@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Core.DataFrame</PackageId>
+    <Description>Fuaran.Core.DataFrame — the declarative-compute layer over Fuaran.Core.Column: a serializable dataframe-transform algebra (Transform + ColExpr, full v1 verb set — filter/project/derive/groupBy/join/window/pivot/unpivot/sort/distinct/limit/union), a pure reference evaluator with pinned null/coercion/order/float semantics (the cross-host parity contract), and a canonical wire codec. transformLaws (in Fuaran.Core.Conformance) certifies any host evaluator byte-identical to the reference. FSharp.Core only, Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="DataFrame.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Fuaran.Core.Column\Fuaran.Core.Column.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.Wire\Fuaran.Core.Wire.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>
