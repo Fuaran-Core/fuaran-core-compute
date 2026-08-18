@@ -25,18 +25,85 @@ type JoinKind =
     | Left
     | Right
     | Outer
+    /// Phase 101 — keep each LEFT row that has at least one match on the right, ONCE, with the left
+    /// schema only (no right columns, no fan-out). Not expressible as `Left` + a filter: a left row
+    /// matching two right rows is duplicated by `Left`, and a `Distinct` afterwards cannot undo that
+    /// without also collapsing rows the input legitimately duplicated.
+    | Semi
+    /// Phase 101 — the complement of `Semi`: keep each LEFT row with NO match on the right, with the
+    /// left schema only. This one IS expressible as `Left` + `IsNull(<right key>)` + `Project`
+    /// (`cellEq` never matches a null, so a matched row's right key is always present, and an
+    /// unmatched left row yields exactly one output row) — the case is here for closed-set symmetry
+    /// with `Semi` and because the idiom is three steps and a schema leak, not one verb.
+    | Anti
 
 type WindowFn =
     | RowNumber
+    /// Ties share a rank and the NEXT distinct order key is the next integer — i.e. this is the
+    /// gapless "dense" rank, not SQL's `RANK()`. The name predates the distinction; `DenseRank` is
+    /// the explicit spelling of the same computation, and `CompetitionRank` is SQL `RANK()`.
+    /// Kept as-is because re-pointing it at the gapped semantics would silently change every
+    /// existing pipeline's output — a major bump, not an additive one.
     | Rank
     | Lag
     | Lead
     | CumulSum
     | RollingMean
+    /// Phase 101 — the explicit spelling of gapless ranking: ties share a rank, the next distinct
+    /// order key is `rank + 1`. Byte-identical to `Rank`; a reader reaching for either gets the
+    /// semantics its name promises.
+    | DenseRank
+    /// Phase 101 — SQL `RANK()`: ties share the LOWEST rank of the tied block and the next distinct
+    /// order key skips by the block's size (`1, 1, 3`). The member of the ranking family that had no
+    /// spelling at all: `Rank` already computed the dense variant.
+    | CompetitionRank
+    /// Phase 101 — SQL `NTILE(n)`: distribute the partition's ordered rows into `n` buckets as evenly
+    /// as possible, the first `rowCount % n` buckets taking one extra row. `n < 1` is a named
+    /// `EvalError`, never a division. The bucket count rides an additive `"n"` wire field present only
+    /// for this case, so every other window step's wire is byte-unchanged.
+    | NTile of buckets: int
+    /// Phase 101 — the running maximum over present values (nulls carry the prior value forward; a
+    /// leading run of nulls is `Null`). Keeps the source column's type, exactly as `AggFn.Max` does.
+    | CumulMax
+    /// Phase 101 — the running minimum; `CumulMax`'s pair.
+    | CumulMin
+    /// Phase 101 — the trailing-window total over the SAME pinned window `RollingMean` averages
+    /// (current + 2 preceding, present values only; `Null` when the window holds none). `Float`, like
+    /// `RollingMean`, so the two compose without a cast.
+    | RollingSum
 
 type SortDir =
     | Asc
     | Desc
+
+// ---------------------------------------------------------------------------
+//  Deliberate omissions from the scalar/verb vocabulary (Phase 101) — decisions,
+//  not gaps. Recorded here because this is where a reader adding a function looks;
+//  the full reasoning is DECISIONS.md D13.
+//
+//  * NO CLOCK — no `Now` / `Today` / `CurrentDate`. The evaluator is a pure function of
+//    (table, env, pipeline): a clock would make the same pipeline over the same data
+//    produce different answers on two hosts (and on one host twice), which is precisely
+//    what `Conformance.transformLaws` byte-identity and deterministic replay certify
+//    against. The intended route is a host-injected `Param` — bind `"today"` once at the
+//    edge and the pipeline stays a total function. `DateDiffDays` then does the arithmetic.
+//  * NO REGEX — no `Matches` / `RegexReplace` / `RegexExtract`. Regex has no portable
+//    semantics: .NET, JS, Go and Rust differ on syntax, escapes, Unicode classes and
+//    (for the backtracking engines) worst-case time, so a pattern is not a cross-host
+//    value. Reach for `Contains` / `StartsWith` / `EndsWith` / `IndexOf` / `Substr` /
+//    `Replace`, or derive the column host-side before it enters the algebra.
+//  * NO `Pow` / `Log` — IEEE-754 does not require transcendental functions to be
+//    correctly rounded, so `Math.Pow` / `Math.Log` may differ in the last ulp between
+//    hosts, and one ulp is a different byte in the canonical float layout. `Sqrt` IS
+//    pinned by IEEE-754 (exact, correctly rounded), which is why it is present and they
+//    are not; integer powers compose from `Mul`.
+//  * NO `Split` and NO explode/flatten — the columnar `Cell` is a closed FLAT scalar set,
+//    and a list-valued cell was explicitly rejected (D12) for blast radius and model
+//    coherence. Both verbs need a value shape the model does not have, so the gap is in
+//    the type model rather than the verb set; a host flattens before handing Core a table.
+//  * NO `PadLeft` / number formatting — the algebra pins VALUES; presentation belongs to
+//    the render tier, which knows the locale and the column width and this does not.
+// ---------------------------------------------------------------------------
 
 /// The fixed scalar-function set a `ColExpr` may apply (spec §2).
 type ScalarFn =
@@ -54,6 +121,22 @@ type ScalarFn =
     | Trim
     | Replace
     | DateDiffDays
+    // Phase 101 — the closed-set edges. `Pow`/`Log` are deliberately absent (see the block above).
+    /// The non-negative square root. `Float`-valued; a NEGATIVE argument is `Null`, matching the
+    /// pinned `Div`-by-zero rule (the strand answers a mathematically-undefined result with `Null`,
+    /// never a `NaN` the canonical wire cannot even carry).
+    | Sqrt
+    /// SQL `LEAST` — the smallest of its variadic arguments by the pinned cell ordering, returned as
+    /// the winning cell (source type preserved). Any null argument propagates, as `Concat`'s does;
+    /// compose `Coalesce` for a treat-null-as-floor idiom. Named `Least`/`Greatest` rather than
+    /// `Min`/`Max` because `AggFn` already owns those two names in this namespace.
+    | Least
+    /// SQL `GREATEST` — `Least`'s pair.
+    | Greatest
+    /// The 0-based ordinal index of the first occurrence of the second argument in the first, or `-1`
+    /// when absent (an empty needle is `0`). 0-based deliberately: `Substr` is 0-based here, so
+    /// `Substr(s, IndexOf(s, t), n)` composes — the 1-based SQL `POSITION` convention would not.
+    | IndexOf
 
 /// A binary operator: arithmetic, comparison, or logical. Null propagates through arithmetic +
 /// comparison (any null operand ⇒ null); the logical pair is three-valued (Kleene).
@@ -144,6 +227,16 @@ type Transform =
     | Distinct
     | Limit of n: int * offset: int
     | Union of DataSource
+    /// Phase 101 — keep the left rows whose FULL ROW also appears in `source`, preserving the left's
+    /// order and its duplicate multiplicity (SQL `INTERSECT ALL`). Row identity is the same canonical
+    /// token `Distinct` dedups on, so `Null` matches `Null` (unlike a `Join` key, where `cellEq`
+    /// never matches a null) and an `Int 1` never matches a `Float 1.0`. Composes with `Distinct`
+    /// exactly as `Union` does: `Intersect · Distinct` is SQL `INTERSECT`.
+    | Intersect of DataSource
+    /// Phase 101 — `Intersect`'s complement: keep the left rows whose full row does NOT appear in
+    /// `source` (SQL `EXCEPT ALL`); `Except · Distinct` is SQL `EXCEPT`. The everyday "rows in A not
+    /// in B" that had no spelling while `Union` shipped alone.
+    | Except of DataSource
 
 /// Pure, total derivations over the `ColExpr` algebra (Phase 77) — the param surface a host reads to
 /// derive dependency edges, reactivity subscriptions, and its unbound-param pruning policy. No
@@ -249,7 +342,9 @@ module Transform =
         | Sort _
         | Distinct
         | Limit _
-        | Union _ -> []
+        | Union _
+        | Intersect _
+        | Except _ -> []
 
     /// Every distinct `Param` name a pipeline references, in first-occurrence order across the steps,
     /// deduplicated. Total over every step kind (incl. `Join` / `Window` / `Pivot`, which carry no
@@ -750,6 +845,41 @@ module DataFrame =
                 | a, b ->
                     civilDays a
                     |> Result.bind (fun da -> civilDays b |> Result.map (fun db -> Int(db - da))))
+        | Sqrt ->
+            unary (fun c ->
+                match asNum c with
+                // A negative root is undefined over the reals; answer `Null`, the same way `Div` by
+                // zero does. A `NaN` would not survive the canonical wire at all.
+                | Some f -> Ok(if f < 0.0 then Null else Float(sqrt f))
+                | None -> Error(TypeError "sqrt of a non-numeric"))
+        | Least
+        | Greatest ->
+            // Variadic (>= 1). Any null propagates, matching `Concat`; incomparable operands are a
+            // typed error via the shared cell ordering, so the pinned comparison is the single source.
+            if List.isEmpty args then
+                Error(ArityError((if fn = Least then "Least" else "Greatest"), 1, 0))
+            elif args |> List.exists ((=) Null) then
+                Ok Null
+            else
+                let rec go (best: Cell) =
+                    function
+                    | [] -> Ok best
+                    | c :: rest ->
+                        match compareCells best c with
+                        | None -> Error(TypeError "least/greatest over incompatible types")
+                        | Some k -> go (if (fn = Least) = (k <= 0) then best else c) rest
+
+                go (List.head args) (List.tail args)
+        | IndexOf ->
+            arity 2
+            |> Result.bind (fun () ->
+                match args.[0], args.[1] with
+                | Null, _
+                | _, Null -> Ok Null
+                // Ordinal, 0-based, `-1` when absent — the same cross-host pin as `Contains`
+                // (JS `indexOf` is code-unit-wise over the same UTF-16).
+                | Str subj, Str needle -> Ok(Int(subj.IndexOf(needle, System.StringComparison.Ordinal)))
+                | _ -> Error(TypeError "indexOf expects (string, string)"))
 
     /// Evaluate a `ColExpr` against one row (resolved through `cols`), reading `Param`s from the
     /// evaluation environment `env` (Phase 77). A `Param` hit resolves to its bound `Cell`; a miss is
@@ -1082,42 +1212,58 @@ module DataFrame =
             let keyMatch (lr: Cell list) (rr: Cell list) =
                 List.forall2 (fun i j -> cellEq (List.item i lr) (List.item j rr)) li ri
 
-            // output schema: left cols ++ right cols (collisions suffixed _right)
-            let leftNames = available f.Cols |> Set.ofList
+            // The combining joins (Inner / Left / Right / Outer) — left cols ++ right cols.
+            let combiningJoin () =
+                // output schema: left cols ++ right cols (collisions suffixed _right)
+                let leftNames = available f.Cols |> Set.ofList
 
-            let rightCols =
-                right.Cols
-                |> List.map (fun (n, ty) -> (if Set.contains n leftNames then n + "_right" else n), ty)
+                let rightCols =
+                    right.Cols
+                    |> List.map (fun (n, ty) -> (if Set.contains n leftNames then n + "_right" else n), ty)
 
-            let outCols = f.Cols @ rightCols
-            let leftNulls = f.Cols |> List.map (fun _ -> Null)
-            let rightNulls = right.Cols |> List.map (fun _ -> Null)
+                let outCols = f.Cols @ rightCols
+                let leftNulls = f.Cols |> List.map (fun _ -> Null)
+                let rightNulls = right.Cols |> List.map (fun _ -> Null)
 
-            let combine lr rr = lr @ rr
+                let combine lr rr = lr @ rr
 
-            let leftSide =
-                f.Rows
-                |> List.collect (fun lr ->
-                    let matches = right.Rows |> List.filter (keyMatch lr)
+                let leftSide =
+                    f.Rows
+                    |> List.collect (fun lr ->
+                        let matches = right.Rows |> List.filter (keyMatch lr)
 
-                    match matches, how with
-                    | [], (Left | Outer) -> [ combine lr rightNulls ]
-                    | [], (Inner | Right) -> []
-                    | ms, _ -> ms |> List.map (combine lr))
+                        match matches, how with
+                        | [], (Left | Outer) -> [ combine lr rightNulls ]
+                        | [], (Inner | Right) -> []
+                        | ms, _ -> ms |> List.map (combine lr))
 
-            // right-only unmatched rows (for Right / Outer)
-            let rightOnly =
-                match how with
-                | Right
-                | Outer ->
-                    right.Rows
-                    |> List.filter (fun rr -> not (f.Rows |> List.exists (fun lr -> keyMatch lr rr)))
-                    |> List.map (fun rr -> combine leftNulls rr)
-                | _ -> []
+                // right-only unmatched rows (for Right / Outer)
+                let rightOnly =
+                    match how with
+                    | Right
+                    | Outer ->
+                        right.Rows
+                        |> List.filter (fun rr -> not (f.Rows |> List.exists (fun lr -> keyMatch lr rr)))
+                        |> List.map (fun rr -> combine leftNulls rr)
+                    | _ -> []
 
-            Ok
                 { Cols = outCols
                   Rows = leftSide @ rightOnly }
+
+            match how with
+            // Phase 101 — the filtering joins: the LEFT schema only, each qualifying left row once,
+            // input order and multiplicity preserved (no fan-out, no right columns to project away).
+            | Semi
+            | Anti ->
+                let matched lr = right.Rows |> List.exists (keyMatch lr)
+
+                Ok
+                    { Cols = f.Cols
+                      Rows = f.Rows |> List.filter (fun lr -> matched lr = (how = Semi)) }
+            | Inner
+            | Left
+            | Right
+            | Outer -> Ok(combiningJoin ())
 
     let private evalUnion (f: Frame) (other: Frame) : Result<Frame, EvalError> =
         if available f.Cols <> available other.Cols then
@@ -1125,9 +1271,45 @@ module DataFrame =
         else
             Ok { f with Rows = f.Rows @ other.Rows }
 
+    /// `Intersect` / `Except` (Phase 101) — the multiset set-ops, keyed on the SAME canonical row
+    /// token `Distinct` dedups on (Phase 41), so membership is host-identical and `Null` is a value
+    /// that matches itself. `keepPresent` selects intersect (`true`) from except (`false`). The
+    /// left's order and duplicate multiplicity survive, so `· Distinct` recovers the SQL set forms.
+    let private evalSetOp (verb: string) (keepPresent: bool) (f: Frame) (other: Frame) : Result<Frame, EvalError> =
+        if available f.Cols <> available other.Cols then
+            Error(JoinError(verb + " requires matching column names"))
+        else
+            let rightKeys = other.Rows |> List.map groupKey |> Set.ofList
+
+            Ok
+                { f with
+                    Rows =
+                        f.Rows
+                        |> List.filter (fun row -> Set.contains (groupKey row) rightKeys = keepPresent) }
+
+    /// Does the window function read the `Of` column at all? The positional/ranking family
+    /// (`RowNumber` / the three ranks / `NTile`) is computed entirely from the ORDER key, so its
+    /// `Of` is unused and an unresolvable name there is not an error (Phase 101 extends the
+    /// pre-existing `RowNumber`/`Rank` carve-out to the ranking family it grew into).
+    let private windowReadsOf (fn: WindowFn) : bool =
+        match fn with
+        | RowNumber
+        | Rank
+        | DenseRank
+        | CompetitionRank
+        | NTile _ -> false
+        | Lag
+        | Lead
+        | CumulSum
+        | CumulMax
+        | CumulMin
+        | RollingMean
+        | RollingSum -> true
+
     let private evalWindow (f: Frame) (spec: WindowSpec) : Result<Frame, EvalError> =
-        match colIndex f.Cols spec.Of with
-        | None when spec.Fn <> RowNumber && spec.Fn <> Rank -> Error(UnknownColumn(spec.Of, available f.Cols))
+        match spec.Fn, colIndex f.Cols spec.Of with
+        | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
+        | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available f.Cols))
         | _ ->
             let partIdx = spec.PartitionBy |> List.choose (colIndex f.Cols)
 
@@ -1173,7 +1355,8 @@ module DataFrame =
                     let outs =
                         match spec.Fn with
                         | RowNumber -> ordered |> List.mapi (fun i _ -> Int(i + 1))
-                        | Rank ->
+                        | Rank
+                        | DenseRank ->
                             // dense-ish rank by the order key: ties (equal order keys) share a rank
                             ordered
                             |> List.mapi (fun i (_, row) ->
@@ -1201,7 +1384,8 @@ module DataFrame =
                                 0.0
                             |> List.tail
                             |> List.map Float
-                        | RollingMean ->
+                        | RollingMean
+                        | RollingSum ->
                             // trailing window of up to 3 (current + 2 preceding), present values only
                             vals
                             |> List.mapi (fun i _ ->
@@ -1209,10 +1393,52 @@ module DataFrame =
                                 let window = vals |> List.skip lo |> List.truncate (i - lo + 1)
                                 let nums = window |> List.choose asNum
 
-                                if List.isEmpty nums then
-                                    Null
+                                if List.isEmpty nums then Null
+                                elif spec.Fn = RollingSum then Float(List.sum nums)
+                                else Float(List.sum nums / float (List.length nums)))
+                        // Phase 101 — SQL RANK(): a tied block shares its LOWEST rank and the next
+                        // distinct order key skips by the block's size (1, 1, 3 — where the dense
+                        // `Rank`/`DenseRank` above give 1, 1, 2).
+                        | CompetitionRank ->
+                            ordered
+                            |> List.fold
+                                (fun (acc, i, cur, prev) (_, row) ->
+                                    let r =
+                                        match prev with
+                                        | Some p when rowKeyCompare f.Cols spec.OrderBy p row = 0 -> cur
+                                        | _ -> i + 1
+
+                                    (Int r :: acc), i + 1, r, Some row)
+                                ([], 0, 0, None)
+                            |> fun (acc, _, _, _) -> List.rev acc
+                        // Phase 101 — SQL NTILE(n): the first `count % n` buckets take one extra row.
+                        | NTile buckets ->
+                            let count = List.length ordered
+                            let small = count / buckets
+                            let big = count % buckets
+                            // rows [0, big*(small+1)) fill the oversized buckets; the rest the rest.
+                            let bigRows = big * (small + 1)
+
+                            ordered
+                            |> List.mapi (fun i _ ->
+                                if i < bigRows then
+                                    Int(i / (small + 1) + 1)
                                 else
-                                    Float(List.sum nums / float (List.length nums)))
+                                    Int(big + (i - bigRows) / small + 1))
+                        // Phase 101 — running max/min over present values; nulls carry the prior
+                        // value forward, so a leading run of nulls is `Null` (never a seeded 0).
+                        | CumulMax
+                        | CumulMin ->
+                            let pick (acc: Cell) (v: Cell) =
+                                match acc, v with
+                                | _, Null -> acc
+                                | Null, _ -> v
+                                | _ ->
+                                    match compareCells acc v with
+                                    | Some c -> if (spec.Fn = CumulMin) = (c <= 0) then acc else v
+                                    | None -> acc
+
+                            vals |> List.scan pick Null |> List.tail
 
                     List.map2 (fun (i, _) out -> i, out) ordered outs)
                 |> List.sortBy fst
@@ -1221,11 +1447,18 @@ module DataFrame =
             let ty =
                 match spec.Fn with
                 | RowNumber
-                | Rank -> IntType
+                | Rank
+                | DenseRank
+                | CompetitionRank
+                | NTile _ -> IntType
                 | CumulSum
-                | RollingMean -> FloatType
+                | RollingMean
+                | RollingSum -> FloatType
                 | Lag
-                | Lead -> colType f.Cols spec.Of |> Option.defaultValue StringType
+                | Lead
+                // The running extremes keep the source type, exactly as `AggFn.Min`/`Max` do.
+                | CumulMax
+                | CumulMin -> colType f.Cols spec.Of |> Option.defaultValue StringType
 
             Ok
                 { Cols = f.Cols @ [ spec.As, ty ]
@@ -1361,6 +1594,14 @@ module DataFrame =
             |> Result.map toFrame
             |> Result.bind (fun rf -> evalJoin f rf on how)
         | Union other -> evalSource resolve other |> Result.map toFrame |> Result.bind (evalUnion f)
+        | Intersect other ->
+            evalSource resolve other
+            |> Result.map toFrame
+            |> Result.bind (evalSetOp "intersect" true f)
+        | Except other ->
+            evalSource resolve other
+            |> Result.map toFrame
+            |> Result.bind (evalSetOp "except" false f)
 
     /// A `Ref`-rejecting resolver — the default for embedded-only pipelines (and the conformance kit).
     let noResolve: string -> Result<Table, EvalError> =
@@ -1454,17 +1695,24 @@ module DataFrame =
         | Sort by -> by |> List.map fst |> Set.ofList
         | Distinct
         | Limit _
-        | Union _ -> Set.empty
+        | Union _
+        | Intersect _
+        | Except _ -> Set.empty
 
     let private readColumns (pipeline: Transform list) : Set<string> =
         unionAll (pipeline |> List.map stepCols)
 
     // `Distinct` dedups on the FULL row, so a column dropped *after* a Distinct still influences the
-    // output through the dedup — the one step where the "not read + not in output" check is unsound.
+    // output through the dedup — the steps where the "not read + not in output" check is unsound.
+    // `Intersect` / `Except` (Phase 101) match on the full row for the same reason and belong here:
+    // a change to a column neither read nor emitted can still flip a row's membership, so the
+    // incremental reuse short-circuit must not fire.
     let private hasFullRowDedup (pipeline: Transform list) : bool =
         pipeline
         |> List.exists (function
-            | Distinct -> true
+            | Distinct
+            | Intersect _
+            | Except _ -> true
             | _ -> false)
 
     /// Incrementally evaluate a pipeline given the PRIOR result and a description of what changed (Phase
@@ -1524,6 +1772,7 @@ module DataFrameCodec =
         | StdDev -> "stddev"
         | First -> "first"
         | Last -> "last"
+        | CountDistinct -> "countDistinct"
 
     let private aggFnOf =
         function
@@ -1536,6 +1785,7 @@ module DataFrameCodec =
         | "stddev" -> Some StdDev
         | "first" -> Some First
         | "last" -> Some Last
+        | "countDistinct" -> Some CountDistinct
         // Phase 92 alias — the SQL prior; canonical encode stays "mean".
         | "avg" -> Some Mean
         | _ -> None
@@ -1546,6 +1796,8 @@ module DataFrameCodec =
         | Left -> "left"
         | Right -> "right"
         | Outer -> "outer"
+        | Semi -> "semi"
+        | Anti -> "anti"
 
     let private joinOf =
         function
@@ -1553,6 +1805,8 @@ module DataFrameCodec =
         | "left" -> Some Left
         | "right" -> Some Right
         | "outer" -> Some Outer
+        | "semi" -> Some Semi
+        | "anti" -> Some Anti
         | _ -> None
 
     let private windowTag =
@@ -1563,6 +1817,13 @@ module DataFrameCodec =
         | Lead -> "lead"
         | CumulSum -> "cumulSum"
         | RollingMean -> "rollingMean"
+        | DenseRank -> "denseRank"
+        | CompetitionRank -> "competitionRank"
+        // The bucket count rides an additive `"n"` field on the step object, not the tag.
+        | NTile _ -> "ntile"
+        | CumulMax -> "cumulMax"
+        | CumulMin -> "cumulMin"
+        | RollingSum -> "rollingSum"
 
     let private windowOf =
         function
@@ -1574,6 +1835,13 @@ module DataFrameCodec =
         // Legacy alias — the pre-rename wire tag (operator rename 2026-07-19); normalises on re-encode.
         | "cumSum" -> Some CumulSum
         | "rollingMean" -> Some RollingMean
+        | "denseRank" -> Some DenseRank
+        | "competitionRank" -> Some CompetitionRank
+        | "cumulMax" -> Some CumulMax
+        | "cumulMin" -> Some CumulMin
+        | "rollingSum" -> Some RollingSum
+        // "ntile" is NOT here: it carries a bucket count, so only the step decoder (which can see
+        // the sibling `"n"` field) can build it.
         | _ -> None
 
     let private dirTag =
@@ -1601,6 +1869,10 @@ module DataFrameCodec =
         | Trim -> "trim"
         | Replace -> "replace"
         | DateDiffDays -> "dateDiffDays"
+        | Sqrt -> "sqrt"
+        | Least -> "least"
+        | Greatest -> "greatest"
+        | IndexOf -> "indexOf"
 
     let private scalarOf =
         function
@@ -1617,6 +1889,10 @@ module DataFrameCodec =
         | "trim" -> Some Trim
         | "replace" -> Some Replace
         | "dateDiffDays" -> Some DateDiffDays
+        | "sqrt" -> Some Sqrt
+        | "least" -> Some Least
+        | "greatest" -> Some Greatest
+        | "indexOf" -> Some IndexOf
         | _ -> None
 
     let private binTag =
@@ -1859,7 +2135,11 @@ module DataFrameCodec =
                                   "concat"
                                   "trim"
                                   "replace"
-                                  "dateDiffDays" ]
+                                  "dateDiffDays"
+                                  "sqrt"
+                                  "least"
+                                  "greatest"
+                                  "indexOf" ]
                             )
                         )
                     | Some fn ->
@@ -2034,7 +2314,16 @@ module DataFrameCodec =
                     Error(
                         UnknownType(
                             fns,
-                            [ "sum"; "mean"; "min"; "max"; "count"; "median"; "stddev"; "first"; "last" ]
+                            [ "sum"
+                              "mean"
+                              "min"
+                              "max"
+                              "count"
+                              "median"
+                              "stddev"
+                              "first"
+                              "last"
+                              "countDistinct" ]
                         )
                     )
                 | Some fn ->
@@ -2057,13 +2346,21 @@ module DataFrameCodec =
                   "on", JArr(on |> List.map pairJson)
                   "how", JStr(joinTag how) ]
         | Window spec ->
-            Canon.typed
-                "window"
+            let fields =
                 [ "partitionBy", strList spec.PartitionBy
                   "orderBy", JArr(spec.OrderBy |> List.map orderJson)
                   "fn", JStr(windowTag spec.Fn)
                   "of", JStr spec.Of
                   "as", JStr spec.As ]
+
+            Canon.typed
+                "window"
+                // Phase 101 — the bucket count is emitted ONLY for `ntile`, so every pre-existing
+                // window step's wire is byte-unchanged. `Canon.render` sorts keys, so position
+                // does not matter.
+                (match spec.Fn with
+                 | NTile buckets -> fields @ [ "n", JInt buckets ]
+                 | _ -> fields)
         | Pivot spec ->
             Canon.typed
                 "pivot"
@@ -2077,6 +2374,8 @@ module DataFrameCodec =
         | Distinct -> Canon.typed "distinct" []
         | Limit(n, offset) -> Canon.typed "limit" [ "n", JInt n; "offset", JInt offset ]
         | Union src -> Canon.typed "union" [ "source", ColumnCodec.encodeJson src ]
+        | Intersect src -> Canon.typed "intersect" [ "source", ColumnCodec.encodeJson src ]
+        | Except src -> Canon.typed "except" [ "source", ColumnCodec.encodeJson src ]
 
     let private intOf el =
         match el with
@@ -2091,7 +2390,7 @@ module DataFrameCodec =
         | Error(MissingField "$type") ->
             Error(
                 MalformedShape(
-                    "a pipeline step is a $type-discriminated op (filter | project | derive | groupBy | join | window | pivot | unpivot | sort | distinct | limit | union) — this step object has no \"$type\""
+                    "a pipeline step is a $type-discriminated op (filter | project | derive | groupBy | join | window | pivot | unpivot | sort | distinct | limit | union | intersect | except) — this step object has no \"$type\""
                 )
             )
         | r ->
@@ -2213,7 +2512,8 @@ module DataFrameCodec =
                             |> Result.bind strOf
                             |> Result.bind (fun hows ->
                                 match joinOf hows with
-                                | None -> Error(UnknownType(hows, [ "inner"; "left"; "right"; "outer" ]))
+                                | None ->
+                                    Error(UnknownType(hows, [ "inner"; "left"; "right"; "outer"; "semi"; "anti" ]))
                                 | Some how -> Ok(Join(src, on, how)))))
                 | "window" ->
                     field "partitionBy" el
@@ -2226,15 +2526,36 @@ module DataFrameCodec =
                             field "fn" el
                             |> Result.bind strOf
                             |> Result.bind (fun fns ->
-                                match windowOf fns with
-                                | None ->
-                                    Error(
-                                        UnknownType(
-                                            fns,
-                                            [ "rowNumber"; "rank"; "lag"; "lead"; "cumulSum"; "rollingMean" ]
-                                        )
-                                    )
-                                | Some fn ->
+                                // Phase 101 — `ntile` is the one window fn carrying an operand, so
+                                // only this decoder (which can see the sibling `"n"` field) builds
+                                // it; every other fn is nullary and resolves through `windowOf`.
+                                let fnRes =
+                                    if fns = "ntile" then
+                                        field "n" el |> Result.bind intOf |> Result.map NTile
+                                    else
+                                        match windowOf fns with
+                                        | Some fn -> Ok fn
+                                        | None ->
+                                            Error(
+                                                UnknownType(
+                                                    fns,
+                                                    [ "rowNumber"
+                                                      "rank"
+                                                      "lag"
+                                                      "lead"
+                                                      "cumulSum"
+                                                      "rollingMean"
+                                                      "denseRank"
+                                                      "competitionRank"
+                                                      "ntile"
+                                                      "cumulMax"
+                                                      "cumulMin"
+                                                      "rollingSum" ]
+                                                )
+                                            )
+
+                                fnRes
+                                |> Result.bind (fun fn ->
                                     field "of" el
                                     |> Result.bind strOf
                                     |> Result.bind (fun ofc ->
@@ -2246,7 +2567,7 @@ module DataFrameCodec =
                                                   OrderBy = ob
                                                   Fn = fn
                                                   Of = ofc
-                                                  As = asn })))))
+                                                  As = asn }))))))
                 | "pivot" ->
                     field "index" el
                     |> Result.bind strListOf
@@ -2273,7 +2594,8 @@ module DataFrameCodec =
                                                   "median"
                                                   "stddev"
                                                   "first"
-                                                  "last" ]
+                                                  "last"
+                                                  "countDistinct" ]
                                             )
                                         )
                                     | Some agg ->
@@ -2307,6 +2629,8 @@ module DataFrameCodec =
                         | Some o -> intOf o |> Result.map (fun ofs -> Limit(n, ofs))
                         | None -> Ok(Limit(n, 0)))
                 | "union" -> field "source" el |> Result.bind ColumnCodec.decodeJson |> Result.map Union
+                | "intersect" -> field "source" el |> Result.bind ColumnCodec.decodeJson |> Result.map Intersect
+                | "except" -> field "source" el |> Result.bind ColumnCodec.decodeJson |> Result.map Except
                 | other ->
                     Error(
                         UnknownType(
@@ -2322,7 +2646,9 @@ module DataFrameCodec =
                               "sort"
                               "distinct"
                               "limit"
-                              "union" ]
+                              "union"
+                              "intersect"
+                              "except" ]
                         )
                     ))
 

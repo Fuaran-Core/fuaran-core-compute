@@ -1010,4 +1010,418 @@ let tests =
 
                   failtestf "paramLaws failed:\n%s" (String.concat "\n" fails)
 
-              Expect.equal (Conformance.paramLaws 7714 200) results "same seed ⇒ identical report" ]
+              Expect.equal (Conformance.paramLaws 7714 200) results "same seed ⇒ identical report"
+
+          // ---- Phase 101 — the closed-set asymmetries ----
+
+          testCase "Phase 101 — Intersect/Except are multiset ops on the full row; null matches null"
+          <| fun _ ->
+              let left =
+                  tbl
+                      [ "k", IntType; "v", StringType ]
+                      [ col "k" IntType [ Int 1; Int 2; Int 2; Int 3; Null ]
+                        col "v" StringType [ Str "a"; Str "b"; Str "b"; Str "c"; Str "z" ] ]
+
+              let right =
+                  tbl
+                      [ "k", IntType; "v", StringType ]
+                      [ col "k" IntType [ Int 2; Int 3; Null ]
+                        col "v" StringType [ Str "b"; Str "x"; Str "z" ] ]
+
+              let inter = DataFrame.evalPipeline [ Intersect(Embedded right) ] left |> okTable
+
+              Expect.equal (cellsOf "k" inter) [ Int 2; Int 2; Null ] "duplicates survive; Null matches Null"
+              Expect.equal (cellsOf "v" inter) [ Str "b"; Str "b"; Str "z" ] "the whole row is the key"
+
+              let exc = DataFrame.evalPipeline [ Except(Embedded right) ] left |> okTable
+              Expect.equal (cellsOf "k" exc) [ Int 1; Int 3 ] "rows in A not in B, left order preserved"
+
+              // `· Distinct` recovers the SQL set forms, exactly as it does for Union.
+              let interSet =
+                  DataFrame.evalPipeline [ Intersect(Embedded right); Distinct ] left |> okTable
+
+              Expect.equal (cellsOf "k" interSet) [ Int 2; Null ] "Intersect · Distinct = SQL INTERSECT"
+
+              // An `Int 1` is not a `Float 1.0` — the same type-tagged token Distinct dedups on.
+              let ints = tbl [ "k", IntType ] [ col "k" IntType [ Int 1 ] ]
+              let floats = tbl [ "k", FloatType ] [ col "k" FloatType [ Float 1.0 ] ]
+
+              Expect.equal
+                  (DataFrame.evalPipeline [ Intersect(Embedded floats) ] ints
+                   |> okTable
+                   |> cellsOf "k")
+                  []
+                  "Int 1 and Float 1.0 are two values"
+
+              match DataFrame.evalPipeline [ Except(Embedded people) ] left with
+              | Error(JoinError m) -> Expect.stringContains m "except" "the verb names itself"
+              | other -> failtestf "expected a JoinError on mismatched columns, got %A" other
+
+          testCase "Phase 101 — Semi/Anti keep the left schema, once per row; Semi is NOT Left+filter"
+          <| fun _ ->
+              // `eng` appears twice on the right, so a `Left` join fans the eng rows out.
+              let depts =
+                  tbl [ "dept", StringType ] [ col "dept" StringType [ Str "eng"; Str "eng"; Str "hr" ] ]
+
+              let semi = run [ Join(Embedded depts, [ "dept", "dept" ], Semi) ] |> okTable
+              Expect.equal (List.map fst semi.Schema) [ "dept"; "name"; "salary"; "bonus" ] "left schema only"
+              Expect.equal (cellsOf "name" semi) [ Str "ana"; Str "bob"; Str "el" ] "each matching left row ONCE"
+
+              let anti = run [ Join(Embedded depts, [ "dept", "dept" ], Anti) ] |> okTable
+              Expect.equal (cellsOf "name" anti) [ Str "cy"; Str "dee" ] "the unmatched left rows"
+
+              // Anti IS expressible the long way — Left + IsNull on the (suffixed) right key.
+              let antiIdiom =
+                  run
+                      [ Join(Embedded depts, [ "dept", "dept" ], Left)
+                        Filter(IsNull(Col "dept_right")) ]
+                  |> okTable
+
+              Expect.equal (cellsOf "name" antiIdiom) (cellsOf "name" anti) "Anti agrees with the Left+IsNull idiom"
+
+              // Semi is NOT: the fan-out is already baked in and no filter undoes it.
+              let semiIdiom =
+                  run
+                      [ Join(Embedded depts, [ "dept", "dept" ], Left)
+                        Filter(Not(IsNull(Col "dept_right"))) ]
+                  |> okTable
+
+              Expect.equal (List.length (cellsOf "name" semiIdiom)) 6 "Left+filter duplicates per right match"
+              Expect.notEqual (cellsOf "name" semiIdiom) (cellsOf "name" semi) "…so it is not a spelling of Semi"
+
+          testCase "Phase 101 — CountDistinct counts distinct present values, host-deterministically"
+          <| fun _ ->
+              let t =
+                  run
+                      [ GroupBy(
+                            [ "dept" ],
+                            [ { Name = "n"
+                                Fn = Count
+                                Of = "salary" }
+                              { Name = "d"
+                                Fn = CountDistinct
+                                Of = "salary" } ]
+                        ) ]
+                  |> okTable
+
+              Expect.equal (cellsOf "n" t) [ Int 2; Int 2 ] "Count is unchanged"
+              Expect.equal (cellsOf "d" t) [ Int 2; Int 1 ] "sales has 90 twice"
+
+              let distinctOver (table: Table) (column: string) =
+                  DataFrame.evalPipeline
+                      [ GroupBy(
+                            [],
+                            [ { Name = "d"
+                                Fn = CountDistinct
+                                Of = column } ]
+                        ) ]
+                      table
+                  |> okTable
+                  |> cellsOf "d"
+
+              // nulls are skipped, exactly as Count skips them
+              let allNull = tbl [ "x", IntType ] [ col "x" IntType [ Null; Null ] ]
+              Expect.equal (distinctOver allNull "x") [ Int 0 ] "all-null counts 0"
+
+              // NaN collapses to one value and -0.0/0.0 coincide — the canonical token, not host equality
+              let nan = System.Double.NaN
+
+              let odd =
+                  tbl [ "f", FloatType ] [ col "f" FloatType [ Float nan; Float nan; Float -0.0; Float 0.0 ] ]
+
+              Expect.equal (distinctOver odd "f") [ Int 2 ] "NaN is one value; -0.0 and 0.0 are one value"
+
+          testCase "Phase 101 — DenseRank equals Rank; CompetitionRank is the gapped SQL RANK()"
+          <| fun _ ->
+              let scores =
+                  tbl [ "s", IntType ] [ col "s" IntType [ Int 10; Int 10; Int 20; Int 30 ] ]
+
+              let rankWith fn =
+                  DataFrame.evalPipeline
+                      [ Window
+                            { PartitionBy = []
+                              OrderBy = [ "s", Asc ]
+                              Fn = fn
+                              Of = "s"
+                              As = "r" } ]
+                      scores
+                  |> okTable
+                  |> cellsOf "r"
+
+              Expect.equal (rankWith Rank) [ Int 1; Int 1; Int 2; Int 3 ] "the legacy Rank is DENSE"
+              Expect.equal (rankWith DenseRank) (rankWith Rank) "DenseRank is the explicit spelling"
+
+              Expect.equal
+                  (rankWith CompetitionRank)
+                  [ Int 1; Int 1; Int 3; Int 4 ]
+                  "CompetitionRank skips by the tied block's size"
+
+          testCase "Phase 101 — NTile distributes evenly, big buckets first; n < 1 is a named error"
+          <| fun _ ->
+              let five =
+                  tbl [ "s", IntType ] [ col "s" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ]
+
+              let ntileSpec n =
+                  Window
+                      { PartitionBy = []
+                        OrderBy = [ "s", Asc ]
+                        Fn = NTile n
+                        Of = "s"
+                        As = "b" }
+
+              let ntile n =
+                  DataFrame.evalPipeline [ ntileSpec n ] five |> okTable |> cellsOf "b"
+
+              Expect.equal (ntile 2) [ Int 1; Int 1; Int 1; Int 2; Int 2 ] "5 rows / 2 buckets = 3 then 2"
+              Expect.equal (ntile 5) [ Int 1; Int 2; Int 3; Int 4; Int 5 ] "one row each"
+              Expect.equal (ntile 7) [ Int 1; Int 2; Int 3; Int 4; Int 5 ] "more buckets than rows leaves a tail empty"
+
+              match DataFrame.evalPipeline [ ntileSpec 0 ] five with
+              | Error(TypeError m) -> Expect.stringContains m "ntile" "the error names the fn"
+              | other -> failtestf "expected a TypeError for 0 buckets, got %A" other
+
+          testCase "Phase 101 — CumulMax/CumulMin carry nulls forward; RollingSum shares the window"
+          <| fun _ ->
+              let v =
+                  tbl [ "v", IntType ] [ col "v" IntType [ Null; Int 3; Int 1; Int 5; Null; Int 2 ] ]
+
+              let windowed fn =
+                  DataFrame.evalPipeline
+                      [ Window
+                            { PartitionBy = []
+                              OrderBy = []
+                              Fn = fn
+                              Of = "v"
+                              As = "w" } ]
+                      v
+                  |> okTable
+
+              let maxT = windowed CumulMax
+              Expect.equal (cellsOf "w" maxT) [ Null; Int 3; Int 3; Int 5; Int 5; Int 5 ] "running max, nulls carried"
+
+              Expect.equal
+                  (maxT.Schema |> List.tryFind (fun (n, _) -> n = "w"))
+                  (Some("w", IntType))
+                  "the running extreme keeps the source type"
+
+              Expect.equal (windowed CumulMin |> cellsOf "w") [ Null; Int 3; Int 1; Int 1; Int 1; Int 1 ] "running min"
+
+              Expect.equal
+                  (windowed RollingSum |> cellsOf "w")
+                  [ Null; Float 3.0; Float 4.0; Float 9.0; Float 6.0; Float 7.0 ]
+                  "trailing 3-window total over present values"
+
+              Expect.equal
+                  (windowed RollingMean |> cellsOf "w" |> List.item 3)
+                  (Float 3.0)
+                  "RollingMean is unchanged — the same window"
+
+          testCase "Phase 101 — Sqrt is Null below zero; Least/Greatest propagate null; IndexOf is 0-based"
+          <| fun _ ->
+              let one = tbl [ "x", IntType ] [ col "x" IntType [ Int 0 ] ]
+
+              let scalar e =
+                  DataFrame.evalPipeline [ Derive("r", e) ] one |> okTable |> cellsOf "r"
+
+              Expect.equal (scalar (ApplyFn(Sqrt, [ Lit(Float 9.0) ]))) [ Float 3.0 ] "sqrt 9 = 3"
+              Expect.equal (scalar (ApplyFn(Sqrt, [ Lit(Int 2) ]))) [ Float(sqrt 2.0) ] "int promotes to float"
+              Expect.equal (scalar (ApplyFn(Sqrt, [ Lit(Int -4) ]))) [ Null ] "a negative root is Null, never NaN"
+              Expect.equal (scalar (ApplyFn(Sqrt, [ Lit Null ]))) [ Null ] "null propagates"
+
+              match DataFrame.evalPipeline [ Derive("r", ApplyFn(Sqrt, [ Lit(Str "x") ])) ] one with
+              | Error(TypeError _) -> ()
+              | other -> failtestf "expected a TypeError for sqrt of a string, got %A" other
+
+              let clamped fn =
+                  run [ Derive("r", ApplyFn(fn, [ Col "salary"; Lit(Int 95) ])) ]
+                  |> okTable
+                  |> cellsOf "r"
+
+              Expect.equal (clamped Greatest) [ Int 100; Int 120; Int 95; Int 95; Null ] "greatest is a floor"
+              Expect.equal (clamped Least) [ Int 95; Int 95; Int 90; Int 90; Null ] "least is a ceiling"
+
+              Expect.equal (scalar (ApplyFn(Greatest, [ Lit(Int 1); Lit(Int 9); Lit(Int 4) ]))) [ Int 9 ] "variadic"
+
+              Expect.equal
+                  (run [ Derive("r", ApplyFn(IndexOf, [ Col "name"; Lit(Str "e") ])) ]
+                   |> okTable
+                   |> cellsOf "r")
+                  [ Int -1; Int -1; Int -1; Int 1; Int 0 ]
+                  "0-based, -1 when absent"
+
+              Expect.equal (scalar (ApplyFn(IndexOf, [ Lit(Str "abc"); Lit(Str "") ]))) [ Int 0 ] "an empty needle is 0"
+
+              // The composition the 0-based pin exists for.
+              Expect.equal
+                  (scalar (
+                      ApplyFn(
+                          Substr,
+                          [ Lit(Str "key=value")
+                            ApplyFn(IndexOf, [ Lit(Str "key=value"); Lit(Str "=") ])
+                            Lit(Int 1) ]
+                      )
+                  ))
+                  [ Str "=" ]
+                  "IndexOf feeds Substr directly"
+
+          testCase "Phase 101 — every new wire form round-trips; existing wire is byte-unchanged"
+          <| fun _ ->
+              let p =
+                  [ Intersect(Embedded people)
+                    Except(Embedded people)
+                    Join(Embedded people, [ "dept", "dept" ], Semi)
+                    Join(Embedded people, [ "dept", "dept" ], Anti)
+                    GroupBy(
+                        [ "dept" ],
+                        [ { Name = "d"
+                            Fn = CountDistinct
+                            Of = "salary" } ]
+                    )
+                    Window
+                        { PartitionBy = []
+                          OrderBy = [ "salary", Asc ]
+                          Fn = DenseRank
+                          Of = "salary"
+                          As = "a" }
+                    Window
+                        { PartitionBy = []
+                          OrderBy = [ "salary", Asc ]
+                          Fn = CompetitionRank
+                          Of = "salary"
+                          As = "b" }
+                    Window
+                        { PartitionBy = []
+                          OrderBy = [ "salary", Asc ]
+                          Fn = NTile 4
+                          Of = "salary"
+                          As = "c" }
+                    Window
+                        { PartitionBy = []
+                          OrderBy = []
+                          Fn = CumulMax
+                          Of = "salary"
+                          As = "d" }
+                    Window
+                        { PartitionBy = []
+                          OrderBy = []
+                          Fn = CumulMin
+                          Of = "salary"
+                          As = "e" }
+                    Window
+                        { PartitionBy = []
+                          OrderBy = []
+                          Fn = RollingSum
+                          Of = "salary"
+                          As = "f" }
+                    Derive("g", ApplyFn(Sqrt, [ Col "bonus" ]))
+                    Derive("h", ApplyFn(Least, [ Col "salary"; Lit(Int 1) ]))
+                    Derive("i", ApplyFn(Greatest, [ Col "salary"; Lit(Int 1) ]))
+                    Derive("j", ApplyFn(IndexOf, [ Col "name"; Lit(Str "e") ])) ]
+
+              let bytes = DataFrameCodec.encodePipeline p
+
+              match DataFrameCodec.decodePipeline bytes with
+              | Error e -> failtestf "round-trip decode failed: %s" (ColumnCodec.errorString e)
+              | Ok p2 ->
+                  Expect.equal p2 p "tree-identical"
+                  Expect.equal (DataFrameCodec.encodePipeline p2) bytes "byte-identical"
+
+              // ADDITIVE PROOF — a non-NTile window step carries no "n" key, so its wire is exactly
+              // what the pre-Phase-101 encoder produced.
+              Expect.equal
+                  (DataFrameCodec.encodePipeline
+                      [ Window
+                            { PartitionBy = [ "dept" ]
+                              OrderBy = [ "salary", Desc ]
+                              Fn = Rank
+                              Of = "salary"
+                              As = "rk" } ])
+                  "[{\"$type\":\"window\",\"as\":\"rk\",\"fn\":\"rank\",\"of\":\"salary\",\"orderBy\":[{\"col\":\"salary\",\"dir\":\"desc\"}],\"partitionBy\":[\"dept\"]}]"
+                  "an existing window step's wire is byte-unchanged"
+
+              Expect.stringContains
+                  (DataFrameCodec.encodePipeline
+                      [ Window
+                            { PartitionBy = []
+                              OrderBy = []
+                              Fn = NTile 4
+                              Of = "salary"
+                              As = "b" } ])
+                  "\"n\":4"
+                  "…and the bucket count appears only for ntile"
+
+          testCase "Phase 101 — the decode rosters enumerate the new vocabulary; ntile needs its n"
+          <| fun _ ->
+              let roster json =
+                  match DataFrameCodec.decodePipeline json with
+                  | Error(UnknownType(_, expected)) -> expected
+                  | other -> failtestf "expected an UnknownType, got %A" other
+
+              let steps = roster """[{"$type":"frobnicate"}]"""
+              Expect.contains steps "intersect" "the step roster gained intersect"
+              Expect.contains steps "except" "the step roster gained except"
+
+              let joins =
+                  roster """[{"$type":"join","source":{"schema":[],"columns":[]},"on":[],"how":"frob"}]"""
+
+              Expect.contains joins "semi" "the join roster gained semi"
+              Expect.contains joins "anti" "the join roster gained anti"
+
+              let windows =
+                  roster """[{"$type":"window","partitionBy":[],"orderBy":[],"fn":"frob","of":"x","as":"y"}]"""
+
+              Expect.contains windows "ntile" "the window roster gained ntile"
+              Expect.contains windows "denseRank" "the window roster gained denseRank"
+              Expect.contains windows "competitionRank" "the window roster gained competitionRank"
+              Expect.contains windows "rollingSum" "the window roster gained rollingSum"
+
+              let aggs =
+                  roster """[{"$type":"groupBy","keys":[],"aggs":[{"name":"a","fn":"frob","of":"x"}]}]"""
+
+              Expect.contains aggs "countDistinct" "the aggregate roster gained countDistinct"
+
+              let scalars =
+                  roster """[{"$type":"filter","pred":{"$type":"apply","fn":"frob","args":[]}}]"""
+
+              Expect.contains scalars "sqrt" "the scalar roster gained sqrt"
+              Expect.contains scalars "indexOf" "the scalar roster gained indexOf"
+
+              match
+                  DataFrameCodec.decodePipeline
+                      """[{"$type":"window","partitionBy":[],"orderBy":[],"fn":"ntile","of":"x","as":"y"}]"""
+              with
+              | Error(MissingField "n") -> ()
+              | other -> failtestf "expected MissingField n, got %A" other
+
+          testCase "Phase 101 — Except is a full-row step, so incremental reuse must not fire"
+          <| fun _ ->
+              let mk (c: Cell list) =
+                  tbl
+                      [ "a", IntType; "b", IntType; "c", IntType ]
+                      [ col "a" IntType [ Int 1; Int 2 ]
+                        col "b" IntType [ Int 0; Int 0 ]
+                        col "c" IntType c ]
+
+              let blocked =
+                  tbl
+                      [ "a", IntType; "b", IntType; "c", IntType ]
+                      [ col "a" IntType [ Int 1 ]
+                        col "b" IntType [ Int 0 ]
+                        col "c" IntType [ Int 9 ] ]
+
+              let pipeline = [ Except(Embedded blocked); Project [ "a", "a" ] ]
+              let oldSrc = mk [ Int 9; Int 9 ]
+              let newSrc = mk [ Int 7; Int 9 ]
+
+              let prior = DataFrame.evalPipeline pipeline oldSrc |> okTable
+              Expect.equal (cellsOf "a" prior) [ Int 2 ] "row 1 is excepted while c = 9"
+
+              // `c` is neither read by the pipeline nor present in the prior output — the exact shape
+              // the reuse short-circuit fires on. It must NOT fire here.
+              let viaIncr =
+                  DataFrame.evalFrom prior (ColumnValuesChanged "c") pipeline newSrc |> okTable
+
+              let viaFull = DataFrame.evalPipeline pipeline newSrc |> okTable
+              Expect.equal (cellsOf "a" viaFull) [ Int 1; Int 2 ] "changing c un-blocks row 1"
+              Expect.equal (cellsOf "a" viaIncr) (cellsOf "a" viaFull) "incremental agrees with full"
+              Expect.notEqual (cellsOf "a" viaIncr) (cellsOf "a" prior) "the prior result was NOT reused" ]
