@@ -5,7 +5,7 @@ A one-page on-ramp for a consumer that already evaluates a `Transform` pipeline 
 has. Read it alongside [`ADOPTION.md`](ADOPTION.md); nothing here replaces the reference evaluator,
 and adopting it is reversible at any point.
 
-Everything below is in `Fuaran.Core.DataFrame` (`0.10.0`), FSharp.Core-only and Fable-clean.
+Everything below is in `Fuaran.Core.DataFrame` (`0.11.0`), FSharp.Core-only and Fable-clean.
 
 ## The shape
 
