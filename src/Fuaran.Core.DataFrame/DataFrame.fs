@@ -468,27 +468,45 @@ module DataFrame =
         | Float f -> Some f
         | _ -> None
 
-    /// A canonical, host-deterministic grouping/dedup key for a row's key cells (Phase 41). A raw
-    /// `Cell list` keys a `Map`/`Set` on each host's float comparison/equality semantics, which differ
-    /// for `NaN` and `-0.0`. This normalises floats so `NaN` collapses to one bucket and `-0.0`/`0.0`
-    /// coincide, via the pinned `Canon` float layout, and type-tags each token so distinct cell types
-    /// never collide — so `GroupBy`/`Distinct`/`Window`/`Pivot` partition identically on every host.
-    let private groupKey (cells: Cell list) : string list =
-        cells
-        |> List.map (fun c ->
-            match c with
-            | Int i -> "i:" + string i
-            | Float f ->
-                "f:"
-                + (if System.Double.IsNaN f then "NaN"
-                   elif System.Double.IsPositiveInfinity f then "Inf"
-                   elif System.Double.IsNegativeInfinity f then "-Inf"
-                   else Canon.canonicalFloat f) // canonical layout collapses -0.0 → "0"
-            | Bool b -> "b:" + (if b then "1" else "0")
-            | Str s -> "s:" + s
-            | Date s -> "d:" + s
-            | Timestamp s -> "t:" + s
-            | Null -> "n:")
+    /// The canonical, host-deterministic token for ONE cell (Phase 41; made public in Phase 98). A raw
+    /// `Cell` keys a `Map`/`Set` on each host's float comparison/equality semantics, which differ for
+    /// `NaN` and `-0.0`. This normalises floats so `NaN` collapses to one bucket and `-0.0`/`0.0`
+    /// coincide, via the pinned `Canon` float layout, and type-tags the token so distinct cell types
+    /// never collide.
+    ///
+    /// Public because the delta layer (Phase 98) has to decide "is this row's content the same as
+    /// before" by exactly the rule `GroupBy` / `Distinct` / `Intersect` partition by, and a second
+    /// hand-written copy of a canonicalisation is how two answers to one question get shipped (the
+    /// same lesson the spine's six FNV-1a copies taught). One implementation, called twice.
+    let cellToken (c: Cell) : string =
+        match c with
+        | Int i -> "i:" + string i
+        | Float f ->
+            "f:"
+            + (if System.Double.IsNaN f then "NaN"
+               elif System.Double.IsPositiveInfinity f then "Inf"
+               elif System.Double.IsNegativeInfinity f then "-Inf"
+               else Canon.canonicalFloat f) // canonical layout collapses -0.0 → "0"
+        | Bool b -> "b:" + (if b then "1" else "0")
+        | Str s -> "s:" + s
+        | Date s -> "d:" + s
+        | Timestamp s -> "t:" + s
+        | Null -> "n:"
+
+    /// The canonical, host-deterministic grouping/dedup key for a row's cells — `cellToken` per cell,
+    /// so `GroupBy` / `Distinct` / `Window` / `Pivot` partition identically on every host.
+    let rowToken (cells: Cell list) : string list = cells |> List.map cellToken
+
+    /// The single-string form of a row's canonical token, LENGTH-PREFIXED per cell so it is
+    /// injective (Phase 98). A bare concatenation gives `["a"; "bc"]` and `["ab"; "c"]` the same
+    /// string — a collision between two distinct rows, which is exactly what a token exists to
+    /// prevent. Row identity and row-content comparison both key on this.
+    let rowTokenString (cells: Cell list) : string =
+        rowToken cells
+        |> List.map (fun t -> string (String.length t) + ":" + t)
+        |> String.concat ""
+
+    let private groupKey (cells: Cell list) : string list = rowToken cells
 
     /// A total comparison between two *present, same-family* cells. `None` ⇒ incomparable (a type
     /// error). Numerics compare as float; strings/date/timestamp by ordinal (ISO sorts
