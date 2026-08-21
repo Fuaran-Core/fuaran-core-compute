@@ -1664,6 +1664,36 @@ module DataFrame =
     let evalPipeline (pipeline: Transform list) (input: Table) : Result<Table, EvalError> =
         evalPipelineWithInEnv noResolve Map.empty pipeline input
 
+    // ---- the reference primitives, exposed (Phase 99) ----
+    // An incremental evaluator recomputes a SUBSET of what a full evaluation recomputes, so it must
+    // compute that subset through the SAME code as the reference — otherwise the two answers can
+    // differ and the "incremental ≡ reference" claim becomes a coincidence maintained by hand. These
+    // three are the whole of what the row-local + maintained-group strategies need; each is a
+    // one-line wrapper over the private definition above, so there is exactly one implementation.
+
+    /// Evaluate one `ColExpr` against a single row, resolving `Param`s from `env` — the reference
+    /// expression evaluator itself. Exposed so an incremental evaluator computes a re-evaluated
+    /// cell through the same path as a full evaluation rather than a copy of it.
+    let evalExprInRow (env: Map<string, Cell>) (cols: Schema) (row: Cell list) (e: ColExpr) : Result<Cell, EvalError> =
+        evalExpr env cols row e
+
+    /// Compute one aggregate over a cell list of the given source type, in the evaluator's
+    /// `EvalError` envelope — what `GroupBy` calls per group. Exposed so an incremental evaluator
+    /// that recomputes only the affected groups produces the same cells (and the same errors) the
+    /// reference would.
+    let aggregateCells (fn: AggFn) (srcType: ColumnType) (cells: Cell list) : Result<Cell, EvalError> =
+        aggCells fn srcType cells
+
+    /// The output column type of an aggregate over a source of the given type — `GroupBy`'s
+    /// aggregate-column typing.
+    let aggregateType (fn: AggFn) (srcType: ColumnType) : ColumnType = aggType fn srcType
+
+    /// The column type a `Derive`d column takes from its computed cells: the first non-null cell's
+    /// type, `StringType` when every cell is null. Exposed because the type is a function of the
+    /// WHOLE column, not of one row — the one place a row-local step is not row-local, and an
+    /// incremental evaluator that overlooked it would type a column differently from the reference.
+    let inferCellType (cells: Cell list) : ColumnType = inferType cells
+
     // ---- incremental evaluation (Phase 34) ----
     // A full-recompute evaluator made incremental via change-relevance analysis: when a change provably
     // cannot alter the output, the prior result is reused; otherwise the pipeline re-runs over the
