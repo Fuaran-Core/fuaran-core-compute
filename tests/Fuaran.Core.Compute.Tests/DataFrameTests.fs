@@ -1012,6 +1012,289 @@ let tests =
 
               Expect.equal (Conformance.paramLaws 7714 200) results "same seed ⇒ identical report"
 
+          // ---- Phase 112 — the static output-schema walk ----
+          // The walk mirrors the evaluator's schema semantics without evaluating anything, so every
+          // case below states the derived answer AND checks it against the schema the reference
+          // evaluator actually produced. `Conformance.schemaWalkLaws` does the same over generated
+          // pipelines; these pin the individual verbs and the two verdicts by hand.
+
+          testCase "Phase 112 — an empty pipeline is the input schema, closed and fully typed"
+          <| fun _ ->
+              let k = SchemaWalk.ofPipeline people.Schema []
+              Expect.isTrue (SchemaWalk.isClosed k) "nothing happened, so nothing was lost"
+              Expect.equal (SchemaWalk.names k) [ "dept"; "name"; "salary"; "bonus" ] "the input's own columns"
+              Expect.equal (SchemaWalk.typeOf "salary" k) (Some IntType) "declared types carry through"
+              Expect.equal (SchemaWalk.reason k) None "a closed set has nothing to explain"
+
+          testCase "Phase 112 — the row-set verbs and the set ops leave the schema alone"
+          <| fun _ ->
+              let unchanged =
+                  [ Filter(Binary(Gt, Col "salary", Lit(Int 95)))
+                    Sort [ "salary", Asc ]
+                    Distinct
+                    Limit(2, 1)
+                    Union(Embedded people)
+                    Intersect(Embedded people)
+                    Except(Ref "anything") ]
+
+              for step in unchanged do
+                  let k = SchemaWalk.ofPipeline people.Schema [ step ]
+                  Expect.isTrue (SchemaWalk.isClosed k) (sprintf "%A drops rows, not columns" step)
+
+                  Expect.equal
+                      (SchemaWalk.names k)
+                      [ "dept"; "name"; "salary"; "bonus" ]
+                      (sprintf "%A leaves the column set alone" step)
+
+          testCase "Phase 112 — Derive names the column and refuses to guess its type"
+          <| fun _ ->
+              let added =
+                  SchemaWalk.ofPipeline people.Schema [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ]
+
+              Expect.equal
+                  (SchemaWalk.names added)
+                  [ "dept"; "name"; "salary"; "bonus"; "raise" ]
+                  "the derived name is appended"
+
+              Expect.equal
+                  (SchemaWalk.typeOf "raise" added)
+                  None
+                  "the type is inferred from the cells, so the walk cannot state it"
+
+              Expect.isTrue (SchemaWalk.has "raise" added) "the column is KNOWN to exist — only its type is not"
+
+              // Onto an existing name the evaluator retypes IN PLACE, position kept.
+              let inPlace = SchemaWalk.ofPipeline people.Schema [ Derive("salary", Lit(Int 1)) ]
+
+              Expect.equal
+                  (SchemaWalk.names inPlace)
+                  [ "dept"; "name"; "salary"; "bonus" ]
+                  "an existing name is retyped, not appended"
+
+              Expect.equal (SchemaWalk.typeOf "salary" inPlace) None "and its declared type is given up"
+
+              let evaluated =
+                  run [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ] |> okTable
+
+              Expect.equal
+                  (evaluated.Schema |> List.map fst)
+                  (SchemaWalk.names added)
+                  "the evaluator agrees on the names"
+
+          testCase "Phase 112 — Project and GroupBy CLOSE the set; the aggregate types are derived"
+          <| fun _ ->
+              let grouped =
+                  [ GroupBy(
+                        [ "dept" ],
+                        [ { Name = "tot"
+                            Fn = Sum
+                            Of = "salary" }
+                          { Name = "n"; Fn = Count; Of = "name" }
+                          { Name = "avg"
+                            Fn = Mean
+                            Of = "bonus" } ]
+                    ) ]
+
+              let k = SchemaWalk.ofPipeline people.Schema grouped
+              Expect.isTrue (SchemaWalk.isClosed k) "a group-by output is exactly keys + aggregates"
+              Expect.equal (SchemaWalk.names k) [ "dept"; "tot"; "n"; "avg" ] "keys then aggregates, in order"
+              Expect.equal (SchemaWalk.typeOf "dept" k) (Some StringType) "a key keeps its type"
+              Expect.equal (SchemaWalk.typeOf "tot" k) (Some IntType) "Sum keeps the source type"
+              Expect.equal (SchemaWalk.typeOf "n" k) (Some IntType) "Count is Int over any source"
+              Expect.equal (SchemaWalk.typeOf "avg" k) (Some FloatType) "Mean is Float over any source"
+              Expect.isFalse (SchemaWalk.has "salary" k) "and a closed set makes that absence a FACT"
+
+              Expect.equal
+                  ((run grouped |> okTable).Schema)
+                  [ "dept", StringType; "tot", IntType; "n", IntType; "avg", FloatType ]
+                  "the evaluator produces exactly that schema"
+
+              let projected =
+                  SchemaWalk.ofPipeline people.Schema [ Project [ "name", "who"; "salary", "pay" ] ]
+
+              Expect.equal (SchemaWalk.names projected) [ "who"; "pay" ] "renamed, in the listed order"
+              Expect.equal (SchemaWalk.typeOf "pay" projected) (Some IntType) "under the source column's type"
+
+          testCase "Phase 112 — Window APPENDS, even when its As collides: the name lands twice"
+          <| fun _ ->
+              let collide =
+                  Window
+                      { PartitionBy = [ "dept" ]
+                        OrderBy = [ "salary", Asc ]
+                        Fn = RowNumber
+                        Of = "salary"
+                        As = "salary" }
+
+              let k = SchemaWalk.ofPipeline people.Schema [ collide ]
+
+              Expect.equal
+                  (SchemaWalk.names k)
+                  [ "dept"; "name"; "salary"; "bonus"; "salary" ]
+                  "the evaluator appends unconditionally, so the walk must too"
+
+              Expect.equal
+                  ((run [ collide ] |> okTable).Schema |> List.map fst)
+                  (SchemaWalk.names k)
+                  "and the evaluated schema really does carry it twice"
+
+              // The three window type families, each pinned to the evaluator's own rule.
+              let windowed fn ofCol =
+                  SchemaWalk.ofPipeline
+                      people.Schema
+                      [ Window
+                            { PartitionBy = []
+                              OrderBy = [ "salary", Asc ]
+                              Fn = fn
+                              Of = ofCol
+                              As = "w" } ]
+                  |> SchemaWalk.typeOf "w"
+
+              Expect.equal (windowed CompetitionRank "salary") (Some IntType) "the ranking family is Int"
+              Expect.equal (windowed RollingSum "salary") (Some FloatType) "the accumulating family is Float"
+              Expect.equal (windowed CumulMax "bonus") (Some FloatType) "the running extremes keep the source type"
+              Expect.equal (windowed Lag "dept") (Some StringType) "and so does the shifting pair"
+
+          testCase "Phase 112 — Unpivot closes to idVars + (variable, value)"
+          <| fun _ ->
+              let melt = [ Unpivot([ "dept"; "name" ], [ "salary" ]) ]
+              let k = SchemaWalk.ofPipeline people.Schema melt
+              Expect.isTrue (SchemaWalk.isClosed k) "the melted shape is fully determined"
+              Expect.equal (SchemaWalk.names k) [ "dept"; "name"; "variable"; "value" ] "idVars then the melted pair"
+              Expect.equal (SchemaWalk.typeOf "variable" k) (Some StringType) "the variable column is the column NAME"
+              Expect.equal (SchemaWalk.typeOf "value" k) (Some IntType) "the value column takes the first value var"
+
+              Expect.equal
+                  ((run melt |> okTable).Schema)
+                  [ "dept", StringType
+                    "name", StringType
+                    "variable", StringType
+                    "value", IntType ]
+                  "the evaluator agrees, types included"
+
+          testCase "Phase 112 — Pivot OPENS the set, and only Closed supports a negative verdict"
+          <| fun _ ->
+              let pivot =
+                  Pivot
+                      { Index = [ "dept" ]
+                        On = "name"
+                        Values = "salary"
+                        Agg = Sum }
+
+              let k = SchemaWalk.ofPipeline people.Schema [ pivot ]
+              Expect.isFalse (SchemaWalk.isClosed k) "the value columns are named by the data"
+              Expect.equal (SchemaWalk.names k) [ "dept" ] "the index columns, and only those"
+
+              Expect.stringContains
+                  (SchemaWalk.reason k |> Option.defaultValue "")
+                  "named by the data"
+                  "the reason says what cost the walk its certainty"
+
+              let evaluated = (run [ pivot ] |> okTable).Schema |> List.map fst
+
+              Expect.stringContains
+                  (String.concat "," evaluated)
+                  "ana"
+                  "the evaluated output really does carry a per-value column"
+
+              Expect.isFalse
+                  (SchemaWalk.has "ana" k)
+                  "the walk cannot SEE it — which on an open set means 'not visible', never 'absent'"
+
+              // A Project after an open step closes it again: the output is exactly what is listed.
+              let closedAgain =
+                  SchemaWalk.ofPipeline people.Schema [ pivot; Project [ "dept", "d" ] ]
+
+              Expect.isTrue (SchemaWalk.isClosed closedAgain) "Project closes however open its input was"
+              Expect.equal (SchemaWalk.names closedAgain) [ "d" ] "exactly the listed columns"
+
+          testCase "Phase 112 — a Ref right-hand source: declared keeps it closed, undeclared opens it"
+          <| fun _ ->
+              let hr: Schema = [ "name", StringType; "grade", IntType ]
+              let join = Join(Ref "hr", [ "name", "name" ], Inner)
+
+              let declared =
+                  SchemaWalk.ofPipelineFrom
+                      (SchemaWalk.ofMap (Map.ofList [ "hr", hr ]))
+                      (SchemaWalk.ofSchema people.Schema)
+                      [ join ]
+
+              Expect.isTrue (SchemaWalk.isClosed declared) "a declared source schema keeps the walk certain"
+
+              Expect.equal
+                  (SchemaWalk.names declared)
+                  [ "dept"; "name"; "salary"; "bonus"; "name_right"; "grade" ]
+                  "left columns, then the right's — a collision taking the evaluator's _right suffix"
+
+              Expect.equal (SchemaWalk.typeOf "grade" declared) (Some IntType) "right column types carry through"
+
+              let undeclared = SchemaWalk.ofPipeline people.Schema [ join ]
+              Expect.isFalse (SchemaWalk.isClosed undeclared) "an undeclared Ref is honestly unknown"
+
+              Expect.equal
+                  (SchemaWalk.names undeclared)
+                  [ "dept"; "name"; "salary"; "bonus" ]
+                  "the left is still known — the walk lost the right, not everything"
+
+              Expect.stringContains
+                  (SchemaWalk.reason undeclared |> Option.defaultValue "")
+                  "no declared schema"
+                  "and it names the source it could not resolve"
+
+          testCase "Phase 112 — a filtering join keeps the left schema and reaches no right source"
+          <| fun _ ->
+              for how in [ Semi; Anti ] do
+                  let k =
+                      SchemaWalk.ofPipeline people.Schema [ Join(Ref "never-declared", [ "name", "k" ], how) ]
+
+                  Expect.isTrue
+                      (SchemaWalk.isClosed k)
+                      (sprintf "%A contributes no right columns, so an unknown right costs nothing" how)
+
+                  Expect.equal
+                      (SchemaWalk.names k)
+                      [ "dept"; "name"; "salary"; "bonus" ]
+                      (sprintf "%A is the left schema, unchanged" how)
+
+          testCase "Phase 112 — an OPEN left contributes no right columns at all"
+          <| fun _ ->
+              let right =
+                  tbl [ "k", StringType; "v", IntType ] [ col "k" StringType [ Str "eng" ]; col "v" IntType [ Int 1 ] ]
+
+              let k =
+                  SchemaWalk.ofPipeline
+                      people.Schema
+                      [ Pivot
+                            { Index = [ "dept" ]
+                              On = "name"
+                              Values = "salary"
+                              Agg = Sum }
+                        Join(Embedded right, [ "dept", "k" ], Inner) ]
+
+              Expect.equal
+                  (SchemaWalk.names k)
+                  [ "dept" ]
+                  "while a left name is invisible, every right name is undecidable between x and x_right"
+
+              Expect.stringContains
+                  (SchemaWalk.reason k |> Option.defaultValue "")
+                  "right-hand output names depend on the left"
+                  "and the reason says so rather than silently dropping them"
+
+          testCase "schemaWalkLaws certify the walk against the evaluator's schema (Phase 112)"
+          <| fun _ ->
+              let results = Conformance.schemaWalkLaws 1121 300
+              Expect.equal (List.length results) 4 "closed-exact, open-sound, types, non-vacuity"
+
+              if results |> List.exists (fun r -> not r.Passed) then
+                  let fails =
+                      results
+                      |> List.filter (fun r -> not r.Passed)
+                      |> List.map (fun r -> sprintf "%s — %A" r.Law r.Counterexample)
+
+                  failtestf "schemaWalkLaws failed:\n%s" (String.concat "\n" fails)
+
+              Expect.equal (Conformance.schemaWalkLaws 1121 300) results "same seed ⇒ identical report"
+
           // ---- Phase 101 — the closed-set asymmetries ----
 
           testCase "Phase 101 — Intersect/Except are multiset ops on the full row; null matches null"

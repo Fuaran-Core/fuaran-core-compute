@@ -1803,6 +1803,352 @@ module DataFrame =
         | OverflowError d -> "overflow: " + d
         | UnboundParam(n, bound) -> "unbound param '" + n + "'; bound: " + String.concat ", " bound
 
+
+// ============================================================================
+//  Phase 112 — the STATIC output-schema walk over a `Transform` pipeline.
+//
+//  A consumer needs a pipeline's OUTPUT columns without evaluating it: a UI
+//  tier's grid validator refusing a field no step can produce, a planner sizing
+//  a result, a domain checking a reader against its producer. `Transform` is
+//  data, so the answer is derivable from the input schema alone — and deriving
+//  it in a CONSUMER is where it goes wrong, because the next verb this file
+//  admits silently invalidates a copy nobody recompiles.
+//
+//  ── Why a static walk can answer this, and where it stops ───────────────────
+//  The verb set is a closed DU, the expression algebra is a closed DU, and
+//  neither carries code. So the walk ENUMERATES; it does not analyse, and there
+//  is no fixpoint to reach. What it cannot do is see VALUES, and three shapes
+//  genuinely depend on them:
+//
+//    Derive    the output column's NAME is declared, but its TYPE is inferred
+//              from the cells the expression produced. So the column is known to
+//              exist with an unknown type — not guessed at from the expression,
+//              because a guess that disagreed with the evaluator would be worse
+//              than no answer.
+//    Pivot     the output's value columns are NAMED BY THE DATA — one per
+//              distinct present value in the `on` column. The index columns are
+//              known; the rest are not even countable.
+//    Ref       a named source's rows are resolved by the host (the wire carries
+//              the name, never the data), so its schema is whatever the caller
+//              declares — and nothing at all when it declares none.
+//
+//  `SchemaKnowledge` carries that distinction in its SHAPE rather than in a
+//  comment: `Closed` means these columns and no others, and it is the ONLY case
+//  from which "that column is absent" can be concluded. `AtLeast` means these
+//  columns are present and the walk cannot name the rest, so it can confirm a
+//  reader but never refute one. A check that cannot refute reports itself as
+//  underivable and produces no finding.
+//
+//  ── The evaluator is the oracle ────────────────────────────────────────────
+//  Every case below mirrors what `DataFrame`'s evaluator does to a frame's
+//  columns, and `Conformance.schemaWalkLaws` certifies the agreement over
+//  generated pipelines rather than leaving it to review. Two places where the
+//  mirror is easy to get wrong, and is deliberate here:
+//
+//    * `Window` APPENDS its output column unconditionally, it does not upsert —
+//      so a window whose `As` collides with an existing column leaves the schema
+//      carrying that name twice, and the walk says so.
+//    * `Derive` UPSERTS (retype in place, position kept), because that is what
+//      the evaluator does with a name it already carries.
+//
+//  FORWARD-COUPLING: a new `Transform` verb, a new `JoinKind`, a new `WindowFn`
+//  or a new `AggFn` extends the matches below — all four are closed DUs matched
+//  with NO catch-all, so the compiler stops a new verb here rather than letting
+//  it drift in a consumer. That is the whole reason this lives beside the
+//  evaluator instead of downstream of it.
+//
+//  FSharp.Core only, Fable-clean; evaluates nothing and allocates no table.
+// ============================================================================
+
+/// What the static walk knows about ONE output column. The name is always known — every verb that
+/// adds a column declares its name — and the type is not always, which is why only one of the two
+/// is an option.
+type ColumnKnowledge =
+    {
+        Name: string
+        /// `None` where the column exists but its type is decidable only from the DATA. A `Derive`'s
+        /// type is inferred from the cells its expression produced, so it is `None` however simple
+        /// the expression looks.
+        Type: ColumnType option
+    }
+
+/// What a static walk knows about a pipeline's output columns (Phase 112).
+///
+/// Two cases, not three: `AtLeast([], reason)` already says "nothing is known", so a separate
+/// opaque case would be a second spelling of one state — and a state with two spellings is one a
+/// check eventually gets wrong.
+[<RequireQualifiedAccess>]
+type SchemaKnowledge =
+    /// The column set is CLOSED: these columns, in this order, and no others. **The only case that
+    /// supports a negative verdict** — an absence is a fact here and an ignorance everywhere else.
+    | Closed of columns: ColumnKnowledge list
+    /// These columns are present; the walk cannot name what else might be. A reader can still be
+    /// CONFIRMED against it and can never be REFUTED, and the reason names what cost the walk its
+    /// certainty.
+    | AtLeast of columns: ColumnKnowledge list * reason: string
+
+/// The static output-schema walk (Phase 112) — `Transform`'s schema semantics, derived without
+/// evaluating anything. See the block comment above for what it can and cannot know.
+///
+/// (Named `SchemaWalk` rather than `Schema`: `Fuaran.Core` already publishes a `Schema` type
+/// abbreviation and a `Schema` module of schema-level operations beside it, and a second module of
+/// that name in one namespace does not compile.)
+module SchemaWalk =
+
+    /// No named source declared. The default, and honest: a walk over a `Ref` under it derives
+    /// nothing about that source and says which name it could not resolve.
+    let noSources: string -> Schema option = fun _ -> None
+
+    /// Declared source schemas as a map — the ordinary caller-side lookup, lifted so a caller
+    /// holding a `Map` does not write the lambda.
+    let ofMap (sources: Map<string, Schema>) : string -> Schema option = fun name -> Map.tryFind name sources
+
+    // ---- reading the knowledge ----
+
+    /// The columns the walk can name, whichever case it is in.
+    let columns (knowledge: SchemaKnowledge) : ColumnKnowledge list =
+        match knowledge with
+        | SchemaKnowledge.Closed cols -> cols
+        | SchemaKnowledge.AtLeast(cols, _) -> cols
+
+    /// The named columns, in schema order.
+    let names (knowledge: SchemaKnowledge) : string list = columns knowledge |> List.map _.Name
+
+    /// True when the column set is closed, so an absence is a fact rather than an ignorance.
+    let isClosed (knowledge: SchemaKnowledge) : bool =
+        match knowledge with
+        | SchemaKnowledge.Closed _ -> true
+        | SchemaKnowledge.AtLeast _ -> false
+
+    /// Why the walk lost its certainty, where it did.
+    let reason (knowledge: SchemaKnowledge) : string option =
+        match knowledge with
+        | SchemaKnowledge.Closed _ -> None
+        | SchemaKnowledge.AtLeast(_, r) -> Some r
+
+    /// The declared type of a named column: `None` both when the column is absent and when it is
+    /// present with an undecidable type. The two are different facts, and a caller that needs to
+    /// tell them apart asks `has` as well.
+    let typeOf (name: string) (knowledge: SchemaKnowledge) : ColumnType option =
+        columns knowledge |> List.tryFind (fun c -> c.Name = name) |> Option.bind _.Type
+
+    /// True when the walk can SEE this column. False on an `AtLeast` means "not visible", never
+    /// "absent" — refuting a reader is sound only under `isClosed`.
+    let has (name: string) (knowledge: SchemaKnowledge) : bool =
+        columns knowledge |> List.exists (fun c -> c.Name = name)
+
+    // ---- building it ----
+
+    let private withColumns (cols: ColumnKnowledge list) (knowledge: SchemaKnowledge) : SchemaKnowledge =
+        match knowledge with
+        | SchemaKnowledge.Closed _ -> SchemaKnowledge.Closed cols
+        | SchemaKnowledge.AtLeast(_, r) -> SchemaKnowledge.AtLeast(cols, r)
+
+    /// Add a column, or RETYPE it in place where the name is already known — exactly what the
+    /// evaluator's `Derive` does, position included.
+    let private upsert (column: ColumnKnowledge) (knowledge: SchemaKnowledge) : SchemaKnowledge =
+        let cols = columns knowledge
+
+        if cols |> List.exists (fun c -> c.Name = column.Name) then
+            knowledge
+            |> withColumns (cols |> List.map (fun c -> if c.Name = column.Name then column else c))
+        else
+            knowledge |> withColumns (cols @ [ column ])
+
+    /// Append a column unconditionally, duplicate name included — what the evaluator's `Window`
+    /// does. Deliberately not `upsert`: a window whose `As` names an existing column leaves the
+    /// evaluated schema carrying that name twice, and a walk that tidied it away would be wrong
+    /// about the shape the consumer actually receives.
+    let private appendColumn (column: ColumnKnowledge) (knowledge: SchemaKnowledge) : SchemaKnowledge =
+        knowledge |> withColumns (columns knowledge @ [ column ])
+
+    let private ofColumns (schema: Schema) : ColumnKnowledge list =
+        schema |> List.map (fun (name, ty) -> { Name = name; Type = Some ty })
+
+    /// A concrete schema is closed knowledge — the walk's starting point.
+    let ofSchema (schema: Schema) : SchemaKnowledge =
+        SchemaKnowledge.Closed(ofColumns schema)
+
+    /// What is known about a `DataSource` before any transform runs. An `Embedded` table declares
+    /// its own schema; a `Ref` is whatever `sources` declares, and an undeclared name degrades to
+    /// "unknown" rather than to a guess or a refusal — refusing on the strength of a schema nobody
+    /// declared would punish a caller for not answering a question it was never asked.
+    let ofSource (sources: string -> Schema option) (source: DataSource) : SchemaKnowledge =
+        match source with
+        | Embedded table -> ofSchema table.Schema
+        | Ref name ->
+            match sources name with
+            | Some schema -> ofSchema schema
+            | None -> SchemaKnowledge.AtLeast([], "source '" + name + "' is a Ref with no declared schema")
+
+    /// The type a window function's output column carries — pinned to the evaluator's own rule, not
+    /// restated loosely: the positional/ranking family is `Int`, the accumulating family is `Float`,
+    /// and the shifting + running-extreme family keeps the source column's type, which is unknown
+    /// exactly when the source column's type is.
+    let private windowType (input: SchemaKnowledge) (spec: WindowSpec) : ColumnType option =
+        match spec.Fn with
+        | RowNumber
+        | Rank
+        | DenseRank
+        | CompetitionRank
+        | NTile _ -> Some IntType
+        | CumulSum
+        | RollingMean
+        | RollingSum -> Some FloatType
+        | Lag
+        | Lead
+        | CumulMax
+        | CumulMin -> typeOf spec.Of input
+
+    /// The type an aggregate produces over a source column of `sourceType`. Where the source type is
+    /// unknown, only the aggregates that IGNORE it can still be typed — which is a fact about the
+    /// aggregate, not a fallback. `Column.aggType` stays the single source for the known case.
+    let private aggregateType (fn: AggFn) (sourceType: ColumnType option) : ColumnType option =
+        match sourceType with
+        | Some ty -> Some(Column.aggType fn ty)
+        | None ->
+            match fn with
+            | Count
+            | CountDistinct -> Some IntType
+            | Mean
+            | Median
+            | StdDev -> Some FloatType
+            | Sum
+            | Min
+            | Max
+            | First
+            | Last -> None
+
+    /// The output knowledge of ONE transform step over an input knowledge. Total, and evaluates
+    /// nothing: every case is a rearrangement of names and declared types.
+    let ofTransform (sources: string -> Schema option) (input: SchemaKnowledge) (step: Transform) : SchemaKnowledge =
+        match step with
+        // Row-set verbs: they drop, reorder or dedup ROWS and touch no column. The three set ops
+        // take the LEFT schema through unchanged — the evaluator requires the two column-name lists
+        // to agree before it gets here, so a disagreement is an `EvalError`, never a schema.
+        | Filter _
+        | Sort _
+        | Distinct
+        | Limit _
+        | Union _
+        | Intersect _
+        | Except _ -> input
+
+        // Project CLOSES the set however open the input was: the output is exactly the listed
+        // columns, under their output names, in the listed order, whatever else the input carried.
+        | Project pairs ->
+            SchemaKnowledge.Closed(
+                pairs
+                |> List.map (fun (source, out) ->
+                    { Name = out
+                      Type = typeOf source input })
+            )
+
+        // The name is declared; the type is inferred from the cells the expression produced, so it
+        // is data-dependent and stays unknown.
+        | Derive(name, _) -> upsert { Name = name; Type = None } input
+
+        // GroupBy closes the set too: the key columns then one column per aggregate, and nothing
+        // survives that was not named.
+        | GroupBy(keys, aggs) ->
+            SchemaKnowledge.Closed(
+                (keys |> List.map (fun key -> { Name = key; Type = typeOf key input }))
+                @ (aggs
+                   |> List.map (fun agg ->
+                       { Name = agg.Name
+                         Type = aggregateType agg.Fn (typeOf agg.Of input) }))
+            )
+
+        | Window spec ->
+            input
+            |> appendColumn
+                { Name = spec.As
+                  Type = windowType input spec }
+
+        // The index columns are known; the value columns are one per DISTINCT PRESENT VALUE in the
+        // `on` column, which is data. Not even their number is derivable, so the set opens here and
+        // every later step inherits that.
+        | Pivot spec ->
+            SchemaKnowledge.AtLeast(
+                spec.Index
+                |> List.map (fun name ->
+                    { Name = name
+                      Type = typeOf name input }),
+                "a pivot's value columns are named by the data — one per distinct value in its `on` column"
+            )
+
+        | Unpivot(idVars, valueVars) ->
+            SchemaKnowledge.Closed(
+                (idVars
+                 |> List.map (fun name ->
+                     { Name = name
+                       Type = typeOf name input }))
+                @ [ { Name = "variable"
+                      Type = Some StringType }
+                    { Name = "value"
+                      Type =
+                        // The evaluator types the melted column from the first value column it can
+                        // resolve, and falls back to `String` when there is no value column at all.
+                        match valueVars with
+                        | [] -> Some StringType
+                        | _ -> valueVars |> List.tryPick (fun name -> typeOf name input) } ]
+            )
+
+        | Join(source, _, how) ->
+            match how with
+            // The FILTERING joins (Phase 101) keep the LEFT schema only — each qualifying left row
+            // once, no right columns — so neither the right source's schema nor the collision-suffix
+            // rule below is reached, and an unknown right source costs the walk nothing.
+            | Semi
+            | Anti -> input
+
+            | Inner
+            | Left
+            | Right
+            | Outer ->
+                match input with
+                // The evaluator suffixes a right column whose name collides with a LEFT one. So a
+                // right column's OUTPUT name is a function of the left's names — and while any left
+                // name is invisible, every right column's name is undecidable between `x` and
+                // `x_right`. That is why an open left contributes no right columns at all rather
+                // than guessing that no collision occurred.
+                | SchemaKnowledge.AtLeast(cols, r) ->
+                    SchemaKnowledge.AtLeast(
+                        cols,
+                        r
+                        + " — and a join's right-hand output names depend on the left's, so they cannot be named either"
+                    )
+                | SchemaKnowledge.Closed left ->
+                    let right = ofSource sources source
+                    let leftNames = left |> List.map _.Name |> Set.ofList
+
+                    let renamed =
+                        columns right
+                        |> List.map (fun c ->
+                            if Set.contains c.Name leftNames then
+                                { c with Name = c.Name + "_right" }
+                            else
+                                c)
+
+                    match right with
+                    | SchemaKnowledge.Closed _ -> SchemaKnowledge.Closed(left @ renamed)
+                    | SchemaKnowledge.AtLeast(_, r) -> SchemaKnowledge.AtLeast(left @ renamed, r)
+
+    /// Fold a pipeline over knowledge already in hand — the general form, and the one a consumer
+    /// that interleaves its own per-step checks with the walk reaches for.
+    let ofPipelineFrom
+        (sources: string -> Schema option)
+        (input: SchemaKnowledge)
+        (pipeline: Transform list)
+        : SchemaKnowledge =
+        pipeline |> List.fold (ofTransform sources) input
+
+    /// The output knowledge of a whole pipeline over a concrete input schema. Total. A `Ref` source
+    /// inside a `Join` / set op is undeclared here (the result opens, with the reason naming the
+    /// unresolved name); a caller that CAN declare them uses `ofPipelineFrom` with `ofMap`.
+    let ofPipeline (schema: Schema) (pipeline: Transform list) : SchemaKnowledge =
+        ofPipelineFrom noSources (ofSchema schema) pipeline
+
 /// The canonical wire codec for the `Transform` + `ColExpr` trees — `"kind"`-tagged objects (the
 /// `Fuaran.Core` envelope discipline), reusing `ColumnCodec` for embedded `DataSource` operands and
 /// the `Wire` canonical-float rules for literals. Decode is `Result`-typed with the same six-code
