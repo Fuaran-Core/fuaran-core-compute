@@ -160,10 +160,30 @@ let tests =
                   (ReferenceOnly(AggregateStepNotLast "groupBy"))
                   "a non-final groupBy is declined, naming why"
 
+              // A sort is admitted (Phase 115) and says so in its own case: it is not row-local,
+              // and calling it `PropagateRows` would be a wrong answer to "does this step's output
+              // for a row depend only on that row".
+              let sorted =
+                  Incremental.plan [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Sort [ "a", Asc ] ]
+
               Expect.equal
-                  (Incremental.plan [ Sort [ "a", Asc ] ]).Strategy
-                  (ReferenceOnly(StepNotRowLocal "sort"))
-                  "a sort is declined, naming the verb"
+                  sorted.Steps
+                  [ PropagateRows; MergeOrder [ "a", Asc ] ]
+                  "a sort declares the ordering it merges by"
+
+              Expect.equal sorted.Strategy RowLocal "a sort-bearing pipeline is not declined"
+
+              // A sort carries no position condition, unlike a groupBy: every step admitted after
+              // it reads the order it produced exactly as it would have read the reference's.
+              Expect.equal
+                  (Incremental.plan [ Sort [ "b", Asc ]; GroupBy([ "b" ], [ agg "n" Count "a" ]) ]).Strategy
+                  RowLocalThenGroups
+                  "a sort before a maintained groupBy is still incremental"
+
+              Expect.equal
+                  (Incremental.plan [ Limit(2, 0) ]).Strategy
+                  (ReferenceOnly(StepNotRowLocal "limit"))
+                  "an order-dependent verb that is NOT a sort is still declined, naming the verb"
 
               Expect.equal (Incremental.plan []).Strategy RowLocal "the empty pipeline is trivially row-local"
 
@@ -300,13 +320,13 @@ let tests =
 
           testCase "a declined verb falls back naming the verb"
           <| fun _ ->
-              let pipeline = [ Sort [ "a", Asc ] ]
+              let pipeline = [ Limit(2, 0) ]
               let after = table (baseRows @ [ "r5", Int 0, Int 2 ])
               let next, _ = step pipeline baseTable after
 
               Expect.equal
                   next.Footprint.Recompute
-                  (FullRecompute(StepNotRowLocal "sort"))
+                  (FullRecompute(StepNotRowLocal "limit"))
                   "the fall-back names the verb"
 
               expectMatchesReference pipeline after next
@@ -315,9 +335,9 @@ let tests =
           <| fun _ ->
               // The reuse is sound for any strategy: a verb is declined because it cannot answer a
               // CHANGE, not because it must be re-run when nothing changed.
-              let pipeline = [ Sort [ "a", Asc ] ]
+              let pipeline = [ Project [ "b", "b" ]; Distinct ]
               let next, _ = step pipeline baseTable baseTable
-              Expect.equal next.Footprint.Recompute ReusedPrior "an unchanged source needs no re-sort"
+              Expect.equal next.Footprint.Recompute ReusedPrior "an unchanged source needs no re-run"
               expectMatchesReference pipeline baseTable next
 
           testCase "a FullRefresh delta falls back, and still answers correctly"
@@ -466,4 +486,115 @@ let tests =
               Expect.equal s1.Footprint.Recompute (RowsRecomputed 2) "one new row, two evaluating steps"
               Expect.equal s2.Footprint.Recompute (RowsRecomputed 2) "still two, over a larger source"
               Expect.equal s2.Footprint.SourceRows 7 "the source grew"
-              expectMatchesReference pipeline t2 s2 ]
+              expectMatchesReference pipeline t2 s2
+
+          // ================= the merged order (Phase 115) =================
+
+          testCase "a sort re-evaluates only the named rows, and the sort itself costs none"
+          <| fun _ ->
+              // The shape the estate's recompute fixture family carries. The saving is NOT in the
+              // sorting — it is that the filter before it stops running over every row, which is
+              // exactly what this pipeline cost while `sort` was declined.
+              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Sort [ "a", Asc ] ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r2" then i, Int 30, b else i, a, b)
+                  )
+
+              let next, _ = step pipeline baseTable changed
+
+              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one filter predicate, not five"
+              expectMatchesReference pipeline changed next
+
+              // A lone sort evaluates no expression at all, so a changed row costs nothing to
+              // re-evaluate and the whole of the work is the merge, which the footprint does not
+              // charge for — the same accounting a groupBy gets, and for the same reason.
+              let lone, _ = step [ Sort [ "a", Asc ] ] baseTable changed
+              Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a sort evaluates nothing"
+              expectMatchesReference [ Sort [ "a", Asc ] ] changed lone
+
+          testCase "the merge breaks a tie the way a stable sort does, not the way a cache would"
+          <| fun _ ->
+              // `b` ties r0 with r1 and r2 with r3. The changed row (r2) is lifted out of the
+              // cached order and merged back; at its tie with r3 the answer is decided by ARRIVAL
+              // position, which is what `List.sortWith`'s stability means. A merge that compared
+              // keys alone would put r3 first here and be correctly sorted and wrong.
+              let pipeline = [ Sort [ "b", Asc ] ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r2" then i, Int 99, b else i, a, b)
+                  )
+
+              let next, _ = step pipeline baseTable changed
+
+              Expect.equal
+                  (next.Output |> Table.tryColumn "id" |> Option.map (fun c -> c.Cells))
+                  (Some [ Str "r0"; Str "r1"; Str "r2"; Str "r3"; Str "r4" ])
+                  "the tie keeps arrival order"
+
+              expectMatchesReference pipeline changed next
+
+          testCase "a reordering that names no row does not answer from the cached order"
+          <| fun _ ->
+              // `Delta.diff` reports a pure reordering as QUIET — every key is present at both ends
+              // with identical content — so nothing in the delta says the frame moved. The cached
+              // order is reusable only for rows that ARRIVED in the same relative order, and here
+              // none did. This is the one case a merge gets wrong silently.
+              let pipeline = [ Sort [ "b", Asc ] ]
+              let reversed = table (List.rev baseRows)
+              let next, delta = step pipeline baseTable reversed
+
+              Expect.isTrue (Delta.isQuiet delta) "the diff named nothing"
+              Expect.equal next.Footprint.Recompute (RowsRecomputed 0) "and nothing was re-evaluated"
+
+              Expect.equal
+                  (next.Output |> Table.tryColumn "id" |> Option.map (fun c -> c.Cells))
+                  (Some [ Str "r1"; Str "r0"; Str "r3"; Str "r2"; Str "r4" ])
+                  "the order is the reference's over the REVERSED frame, not the cached one"
+
+              expectMatchesReference pipeline reversed next
+
+          testCase "a sort feeding a maintained group still maintains it"
+          <| fun _ ->
+              // The group's `First` / `Last` read the position the sort put each row in, so the
+              // ordered-member condition and the arrival-order condition are both live here. A
+              // group whose members did not move is still reused.
+              let pipeline =
+                  [ Sort [ "b", Asc; "a", Desc ]
+                    GroupBy([ "b" ], [ agg "f" First "id"; agg "l" Last "id"; agg "n" Count "a" ]) ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r4" then i, Int 50, b else i, a, b)
+                  )
+
+              let next, _ = step pipeline baseTable changed
+
+              match next.Footprint.Recompute with
+              | GroupsRecomputed(_, g) -> Expect.equal g 1 "only the group the changed row is in"
+              | other -> failtestf "expected a maintained-group refresh, got %A" other
+
+              expectMatchesReference pipeline changed next
+
+          testCase "a sort before a filter and a type-inferring derive stays equal to the reference"
+          <| fun _ ->
+              // A sort that is NOT last: the steps after it read the order it produced, including a
+              // derived column whose TYPE is inferred over the frame at that step.
+              let pipeline =
+                  [ Sort [ "b", Asc ]
+                    Derive("d", Case([ Binary(Gt, Col "a", Lit(Int 3)), Lit(Str "hi") ], Lit Null))
+                    Filter(Binary(Lt, Col "a", Lit(Int 5))) ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r0" then i, Int 9, b else i, a, b)
+                  )
+
+              let next, _ = step pipeline baseTable changed
+              expectMatchesReference pipeline changed next ]

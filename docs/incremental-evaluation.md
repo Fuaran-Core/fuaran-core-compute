@@ -49,9 +49,13 @@ match (Incremental.plan pipeline).Strategy with
 - **`MaintainGroups`** — a `GroupBy` as the pipeline's **last** step. The group partition is
   maintained and only the affected groups' aggregates are recomputed. The same `GroupBy` earlier in
   the pipeline is declined, because what follows it would need a delta over the *group* table.
-- **`FallBack`** — `Sort`, `Limit`, `Window`, `Pivot`, `Unpivot`, `Join`, `Union`, `Intersect`,
-  `Except`. Their output for one row depends on rows a delta does not name, so the pipeline is
-  evaluated in full and the footprint says so.
+- **`MergeOrder`** — a `Sort`, at **any** position. It computes nothing and moves everything, so the
+  new order is the previous order with the named rows merged back into it. The saving is not in the
+  sorting — a sort evaluates no expression and is charged none — it is that the steps *before* the
+  sort stop re-evaluating every row.
+- **`FallBack`** — `Limit`, `Window`, `Pivot`, `Unpivot`, `Join`, `Union`, `Intersect`, `Except`.
+  Their output for one row depends on rows a delta does not name, so the pipeline is evaluated in
+  full and the footprint says so.
 
 Adoption is therefore per pipeline, not per application: a declined pipeline costs exactly what it
 costs today, and can sit beside an adopted one.

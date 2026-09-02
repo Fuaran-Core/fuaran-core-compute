@@ -18,12 +18,12 @@ namespace Fuaran.Core
 //     every (base, delta) pair, so a divergence is a failing law rather than a
 //     wrong number in a consumer.
 //   * THE BOUNDARY IS DECLARED AS DATA. `plan` classifies every step —
-//     `PropagateRows`, `MaintainGroups`, or `FallBack` with a typed reason —
-//     before any evaluation happens, so a consumer can ASK whether a pipeline
-//     is incrementalisable and see why it is not. A step whose output for one
-//     row depends on rows the delta does not name (a sort, a window, a
-//     whole-relation set op, a join) is not approximated: the reference
-//     evaluator re-runs, and the footprint records that it did.
+//     `PropagateRows`, `MergeOrder`, `MaintainGroups`, or `FallBack` with a
+//     typed reason — before any evaluation happens, so a consumer can ASK
+//     whether a pipeline is incrementalisable and see why it is not. A step
+//     whose output for one row depends on rows the delta does not name (a
+//     window, a whole-relation set op, a join, a limit) is not approximated:
+//     the reference evaluator re-runs, and the footprint records that it did.
 //   * NEVER A WRONG ANSWER, ONLY A LARGER ONE. Every condition the incremental
 //     path cannot honour — a schema that moved, an env that changed, a
 //     pipeline that changed, a delta that says `FullRefresh`, an identity
@@ -31,13 +31,24 @@ namespace Fuaran.Core
 //     the reason recorded. Degrading is always available and always correct,
 //     which is what makes the seam safe to adopt one pipeline at a time.
 //
-//  Two order-sensitivities are handled explicitly rather than assumed away,
-//  because both are silent when got wrong. A `Derive`d column's TYPE is
+//  A `Sort` is the one admitted step that is not row-local (Phase 115). It
+//  computes nothing and moves everything: the delta names rows whose POSITION
+//  may have changed, so the new order is the previous order with those rows
+//  lifted out and merged back in under the reference's own comparator. The
+//  saving it earns is not in the sorting — it is that the steps BEFORE the sort
+//  stop re-evaluating every row, which is what a declined pipeline costs today.
+//
+//  Three order-sensitivities are handled explicitly rather than assumed away,
+//  because all three are silent when got wrong. A `Derive`d column's TYPE is
 //  inferred from the whole column, so it is recomputed from the rows alive at
-//  that step even when no cell moved. And a group's aggregate depends on its
+//  that step even when no cell moved. A group's aggregate depends on its
 //  members' ORDER (`First` / `Last` outright, a float `Sum` in its last bits),
 //  so a cached aggregate is reused only when the group's ordered member list is
-//  unchanged — never merely because no row in it was named.
+//  unchanged — never merely because no row in it was named. And a stable sort
+//  breaks ties by ARRIVAL position, so a cached ORDER is reused only for rows
+//  that arrived in the same relative order as before — one condition, stated
+//  three times, because reuse of order-sensitive state is the whole risk here
+//  and `Delta.diff` reports a pure reordering as quiet.
 //
 //  The caller's one obligation: the delta must TRUTHFULLY describe the change
 //  from the source the state was last evaluated against to the source now
@@ -85,12 +96,23 @@ type StepIncrementality =
     /// recomputed and whose untouched groups are reused. Names the grouping keys and the aggregate
     /// output names, so a consumer can see what is maintained rather than infer it.
     | MaintainGroups of keys: string list * aggregates: string list
+    /// The step reorders rows and computes none: a `Sort`. Its output for one row is that row's
+    /// cells unchanged; what the delta moves is the row's POSITION, and a position is recoverable by
+    /// merging the named rows into the order the previous evaluation already produced. Names the
+    /// ordering keys, so a consumer can see what is maintained rather than infer it.
+    ///
+    /// A sort is therefore not row-local — `PropagateRows` would be a wrong answer to "does this
+    /// step's output for a row depend only on that row" — and not a fall-back either.
+    | MergeOrder of by: (string * SortDir) list
     /// Not incrementalisable — the reference evaluator answers this pipeline.
     | FallBack of reason: FallBackReason
 
 /// The strategy a whole pipeline's classification induces.
 type IncrementalStrategy =
-    /// Every step is row-local.
+    /// Every step propagates the delta: the row-local three, and `Sort`, whose order is merged
+    /// rather than recomputed. (The name predates `Sort`'s admission and is kept: `isIncremental`
+    /// and every law key off `ReferenceOnly`-versus-not, and a third case would change every
+    /// consumer's match without carrying a new decision. `Steps` carries the per-step truth.)
     | RowLocal
     /// A row-local prefix followed by a final maintained `GroupBy`.
     | RowLocalThenGroups
@@ -160,6 +182,14 @@ type IncrementalEval =
         GroupMembers: Map<string, string list>
         /// Per group token, the aggregate cells last computed for it (maintained-groups only).
         GroupAggs: Map<string, Cell list>
+        /// Per `Sort` step (indexed by its ordinal among the pipeline's sorts), the token order the
+        /// step's rows ARRIVED in and the token order it PRODUCED. Both halves are needed and
+        /// neither is redundant: the produced order is what a merge reuses, and the arrival order is
+        /// the only thing that says the reuse is still valid — a stable sort breaks ties by arrival
+        /// position, so a cached order whose unnamed rows arrived in a different order now would
+        /// merge those ties the wrong way round. `Delta.diff` reports a pure reordering as quiet, so
+        /// this cannot be inferred from the delta.
+        SortOrders: Map<int, string list * string list>
         /// What producing `Output` cost.
         Footprint: RecomputeFootprint
     }
@@ -193,11 +223,18 @@ module Incremental =
     /// Classify one step. `isLast` matters only for the maintainable verbs: a `GroupBy` at the end
     /// of a pipeline has maintainable state, the same `GroupBy` in the middle does not, because
     /// what follows it would need a delta over the GROUP table and no such delta was supplied.
+    ///
+    /// A `Sort` carries no such position condition, which is why it takes none. It emits the rows it
+    /// was handed, reordered, so every step admitted after it — the row-local three, and a final
+    /// `GroupBy` — reads the order it produced exactly as it would have read the reference's, and
+    /// the two order-sensitive readers in the seam (a `Derive`d column's whole-column type inference
+    /// and a group's ordered member list) are computed from the walked frame rather than a cache.
     let classifyStep (isLast: bool) (t: Transform) : StepIncrementality =
         match t with
         | Filter _
         | Project _
         | Derive _ -> PropagateRows
+        | Sort by -> MergeOrder by
         | GroupBy(keys, aggs) ->
             if isLast then
                 MaintainGroups(keys, aggs |> List.map (fun a -> a.Name))
@@ -317,28 +354,35 @@ module Incremental =
 
     // ---- the row-local walk ----
 
-    /// The three row-local verbs, as the closed shape the walk consumes. Splitting the pipeline into
-    /// this form (rather than re-matching `Transform` inside the walk) is what removes the
-    /// "unreachable case" a catch-all would otherwise need: a step that is not one of these three
+    /// The four propagating verbs, as the closed shape the walk consumes. Splitting the pipeline
+    /// into this form (rather than re-matching `Transform` inside the walk) is what removes the
+    /// "unreachable case" a catch-all would otherwise need: a step that is not one of these four
     /// never reaches the walk, by construction.
-    type private RowLocalStep =
+    ///
+    /// `WSort` carries its ORDINAL among the pipeline's sorts, which is what keys its cached order
+    /// in the state. An ordinal is enough because `refresh` refuses a pipeline that is not the one
+    /// the state was built for (`PipelineChanged`), so the numbering a state was written under is
+    /// the numbering it is read under.
+    type private PrefixStep =
         | WFilter of ColExpr
         | WProject of (string * string) list
         | WDerive of string * ColExpr
+        | WSort of int * (string * SortDir) list
 
-    /// Split a pipeline into its row-local prefix and an optional final `GroupBy`. `None` when the
+    /// Split a pipeline into its propagating prefix and an optional final `GroupBy`. `None` when the
     /// pipeline is not of the incremental shape — exactly when `plan` says `ReferenceOnly`.
-    let private split (pipeline: Transform list) : (RowLocalStep list * (string list * Agg list) option) option =
-        let rec go acc =
+    let private split (pipeline: Transform list) : (PrefixStep list * (string list * Agg list) option) option =
+        let rec go acc sorts =
             function
             | [] -> Some(List.rev acc, None)
             | [ GroupBy(keys, aggs) ] -> Some(List.rev acc, Some(keys, aggs))
-            | Filter p :: rest -> go (WFilter p :: acc) rest
-            | Project pairs :: rest -> go (WProject pairs :: acc) rest
-            | Derive(n, e) :: rest -> go (WDerive(n, e) :: acc) rest
+            | Filter p :: rest -> go (WFilter p :: acc) sorts rest
+            | Project pairs :: rest -> go (WProject pairs :: acc) sorts rest
+            | Derive(n, e) :: rest -> go (WDerive(n, e) :: acc) sorts rest
+            | Sort by :: rest -> go (WSort(sorts, by) :: acc) (sorts + 1) rest
             | _ -> None
 
-        go [] pipeline
+        go [] 0 pipeline
 
     /// One source row in flight: its identity token, whether the delta named it, whether it is still
     /// alive after the filters so far, its current cells, the cells cached for it by the previous
@@ -367,19 +411,107 @@ module Incremental =
         | Some c -> Ok(c, false)
         | None -> DataFrame.evalExprInRow env cols w.Cells expr |> Result.map (fun c -> c, true)
 
-    /// Walk the row-local prefix, threading the schema and the rows. Dead rows are carried (so their
-    /// cached prefix survives for the next refresh) but never evaluated and never counted — exactly
-    /// as in the reference evaluator, which has already dropped them from its frame.
+    /// Merge two already-ordered token sequences into one, under the reference comparator, breaking
+    /// a tie by ARRIVAL position. That tiebreak is what makes the merge equal to `List.sortWith` over
+    /// the whole frame: `List.sortWith` is stable, and a stable sort is exactly a sort by
+    /// (key, arrival position). Dropping it would leave an order that is correctly sorted and
+    /// differs from the reference's on the first tie.
+    let private mergeOrders
+        (cmp: string -> string -> int)
+        (posOf: Map<string, int>)
+        (xs: string list)
+        (ys: string list)
+        : string list =
+        let posAt t =
+            Map.tryFind t posOf |> Option.defaultValue System.Int32.MaxValue
+
+        let rec go acc xs ys =
+            match xs, ys with
+            | [], rest
+            | rest, [] -> List.rev acc @ rest
+            | x :: xt, y :: yt ->
+                let c = cmp x y
+                let c = if c <> 0 then c else compare (posAt x) (posAt y)
+
+                if c <= 0 then go (x :: acc) xt ys else go (y :: acc) xs yt
+
+        go [] xs ys
+
+    /// Walk the propagating prefix, threading the schema and the rows. Dead rows are carried (so
+    /// their cached prefix survives for the next refresh) but never evaluated and never counted —
+    /// exactly as in the reference evaluator, which has already dropped them from its frame.
+    ///
+    /// `priorSort` is the state's cached per-sort orders and is read-only; `sortAcc` accumulates the
+    /// ones this walk produced, which is what the next refresh will read.
     let rec private walk
         (env: Map<string, Cell>)
+        (priorSort: Map<int, string list * string list>)
         (cols: Schema)
         (works: Work list)
         (evalIdx: int)
         (evaluated: int)
-        (steps: RowLocalStep list)
-        : Result<Schema * Work list * int, EvalError> =
+        (sortAcc: Map<int, string list * string list>)
+        (steps: PrefixStep list)
+        : Result<Schema * Work list * int * Map<int, string list * string list>, EvalError> =
         match steps with
-        | [] -> Ok(cols, works, evaluated)
+        | [] -> Ok(cols, works, evaluated, sortAcc)
+        | WSort(sortIdx, by) :: rest ->
+            // The rows the sort orders, in the order they arrived. Dead rows are not in the frame
+            // at all — the reference dropped them at the filter that killed them — so they are
+            // carried past the step (their cached prefix is still wanted) but take no part in it.
+            let aliveWorks = works |> List.filter (fun w -> w.Alive)
+            let deadWorks = works |> List.filter (fun w -> not w.Alive)
+            let arrival = aliveWorks |> List.map (fun w -> w.Token)
+
+            let byToken = (Map.empty, aliveWorks) ||> List.fold (fun m w -> Map.add w.Token w m)
+
+            let posOf =
+                (Map.empty, List.indexed arrival) ||> List.fold (fun m (i, t) -> Map.add t i m)
+
+            // The reference's own comparator, over the reference's own cells. A second comparator
+            // here would agree on every corpus anyone thought to write and disagree on the first
+            // null, the first tie and the first misspelled key.
+            let cmp (a: string) (b: string) =
+                match Map.tryFind a byToken, Map.tryFind b byToken with
+                | Some wa, Some wb -> DataFrame.rowCompareBy cols by wa.Cells wb.Cells
+                | _ -> 0
+
+            let unnamed =
+                aliveWorks
+                |> List.filter (fun w -> not w.Affected)
+                |> List.map (fun w -> w.Token)
+                |> Set.ofList
+
+            // The cached order may be reused only for rows that arrived in the SAME relative order
+            // as last time. A stable sort breaks ties by arrival position, so a reordering among
+            // unnamed rows moves the answer while naming no row at all — and `Delta.diff` reports a
+            // pure reordering as quiet, so nothing in the delta would have said so. This is the
+            // ordered-member condition the maintained groups already carry, one verb along.
+            let reusable =
+                match Map.tryFind sortIdx priorSort with
+                | None -> None
+                | Some(prevArrival, prevOrder) ->
+                    let keep = List.filter (fun t -> Set.contains t unnamed)
+
+                    if keep prevArrival = keep arrival then
+                        Some(keep prevOrder)
+                    else
+                        None
+
+            let ordered =
+                match reusable with
+                | None -> arrival |> List.sortWith cmp
+                | Some cachedUnnamed ->
+                    let named =
+                        arrival
+                        |> List.filter (fun t -> not (Set.contains t unnamed))
+                        |> List.sortWith cmp
+
+                    mergeOrders cmp posOf cachedUnnamed named
+
+            let works2 = (ordered |> List.map (fun t -> Map.find t byToken)) @ deadWorks
+
+            walk env priorSort cols works2 evalIdx evaluated (Map.add sortIdx (arrival, ordered) sortAcc) rest
         | WFilter pred :: rest ->
             let rec go acc n =
                 function
@@ -399,7 +531,7 @@ module Incremental =
                             go (w' :: acc) (if didWork then n + 1 else n) tail
 
             go [] evaluated works
-            |> Result.bind (fun (ws, n) -> walk env cols ws (evalIdx + 1) n rest)
+            |> Result.bind (fun (ws, n) -> walk env priorSort cols ws (evalIdx + 1) n sortAcc rest)
         | WProject pairs :: rest ->
             let resolveOne (src, out) =
                 match colIndex cols src with
@@ -419,7 +551,7 @@ module Incremental =
                         else
                             w)
 
-                walk env cols2 ws evalIdx evaluated rest)
+                walk env priorSort cols2 ws evalIdx evaluated sortAcc rest)
         | WDerive(name, expr) :: rest ->
             let rec go acc n =
                 function
@@ -469,7 +601,7 @@ module Incremental =
                              else
                                  w))
 
-                walk env cols2 ws2 (evalIdx + 1) n rest)
+                walk env priorSort cols2 ws2 (evalIdx + 1) n sortAcc rest)
 
     // ---- the maintained-group step ----
 
@@ -638,7 +770,7 @@ module Incremental =
         (scheme: string)
         (pipeline: Transform list)
         (p: IncrementalPlan)
-        (prefix: RowLocalStep list)
+        (prefix: PrefixStep list)
         (final: (string list * Agg list) option)
         (source: Table)
         (tokens: string list)
@@ -664,8 +796,11 @@ module Incremental =
                 tokens
                 (rowsOf source)
 
-        walk env source.Schema works 0 0 prefix
-        |> Result.bind (fun (cols, ws, evaluated) ->
+        let priorSort =
+            prior |> Option.map (fun s -> s.SortOrders) |> Option.defaultValue Map.empty
+
+        walk env priorSort source.Schema works 0 0 Map.empty prefix
+        |> Result.bind (fun (cols, ws, evaluated, sortOrders) ->
             let rowCells =
                 (Map.empty, ws) ||> List.fold (fun m w -> Map.add w.Token (List.rev w.Fresh) m)
 
@@ -685,6 +820,7 @@ module Incremental =
                       RowGroup = Map.empty
                       GroupMembers = Map.empty
                       GroupAggs = Map.empty
+                      SortOrders = sortOrders
                       Footprint =
                         { SourceRows = List.length tokens
                           ResultRows = List.length aliveRows
@@ -711,6 +847,7 @@ module Incremental =
                       RowGroup = g.RowGroup
                       GroupMembers = g.Members
                       GroupAggs = g.Aggs
+                      SortOrders = sortOrders
                       Footprint =
                         { SourceRows = List.length tokens
                           ResultRows = List.length g.Rows
@@ -740,6 +877,7 @@ module Incremental =
               RowGroup = Map.empty
               GroupMembers = Map.empty
               GroupAggs = Map.empty
+              SortOrders = Map.empty
               Footprint =
                 { SourceRows = Table.rowCount source
                   ResultRows = Table.rowCount output

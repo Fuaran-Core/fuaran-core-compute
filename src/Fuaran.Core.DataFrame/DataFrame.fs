@@ -1694,6 +1694,18 @@ module DataFrame =
     /// incremental evaluator that overlooked it would type a column differently from the reference.
     let inferCellType (cells: Cell list) : ColumnType = inferType cells
 
+    /// The reference `Sort`'s row comparator: the pinned ordering (multi-key, nulls last regardless
+    /// of direction, unknown columns skipped). Exposed for the same reason as the four above — an
+    /// incremental evaluator that merged rows into a cached order under its OWN comparator would
+    /// agree with the reference on every corpus anyone thought to write and disagree on the first
+    /// null, the first tie and the first misspelled key. `List.sortWith` over it is `evalSort`.
+    ///
+    /// It is a comparator, so it says nothing about STABILITY: `Sort`'s stability comes from
+    /// `List.sortWith` being stable over the frame order, and a caller reproducing the reference
+    /// ordering must reproduce that too, not only this function.
+    let rowCompareBy (cols: Schema) (by: (string * SortDir) list) (r1: Cell list) (r2: Cell list) : int =
+        rowKeyCompare cols by r1 r2
+
     // ---- incremental evaluation (Phase 34) ----
     // A full-recompute evaluator made incremental via change-relevance analysis: when a change provably
     // cannot alter the output, the prior result is reused; otherwise the pipeline re-runs over the
