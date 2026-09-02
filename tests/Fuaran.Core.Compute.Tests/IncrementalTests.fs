@@ -52,6 +52,26 @@ let private expectMatchesReference (pipeline: Transform list) (after: Table) (s:
 
 let private agg name fn ofCol : Agg = { Name = name; Fn = fn; Of = ofCol }
 
+// ---- Phase 120 fixtures ----
+
+/// A bounded frame: the value of the row before this one in its partition's order.
+let private lagOverB =
+    Window
+        { PartitionBy = [ "b" ]
+          OrderBy = [ "a", Asc ]
+          Fn = Lag
+          Of = "a"
+          As = "prev" }
+
+/// The relation the filtering joins match against: two of the three `b` values the base table
+/// carries, so both sides of the verdict are live in every case below.
+let private lookup: Table =
+    { Schema = [ "k", IntType ]
+      Columns = [ Column.create "k" IntType [ Int 0; Int 2 ] ] }
+
+let private semiOnLookup = Join(Embedded lookup, [ "b", "k" ], Semi)
+let private antiOnLookup = Join(Embedded lookup, [ "b", "k" ], Anti)
+
 [<Tests>]
 let tests =
     testList
@@ -636,4 +656,231 @@ let tests =
                   )
 
               let next, _ = step pipeline baseTable changed
-              expectMatchesReference pipeline changed next ]
+              expectMatchesReference pipeline changed next
+
+          // ============ the bounded frame and the filtering join (Phase 120) ============
+
+          testCase "a bounded-frame window re-evaluates only the named rows, and the window costs none"
+          <| fun _ ->
+              // The `MergeOrder` accounting, one verb along. A window evaluates no expression, so
+              // what the admission buys is that the FILTER before it stops running over every row —
+              // which is the whole cost this pipeline paid while `window` was declined.
+              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); lagOverB ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r2" then i, Int 30, b else i, a, b)
+                  )
+
+              let next, _ = step pipeline baseTable changed
+
+              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one filter predicate, not five"
+              expectMatchesReference pipeline changed next
+
+              let lone, _ = step [ lagOverB ] baseTable changed
+              Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a window evaluates nothing"
+              expectMatchesReference [ lagOverB ] changed lone
+
+          testCase "a bounded frame moves a row the delta did NOT name, and the column follows it"
+          <| fun _ ->
+              // The case a per-row cache of the window column would get wrong silently. `lag` reads
+              // the row BEFORE this one in the partition's order, so changing r0's `a` moves r1's
+              // `prev` — and the delta names r0 alone. The column is recomputed over the walked
+              // frame for exactly this reason.
+              let pipeline = [ lagOverB ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r0" then i, Int 99, b else i, a, b)
+                  )
+
+              let primed = ok (Incremental.primeOn idw pipeline baseTable)
+              let next, delta = step pipeline baseTable changed
+
+              Expect.equal (Delta.rowsWith RowChanged delta |> List.length) 1 "the delta named one row"
+
+              Expect.equal
+                  (primed.Output |> Table.tryColumn "prev" |> Option.map (fun c -> c.Cells))
+                  (Some [ Null; Int 1; Null; Int 3; Null ])
+                  "before: partition b=0 orders r0 (1) then r1 (2), so r1's predecessor is r0's value"
+
+              // Partition b=0 now orders r1 (2) before r0 (99), so the two swap places: r1 becomes
+              // the partition's first row and loses its predecessor, and r0 gains r1's value. BOTH
+              // cells move, and the delta named only r0.
+              Expect.equal
+                  (next.Output |> Table.tryColumn "prev" |> Option.map (fun c -> c.Cells))
+                  (Some [ Int 2; Null; Null; Int 3; Null ])
+                  "after: the unnamed neighbour's cell moved too"
+
+              expectMatchesReference pipeline changed next
+
+          testCase "an unbounded frame declines by type, naming the FUNCTION and not the verb"
+          <| fun _ ->
+              // `window` alone would not say which frame declined, now that some of them do not.
+              let pipeline =
+                  [ Window
+                        { PartitionBy = [ "b" ]
+                          OrderBy = [ "a", Asc ]
+                          Fn = CumulSum
+                          Of = "a"
+                          As = "run" } ]
+
+              Expect.equal
+                  (Incremental.plan pipeline).Strategy
+                  (ReferenceOnly(WindowFrameUnbounded "cumulSum"))
+                  "a cumulative aggregate reads every preceding row of its partition"
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r2" then i, Int 30, b else i, a, b)
+                  )
+
+              let next, _ = step pipeline baseTable changed
+
+              Expect.equal
+                  next.Footprint.Recompute
+                  (FullRecompute(0, WindowFrameUnbounded "cumulSum"))
+                  "the refresh falls back, carrying the declared reason"
+
+              Expect.equal
+                  (Incremental.reasonString (WindowFrameUnbounded "cumulSum"))
+                  "the window function 'cumulSum' reads the whole partition, not a bounded frame"
+                  "and the reason renders as a stable line"
+
+              expectMatchesReference pipeline changed next
+
+          testCase "a filtering join re-evaluates only the named rows, and the join costs none"
+          <| fun _ ->
+              // The edit moves r2's key OUT of the relation, so the verdict cached for r2 is
+              // exactly what has to be recomputed and every other row's is exactly what may be
+              // reused. `b` = 1 is not in the lookup, so r2 leaves the result.
+              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); semiOnLookup ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r0" then i, a, Int 1 else i, a, b)
+                  )
+
+              let next, _ = step pipeline baseTable changed
+
+              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one filter predicate, not five"
+              Expect.equal next.Output.Schema baseTable.Schema "a filtering join keeps the LEFT schema only"
+              expectMatchesReference pipeline changed next
+
+              let lone, _ = step [ semiOnLookup ] baseTable changed
+              Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a join evaluates nothing"
+              expectMatchesReference [ semiOnLookup ] changed lone
+
+          testCase "the anti join is the semi join's complement, row for row"
+          <| fun _ ->
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r0" then i, a, Int 1 else i, a, b)
+                  )
+
+              let semi, _ = step [ semiOnLookup ] baseTable changed
+              let anti, _ = step [ antiOnLookup ] baseTable changed
+
+              expectMatchesReference [ semiOnLookup ] changed semi
+              expectMatchesReference [ antiOnLookup ] changed anti
+
+              let ids (t: Table) =
+                  t
+                  |> Table.tryColumn "id"
+                  |> Option.map (fun c -> c.Cells)
+                  |> Option.defaultValue []
+
+              Expect.equal
+                  (ids semi.Output @ ids anti.Output |> List.sort)
+                  (ids changed |> List.sort)
+                  "together they partition the rows"
+
+              Expect.isEmpty
+                  (Set.intersect (Set.ofList (ids semi.Output)) (Set.ofList (ids anti.Output)))
+                  "and they overlap nowhere"
+
+          testCase "a filtering join feeding a maintained group still maintains it"
+          <| fun _ ->
+              // What the join decides here is which rows are in the group at all, so a group whose
+              // membership did not move is still reused.
+              let pipeline =
+                  [ semiOnLookup; GroupBy([ "b" ], [ agg "n" Count "a"; agg "f" First "id" ]) ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r4" then i, Int 50, b else i, a, b)
+                  )
+
+              let next, _ = step pipeline baseTable changed
+
+              match next.Footprint.Recompute with
+              | GroupsRecomputed(_, g) -> Expect.equal g 1 "only the group the changed row is in"
+              | other -> failtestf "expected a maintained-group refresh, got %A" other
+
+              expectMatchesReference pipeline changed next
+
+          testCase "a combining join declines by type, naming the KIND and not the verb"
+          <| fun _ ->
+              for how in [ Inner; Left; Right; Outer ] do
+                  let pipeline = [ Join(Embedded lookup, [ "b", "k" ], how) ]
+
+                  Expect.equal
+                      (Incremental.plan pipeline).Strategy
+                      (ReferenceOnly(JoinNotRowPreserving(Incremental.joinKindName how)))
+                      (sprintf "a '%s' join's output rows are not its left rows" (Incremental.joinKindName how))
+
+              Expect.equal
+                  (Incremental.reasonString (JoinNotRowPreserving "inner"))
+                  "a 'inner' join's output rows are not its left rows"
+                  "and the reason renders as a stable line"
+
+          testCase "a cached verdict is NOT reused when the joined relation moved"
+          <| fun _ ->
+              // The condition the whole `JoinKeys` cache exists for. The delta describes the SOURCE,
+              // so a row it did not name can still have a different verdict — the relation may have
+              // gained or lost the key that row matched on. Here the source does not move AT ALL and
+              // the delta is quiet; only the relation changes, and the answer must change with it.
+              let pipeline = [ Join(Ref "lookup", [ "b", "k" ], Semi) ]
+
+              let resolveTo (ks: int list) =
+                  fun (name: string) ->
+                      if name = "lookup" then
+                          Ok
+                              { Schema = [ "k", IntType ]
+                                Columns = [ Column.create "k" IntType (ks |> List.map Int) ] }
+                      else
+                          Error(UnresolvedSource name)
+
+              let before = resolveTo [ 0; 2 ]
+              let after = resolveTo [ 1 ]
+
+              let state = ok (Incremental.prime before Map.empty idw pipeline baseTable)
+              let quiet = ok (Delta.diff idw baseTable baseTable)
+              Expect.isTrue (Delta.isQuiet quiet) "the delta names nothing, and the source is the same table"
+
+              let next =
+                  ok (Incremental.refresh after Map.empty idw pipeline state quiet baseTable)
+
+              Expect.equal
+                  (Ok next.Output)
+                  (DataFrame.evalPipelineWith after pipeline baseTable)
+                  "the answer is the reference's over the RELATION AS IT NOW STANDS"
+
+              Expect.equal
+                  (next.Output |> Table.tryColumn "id" |> Option.map (fun c -> c.Cells))
+                  (Some [ Str "r2"; Str "r3" ])
+                  "the rows matching the new relation, not the old one"
+
+              // And the reuse is not thrown away when the relation did NOT move: the same refresh
+              // against the same relation answers from the cache and evaluates nothing.
+              let same =
+                  ok (Incremental.refresh before Map.empty idw pipeline state quiet baseTable)
+
+              Expect.equal same.Footprint.Recompute (RowsRecomputed 0) "an unmoved relation costs nothing"
+              Expect.equal same.Output state.Output "and answers exactly as before" ]

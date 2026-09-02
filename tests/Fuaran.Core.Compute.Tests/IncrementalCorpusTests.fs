@@ -39,10 +39,19 @@ open Fuaran.Core
 
 // ---- locating the vendored corpus ----
 
+/// The vectors this repository vendors. `point-edit-row-local` and `sort-declines-in-full` are
+/// Phase 115's pair; `window-declines-in-full` and `join-declines-in-full` are Phase 120's, each
+/// recording the DECLINED triple its class produced before that phase.
+let private vectorNames =
+    [ "point-edit-row-local"
+      "sort-declines-in-full"
+      "window-declines-in-full"
+      "join-declines-in-full" ]
+
 let private isCorpus (dir: string) : bool =
     try
-        File.Exists(Path.Combine(dir, "sort-declines-in-full.json"))
-        && File.Exists(Path.Combine(dir, "point-edit-row-local.json"))
+        vectorNames
+        |> List.forall (fun n -> File.Exists(Path.Combine(dir, n + ".json")))
     with _ ->
         false
 
@@ -72,8 +81,9 @@ let private resolveCorpus () : Result<string, string> =
         else
             Error(
                 sprintf
-                    "FUARAN_INCREMENTAL_CORPUS is set to '%s', which is not a corpus: it must hold sort-declines-in-full.json and point-edit-row-local.json. Unset it to use the vendored corpus."
+                    "FUARAN_INCREMENTAL_CORPUS is set to '%s', which is not a corpus: it must hold %s. Unset it to use the vendored corpus."
                     ovr
+                    (vectorNames |> List.map (fun n -> n + ".json") |> String.concat ", ")
             )
     | _ ->
         match vendoredCorpus () with
@@ -119,11 +129,17 @@ let private arr (v: JVal) : JVal list =
     | JArr xs -> xs
     | _ -> fail "expected an array"
 
+/// A cell. `{"null": true}` is THIS REPOSITORY's spelling, introduced with the Phase 120 window
+/// vector: a bounded frame's first row in each partition has no predecessor, so a `lag` column
+/// cannot avoid one. The corpus that owns this family has not recorded a window vector yet, so it
+/// has not spelled a null cell either; when it does, this reader adopts the corpus's spelling and
+/// the vendored bytes follow it. See the README beside the vectors.
 let private cellOf (v: JVal) : Cell =
-    match tryMem "int" v, tryMem "string" v with
-    | Some x, _ -> Int(int_ x)
-    | _, Some x -> Str(str x)
-    | _ -> fail "a cell is {\"int\": n} or {\"string\": s}"
+    match tryMem "int" v, tryMem "string" v, tryMem "null" v with
+    | Some x, _, _ -> Int(int_ x)
+    | _, Some x, _ -> Str(str x)
+    | _, _, Some(JBool true) -> Null
+    | _ -> fail "a cell is {\"int\": n}, {\"string\": s} or {\"null\": true}"
 
 let private columnTypeOf (s: string) : ColumnType =
     match s with
@@ -175,24 +191,53 @@ let private aggOf (v: JVal) : Agg =
       Fn = fn
       Of = str (mem "of" v) }
 
-let private stepOf (v: JVal) : Transform =
+let private orderOf (v: JVal) : string * SortDir =
+    let dir =
+        match str (mem "direction" v) with
+        | "ascending" -> Asc
+        | "descending" -> Desc
+        | other -> fail ("unmodelled direction '" + other + "'")
+
+    str (mem "column" v), dir
+
+let private windowFnOf (s: string) : WindowFn =
+    match s with
+    | "lag" -> Lag
+    | "lead" -> Lead
+    | other -> fail ("unmodelled window function '" + other + "'")
+
+let private joinKindOf (s: string) : JoinKind =
+    match s with
+    | "semi" -> Semi
+    | "anti" -> Anti
+    | other -> fail ("unmodelled join kind '" + other + "'")
+
+let rec private stepOf (v: JVal) : Transform =
     match str (mem "verb" v) with
     | "filter" -> Filter(exprOf (mem "where" v))
     | "derive" -> Derive(str (mem "column" v), exprOf (mem "value" v))
     | "groupBy" -> GroupBy(v |> mem "keys" |> arr |> List.map str, v |> mem "aggregates" |> arr |> List.map aggOf)
-    | "sort" ->
-        Sort(
+    | "sort" -> Sort(v |> mem "by" |> arr |> List.map orderOf)
+    // Phase 120. The reader models the WINDOW FUNCTIONS and the JOIN KINDS the vendored vectors
+    // use and refuses the rest by name, on the same rule as every other member here: a vector
+    // whose `cumulSum` this reader silently read as a `lag` would certify a frame the corpus did
+    // not write. That refusal is not a statement about what the seam admits — `Incremental.plan`
+    // is — it is a statement about what these BYTES have been read against.
+    | "window" ->
+        Window
+            { PartitionBy = v |> mem "partitionBy" |> arr |> List.map str
+              OrderBy = v |> mem "orderBy" |> arr |> List.map orderOf
+              Fn = windowFnOf (str (mem "fn" v))
+              Of = str (mem "of" v)
+              As = str (mem "as" v) }
+    | "join" ->
+        Join(
+            Embedded(tableOf (mem "source" v)),
             v
-            |> mem "by"
+            |> mem "on"
             |> arr
-            |> List.map (fun o ->
-                let dir =
-                    match str (mem "direction" o) with
-                    | "ascending" -> Asc
-                    | "descending" -> Desc
-                    | other -> fail ("unmodelled direction '" + other + "'")
-
-                str (mem "column" o), dir)
+            |> List.map (fun pair -> str (mem "left" pair), str (mem "right" pair)),
+            joinKindOf (str (mem "how" v))
         )
     | other -> fail ("unmodelled verb '" + other + "'")
 
@@ -427,13 +472,94 @@ let tests =
                   (Incremental.rowsEvaluated full)
                   "strictly fewer row-evaluations than the full evaluation it is measured against"
 
+          testCase "the window vector's result is unchanged and its class is not: the recorded saving"
+          <| fun _ ->
+              // Phase 120's first vector, on exactly the terms Phase 115's sort vector was written
+              // on. Its pipeline is a filter followed by a BOUNDED-frame window (a lag over the
+              // tie-heavy partition key); its recorded refresh is the full evaluation declined for
+              // `window`, which is what this repository produced until the frame was admitted.
+              let vec = readVector corpus.Value "window-declines-in-full"
+              let prime, full, refreshed = run vec
+
+              Expect.equal refreshed.Output vec.Result "the refresh produces the recorded result"
+
+              Expect.equal
+                  (Ok vec.Result)
+                  (DataFrame.evalPipeline vec.Pipeline vec.Changed)
+                  "and so does a full reference evaluation over the changed source"
+
+              // The "before": the vendored bytes' own declined class, asserted rather than
+              // described. A window evaluates no expression, so the six are the filter's.
+              Expect.equal
+                  vec.Refresh.Recompute
+                  (FullRecompute(6, StepNotRowLocal "window"))
+                  "the vendored vector records a decline naming the window, with what it evaluated"
+
+              // The "after".
+              Expect.equal (Incremental.plan vec.Pipeline).Strategy RowLocal "the pipeline is no longer declined"
+
+              Expect.equal prime vec.Prime "the recorded prime footprint"
+              Expect.equal full vec.Full "the recorded full-evaluation footprint"
+              Expect.equal refreshed.Footprint.Recompute (RowsRecomputed 1) "the refresh re-evaluates one row"
+
+              Expect.isLessThan
+                  (Incremental.rowsEvaluated refreshed.Footprint)
+                  (Incremental.rowsEvaluated vec.Refresh)
+                  "strictly fewer row-evaluations than the decline it replaces"
+
+          testCase "the join vector's result is unchanged and its class is not: the recorded saving"
+          <| fun _ ->
+              // Phase 120's second vector: a filter followed by a SEMI join against a two-row
+              // lookup, with the edit moving a row's key OUT of the relation — so the verdict the
+              // join caches for that row is exactly what has to be recomputed, and every other
+              // row's is exactly what may be reused.
+              let vec = readVector corpus.Value "join-declines-in-full"
+              let prime, full, refreshed = run vec
+
+              Expect.equal refreshed.Output vec.Result "the refresh produces the recorded result"
+
+              Expect.equal
+                  (Ok vec.Result)
+                  (DataFrame.evalPipeline vec.Pipeline vec.Changed)
+                  "and so does a full reference evaluation over the changed source"
+
+              Expect.equal
+                  vec.Refresh.Recompute
+                  (FullRecompute(6, StepNotRowLocal "join"))
+                  "the vendored vector records a decline naming the join, with what it evaluated"
+
+              Expect.equal (Incremental.plan vec.Pipeline).Strategy RowLocal "the pipeline is no longer declined"
+
+              Expect.equal prime vec.Prime "the recorded prime footprint"
+              Expect.equal full vec.Full "the recorded full-evaluation footprint"
+              Expect.equal refreshed.Footprint.Recompute (RowsRecomputed 1) "the refresh re-evaluates one row"
+
+              // The join drops a row the filter kept, so the result is SMALLER than the prime's —
+              // the recorded triple carries three result-row counts, not one.
+              Expect.equal prime.ResultRows 3 "the prime kept three rows"
+
+              Expect.equal
+                  refreshed.Footprint.ResultRows
+                  2
+                  "and the refresh two, the moved key having left the relation"
+
+              Expect.isLessThan
+                  (Incremental.rowsEvaluated refreshed.Footprint)
+                  (Incremental.rowsEvaluated vec.Refresh)
+                  "strictly fewer row-evaluations than the decline it replaces"
+
           testCase "a corpus this reader cannot fully model is refused, not partly run"
           <| fun _ ->
               // The reader's refusals are the reason its greens mean anything: a vector using a
               // verb it silently skipped would certify a pipeline the corpus did not write.
-              Expect.throws
-                  (fun () -> stepOf (JObj [ "verb", JStr "window" ]) |> ignore)
-                  "an unmodelled verb is refused"
+              Expect.throws (fun () -> stepOf (JObj [ "verb", JStr "pivot" ]) |> ignore) "an unmodelled verb is refused"
+
+              // Phase 120 models two window functions and two join kinds, not the families they
+              // belong to — an unmodelled member of a verb the reader DOES model is the refusal
+              // most likely to be skipped, so it is the one asserted.
+              Expect.throws (fun () -> windowFnOf "cumulSum" |> ignore) "an unmodelled window function is refused"
+
+              Expect.throws (fun () -> joinKindOf "inner" |> ignore) "an unmodelled join kind is refused"
 
               Expect.throws
                   (fun () ->

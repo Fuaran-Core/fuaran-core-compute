@@ -1,13 +1,22 @@
 # Incremental-recompute corpus vectors
 
-Two vectors of the estate's `incremental-recompute` conformance family — §12.7 of
-the app-composition wire specification — vendored here so the legs of
+Four vectors of the estate's `incremental-recompute` conformance family — §12.7
+of the app-composition wire specification — vendored here so the legs of
 `../../IncrementalCorpusTests.fs` run in any clone of this repository rather
 than reporting themselves skipped.
 
-The bytes were the family's, unedited, until Phase 117 **re-pinned
-`sort-declines-in-full`'s footprint triple** — see "The Phase 117 re-pin" below,
-which says exactly what moved and why. `point-edit-row-local` is untouched.
+The first two files' bytes were the family's, unedited, until Phase 117
+**re-pinned `sort-declines-in-full`'s footprint triple** — see "The Phase 117
+re-pin" below, which says exactly what moved and why. `point-edit-row-local` is
+untouched.
+
+**`window-declines-in-full` and `join-declines-in-full` are Phase 120's, and
+they were WRITTEN HERE rather than taken from the corpus.** The corpus records
+no window or join footprint at all — that absence is what D20's gate was about —
+and an operator decision of 2026-09-02 waived that gate for these two classes,
+on the understanding that the corpus records the family's own vectors afterwards
+from the real consumer. Until it does, these two lead the corpus in the same way
+the re-pinned sort vector does; see "Where the Phase 120 pair came from" below.
 
 ## What a vector is
 
@@ -34,9 +43,10 @@ it was evaluated in full or in part. Reading a declined evaluation's cost off
 `sourceRows` charged it for a single pass, so a decline compared against its own
 full baseline read as having done *less* work than the thing it fell back to.
 
-## Why these two
+## Why these four
 
-They are a pair, and the pairing is what makes either of them mean anything.
+They are one control and three widenings, and the pairing is what makes any of
+them mean anything.
 
 - **`point-edit-row-local`** is the **control**. Its pipeline (a filter and a
   derive) was incrementalisable before the sort widening, so all three of its
@@ -50,7 +60,17 @@ They are a pair, and the pairing is what makes either of them mean anything.
   **refresh class must**. That is the saving, and the test reads the numbers on
   both sides of the comparison off these bytes rather than restating them in F#.
 
-So this vector's recorded *refresh class* is no longer an oracle for this
+- **`window-declines-in-full`** and **`join-declines-in-full`** are Phase 120's
+  pair, written on exactly the terms above. The first's pipeline is a filter
+  followed by a **bounded-frame** window (a `lag` over the tie-heavy partition
+  key); the second's is a filter followed by a **semi** join against a two-row
+  lookup, with the edit moving a row's key OUT of the relation — so the verdict
+  cached for that row is precisely what has to be recomputed, and every other
+  row's is precisely what may be reused. Each records the full evaluation its
+  class declined into before the widening, and each falls from six
+  row-evaluations to one.
+
+So a widened vector's recorded *refresh class* is no longer an oracle for this
 repository, while its recorded *result* still is. The family's own rule still
 derives the declined reason it records — a pipeline carrying an order-dependent
 verb, named — so the vector is not wrong; it describes an evaluator that
@@ -96,16 +116,46 @@ vendored from, and the reader here requires the `rowsEvaluated` field a
 
 ## What the reader models
 
-`IncrementalCorpusTests.fs` reads only what these two vectors use — `filter`,
-`derive`, `groupBy` and `sort` steps; `column`, `literal` and `binary`
-(`greaterThan`, `multiply`) expressions; `setCell`, `appendRow` and `removeRow`
-edits under the `identity` scheme — and **refuses** anything else by name. A
+`IncrementalCorpusTests.fs` reads only what these four vectors use — `filter`,
+`derive`, `groupBy`, `sort`, `window` and `join` steps; `column`, `literal` and
+`binary` (`greaterThan`, `multiply`) expressions; `setCell`, `appendRow` and
+`removeRow` edits under the `identity` scheme — and **refuses** anything else by
+name. The refusal is per MEMBER, not per verb: the reader models `lag` and
+`lead` and refuses `cumulSum`, models `semi` and `anti` and refuses `inner`,
+because a vector whose `cumulSum` it silently read as a `lag` would certify a
+frame the corpus did not write. That is a statement about what these bytes have
+been read against, never about what the seam admits — `Incremental.plan` is what
+answers that. A
 vector using a verb the reader silently skipped would be certified against a
 pipeline the corpus did not write, which is worse than a vector nobody ran. An
 `ordinal`-addressed stream is refused rather than run as an identity one: that
 distinction is the whole of §12.7's re-addressing pair.
 
+## Where the Phase 120 pair came from, and the one spelling invented here
+
+Those two vectors are this repository's own. Everything about their shape
+follows the two the corpus wrote — the same `family`, the same footprint triple,
+the same `identity`-addressed edit stream — and three members had no precedent
+to follow, because no corpus vector uses them:
+
+| member | spelling used here |
+|---|---|
+| a window step | `{"verb":"window","partitionBy":[…],"orderBy":[{"column":…,"direction":…}],"fn":"lag","of":…,"as":…}` |
+| a join step | `{"verb":"join","how":"semi","on":[{"left":…,"right":…}],"source":{"columns":…,"rows":…}}` |
+| a **null cell** | `{"null": true}` |
+
+The null cell is the one worth flagging. A bounded frame's first row in each
+partition has no predecessor, so a `lag` column **cannot** avoid a null, and the
+corpus — having never recorded a window vector — has never had to spell one. The
+flat single-member shape used here matches its `{"int": n}` / `{"string": s}`
+siblings, which is the most it can claim: it is a choice, not a convention.
+**When the corpus records the family's own window and join vectors, this
+repository adopts the corpus's spellings and these bytes follow them.** The
+reader refuses anything it does not model, so that adoption arrives as a failing
+read rather than as a silently different meaning.
+
 ## Pointing the tests at a different corpus
 
-Set `FUARAN_INCREMENTAL_CORPUS` to a directory holding both files. A directory
-that does not hold them is refused by name rather than falling back silently.
+Set `FUARAN_INCREMENTAL_CORPUS` to a directory holding all four files. A
+directory that does not hold them is refused by name rather than falling back
+silently.

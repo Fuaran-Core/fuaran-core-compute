@@ -1208,27 +1208,41 @@ module DataFrame =
         { f with
             Rows = skipped |> List.truncate (max 0 n) }
 
+    /// The join's key-column resolution: the left and right indices `on` names, or the FIRST
+    /// unresolvable name in the order this evaluator reports it (left names, then right names).
+    /// Exposed downstream as `joinKeyIndices` (Phase 120) — one implementation, two callers.
+    let private joinKeyIdx
+        (leftCols: Schema)
+        (rightCols: Schema)
+        (on: (string * string) list)
+        : Result<int list * int list, EvalError> =
+        let leftIdx = on |> List.map (fun (l, _) -> colIndex leftCols l, l)
+        let rightIdx = on |> List.map (fun (_, r) -> colIndex rightCols r, r)
+
+        match
+            (leftIdx @ rightIdx)
+            |> List.tryPick (fun (i, n) -> if Option.isNone i then Some n else None)
+        with
+        | Some n -> Error(UnknownColumn(n, available leftCols @ available rightCols))
+        | None -> Ok(leftIdx |> List.map (fst >> Option.get), rightIdx |> List.map (fst >> Option.get))
+
+    /// The join's key predicate over two rows' already-projected key cells: `cellEq` pairwise, so a
+    /// `Null` key matches nothing, itself included. Exposed downstream as `joinKeysMatch`.
+    let private joinKeyEq (leftKeys: Cell list) (rightKeys: Cell list) : bool =
+        List.length leftKeys = List.length rightKeys
+        && List.forall2 cellEq leftKeys rightKeys
+
     let private evalJoin
         (f: Frame)
         (right: Frame)
         (on: (string * string) list)
         (how: JoinKind)
         : Result<Frame, EvalError> =
-        let leftIdx = on |> List.map (fun (l, _) -> colIndex f.Cols l, l)
-        let rightIdx = on |> List.map (fun (_, r) -> colIndex right.Cols r, r)
-
-        let missing =
-            (leftIdx @ rightIdx)
-            |> List.tryPick (fun (i, n) -> if Option.isNone i then Some n else None)
-
-        match missing with
-        | Some n -> Error(UnknownColumn(n, available f.Cols @ available right.Cols))
-        | None ->
-            let li = leftIdx |> List.map (fst >> Option.get)
-            let ri = rightIdx |> List.map (fst >> Option.get)
-
+        match joinKeyIdx f.Cols right.Cols on with
+        | Error e -> Error e
+        | Ok(li, ri) ->
             let keyMatch (lr: Cell list) (rr: Cell list) =
-                List.forall2 (fun i j -> cellEq (List.item i lr) (List.item j rr)) li ri
+                joinKeyEq (li |> List.map (fun i -> List.item i lr)) (ri |> List.map (fun j -> List.item j rr))
 
             // The combining joins (Inner / Left / Right / Outer) — left cols ++ right cols.
             let combiningJoin () =
@@ -1738,6 +1752,65 @@ module DataFrame =
     /// ordering must reproduce that too, not only this function.
     let rowCompareBy (cols: Schema) (by: (string * SortDir) list) (r1: Cell list) (r2: Cell list) : int =
         rowKeyCompare cols by r1 r2
+
+    /// Is this window function's frame BOUNDED — its output for a row a function of the rows within
+    /// a fixed offset of it in its partition's order (Phase 120)?
+    ///
+    /// `Lag` and `Lead` read one row either side; the rolling pair reads the pinned trailing window
+    /// `evalWindow` implements (current + two preceding). Every other member reads the whole
+    /// partition: the ranking family and `NTile` are functions of a row's POSITION among all of its
+    /// partition's rows (and, for `NTile`, of the partition's size), and the cumulative aggregates
+    /// are functions of every preceding row's value.
+    ///
+    /// It is a statement about the evaluator's own frames, so it lives beside them rather than in
+    /// the incremental seam that reads it — a copy there would be a second answer to a question this
+    /// module already answers in `evalWindow`, and would drift the first time a window function is
+    /// added.
+    let windowFrameBounded (fn: WindowFn) : bool =
+        match fn with
+        | Lag
+        | Lead
+        | RollingMean
+        | RollingSum -> true
+        | RowNumber
+        | Rank
+        | DenseRank
+        | CompetitionRank
+        | NTile _
+        | CumulSum
+        | CumulMax
+        | CumulMin -> false
+
+    /// The reference `Window` step over a frame given as its schema and rows (Phase 120): the new
+    /// schema (the input's, plus the appended column) and the new rows, in the input's own order.
+    /// Exposed for the reason the five above are — an incremental evaluator that recomputed a
+    /// window column through its own copy of the frame semantics would agree with the reference on
+    /// every corpus anyone thought to write and disagree on the first tie, the first null and the
+    /// first empty partition.
+    let windowStep
+        (cols: Schema)
+        (rows: Cell list list)
+        (spec: WindowSpec)
+        : Result<Schema * Cell list list, EvalError> =
+        evalWindow { Cols = cols; Rows = rows } spec
+        |> Result.map (fun f -> f.Cols, f.Rows)
+
+    /// The reference `Join`'s key-column resolution (Phase 120): the left and right column indices
+    /// its `on` pairs name, or the FIRST unresolvable name in the order the reference reports it —
+    /// left names before right names, with both schemas' available columns. Exposed so a restricted
+    /// evaluation refuses exactly what the reference refuses, and says the same thing when it does.
+    let joinKeyIndices
+        (leftCols: Schema)
+        (rightCols: Schema)
+        (on: (string * string) list)
+        : Result<int list * int list, EvalError> =
+        joinKeyIdx leftCols rightCols on
+
+    /// The reference `Join`'s key predicate (Phase 120), over the two rows' already-projected key
+    /// cells. It is `cellEq` pairwise, so a `Null` key matches NOTHING — including another `Null` —
+    /// which is exactly where a second implementation would diverge: the canonical row token
+    /// `Distinct` and the set ops dedup on says `Null` matches itself, and a join says it does not.
+    let joinKeysMatch (leftKeys: Cell list) (rightKeys: Cell list) : bool = joinKeyEq leftKeys rightKeys
 
     // ---- incremental evaluation (Phase 34) ----
     // A full-recompute evaluator made incremental via change-relevance analysis: when a change provably

@@ -18,12 +18,14 @@ namespace Fuaran.Core
 //     every (base, delta) pair, so a divergence is a failing law rather than a
 //     wrong number in a consumer.
 //   * THE BOUNDARY IS DECLARED AS DATA. `plan` classifies every step —
-//     `PropagateRows`, `MergeOrder`, `MaintainGroups`, or `FallBack` with a
-//     typed reason — before any evaluation happens, so a consumer can ASK
-//     whether a pipeline is incrementalisable and see why it is not. A step
-//     whose output for one row depends on rows the delta does not name (a
-//     window, a whole-relation set op, a join, a limit) is not approximated:
-//     the reference evaluator re-runs, and the footprint records that it did.
+//     `PropagateRows`, `MergeOrder`, `RecomputeFrame`, `FilterByRelation`,
+//     `MaintainGroups`, or `FallBack` with a typed reason — before any
+//     evaluation happens, so a consumer can ASK whether a pipeline is
+//     incrementalisable and see why it is not. A step whose output for one row
+//     depends on rows the delta does not name and cannot recover (an unbounded
+//     window frame, a whole-relation set op, a combining join, a limit) is not
+//     approximated: the reference evaluator re-runs, and the footprint records
+//     that it did.
 //   * NEVER A WRONG ANSWER, ONLY A LARGER ONE. Every condition the incremental
 //     path cannot honour — a schema that moved, an env that changed, a
 //     pipeline that changed, a delta that says `FullRefresh`, an identity
@@ -40,12 +42,29 @@ namespace Fuaran.Core
 //  cheaper answer — an instrument that reads backwards is worse than none, and
 //  every measurement of this seam is taken through it.
 //
-//  A `Sort` is the one admitted step that is not row-local (Phase 115). It
+//  A `Sort` is the first admitted step that is not row-local (Phase 115). It
 //  computes nothing and moves everything: the delta names rows whose POSITION
 //  may have changed, so the new order is the previous order with those rows
 //  lifted out and merged back in under the reference's own comparator. The
 //  saving it earns is not in the sorting — it is that the steps BEFORE the sort
 //  stop re-evaluating every row, which is what a declined pipeline costs today.
+//
+//  Phase 120 admitted two more on the same argument, and the argument is worth
+//  stating once for all three. NONE of them evaluates an expression, so none of
+//  them costs anything on this seam's instrument in either path — what the
+//  admission buys, every time, is that the steps BEFORE them stop re-evaluating
+//  every row. A BOUNDED-FRAME `Window` (`lag` / `lead` / the rolling pair)
+//  appends a column computed from a fixed neighbourhood of each row in its
+//  partition's order, emitting the rows it was handed one for one; it is
+//  recomputed over the walked frame through the reference's own window step,
+//  because the frame of a row the delta did NOT name moves when its neighbour
+//  moves. An unbounded frame reads the whole partition and stays declined, by
+//  type, naming the function. A FILTERING `Join` (`semi` / `anti`) keeps or
+//  drops each row on whether it matches a joined relation and emits the row it
+//  kept unchanged — a `Filter` whose predicate reads a relation — so its
+//  verdict is cached per row exactly as a filter's cell is, and reused only
+//  while the relation's key index has not moved. A combining join fans a row
+//  out across its matches and stays declined, by type, naming the kind.
 //
 //  Three order-sensitivities are handled explicitly rather than assumed away,
 //  because all three are silent when got wrong. A `Derive`d column's TYPE is
@@ -94,6 +113,20 @@ type FallBackReason =
     /// The identity witness could not key the source, or the delta's scheme is not the witness's —
     /// carries the delta layer's own defect.
     | RowIdentityUnusable of defect: DeltaDefect
+    /// Phase 120 — a `Window` whose frame is NOT bounded: its output for a row is a function of the
+    /// whole partition rather than of a fixed neighbourhood of it, so no row-local rule reaches it.
+    /// The ranking family and `NTile` read a row's position among all of its partition's rows (and
+    /// `NTile` its size); the cumulative aggregates read every preceding row's value. Names the
+    /// window function, because "window" alone does not say which frame declined — the bounded ones
+    /// (`lag` / `lead` / the rolling pair) are admitted.
+    | WindowFrameUnbounded of fn: string
+    /// Phase 120 — a `Join` whose output rows are not its LEFT rows. A combining join (`inner` /
+    /// `left`) fans one left row out across every right row it matches and appends the right
+    /// schema, so one source row no longer corresponds to one output row; the right-outer kinds
+    /// (`right` / `outer`) additionally emit a row for each right row NO left row matched, which is
+    /// a function of the whole left relation. Names the kind, because the filtering joins (`semi` /
+    /// `anti`) — which emit each left row at most once, unchanged — are admitted.
+    | JoinNotRowPreserving of kind: string
 
 /// How ONE pipeline step responds to a delta — the per-node incrementality, declared as data.
 type StepIncrementality =
@@ -113,6 +146,38 @@ type StepIncrementality =
     /// A sort is therefore not row-local — `PropagateRows` would be a wrong answer to "does this
     /// step's output for a row depend only on that row" — and not a fall-back either.
     | MergeOrder of by: (string * SortDir) list
+    /// Phase 120 — the step APPENDS a column whose value for a row is computed from a BOUNDED frame
+    /// around that row in its partition's order (`Lag` / `Lead` / the rolling pair). It emits the
+    /// rows it was handed, in the order it was handed them, one for one — so a delta propagates
+    /// through it exactly as it does through a `Sort`, and every step admitted after it reads what
+    /// the reference would have handed it. Names the partition and ordering keys, so a consumer can
+    /// see what the frame is scoped by rather than infer it.
+    ///
+    /// The appended column is recomputed over the walked frame through the reference's own
+    /// `DataFrame.windowStep`; it is not read from a cache. That is not a shortcut but the honest
+    /// accounting: a `Window` evaluates no expression, so it costs nothing on this seam's
+    /// instrument in EITHER path (`DataFrame.evalPipelineWithInEnvCounted` charges only `Filter` and
+    /// `Derive`), and knowing which rows a delta DISPLACED would mean recomputing the partitions and
+    /// their orders anyway. What the admission buys is the same thing `MergeOrder` buys: the steps
+    /// BEFORE it stop re-evaluating every row.
+    ///
+    /// An UNBOUNDED frame is not admitted here — it is `FallBack (WindowFrameUnbounded fn)`. A
+    /// bounded frame is the class a later phase can restrict to the rows a delta names or displaces;
+    /// a partition-global one never can, and declaring the two alike would say the seam knows
+    /// something about a cumulative aggregate that it does not.
+    | RecomputeFrame of partitionBy: string list * orderBy: (string * SortDir) list
+    /// Phase 120 — the step keeps or drops each row on whether it matches a JOINED RELATION, and
+    /// emits the row it kept unchanged: a filtering join (`Semi` / `Anti`). Its output for a row is
+    /// that row's own cells; what it decides is the row's SURVIVAL, and that decision is a function
+    /// of the row and of the joined relation alone — so a delta propagates through it exactly as it
+    /// does through a `Filter`, and the verdict cached for a row the delta does not name is reusable
+    /// whenever the joined relation's key index has not moved. Names the kind and the key pairs, so
+    /// a consumer can see what is matched rather than infer it.
+    ///
+    /// `PropagateRows` would be a wrong answer: the step reads a relation the delta says nothing
+    /// about, and reuse is conditioned on that relation as well as on the delta. `FallBack` would be
+    /// a wrong answer too: it answers a delta perfectly well.
+    | FilterByRelation of kind: string * on: (string * string) list
     /// Not incrementalisable — the reference evaluator answers this pipeline.
     | FallBack of reason: FallBackReason
 
@@ -210,6 +275,17 @@ type IncrementalEval =
         /// merge those ties the wrong way round. `Delta.diff` reports a pure reordering as quiet, so
         /// this cannot be inferred from the delta.
         SortOrders: Map<int, string list * string list>
+        /// Per admitted `Join` step (indexed by its ordinal among the pipeline's admitted joins),
+        /// the joined relation's KEY INDEX as of this evaluation: its rows' key cells, projected
+        /// through the step's `on` pairs, in the relation's own row order (Phase 120).
+        ///
+        /// It is what says a cached match verdict is still valid. A filtering join's verdict for a
+        /// row depends on the row AND on the relation, and the delta describes only the source — so
+        /// a verdict reused because "the delta did not name this row" would answer a changed
+        /// relation with the previous relation's answer. The key index is the whole of what the
+        /// verdict reads, so a relation that moved in some other column legitimately keeps the
+        /// reuse; one whose keys moved does not.
+        JoinKeys: Map<int, Cell list list>
         /// What producing `Output` cost.
         Footprint: RecomputeFootprint
     }
@@ -240,6 +316,36 @@ module Incremental =
         | Intersect _ -> "intersect"
         | Except _ -> "except"
 
+    /// The stable name of a window function — what `WindowFrameUnbounded` names (Phase 120). These
+    /// are the canonical wire tags, spelled here for the same reason `verbName` spells the verbs:
+    /// the codec that also knows them is compiled after this module, and a `FallBackReason` a
+    /// consumer prints must not depend on which of the two it happened to reach.
+    let windowFnName (fn: WindowFn) : string =
+        match fn with
+        | RowNumber -> "rowNumber"
+        | Rank -> "rank"
+        | Lag -> "lag"
+        | Lead -> "lead"
+        | CumulSum -> "cumulSum"
+        | RollingMean -> "rollingMean"
+        | DenseRank -> "denseRank"
+        | CompetitionRank -> "competitionRank"
+        | NTile _ -> "ntile"
+        | CumulMax -> "cumulMax"
+        | CumulMin -> "cumulMin"
+        | RollingSum -> "rollingSum"
+
+    /// The stable name of a join kind — what `JoinNotRowPreserving` and `FilterByRelation` name
+    /// (Phase 120). The canonical wire tags, on the same terms as `windowFnName`.
+    let joinKindName (how: JoinKind) : string =
+        match how with
+        | Inner -> "inner"
+        | Left -> "left"
+        | Right -> "right"
+        | Outer -> "outer"
+        | Semi -> "semi"
+        | Anti -> "anti"
+
     /// Classify one step. `isLast` matters only for the maintainable verbs: a `GroupBy` at the end
     /// of a pipeline has maintainable state, the same `GroupBy` in the middle does not, because
     /// what follows it would need a delta over the GROUP table and no such delta was supplied.
@@ -255,6 +361,27 @@ module Incremental =
         | Project _
         | Derive _ -> PropagateRows
         | Sort by -> MergeOrder by
+        // Phase 120 — a bounded frame is admitted at any position, on the same argument a `Sort`
+        // is: the step emits the rows it was handed, in the order it was handed them, so every
+        // step after it reads what the reference would have handed it. An unbounded frame declines
+        // by type, naming the function rather than the verb.
+        | Window spec ->
+            if DataFrame.windowFrameBounded spec.Fn then
+                RecomputeFrame(spec.PartitionBy, spec.OrderBy)
+            else
+                FallBack(WindowFrameUnbounded(windowFnName spec.Fn))
+        // Phase 120 — the FILTERING joins emit each left row at most once and unchanged, which is a
+        // `Filter` whose predicate reads a relation. The combining ones do not: they fan a left row
+        // out across its matches and append the right schema, and the right-outer pair emits rows
+        // no left row produced at all.
+        | Join(_, on, how) ->
+            match how with
+            | Semi
+            | Anti -> FilterByRelation(joinKindName how, on)
+            | Inner
+            | Left
+            | Right
+            | Outer -> FallBack(JoinNotRowPreserving(joinKindName how))
         | GroupBy(keys, aggs) ->
             if isLast then
                 MaintainGroups(keys, aggs |> List.map (fun a -> a.Name))
@@ -324,6 +451,11 @@ module Incremental =
         | EnvChanged -> "the evaluation env changed"
         | PipelineChanged -> "the pipeline changed"
         | RowIdentityUnusable d -> "the identity witness is unusable: " + Delta.defectString d
+        | WindowFrameUnbounded fn ->
+            "the window function '"
+            + fn
+            + "' reads the whole partition, not a bounded frame"
+        | JoinNotRowPreserving kind -> "a '" + kind + "' join's output rows are not its left rows"
 
     /// A stable human string for a footprint — counts only, so two hosts print the same line.
     let footprintString (f: RecomputeFootprint) : string =
@@ -377,35 +509,44 @@ module Incremental =
 
     // ---- the row-local walk ----
 
-    /// The four propagating verbs, as the closed shape the walk consumes. Splitting the pipeline
-    /// into this form (rather than re-matching `Transform` inside the walk) is what removes the
-    /// "unreachable case" a catch-all would otherwise need: a step that is not one of these four
+    /// The propagating verbs, as the closed shape the walk consumes. Splitting the pipeline into
+    /// this form (rather than re-matching `Transform` inside the walk) is what removes the
+    /// "unreachable case" a catch-all would otherwise need: a step that is not one of these
     /// never reaches the walk, by construction.
     ///
-    /// `WSort` carries its ORDINAL among the pipeline's sorts, which is what keys its cached order
-    /// in the state. An ordinal is enough because `refresh` refuses a pipeline that is not the one
-    /// the state was built for (`PipelineChanged`), so the numbering a state was written under is
-    /// the numbering it is read under.
+    /// `WSort` and `WJoin` carry their ORDINAL among the pipeline's sorts / admitted joins, which is
+    /// what keys the cached order and the cached key index in the state. An ordinal is enough
+    /// because `refresh` refuses a pipeline that is not the one the state was built for
+    /// (`PipelineChanged`), so the numbering a state was written under is the numbering it is read
+    /// under.
+    ///
+    /// `WJoin` carries `keepMatched` rather than the `JoinKind` itself: `Semi` and `Anti` differ in
+    /// exactly that bit, and the walk should not be able to be handed a kind it cannot answer.
     type private PrefixStep =
         | WFilter of ColExpr
         | WProject of (string * string) list
         | WDerive of string * ColExpr
         | WSort of int * (string * SortDir) list
+        | WWindow of WindowSpec
+        | WJoin of int * DataSource * (string * string) list * bool
 
     /// Split a pipeline into its propagating prefix and an optional final `GroupBy`. `None` when the
     /// pipeline is not of the incremental shape — exactly when `plan` says `ReferenceOnly`.
     let private split (pipeline: Transform list) : (PrefixStep list * (string list * Agg list) option) option =
-        let rec go acc sorts =
+        let rec go acc sorts joins =
             function
             | [] -> Some(List.rev acc, None)
             | [ GroupBy(keys, aggs) ] -> Some(List.rev acc, Some(keys, aggs))
-            | Filter p :: rest -> go (WFilter p :: acc) sorts rest
-            | Project pairs :: rest -> go (WProject pairs :: acc) sorts rest
-            | Derive(n, e) :: rest -> go (WDerive(n, e) :: acc) sorts rest
-            | Sort by :: rest -> go (WSort(sorts, by) :: acc) (sorts + 1) rest
+            | Filter p :: rest -> go (WFilter p :: acc) sorts joins rest
+            | Project pairs :: rest -> go (WProject pairs :: acc) sorts joins rest
+            | Derive(n, e) :: rest -> go (WDerive(n, e) :: acc) sorts joins rest
+            | Sort by :: rest -> go (WSort(sorts, by) :: acc) (sorts + 1) joins rest
+            | Window spec :: rest when DataFrame.windowFrameBounded spec.Fn -> go (WWindow spec :: acc) sorts joins rest
+            | Join(src, on, Semi) :: rest -> go (WJoin(joins, src, on, true) :: acc) sorts (joins + 1) rest
+            | Join(src, on, Anti) :: rest -> go (WJoin(joins, src, on, false) :: acc) sorts (joins + 1) rest
             | _ -> None
 
-        go [] 0 pipeline
+        go [] 0 0 pipeline
 
     /// One source row in flight: its identity token, whether the delta named it, whether it is still
     /// alive after the filters so far, its current cells, the cells cached for it by the previous
@@ -460,24 +601,37 @@ module Incremental =
 
         go [] xs ys
 
+    /// The per-step state the walk reads from the prior evaluation and writes for the next one,
+    /// carried as one value rather than as a parameter per admitted step. It is the shape of every
+    /// state-keeping step's cache: keyed by that step's ordinal in the pipeline, valid only while
+    /// the pipeline is the one the state was built for.
+    type private WalkCaches =
+        { SortOrders: Map<int, string list * string list>
+          JoinKeys: Map<int, Cell list list> }
+
+    let private noCaches: WalkCaches =
+        { SortOrders = Map.empty
+          JoinKeys = Map.empty }
+
     /// Walk the propagating prefix, threading the schema and the rows. Dead rows are carried (so
     /// their cached prefix survives for the next refresh) but never evaluated and never counted —
     /// exactly as in the reference evaluator, which has already dropped them from its frame.
     ///
-    /// `priorSort` is the state's cached per-sort orders and is read-only; `sortAcc` accumulates the
-    /// ones this walk produced, which is what the next refresh will read.
+    /// `prior` is the state's caches and is read-only; `caches` accumulates the ones this walk
+    /// produced, which is what the next refresh will read.
     let rec private walk
+        (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
-        (priorSort: Map<int, string list * string list>)
+        (prior: WalkCaches)
         (cols: Schema)
         (works: Work list)
         (evalIdx: int)
         (evaluated: int)
-        (sortAcc: Map<int, string list * string list>)
+        (caches: WalkCaches)
         (steps: PrefixStep list)
-        : Result<Schema * Work list * int * Map<int, string list * string list>, EvalError> =
+        : Result<Schema * Work list * int * WalkCaches, EvalError> =
         match steps with
-        | [] -> Ok(cols, works, evaluated, sortAcc)
+        | [] -> Ok(cols, works, evaluated, caches)
         | WSort(sortIdx, by) :: rest ->
             // The rows the sort orders, in the order they arrived. Dead rows are not in the frame
             // at all — the reference dropped them at the filter that killed them — so they are
@@ -511,7 +665,7 @@ module Incremental =
             // pure reordering as quiet, so nothing in the delta would have said so. This is the
             // ordered-member condition the maintained groups already carry, one verb along.
             let reusable =
-                match Map.tryFind sortIdx priorSort with
+                match Map.tryFind sortIdx prior.SortOrders with
                 | None -> None
                 | Some(prevArrival, prevOrder) ->
                     let keep = List.filter (fun t -> Set.contains t unnamed)
@@ -534,7 +688,91 @@ module Incremental =
 
             let works2 = (ordered |> List.map (fun t -> Map.find t byToken)) @ deadWorks
 
-            walk env priorSort cols works2 evalIdx evaluated (Map.add sortIdx (arrival, ordered) sortAcc) rest
+            walk
+                resolve
+                env
+                prior
+                cols
+                works2
+                evalIdx
+                evaluated
+                { caches with
+                    SortOrders = Map.add sortIdx (arrival, ordered) caches.SortOrders }
+                rest
+        // Phase 120 — a bounded-frame `Window`. The column is recomputed over the rows alive AT
+        // THIS STEP, in the order they are in, through the reference's own window step: the walked
+        // frame IS the reference's frame here (that is the walk's invariant, and the same one the
+        // maintained `GroupBy` and the type-inferring `Derive` read), so the appended column is the
+        // reference's column by construction rather than by a second implementation agreeing with
+        // it. `evalIdx` does not advance and `evaluated` does not move: a window evaluates no
+        // expression, so it caches no cell and the reference's own counter charges it nothing.
+        | WWindow spec :: rest ->
+            let aliveWorks = works |> List.filter (fun w -> w.Alive)
+            let deadWorks = works |> List.filter (fun w -> not w.Alive)
+
+            DataFrame.windowStep cols (aliveWorks |> List.map (fun w -> w.Cells)) spec
+            |> Result.bind (fun (cols2, rows2) ->
+                let ws =
+                    (List.map2 (fun (w: Work) row -> { w with Cells = row }) aliveWorks rows2)
+                    @ deadWorks
+
+                walk resolve env prior cols2 ws evalIdx evaluated caches rest)
+        // Phase 120 — a filtering join (`Semi` / `Anti`): a `Filter` whose predicate reads a
+        // relation instead of an expression. The verdict is cached in the same per-row cell list a
+        // `Filter`'s is, so `evalIdx` advances; `evaluated` does not move, because the reference's
+        // own counter charges a join nothing.
+        //
+        // Reuse is conditioned on the RELATION as well as on the delta. The delta describes the
+        // source only, so a row it did not name can still have a different verdict — the joined
+        // relation may have gained or lost the key it matched on. When the key index has moved,
+        // every row's verdict is recomputed at this step and the prefix's reuse is untouched.
+        | WJoin(joinIdx, src, on, keepMatched) :: rest ->
+            DataFrame.evalSource resolve src
+            |> Result.bind (fun rightTable ->
+                DataFrame.joinKeyIndices cols rightTable.Schema on
+                |> Result.bind (fun (li, ri) ->
+                    let rightKeys =
+                        rowsOf rightTable |> List.map (fun r -> ri |> List.map (fun j -> List.item j r))
+
+                    let relationMoved = Map.tryFind joinIdx prior.JoinKeys <> Some rightKeys
+
+                    let verdictOf (w: Work) =
+                        let cached =
+                            if w.Affected || relationMoved then
+                                None
+                            else
+                                List.tryItem evalIdx w.Cached
+
+                        match cached with
+                        | Some c -> c
+                        | None ->
+                            let leftKeys = li |> List.map (fun i -> List.item i w.Cells)
+                            let matched = rightKeys |> List.exists (DataFrame.joinKeysMatch leftKeys)
+                            Bool(matched = keepMatched)
+
+                    let ws =
+                        works
+                        |> List.map (fun w ->
+                            if not w.Alive then
+                                w
+                            else
+                                let v = verdictOf w
+
+                                { w with
+                                    Alive = (v = Bool true)
+                                    Fresh = v :: w.Fresh })
+
+                    walk
+                        resolve
+                        env
+                        prior
+                        cols
+                        ws
+                        (evalIdx + 1)
+                        evaluated
+                        { caches with
+                            JoinKeys = Map.add joinIdx rightKeys caches.JoinKeys }
+                        rest))
         | WFilter pred :: rest ->
             let rec go acc n =
                 function
@@ -554,7 +792,7 @@ module Incremental =
                             go (w' :: acc) (if didWork then n + 1 else n) tail
 
             go [] evaluated works
-            |> Result.bind (fun (ws, n) -> walk env priorSort cols ws (evalIdx + 1) n sortAcc rest)
+            |> Result.bind (fun (ws, n) -> walk resolve env prior cols ws (evalIdx + 1) n caches rest)
         | WProject pairs :: rest ->
             let resolveOne (src, out) =
                 match colIndex cols src with
@@ -574,7 +812,7 @@ module Incremental =
                         else
                             w)
 
-                walk env priorSort cols2 ws evalIdx evaluated sortAcc rest)
+                walk resolve env prior cols2 ws evalIdx evaluated caches rest)
         | WDerive(name, expr) :: rest ->
             let rec go acc n =
                 function
@@ -624,7 +862,7 @@ module Incremental =
                              else
                                  w))
 
-                walk env priorSort cols2 ws2 (evalIdx + 1) n sortAcc rest)
+                walk resolve env prior cols2 ws2 (evalIdx + 1) n caches rest)
 
     // ---- the maintained-group step ----
 
@@ -782,6 +1020,32 @@ module Incremental =
         |> List.map Delta.refToken
         |> Set.ofList
 
+    /// Does this pipeline read a relation from OUTSIDE its own definition — a `Ref` source, which
+    /// `resolve` answers and which the state therefore cannot pin (Phase 120)?
+    ///
+    /// It conditions the wholesale reuse of a prior result. That reuse asks whether anything the
+    /// answer depends on has moved, and it can only ask about the three things the state carries:
+    /// the pipeline, the env, and the source. An `Embedded` relation is part of the pipeline, so a
+    /// changed one is already `PipelineChanged`. A `Ref` one is whatever `resolve` returns at the
+    /// moment it is called, and neither a quiet delta nor a byte-identical source says it returned
+    /// the same table twice — so a pipeline naming one takes the ordinary path, where the relation
+    /// is resolved and compared. That is a correctness condition, not a cost one: handing back the
+    /// prior result there answers the previous relation's question with the previous relation's
+    /// answer.
+    let private readsExternalSource (pipeline: Transform list) : bool =
+        let isRef =
+            function
+            | Ref _ -> true
+            | Embedded _ -> false
+
+        pipeline
+        |> List.exists (function
+            | Join(src, _, _)
+            | Union src
+            | Intersect src
+            | Except src -> isRef src
+            | _ -> false)
+
     // ---- evaluation ----
 
     /// Run the incremental path over `source`, re-evaluating the rows in `named` (`None` = all).
@@ -789,6 +1053,7 @@ module Incremental =
     /// identity tokens, already computed by the caller (which had to compute them to know the
     /// witness could key the source at all).
     let private runIncremental
+        (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (scheme: string)
         (pipeline: Transform list)
@@ -819,11 +1084,15 @@ module Incremental =
                 tokens
                 (rowsOf source)
 
-        let priorSort =
-            prior |> Option.map (fun s -> s.SortOrders) |> Option.defaultValue Map.empty
+        let priorCaches =
+            match prior with
+            | Some s ->
+                { SortOrders = s.SortOrders
+                  JoinKeys = s.JoinKeys }
+            | None -> noCaches
 
-        walk env priorSort source.Schema works 0 0 Map.empty prefix
-        |> Result.bind (fun (cols, ws, evaluated, sortOrders) ->
+        walk resolve env priorCaches source.Schema works 0 0 noCaches prefix
+        |> Result.bind (fun (cols, ws, evaluated, caches) ->
             let rowCells =
                 (Map.empty, ws) ||> List.fold (fun m w -> Map.add w.Token (List.rev w.Fresh) m)
 
@@ -843,7 +1112,8 @@ module Incremental =
                       RowGroup = Map.empty
                       GroupMembers = Map.empty
                       GroupAggs = Map.empty
-                      SortOrders = sortOrders
+                      SortOrders = caches.SortOrders
+                      JoinKeys = caches.JoinKeys
                       Footprint =
                         { SourceRows = List.length tokens
                           ResultRows = List.length aliveRows
@@ -870,7 +1140,8 @@ module Incremental =
                       RowGroup = g.RowGroup
                       GroupMembers = g.Members
                       GroupAggs = g.Aggs
-                      SortOrders = sortOrders
+                      SortOrders = caches.SortOrders
+                      JoinKeys = caches.JoinKeys
                       Footprint =
                         { SourceRows = List.length tokens
                           ResultRows = List.length g.Rows
@@ -905,6 +1176,7 @@ module Incremental =
               GroupMembers = Map.empty
               GroupAggs = Map.empty
               SortOrders = Map.empty
+              JoinKeys = Map.empty
               Footprint =
                 { SourceRows = Table.rowCount source
                   ResultRows = Table.rowCount output
@@ -944,7 +1216,8 @@ module Incremental =
             | Error defect ->
                 runReference resolve env idw.Scheme pipeline p source (fun n ->
                     FullRecompute(n, RowIdentityUnusable defect))
-            | Ok tokens -> runIncremental env idw.Scheme pipeline p prefix final source tokens prior named recomputeOf
+            | Ok tokens ->
+                runIncremental resolve env idw.Scheme pipeline p prefix final source tokens prior named recomputeOf
 
     /// Evaluate `pipeline` over `source` from scratch, building the state a later `refresh`
     /// restricts. Equal to `DataFrame.evalPipelineWithInEnv resolve env pipeline source` — priming
@@ -1028,7 +1301,19 @@ module Incremental =
             // This reuse is sound for EVERY strategy, declined pipelines included — a verb is
             // declined because it cannot answer a change, not because it must be re-run when
             // nothing changed. It is reached before the strategy dispatch for exactly that reason.
-            if Delta.isQuiet delta && source = state.Source then
+            //
+            // The third condition is Phase 120's. "Nothing changed" is a claim about everything the
+            // answer depends on, and a pipeline naming a `Ref` relation depends on what `resolve`
+            // returns — which is not the pipeline, not the env and not the source, so none of the
+            // state's comparisons can see it move. Such a pipeline takes the ordinary path instead,
+            // where the relation is resolved and its key index compared against the cached one; a
+            // relation that did not move still costs nothing there, because a join evaluates no
+            // expression.
+            if
+                Delta.isQuiet delta
+                && source = state.Source
+                && not (readsExternalSource pipeline)
+            then
                 Ok
                     { state with
                         Footprint =
