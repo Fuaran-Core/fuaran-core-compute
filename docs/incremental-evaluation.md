@@ -70,12 +70,28 @@ costs today, and can sit beside an adopted one.
 | `ReusedPrior` | nothing changed and the source did not move; the prior result stands |
 | `RowsRecomputed n` | only the delta's rows were re-evaluated |
 | `GroupsRecomputed (n, g)` | `n` rows re-evaluated, `g` groups' aggregates recomputed |
-| `FullRecompute reason` | the pipeline was evaluated in full; `reason` says why |
+| `FullRecompute (n, reason)` | the pipeline was evaluated in full, `n` row expressions evaluated; `reason` says why |
 
 `Incremental.rowsEvaluated` and `Incremental.footprintString` project it. The counts carry no clock,
 so they are deterministic and identical on every host — which is what makes them safe to assert on
 in a consumer's own tests, and what lets a regression ("this refresh started recomputing
 everything") be a failing assertion rather than a stopwatch reading.
+
+**Every `n` above is the same unit: one evaluation of one step's expression against one row.** A row
+that passes three evaluating steps counts three times; a step that evaluates no expression — a
+`Sort`, a `GroupBy`, a `Project` — counts none; and `SourceRows` is a separate field that never
+stands in for the count. That matters because the comparison a consumer actually wants to make is
+between a refresh and the full evaluation it replaced, and the two are only comparable on one scale:
+a full evaluation reported as its source row count would charge a three-step pipeline for a single
+pass, so a decline would read as *cheaper* than the baseline it fell back to.
+
+**A prime is always `Primed`, even for a pipeline the plan declines.** Priming evaluates everything
+whatever the plan says, so there is no fall-back to report; the decline and its reason attach to a
+**refresh**, where the fall-back actually happens. Ask `Incremental.plan` whether refreshes will be
+restricted — that is what it is for, and it answers before any evaluation. The one thing a prime's
+footprint does report is a defect `plan` cannot see: an identity witness that could not key the
+source arrives as `FullRecompute (n, RowIdentityUnusable …)`, because the footprint is its only
+channel.
 
 ## The one obligation
 

@@ -1625,6 +1625,44 @@ module DataFrame =
     let noResolve: string -> Result<Table, EvalError> =
         fun r -> Error(UnresolvedSource r)
 
+    /// The reference evaluator, parameterised (Phase 77), reporting alongside its answer how many
+    /// ROW EVALUATIONS AT STEPS producing that answer cost (Phase 117).
+    ///
+    /// The unit is one evaluation of one step's expression against one row — precisely what
+    /// `evalExprInRow` is one of. A `Filter` and a `Derive` evaluate their expression once per row
+    /// alive at that step, so each is charged the frame's row count where it stands; every other
+    /// verb evaluates no per-row expression and is charged none, which is why a `Sort` and a
+    /// `GroupBy` contribute nothing.
+    ///
+    /// It exists so that a full evaluation and a restricted one are measured on ONE scale. An
+    /// incremental evaluator counts the same unit — the row evaluations it did not avoid — so
+    /// projecting a full evaluation onto its SOURCE ROW COUNT instead made the two incomparable, and
+    /// made a pipeline with several evaluating steps read as if a full evaluation were the cheaper
+    /// answer. Deriving the count outside this driver would be a second semantics; it is counted
+    /// here, where the steps are actually taken.
+    let evalPipelineWithInEnvCounted
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (input: Table)
+        : Result<Table * int, EvalError> =
+        let costOf (f: Frame) (step: Transform) =
+            match step with
+            | Filter _
+            | Derive _ -> List.length f.Rows
+            | _ -> 0
+
+        let rec go f evaluated =
+            function
+            | [] -> Ok(ofFrame f, evaluated)
+            | step :: rest ->
+                let cost = costOf f step
+
+                evalStep resolve env f step
+                |> Result.bind (fun f' -> go f' (evaluated + cost) rest)
+
+        go (toFrame input) 0 pipeline
+
     /// The reference evaluator, parameterised (Phase 77): fold the pipeline over the input table
     /// threading a `Frame`, resolving `ColExpr.Param`s from `env` and any `Ref` source through
     /// `resolve`. Every other entry point delegates here — `evalPipelineWith` / `evalPipeline` pass
@@ -1635,12 +1673,7 @@ module DataFrame =
         (pipeline: Transform list)
         (input: Table)
         : Result<Table, EvalError> =
-        let rec go f =
-            function
-            | [] -> Ok(ofFrame f)
-            | step :: rest -> evalStep resolve env f step |> Result.bind (fun f' -> go f' rest)
-
-        go (toFrame input) pipeline
+        evalPipelineWithInEnvCounted resolve env pipeline input |> Result.map fst
 
     /// The reference evaluator over embedded sources only, resolving params from `env` (Phase 77).
     let evalPipelineInEnv

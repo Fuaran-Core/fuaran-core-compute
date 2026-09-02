@@ -203,10 +203,16 @@ let private recomputeOf (v: JVal) : Recompute =
     | "rowsRecomputed" -> RowsRecomputed(int_ (mem "rowsEvaluated" v))
     | "groupsRecomputed" -> GroupsRecomputed(int_ (mem "rowsEvaluated" v), int_ (mem "groupsRecomputed" v))
     | "fullRecompute" ->
+        // `rowsEvaluated` is required here, exactly as it is on every other counting kind
+        // (Phase 117). A full evaluation that recorded no count could only be compared with a
+        // restricted one by inventing a number for it, which is what reading it off `sourceRows`
+        // amounted to.
+        let n = int_ (mem "rowsEvaluated" v)
+
         match str (mem "reason" v) with
-        | "stepNotRowLocal" -> FullRecompute(StepNotRowLocal(str (mem "verb" v)))
-        | "aggregateStepNotLast" -> FullRecompute(AggregateStepNotLast(str (mem "verb" v)))
-        | "ordinalAddressing" -> FullRecompute OrdinalAddressing
+        | "stepNotRowLocal" -> FullRecompute(n, StepNotRowLocal(str (mem "verb" v)))
+        | "aggregateStepNotLast" -> FullRecompute(n, AggregateStepNotLast(str (mem "verb" v)))
+        | "ordinalAddressing" -> FullRecompute(n, OrdinalAddressing)
         | other -> fail ("unmodelled decline reason '" + other + "'")
     | other -> fail ("unmodelled recompute kind '" + other + "'")
 
@@ -385,21 +391,29 @@ let tests =
                   "and so does a full reference evaluation over the changed source"
 
               // (2) The recorded footprint IS the declined one — asserted rather than described, so
-              // the "before" side of the saving is the corpus's number and not this file's.
+              // the "before" side of the saving is the corpus's number and not this file's. Its
+              // recorded count is the declining evaluator's own row evaluations at steps (the
+              // filter, over six rows), on the same scale this repository now reports.
               Expect.equal
                   vec.Refresh.Recompute
-                  (FullRecompute(StepNotRowLocal "sort"))
-                  "the vendored vector records a decline naming the sort"
+                  (FullRecompute(6, StepNotRowLocal "sort"))
+                  "the vendored vector records a decline naming the sort, with what it evaluated"
 
               Expect.equal
                   (Incremental.rowsEvaluated vec.Refresh)
                   6
-                  "and a declined refresh is charged every source row"
+                  "and a declined refresh re-evaluates the filter over every row"
 
               // (3) The class this repository now produces, and the measured saving: one filter
               // predicate re-evaluated where six were before. The sort itself contributes nothing
               // to the count — it evaluates no expression, exactly as a groupBy does not.
               Expect.equal (Incremental.plan vec.Pipeline).Strategy RowLocal "the pipeline is no longer declined"
+
+              // The PRIME and the FULL sides of the recorded triple are reproduced exactly: a
+              // declining evaluator and this one prime identically, because a prime avoids nothing
+              // whatever the plan says. Only the refresh moves, and that difference is the saving.
+              Expect.equal prime vec.Prime "the recorded prime footprint"
+              Expect.equal full vec.Full "the recorded full-evaluation footprint"
 
               Expect.equal prime.Recompute (Primed 6) "priming evaluates the filter over every row"
               Expect.equal full.Recompute (Primed 6) "so does a full evaluation over the changed source"

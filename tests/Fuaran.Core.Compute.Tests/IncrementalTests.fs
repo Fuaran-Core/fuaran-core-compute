@@ -324,10 +324,40 @@ let tests =
               let after = table (baseRows @ [ "r5", Int 0, Int 2 ])
               let next, _ = step pipeline baseTable after
 
+              // A `Limit` evaluates no per-row expression, so a full evaluation of this pipeline is
+              // charged nothing at all — which is the point of counting row evaluations at steps
+              // rather than source rows. Six source rows, zero row evaluations.
               Expect.equal
                   next.Footprint.Recompute
-                  (FullRecompute(StepNotRowLocal "limit"))
-                  "the fall-back names the verb"
+                  (FullRecompute(0, StepNotRowLocal "limit"))
+                  "the fall-back names the verb, and carries what the reference actually evaluated"
+
+              Expect.equal next.Footprint.SourceRows 6 "`SourceRows` stays its own field"
+              expectMatchesReference pipeline after next
+
+          testCase "a declined pipeline's PRIME is `Primed`, not the decline"
+          <| fun _ ->
+              // A prime avoids nothing whatever the plan says, so there is no fall-back to report —
+              // the decline attaches to the REFRESH, where it actually happens. The plan is what a
+              // consumer asks beforehand, and it still says the pipeline is declined.
+              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Limit(2, 0) ]
+              let primed = ok (Incremental.primeOn idw pipeline baseTable)
+
+              Expect.equal
+                  (Incremental.plan pipeline).Strategy
+                  (ReferenceOnly(StepNotRowLocal "limit"))
+                  "the pipeline is declined"
+
+              Expect.equal primed.Footprint.Recompute (Primed 5) "and its prime evaluated the filter over every row"
+
+              let after = table (baseRows @ [ "r5", Int 8, Int 2 ])
+              let delta = ok (Delta.diff idw baseTable after)
+              let next = ok (Incremental.refreshOn idw pipeline primed delta after)
+
+              Expect.equal
+                  next.Footprint.Recompute
+                  (FullRecompute(6, StepNotRowLocal "limit"))
+                  "the refresh is where the decline is reported"
 
               expectMatchesReference pipeline after next
 
@@ -346,7 +376,7 @@ let tests =
               let after = table (baseRows @ [ "r5", Int 8, Int 2 ])
               let state = ok (Incremental.primeOn idw pipeline baseTable)
               let next = ok (Incremental.refreshOn idw pipeline state FullRefresh after)
-              Expect.equal next.Footprint.Recompute (FullRecompute DeltaIsFullRefresh) "the reason is the delta"
+              Expect.equal next.Footprint.Recompute (FullRecompute(6, DeltaIsFullRefresh)) "the reason is the delta"
               expectMatchesReference pipeline after next
 
           testCase "an ordinal-addressed delta falls back rather than keying a cache by position"
@@ -356,7 +386,7 @@ let tests =
               let state = ok (Incremental.primeOn idw pipeline baseTable)
               let delta = Delta.diffByOrdinal baseTable after
               let next = ok (Incremental.refreshOn idw pipeline state delta after)
-              Expect.equal next.Footprint.Recompute (FullRecompute OrdinalAddressing) "the reason is the addressing"
+              Expect.equal next.Footprint.Recompute (FullRecompute(6, OrdinalAddressing)) "the reason is the addressing"
               expectMatchesReference pipeline after next
 
           testCase "a schema change falls back as a schema change, not as a row change"
@@ -373,7 +403,7 @@ let tests =
               let delta = ok (Delta.diff idw baseTable wide)
               Expect.equal delta FullRefresh "an identity diff across schemas is a full refresh"
               let next = ok (Incremental.refreshOn idw pipeline state delta wide)
-              Expect.equal next.Footprint.Recompute (FullRecompute SourceSchemaMoved) "the schema is the reason"
+              Expect.equal next.Footprint.Recompute (FullRecompute(5, SourceSchemaMoved)) "the schema is the reason"
               expectMatchesReference pipeline wide next
 
           testCase "a changed env falls back — a cached cell is no longer that row's value"
@@ -388,7 +418,7 @@ let tests =
                       Incremental.refresh DataFrame.noResolve env1 idw pipeline state (Delta.empty idw.Scheme) baseTable
                   )
 
-              Expect.equal next.Footprint.Recompute (FullRecompute EnvChanged) "the env is the reason"
+              Expect.equal next.Footprint.Recompute (FullRecompute(5, EnvChanged)) "the env is the reason"
 
               Expect.equal
                   (Ok next.Output)
@@ -404,7 +434,7 @@ let tests =
               let next =
                   ok (Incremental.refreshOn idw p1 state (Delta.empty idw.Scheme) baseTable)
 
-              Expect.equal next.Footprint.Recompute (FullRecompute PipelineChanged) "the pipeline is the reason"
+              Expect.equal next.Footprint.Recompute (FullRecompute(5, PipelineChanged)) "the pipeline is the reason"
               expectMatchesReference p1 baseTable next
 
           testCase "a column-invalidation delta re-evaluates every row (it names none)"
@@ -440,7 +470,7 @@ let tests =
 
               Expect.equal
                   state.Footprint.Recompute
-                  (FullRecompute(RowIdentityUnusable(MissingIdentity(idw.Scheme, 0))))
+                  (FullRecompute(2, RowIdentityUnusable(MissingIdentity(idw.Scheme, 0))))
                   "the defect is carried, not swallowed"
 
               Expect.equal (Ok state.Output) (DataFrame.evalPipeline pipeline nullKeyed) "and the answer is correct"
@@ -461,12 +491,21 @@ let tests =
 
               Expect.equal (Incremental.rowsEvaluated f) 1 "rows evaluated"
 
+              // One scale (Phase 117): a full evaluation reports what it evaluated, not the source
+              // row count. Here the two are deliberately DIFFERENT — five source rows, eleven row
+              // evaluations, because the pipeline had more than one evaluating step — which is the
+              // whole distinction the old projection could not express.
+              let full =
+                  { f with
+                      Recompute = FullRecompute(11, DeltaIsFullRefresh) }
+
+              Expect.equal (Incremental.rowsEvaluated full) 11 "a full evaluation reports its own count"
+              Expect.equal full.SourceRows 5 "and `SourceRows` stays its own field"
+
               Expect.equal
-                  (Incremental.rowsEvaluated
-                      { f with
-                          Recompute = FullRecompute DeltaIsFullRefresh })
-                  5
-                  "a full evaluation touches every source row"
+                  (Incremental.footprintString full)
+                  "5 source rows -> 3 result rows: full evaluation, 11 rows evaluated (the delta is a full refresh)"
+                  "the recorded line carries the count too"
 
           testCase "a repeated refresh keeps restricting (the state advances, it does not decay)"
           <| fun _ ->

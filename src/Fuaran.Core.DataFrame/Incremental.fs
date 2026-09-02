@@ -31,6 +31,15 @@ namespace Fuaran.Core
 //     the reason recorded. Degrading is always available and always correct,
 //     which is what makes the seam safe to adopt one pipeline at a time.
 //
+//  THE FOOTPRINT IS ONE SCALE (Phase 117). `rowsEvaluated` counts row
+//  evaluations AT STEPS in every case, a full evaluation included: the
+//  reference evaluator reports its own count rather than being projected onto
+//  the source row count, so a decline and a restricted refresh are two readings
+//  of one instrument. Projecting the full case onto `SourceRows` charged a
+//  multi-step pipeline for a single pass, which made the baseline read as the
+//  cheaper answer — an instrument that reads backwards is worse than none, and
+//  every measurement of this seam is taken through it.
+//
 //  A `Sort` is the one admitted step that is not row-local (Phase 115). It
 //  computes nothing and moves everything: the delta names rows whose POSITION
 //  may have changed, so the new order is the previous order with those rows
@@ -126,8 +135,18 @@ type IncrementalPlan =
       Strategy: IncrementalStrategy }
 
 /// What one evaluation actually recomputed — the honest account of the work done.
+///
+/// Every case that did work carries `rowsEvaluated` in the SAME unit: one evaluation of one step's
+/// expression against one row (Phase 117). A row that passes through three evaluating steps is
+/// counted three times, a step that evaluates no expression — a `Sort`, a `GroupBy`, a `Project` —
+/// contributes none, and a full evaluation is counted by the reference evaluator itself rather than
+/// projected onto the source row count. One scale is what makes a decline and a restricted refresh
+/// comparable at all.
 type Recompute =
-    /// The first evaluation: there was no prior state, so every row was evaluated.
+    /// The first evaluation: there was no prior state, so every row was evaluated. A pipeline the
+    /// plan DECLINES primes to this too — a prime avoids nothing whatever the plan says, so there is
+    /// no fall-back to report; the decline and its reason attach to a REFRESH, where the fall-back
+    /// actually happens, and `Incremental.plan` is what a consumer asks beforehand.
     | Primed of rowsEvaluated: int
     /// The delta asserted that nothing changed and the source was unchanged; the prior result was
     /// returned as it stood.
@@ -136,8 +155,9 @@ type Recompute =
     | RowsRecomputed of rowsEvaluated: int
     /// Only the affected groups' aggregates were recomputed, over the re-evaluated rows.
     | GroupsRecomputed of rowsEvaluated: int * groupsRecomputed: int
-    /// The pipeline was evaluated in full, for the named reason.
-    | FullRecompute of reason: FallBackReason
+    /// The pipeline was evaluated in full, for the named reason — carrying what the reference
+    /// evaluator itself evaluated, on the same scale as every other case.
+    | FullRecompute of rowsEvaluated: int * reason: FallBackReason
 
 /// The measured cost of one evaluation — the instrument a consumer records to show the incremental
 /// path is doing less work than a full one, and the one the conformance family records beside each
@@ -280,15 +300,18 @@ module Incremental =
 
     // ---- footprint projections ----
 
-    /// The rows whose expressions were evaluated. A full evaluation touches every source row, which
-    /// is the honest reading of that outcome even though the evaluator does not itself count.
+    /// The row evaluations at steps this evaluation performed — ONE scale across every case
+    /// (Phase 117), so a decline and a restricted refresh are comparable and `SourceRows` stays its
+    /// own field. A full evaluation reports the reference evaluator's own count, not the source row
+    /// count: projecting it onto `SourceRows` charged a multi-step pipeline for one pass and made
+    /// the full baseline read as the cheaper answer.
     let rowsEvaluated (f: RecomputeFootprint) : int =
         match f.Recompute with
         | Primed n
         | RowsRecomputed n -> n
         | GroupsRecomputed(n, _) -> n
         | ReusedPrior -> 0
-        | FullRecompute _ -> f.SourceRows
+        | FullRecompute(n, _) -> n
 
     /// A stable human string for a fall-back reason.
     let reasonString (r: FallBackReason) : string =
@@ -310,7 +333,7 @@ module Incremental =
             | ReusedPrior -> "reused the prior result, 0 rows evaluated"
             | RowsRecomputed n -> string n + " rows re-evaluated"
             | GroupsRecomputed(n, g) -> string n + " rows re-evaluated, " + string g + " groups recomputed"
-            | FullRecompute r -> "full evaluation (" + reasonString r + ")"
+            | FullRecompute(n, r) -> "full evaluation, " + string n + " rows evaluated (" + reasonString r + ")"
 
         string f.SourceRows
         + " source rows -> "
@@ -856,6 +879,10 @@ module Incremental =
     /// Evaluate through the reference evaluator and wrap the answer in a cache-free state — the
     /// always-available degradation. A refresh over such a state re-primes, so a fall-back costs a
     /// full evaluation and never corrupts what follows it.
+    ///
+    /// `recompute` is handed the reference evaluator's OWN count of row evaluations at steps
+    /// (Phase 117), so a footprint recorded here is on the same scale as one recorded by the
+    /// restricted walk — the caller decides which case carries it.
     let private runReference
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
@@ -863,10 +890,10 @@ module Incremental =
         (pipeline: Transform list)
         (p: IncrementalPlan)
         (source: Table)
-        (recompute: Recompute)
+        (recompute: int -> Recompute)
         : Result<IncrementalEval, EvalError> =
-        DataFrame.evalPipelineWithInEnv resolve env pipeline source
-        |> Result.map (fun output ->
+        DataFrame.evalPipelineWithInEnvCounted resolve env pipeline source
+        |> Result.map (fun (output, evaluated) ->
             { Plan = p
               Pipeline = pipeline
               Env = env
@@ -881,10 +908,18 @@ module Incremental =
               Footprint =
                 { SourceRows = Table.rowCount source
                   ResultRows = Table.rowCount output
-                  Recompute = recompute } })
+                  Recompute = recompute evaluated } })
 
     /// The shared entry: run the incremental path when the shape and the witness allow it, and the
     /// reference path otherwise. `named` is `None` for "every row".
+    ///
+    /// `onDeclined` says what a PLAN-LEVEL decline is reported as, and it differs by caller
+    /// (Phase 117): a refresh reports `FullRecompute` with the declared reason, because a fall-back
+    /// is exactly what happened; a prime reports `Primed`, because a prime avoids nothing whatever
+    /// the plan says and had no state to fall back FROM. The other two reference branches take no
+    /// such parameter, deliberately — a witness that cannot key the source is not discoverable from
+    /// `plan`, so the footprint is the only place it can be reported, and a `plan`/`split`
+    /// disagreement is a defect that should be visible wherever it happens.
     let private run
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
@@ -894,19 +929,21 @@ module Incremental =
         (prior: IncrementalEval option)
         (named: Set<string> option)
         (recomputeOf: int -> int -> Recompute)
+        (onDeclined: FallBackReason -> int -> Recompute)
         : Result<IncrementalEval, EvalError> =
         let p = plan pipeline
 
         match p.Strategy, split pipeline with
-        | ReferenceOnly r, _ -> runReference resolve env idw.Scheme pipeline p source (FullRecompute r)
+        | ReferenceOnly r, _ -> runReference resolve env idw.Scheme pipeline p source (onDeclined r)
         | _, None ->
             // Unreachable while `plan` and `split` agree; the reference path is the safe reading of
             // a disagreement, so it is taken rather than asserted away.
-            runReference resolve env idw.Scheme pipeline p source (FullRecompute PipelineChanged)
+            runReference resolve env idw.Scheme pipeline p source (fun n -> FullRecompute(n, PipelineChanged))
         | _, Some(prefix, final) ->
             match tokensOf idw source with
             | Error defect ->
-                runReference resolve env idw.Scheme pipeline p source (FullRecompute(RowIdentityUnusable defect))
+                runReference resolve env idw.Scheme pipeline p source (fun n ->
+                    FullRecompute(n, RowIdentityUnusable defect))
             | Ok tokens -> runIncremental env idw.Scheme pipeline p prefix final source tokens prior named recomputeOf
 
     /// Evaluate `pipeline` over `source` from scratch, building the state a later `refresh`
@@ -915,7 +952,13 @@ module Incremental =
     ///
     /// A witness that cannot key the source uniquely does not fail the call: the pipeline is
     /// evaluated through the reference path and the state carries no caches, so a later refresh
-    /// re-primes. Identity is what the SEAM needs, not what the ANSWER needs.
+    /// re-primes, and the footprint carries the defect. Identity is what the SEAM needs, not what
+    /// the ANSWER needs.
+    ///
+    /// A pipeline the plan DECLINES primes to `Primed n` like any other (Phase 117). Priming a
+    /// declined pipeline is not a fall-back — there was no prior state to fall back from, and a
+    /// prime evaluates everything whatever the plan says. Ask `Incremental.plan` whether a refresh
+    /// will be restricted; the prime's footprint answers what the prime cost.
     let prime
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
@@ -923,7 +966,7 @@ module Incremental =
         (pipeline: Transform list)
         (source: Table)
         : Result<IncrementalEval, EvalError> =
-        run resolve env idw pipeline source None None (fun evaluated _ -> Primed evaluated)
+        run resolve env idw pipeline source None None (fun evaluated _ -> Primed evaluated) (fun _ n -> Primed n)
 
     /// Advance a state against a delta describing the change from the state's source to `source`.
     /// The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every
@@ -965,7 +1008,17 @@ module Incremental =
         | Some r ->
             // The answer is a full evaluation either way; taking it through the incremental path
             // (with every row named) re-primes the caches, so the NEXT refresh can restrict again.
-            run resolve env idw pipeline source None None (fun _ _ -> FullRecompute r)
+            // Every row is named, so the count the walk returns is what a full evaluation costs.
+            run
+                resolve
+                env
+                idw
+                pipeline
+                source
+                None
+                None
+                (fun evaluated _ -> FullRecompute(evaluated, r))
+                (fun declined n -> FullRecompute(n, declined))
         | None ->
             // A quiet delta over a source that is byte-identical to the one the state was evaluated
             // against is the one case where the prior result can be handed back untouched. The
@@ -994,10 +1047,19 @@ module Incremental =
                         else
                             None
 
-                run resolve env idw pipeline source (Some state) named (fun evaluated groups ->
-                    match state.Plan.Strategy with
-                    | RowLocalThenGroups -> GroupsRecomputed(evaluated, groups)
-                    | _ -> RowsRecomputed evaluated)
+                run
+                    resolve
+                    env
+                    idw
+                    pipeline
+                    source
+                    (Some state)
+                    named
+                    (fun evaluated groups ->
+                        match state.Plan.Strategy with
+                        | RowLocalThenGroups -> GroupsRecomputed(evaluated, groups)
+                        | _ -> RowsRecomputed evaluated)
+                    (fun declined n -> FullRecompute(n, declined))
 
     /// `prime` over embedded sources with no params — the everyday call.
     let primeOn
