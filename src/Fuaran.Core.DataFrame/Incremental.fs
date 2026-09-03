@@ -311,7 +311,7 @@ module Incremental =
     // ---- classification (pure, total, no evaluation) ----
 
     /// The stable verb name of a step — what a `FallBackReason` names, and what a consumer prints.
-    let verbName (t: Transform) : string =
+    let internal verbName (t: Transform) : string =
         match t with
         | Filter _ -> "filter"
         | Project _ -> "project"
@@ -371,7 +371,7 @@ module Incremental =
     /// `GroupBy` — reads the order it produced exactly as it would have read the reference's, and
     /// the two order-sensitive readers in the seam (a `Derive`d column's whole-column type inference
     /// and a group's ordered member list) are computed from the walked frame rather than a cache.
-    let classifyStep (isLast: bool) (t: Transform) : StepIncrementality =
+    let internal classifyStep (isLast: bool) (t: Transform) : StepIncrementality =
         match t with
         | Filter _
         | Project _
@@ -1389,7 +1389,7 @@ module Incremental =
     /// Prime over `before`, then refresh against `delta` and `after`, in one call — the shape a
     /// conformance check and a first adoption both want. The returned state's `Output` is the new
     /// result and its `Footprint` accounts for the REFRESH, not for the prime.
-    let evalDelta
+    let internal evalDelta
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (idw: RowIdentity<'Id>)
@@ -1400,13 +1400,3 @@ module Incremental =
         : Result<IncrementalEval, EvalError> =
         prime resolve env idw pipeline before
         |> Result.bind (fun state -> refresh resolve env idw pipeline state delta after)
-
-    /// `evalDelta` over embedded sources with no params.
-    let evalDeltaOn
-        (idw: RowIdentity<'Id>)
-        (pipeline: Transform list)
-        (before: Table)
-        (delta: TableDelta)
-        (after: Table)
-        : Result<IncrementalEval, EvalError> =
-        evalDelta DataFrame.noResolve Map.empty idw pipeline before delta after

@@ -247,7 +247,7 @@ module ColExpr =
     /// Every `Param` name the expression references, in stable left-to-right order **with**
     /// duplicates (recursing through every sub-expression kind). `paramsOf` dedups; the raw walk is
     /// exposed for callers that want occurrence order preserved.
-    let rec paramNames (e: ColExpr) : string list =
+    let rec internal paramNames (e: ColExpr) : string list =
         match e with
         | Col _
         | Lit _ -> []
@@ -329,7 +329,7 @@ module Transform =
 
     /// The `Param` names a single step references (only `Filter` / `Derive` carry a `ColExpr`; every
     /// other verb contributes none). Occurrence order, with duplicates.
-    let stepParamNames (t: Transform) : string list =
+    let internal stepParamNames (t: Transform) : string list =
         match t with
         | Filter p -> ColExpr.paramNames p
         | Derive(_, e) -> ColExpr.paramNames e
@@ -2023,7 +2023,7 @@ module SchemaWalk =
 
     /// No named source declared. The default, and honest: a walk over a `Ref` under it derives
     /// nothing about that source and says which name it could not resolve.
-    let noSources: string -> Schema option = fun _ -> None
+    let internal noSources: string -> Schema option = fun _ -> None
 
     /// Declared source schemas as a map — the ordinary caller-side lookup, lifted so a caller
     /// holding a `Map` does not write the lambda.
