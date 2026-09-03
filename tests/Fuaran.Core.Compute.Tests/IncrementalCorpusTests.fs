@@ -13,12 +13,12 @@ open Fuaran.Core
 //  the app-composition wire specification — whose vectors each pair a pipeline,
 //  a source, an edit stream and a required result with a RECORDED FOOTPRINT
 //  TRIPLE: what a prime over the source cost, what a full evaluation over the
-//  changed source cost, and what advancing the primed state cost. Two of its
-//  vectors are vendored under `fixtures/incremental-recompute/` (see the README
-//  there) so these legs run in any clone of this repository, exactly as the
-//  vocabulary spikes vendor theirs.
+//  changed source cost, and what advancing the primed state cost. Vectors are
+//  vendored under `fixtures/incremental-recompute/` (see the README there) so
+//  these legs run in any clone of this repository, exactly as the vocabulary
+//  spikes vendor theirs.
 //
-//  They are a PAIR, and the pairing is the whole point.
+//  Phase 115's two are a PAIR, and the pairing is the whole point.
 //
 //   * `point-edit-row-local` is the CONTROL. Its pipeline was already
 //     incrementalisable before this phase, so every one of its three recorded
@@ -42,11 +42,15 @@ open Fuaran.Core
 /// The vectors this repository vendors. `point-edit-row-local` and `sort-declines-in-full` are
 /// Phase 115's pair; `window-declines-in-full` and `join-declines-in-full` are Phase 120's, each
 /// recording the DECLINED triple its class produced before that phase.
+/// `rank-declines-in-full` is `0.19.0`'s, on the same terms — and its recorded decline is the one
+/// Phase 120 itself produced (`windowFrameUnbounded` / `rank`), because that is the evaluator this
+/// widening is measured against.
 let private vectorNames =
     [ "point-edit-row-local"
       "sort-declines-in-full"
       "window-declines-in-full"
-      "join-declines-in-full" ]
+      "join-declines-in-full"
+      "rank-declines-in-full" ]
 
 let private isCorpus (dir: string) : bool =
     try
@@ -204,6 +208,11 @@ let private windowFnOf (s: string) : WindowFn =
     match s with
     | "lag" -> Lag
     | "lead" -> Lead
+    // `0.19.0` — the seam admits every window function now, and this reader models one MORE than it
+    // did, not all of them. What it models is what the vendored bytes use; the refusal below is a
+    // statement about which spellings these bytes have been read against, and it stays narrow for
+    // the same reason it was narrow before.
+    | "rank" -> Rank
     | other -> fail ("unmodelled window function '" + other + "'")
 
 let private joinKindOf (s: string) : JoinKind =
@@ -258,6 +267,11 @@ let private recomputeOf (v: JVal) : Recompute =
         | "stepNotRowLocal" -> FullRecompute(n, StepNotRowLocal(str (mem "verb" v)))
         | "aggregateStepNotLast" -> FullRecompute(n, AggregateStepNotLast(str (mem "verb" v)))
         | "ordinalAddressing" -> FullRecompute(n, OrdinalAddressing)
+        // `0.19.0` — the rank vector's recorded "before" is the decline PHASE 120 produced, so the
+        // reader has to model a reason this repository no longer emits. That is the ordinary shape
+        // of a before/after vector here: the bytes describe the evaluator being improved on, and a
+        // reader that could not read them could not measure anything.
+        | "windowFrameUnbounded" -> FullRecompute(n, WindowFrameUnbounded(str (mem "fn" v)))
         | other -> fail ("unmodelled decline reason '" + other + "'")
     | other -> fail ("unmodelled recompute kind '" + other + "'")
 
@@ -548,16 +562,98 @@ let tests =
                   (Incremental.rowsEvaluated vec.Refresh)
                   "strictly fewer row-evaluations than the decline it replaces"
 
+          testCase "the rank vector's result is unchanged and its class is not: the recorded saving"
+          <| fun _ ->
+              // `0.19.0`'s vector, on exactly the terms the three before it were written on — and
+              // the one whose "before" is the NEAREST evaluator rather than the oldest: its
+              // recorded refresh is the decline Phase 120 itself produced, naming the window
+              // FUNCTION, because frame boundedness is what this widening relaxed.
+              let vec = readVector corpus.Value "rank-declines-in-full"
+              let prime, full, refreshed = run vec
+
+              Expect.equal refreshed.Output vec.Result "the refresh produces the recorded result"
+
+              Expect.equal
+                  (Ok vec.Result)
+                  (DataFrame.evalPipeline vec.Pipeline vec.Changed)
+                  "and so does a full reference evaluation over the changed source"
+
+              // The "before": Phase 120's own decline, asserted from the bytes rather than
+              // described. A window evaluates no expression, so the six are the filter's — the
+              // identical count the bounded-frame vector records, which is the point: the two
+              // families cost the same and were classified differently.
+              Expect.equal
+                  vec.Refresh.Recompute
+                  (FullRecompute(6, WindowFrameUnbounded "rank"))
+                  "the vendored vector records the frame-boundedness decline, with what it evaluated"
+
+              // The "after", and the identical saving: six row-evaluations to one.
+              Expect.equal (Incremental.plan vec.Pipeline).Strategy RowLocal "the pipeline is no longer declined"
+
+              Expect.equal
+                  (Incremental.plan vec.Pipeline).Steps
+                  [ PropagateRows; RecomputeFrame([ "b" ], [ "a", Asc ]) ]
+                  "and it classifies as the case a bounded frame already did"
+
+              Expect.equal prime vec.Prime "the recorded prime footprint"
+              Expect.equal full vec.Full "the recorded full-evaluation footprint"
+              Expect.equal refreshed.Footprint.Recompute (RowsRecomputed 1) "the refresh re-evaluates one row"
+
+              Expect.isLessThan
+                  (Incremental.rowsEvaluated refreshed.Footprint)
+                  (Incremental.rowsEvaluated vec.Refresh)
+                  "strictly fewer row-evaluations than the decline it replaces"
+
+          testCase "the rank vector's saving is the window vector's, to the row-evaluation"
+          <| fun _ ->
+              // The whole argument for the relaxation, as an assertion: the two families are not
+              // merely both admissible, they cost the same. A widening that bought less on the
+              // partition-global family would mean frame boundedness was tracking something real
+              // after all.
+              let bounded = readVector corpus.Value "window-declines-in-full"
+              let global_ = readVector corpus.Value "rank-declines-in-full"
+
+              let _, boundedFull, boundedRefresh = run bounded
+              let _, globalFull, globalRefresh = run global_
+
+              Expect.equal
+                  (Incremental.rowsEvaluated globalRefresh.Footprint)
+                  (Incremental.rowsEvaluated boundedRefresh.Footprint)
+                  "the refresh costs the same"
+
+              Expect.equal
+                  (Incremental.rowsEvaluated globalFull)
+                  (Incremental.rowsEvaluated boundedFull)
+                  "measured against the same full baseline"
+
+              Expect.equal
+                  (Incremental.rowsEvaluated global_.Refresh)
+                  (Incremental.rowsEvaluated bounded.Refresh)
+                  "and the declines they replace cost the same too"
+
           testCase "a corpus this reader cannot fully model is refused, not partly run"
           <| fun _ ->
               // The reader's refusals are the reason its greens mean anything: a vector using a
               // verb it silently skipped would certify a pipeline the corpus did not write.
               Expect.throws (fun () -> stepOf (JObj [ "verb", JStr "pivot" ]) |> ignore) "an unmodelled verb is refused"
 
-              // Phase 120 models two window functions and two join kinds, not the families they
+              // The reader models three window functions and two join kinds, not the families they
               // belong to — an unmodelled member of a verb the reader DOES model is the refusal
-              // most likely to be skipped, so it is the one asserted.
+              // most likely to be skipped, so it is the one asserted. `cumulSum` is refused here
+              // while `Incremental.plan` ADMITS it (`0.19.0`), which is the distinction the README
+              // states: what these bytes have been read against is not what the seam can evaluate.
               Expect.throws (fun () -> windowFnOf "cumulSum" |> ignore) "an unmodelled window function is refused"
+
+              Expect.throws
+                  (fun () ->
+                      recomputeOf (
+                          JObj
+                              [ "kind", JStr "fullRecompute"
+                                "rowsEvaluated", JInt 1
+                                "reason", JStr "envChanged" ]
+                      )
+                      |> ignore)
+                  "an unmodelled decline reason is refused"
 
               Expect.throws (fun () -> joinKindOf "inner" |> ignore) "an unmodelled join kind is refused"
 

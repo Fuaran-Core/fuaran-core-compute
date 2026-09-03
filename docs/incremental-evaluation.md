@@ -53,22 +53,24 @@ match (Incremental.plan pipeline).Strategy with
   new order is the previous order with the named rows merged back into it. The saving is not in the
   sorting — a sort evaluates no expression and is charged none — it is that the steps *before* the
   sort stop re-evaluating every row.
-- **`RecomputeFrame`** — a `Window` whose frame is **bounded** (`lag`, `lead`, `rollingMean`,
-  `rollingSum`), at **any** position. It appends a column computed from a fixed neighbourhood of
-  each row in its partition's order, emitting the rows it was handed one for one. The column is
-  recomputed over the frame rather than read from a cache — a window evaluates no expression, so it
-  is charged none either way, and a row's frame moves when its *neighbour* moves. As with a sort,
-  the saving is that the steps *before* it stop re-evaluating every row.
+- **`RecomputeFrame`** — a `Window`, **any** window function, at **any** position. It appends a
+  column computed over each row's partition and emits the rows it was handed one for one, which is
+  all a restricted walk needs: what admits it is that it *preserves the row set*, not that its frame
+  is bounded. The column is recomputed over the walked frame rather than read from a cache — a
+  window evaluates no expression, so it is charged none either way, and a row's output moves when
+  another row in its partition moves. As with a sort, the saving is that the steps *before* it stop
+  re-evaluating every row; a `rank` refresh still sorts its partitions, and that work is not on the
+  `rowsEvaluated` scale.
 - **`FilterByRelation`** — a `Join` whose kind is **filtering** (`semi`, `anti`). It keeps or drops
   each row on whether it matches the joined relation and emits the row it kept unchanged, so a delta
   propagates through it exactly as through a `Filter`. The cached verdict for a row the delta did not
   name is reused only while the relation's **key index** is unchanged: the delta describes the
   source, so it cannot say the relation moved.
-- **`FallBack`** — `Limit`, `Pivot`, `Unpivot`, `Union`, `Intersect`, `Except`; a `Window` whose
-  frame is **unbounded** (the ranking family, `ntile`, the cumulative aggregates), which the reason
-  names by function; and a **combining** `Join` (`inner`, `left`, `right`, `outer`), which the reason
-  names by kind. Their output for one row depends on rows a delta does not name — or is not one row
-  at all — so the pipeline is evaluated in full and the footprint says so.
+- **`FallBack`** — `Limit`, `Pivot`, `Unpivot`, `Union`, `Intersect`, `Except`; and a **combining**
+  `Join` (`inner`, `left`, `right`, `outer`), which the reason names by kind. Their output for one
+  row depends on rows a delta does not name — or is not one row at all — so the pipeline is
+  evaluated in full and the footprint says so. `WindowFrameUnbounded` is a retained reason that
+  nothing produces any more: every window function is admitted.
 
 Adoption is therefore per pipeline, not per application: a declined pipeline costs exactly what it
 costs today, and can sit beside an adopted one.

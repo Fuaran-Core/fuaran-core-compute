@@ -113,12 +113,15 @@ type FallBackReason =
     /// The identity witness could not key the source, or the delta's scheme is not the witness's —
     /// carries the delta layer's own defect.
     | RowIdentityUnusable of defect: DeltaDefect
-    /// Phase 120 — a `Window` whose frame is NOT bounded: its output for a row is a function of the
-    /// whole partition rather than of a fixed neighbourhood of it, so no row-local rule reaches it.
-    /// The ranking family and `NTile` read a row's position among all of its partition's rows (and
-    /// `NTile` its size); the cumulative aggregates read every preceding row's value. Names the
-    /// window function, because "window" alone does not say which frame declined — the bounded ones
-    /// (`lag` / `lead` / the rolling pair) are admitted.
+    /// Phase 120 — a `Window` whose frame is not bounded, named by its window function.
+    ///
+    /// **RETAINED, and no longer produced by `plan` (`0.19.0`).** Frame boundedness turned out not
+    /// to be what admits a `Window` to the restricted walk: the admitted column is recomputed
+    /// wholesale over the walked frame, which is correct for every window function, and what the
+    /// walk actually needs is that the step PRESERVES THE ROW SET — which every member does. So
+    /// every `Window` is `RecomputeFrame` now and nothing constructs this case. It is kept because
+    /// removing a case from a published DU is a breaking change for every consumer that matches on
+    /// it, and `reasonString` still renders it, so a stored reason from `0.18.0` still reads.
     | WindowFrameUnbounded of fn: string
     /// Phase 120 — a `Join` whose output rows are not its LEFT rows. A combining join (`inner` /
     /// `left`) fans one left row out across every right row it matches and appends the right
@@ -146,12 +149,21 @@ type StepIncrementality =
     /// A sort is therefore not row-local — `PropagateRows` would be a wrong answer to "does this
     /// step's output for a row depend only on that row" — and not a fall-back either.
     | MergeOrder of by: (string * SortDir) list
-    /// Phase 120 — the step APPENDS a column whose value for a row is computed from a BOUNDED frame
-    /// around that row in its partition's order (`Lag` / `Lead` / the rolling pair). It emits the
-    /// rows it was handed, in the order it was handed them, one for one — so a delta propagates
-    /// through it exactly as it does through a `Sort`, and every step admitted after it reads what
-    /// the reference would have handed it. Names the partition and ordering keys, so a consumer can
-    /// see what the frame is scoped by rather than infer it.
+    /// Phase 120 — the step APPENDS a column computed over each row's partition in that partition's
+    /// order, and emits the rows it was handed, in the order it was handed them, one for one — so a
+    /// delta propagates through it exactly as it does through a `Sort`, and every step admitted
+    /// after it reads what the reference would have handed it. Names the partition and ordering
+    /// keys, so a consumer can see what the frame is scoped by rather than infer it.
+    ///
+    /// **Every window function is admitted (`0.19.0`), not only the bounded frames.** What the walk
+    /// needs from a step is that it PRESERVES THE ROW SET — one row in, one row out, in input order,
+    /// plus an appended column — and every member has that: a rank, a bucket and a running total
+    /// append a column exactly as a `lag` does. Frame boundedness, which `0.18.0` used as the
+    /// discriminator, describes a distinction this evaluator does not make, since the column is
+    /// recomputed wholesale over the walked frame in either case (below). It remains a true
+    /// statement about the frames — `DataFrame.windowFrameBounded` still answers it — and it is the
+    /// line a LATER phase restricting the recompute to displaced rows would draw; it is not the line
+    /// that admits a step to this walk.
     ///
     /// The appended column is recomputed over the walked frame through the reference's own
     /// `DataFrame.windowStep`; it is not read from a cache. That is not a shortcut but the honest
@@ -161,10 +173,10 @@ type StepIncrementality =
     /// their orders anyway. What the admission buys is the same thing `MergeOrder` buys: the steps
     /// BEFORE it stop re-evaluating every row.
     ///
-    /// An UNBOUNDED frame is not admitted here — it is `FallBack (WindowFrameUnbounded fn)`. A
-    /// bounded frame is the class a later phase can restrict to the rows a delta names or displaces;
-    /// a partition-global one never can, and declaring the two alike would say the seam knows
-    /// something about a cumulative aggregate that it does not.
+    /// That wholesale recompute is also why the widening is not a claim about cumulative aggregates:
+    /// the seam does not say it can answer a `cumulSum` from a delta, it says the STEPS BEFORE the
+    /// window stop re-evaluating every row while the column is recomputed as the reference computes
+    /// it. That sentence was already true of a `lag`.
     | RecomputeFrame of partitionBy: string list * orderBy: (string * SortDir) list
     /// Phase 120 — the step keeps or drops each row on whether it matches a JOINED RELATION, and
     /// emits the row it kept unchanged: a filtering join (`Semi` / `Anti`). Its output for a row is
@@ -316,10 +328,14 @@ module Incremental =
         | Intersect _ -> "intersect"
         | Except _ -> "except"
 
-    /// The stable name of a window function — what `WindowFrameUnbounded` names (Phase 120). These
-    /// are the canonical wire tags, spelled here for the same reason `verbName` spells the verbs:
-    /// the codec that also knows them is compiled after this module, and a `FallBackReason` a
-    /// consumer prints must not depend on which of the two it happened to reach.
+    /// The stable name of a window function — the spelling `WindowFrameUnbounded` carries (Phase
+    /// 120). These are the canonical wire tags, spelled here for the same reason `verbName` spells
+    /// the verbs: the codec that also knows them is compiled after this module, and a
+    /// `FallBackReason` a consumer prints must not depend on which of the two it happened to reach.
+    ///
+    /// Retained on the same terms as the reason case it names (`0.19.0`): nothing here constructs
+    /// that reason any more, and this is still the published spelling for a `0.18.0` record and for
+    /// a consumer printing a window function of its own.
     let windowFnName (fn: WindowFn) : string =
         match fn with
         | RowNumber -> "rowNumber"
@@ -361,15 +377,13 @@ module Incremental =
         | Project _
         | Derive _ -> PropagateRows
         | Sort by -> MergeOrder by
-        // Phase 120 — a bounded frame is admitted at any position, on the same argument a `Sort`
-        // is: the step emits the rows it was handed, in the order it was handed them, so every
-        // step after it reads what the reference would have handed it. An unbounded frame declines
-        // by type, naming the function rather than the verb.
-        | Window spec ->
-            if DataFrame.windowFrameBounded spec.Fn then
-                RecomputeFrame(spec.PartitionBy, spec.OrderBy)
-            else
-                FallBack(WindowFrameUnbounded(windowFnName spec.Fn))
+        // Phase 120, relaxed in `0.19.0` — EVERY window is admitted, at any position, on the same
+        // argument a `Sort` is: the step emits the rows it was handed, in the order it was handed
+        // them, so every step after it reads what the reference would have handed it. There is no
+        // predicate here because there is no distinction to draw — a predicate that is constantly
+        // true would be a branch that cannot be taken, and `WindowFrameUnbounded` is retained
+        // (above) rather than produced.
+        | Window spec -> RecomputeFrame(spec.PartitionBy, spec.OrderBy)
         // Phase 120 — the FILTERING joins emit each left row at most once and unchanged, which is a
         // `Filter` whose predicate reads a relation. The combining ones do not: they fan a left row
         // out across its matches and append the right schema, and the right-outer pair emits rows
@@ -541,7 +555,7 @@ module Incremental =
             | Project pairs :: rest -> go (WProject pairs :: acc) sorts joins rest
             | Derive(n, e) :: rest -> go (WDerive(n, e) :: acc) sorts joins rest
             | Sort by :: rest -> go (WSort(sorts, by) :: acc) (sorts + 1) joins rest
-            | Window spec :: rest when DataFrame.windowFrameBounded spec.Fn -> go (WWindow spec :: acc) sorts joins rest
+            | Window spec :: rest -> go (WWindow spec :: acc) sorts joins rest
             | Join(src, on, Semi) :: rest -> go (WJoin(joins, src, on, true) :: acc) sorts (joins + 1) rest
             | Join(src, on, Anti) :: rest -> go (WJoin(joins, src, on, false) :: acc) sorts (joins + 1) rest
             | _ -> None

@@ -1,6 +1,6 @@
 # Incremental-recompute corpus vectors
 
-Four vectors of the estate's `incremental-recompute` conformance family — §12.7
+Five vectors of the estate's `incremental-recompute` conformance family — §12.7
 of the app-composition wire specification — vendored here so the legs of
 `../../IncrementalCorpusTests.fs` run in any clone of this repository rather
 than reporting themselves skipped.
@@ -17,6 +17,11 @@ and an operator decision of 2026-09-02 waived that gate for these two classes,
 on the understanding that the corpus records the family's own vectors afterwards
 from the real consumer. Until it does, these two lead the corpus in the same way
 the re-pinned sort vector does; see "Where the Phase 120 pair came from" below.
+
+**`rank-declines-in-full` is `0.19.0`'s, written here on the same terms**, when
+the window boundary was relaxed from frame boundedness to row-set preservation.
+Its "before" is the nearest evaluator rather than the oldest — see "The
+`0.19.0` rank vector" below.
 
 ## What a vector is
 
@@ -43,9 +48,9 @@ it was evaluated in full or in part. Reading a declined evaluation's cost off
 `sourceRows` charged it for a single pass, so a decline compared against its own
 full baseline read as having done *less* work than the thing it fell back to.
 
-## Why these four
+## Why these five
 
-They are one control and three widenings, and the pairing is what makes any of
+They are one control and four widenings, and the pairing is what makes any of
 them mean anything.
 
 - **`point-edit-row-local`** is the **control**. Its pipeline (a filter and a
@@ -69,6 +74,15 @@ them mean anything.
   row's is precisely what may be reused. Each records the full evaluation its
   class declined into before the widening, and each falls from six
   row-evaluations to one.
+
+- **`rank-declines-in-full`** is `0.19.0`'s, and it is the one whose recorded
+  "before" is **the evaluator immediately preceding it** rather than the
+  pre-Phase-115 one. Its pipeline is the window vector's with `lag` replaced by
+  `rank`, over the same source and the same edit — deliberately, because the
+  claim being measured is that the two cost *the same*, and two vectors that
+  differed in anything else could not say so. Its recorded refresh is therefore
+  `windowFrameUnbounded` / `rank`, which is what Phase 120 produced, and it too
+  falls from six row-evaluations to one. A test asserts that equality directly.
 
 So a widened vector's recorded *refresh class* is no longer an oracle for this
 repository, while its recorded *result* still is. The family's own rule still
@@ -116,16 +130,18 @@ vendored from, and the reader here requires the `rowsEvaluated` field a
 
 ## What the reader models
 
-`IncrementalCorpusTests.fs` reads only what these four vectors use — `filter`,
+`IncrementalCorpusTests.fs` reads only what these five vectors use — `filter`,
 `derive`, `groupBy`, `sort`, `window` and `join` steps; `column`, `literal` and
 `binary` (`greaterThan`, `multiply`) expressions; `setCell`, `appendRow` and
-`removeRow` edits under the `identity` scheme — and **refuses** anything else by
-name. The refusal is per MEMBER, not per verb: the reader models `lag` and
-`lead` and refuses `cumulSum`, models `semi` and `anti` and refuses `inner`,
-because a vector whose `cumulSum` it silently read as a `lag` would certify a
-frame the corpus did not write. That is a statement about what these bytes have
-been read against, never about what the seam admits — `Incremental.plan` is what
-answers that. A
+`removeRow` edits under the `identity` scheme; and the decline reasons the
+recorded triples carry, `windowFrameUnbounded` among them — and **refuses**
+anything else by name. The refusal is per MEMBER, not per verb: the reader
+models `lag`, `lead` and `rank` and refuses `cumulSum`, models `semi` and `anti`
+and refuses `inner`, because a vector whose `cumulSum` it silently read as a
+`lag` would certify a frame the corpus did not write. That is a statement about
+what these bytes have been read against, never about what the seam admits —
+`Incremental.plan` is what answers that, and since `0.19.0` it admits every
+window function including the `cumulSum` this reader refuses. A
 vector using a verb the reader silently skipped would be certified against a
 pipeline the corpus did not write, which is worse than a vector nobody ran. An
 `ordinal`-addressed stream is refused rather than run as an identity one: that
@@ -154,8 +170,30 @@ repository adopts the corpus's spellings and these bytes follow them.** The
 reader refuses anything it does not model, so that adoption arrives as a failing
 read rather than as a silently different meaning.
 
+## The `0.19.0` rank vector
+
+`rank-declines-in-full` follows the Phase 120 pair's shape exactly — the same
+`family`, the same footprint triple, the same `identity`-addressed edit stream —
+and needed no new spelling at all: `{"fn":"rank"}` is the canonical wire tag the
+codec already carries, and the reason `windowFrameUnbounded` is the one this
+repository emitted between Phase 120 and this vector. It records **no null
+cell**, because a rank has no first row without a predecessor to spell.
+
+Its "before" being the immediately-preceding evaluator rather than the oldest
+one is a deliberate difference from the four above, and the reason is what the
+vector is *for*. The three widened vectors each measure a class against the
+evaluator that declined it *by verb*; this one measures a class against the
+evaluator that declined it *by frame*, which is the distinction being relaxed.
+Recording `stepNotRowLocal` / `window` here would have been a true statement
+about a still older evaluator and would have measured the wrong gap.
+
+**The same standing division applies**: re-recording these on the corpus side is
+that specification's act, not this repository's, and when it records the
+family's own window vectors this repository adopts its spellings. The reader
+refuses what it does not model, so that adoption arrives as a failing read.
+
 ## Pointing the tests at a different corpus
 
-Set `FUARAN_INCREMENTAL_CORPUS` to a directory holding all four files. A
+Set `FUARAN_INCREMENTAL_CORPUS` to a directory holding all five files. A
 directory that does not hold them is refused by name rather than falling back
 silently.

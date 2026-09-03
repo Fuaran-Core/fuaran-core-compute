@@ -72,6 +72,71 @@ let private lookup: Table =
 let private semiOnLookup = Join(Embedded lookup, [ "b", "k" ], Semi)
 let private antiOnLookup = Join(Embedded lookup, [ "b", "k" ], Anti)
 
+// ---- the row-set-preserving family (`0.19.0`) ----
+
+/// A partition-global frame: a running total over every preceding row of the partition. The shape
+/// frame boundedness declined and row-set preservation admits.
+let private cumulSumOverB =
+    Window
+        { PartitionBy = [ "b" ]
+          OrderBy = [ "a", Asc ]
+          Fn = CumulSum
+          Of = "a"
+          As = "run" }
+
+/// The other partition-global shape, and the one the widening's named consumer wants: a ranked
+/// column. A row's rank is a function of every other row in its partition.
+let private rankOverB =
+    Window
+        { PartitionBy = [ "b" ]
+          OrderBy = [ "a", Asc ]
+          Fn = Rank
+          Of = "a"
+          As = "rk" }
+
+/// One witness per `WindowFn` case, checked against the union itself below rather than trusted: the
+/// property that admits the verb is a claim about every member, so a member added without appearing
+/// here must fail rather than go unmeasured.
+let private everyWindowFn: WindowFn list =
+    [ RowNumber
+      Rank
+      DenseRank
+      CompetitionRank
+      NTile 2
+      Lag
+      Lead
+      CumulSum
+      CumulMax
+      CumulMin
+      RollingMean
+      RollingSum ]
+
+/// The union-case name of a window function. Exhaustive deliberately — it is what joins the witness
+/// list above to the DU, so neither can drift past the other in silence.
+let private windowCaseName (fn: WindowFn) : string =
+    match fn with
+    | RowNumber -> "RowNumber"
+    | Rank -> "Rank"
+    | DenseRank -> "DenseRank"
+    | CompetitionRank -> "CompetitionRank"
+    | NTile _ -> "NTile"
+    | Lag -> "Lag"
+    | Lead -> "Lead"
+    | CumulSum -> "CumulSum"
+    | CumulMax -> "CumulMax"
+    | CumulMin -> "CumulMin"
+    | RollingMean -> "RollingMean"
+    | RollingSum -> "RollingSum"
+
+/// A table's rows, in schema order — the shape `DataFrame.windowStep` takes and returns.
+let private rowsOf (t: Table) : Cell list list =
+    [ for i in 0 .. Table.rowCount t - 1 ->
+          t.Schema
+          |> List.map (fun (n, _) ->
+              match Table.tryColumn n t with
+              | Some c -> Column.cell i c
+              | None -> Null) ]
+
 [<Tests>]
 let tests =
     testList
@@ -716,21 +781,16 @@ let tests =
 
               expectMatchesReference pipeline changed next
 
-          testCase "an unbounded frame declines by type, naming the FUNCTION and not the verb"
-          <| fun _ ->
-              // `window` alone would not say which frame declined, now that some of them do not.
-              let pipeline =
-                  [ Window
-                        { PartitionBy = [ "b" ]
-                          OrderBy = [ "a", Asc ]
-                          Fn = CumulSum
-                          Of = "a"
-                          As = "run" } ]
+          // ============ the row-set-preserving family (`0.19.0`) ============
 
-              Expect.equal
-                  (Incremental.plan pipeline).Strategy
-                  (ReferenceOnly(WindowFrameUnbounded "cumulSum"))
-                  "a cumulative aggregate reads every preceding row of its partition"
+          testCase "a PARTITION-GLOBAL window is admitted on the identical terms, with the identical saving"
+          <| fun _ ->
+              // The relaxation. A cumulative aggregate reads every preceding row of its partition,
+              // which is what frame boundedness declined — and it makes no difference to this walk,
+              // because the appended column is recomputed wholesale over the walked frame either
+              // way. What is bought is the same thing a `lag` buys: the FILTER before it stops
+              // running over every row.
+              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); cumulSumOverB ]
 
               let changed =
                   table (
@@ -738,19 +798,125 @@ let tests =
                       |> List.map (fun (i, a, b) -> if i = "r2" then i, Int 30, b else i, a, b)
                   )
 
-              let next, _ = step pipeline baseTable changed
+              Expect.equal (Incremental.plan pipeline).Strategy RowLocal "no longer declined"
 
               Expect.equal
-                  next.Footprint.Recompute
-                  (FullRecompute(0, WindowFrameUnbounded "cumulSum"))
-                  "the refresh falls back, carrying the declared reason"
+                  (Incremental.plan pipeline).Steps
+                  [ PropagateRows; RecomputeFrame([ "b" ], [ "a", Asc ]) ]
+                  "and it classifies as the same case a bounded frame does"
 
+              let next, _ = step pipeline baseTable changed
+              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one filter predicate, not five"
+              expectMatchesReference pipeline changed next
+
+              let lone, _ = step [ cumulSumOverB ] baseTable changed
+              Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a window evaluates nothing"
+              expectMatchesReference [ cumulSumOverB ] changed lone
+
+          testCase "a ranked column follows a row the delta did NOT name"
+          <| fun _ ->
+              // The partition-global analogue of the `lag` case above, and the reason the column is
+              // never read from a per-row cache: raising r0 past r1 in partition b=0 swaps their
+              // ranks, and the delta names r0 alone.
+              let pipeline = [ rankOverB ]
+
+              let changed =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r0" then i, Int 99, b else i, a, b)
+                  )
+
+              let primed = ok (Incremental.primeOn idw pipeline baseTable)
+              let next, delta = step pipeline baseTable changed
+
+              Expect.equal (Delta.rowsWith RowChanged delta |> List.length) 1 "the delta named one row"
+
+              Expect.equal
+                  (primed.Output |> Table.tryColumn "rk" |> Option.map (fun c -> c.Cells))
+                  (Some [ Int 1; Int 2; Int 1; Int 2; Int 1 ])
+                  "before: r0 (1) ranks ahead of r1 (2) in partition b=0"
+
+              Expect.equal
+                  (next.Output |> Table.tryColumn "rk" |> Option.map (fun c -> c.Cells))
+                  (Some [ Int 2; Int 1; Int 1; Int 2; Int 1 ])
+                  "after: the unnamed row's rank moved too"
+
+              expectMatchesReference pipeline changed next
+
+          testCase "every window function preserves the row set — the discriminator, over the whole DU"
+          <| fun _ ->
+              // What admits a `Window` to the restricted walk is that it emits the rows it was
+              // handed, in the order it was handed them, one for one, plus an appended column. That
+              // is a claim about EVERY member, so it is checked over every member rather than over
+              // the two the fixtures happen to use — and the case list is checked against the union
+              // itself, so a window function added without appearing here fails rather than being
+              // silently exempt from the property that admits its verb.
+              let declared =
+                  Microsoft.FSharp.Reflection.FSharpType.GetUnionCases typeof<WindowFn>
+                  |> Array.map (fun c -> c.Name)
+                  |> Set.ofArray
+
+              Expect.equal
+                  (everyWindowFn |> List.map windowCaseName |> Set.ofList)
+                  declared
+                  "the witness list covers every WindowFn case"
+
+              let cols = baseTable.Schema
+              let rows = rowsOf baseTable
+
+              for fn in everyWindowFn do
+                  let spec =
+                      { PartitionBy = [ "b" ]
+                        OrderBy = [ "a", Asc ]
+                        Fn = fn
+                        Of = "a"
+                        As = "w" }
+
+                  let cols2, rows2 = ok (DataFrame.windowStep cols rows spec)
+
+                  Expect.equal
+                      (List.length rows2)
+                      (List.length rows)
+                      (sprintf "%s emits one row per input row" (windowCaseName fn))
+
+                  Expect.equal
+                      (rows2 |> List.map (fun r -> r |> List.truncate (List.length cols)))
+                      rows
+                      (sprintf "%s emits them unchanged, in input order" (windowCaseName fn))
+
+                  Expect.equal
+                      (List.length cols2)
+                      (List.length cols + 1)
+                      (sprintf "%s appends exactly one column" (windowCaseName fn))
+
+          testCase "`WindowFrameUnbounded` is retained and no longer produced"
+          <| fun _ ->
+              // Removing a case from a published DU breaks every consumer that matches on it, so
+              // the case and its rendering stay; what changed is that nothing constructs it. The
+              // second assertion is the one with teeth — it is what would go red if a `plan` branch
+              // ever reached for it again.
               Expect.equal
                   (Incremental.reasonString (WindowFrameUnbounded "cumulSum"))
                   "the window function 'cumulSum' reads the whole partition, not a bounded frame"
-                  "and the reason renders as a stable line"
+                  "a reason stored under 0.18.0 still renders as its stable line"
 
-              expectMatchesReference pipeline changed next
+              let produced =
+                  [ for fn in everyWindowFn do
+                        let spec =
+                            { PartitionBy = [ "b" ]
+                              OrderBy = [ "a", Asc ]
+                              Fn = fn
+                              Of = "a"
+                              As = "w" }
+
+                        yield! (Incremental.plan [ Window spec ]).Steps ]
+
+              Expect.isTrue
+                  (produced
+                   |> List.forall (function
+                       | RecomputeFrame _ -> true
+                       | _ -> false))
+                  "plan admits every window function and declines none"
 
           testCase "a filtering join re-evaluates only the named rows, and the join costs none"
           <| fun _ ->

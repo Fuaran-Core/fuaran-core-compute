@@ -1766,6 +1766,14 @@ module DataFrame =
     /// the incremental seam that reads it — a copy there would be a second answer to a question this
     /// module already answers in `evalWindow`, and would drift the first time a window function is
     /// added.
+    ///
+    /// **It is NOT what admits a `Window` to the incremental walk, and was only ever a proxy for
+    /// it (`0.19.0`).** That walk recomputes the appended column wholesale over the frame it
+    /// walked, which is correct for every member here, so what it needs is row-set preservation —
+    /// which every member has. This predicate stays because the distinction it draws is real and
+    /// load-bearing elsewhere: it is the line a phase restricting the recompute to the rows a delta
+    /// names or DISPLACES would have to draw, and the incremental equivalence family uses it to
+    /// name the partition-global family its sample-adequacy demand requires be reached.
     let windowFrameBounded (fn: WindowFn) : bool =
         match fn with
         | Lag
