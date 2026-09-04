@@ -208,6 +208,70 @@ let tests =
                   (lines |> List.forall (fun l -> l.Contains "prime:" && l.Contains "refresh:"))
                   "each line records both footprints"
 
+          testCase "the family's adequacy guard is a finding, not a coin flip, across a seed sweep"
+          <| fun _ ->
+              // The guard above runs on four pinned seeds, which cannot tell a demand that always
+              // holds from one that holds nine times in ten. A consumer sweeping independent seeds
+              // found exactly that: the two classes the corpus admitted last were each carried by
+              // two pipelines out of twenty and reached by about one sample in twenty, so a
+              // hundred-iteration run missed one of them on 8 of 800 seed/bound runs — and the
+              // guard's own counterexample forbids the two things a session reaching for green
+              // would then do (re-seed, or iterate harder). This is the sweep, in the suite, so the
+              // margin is measured rather than remembered.
+              //
+              // Both bounds, because the row bound moves the draw: the pre-widening generator
+              // missed a class on 2 of 400 seeds at the shipped bound and 6 of 400 at the wider
+              // one, so a sweep at one bound alone would have under-reported it threefold.
+              let bounds = [ 9; 12 ]
+              let seeds = [ 1..300 ]
+
+              let firings =
+                  [ for bound in bounds do
+                        for seed in seeds do
+                            for r in IncrementalDelta.lawsWith bound seed 100 do
+                                if r.Law.StartsWith "sample adequacy" && not r.Passed then
+                                    yield sprintf "bound=%d seed=%d %s %A" bound seed r.Law r.Counterexample ]
+
+              Expect.isEmpty
+                  firings
+                  (sprintf
+                      "the adequacy guard fired on %d of %d runs — the generator no longer reaches a class its laws branch on often enough for a hundred iterations to find it: %A"
+                      (List.length firings)
+                      (List.length bounds * List.length seeds)
+                      (firings |> List.truncate 8))
+
+              // Zero firings over a fixed seed range is necessary and not sufficient — a range can
+              // be clean by luck. The margin is what makes it a property: every class the laws
+              // branch on is reached by a share of samples far enough above zero that a
+              // hundred-iteration miss is not a live outcome. Seven per cent is where that stops
+              // being true; the classes the sweep above was widened for sat at 5.2% and 5.4% when
+              // the guard was flipping coins, and the narrowest class now sits near 10%. A
+              // legitimate later widening that pushes a class under this floor should re-measure
+              // and move the floor deliberately, which is the whole point of it being here.
+              let verdicts, classify =
+                  IncrementalDelta.demands
+                  |> List.tryPick (function
+                      | ReachesEvery("refresh class", vs, f) -> Some(vs, f)
+                      | _ -> None)
+                  |> Option.defaultWith (fun () -> failtest "the family no longer declares a refresh-class demand")
+
+              let samples =
+                  [ for bound in bounds do
+                        for seed in seeds do
+                            yield! IncrementalDelta.samplesWith bound seed 100 ]
+
+              let tagged = samples |> List.map classify
+              let total = List.length samples
+
+              for v in verdicts do
+                  let n = tagged |> List.filter (List.contains v) |> List.length
+                  let share = 100.0 * float n / float total
+
+                  Expect.isGreaterThan
+                      share
+                      7.0
+                      (sprintf "refresh class %s was reached by only %.2f%% of %d samples" v share total)
+
           // ================= the plan (the boundary, declared as data) =================
 
           testCase "plan classifies every step, and the strategy follows the classifications"
