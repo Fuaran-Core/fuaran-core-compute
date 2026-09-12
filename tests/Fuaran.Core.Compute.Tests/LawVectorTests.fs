@@ -28,27 +28,6 @@ open Fuaran.Core
 //      describing an evaluator that no longer exists.
 // ---------------------------------------------------------------------------
 
-/// The corpus's `laws/` directory, when it is checked out alongside — the same climb
-/// `IdlSpikeTests` uses for the `nodes/` family.
-let private tryFindLawsDir () : string option =
-    let candidates (root: string) =
-        [ Path.Combine(root, "Fuaran-UI", "wire-format-fixtures", "laws")
-          Path.Combine(root, "wire-format-fixtures", "laws") ]
-
-    let rec climb (dir: string) (budget: int) =
-        if budget < 0 || isNull dir then
-            None
-        else
-            match candidates dir |> List.tryFind Directory.Exists with
-            | Some d -> Some d
-            | None ->
-                match Directory.GetParent dir with
-                | null -> None
-                | parent -> climb parent.FullName (budget - 1)
-
-    [ Directory.GetCurrentDirectory(); System.AppContext.BaseDirectory ]
-    |> List.tryPick (fun start -> climb start 12)
-
 let private field (name: string) (el: JVal) : JVal option =
     match el with
     | JObj ms -> ms |> List.tryPick (fun (k, v) -> if k = name then Some v else None)
@@ -193,13 +172,22 @@ let tests =
 
           testCase "the committed corpus vectors are the ones this kit renders"
           <| fun _ ->
-              match tryFindLawsDir () with
-              | None -> skiptest "wire-format-fixtures not checked out alongside — corpus comparison skipped"
-              | Some dir ->
-                  let path = Path.Combine(dir, LawVectorExport.transformFileName)
+              // Phase 130: the corpus is resolved from the repository's MAIN working tree and an
+              // absent one FAILS. This leg used to skip by name whenever the climb from the
+              // running binary found nothing, which is every linked worktree of this repository —
+              // so the comparison did not run in four consecutive worktree gates, and the first
+              // run that did compare found the corpus stale.
+              match SiblingCorpus.resolve LawVectorExport.familyDirName with
+              | SiblingCorpus.SkippedByRequest why -> skiptest why
+              | SiblingCorpus.Absent why -> failtest why
+              | SiblingCorpus.Found root ->
+                  let path = LawVectorExport.transformPath root
 
                   if not (File.Exists path) then
-                      skiptest "the corpus carries no transform-laws.json yet — comparison skipped"
+                      failtestf
+                          "the corpus at '%s' carries no %s — the vectors this kit renders are not published there; re-run `--emit-laws <corpus dir>` and commit the corpus"
+                          root
+                          LawVectorExport.transformFileName
                   else
                       // Read as bytes-to-text without newline translation: the file is LF and the
                       // comparison is about bytes.
