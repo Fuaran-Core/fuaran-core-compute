@@ -2023,7 +2023,11 @@ module SchemaWalk =
 
     /// No named source declared. The default, and honest: a walk over a `Ref` under it derives
     /// nothing about that source and says which name it could not resolve.
-    let internal noSources: string -> Schema option = fun _ -> None
+    ///
+    /// Public again since `0.22.0` (Phase 129). `0.19.0` narrowed it to `internal` as one of
+    /// thirty-one members a caller-count sweep found unreferenced; it had a caller the sweep could
+    /// not see, and the narrowing entry in `STABILITY.md` invited exactly this correction.
+    let noSources: string -> Schema option = fun _ -> None
 
     /// Declared source schemas as a map — the ordinary caller-side lookup, lifted so a caller
     /// holding a `Map` does not write the lambda.
