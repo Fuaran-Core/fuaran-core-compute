@@ -112,14 +112,14 @@ let tests =
 
           testCase "Sort places nulls last regardless of direction; stable"
           <| fun _ ->
-              let asc = run [ Sort [ "salary", Asc ] ] |> okTable
+              let asc = run [ Transform.sortBy [ "salary", Asc ] ] |> okTable
 
               Expect.equal
                   (cellsOf "salary" asc)
                   [ Int 90; Int 90; Int 100; Int 120; Null ]
                   "asc, nulls last, stable ties"
 
-              let desc = run [ Sort [ "salary", Desc ] ] |> okTable
+              let desc = run [ Transform.sortBy [ "salary", Desc ] ] |> okTable
               Expect.equal (cellsOf "salary" desc) [ Int 120; Int 100; Int 90; Int 90; Null ] "desc, nulls still last"
 
           testCase "Distinct dedupes whole rows, first occurrence wins"
@@ -130,7 +130,7 @@ let tests =
 
           testCase "Limit with offset"
           <| fun _ ->
-              let t = run [ Limit(2, 1) ] |> okTable
+              let t = run [ Transform.limit 2 1 ] |> okTable
               Expect.equal (cellsOf "name" t) [ Str "bob"; Str "cy" ] "skip 1, take 2"
 
           testCase "Window RowNumber partitions + orders"
@@ -189,7 +189,8 @@ let tests =
           testCase "Union concatenates matching-schema rows"
           <| fun _ ->
               let t =
-                  run [ Limit(1, 0); Union(Embedded(run [ Limit(1, 4) ] |> okTable)) ] |> okTable
+                  run [ Transform.limit 1 0; Union(Embedded(run [ Transform.limit 1 4 ] |> okTable)) ]
+                  |> okTable
 
               Expect.equal (cellsOf "name" t) [ Str "ana"; Str "el" ] "first row ∪ last row"
 
@@ -280,9 +281,9 @@ let tests =
                           Values = "s"
                           Agg = Mean }
                     Unpivot([ "dept" ], [ "s" ])
-                    Sort [ "dept", Asc ]
+                    Transform.sortBy [ "dept", Asc ]
                     Distinct
-                    Limit(10, 0)
+                    Transform.limit 10 0
                     Union(Embedded people)
                     Derive("cast", Cast(FloatType, ApplyFn(Substr, [ Lit(Str "hello"); Lit(Int 1); Lit(Int 3) ]))) ]
 
@@ -486,9 +487,9 @@ let tests =
                   """[{"$type":"sort","keys":[{"column":"revenue","descending":true},{"column":"name","descending":false}]}]"""
 
               match DataFrameCodec.decodePipeline flat with
-              | Ok [ Sort [ ("revenue", Desc); ("name", Asc) ] as p ] ->
+              | Ok [ Sort [ (Slot.Lit "revenue", Desc); (Slot.Lit "name", Asc) ] as p ] ->
                   let canonical =
-                      DataFrameCodec.encodePipeline [ Sort [ "revenue", Desc; "name", Asc ] ]
+                      DataFrameCodec.encodePipeline [ Transform.sortBy [ "revenue", Desc; "name", Asc ] ]
 
                   Expect.equal (DataFrameCodec.encodePipeline [ p ]) canonical "re-encodes canonically"
               | other -> failtestf "expected the coerced sort, got %A" other
@@ -508,7 +509,7 @@ let tests =
           testCase "Phase 92 — limit accepts count and defaults offset to 0"
           <| fun _ ->
               match DataFrameCodec.decodePipeline """[{"$type":"limit","count":10}]""" with
-              | Ok [ Limit(10, 0) ] -> ()
+              | Ok [ Limit(Slot.Lit 10, Slot.Lit 0) ] -> ()
               | other -> failtestf "expected Limit(10,0), got %A" other
 
           testCase "Phase 92 — both canonical and alias present rejects didactically"
@@ -618,7 +619,7 @@ let tests =
                   DataFrameCodec.decodePipeline
                       """[{"$type":"sort","by":[{"column":"revenue","direction":"desc"},{"column":"name"}]}]"""
               with
-              | Ok [ Sort [ ("revenue", Desc); ("name", Asc) ] ] -> ()
+              | Ok [ Sort [ (Slot.Lit "revenue", Desc); (Slot.Lit "name", Asc) ] ] -> ()
               | other -> failtestf "expected the coerced sort, got %A" other
 
           testCase "Phase 93 — both pred and predicate rejects; left+expr rejects"
@@ -716,10 +717,10 @@ let tests =
                   let pipeline =
                       match stepKind with
                       | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
-                      | 1 -> [ Sort [ "v", Asc ]; Distinct ]
+                      | 1 -> [ Transform.sortBy [ "v", Asc ]; Distinct ]
                       | 2 -> [ Derive("w", Binary(Add, Col "v", Lit(Int 1))) ]
                       | 3 -> [ GroupBy([ "g" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ]
-                      | _ -> [ Limit(2, 0) ]
+                      | _ -> [ Transform.limit 2 0 ]
 
                   (table, pipeline), r2
 
@@ -1030,9 +1031,9 @@ let tests =
           <| fun _ ->
               let unchanged =
                   [ Filter(Binary(Gt, Col "salary", Lit(Int 95)))
-                    Sort [ "salary", Asc ]
+                    Transform.sortBy [ "salary", Asc ]
                     Distinct
-                    Limit(2, 1)
+                    Transform.limit 2 1
                     Union(Embedded people)
                     Intersect(Embedded people)
                     Except(Ref "anything") ]
@@ -1777,3 +1778,85 @@ let nowTests =
                   [ Derive("a", Lit(Date "2026-09-13"))
                     Derive("b", Lit(Timestamp "2026-09-13T00:00:00Z")) ]
                   "each Now became the witness's own literal, at its own grain" ]
+
+[<Tests>]
+let slotTests =
+    testList
+        "DataFrame.Slot"
+        [ testCase "slotParamLaws certify a slot param resolves exactly as an expression param (Phase 125)"
+          <| fun _ ->
+              let results = Conformance.slotParamLaws 12500 120
+              Expect.equal (List.length results) 6 "six slot laws reported"
+
+              if results |> List.exists (fun r -> not r.Passed) then
+                  let fails =
+                      results
+                      |> List.filter (fun r -> not r.Passed)
+                      |> List.map (fun r -> sprintf "%s — %A" r.Law r.Counterexample)
+
+                  failtestf "slotParamLaws failed:\n%s" (String.concat "\n" fails)
+
+              Expect.equal (Conformance.slotParamLaws 12500 120) results "same seed ⇒ identical report"
+
+          // The adoption claim, checked rather than asserted: every pre-0.23.0 pipeline is
+          // byte-identical on the wire, so a consumer that binds nothing pays nothing for the
+          // widening. This is the property that made a breaking DU change affordable.
+          testCase "a literal-only Sort/Limit is byte-identical to the pre-0.23.0 wire"
+          <| fun _ ->
+              Expect.equal
+                  (DataFrameCodec.encodePipeline [ Transform.sortBy [ "total", Desc ]; Transform.limit 10 5 ])
+                  "[{\"$type\":\"sort\",\"by\":[{\"col\":\"total\",\"dir\":\"desc\"}]},{\"$type\":\"limit\",\"n\":10,\"offset\":5}]"
+                  "a literal slot is the bare value it always was"
+
+          testCase "a param slot round-trips through the canonical wire"
+          <| fun _ ->
+              let pipeline =
+                  [ Sort [ Slot.Param "orderBy", Asc ]; Limit(Slot.Param "take", Slot.Lit 0) ]
+
+              let json = DataFrameCodec.encodePipeline pipeline
+              Expect.stringContains json "{\"$param\":\"orderBy\"}" "the param slot's own wire shape"
+              Expect.stringContains json "\"n\":{\"$param\":\"take\"}" "a param at a count slot"
+              Expect.stringContains json "\"offset\":0" "the literal half stays bare"
+
+              match DataFrameCodec.decodePipeline json with
+              | Ok back -> Expect.equal back pipeline "decode ∘ encode is the identity over slots"
+              | Error e -> failtestf "decode failed: %A" e
+
+          testCase "a malformed param slot is refused, not read as a literal"
+          <| fun _ ->
+              match DataFrameCodec.decodePipeline """[{"$type":"limit","n":{"$param":7}}]""" with
+              | Error(MalformedShape m) -> Expect.stringContains m "$param" "the refusal names the member"
+              | other -> failtestf "expected a MalformedShape, got %A" other
+
+              match DataFrameCodec.decodePipeline """[{"$type":"limit","n":{"count":7}}]""" with
+              | Error(MalformedShape m) -> Expect.stringContains m "limit n" "the refusal names the slot"
+              | other -> failtestf "expected a MalformedShape, got %A" other
+
+          // The static walk's honesty, which is the one place the widening could have introduced a
+          // WRONG answer rather than a refused one: `readColumns` cannot see a param sort column, so
+          // `evalFrom` must not reuse a prior result on the strength of it.
+          testCase "evalFrom declines the reuse while a slot param stands"
+          <| fun _ ->
+              let table =
+                  { Schema = [ "a", IntType; "z", IntType ]
+                    Columns =
+                      [ Column.create "a" IntType [ Int 2; Int 1 ]
+                        Column.create "z" IntType [ Int 9; Int 8 ] ] }
+
+              let pipeline = [ Sort [ Slot.Param "orderBy", Asc ] ]
+
+              // `z` is not a column any LITERAL key names, so the pre-0.23.0 reasoning would have
+              // reused the prior table. The param could BE "z", so the reuse is not available.
+              match DataFrame.evalFrom table (ColumnValuesChanged "z") pipeline table with
+              | Error(UnboundParam("orderBy", _)) -> ()
+              | other -> failtestf "expected the declined reuse to reach the evaluator and refuse, got %A" other
+
+          testCase "Incremental.plan declines a slot-param sort BY NAME rather than guessing"
+          <| fun _ ->
+              match (Incremental.plan [ Sort [ Slot.Param "orderBy", Asc ] ]).Strategy with
+              | ReferenceOnly(UnresolvedSlotParam("sort", "orderBy")) -> ()
+              | other -> failtestf "expected a named UnresolvedSlotParam fall-back, got %A" other
+
+              match (Incremental.plan [ Transform.sortBy [ "a", Asc ] ]).Strategy with
+              | ReferenceOnly r -> failtestf "a literal sort must still be planned, got a fall-back: %A" r
+              | _ -> () ]

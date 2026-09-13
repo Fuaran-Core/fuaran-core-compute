@@ -226,7 +226,7 @@ let rec private stepOf (v: JVal) : Transform =
     | "filter" -> Filter(exprOf (mem "where" v))
     | "derive" -> Derive(str (mem "column" v), exprOf (mem "value" v))
     | "groupBy" -> GroupBy(v |> mem "keys" |> arr |> List.map str, v |> mem "aggregates" |> arr |> List.map aggOf)
-    | "sort" -> Sort(v |> mem "by" |> arr |> List.map orderOf)
+    | "sort" -> Transform.sortBy (v |> mem "by" |> arr |> List.map orderOf)
     // Phase 120. The reader models the WINDOW FUNCTIONS and the JOIN KINDS the vendored vectors
     // use and refuses the rest by name, on the same rule as every other member here: a vector
     // whose `cumulSum` this reader silently read as a `lag` would certify a frame the corpus did

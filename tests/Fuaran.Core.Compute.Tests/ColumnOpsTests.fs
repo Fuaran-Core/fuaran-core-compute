@@ -135,7 +135,7 @@ let tests =
                     InsertColumn(0, Column.create "m" IntType [ Null; Int 2; Int 3 ])
                     RemoveColumn "a"
                     AppendRows [ [ "a", Int 1; "b", Null ] ]
-                    ApplyTransform [ Sort [ "a", Asc ]; Distinct ] ]
+                    ApplyTransform [ Transform.sortBy [ "a", Asc ]; Distinct ] ]
 
               for op in ops do
                   match ColumnOps.decode (ColumnOps.encode op) with

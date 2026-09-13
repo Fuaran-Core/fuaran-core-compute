@@ -113,6 +113,11 @@ type FallBackReason =
     /// The identity witness could not key the source, or the delta's scheme is not the witness's —
     /// carries the delta layer's own defect.
     | RowIdentityUnusable of defect: DeltaDefect
+    /// `0.23.0` — a step's scalar `Slot` still names a PARAMETER, so the step's static shape (which
+    /// column it orders by, how many rows it keeps) is not known without an evaluation env. The
+    /// walk declines rather than guessing: substitute the params (`Transform.substitute`) and the
+    /// plan is computable again. Names the verb and the unresolved param.
+    | UnresolvedSlotParam of verb: string * param: string
     /// Phase 120 — a `Window` whose frame is not bounded, named by its window function.
     ///
     /// **RETAINED, and no longer produced by `plan` (`0.19.0`).** Frame boundedness turned out not
@@ -308,6 +313,16 @@ type IncrementalEval =
 [<RequireQualifiedAccess>]
 module Incremental =
 
+    /// `List.map` over an option-returning projection, short-circuiting to `None` — used to read a
+    /// list of scalar slots as literals, or decline the whole list when any is still a param.
+    let private mapM (f: 'a -> 'b option) (xs: 'a list) : 'b list option =
+        (Some [], xs)
+        ||> List.fold (fun acc x ->
+            match acc, f x with
+            | Some vs, Some v -> Some(v :: vs)
+            | _ -> None)
+        |> Option.map List.rev
+
     // ---- classification (pure, total, no evaluation) ----
 
     /// The stable verb name of a step — what a `FallBackReason` names, and what a consumer prints.
@@ -376,7 +391,15 @@ module Incremental =
         | Filter _
         | Project _
         | Derive _ -> PropagateRows
-        | Sort by -> MergeOrder by
+        | Sort by ->
+            // `0.23.0` — the merge needs the literal key columns. An unresolved slot param means
+            // there is no static ordering to merge against, so this declines by name.
+            match by |> mapM (fun (c, d) -> Slot.tryLit c |> Option.map (fun n -> n, d)) with
+            | Some resolved -> MergeOrder resolved
+            | None ->
+                let p = by |> List.pick (fun (c, _) -> Slot.paramName c |> List.tryHead)
+
+                FallBack(UnresolvedSlotParam("sort", p))
         // Phase 120, relaxed in `0.19.0` — EVERY window is admitted, at any position, on the same
         // argument a `Sort` is: the step emits the rows it was handed, in the order it was handed
         // them, so every step after it reads what the reference would have handed it. There is no
@@ -554,7 +577,13 @@ module Incremental =
             | Filter p :: rest -> go (WFilter p :: acc) sorts joins rest
             | Project pairs :: rest -> go (WProject pairs :: acc) sorts joins rest
             | Derive(n, e) :: rest -> go (WDerive(n, e) :: acc) sorts joins rest
-            | Sort by :: rest -> go (WSort(sorts, by) :: acc) (sorts + 1) joins rest
+            // `0.23.0` — an unresolved slot param has no static ordering, so the walk refuses the
+            // pipeline outright (`None`) and the seam falls back to the reference evaluator, which
+            // is where the `UnboundParam` will honestly surface.
+            | Sort by :: rest ->
+                match by |> mapM (fun (c, d) -> Slot.tryLit c |> Option.map (fun n -> n, d)) with
+                | None -> None
+                | Some resolved -> go (WSort(sorts, resolved) :: acc) (sorts + 1) joins rest
             | Window spec :: rest -> go (WWindow spec :: acc) sorts joins rest
             | Join(src, on, Semi) :: rest -> go (WJoin(joins, src, on, true) :: acc) sorts (joins + 1) rest
             | Join(src, on, Anti) :: rest -> go (WJoin(joins, src, on, false) :: acc) sorts (joins + 1) rest

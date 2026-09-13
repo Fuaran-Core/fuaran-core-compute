@@ -313,7 +313,7 @@ let tests =
               // and calling it `PropagateRows` would be a wrong answer to "does this step's output
               // for a row depend only on that row".
               let sorted =
-                  Incremental.plan [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Sort [ "a", Asc ] ]
+                  Incremental.plan [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Transform.sortBy [ "a", Asc ] ]
 
               Expect.equal
                   sorted.Steps
@@ -325,12 +325,12 @@ let tests =
               // A sort carries no position condition, unlike a groupBy: every step admitted after
               // it reads the order it produced exactly as it would have read the reference's.
               Expect.equal
-                  (Incremental.plan [ Sort [ "b", Asc ]; GroupBy([ "b" ], [ agg "n" Count "a" ]) ]).Strategy
+                  (Incremental.plan [ Transform.sortBy [ "b", Asc ]; GroupBy([ "b" ], [ agg "n" Count "a" ]) ]).Strategy
                   RowLocalThenGroups
                   "a sort before a maintained groupBy is still incremental"
 
               Expect.equal
-                  (Incremental.plan [ Limit(2, 0) ]).Strategy
+                  (Incremental.plan [ Transform.limit 2 0 ]).Strategy
                   (ReferenceOnly(StepNotRowLocal "limit"))
                   "an order-dependent verb that is NOT a sort is still declined, naming the verb"
 
@@ -469,7 +469,7 @@ let tests =
 
           testCase "a declined verb falls back naming the verb"
           <| fun _ ->
-              let pipeline = [ Limit(2, 0) ]
+              let pipeline = [ Transform.limit 2 0 ]
               let after = table (baseRows @ [ "r5", Int 0, Int 2 ])
               let next, _ = step pipeline baseTable after
 
@@ -489,7 +489,7 @@ let tests =
               // A prime avoids nothing whatever the plan says, so there is no fall-back to report —
               // the decline attaches to the REFRESH, where it actually happens. The plan is what a
               // consumer asks beforehand, and it still says the pipeline is declined.
-              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Limit(2, 0) ]
+              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Transform.limit 2 0 ]
               let primed = ok (Incremental.primeOn idw pipeline baseTable)
 
               Expect.equal
@@ -683,7 +683,8 @@ let tests =
               // The shape the estate's recompute fixture family carries. The saving is NOT in the
               // sorting — it is that the filter before it stops running over every row, which is
               // exactly what this pipeline cost while `sort` was declined.
-              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Sort [ "a", Asc ] ]
+              let pipeline =
+                  [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Transform.sortBy [ "a", Asc ] ]
 
               let changed =
                   table (
@@ -699,9 +700,9 @@ let tests =
               // A lone sort evaluates no expression at all, so a changed row costs nothing to
               // re-evaluate and the whole of the work is the merge, which the footprint does not
               // charge for — the same accounting a groupBy gets, and for the same reason.
-              let lone, _ = step [ Sort [ "a", Asc ] ] baseTable changed
+              let lone, _ = step [ Transform.sortBy [ "a", Asc ] ] baseTable changed
               Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a sort evaluates nothing"
-              expectMatchesReference [ Sort [ "a", Asc ] ] changed lone
+              expectMatchesReference [ Transform.sortBy [ "a", Asc ] ] changed lone
 
           testCase "the merge breaks a tie the way a stable sort does, not the way a cache would"
           <| fun _ ->
@@ -709,7 +710,7 @@ let tests =
               // cached order and merged back; at its tie with r3 the answer is decided by ARRIVAL
               // position, which is what `List.sortWith`'s stability means. A merge that compared
               // keys alone would put r3 first here and be correctly sorted and wrong.
-              let pipeline = [ Sort [ "b", Asc ] ]
+              let pipeline = [ Transform.sortBy [ "b", Asc ] ]
 
               let changed =
                   table (
@@ -732,7 +733,7 @@ let tests =
               // with identical content — so nothing in the delta says the frame moved. The cached
               // order is reusable only for rows that ARRIVED in the same relative order, and here
               // none did. This is the one case a merge gets wrong silently.
-              let pipeline = [ Sort [ "b", Asc ] ]
+              let pipeline = [ Transform.sortBy [ "b", Asc ] ]
               let reversed = table (List.rev baseRows)
               let next, delta = step pipeline baseTable reversed
 
@@ -752,7 +753,7 @@ let tests =
               // ordered-member condition and the arrival-order condition are both live here. A
               // group whose members did not move is still reused.
               let pipeline =
-                  [ Sort [ "b", Asc; "a", Desc ]
+                  [ Transform.sortBy [ "b", Asc; "a", Desc ]
                     GroupBy([ "b" ], [ agg "f" First "id"; agg "l" Last "id"; agg "n" Count "a" ]) ]
 
               let changed =
@@ -774,7 +775,7 @@ let tests =
               // A sort that is NOT last: the steps after it read the order it produced, including a
               // derived column whose TYPE is inferred over the frame at that step.
               let pipeline =
-                  [ Sort [ "b", Asc ]
+                  [ Transform.sortBy [ "b", Asc ]
                     Derive("d", Case([ Binary(Gt, Col "a", Lit(Int 3)), Lit(Str "hi") ], Lit Null))
                     Filter(Binary(Lt, Col "a", Lit(Int 5))) ]
 

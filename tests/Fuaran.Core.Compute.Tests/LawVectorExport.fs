@@ -84,10 +84,10 @@ module LawVectorExport =
     let private pipelineOf (k: int) : Transform list =
         match k with
         | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
-        | 1 -> [ Sort [ "g", Asc; "v", Asc ]; Distinct ]
+        | 1 -> [ Transform.sortBy [ "g", Asc; "v", Asc ]; Distinct ]
         | 2 -> [ Derive("d", Binary(Add, Col "v", Col "w")) ]
         | 3 -> [ GroupBy([ "g" ], [ agg "s" Sum "v"; agg "n" Count "v"; agg "m" Mean "w" ]) ]
-        | 4 -> [ Limit(2, 1) ]
+        | 4 -> [ Transform.limit 2 1 ]
         | 5 -> [ Derive("q", Binary(Div, Col "v", Lit(Int 0))) ]
         | 6 -> [ Derive("r", Binary(Div, Col "w", Lit(Float 3.0))) ]
         | _ -> [ Filter(Binary(Gt, Col "nope", Lit(Int 0))) ]
