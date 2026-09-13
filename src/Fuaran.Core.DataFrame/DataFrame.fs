@@ -159,6 +159,49 @@ type BinOp =
     | StartsWith
     | EndsWith
 
+/// The grain of a `ColExpr.Now` reading (Phase 125) — the two `Cell` cases that can hold a clock
+/// reading, and no more.
+///
+/// **Why there is no `hour` / `quarter` / `week` ladder.** A grain has to land in a cell, and the
+/// columnar model has exactly two that carry a moment: `Cell.Date` (`YYYY-MM-DD`) and
+/// `Cell.Timestamp` (`YYYY-MM-DDThh:mm:ssZ`), both canonical ISO-8601 strings. A finer or coarser
+/// grain would be vocabulary with no semantics — admitted by the type, meaningless to every
+/// evaluator. Truncating an existing moment to a period is `ScalarFn.DatePart`'s job and always was.
+[<RequireQualifiedAccess>]
+type NowGrain =
+    /// A calendar day: `Cell.Date`, `YYYY-MM-DD`.
+    | Date
+    /// An instant: `Cell.Timestamp`, `YYYY-MM-DDThh:mm:ssZ`.
+    | Timestamp
+
+/// Wire tags for `NowGrain`.
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module NowGrain =
+
+    let tag (g: NowGrain) : string =
+        match g with
+        | NowGrain.Date -> "date"
+        | NowGrain.Timestamp -> "timestamp"
+
+    let ofTag (s: string) : NowGrain option =
+        match s with
+        | "date" -> Some NowGrain.Date
+        | "timestamp" -> Some NowGrain.Timestamp
+        | _ -> None
+
+    /// Both tags, for a decoder's `UnknownType` enumeration (GP5 — a closed set names its
+    /// alternatives when it refuses).
+    let allTags: string list = [ "date"; "timestamp" ]
+
+/// The clock seam (Phase 125): a pinned reading per grain.
+///
+/// Core is FSharp.Core-only and Fable-clean (GP3), so it holds no platform clock and never will —
+/// the host supplies one. That is not merely a portability constraint: a pipeline that silently
+/// picked up wall-clock time at evaluation would not be reproducible, and its cross-host parity
+/// claim would not be falsifiable. PINNING the clock is what makes `Now` deterministic, and what
+/// `Conformance.nowLaws` certifies.
+type ClockWitness = NowGrain -> Cell
+
 /// A scalar expression over a row's columns + literals — the `ColExpr` algebra (spec §2).
 type ColExpr =
     | Col of string
@@ -187,6 +230,18 @@ type ColExpr =
     /// is a strict `UnboundParam`. Wire: `{"$type":"in","expr":...,"param":"<name>"}` — the same
     /// `in` tag as the literal form, with `param` in place of `items` (exactly one of the two).
     | InParam of ColExpr * name: string
+    /// A `now` literal at the declared grain (Phase 125) — a pipeline names the current moment
+    /// itself, instead of a host threading a param by hand for it at every site.
+    ///
+    /// Resolves by SUBSTITUTION against a pinned `ClockWitness` (`ColExpr.substituteNow` /
+    /// `Transform.substituteNow`, and the `…At` evaluator entry points that call them) — the same
+    /// seam `InParam` resolves through, reused rather than joined by a second mechanism. One that
+    /// reaches evaluation unresolved is a strict `EvalError.UnpinnedClock`, never a silent reading
+    /// of the host's real clock: Core owns no clock, and a pipeline whose answer depends on when it
+    /// ran is not reproducible and its parity claim is not falsifiable.
+    ///
+    /// Wire: `{"$type":"now","grain":"date"|"timestamp"}`.
+    | Now of grain: NowGrain
 
 /// One aggregate in a `GroupBy` / `Pivot`: an output `Name`, the aggregate `Fn`, over column `Of`.
 type Agg = { Name: string; Fn: AggFn; Of: string }
@@ -250,7 +305,9 @@ module ColExpr =
     let rec internal paramNames (e: ColExpr) : string list =
         match e with
         | Col _
-        | Lit _ -> []
+        | Lit _
+        // A `Now` carries no param name: the clock is a witness, not a binding.
+        | Now _ -> []
         | Param n -> [ n ]
         | Binary(_, a, b) -> paramNames a @ paramNames b
         | Not x -> paramNames x
@@ -274,7 +331,8 @@ module ColExpr =
     let rec substitute (env: Map<string, Cell>) (e: ColExpr) : ColExpr =
         match e with
         | Col _
-        | Lit _ -> e
+        | Lit _
+        | Now _ -> e
         | Param n ->
             match Map.tryFind n env with
             | Some c -> Lit c
@@ -300,7 +358,8 @@ module ColExpr =
         match e with
         | Col _
         | Lit _
-        | Param _ -> e
+        | Param _
+        | Now _ -> e
         | InParam(x, n) ->
             let x = substituteListParams listEnv x
 
@@ -320,6 +379,74 @@ module ColExpr =
         | ApplyFn(fn, xs) -> ApplyFn(fn, xs |> List.map (substituteListParams listEnv))
         | InList(x, items) -> InList(substituteListParams listEnv x, items |> List.map (substituteListParams listEnv))
         | IsNull x -> IsNull(substituteListParams listEnv x)
+
+    /// Replace every `Now g` with `Lit (clock g)` — the clock-pinning twin of `substitute`
+    /// (Phase 125). A `Now` resolves this way and no other: Core holds no clock, so the reading is
+    /// the caller's, taken once and frozen into the expression before anything evaluates.
+    ///
+    /// **Substitution rather than an evaluator argument, deliberately.** Threading a clock down
+    /// `evalExpr` would give every call site a chance to supply a different one, and "the same
+    /// pipeline twice under one clock agrees" would then be a claim about call-site discipline.
+    /// Substituted, it is a claim about the expression: after this call the pipeline contains no
+    /// `Now` at all, so what evaluates is a pure function of literals, and the determinism law
+    /// (`Conformance.nowLaws`) is about the value rather than about who called what.
+    ///
+    /// The witness is read AT MOST ONCE PER GRAIN per call (`pinOnce`): two `Now NowGrain.Timestamp`
+    /// nodes in one expression must be the same instant, or a pipeline could straddle a second and
+    /// compare a row against two different "now"s.
+    let rec substituteNow (clock: ClockWitness) (e: ColExpr) : ColExpr = substituteWithPinned (pinOnce clock) e
+
+    /// One reading per grain, taken on first use. `Lazy` rather than a mutable dictionary:
+    /// FSharp.Core only, Fable-clean, and a grain the expression never names is never asked for —
+    /// a witness that reads a real clock, or charges for one, is not invoked for a grain nobody
+    /// wanted.
+    and internal pinOnce (clock: ClockWitness) : ClockWitness =
+        let d = lazy (clock NowGrain.Date)
+        let ts = lazy (clock NowGrain.Timestamp)
+
+        fun g ->
+            match g with
+            | NowGrain.Date -> d.Value
+            | NowGrain.Timestamp -> ts.Value
+
+    /// The walk itself, over an ALREADY-pinned witness — so the pinning happens once at the entry
+    /// point rather than once per recursive step.
+    and internal substituteWithPinned (pinned: ClockWitness) (e: ColExpr) : ColExpr =
+        let go = substituteWithPinned pinned
+
+        match e with
+        | Col _
+        | Lit _
+        | Param _ -> e
+        | Now g -> Lit(pinned g)
+        | Binary(op, a, b) -> Binary(op, go a, go b)
+        | Not x -> Not(go x)
+        | Coalesce xs -> Coalesce(xs |> List.map go)
+        | Case(cases, els) -> Case(cases |> List.map (fun (w, t) -> go w, go t), go els)
+        | Cast(ty, x) -> Cast(ty, go x)
+        | ApplyFn(fn, xs) -> ApplyFn(fn, xs |> List.map go)
+        | InList(x, items) -> InList(go x, items |> List.map go)
+        | IsNull x -> IsNull(go x)
+        | InParam(x, n) -> InParam(go x, n)
+
+    /// Does the expression name `now` anywhere? The `paramsOf` analogue for the clock: a host that
+    /// needs to know whether a pipeline is clock-dependent (to decide caching, or to refuse to
+    /// evaluate one without pinning) reads it off the expression rather than declaring it beside.
+    let rec usesNow (e: ColExpr) : bool =
+        match e with
+        | Now _ -> true
+        | Col _
+        | Lit _
+        | Param _ -> false
+        | Binary(_, a, b) -> usesNow a || usesNow b
+        | Not x
+        | Cast(_, x)
+        | IsNull x
+        | InParam(x, _) -> usesNow x
+        | Coalesce xs
+        | ApplyFn(_, xs) -> xs |> List.exists usesNow
+        | Case(cases, els) -> (cases |> List.exists (fun (w, t) -> usesNow w || usesNow t)) || usesNow els
+        | InList(x, items) -> usesNow x || (items |> List.exists usesNow)
 
 /// Pure, total derivations over a `Transform` pipeline (Phase 77) — the load-bearing helper for a
 /// host that wires a filter/state value into a declarative pipeline: `paramsOf` names every param the
@@ -371,6 +498,31 @@ module Transform =
             | Derive(n, e) -> Derive(n, ColExpr.substituteListParams listEnv e)
             | other -> other)
 
+    /// Pin the clock through the whole pipeline (Phase 125): every `ColExpr.Now` becomes the
+    /// literal `clock` returns for its grain. ONE reading per grain per call is what makes a
+    /// pipeline's two `Now`s agree with each other — a witness that returned a fresh reading per
+    /// call would let `Derive("a", Now g)` and `Derive("b", Now g)` disagree within one evaluation,
+    /// which is the defect a host threading a param by hand was already avoiding by accident.
+    let substituteNow (clock: ClockWitness) (pipeline: Transform list) : Transform list =
+        let pinned = ColExpr.pinOnce clock
+
+        pipeline
+        |> List.map (fun t ->
+            match t with
+            | Filter p -> Filter(ColExpr.substituteWithPinned pinned p)
+            | Derive(n, e) -> Derive(n, ColExpr.substituteWithPinned pinned e)
+            | other -> other)
+
+    /// Does the pipeline name `now` anywhere? The clock's `paramsOf` — a host reads clock
+    /// dependence off the pipeline rather than declaring it beside.
+    let usesNow (pipeline: Transform list) : bool =
+        pipeline
+        |> List.exists (fun t ->
+            match t with
+            | Filter p -> ColExpr.usesNow p
+            | Derive(_, e) -> ColExpr.usesNow e
+            | _ -> false)
+
 /// The reference evaluator's recoverable error envelope — names the failure, enumerates the
 /// alternatives where a closed set is expected (GP5).
 type EvalError =
@@ -389,6 +541,12 @@ type EvalError =
     /// the reference evaluator never guesses a default — lenient "unset ⇒ no constraint" is host policy
     /// (prune the step via `Transform.paramsOf` before evaluating).
     | UnboundParam of name: string * bound: string list
+    /// A `ColExpr.Now` reached evaluation with no clock pinned (Phase 125). Names the grain that
+    /// was asked for. Strict-Core, and the exact analogue of `UnboundParam`: the reference
+    /// evaluator never reads a host clock of its own, because an answer that depends on when the
+    /// pipeline ran is not reproducible and not comparable across hosts. Pin one with
+    /// `DataFrame.evalPipelineAt` (or `Transform.substituteNow` before evaluating).
+    | UnpinnedClock of grain: NowGrain
 
 /// A description of what changed in a source table between a prior evaluation and now (Phase 34) — the
 /// input to the incremental `DataFrame.evalFrom`. `ColumnValuesChanged` = the cells of one existing
@@ -1002,6 +1160,12 @@ module DataFrame =
             // List params resolve by substitution (`substituteListParams`) BEFORE evaluation —
             // one that reaches the evaluator is unbound, same strictness as a scalar `Param`.
             Error(UnboundParam(name, env |> Map.toList |> List.map fst))
+        | Now grain ->
+            // A `now` resolves by substitution against a pinned clock (`substituteNow`) BEFORE
+            // evaluation, exactly as a list param does. One that reaches here has no clock, and
+            // Core has none to fall back on — reading the host's real clock here would make the
+            // answer depend on when the pipeline ran, which is the property `Now` exists to keep.
+            Error(UnpinnedClock grain)
         | ApplyFn(fn, args) ->
             let rec evalArgs acc =
                 function
@@ -1711,6 +1875,37 @@ module DataFrame =
     let evalPipeline (pipeline: Transform list) (input: Table) : Result<Table, EvalError> =
         evalPipelineWithInEnv noResolve Map.empty pipeline input
 
+    // ---- clock-pinning entry points (Phase 125) ----
+    // Each is `substituteNow` followed by the corresponding param-resolving entry point, in that
+    // order and one line long — there is no second evaluator. Pinning the clock FIRST is what makes
+    // `Now` deterministic: after the substitution the pipeline holds literals, so everything below
+    // is the same pure fold it was before `Now` existed, and `Conformance.nowLaws` can state its
+    // claim about a value rather than about an ordering of calls.
+
+    /// The reference evaluator with a pinned clock, a param env, and a `Ref` resolver — the full
+    /// form every other `…At` entry point delegates to.
+    let evalPipelineWithInEnvAt
+        (clock: ClockWitness)
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (input: Table)
+        : Result<Table, EvalError> =
+        evalPipelineWithInEnv resolve env (Transform.substituteNow clock pipeline) input
+
+    /// The reference evaluator over embedded sources, with a pinned clock and a param env.
+    let evalPipelineInEnvAt
+        (clock: ClockWitness)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (input: Table)
+        : Result<Table, EvalError> =
+        evalPipelineWithInEnvAt clock noResolve env pipeline input
+
+    /// The reference evaluator over embedded sources, with a pinned clock and no params.
+    let evalPipelineAt (clock: ClockWitness) (pipeline: Transform list) (input: Table) : Result<Table, EvalError> =
+        evalPipelineWithInEnvAt clock noResolve Map.empty pipeline input
+
     // ---- the reference primitives, exposed (Phase 99) ----
     // An incremental evaluator recomputes a SUBSET of what a full evaluation recomputes, so it must
     // compute that subset through the SAME code as the reference — otherwise the two answers can
@@ -1848,6 +2043,7 @@ module DataFrame =
         | InList(x, items) -> unionAll ((x :: items) |> List.map exprCols)
         | IsNull x -> exprCols x
         | InParam(x, _) -> exprCols x
+        | Now _ -> Set.empty
 
     /// The source columns a single step references — an over-approximation is safe (it only makes the
     /// incremental check more conservative, never less). A right-hand `Join`/`Union` source is a
@@ -1928,6 +2124,10 @@ module DataFrame =
         | UnresolvedSource r -> "unresolved source ref: " + r
         | OverflowError d -> "overflow: " + d
         | UnboundParam(n, bound) -> "unbound param '" + n + "'; bound: " + String.concat ", " bound
+        | UnpinnedClock g ->
+            "unpinned clock: a now("
+            + NowGrain.tag g
+            + ") reached evaluation with no ClockWitness; pin one with evalPipelineAt (or Transform.substituteNow)"
 
 
 // ============================================================================
@@ -2518,6 +2718,7 @@ module DataFrameCodec =
             Canon.typed "in" [ "expr", encodeExpr subject; "items", JArr(items |> List.map encodeExpr) ]
         | InParam(subject, name) -> Canon.typed "in" [ "expr", encodeExpr subject; "param", JStr name ]
         | IsNull inner -> Canon.typed "isNull" [ "expr", encodeExpr inner ]
+        | Now grain -> Canon.typed "now" [ "grain", JStr(NowGrain.tag grain) ]
 
     let private field k el =
         match el with
@@ -2691,6 +2892,13 @@ module DataFrameCodec =
                         )
                     | None, None -> Error(MissingField "items"))
             | "isNull" -> field "expr" el |> Result.bind decodeExpr |> Result.map IsNull
+            | "now" ->
+                field "grain" el
+                |> Result.bind strOf
+                |> Result.bind (fun gs ->
+                    match NowGrain.ofTag gs with
+                    | Some g -> Ok(Now g)
+                    | None -> Error(UnknownType(gs, NowGrain.allTags)))
             // Phase 93 — expression-level string-predicate spellings (stretch-wave-2 census):
             // {"$type":"contains","expr":X,"other":Y} (also left/right) denotes exactly
             // Binary(Contains, X, Y); same for startsWith/endsWith. Canonical stays the
@@ -2783,7 +2991,8 @@ module DataFrameCodec =
                           "cast"
                           "apply"
                           "in"
-                          "isNull" ]
+                          "isNull"
+                          "now" ]
                     )
                 ))
 

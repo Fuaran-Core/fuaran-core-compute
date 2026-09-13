@@ -1708,3 +1708,72 @@ let tests =
               Expect.equal (cellsOf "a" viaFull) [ Int 1; Int 2 ] "changing c un-blocks row 1"
               Expect.equal (cellsOf "a" viaIncr) (cellsOf "a" viaFull) "incremental agrees with full"
               Expect.notEqual (cellsOf "a" viaIncr) (cellsOf "a" prior) "the prior result was NOT reused" ]
+
+[<Tests>]
+let nowTests =
+    testList
+        "DataFrame.Now"
+        [ testCase "nowLaws certify the pinned clock: determinism, one reading per grain, strict refusal (Phase 125)"
+          <| fun _ ->
+              let results = Conformance.nowLaws 1250 150
+              Expect.equal (List.length results) 5 "five now laws reported"
+
+              if results |> List.exists (fun r -> not r.Passed) then
+                  let fails =
+                      results
+                      |> List.filter (fun r -> not r.Passed)
+                      |> List.map (fun r -> sprintf "%s — %A" r.Law r.Counterexample)
+
+                  failtestf "nowLaws failed:\n%s" (String.concat "\n" fails)
+
+              Expect.equal (Conformance.nowLaws 1250 150) results "same seed ⇒ identical report"
+
+          testCase "Now round-trips through the canonical wire on both grains"
+          <| fun _ ->
+              for grain, tag in [ NowGrain.Date, "date"; NowGrain.Timestamp, "timestamp" ] do
+                  let pipeline = [ Derive("t", Now grain) ]
+                  let json = DataFrameCodec.encodePipeline pipeline
+
+                  Expect.stringContains json ("{\"$type\":\"now\",\"grain\":\"" + tag + "\"}") "the canonical now form"
+
+                  match DataFrameCodec.decodePipeline json with
+                  | Ok back -> Expect.equal back pipeline "decode ∘ encode is the identity on a Now"
+                  | Error e -> failtestf "decode failed for grain %s: %A" tag e
+
+          testCase "an unknown grain is refused and ENUMERATES the alternatives (GP5)"
+          <| fun _ ->
+              match
+                  DataFrameCodec.decodePipeline
+                      """[{"$type":"derive","name":"t","expr":{"$type":"now","grain":"fortnight"}}]"""
+              with
+              | Error(UnknownType("fortnight", alts)) -> Expect.equal alts [ "date"; "timestamp" ] "both grains named"
+              | other -> failtestf "expected an enumerating UnknownType, got %A" other
+
+          testCase "usesNow reads clock dependence off the pipeline, and a param-only one is not clock-dependent"
+          <| fun _ ->
+              Expect.isTrue
+                  (Transform.usesNow [ Filter(Binary(Gt, Col "d", Now NowGrain.Date)) ])
+                  "a Now nested inside an expression is found"
+
+              Expect.isFalse
+                  (Transform.usesNow [ Filter(Binary(Gt, Col "d", Param "asOf")) ])
+                  "the hand-threaded param idiom is NOT clock-dependent — that is the point of the ask"
+
+          testCase "substituteNow leaves no Now behind, so what evaluates is literals"
+          <| fun _ ->
+              let clock: ClockWitness =
+                  fun g ->
+                      match g with
+                      | NowGrain.Date -> Date "2026-09-13"
+                      | NowGrain.Timestamp -> Timestamp "2026-09-13T00:00:00Z"
+
+              let pinned =
+                  Transform.substituteNow clock [ Derive("a", Now NowGrain.Date); Derive("b", Now NowGrain.Timestamp) ]
+
+              Expect.isFalse (Transform.usesNow pinned) "no Now survives the substitution"
+
+              Expect.equal
+                  pinned
+                  [ Derive("a", Lit(Date "2026-09-13"))
+                    Derive("b", Lit(Timestamp "2026-09-13T00:00:00Z")) ]
+                  "each Now became the witness's own literal, at its own grain" ]
