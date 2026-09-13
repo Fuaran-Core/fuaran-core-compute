@@ -493,6 +493,12 @@ module Incremental =
             + fn
             + "' reads the whole partition, not a bounded frame"
         | JoinNotRowPreserving kind -> "a '" + kind + "' join's output rows are not its left rows"
+        | UnresolvedSlotParam(verb, param) ->
+            "'"
+            + verb
+            + "' names the unresolved slot param '"
+            + param
+            + "', so its static shape is not known without an env (substitute it and the plan is computable)"
 
     /// A stable human string for a footprint — counts only, so two hosts print the same line.
     let footprintString (f: RecomputeFootprint) : string =
