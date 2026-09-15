@@ -170,46 +170,78 @@ let tests =
                   (once.Contains "\r")
                   "the corpus is byte-compared across three operating systems — no CR may reach it"
 
-          testCase "the committed corpus vectors are the ones this kit renders"
+          testCase
+              "the committed conformance/laws vectors are the ones this kit renders, and each is true of this evaluator"
           <| fun _ ->
-              // Phase 130: the corpus is resolved from the repository's MAIN working tree and an
-              // absent one FAILS. This leg used to skip by name whenever the climb from the
-              // running binary found nothing, which is every linked worktree of this repository —
-              // so the comparison did not run in four consecutive worktree gates, and the first
-              // run that did compare found the corpus stale.
+              // Phase 172: the vectors are AUTHORED here — `conformance/laws/transform-laws.json`
+              // at this repository's root — and the shared corpus carries a declared copy. So the
+              // oracle question and the freshness question are both asked of the committed file
+              // in this checkout, and the suite needs no corpus to certify its own contract.
+              let root = OwnedConformance.root ()
+              let path = LawVectorExport.transformPath root
+
+              if not (File.Exists path) then
+                  failtestf
+                      "this repository carries no %s at '%s' — re-run `--emit-laws` (no argument writes into conformance/) and commit the result"
+                      LawVectorExport.transformFileName
+                      path
+              else
+                  // Read as bytes-to-text without newline translation: the file is LF and the
+                  // comparison is about bytes.
+                  let committed = File.ReadAllText path
+
+                  match parseVectors committed with
+                  | Error m -> failtest ("the committed vectors did not read: " + m)
+                  | Ok vectors ->
+                      // First the oracle question — is what the file records still true of
+                      // this kit? — because that is the failure a host would suffer.
+                      let failures = vectors |> List.choose checkVector
+
+                      Expect.isEmpty
+                          failures
+                          (sprintf "the committed vectors disagree with this kit's reference evaluator: %A" failures)
+
+                      // Then the freshness question. Distinct from the above: a rendering
+                      // change (a new shape, a reworded description, a `<Version>` move behind
+                      // the `kitVersion` stamp) leaves every vector true and the file stale. The
+                      // stamp lives in THIS file, so a version cut re-emits it in the same commit
+                      // and never reaches across a repository boundary to go red.
+                      Expect.equal
+                          committed
+                          (LawVectorExport.renderTransformVectors ())
+                          "the committed conformance/laws file is not what this kit renders — re-run `--emit-laws` (no argument) and commit conformance/"
+
+          testCase "the corpus copy of laws/transform-laws.json is fresh (opt-in: FUARAN_CORE_CORPUS_FRESHNESS)"
+          <| fun _ ->
+              // Phase 130 decided that an absent corpus FAILS; Phase 172 keeps that on the leg it
+              // was written for. The comparison is the workspace copy registry's `fingerprint`
+              // equality (`roadmapctl copies`), so this leg and the estate sweep agree on what
+              // "fresh" means; the sweep reports it warn-first from every checkout, this leg fails
+              // it where the corpus is present and asked for — CI, on every push.
               match SiblingCorpus.resolve LawVectorExport.familyDirName with
-              | SiblingCorpus.SkippedByRequest why -> skiptest why
+              | SiblingCorpus.NotAsked why -> skiptest why
               | SiblingCorpus.Absent why -> failtest why
               | SiblingCorpus.Found root ->
-                  let path = LawVectorExport.transformPath root
+                  let copy = LawVectorExport.transformPath root
+                  let owned = LawVectorExport.transformPath (OwnedConformance.root ())
 
-                  if not (File.Exists path) then
+                  if not (File.Exists copy) then
                       failtestf
-                          "the corpus at '%s' carries no %s — the vectors this kit renders are not published there; re-run `--emit-laws <corpus dir>` and commit the corpus"
+                          "the corpus at '%s' carries no %s — the copy is not published there; re-run `--emit-laws <corpus dir>` and commit the corpus"
                           root
                           LawVectorExport.transformFileName
-                  else
-                      // Read as bytes-to-text without newline translation: the file is LF and the
-                      // comparison is about bytes.
-                      let committed = File.ReadAllText path
 
-                      match parseVectors committed with
-                      | Error m -> failtest ("the committed vectors did not read: " + m)
-                      | Ok vectors ->
-                          // First the oracle question — is what the corpus records still true of
-                          // this kit? — because that is the failure a host would suffer.
-                          let failures = vectors |> List.choose checkVector
+                  if not (File.Exists owned) then
+                      failtestf
+                          "this repository carries no %s at '%s' — nothing to compare the copy against"
+                          LawVectorExport.transformFileName
+                          owned
 
-                          Expect.isEmpty
-                              failures
-                              (sprintf
-                                  "the committed corpus vectors disagree with this kit's reference evaluator: %A"
-                                  failures)
-
-                          // Then the freshness question. Distinct from the above: a rendering
-                          // change (a new shape, a reworded description) leaves every vector true
-                          // and the file stale.
-                          Expect.equal
-                              committed
-                              (LawVectorExport.renderTransformVectors ())
-                              "the committed corpus file is not what this kit renders — re-run `--emit-laws <corpus dir>`" ]
+                  Expect.equal
+                      (OwnedConformance.fingerprint (File.ReadAllText copy))
+                      (OwnedConformance.fingerprint (File.ReadAllText owned))
+                      (sprintf
+                          "the corpus copy '%s' is STALE against this repository's conformance/%s/%s — re-run `--emit-laws <corpus dir>` and commit the corpus (copies.json names the same command)"
+                          copy
+                          LawVectorExport.familyDirName
+                          LawVectorExport.transformFileName) ]
