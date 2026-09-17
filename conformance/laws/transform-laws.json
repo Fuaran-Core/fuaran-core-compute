@@ -1,6 +1,6 @@
 {
   "family": "transformLaws",
-  "kitVersion": "0.25.0",
+  "kitVersion": "0.26.0",
   "seed": 20260904,
   "iterations": 16,
   "description": "The reference answers Fuaran.Core.Conformance.transformLaws compares a host evaluator against, over a sample declared by `seed` and `iterations` and computed by calling Fuaran.Core.DataFrame.evalPipeline. `input.source` is a canonical DataSource wire string (an Embedded table) and `input.pipeline` a canonical Transform pipeline wire string — both decode with the host's existing dataframe codec; no new codec is needed. A host runs the family by decoding both, evaluating the pipeline with ITS OWN evaluator, and comparing: an `ok` vector requires the host's result table to encode byte-for-byte to `expected.table`, and an `error` vector requires the host to refuse the pipeline too. The refusal is deliberately unnamed — the parity contract compares that both sides errored, never which error, so a host must not gate on a class this file does not carry. To reproduce the sample rather than replay it: per iteration draw intBelow(4) = extra (rows = extra + 2) and intBelow(7) = offset, then build columns g = Str of [a;b;c][i mod 3], v = Null when (i + offset) mod 4 = 0 else Int(i*3 + offset - 5), and w = Float((i + offset) / 2). The pipeline shape is the iteration index modulo eight over the shapes named in each vector id — a fixed cycle rather than a draw, so no shape can be missed. These are BEHAVIOUR vectors: a host asserts the encoded result, not the framing of this file.",
