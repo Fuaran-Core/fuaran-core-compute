@@ -960,7 +960,7 @@ let can_apply : evaluator  ->  op  ->  table  ->  outcome<unit, rejection> = (fu
      end))
 
 
-let invert : op  ->  table  ->  outcome<op, rejection> = (fun ( o  :  op ) ( t  :  table ) -> (match (o) with
+let invert_pre181 : op  ->  table  ->  outcome<op, rejection> = (fun ( o  :  op ) ( t  :  table ) -> (match (o) with
 | SetCell (n, row, uu___) -> begin
      (match ((find_col n t.columns)) with
 | FStar_Pervasives_Native.None -> begin
@@ -1016,6 +1016,24 @@ if ((row < (Prims.parse_int "0")) || (row >= rc)) then begin
      end
 | ApplyTransform (uu___) -> begin
      Error (NotInvertible ("ApplyTransform"))
+     end))
+
+
+let invert : evaluator  ->  op  ->  table  ->  outcome<op, rejection> = (fun ( ev  :  evaluator ) ( o  :  op ) ( t  :  table ) -> (match (o) with
+| AppendRows (uu___) -> begin
+     Error (NotInvertible ("AppendRows"))
+     end
+| ApplyTransform (uu___) -> begin
+     Error (NotInvertible ("ApplyTransform"))
+     end
+| uu___ -> begin
+     (match ((can_apply ev o t)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (()) -> begin
+     (invert_pre181 o t)
+     end)
      end))
 
 

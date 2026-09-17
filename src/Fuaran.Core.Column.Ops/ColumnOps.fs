@@ -193,29 +193,55 @@ module ColumnOps =
     /// The inverse op that undoes `op` applied to the PRE-state `t` (so `apply (invert op t) (apply op t) =
     /// t`). Defined for the structural ops; `AppendRows` / `ApplyTransform` are `NotInvertible` (no
     /// row-removal / no general transform inverse). Reads the pre-state for the values it must restore.
+    ///
+    /// **Guarded by `canApply` (Phase 181).** An op the table would REFUSE has no inverse: its rejection
+    /// is returned, not an op. Until Phase 181 the `InsertColumn` clause read NOTHING from the pre-state
+    /// and answered `RemoveColumn col.Name` unconditionally, so the "inverse" of an insert refused as a
+    /// `DuplicateColumn` was a remove that SUCCEEDED and took the column that was already there — an undo
+    /// stack that records `invert op pre` beside every op it attempts lost a column the refused op never
+    /// touched. The guard is the tree engine's (`Ops.invert`), and it strengthens all four invertible
+    /// clauses rather than one: `SetCell` and `SetColumn` read the pre-state for the column and row but
+    /// not for the VALUE, so a wrong-typed `SetCell` that `apply` refuses had an inverse too.
     let invert (op: ColumnOp) (t: Table) : Result<ColumnOp, ColumnRejection> =
         match op with
-        | SetCell(name, row, _) ->
-            match t.Columns |> List.tryFind (fun c -> c.Name = name) with
-            | None -> Error(NoSuchColumn(name, Table.columnNames t))
-            | Some col ->
-                let rc = Table.rowCount t
-
-                if row < 0 || row >= rc then
-                    Error(RowOutOfRange(row, rc))
-                else
-                    Ok(SetCell(name, row, List.item row col.Cells))
-        | SetColumn newCol ->
-            match t.Columns |> List.tryFind (fun c -> c.Name = newCol.Name) with
-            | None -> Error(NoSuchColumn(newCol.Name, Table.columnNames t))
-            | Some old -> Ok(SetColumn old)
-        | InsertColumn(_, col) -> Ok(RemoveColumn col.Name)
-        | RemoveColumn name ->
-            match t.Columns |> List.tryFindIndex (fun c -> c.Name = name) with
-            | None -> Error(NoSuchColumn(name, Table.columnNames t))
-            | Some idx -> Ok(InsertColumn(idx, List.item idx t.Columns))
+        // Neither has an inverse at ANY table — no row removal, no general transform inverse — so both
+        // answer before the guard. That is not just brevity: `canApply (ApplyTransform p)` runs the
+        // pipeline, and `invert` must not evaluate a pipeline to say what it already knows.
         | AppendRows _ -> Error(NotInvertible "AppendRows")
         | ApplyTransform _ -> Error(NotInvertible "ApplyTransform")
+        | _ ->
+            // An op is invertible only if it would apply to the pre-state. The per-clause reads below
+            // are unreachable in their `None` / out-of-range arms once this has passed; they are kept
+            // rather than replaced by `List.item` + `Option.get` so `invert` stays total by shape
+            // (GP4) and not merely by argument.
+            match canApply op t with
+            | Error e -> Error e
+            | Ok() ->
+                match op with
+                | SetCell(name, row, _) ->
+                    match t.Columns |> List.tryFind (fun c -> c.Name = name) with
+                    | None -> Error(NoSuchColumn(name, Table.columnNames t))
+                    | Some col ->
+                        let rc = Table.rowCount t
+
+                        if row < 0 || row >= rc then
+                            Error(RowOutOfRange(row, rc))
+                        else
+                            Ok(SetCell(name, row, List.item row col.Cells))
+                | SetColumn newCol ->
+                    match t.Columns |> List.tryFind (fun c -> c.Name = newCol.Name) with
+                    | None -> Error(NoSuchColumn(newCol.Name, Table.columnNames t))
+                    | Some old -> Ok(SetColumn old)
+                | InsertColumn(_, col) ->
+                    // The guard has established the column is ABSENT, which is what makes the remove
+                    // the true inverse: it takes back exactly what the insert put in.
+                    Ok(RemoveColumn col.Name)
+                | RemoveColumn name ->
+                    match t.Columns |> List.tryFindIndex (fun c -> c.Name = name) with
+                    | None -> Error(NoSuchColumn(name, Table.columnNames t))
+                    | Some idx -> Ok(InsertColumn(idx, List.item idx t.Columns))
+                | AppendRows _ -> Error(NotInvertible "AppendRows") // unreachable — answered above
+                | ApplyTransform _ -> Error(NotInvertible "ApplyTransform") // unreachable — answered above
 
     // ---- structural diff ----
 

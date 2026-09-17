@@ -108,6 +108,117 @@ let tests =
               | Error(NotInvertible "AppendRows") -> ()
               | other -> failtestf "expected NotInvertible, got %A" other
 
+              match ColumnOps.invert (ApplyTransform [ Distinct ]) baseTable with
+              | Error(NotInvertible "ApplyTransform") -> ()
+              | other -> failtestf "expected NotInvertible, got %A" other
+
+              // Unconditionally, and that is why both answer BEFORE the `canApply` guard: an
+              // `AppendRows` the table refuses still has no inverse, and saying so must not depend
+              // on running the op.
+              match ColumnOps.invert (AppendRows [ [ "nope", Int 1 ] ]) baseTable with
+              | Error(NotInvertible "AppendRows") -> ()
+              | other -> failtestf "expected NotInvertible for a refused AppendRows, got %A" other
+
+          // ---- Phase 181: invert is guarded by canApply ----
+          testCase "a REFUSED insert has no inverse — its rejection is returned, not a live remove"
+          <| fun _ ->
+              // The Phase 176 finding, closed. Before Phase 181 this answered `Ok(RemoveColumn "a")`
+              // — a remove that SUCCEEDS at the pre-state and takes the column that was already
+              // there, so an undo stack recording `invert op pre` beside every op it attempted lost
+              // a column the refused insert never touched.
+              let dup = InsertColumn(0, Column.create "a" IntType [ Int 9; Int 9; Int 9 ])
+              Expect.equal (ColumnOps.apply dup baseTable) (Error(DuplicateColumn "a")) "the insert is refused"
+              Expect.equal (ColumnOps.invert dup baseTable) (Error(DuplicateColumn "a")) "and so is its inverse"
+
+          testCase "the guard is the refusing rejection, on every invertible clause"
+          <| fun _ ->
+              // Not only `InsertColumn`. `SetCell` and `SetColumn` read the pre-state for the column
+              // and the row but never for the VALUE, so a wrong-typed cell or a wrong-length column
+              // — both of which `apply` refuses — had an inverse too.
+              let cases =
+                  [ SetCell("a", 0, Str "x"), CellTypeMismatch("a", "int", "string")
+                    SetCell("nope", 0, Int 1), NoSuchColumn("nope", [ "a"; "b" ])
+                    SetCell("a", 9, Int 1), RowOutOfRange(9, 3)
+                    SetColumn(Column.create "b" IntType [ Int 0 ]), ColumnLengthMismatch("b", 3, 1)
+                    InsertColumn(0, Column.create "z" IntType [ Int 0 ]), ColumnLengthMismatch("z", 3, 1)
+                    RemoveColumn "nope", NoSuchColumn("nope", [ "a"; "b" ]) ]
+
+              for op, rejection in cases do
+                  Expect.equal (ColumnOps.apply op baseTable) (Error rejection) (sprintf "apply refuses %A" op)
+
+                  Expect.equal
+                      (ColumnOps.invert op baseTable)
+                      (Error rejection)
+                      (sprintf "invert refuses %A with the SAME rejection" op)
+
+          testCase "the guard does not narrow the accepted cases — an applicable op still inverts"
+          <| fun _ ->
+              // The other direction, so a guard that refused everything could not pass: every op
+              // `apply` accepts still yields its inverse.
+              let accepted =
+                  [ SetCell("a", 2, Int 42)
+                    SetColumn(Column.create "b" IntType [ Int 0; Int 0; Int 0 ])
+                    InsertColumn(1, Column.create "m" IntType [ Int 7; Int 8; Int 9 ])
+                    RemoveColumn "a" ]
+
+              for op in accepted do
+                  Expect.isTrue (Result.isOk (ColumnOps.apply op baseTable)) (sprintf "apply accepts %A" op)
+                  Expect.isTrue (Result.isOk (ColumnOps.invert op baseTable)) (sprintf "invert answers for %A" op)
+
+          testCase "the inverse-only-for-applicable law goes RED on the pre-Phase-181 clause"
+          <| fun _ ->
+              // The go-red, through the kit's own injectable seam: hand `columnarOpLawsWith` the
+              // clause as it stood — `InsertColumn` answering `RemoveColumn col.Name` without
+              // reading the pre-state — and the law must lose. A law that cannot go red on the
+              // code it was written against certifies nothing.
+              let preFixInvert (op: ColumnOp) (t: Table) : Result<ColumnOp, ColumnRejection> =
+                  match op with
+                  | InsertColumn(_, col) -> Ok(RemoveColumn col.Name)
+                  | _ -> ColumnOps.invert op t
+
+              let lawNamed name (rs: LawResult list) = rs |> List.find (fun r -> r.Law = name)
+
+              let law = "columnar inverse exists only for an applicable op"
+              let shipped = Conformance.columnarOpLawsWith ColumnOps.invert 4242 200
+              let preFix = Conformance.columnarOpLawsWith preFixInvert 4242 200
+
+              Expect.isTrue (lawNamed law shipped).Passed "the shipped invert satisfies the law"
+              Expect.isFalse (lawNamed law preFix).Passed "the pre-181 clause does NOT"
+
+              match (lawNamed law preFix).Counterexample with
+              | Some c ->
+                  Expect.stringContains c "REFUSED" "the counterexample says the op was refused"
+                  Expect.stringContains c "still has an inverse" "and that it had an inverse anyway"
+              | None -> failtest "a failing law must carry its counterexample"
+
+              // and the SAME injection leaves every other law green — the seam is narrow, so a red
+              // here is about the guard and not about the family
+              for r in preFix do
+                  if r.Law <> law then
+                      Expect.isTrue r.Passed (sprintf "%s is unaffected by the injection" r.Law)
+
+          testCase "the refusal population is guarded — the law cannot be certified vacuously"
+          <| fun _ ->
+              // Phase 121's guard, on this family. The law above is about refused ops, so a run
+              // that refuses no invertible op certifies nothing by it; the family says that rather
+              // than reporting a hollow green.
+              let adequacy =
+                  Conformance.columnarOpLaws 4242 200
+                  |> List.filter (fun r -> r.Law.StartsWith "sample adequacy")
+
+              Expect.equal (List.length adequacy) 1 "the family emits exactly one adequacy law"
+              Expect.isTrue (List.head adequacy).Passed "and the shipped generator reaches the population"
+
+              // its teeth: a generator that never refuses an invertible op must fail it
+              let hollow =
+                  SampleAdequacy.reached
+                      "columnarOpLaws"
+                      "invert's refusal population"
+                      4242
+                      [ "refused invertible op", 0 ]
+
+              Expect.isFalse hollow.Passed "a run refusing no invertible op is not adequate for the law"
+
           // ---- Diff ----
           testCase "Diff.toOps reconstructs after from before (same-schema cell change)"
           <| fun _ ->
@@ -146,7 +257,11 @@ let tests =
           testCase "columnarOpLaws certify totality + canApply + invert + chain + replay (Phase 31)"
           <| fun _ ->
               let results = Conformance.columnarOpLaws 4242 200
-              Expect.equal (List.length results) 5 "totality + equivalence + inversion + verify + replay"
+
+              Expect.equal
+                  (List.length results)
+                  7
+                  "totality + equivalence + inversion + inverse-only-for-applicable + verify + replay + adequacy"
 
               if results |> List.exists (fun r -> not r.Passed) then
                   let fails =

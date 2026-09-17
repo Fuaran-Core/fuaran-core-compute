@@ -34,12 +34,16 @@
      - `invert_roundtrip` — on the four operations `invert` is defined for, the inverse of an
        accepted operation is accepted at the result and restores the input EXACTLY, on a
        well-formed table. The partial cases are CHARACTERISED beside it: `AppendRows` and
-       `ApplyTransform` are `NotInvertible` unconditionally; `invert` on `SetCell`, `SetColumn`
-       and `RemoveColumn` refuses exactly the pre-states `apply` refuses for the column and row it
-       reads; and `invert` on `InsertColumn` reads NOTHING from the pre-state — the finding
-       `invert_insert_reads_nothing` and its consequence `refused_insert_inverse_is_live`: the
-       "inverse" of a REFUSED insert is a remove that succeeds at the pre-state and takes the
-       column that was already there. Reported, not fixed here.
+       `ApplyTransform` are `NotInvertible` unconditionally, and on the four invertible operations
+       `invert` refuses exactly what `apply` refuses, with the same rejection
+       (`invert_refuses_as_apply`).
+     - `invert_only_for_applicable` (Phase 181) — an inverse exists ONLY for an applicable
+       operation. Phase 176 proved this FALSE of the shipped engine: `invert` on `InsertColumn`
+       read NOTHING from the pre-state, so the "inverse" of an insert refused as a duplicate was a
+       remove that succeeded at the pre-state and took the column that was already there. Phase 181
+       guards `invert` with `canApply`, as the tree engine does. The finding is kept as the pinned
+       negative — `invert_insert_reads_nothing` and `refused_insert_inverse_is_live` are theorems
+       about `invert_pre181`, the clause as it stood, with the shipped refusal stated beside them.
      - `diff_applicable` — every script `Diff.toOps` emits applies to the table it was computed
        against and yields the other table, on well-formed tables: the column-granular branch by
        replacing each changed column in place, the rebuild branch by removing every column and
@@ -384,8 +388,11 @@ let can_apply (ev:evaluator) (o:op) (t:table) : Tot (outcome unit rejection) =
   | Ok _ -> Ok ()
   | Error e -> Error e
 
-(* F#: `ColumnOps.invert` — the inverse that undoes `o` applied to the PRE-state `t`. *)
-let invert (o:op) (t:table) : Tot (outcome op rejection) =
+(* F#: `ColumnOps.invert` AS IT STOOD BEFORE Phase 181 — kept because Phase 176's finding is a
+   theorem about THIS function and a deleted function cannot be the subject of one. Nothing in
+   production corresponds to it any more; it is the pinned negative, and `invert` below is what
+   ships. Its `InsertColumn` clause is the finding: it reads nothing from the pre-state. *)
+let invert_pre181 (o:op) (t:table) : Tot (outcome op rejection) =
   match o with
   | SetCell n row _ ->
     (match find_col n t.columns with
@@ -413,6 +420,30 @@ let invert (o:op) (t:table) : Tot (outcome op rejection) =
         | None -> Error (NoSuchColumn n (names t))))   (* unreachable: `find_index` found it *)
   | AppendRows _ -> Error (NotInvertible "AppendRows")
   | ApplyTransform _ -> Error (NotInvertible "ApplyTransform")
+
+(* F#: `ColumnOps.invert` (Phase 181) — the inverse that undoes `o` applied to the PRE-state `t`,
+   GUARDED by `canApply`. An operation the table would refuse has no inverse: its rejection is
+   returned, which is the tree engine's shape (`Preservation.fst`'s `invert_leaf` models the same
+   guard as its first line).
+
+   The two that have no inverse at any table answer BEFORE the guard, exactly as the F# does, and
+   that ordering is load-bearing rather than cosmetic: `can_apply ev (ApplyTransform p) t` runs the
+   evaluator, and `invert` must not run a pipeline to say what it already knows. `ev` is therefore
+   a parameter this function never consults — `invert_ignores_evaluator` below is that sentence as
+   a theorem, which is what earns the parameter its place.
+
+   The guarded body is written as `invert_pre181 o t` rather than as a second copy of the four
+   clauses. On the four operations that reach it the two are the same function — the F# inlines
+   the clauses under the guard and this names them — and writing it this way makes the relation
+   the phase is about exact: what ships IS what shipped, behind a guard. *)
+let invert (ev:evaluator) (o:op) (t:table) : Tot (outcome op rejection) =
+  match o with
+  | AppendRows _ -> Error (NotInvertible "AppendRows")
+  | ApplyTransform _ -> Error (NotInvertible "ApplyTransform")
+  | _ ->
+    (match can_apply ev o t with
+     | Error e -> Error e
+     | Ok () -> invert_pre181 o t)
 
 (* F#: `ColumnOps.applyAll` — `List.fold` threading the table, short-circuiting on the first
    rejection. *)
@@ -1083,8 +1114,9 @@ let rec apply_all_preserves_wf (ev:evaluator) (os:list op) (t:table)
 
       F#: "`apply (invert op t) (apply op t) = t`", the doc comment's defining law, sampled by
       `Conformance.columnarOpLaws` and proved here for the four operations `invert` is defined
-      for, on a well-formed table. The two it refuses unconditionally, and the one it answers
-      WITHOUT LOOKING, are stated beside it.
+      for, on a well-formed table. The two it refuses unconditionally are stated beside it, as is
+      Phase 181's guard — an inverse exists only for an applicable operation — and the Phase 176
+      finding it closes, kept as a theorem about the clause that had it.
    ====================================================================================== *)
 
 (* ---- replace twice ---- *)
@@ -1235,7 +1267,7 @@ let invertible (o:op) : Tot bool =
    itself accepted at the result and restores the input exactly. *)
 let invert_roundtrip (ev:evaluator) (o:op) (t:table)
   : Lemma (requires wf t /\ invertible o /\ Ok? (apply ev o t))
-          (ensures (match invert o t with
+          (ensures (match invert ev o t with
                     | Ok inv -> apply ev inv (Ok?._0 (apply ev o t)) == Ok t
                     | Error _ -> False))
   = match o with
@@ -1290,51 +1322,75 @@ let invert_roundtrip (ev:evaluator) (o:op) (t:table)
 
 (* ---- the partial cases, characterised ---- *)
 
-(* The two `invert` refuses whatever the table: no row removal, no general transform inverse. *)
-let invert_not_invertible (rows:list (list (string & cell))) (p:string) (t:table)
-  : Lemma (ensures invert (AppendRows rows) t == Error (NotInvertible "AppendRows") /\
-                   invert (ApplyTransform p) t == Error (NotInvertible "ApplyTransform"))
+(* The two `invert` refuses whatever the table: no row removal, no general transform inverse. Both
+   answer before the guard, so this stays UNCONDITIONAL — a refused `AppendRows` is `NotInvertible`
+   too, and saying so costs no evaluation. *)
+let invert_not_invertible (ev:evaluator) (rows:list (list (string & cell))) (p:string) (t:table)
+  : Lemma (ensures invert ev (AppendRows rows) t == Error (NotInvertible "AppendRows") /\
+                   invert ev (ApplyTransform p) t == Error (NotInvertible "ApplyTransform"))
   = ()
 
-(* `invert` on `SetCell`, `SetColumn` and `RemoveColumn` refuses EXACTLY the pre-states `apply`
-   refuses for the column and row it reads, with the same rejection; where `apply` goes on to
-   refuse the VALUE (a cell of the wrong type, a column of the wrong length), `invert` has
-   already answered — and `RemoveColumn` has no value to refuse, so there the two verdicts
-   coincide outright. *)
+(* THE PHASE 181 THEOREM. An inverse exists ONLY for an applicable operation — over all six, any
+   table and any evaluator. This is what the pre-181 clause made false, and it is the one clause a
+   caller deriving `invert op pre` beside every op it attempts needs: what it is handed is either
+   a rejection or an operation the table would have taken. *)
+let invert_only_for_applicable (ev:evaluator) (o:op) (t:table)
+  : Lemma (requires Ok? (invert ev o t))
+          (ensures Ok? (apply ev o t))
+  = ()
+
+(* And the exact form, on the four operations that can have one: `invert` refuses EXACTLY the
+   pre-states `apply` refuses, with the SAME rejection, and answers wherever `apply` does. Phase
+   176 could state this for only three of them, and only for the pre-states those three READ: where
+   `apply` went on to refuse the VALUE — a cell of the wrong type, a column of the wrong length —
+   `invert` had already answered `Ok`, and on `InsertColumn` it answered without reading anything at
+   all. The guard makes the fourth operation true of it and drops the value-refusal exception with
+   it, so the statement is now an equality of verdicts rather than a characterisation of a gap. *)
 let invert_refuses_as_apply (ev:evaluator) (o:op) (t:table)
-  : Lemma (requires SetCell? o \/ SetColumn? o \/ RemoveColumn? o)
-          (ensures (match invert o t with
-                    | Error e -> apply ev o t == Error e
-                    | Ok _ -> (match apply ev o t with
-                               | Ok _ -> True
-                               | Error e -> not (RemoveColumn? o) /\
-                                           (CellTypeMismatch? e \/ ColumnLengthMismatch? e))))
+  : Lemma (requires invertible o)
+          (ensures (match apply ev o t with
+                    | Error e -> invert ev o t == Error e
+                    | Ok _ -> Ok? (invert ev o t)))
   = match o with
     | SetCell n row _ ->
       (match find_col n t.columns with
        | None -> ()
        | Some col -> if row < 0 || row >= row_count t then () else ())
     | SetColumn nc -> cells_fit_from_shape nc.name nc.ty nc.cells
-    | RemoveColumn n -> find_index_some n t.columns; nth_find_index n t.columns
+    | InsertColumn _ _ -> ()
+    | RemoveColumn n -> find_col_mem n t.columns; find_index_some n t.columns; nth_find_index n t.columns
 
-(* THE FINDING. `invert` on `InsertColumn` reads nothing from the pre-state — the F# clause is
-   `InsertColumn(_, col) -> Ok(RemoveColumn col.Name)`, unconditionally — so it answers for a
-   REFUSED insert exactly as for an accepted one. *)
-let invert_insert_reads_nothing (index:int) (col:column) (t u:table)
-  : Lemma (ensures invert (InsertColumn index col) t == Ok (RemoveColumn col.name) /\
-                   invert (InsertColumn index col) t == invert (InsertColumn index col) u)
+(* The guard never consults the evaluator, which is the whole reason the two unconditionally
+   non-invertible operations answer ahead of it: `invert` on an `ApplyTransform` does not run the
+   pipeline to report that it has no inverse. *)
+let invert_ignores_evaluator (ev ev':evaluator) (o:op) (t:table)
+  : Lemma (ensures invert ev o t == invert ev' o t)
   = ()
 
-(* And the consequence: the "inverse" of an insert refused as a DUPLICATE is a remove that
-   succeeds at the pre-state and takes the column that was already there. A caller that inverts
-   without first checking acceptance loses a column the refused operation never touched.
-   Reported here; `Column.Ops` is unchanged by this phase. *)
+(* THE PHASE 176 FINDING, kept as the pinned negative — a theorem about `invert_pre181`, the clause
+   as it stood, and no longer about anything production runs. `invert_pre181` on `InsertColumn`
+   reads nothing from the pre-state — the F# clause was `InsertColumn(_, col) -> Ok(RemoveColumn
+   col.Name)`, unconditionally — so it answered for a REFUSED insert exactly as for an accepted
+   one. It is kept rather than deleted because a finding deleted at the moment it is fixed leaves
+   nothing that goes red if the fix is ever reverted. *)
+let invert_insert_reads_nothing (index:int) (col:column) (t u:table)
+  : Lemma (ensures invert_pre181 (InsertColumn index col) t == Ok (RemoveColumn col.name) /\
+                   invert_pre181 (InsertColumn index col) t == invert_pre181 (InsertColumn index col) u)
+  = ()
+
+(* And the consequence, with its closure beside it: the pre-181 "inverse" of an insert refused as a
+   DUPLICATE is a remove that SUCCEEDS at the pre-state and takes the column that was already there
+   — a caller that inverted without first checking acceptance lost a column the refused operation
+   never touched — and the shipped `invert` REFUSES that same insert, with the rejection `apply`
+   gave. The two halves are stated together on purpose: the second is what the first is fixed by,
+   and separating them would let one be re-proved while the other quietly stopped holding. *)
 let refused_insert_inverse_is_live (ev:evaluator) (index:int) (col:column) (t:table)
   : Lemma (requires apply ev (InsertColumn index col) t == Error (DuplicateColumn col.name))
-          (ensures (match invert (InsertColumn index col) t with
+          (ensures (match invert_pre181 (InsertColumn index col) t with
                     | Ok inv -> apply ev inv t == Ok (remove_column col.name t) /\
                                len (remove_cols col.name t.columns) < len t.columns
-                    | Error _ -> False))
+                    | Error _ -> False) /\
+                   invert ev (InsertColumn index col) t == Error (DuplicateColumn col.name))
   = cells_fit_from_shape col.name col.ty col.cells;
     find_col_mem col.name t.columns;
     len_remove_mem col.name t.columns
