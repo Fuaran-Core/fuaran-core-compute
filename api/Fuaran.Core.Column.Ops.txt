@@ -1,0 +1,65 @@
+# Fuaran.Core.Column.Ops — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+field Fuaran.Core.ColumnOp+Tags.AppendRows : System.Int32 (literal)
+field Fuaran.Core.ColumnOp+Tags.ApplyTransform : System.Int32 (literal)
+field Fuaran.Core.ColumnOp+Tags.InsertColumn : System.Int32 (literal)
+field Fuaran.Core.ColumnOp+Tags.RemoveColumn : System.Int32 (literal)
+field Fuaran.Core.ColumnOp+Tags.SetCell : System.Int32 (literal)
+field Fuaran.Core.ColumnOp+Tags.SetColumn : System.Int32 (literal)
+field Fuaran.Core.ColumnRejection+Tags.CellTypeMismatch : System.Int32 (literal)
+field Fuaran.Core.ColumnRejection+Tags.ColumnLengthMismatch : System.Int32 (literal)
+field Fuaran.Core.ColumnRejection+Tags.DuplicateColumn : System.Int32 (literal)
+field Fuaran.Core.ColumnRejection+Tags.NoSuchColumn : System.Int32 (literal)
+field Fuaran.Core.ColumnRejection+Tags.NotInvertible : System.Int32 (literal)
+field Fuaran.Core.ColumnRejection+Tags.RowOutOfRange : System.Int32 (literal)
+field Fuaran.Core.ColumnRejection+Tags.RowShapeUnknownColumn : System.Int32 (literal)
+field Fuaran.Core.ColumnRejection+Tags.TransformRejected : System.Int32 (literal)
+method Fuaran.Core.ColumnOps.apply(Fuaran.Core.ColumnOp, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.ColumnRejection>
+method Fuaran.Core.ColumnOps.applyAll(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.ColumnOp>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.ColumnRejection>
+method Fuaran.Core.ColumnOps.canApply(Fuaran.Core.ColumnOp, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Core.ColumnRejection>
+method Fuaran.Core.ColumnOps.changeOf(Fuaran.Core.ColumnOp) : Fuaran.Core.Change
+method Fuaran.Core.ColumnOps.decode(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.ColumnOp, System.String>
+method Fuaran.Core.ColumnOps.decodeJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.ColumnOp, System.String>
+method Fuaran.Core.ColumnOps.encode(Fuaran.Core.ColumnOp) : System.String
+method Fuaran.Core.ColumnOps.encodeJson(Fuaran.Core.ColumnOp) : Fuaran.Core.JVal
+method Fuaran.Core.ColumnOps.invert(Fuaran.Core.ColumnOp, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.ColumnOp, Fuaran.Core.ColumnRejection>
+method Fuaran.Core.ColumnOps.rejectionString(Fuaran.Core.ColumnRejection) : System.String
+method Fuaran.Core.ColumnOps.toOps(Fuaran.Core.Table, Fuaran.Core.Table) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.ColumnOp>
+property Fuaran.Core.ColumnOps.streamWitness : Fuaran.Core.StreamWitness`3<Fuaran.Core.ColumnOp, Fuaran.Core.Table, Fuaran.Core.ColumnRejection> { get }
+type Fuaran.Core.ColumnOp (union)
+type Fuaran.Core.ColumnOp+AppendRows (type)
+type Fuaran.Core.ColumnOp+ApplyTransform (type)
+type Fuaran.Core.ColumnOp+InsertColumn (type)
+type Fuaran.Core.ColumnOp+RemoveColumn (type)
+type Fuaran.Core.ColumnOp+SetCell (type)
+type Fuaran.Core.ColumnOp+SetColumn (type)
+type Fuaran.Core.ColumnOp+Tags (type)
+type Fuaran.Core.ColumnOps (module)
+type Fuaran.Core.ColumnRejection (union)
+type Fuaran.Core.ColumnRejection+CellTypeMismatch (type)
+type Fuaran.Core.ColumnRejection+ColumnLengthMismatch (type)
+type Fuaran.Core.ColumnRejection+DuplicateColumn (type)
+type Fuaran.Core.ColumnRejection+NoSuchColumn (type)
+type Fuaran.Core.ColumnRejection+NotInvertible (type)
+type Fuaran.Core.ColumnRejection+RowOutOfRange (type)
+type Fuaran.Core.ColumnRejection+RowShapeUnknownColumn (type)
+type Fuaran.Core.ColumnRejection+Tags (type)
+type Fuaran.Core.ColumnRejection+TransformRejected (type)
+union-case Fuaran.Core.ColumnOp.NewAppendRows #4(Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.Cell>>>)
+union-case Fuaran.Core.ColumnOp.NewApplyTransform #5(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>)
+union-case Fuaran.Core.ColumnOp.NewInsertColumn #2(System.Int32, Fuaran.Core.Column)
+union-case Fuaran.Core.ColumnOp.NewRemoveColumn #3(System.String)
+union-case Fuaran.Core.ColumnOp.NewSetCell #0(System.String, System.Int32, Fuaran.Core.Cell)
+union-case Fuaran.Core.ColumnOp.NewSetColumn #1(Fuaran.Core.Column)
+union-case Fuaran.Core.ColumnRejection.NewCellTypeMismatch #3(System.String, System.String, System.String)
+union-case Fuaran.Core.ColumnRejection.NewColumnLengthMismatch #4(System.String, System.Int32, System.Int32)
+union-case Fuaran.Core.ColumnRejection.NewDuplicateColumn #1(System.String)
+union-case Fuaran.Core.ColumnRejection.NewNoSuchColumn #0(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Core.ColumnRejection.NewNotInvertible #7(System.String)
+union-case Fuaran.Core.ColumnRejection.NewRowOutOfRange #2(System.Int32, System.Int32)
+union-case Fuaran.Core.ColumnRejection.NewRowShapeUnknownColumn #5(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Core.ColumnRejection.NewTransformRejected #6(System.String)
