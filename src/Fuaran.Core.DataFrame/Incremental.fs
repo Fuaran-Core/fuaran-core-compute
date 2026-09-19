@@ -66,6 +66,22 @@ namespace Fuaran.Core
 //  while the relation's key index has not moved. A combining join fans a row
 //  out across its matches and stays declined, by type, naming the kind.
 //
+//  Phase 207 admitted a `Limit` on the SAME argument once more, and it is the
+//  argument's limiting case: the step computes nothing, evaluates nothing, and
+//  keeps a slice of the rows it was handed in the order it was handed them. The
+//  walk is already holding the reference's own frame at every step — that is the
+//  invariant the maintained `GroupBy`, the type-inferring `Derive` and the
+//  recomputed window frame all read — so the slice is one positional pass over
+//  it, and a row outside the window leaves exactly as a filtered row leaves.
+//  What the admission buys is again that the steps BEFORE it stop re-evaluating
+//  every row, which on the shapes that motivated it (`Filter > Sort > Limit`, a
+//  top-N board over a live table) is the whole of the pipeline's cost. There is
+//  no condition on WHERE the limit sits or on WHICH order it reads, because
+//  every step this walk admits preserves the reference's row set and order and
+//  a step that does not declines the pipeline before the limit is reached — so
+//  the second decline class the design anticipated is empty by construction, and
+//  saying so is more honest than a predicate that cannot be false.
+//
 //  Three order-sensitivities are handled explicitly rather than assumed away,
 //  because all three are silent when got wrong. A `Derive`d column's TYPE is
 //  inferred from the whole column, so it is recomputed from the rows alive at
@@ -197,6 +213,44 @@ type StepIncrementality =
     | FilterByRelation of kind: string * on: (string * string) list
     /// Not incrementalisable — the reference evaluator answers this pipeline.
     | FallBack of reason: FallBackReason
+    /// Phase 207 — the step KEEPS A SLICE of the rows it was handed, in the order it was handed
+    /// them, and computes nothing: a `Limit`.
+    ///
+    /// **It is declared AFTER `FallBack` rather than beside the other admitted classes, and the
+    /// position is the contract rather than the reading order.** A union case's declaration order
+    /// is its `Tags` number, so inserting this one where it belongs thematically renumbered
+    /// `FallBack` from `5` to `6` — which the Phase 183 surface classifier reports as a `retype`
+    /// beside the `union-widening`, and which costs a consumer a second, entirely gratuitous
+    /// breakage on a case that did not change. Appending costs a reader one paragraph; inserting
+    /// costs every consumer that reads a tag. `FallBackReason` above is ordered the same way, for
+    /// the same reason: `0.23.0`'s case sits before Phase 120's because that is when each arrived.
+    ///
+    /// Its output for a row is that row's cells unchanged;
+    /// what it decides is the row's SURVIVAL, and that decision is a function of the row's POSITION
+    /// in the frame at this step. The walk already holds that frame — the walked frame IS the
+    /// reference's frame, which is the invariant every other admitted step reads — so the slice is a
+    /// single positional pass over it and the rows outside the window leave exactly as a `Filter`'s
+    /// dropped rows leave. Names the count and the offset, so a consumer can see what is kept rather
+    /// than infer it.
+    ///
+    /// **It carries no position condition and no order condition, and the absence of both is a
+    /// finding rather than an omission.** The obvious shape — admit a `Limit` only where the order
+    /// it reads is one the seam maintains, and decline the rest by type — describes a distinction
+    /// this walk cannot draw: EVERY step the walk admits (`PropagateRows`, `MergeOrder`,
+    /// `RecomputeFrame`, `FilterByRelation`) preserves the reference's row set and the reference's
+    /// order, and a step that does not is declined, which declines the whole pipeline before this
+    /// one is reached. So a `Limit` the walk reaches is over a maintained order by construction,
+    /// and a predicate saying so would be a branch that cannot be taken — the same call `0.19.0`
+    /// made for `Window`, for the same reason. The one `Limit` that still declines is one whose
+    /// count or offset is an unresolved `Slot.Param`: there is no static window to take, and it
+    /// declines as `UnresolvedSlotParam "limit"` exactly as a `Sort` on a param key does.
+    ///
+    /// `PropagateRows` would be a wrong answer — the step's verdict for a row reads every row ahead
+    /// of it in the frame, not that row alone. `FallBack` would be a wrong answer too: it answers a
+    /// delta perfectly well. What the admission buys is what `MergeOrder` and `RecomputeFrame` buy —
+    /// a `Limit` evaluates no expression, so it costs nothing on this seam's instrument in either
+    /// path, and the saving is that the steps BEFORE it stop re-evaluating every row.
+    | TruncateOrder of n: int * offset: int
 
 /// The strategy a whole pipeline's classification induces.
 type IncrementalStrategy =
@@ -424,6 +478,20 @@ module Incremental =
                 MaintainGroups(keys, aggs |> List.map (fun a -> a.Name))
             else
                 FallBack(AggregateStepNotLast(verbName t))
+        // Phase 207 — a `Limit`, at ANY position, over ANY order the walk produced. There is no
+        // predicate here for the reason there is none on `Window`: every step this walk admits
+        // preserves the reference's row set and order, so the frame a `Limit` slices is the
+        // reference's frame, and a condition saying so could never be false where it is asked.
+        // What DOES decline is a window that is not statically known — the `0.23.0` rule a `Sort`
+        // on a param key already follows, reported against the same reason and in the same slot
+        // order `Transform.paramsOf` reports a limit's params in (count, then offset).
+        | Limit(n, offset) ->
+            match Slot.tryLit n, Slot.tryLit offset with
+            | Some count, Some off -> TruncateOrder(count, off)
+            | _ ->
+                let p = (Slot.paramName n @ Slot.paramName offset) |> List.head
+
+                FallBack(UnresolvedSlotParam("limit", p))
         | other -> FallBack(StepNotRowLocal(verbName other))
 
     /// Classify a whole pipeline. An empty pipeline is `RowLocal` (the identity is trivially
@@ -566,6 +634,10 @@ module Incremental =
         | WSort of int * (string * SortDir) list
         | WWindow of WindowSpec
         | WJoin of int * DataSource * (string * string) list * bool
+        /// Phase 207 — a `Limit`, carrying its already-resolved count and offset. It keys no cache
+        /// and takes no ordinal: the window it keeps is read off the frame the walk is holding, so
+        /// there is nothing about it for a prior evaluation to have recorded.
+        | WLimit of n: int * offset: int
 
     /// Split a pipeline into its propagating prefix and an optional final `GroupBy`. `None` when the
     /// pipeline is not of the incremental shape — exactly when `plan` says `ReferenceOnly`.
@@ -585,6 +657,14 @@ module Incremental =
                 | None -> None
                 | Some resolved -> go (WSort(sorts, resolved) :: acc) (sorts + 1) joins rest
             | Window spec :: rest -> go (WWindow spec :: acc) sorts joins rest
+            // Phase 207 — same shape as the `Sort` case above and for the same reason: an
+            // unresolved slot param has no static window, so the walk refuses the pipeline outright
+            // and the seam falls back to the reference evaluator, which is where the `UnboundParam`
+            // will honestly surface.
+            | Limit(n, offset) :: rest ->
+                match Slot.tryLit n, Slot.tryLit offset with
+                | Some count, Some off -> go (WLimit(count, off) :: acc) sorts joins rest
+                | _ -> None
             | Join(src, on, Semi) :: rest -> go (WJoin(joins, src, on, true) :: acc) sorts (joins + 1) rest
             | Join(src, on, Anti) :: rest -> go (WJoin(joins, src, on, false) :: acc) sorts (joins + 1) rest
             | _ -> None
@@ -760,6 +840,41 @@ module Incremental =
                     @ deadWorks
 
                 walk resolve env prior cols2 ws evalIdx evaluated caches rest)
+        // Phase 207 — a `Limit`. The rows alive AT THIS STEP, in the order they are in, are the
+        // reference's frame here (the walk's invariant), so keeping `[offset, offset + n)` of them
+        // is exactly what `DataFrame.evalLimit` does to that frame — the same `max 0` clamps on
+        // both slots, written as a membership test so the arithmetic cannot overflow the way a
+        // precomputed `offset + n` would at `System.Int32.MaxValue`.
+        //
+        // A row outside the window leaves exactly as a `Filter`'s dropped row leaves: it stops
+        // being alive, is carried on so its cached prefix survives, and takes no further part. That
+        // is also what makes a row RE-ENTERING the window correct with no extra machinery — a dead
+        // row accumulates no `Fresh` cell, so its cached prefix stops where it died, and `cellAt`'s
+        // `List.tryItem evalIdx` misses at every step past that point and evaluates afresh.
+        //
+        // `evalIdx` does not advance and `evaluated` does not move: a limit evaluates no
+        // expression, caches no cell, and the reference's own counter charges it nothing. The pass
+        // is SINGLE and positional — no index lookup per row — which is the whole of what keeps it
+        // off the quadratic list Phase 206 spent itself clearing.
+        | WLimit(n, offset) :: rest ->
+            let lo = max 0 offset
+            let keep = max 0 n
+
+            let rec go acc i =
+                function
+                | [] -> List.rev acc
+                | (w: Work) :: tail ->
+                    if not w.Alive then
+                        go (w :: acc) i tail
+                    else
+                        go
+                            ({ w with
+                                Alive = (i >= lo && i - lo < keep) }
+                             :: acc)
+                            (i + 1)
+                            tail
+
+            walk resolve env prior cols (go [] 0 works) evalIdx evaluated caches rest
         // Phase 120 — a filtering join (`Semi` / `Anti`): a `Filter` whose predicate reads a
         // relation instead of an expression. The verdict is cached in the same per-row cell list a
         // `Filter`'s is, so `evalIdx` advances; `evaluated` does not move, because the reference's

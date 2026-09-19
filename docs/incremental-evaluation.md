@@ -66,11 +66,22 @@ match (Incremental.plan pipeline).Strategy with
   propagates through it exactly as through a `Filter`. The cached verdict for a row the delta did not
   name is reused only while the relation's **key index** is unchanged: the delta describes the
   source, so it cannot say the relation moved.
-- **`FallBack`** — `Limit`, `Pivot`, `Unpivot`, `Union`, `Intersect`, `Except`; and a **combining**
-  `Join` (`inner`, `left`, `right`, `outer`), which the reason names by kind. Their output for one
-  row depends on rows a delta does not name — or is not one row at all — so the pipeline is
-  evaluated in full and the footprint says so. `WindowFrameUnbounded` is a retained reason that
-  nothing produces any more: every window function is admitted.
+- **`TruncateOrder`** — a `Limit`, at **any** position, over **any** order the walk produced. It
+  computes nothing and keeps a slice of the rows it was handed, in the order it was handed them, so
+  a row outside the window leaves exactly as a filtered row leaves and only the rows that *enter* or
+  *leave* the window change the output. There is no condition on which order it reads, and the
+  absence is deliberate: every step admitted above preserves the reference's row set and order, and
+  a step that does not declines the whole pipeline before the limit is reached — so a `Limit` the
+  walk reaches is over a maintained order by construction. As with a sort, a limit evaluates no
+  expression and is charged none; the saving is that the steps *before* it stop re-evaluating every
+  row, which on a `Filter > Sort > Limit` board is the whole of the pipeline's cost. A `Limit` whose
+  count or offset is still a `Slot.Param` declines as `UnresolvedSlotParam` — substitute the params
+  (`Transform.substitute`) and the plan is computable again.
+- **`FallBack`** — `Distinct`, `Pivot`, `Unpivot`, `Union`, `Intersect`, `Except`; and a
+  **combining** `Join` (`inner`, `left`, `right`, `outer`), which the reason names by kind. Their
+  output for one row depends on rows a delta does not name — or is not one row at all — so the
+  pipeline is evaluated in full and the footprint says so. `WindowFrameUnbounded` is a retained
+  reason that nothing produces any more: every window function is admitted.
 
 Adoption is therefore per pipeline, not per application: a declined pipeline costs exactly what it
 costs today, and can sit beside an adopted one.
@@ -183,6 +194,23 @@ expression does. What it saves is n−1 evaluations of the row expression. So th
 taking when **the row expression costs more than that bookkeeping**, and the row count is not the
 variable that decides it: both costs are linear in n, so a bigger table scales the saving and the
 spend together.
+
+**A top-N board narrows that gap but does not close it** (Phase 207, same machine, same 20,000 rows
+and one edited row, over `Filter > Sort > Limit 10`):
+
+| row expression | restricted refresh | full evaluation | |
+|---|---|---|---|
+| one `Ge` comparison | 89 ms | 56 ms | the seam **loses**, by 1.6× |
+| 129 expression nodes | 87 ms | 245 ms | the seam **wins**, by 2.8× |
+
+The narrowing is the measurable part and it is worth reading rather than glossing: a top-N *full*
+evaluation sorts the whole frame every tick, where a restricted refresh merges the named rows into
+the order it already holds — so the seam has a second saving here that `Filter > GroupBy` had no
+equivalent of, and the trivial-predicate gap falls from 3.4× against it to 1.6×. It is still
+against it. **Admitting the `Limit` did not change which variable decides the question**, and the
+honest statement of what the admission bought is that a top-N pipeline can now be *refreshed at all*
+rather than falling back — on the same terms as every other admitted pipeline, and with the same
+row-expression threshold deciding whether that is worth doing.
 
 Two practical consequences. A pipeline of cheap row-local predicates is better evaluated in full,
 and `Incremental.plan` will still say the refresh is restricted — correctly, because the footprint

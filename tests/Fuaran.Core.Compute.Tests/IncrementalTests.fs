@@ -329,10 +329,12 @@ let tests =
                   RowLocalThenGroups
                   "a sort before a maintained groupBy is still incremental"
 
+              // Phase 207 — a `Limit` is admitted on the same argument, so the order-dependent verb
+              // that still declines is one whose output is not one row per input row at all.
               Expect.equal
-                  (Incremental.plan [ Transform.limit 2 0 ]).Strategy
-                  (ReferenceOnly(StepNotRowLocal "limit"))
-                  "an order-dependent verb that is NOT a sort is still declined, naming the verb"
+                  (Incremental.plan [ Distinct ]).Strategy
+                  (ReferenceOnly(StepNotRowLocal "distinct"))
+                  "a whole-relation verb is still declined, naming the verb"
 
               Expect.equal (Incremental.plan []).Strategy RowLocal "the empty pipeline is trivially row-local"
 
@@ -469,16 +471,19 @@ let tests =
 
           testCase "a declined verb falls back naming the verb"
           <| fun _ ->
-              let pipeline = [ Transform.limit 2 0 ]
+              // Phase 207 moved this case off `Limit`, which is now admitted, and onto `Distinct` —
+              // a whole-relation verb whose output rows are not its input rows. The property is
+              // unchanged and so is the arithmetic: neither verb evaluates a per-row expression, so
+              // a full evaluation of this pipeline is charged nothing at all, which is the point of
+              // counting row evaluations at steps rather than source rows. Six source rows, zero
+              // row evaluations.
+              let pipeline = [ Distinct ]
               let after = table (baseRows @ [ "r5", Int 0, Int 2 ])
               let next, _ = step pipeline baseTable after
 
-              // A `Limit` evaluates no per-row expression, so a full evaluation of this pipeline is
-              // charged nothing at all — which is the point of counting row evaluations at steps
-              // rather than source rows. Six source rows, zero row evaluations.
               Expect.equal
                   next.Footprint.Recompute
-                  (FullRecompute(0, StepNotRowLocal "limit"))
+                  (FullRecompute(0, StepNotRowLocal "distinct"))
                   "the fall-back names the verb, and carries what the reference actually evaluated"
 
               Expect.equal next.Footprint.SourceRows 6 "`SourceRows` stays its own field"
@@ -489,12 +494,12 @@ let tests =
               // A prime avoids nothing whatever the plan says, so there is no fall-back to report —
               // the decline attaches to the REFRESH, where it actually happens. The plan is what a
               // consumer asks beforehand, and it still says the pipeline is declined.
-              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Transform.limit 2 0 ]
+              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Distinct ]
               let primed = ok (Incremental.primeOn idw pipeline baseTable)
 
               Expect.equal
                   (Incremental.plan pipeline).Strategy
-                  (ReferenceOnly(StepNotRowLocal "limit"))
+                  (ReferenceOnly(StepNotRowLocal "distinct"))
                   "the pipeline is declined"
 
               Expect.equal primed.Footprint.Recompute (Primed 5) "and its prime evaluated the filter over every row"
@@ -505,7 +510,7 @@ let tests =
 
               Expect.equal
                   next.Footprint.Recompute
-                  (FullRecompute(6, StepNotRowLocal "limit"))
+                  (FullRecompute(6, StepNotRowLocal "distinct"))
                   "the refresh is where the decline is reported"
 
               expectMatchesReference pipeline after next

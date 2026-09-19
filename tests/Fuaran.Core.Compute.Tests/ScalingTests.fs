@@ -133,6 +133,89 @@ let private costlyPipeline: Transform list =
     [ Filter(Binary(Ge, nest 16 (Col "a"), Lit(Int -1)))
       GroupBy([ "grp" ], [ { Name = "n"; Fn = Count; Of = "a" }; { Name = "s"; Fn = Sum; Of = "b" } ]) ]
 
+/// Phase 207 — a top-10 board: a row-local predicate every row satisfies, a sort, and the cut.
+/// This is the shape the `Limit` admission was asked for, and it differs from `pipeline` above in
+/// what the FULL evaluation costs as well as in what the refresh does: a full evaluation sorts the
+/// whole frame every tick, while a restricted refresh merges the named rows into the order it
+/// already holds. So the top-N case is the one where the seam has a second saving to show — and
+/// whether that is enough to beat the baseline with a ONE-COMPARISON predicate is a question this
+/// phase measured rather than assumed, because Phase 206 measured the same question for
+/// `Filter > GroupBy` and the answer was no.
+let private topNPipeline: Transform list =
+    [ Filter(Binary(Ge, Col "a", Lit(Int -10)))
+      Transform.sortBy [ "a", Desc ]
+      Transform.limit 10 0 ]
+
+/// The same top-N board with the 129-node row expression, for the same reason `costlyPipeline`
+/// exists: it is the instrument for the claim that is actually the seam's, which is about the size
+/// of the ROW EXPRESSION rather than the size of the table.
+let private costlyTopNPipeline: Transform list =
+    let rec nest n e =
+        if n = 0 then
+            e
+        else
+            nest
+                (n - 1)
+                (Binary(Sub, Binary(Add, e, Binary(Add, Col "b", Lit(Int 2))), Binary(Add, Col "b", Lit(Int 1))))
+
+    [ Filter(Binary(Ge, nest 16 (Col "a"), Lit(Int -1)))
+      Transform.sortBy [ "a", Desc ]
+      Transform.limit 10 0 ]
+
+/// The two ways to decide which rows a `Limit` keeps, as functions of the frame alone — the
+/// shipped shape and the one it was deliberately not written as, each COUNTING the element visits
+/// it makes.
+///
+/// These are MODELS of the step rather than a second evaluator, and they are here because the
+/// claim they prove is otherwise unfalsifiable: "the maintenance adds no third quadratic class" is
+/// a statement about a cost curve, and a cost curve is only a finding if the shape it excludes can
+/// be shown to fail the same instrument. The naive form is the obvious one — decide each row's
+/// membership by asking where it sits in the ordered frame — and a list index lookup walks from the
+/// head every time, which is exactly the access pattern Phase 206 spent itself removing from three
+/// files.
+///
+/// **They are COUNTED and not timed, and that is a finding of this phase rather than a preference.**
+/// A timed version was written first and measured 12 against 62 on the 1,000 → 20,000 span where a
+/// pure quadratic scores 400 — the naive shape passing the very bound it exists to fail. The cause
+/// is that both functions are small and tight, so the SMALL size is measured in tier-0 JIT code and
+/// the large one in tier-1 after the loop has been promoted, which deflates the ratio by roughly the
+/// factor observed; carrying it as a string-keyed frame added a second confound, since string
+/// equality rejects on length and the two sizes do not draw their lengths from the same
+/// distribution. Neither confound touches the family's other cases, which time work heavy enough to
+/// reach tier-1 during their own warm-up. Counting removes both: the numbers below are exact,
+/// identical on every host, and carry no clock — which is what the rest of this seam's instruments
+/// already do (GP6), and the reason the footprint was built that way in the first place.
+let private keepPositional (steps: int ref) (lo: int) (keep: int) (frame: int list) : int list =
+    let rec go acc i =
+        function
+        | [] -> List.rev acc
+        | t :: tail ->
+            steps.Value <- steps.Value + 1
+
+            if i >= lo && i - lo < keep then
+                go (t :: acc) (i + 1) tail
+            else
+                go acc (i + 1) tail
+
+    go [] 0 frame
+
+let private keepByIndexLookup (steps: int ref) (lo: int) (keep: int) (frame: int list) : int list =
+    let indexOf t =
+        let rec find i =
+            function
+            | [] -> -1
+            | x :: tail ->
+                steps.Value <- steps.Value + 1
+                if x = t then i else find (i + 1) tail
+
+        find 0 frame
+
+    frame
+    |> List.filter (fun t ->
+        steps.Value <- steps.Value + 1
+        let i = indexOf t
+        i >= lo && i - lo < keep)
+
 /// The BEST of `runs` timings, after one discarded warm-up and with the heap settled first.
 ///
 /// The minimum, not the median or the mean, and that is the one methodological choice in this file
@@ -250,4 +333,117 @@ let scalingTests =
               Expect.isLessThan
                   costlyRefresh
                   costlyFull
-                  "one edited row of twenty thousand must cost less than re-evaluating all of them" ]
+                  "one edited row of twenty thousand must cost less than re-evaluating all of them"
+
+          // ================= Phase 207 — the top-N board =================
+
+          testCase "the top-N step itself is a single pass, and the obvious shape is not"
+          <| fun _ ->
+              // The go-red half of the claim below, and the reason it is a finding rather than an
+              // assertion of the status quo: BOTH shapes are measured on the same instrument over
+              // the same two sizes, and the naive one is required to FAIL the bound the shipped one
+              // passes. Without that, "the maintenance is linear" is a sentence no run can refute.
+              //
+              // The instrument is a COUNT of element visits, exact and clock-free — see the note on
+              // the two models above for the two confounds that made the timed form report the
+              // naive shape as passing.
+              let visits (f: int ref -> int list -> int list) (n: int) =
+                  let c = ref 0
+                  f c [ 0 .. n - 1 ] |> ignore
+                  float c.Value
+
+              let ratioOf f = visits f large / visits f small
+
+              let shipped = ratioOf (fun c -> keepPositional c 0 10)
+              let naive = ratioOf (fun c -> keepByIndexLookup c 0 10)
+
+              printfn
+                  "  [scaling] %-28s positional %6.2f   index-lookup %8.2f   (bound %.0f, linear %.0f)"
+                  "limit step (visits)"
+                  shipped
+                  naive
+                  ratioBound
+                  sizeRatio
+
+              // The answers agree — a cost comparison between two functions that compute different
+              // things is not a finding about cost.
+              Expect.equal
+                  (keepPositional (ref 0) 0 10 [ 0 .. large - 1 ])
+                  (keepByIndexLookup (ref 0) 0 10 [ 0 .. large - 1 ])
+                  "both shapes keep the same rows"
+
+              Expect.equal
+                  (visits (fun c -> keepPositional c 0 10) large)
+                  (float large)
+                  "the shipped shape visits each element exactly once — one pass, by count and not by inspection"
+
+              Expect.isGreaterThan
+                  naive
+                  ratioBound
+                  "the index-lookup shape is QUADRATIC — if this ever passes the bound, the bound has stopped discriminating and the case below proves nothing"
+
+              Expect.equal
+                  shipped
+                  sizeRatio
+                  "and the shipped shape is EXACTLY linear: twenty times the rows, twenty times the visits"
+
+          testCase "a top-N refresh is linear in the row count"
+          <| fun _ ->
+              let _, _, r =
+                  scaling "Incremental top-N refresh" (fun t ->
+                      let after = editOne t
+                      let state = ok (Incremental.primeOn idw topNPipeline t)
+                      let delta = ok (Delta.diff idw t after)
+                      Incremental.refreshOn idw topNPipeline state delta after |> ok |> ignore)
+
+              // It lands at about 46 against the bound of 100, which is the highest figure in this
+              // family and is structurally explained rather than slack: the measurement primes as
+              // well as refreshes, and a prime SORTS the whole frame, so the expectation here is
+              // n log n and not n — 20,000 log 20,000 over 1,000 log 1,000 is 28.6 before the keyed
+              // maps' own growth is counted. Do not tighten the bound to fit it; the separation
+              // this family exists to make is from FOUR HUNDRED.
+              Expect.isLessThan r ratioBound "admitting the limit must not add a third quadratic class to the walk"
+
+          testCase "a top-N refresh beats the full evaluation on the clock"
+          <| fun _ ->
+              // The claim the admission was asked for: a top-10 board over a live table should not
+              // re-sort and re-filter twenty thousand rows because one of them moved.
+              //
+              // It is asserted on the COSTLY pipeline for the reason Phase 206 measured and this
+              // phase re-measured rather than inherited: the seam's per-row bookkeeping does not
+              // shrink when the row expression does. The trivial-predicate figure is measured and
+              // printed beside it, unasserted, so the gate carries its own counter-example — and on
+              // THIS shape the two figures are worth reading together, because a top-N full
+              // evaluation sorts the whole frame while the refresh merges into an order it already
+              // holds, which is a saving `Filter > GroupBy` had no equivalent of.
+              let compare (label: string) (p: Transform list) =
+                  let before = build large
+                  let after = editOne before
+                  let state = ok (Incremental.primeOn idw p before)
+                  let delta = ok (Delta.diff idw before after)
+
+                  let refreshed = ok (Incremental.refreshOn idw p state delta after)
+                  Expect.equal (Ok refreshed.Output) (DataFrame.evalPipeline p after) "refresh = reference"
+
+                  Expect.equal (Table.rowCount refreshed.Output) 10 "and it is a top-10 board"
+
+                  let refreshMs =
+                      bestMs 5 (fun () -> Incremental.refreshOn idw p state delta after |> ok |> ignore)
+
+                  let fullMs = bestMs 5 (fun () -> DataFrame.evalPipeline p after |> ok |> ignore)
+
+                  printfn "  [scaling] %-28s refresh %7.2f ms vs full %7.2f ms @ %d" label refreshMs fullMs large
+
+                  refreshMs, fullMs
+
+              let trivialRefresh, trivialFull = compare "top-N, one comparison" topNPipeline
+
+              let costlyRefresh, costlyFull =
+                  compare "top-N, 16-level expression" costlyTopNPipeline
+
+              ignore (trivialRefresh, trivialFull)
+
+              Expect.isLessThan
+                  costlyRefresh
+                  costlyFull
+                  "a top-10 refresh over one edited row of twenty thousand must cost less than recomputing the board" ]
