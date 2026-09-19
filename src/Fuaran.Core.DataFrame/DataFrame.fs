@@ -665,6 +665,66 @@ type Change =
     | SchemaChanged of SchemaDelta
     | FullChange
 
+/// Row-major access to a columnar table, in ONE pass over the column lists (Phase 206).
+///
+/// A table stores cells COLUMN-major, and every consumer that wants rows — the reference
+/// evaluator's frame, the delta's row tokens, the incremental seam's per-row work units — used to
+/// ask for them one index at a time through `Column.cell i c`. That is `List.item` over a linked
+/// list, so each cell read walks the column from its head and reading the whole table costs
+/// O(rows² × cols). It is why a ten-fold source cost a hundred-fold time, and why the incremental
+/// seam evaluated one row expression out of ten thousand and still finished AFTER the full
+/// evaluation it replaces.
+///
+/// Nothing about the representation forced it. The cells are already in row order inside each
+/// column, so a row-major view is a TRANSPOSE, and a transpose is linear. The arrays below are the
+/// transpose's working storage and never leave this assembly: `Column.Cells` is still a `Cell list`,
+/// no public signature moves, and every result is the one the per-index reads produced.
+///
+/// Internal rather than public, deliberately. This is an access STRATEGY, not a contract — a
+/// published helper would commit the packages to it, and a host that stores its columns some other
+/// way has no use for it. One implementation for the three files of this package, which is also why
+/// it lives here rather than as three private copies.
+module internal RowAccess =
+
+    /// Each schema column's cells as an array of exactly `Table.rowCount` entries, in schema order.
+    ///
+    /// Short and absent columns are padded with `Null`, which is exactly what the per-index reads
+    /// answered: `Column.cell` is total and returns `Null` past the end, and a name the table does
+    /// not carry resolved to `Null` at every row. The padding is therefore not a new policy — it is
+    /// the old one, paid once per column instead of once per cell.
+    let columns (t: Table) : Cell[] list =
+        let n = Table.rowCount t
+
+        t.Schema
+        |> List.map (fun (name, _) ->
+            match Table.tryColumn name t with
+            | Some c ->
+                let a = List.toArray c.Cells
+
+                if a.Length = n then
+                    a
+                else
+                    Array.init n (fun i -> if i < a.Length then a[i] else Null)
+            | None -> Array.create n Null)
+
+    /// Every row of the table, in row order — the transpose.
+    let rows (t: Table) : Cell list list =
+        let cols = columns t
+        let n = Table.rowCount t
+        [ for i in 0 .. n - 1 -> cols |> List.map (fun a -> a[i]) ]
+
+    /// The transpose back: full-width `rows` in row order, under the schema `cols`.
+    ///
+    /// The direct form — `rows |> List.map (fun row -> List.item ci row)` once per column — walks
+    /// every row list once per column, so it is quadratic in the COLUMN count. Reading each row into
+    /// an array once makes it one read per cell. A row narrower than the schema throws here exactly
+    /// as `List.item` did; that shape is a defect upstream and staying loud about it is the point.
+    let toColumns (cols: Schema) (rows: Cell list list) : Column list =
+        let arrs = rows |> List.map List.toArray
+
+        cols
+        |> List.mapi (fun ci (name, ty) -> Column.create name ty (arrs |> List.map (fun r -> r[ci])))
+
 /// The pure reference evaluator + the algebra's pinned semantics. Every host evaluator is
 /// certified byte-identical to this through `Conformance.transformLaws`.
 module DataFrame =
@@ -673,25 +733,17 @@ module DataFrame =
 
     type private Frame = { Cols: Schema; Rows: Cell list list }
 
+    // One transpose each way (Phase 206). These were the evaluator's per-index readers — a
+    // `Column.cell i c` per row per column going in, a `List.item ci row` per column per row coming
+    // back — and between them they made every pipeline quadratic in the row count. The results are
+    // unchanged; only the number of list traversals is.
     let private toFrame (t: Table) : Frame =
-        let n = Table.rowCount t
-
-        let rows =
-            [ for i in 0 .. n - 1 ->
-                  t.Schema
-                  |> List.map (fun (name, _) ->
-                      match Table.tryColumn name t with
-                      | Some c -> Column.cell i c
-                      | None -> Null) ]
-
-        { Cols = t.Schema; Rows = rows }
+        { Cols = t.Schema
+          Rows = RowAccess.rows t }
 
     let private ofFrame (f: Frame) : Table =
-        let columns =
-            f.Cols
-            |> List.mapi (fun ci (name, ty) -> Column.create name ty (f.Rows |> List.map (fun row -> List.item ci row)))
-
-        { Schema = f.Cols; Columns = columns }
+        { Schema = f.Cols
+          Columns = RowAccess.toColumns f.Cols f.Rows }
 
     let private colIndex (cols: Schema) (name: string) : int option =
         cols |> List.tryFindIndex (fun (n, _) -> n = name)
@@ -1413,7 +1465,13 @@ module DataFrame =
 
             // group, preserving first-appearance order of keys; key the map on the canonical token
             // (Phase 41) so float keys group host-identically, but carry the original key cells for output
-            let order, groups =
+            //
+            // Both accumulators are built in REVERSE and turned once at the end (Phase 206).
+            // `rows @ [ row ]` re-walks a group for every member it gains, and `order @ [ kt ]`
+            // re-walks the key list for every new key — so this fold was quadratic in the group
+            // size AND, on a high-cardinality grouping, quadratic in the row count. Prepending is
+            // O(1) and the two reversals are one further pass each. Same order, same groups.
+            let orderRev, groupsRev =
                 f.Rows
                 |> List.fold
                     (fun (order, map: Map<string list, Cell list * Cell list list>) row ->
@@ -1421,9 +1479,12 @@ module DataFrame =
                         let kt = groupKey k
 
                         match Map.tryFind kt map with
-                        | Some(k0, rows) -> order, Map.add kt (k0, rows @ [ row ]) map
-                        | None -> order @ [ kt ], Map.add kt (k, [ row ]) map)
+                        | Some(k0, rows) -> order, Map.add kt (k0, row :: rows) map
+                        | None -> kt :: order, Map.add kt (k, [ row ]) map)
                     ([], Map.empty)
+
+            let order = List.rev orderRev
+            let groups = groupsRev |> Map.map (fun _ (k, rows) -> k, List.rev rows)
 
             // resolve each agg's source column + type
             let resolveAgg (a: Agg) =
@@ -1630,11 +1691,17 @@ module DataFrame =
                         // restored to input order by their tag)
                         let k = groupKey (partKey row)
 
+                        // Prepended and turned below (Phase 206) — `rs @ [ i, row ]` re-walked the
+                        // partition for every row it gained, which is quadratic in the partition
+                        // size. The order accumulator is discarded here (the map's own key order
+                        // drives the collect), but it is prepended too rather than left as the one
+                        // quadratic in a fold that no longer has any.
                         match Map.tryFind k map with
-                        | Some rs -> order, Map.add k (rs @ [ i, row ]) map
-                        | None -> order @ [ k ], Map.add k [ i, row ] map)
+                        | Some rs -> order, Map.add k ((i, row) :: rs) map
+                        | None -> k :: order, Map.add k [ i, row ] map)
                     ([], Map.empty)
                 |> snd
+                |> Map.map (fun _ rs -> List.rev rs)
 
             let ofIdx = colIndex f.Cols spec.Of
 
@@ -1658,18 +1725,23 @@ module DataFrame =
                         | RowNumber -> ordered |> List.mapi (fun i _ -> Int(i + 1))
                         | Rank
                         | DenseRank ->
-                            // dense-ish rank by the order key: ties (equal order keys) share a rank
-                            ordered
-                            |> List.mapi (fun i (_, row) ->
-                                if i = 0 then
-                                    1
-                                else
-                                    let prev = ordered |> List.item (i - 1) |> snd
+                            // dense-ish rank by the order key: ties (equal order keys) share a rank.
+                            //
+                            // The predecessor is carried by the fold (Phase 206). It used to be
+                            // fetched as `ordered |> List.item (i - 1)`, which walks the partition
+                            // from its head for every row — quadratic in the PARTITION size, on a
+                            // list this loop is already traversing in order. Same steps, same
+                            // scan, same ranks.
+                            ((None, []), ordered)
+                            ||> List.fold (fun (prev, acc) (_, row) ->
+                                let step =
+                                    match prev with
+                                    | None -> 1
+                                    | Some p -> if rowKeyCompare f.Cols spec.OrderBy p row = 0 then 0 else 1
 
-                                    if rowKeyCompare f.Cols spec.OrderBy prev row = 0 then
-                                        0
-                                    else
-                                        1)
+                                Some row, step :: acc)
+                            |> snd
+                            |> List.rev
                             |> List.scan (+) 0
                             |> List.tail
                             |> List.map Int
@@ -1807,9 +1879,13 @@ module DataFrame =
                                 if Set.contains kt seen then
                                     ord, seen
                                 else
-                                    ord @ [ k, kt ], Set.add kt seen)
+                                    // Prepended, turned below (Phase 206): appending re-walked the
+                                    // index-key list for every DISTINCT key, so a pivot over a
+                                    // high-cardinality index was quadratic in that cardinality.
+                                    (k, kt) :: ord, Set.add kt seen)
                             ([], Set.empty)
                         |> fst
+                        |> List.rev
 
                     let idxCols = spec.Index |> List.map (fun n -> n, colType f.Cols n |> Option.get)
 

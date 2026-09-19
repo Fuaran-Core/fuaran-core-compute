@@ -534,21 +534,15 @@ module Incremental =
 
         go [] xs
 
-    let private rowsOf (t: Table) : Cell list list =
-        let n = Table.rowCount t
-
-        [ for i in 0 .. n - 1 ->
-              t.Schema
-              |> List.map (fun (name, _) ->
-                  match Table.tryColumn name t with
-                  | Some c -> Column.cell i c
-                  | None -> Null) ]
+    // The seam's own transposes (Phase 206). These read and wrote the source column-by-column
+    // through per-index list access, so the seam inherited the reference evaluator's quadratic even
+    // when it evaluated a single row expression — and that is why a restricted refresh used to
+    // finish AFTER the full evaluation it replaces. Same rows, same table, one traversal each.
+    let private rowsOf (t: Table) : Cell list list = RowAccess.rows t
 
     let private tableOf (cols: Schema) (rows: Cell list list) : Table =
         { Schema = cols
-          Columns =
-            cols
-            |> List.mapi (fun ci (name, ty) -> Column.create name ty (rows |> List.map (List.item ci))) }
+          Columns = RowAccess.toColumns cols rows }
 
     // ---- the row-local walk ----
 
@@ -972,7 +966,15 @@ module Incremental =
                 // Group, preserving first-appearance order, keyed by the pinned canonical token —
                 // the same partition `evalGroupBy` builds, so the two never disagree about which
                 // rows are one group.
-                let order, groups, rowGroup =
+                //
+                // Every accumulator is built in REVERSE and turned once below (Phase 206). The
+                // append forms re-walked a group's rows and tokens for each member it gained, so
+                // this fold was quadratic in the group size — and it is the reason a refresh that
+                // re-evaluated ONE row expression still scaled like a full evaluation after the
+                // frame reads were made linear. Prepending is O(1); the reversals are one pass.
+                // The group memberships are order-sensitive (`priorMembers = Some toks` decides
+                // reuse), so the turn is not cosmetic — it restores exactly the previous order.
+                let orderRev, groupsRev, rowGroup =
                     (([], Map.empty, Map.empty), alive)
                     ||> List.fold
                         (fun (order, map: Map<string, Cell list * Cell list list * string list>, rg) (token, row) ->
@@ -981,9 +983,13 @@ module Incremental =
                             let rg2 = Map.add token gt rg
 
                             match Map.tryFind gt map with
-                            | Some(k0, rows, toks) ->
-                                order, Map.add gt (k0, rows @ [ row ], toks @ [ token ]) map, rg2
-                            | None -> order @ [ gt ], Map.add gt (k, [ row ], [ token ]) map, rg2)
+                            | Some(k0, rows, toks) -> order, Map.add gt (k0, row :: rows, token :: toks) map, rg2
+                            | None -> gt :: order, Map.add gt (k, [ row ], [ token ]) map, rg2)
+
+                let order = List.rev orderRev
+
+                let groups =
+                    groupsRev |> Map.map (fun _ (k, rows, toks) -> k, List.rev rows, List.rev toks)
 
                 let touched =
                     match namedRows with
@@ -1044,12 +1050,15 @@ module Incremental =
     /// tokens are the same strings by construction rather than by a second convention.
     let private tokensOf (idw: RowIdentity<'Id>) (t: Table) : Result<string list, DeltaDefect> =
         let n = Table.rowCount t
+        // Hoisted for the reason `Delta.keyIndex` hoists it (Phase 206): the witness's per-table
+        // work belongs in the first application, not in every iteration of this loop.
+        let keyAt = idw.KeyOf t
 
         let rec go i acc (seen: Set<string>) =
             if i >= n then
                 Ok(List.rev acc)
             else
-                match idw.KeyOf t i with
+                match keyAt i with
                 | None -> Error(MissingIdentity(idw.Scheme, i))
                 | Some id ->
                     let k = idw.KeyString id

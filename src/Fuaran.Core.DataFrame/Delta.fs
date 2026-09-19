@@ -150,13 +150,28 @@ module RowIdentity =
     let byColumn (column: string) : RowIdentity<Cell> =
         { Scheme = "column:" + column
           KeyOf =
-            fun t i ->
-                match Table.tryColumn column t with
-                | Some c when i >= 0 && i < List.length c.Cells ->
-                    match Column.cell i c with
-                    | Null -> None
-                    | cell -> Some cell
-                | _ -> None
+            // The currying is load-bearing (Phase 206): the per-TABLE work sits in the FIRST
+            // application, so a consumer that keys every row binds `idw.KeyOf t` once and then pays
+            // O(1) per row. Reading the cell out of the `Cell list` by index instead is O(i) each,
+            // and keying an n-row table that way is quadratic — which is what made `Delta.diff` a
+            // hundred times dearer for ten times the rows. The answers are identical either way.
+            //
+            // A caller that writes `idw.KeyOf t i` inside its own loop re-does the first
+            // application on every iteration and gets the old cost back; the two callers in this
+            // package (`keyIndex` here, `tokensOf` in the incremental seam) hoist it deliberately.
+            fun t ->
+                let cells =
+                    match Table.tryColumn column t with
+                    | Some c -> List.toArray c.Cells
+                    | None -> [||]
+
+                fun i ->
+                    if i >= 0 && i < cells.Length then
+                        match cells[i] with
+                        | Null -> None
+                        | cell -> Some cell
+                    else
+                        None
           KeyString = DataFrame.cellToken }
 
     /// Identity is the tuple of several named columns — the composite-key case. Any `Null` component
@@ -164,18 +179,24 @@ module RowIdentity =
     let byColumns (columns: string list) : RowIdentity<Cell list> =
         { Scheme = "columns:" + String.concat "," columns
           KeyOf =
-            fun t i ->
-                let cells =
+            // Staged exactly as `byColumn` above, and for the same reason: one pass per key column
+            // on the first application, O(1) per row thereafter.
+            fun t ->
+                let arrays =
                     columns
                     |> List.map (fun n ->
                         match Table.tryColumn n t with
-                        | Some c when i >= 0 && i < List.length c.Cells -> Column.cell i c
-                        | _ -> Null)
+                        | Some c -> List.toArray c.Cells
+                        | None -> [||])
 
-                if List.isEmpty cells || cells |> List.exists Cell.isNull then
-                    None
-                else
-                    Some cells
+                fun i ->
+                    let cells =
+                        arrays |> List.map (fun a -> if i >= 0 && i < a.Length then a[i] else Null)
+
+                    if List.isEmpty cells || cells |> List.exists Cell.isNull then
+                        None
+                    else
+                        Some cells
           KeyString = DataFrame.rowTokenString }
 
 /// The delta algebra: construction, validation, composition, and the projections a consumer reads.
@@ -449,24 +470,30 @@ module Delta =
 
     // ---- diffing two tables (the reference producer) ----
 
-    let private rowCells (t: Table) (i: int) : Cell list =
-        t.Schema
-        |> List.map (fun (name, _) ->
-            match Table.tryColumn name t with
-            | Some c -> Column.cell i c
-            | None -> Null)
-
-    let private rowContentToken (t: Table) (i: int) : string = DataFrame.rowTokenString (rowCells t i)
+    /// Every row's canonical content token, in row order, indexable in O(1) (Phase 206).
+    ///
+    /// This replaced a `rowContentToken t i` that read the row by index — a `Column.cell` per
+    /// column, each walking its column list from the head — and was called once per candidate row.
+    /// Computing the whole table's tokens in one transpose is linear, and the comparison below
+    /// then costs a string equality rather than a table scan. Computed lazily at the point of use,
+    /// so a diff that refuses on a keying defect never pays for it.
+    let private rowTokens (t: Table) : string[] =
+        RowAccess.rows t |> List.map DataFrame.rowTokenString |> List.toArray
 
     /// Index a table's rows by identity, refusing whole if the witness cannot key every row uniquely.
     let private keyIndex (idw: RowIdentity<'Id>) (t: Table) : Result<(string * int) list, DeltaDefect> =
         let n = Table.rowCount t
 
+        // Hoisted (Phase 206): the witness's per-table work happens once here, not once per row.
+        // The reference witnesses build a row-indexable view of their key columns on this first
+        // application; keeping it inside the loop is what made keying an n-row table quadratic.
+        let keyAt = idw.KeyOf t
+
         let rec go i acc (seen: Set<string>) =
             if i >= n then
                 Ok(List.rev acc)
             else
-                match idw.KeyOf t i with
+                match keyAt i with
                 | None -> Error(MissingIdentity(idw.Scheme, i))
                 | Some id ->
                     let k = idw.KeyString id
@@ -495,6 +522,8 @@ module Delta =
                 |> Result.map (fun afterKeys ->
                     let beforeMap = Map.ofList beforeKeys
                     let afterMap = Map.ofList afterKeys
+                    let beforeTokens = rowTokens before
+                    let afterTokens = rowTokens after
 
                     let fromAfter =
                         afterKeys
@@ -502,7 +531,7 @@ module Delta =
                             match Map.tryFind k beforeMap with
                             | None -> Some(ByKey k, RowAdded)
                             | Some bi ->
-                                if rowContentToken before bi = rowContentToken after ai then
+                                if beforeTokens[bi] = afterTokens[ai] then
                                     None // present at both ends, byte-identical content — not a change
                                 else
                                     Some(ByKey k, RowChanged))
@@ -528,10 +557,12 @@ module Delta =
             let nb = Table.rowCount before
             let na = Table.rowCount after
             let shared = min nb na
+            let beforeTokens = rowTokens before
+            let afterTokens = rowTokens after
 
             let changed =
                 [ for i in 0 .. shared - 1 do
-                      if rowContentToken before i <> rowContentToken after i then
+                      if beforeTokens[i] <> afterTokens[i] then
                           ByOrdinal i, RowChanged ]
 
             let added = [ for i in shared .. na - 1 -> ByOrdinal i, RowAdded ]

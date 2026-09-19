@@ -120,6 +120,77 @@ env, a moved schema, a `FullRefresh` delta, an ordinal-addressed delta, or an id
 cannot key the source each degrade to a full evaluation carrying its reason. Degrading is always
 available and always correct.
 
+## What it costs on the clock
+
+The footprint counts what a refresh RE-EVALUATES. It does not track time, and until Phase 206 the
+two answers disagreed: the refresh really did evaluate one row expression instead of ten thousand,
+and it still finished **after** the full evaluation it replaced.
+
+The cause was not the seam. A table stores its cells column-major as `Cell list`, and every
+consumer that wanted rows asked for them one index at a time through `Column.cell i c` — `List.item`
+over a linked list, so each cell read walked its column from the head and reading an n-row table
+cost O(n² × columns). The reference evaluator's frame, `Delta.diff`'s row comparison, the reference
+identity witnesses and the seam's own transposes all did it, and four grouping folds compounded it
+by appending to an accumulator once per row. Every one of those is a single pass now, and no public
+signature moved to get there.
+
+Measured on one machine over a `Filter > GroupBy` pipeline with one row of the source edited.
+Both columns are the median of three timings after a warm-up — the same estimator on both sides,
+which is what makes them comparable:
+
+| | before, 1,000 | before, 20,000 | ratio | after, 1,000 | after, 20,000 | ratio |
+|---|---|---|---|---|---|---|
+| reference evaluation | 19.27 ms | 3,153.39 ms | 163.67 | 1.37 ms | 27.49 ms | 20.26 |
+| `Delta.diff` | 18.62 ms | 7,689.30 ms | 412.85 | 4.06 ms | 107.20 ms | 26.91 |
+| prime + diff + refresh | 36.36 ms | 16,015.97 ms | 440.48 | 6.45 ms | 246.03 ms | 38.43 |
+
+A ratio of about twenty for twenty times the rows is the linear shape; four hundred is the
+quadratic one. The `Scaling` family in this repository's suite holds that shape rather than any
+absolute time, because Core owns no clock and an absolute threshold is a test that eventually fails
+on a slow runner for a reason nobody can act on.
+
+The family itself reports slightly **higher** post-fix ratios — about 34, 52 and 44 — because it
+uses the best of five timings rather than a median. Noise here is additive, so the minimum is the
+better estimate of the true cost, and it is at the 1,000-row end that a median is most inflated by
+fixed overhead: removing that inflation raises the ratio. The honest reading is that none of the
+three is exactly linear, and none needs to be — they are n log n over keyed maps whose comparisons
+are string and string-list shaped. The bound the family enforces is five times the linear
+expectation, which clears those shapes twice over and still refuses a quadratic four times over.
+
+The same figures hold under **Fable**, which is what you would expect and is worth having measured
+rather than assumed: the access pattern was in shared code, so both pipelines carry the fix. On
+node, the reference evaluation runs 1.47 ms → 20.91 ms and `Delta.diff` 3.78 ms → 95.69 ms over the
+same 1,000 → 20,000 span — ratios of 14 and 25, which is the linear shape. That ratio IS the
+evidence: a quadratic JS evaluator would score in the hundreds here whatever the machine. The
+`Scaling` family gates the .NET leg only; the JS figures are recorded, not enforced, because a
+wall-clock bound on a JS runtime is a test about the runtime.
+
+### When the seam actually pays — it is about the row expression, not the row count
+
+Removing the quadratic did not by itself make a restricted refresh cheaper than a full evaluation.
+It made the seam's **own per-row bookkeeping** the dominant cost:
+
+| row expression | restricted refresh | full evaluation | |
+|---|---|---|---|
+| one `Ge` comparison | 88 ms | 20 ms | the seam **loses** |
+| 129 expression nodes | 99 ms | 224 ms | the seam **wins** |
+
+Both rows are 20,000 rows with one row edited. Read them together: the refresh's cost barely moves
+between them (88 → 99 ms) while the full evaluation's rises elevenfold. The refresh pays, per
+source row, for an identity token, its uniqueness check, two lookups into the prior row-cell map
+and a group-membership entry — string-keyed persistent-map operations that do not shrink when the
+expression does. What it saves is n−1 evaluations of the row expression. So the seam is worth
+taking when **the row expression costs more than that bookkeeping**, and the row count is not the
+variable that decides it: both costs are linear in n, so a bigger table scales the saving and the
+spend together.
+
+Two practical consequences. A pipeline of cheap row-local predicates is better evaluated in full,
+and `Incremental.plan` will still say the refresh is restricted — correctly, because the footprint
+claim is about expression evaluations and is true. And a pipeline whose per-row work is real — a
+long derived expression, a `Case` ladder, string work — is exactly where the seam was designed to
+be used. Measure your own pipeline rather than reading either row as a rule: the threshold is a
+property of your expressions, and the two figures above bracket it.
+
 ## What it does not do
 
 - **It does not maintain a delta on the OUTPUT.** A refresh returns the new table, not a description
