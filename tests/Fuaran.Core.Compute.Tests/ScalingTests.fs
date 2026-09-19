@@ -162,6 +162,32 @@ let private costlyTopNPipeline: Transform list =
       Transform.sortBy [ "a", Desc ]
       Transform.limit 10 0 ]
 
+/// Phase 202 — a `Having`: the same grouping as `pipeline`, with a filter over the GROUP table
+/// after it. This is the shape the seam declined until this phase, and it is the one whose tail
+/// work is bounded by the group count rather than by the row count — `build` holds the grouping key
+/// to seventeen values whatever the source size, so the tail evaluates seventeen predicates where
+/// the prefix evaluates `n`.
+let private groupTailPipeline: Transform list =
+    [ Filter(Binary(Ge, Col "a", Lit(Int -10)))
+      GroupBy([ "grp" ], [ { Name = "n"; Fn = Count; Of = "a" }; { Name = "s"; Fn = Sum; Of = "b" } ])
+      Filter(Binary(Gt, Col "n", Lit(Int 0))) ]
+
+/// The same `Having` with the 129-node row expression, for the reason `costlyPipeline` exists: the
+/// seam's proposition is about the size of the ROW EXPRESSION, not the size of the table, and the
+/// two shapes give different answers.
+let private costlyGroupTailPipeline: Transform list =
+    let rec nest n e =
+        if n = 0 then
+            e
+        else
+            nest
+                (n - 1)
+                (Binary(Sub, Binary(Add, e, Binary(Add, Col "b", Lit(Int 2))), Binary(Add, Col "b", Lit(Int 1))))
+
+    [ Filter(Binary(Ge, nest 16 (Col "a"), Lit(Int -1)))
+      GroupBy([ "grp" ], [ { Name = "n"; Fn = Count; Of = "a" }; { Name = "s"; Fn = Sum; Of = "b" } ])
+      Filter(Binary(Gt, Col "n", Lit(Int 0))) ]
+
 /// The two ways to decide which rows a `Limit` keeps, as functions of the frame alone — the
 /// shipped shape and the one it was deliberately not written as, each COUNTING the element visits
 /// it makes.
@@ -446,4 +472,68 @@ let scalingTests =
               Expect.isLessThan
                   costlyRefresh
                   costlyFull
-                  "a top-10 refresh over one edited row of twenty thousand must cost less than recomputing the board" ]
+                  "a top-10 refresh over one edited row of twenty thousand must cost less than recomputing the board"
+
+          // ================= Phase 202 — the steps after a maintained group-by =================
+
+          testCase "a group-tail refresh is linear in the row count"
+          <| fun _ ->
+              // The obligation this phase inherits rather than chooses: Phase 206 cleared two
+              // quadratic classes out of this seam and recorded a third it did not close, so a
+              // widening that routes MORE pipelines onto the restricted path must not add a fourth.
+              //
+              // The tail's own work is bounded by the GROUP count, which `build` holds at seventeen
+              // whatever the source size, so this case is measuring that the tail did not make the
+              // source scan worse — which is the only way it could go quadratic.
+              let _, _, r =
+                  scaling "Incremental.refreshOn (tail)" (fun t ->
+                      let after = editOne t
+                      let state = ok (Incremental.primeOn idw groupTailPipeline t)
+                      let delta = ok (Delta.diff idw t after)
+                      Incremental.refreshOn idw groupTailPipeline state delta after |> ok |> ignore)
+
+              Expect.isLessThan r ratioBound "the group tail must not put a third quadratic class back"
+
+          testCase "a group-tail refresh, measured against the full evaluation"
+          <| fun _ ->
+              // Measured and reported UNFLATTERINGLY, on the terms Phase 206 set: the trivial
+              // predicate is the shape where this seam LOSES, because its per-source-row
+              // string-keyed bookkeeping does not shrink when the row expression does. That figure
+              // is printed and NOT asserted on — asserting it would be asserting a claim the
+              // measurement does not support, and hiding it would be worse.
+              //
+              // What IS asserted is the costly shape, which is the claim the seam actually makes.
+              let compare (label: string) (p: Transform list) =
+                  let before = build large
+                  let after = editOne before
+                  let state = ok (Incremental.primeOn idw p before)
+                  let delta = ok (Delta.diff idw before after)
+
+                  let refreshed = ok (Incremental.refreshOn idw p state delta after)
+                  Expect.equal (Ok refreshed.Output) (DataFrame.evalPipeline p after) "refresh = reference"
+
+                  match refreshed.Footprint.Recompute with
+                  | GroupsRecomputed _ -> ()
+                  | other -> failtestf "%s: expected a maintained-group refresh, got %A" label other
+
+                  let refreshMs =
+                      bestMs 5 (fun () -> Incremental.refreshOn idw p state delta after |> ok |> ignore)
+
+                  let fullMs = bestMs 5 (fun () -> DataFrame.evalPipeline p after |> ok |> ignore)
+
+                  printfn "  [scaling] %-28s refresh %7.2f ms vs full %7.2f ms @ %d" label refreshMs fullMs large
+
+                  refreshMs, fullMs
+
+              let trivialRefresh, trivialFull =
+                  compare "group-tail, one comparison" groupTailPipeline
+
+              let costlyRefresh, costlyFull =
+                  compare "group-tail, 16-level expression" costlyGroupTailPipeline
+
+              ignore (trivialRefresh, trivialFull)
+
+              Expect.isLessThan
+                  costlyRefresh
+                  costlyFull
+                  "a Having over one edited row of twenty thousand must cost less than recomputing it" ]

@@ -297,17 +297,28 @@ let tests =
 
               Expect.equal grouped.Strategy RowLocalThenGroups "row-local then groups"
 
-              // The SAME groupBy, one step earlier, is not maintainable — what follows it would
-              // need a delta over the group table, and no such delta was supplied.
+              // Phase 202 — the SAME groupBy, one step earlier, IS maintainable now: the delta over
+              // the group table is the set of groups `MaintainGroups` recomputed, and the steps
+              // after it walk the group table. What is declined is a SECOND aggregating step, which
+              // would group that table in turn. (Moved rather than deleted, exactly as Phase 207
+              // moved this suite's `Limit` assertions onto `Distinct`: the assertion is about where
+              // the seam's boundary IS, and the boundary moved one verb along.)
               let midGrouped =
                   Incremental.plan
                       [ GroupBy([ "b" ], [ agg "n" Count "a" ])
                         Filter(Binary(Gt, Col "n", Lit(Int 0))) ]
 
+              Expect.equal midGrouped.Strategy RowLocalThenGroups "a groupBy with a tail is maintained, not declined"
+
+              let twiceGrouped =
+                  Incremental.plan
+                      [ GroupBy([ "b" ], [ agg "n" Count "a" ])
+                        GroupBy([ "n" ], [ agg "m" Count "n" ]) ]
+
               Expect.equal
-                  midGrouped.Strategy
-                  (ReferenceOnly(AggregateStepNotLast "groupBy"))
-                  "a non-final groupBy is declined, naming why"
+                  twiceGrouped.Strategy
+                  (ReferenceOnly(AggregateStepRepeated "groupBy"))
+                  "a second groupBy is declined, naming why"
 
               // A sort is admitted (Phase 115) and says so in its own case: it is not row-local,
               // and calling it `PropagateRows` would be a wrong answer to "does this step's output

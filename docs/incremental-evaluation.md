@@ -46,9 +46,30 @@ match (Incremental.plan pipeline).Strategy with
 
 - **`PropagateRows`** — `Filter`, `Project`, `Derive`. Output for a row is a function of that row,
   so only the named rows are re-evaluated.
-- **`MaintainGroups`** — a `GroupBy` as the pipeline's **last** step. The group partition is
-  maintained and only the affected groups' aggregates are recomputed. The same `GroupBy` earlier in
-  the pipeline is declined, because what follows it would need a delta over the *group* table.
+- **`MaintainGroups`** — a `GroupBy`, at **any** position. The group partition is maintained and
+  only the affected groups' aggregates are recomputed; the steps **after** it walk the group table
+  the same way the steps before it walk the source rows, so a `Having` — which is a `Filter` after a
+  `GroupBy`, there being no `Having` verb — is restricted too. This was declined until Phase 202, on
+  the reasoning that what follows a group-by would need a delta over the group table. It does, and
+  there is one: the set of groups whose aggregates were recomputed, which this step has always
+  computed and the state has always recorded. A group whose aggregates were *reused* has a row
+  identical to the one the tail last read, so the tail reuses its cached cells for it.
+
+  **Every aggregate function is maintained** — `sum`, `mean`, `min`, `max`, `count`, `median`,
+  `stdDev`, `first`, `last`, `countDistinct` — and none is declined. That is worth stating plainly
+  because the opposite is the usual expectation: an incremental group-by normally maintains a
+  *running accumulator* per group, where only the decomposable aggregates work, a deletion from a
+  `min`/`max` group needs a tombstone and a re-scan, and `median` is out of reach. This seam keeps
+  no accumulator. It recomputes an affected group **from that group's own rows**, through the same
+  aggregator the reference evaluator calls, so decomposability is not a property it needs and a
+  deletion is not a special case. What it trades for that is the obvious thing: a group with a
+  thousand members costs a thousand-row aggregation when one of them moves, where a running `sum`
+  would cost an addition. The saving is that the *other* groups cost nothing, and that the steps on
+  both sides of the group-by stop re-evaluating every row.
+
+  The one decline is a **second** `GroupBy` in the same pipeline, reported as `AggregateStepRepeated`:
+  grouping the group table needs a second level of row-to-group, ordered-membership and per-group
+  aggregate state. It refuses as data, never by a silent full re-evaluation.
 - **`MergeOrder`** — a `Sort`, at **any** position. It computes nothing and moves everything, so the
   new order is the previous order with the named rows merged back into it. The saving is not in the
   sorting — a sort evaluates no expression and is charged none — it is that the steps *before* the
@@ -80,8 +101,11 @@ match (Incremental.plan pipeline).Strategy with
 - **`FallBack`** — `Distinct`, `Pivot`, `Unpivot`, `Union`, `Intersect`, `Except`; and a
   **combining** `Join` (`inner`, `left`, `right`, `outer`), which the reason names by kind. Their
   output for one row depends on rows a delta does not name — or is not one row at all — so the
-  pipeline is evaluated in full and the footprint says so. `WindowFrameUnbounded` is a retained
-  reason that nothing produces any more: every window function is admitted.
+  pipeline is evaluated in full and the footprint says so. A **second** `GroupBy` joins them, as
+  `AggregateStepRepeated`. Two reasons are **retained and no longer produced by any plan**, because
+  removing a case from a published union breaks every consumer that matches on it and a stored
+  footprint still has to read: `WindowFrameUnbounded` (every window function is admitted) and
+  `AggregateStepNotLast` (a group-by is admitted at any position).
 
 Adoption is therefore per pipeline, not per application: a declined pipeline costs exactly what it
 costs today, and can sit beside an adopted one.
@@ -211,6 +235,22 @@ against it. **Admitting the `Limit` did not change which variable decides the qu
 honest statement of what the admission bought is that a top-N pipeline can now be *refreshed at all*
 rather than falling back — on the same terms as every other admitted pipeline, and with the same
 row-expression threshold deciding whether that is worth doing.
+
+**A `Having` behaves the same way, and the third measurement is the one that settles the pattern**
+(Phase 202, same machine, same 20,000 rows and one edited row, over
+`Filter > GroupBy > Filter`):
+
+| row expression | restricted refresh | full evaluation | |
+|---|---|---|---|
+| one `Ge` comparison | 61 ms | 20 ms | the seam **loses**, by 3.1× |
+| 129 expression nodes | 61 ms | 211 ms | the seam **wins**, by 3.5× |
+
+Three admissions have now been measured on this axis and all three answer the same way, so the
+threshold is a property of the seam rather than of any pipeline shape: the refresh's cost is
+**61 ms in both rows** — it does not move at all with the expression — while the full evaluation's
+rises tenfold. The tail itself is charged by the GROUP count, which is small and bounded, so
+admitting it moved the row-expression threshold not at all. What it bought is the same thing the
+`Limit` admission bought: the pipeline can be refreshed *at all*.
 
 Two practical consequences. A pipeline of cheap row-local predicates is better evaluated in full,
 and `Incremental.plan` will still say the refresh is restricted — correctly, because the footprint

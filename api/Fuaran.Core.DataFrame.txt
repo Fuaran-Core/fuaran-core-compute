@@ -6,7 +6,7 @@
 # See STABILITY.md "Public-surface baselines" for what each move class means.
 ctor Fuaran.Core.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
 ctor Fuaran.Core.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>)
-ctor Fuaran.Core.IncrementalEval..ctor(Fuaran.Core.IncrementalPlan, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, System.String, Fuaran.Core.Table, Fuaran.Core.Table, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Collections.FSharpList`1<System.String>>>, Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>>, Fuaran.Core.RecomputeFootprint)
+ctor Fuaran.Core.IncrementalEval..ctor(Fuaran.Core.IncrementalPlan, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, System.String, Fuaran.Core.Table, Fuaran.Core.Table, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Collections.FSharpList`1<System.String>>>, Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>>, Fuaran.Core.RecomputeFootprint, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>)
 ctor Fuaran.Core.IncrementalPlan..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.StepIncrementality>, Fuaran.Core.IncrementalStrategy)
 ctor Fuaran.Core.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, System.String, System.String, Fuaran.Core.AggFn)
 ctor Fuaran.Core.RecomputeFootprint..ctor(System.Int32, System.Int32, Fuaran.Core.Recompute)
@@ -66,6 +66,7 @@ field Fuaran.Core.EvalError+Tags.UnknownColumn : System.Int32 (literal)
 field Fuaran.Core.EvalError+Tags.UnpinnedClock : System.Int32 (literal)
 field Fuaran.Core.EvalError+Tags.UnresolvedSource : System.Int32 (literal)
 field Fuaran.Core.FallBackReason+Tags.AggregateStepNotLast : System.Int32 (literal)
+field Fuaran.Core.FallBackReason+Tags.AggregateStepRepeated : System.Int32 (literal)
 field Fuaran.Core.FallBackReason+Tags.DeltaIsFullRefresh : System.Int32 (literal)
 field Fuaran.Core.FallBackReason+Tags.EnvChanged : System.Int32 (literal)
 field Fuaran.Core.FallBackReason+Tags.JoinNotRowPreserving : System.Int32 (literal)
@@ -270,6 +271,7 @@ record-field Fuaran.Core.ColumnKnowledge.Type #1 : Microsoft.FSharp.Core.FSharpO
 record-field Fuaran.Core.IncrementalEval.Env #2 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>
 record-field Fuaran.Core.IncrementalEval.Footprint #12 : Fuaran.Core.RecomputeFootprint
 record-field Fuaran.Core.IncrementalEval.GroupAggs #9 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
+record-field Fuaran.Core.IncrementalEval.GroupCells #13 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
 record-field Fuaran.Core.IncrementalEval.GroupMembers #8 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>>
 record-field Fuaran.Core.IncrementalEval.JoinKeys #11 : Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>>
 record-field Fuaran.Core.IncrementalEval.Output #5 : Fuaran.Core.Table
@@ -350,6 +352,7 @@ type Fuaran.Core.EvalError+UnpinnedClock (type)
 type Fuaran.Core.EvalError+UnresolvedSource (type)
 type Fuaran.Core.FallBackReason (union)
 type Fuaran.Core.FallBackReason+AggregateStepNotLast (type)
+type Fuaran.Core.FallBackReason+AggregateStepRepeated (type)
 type Fuaran.Core.FallBackReason+JoinNotRowPreserving (type)
 type Fuaran.Core.FallBackReason+RowIdentityUnusable (type)
 type Fuaran.Core.FallBackReason+StepNotRowLocal (type)
@@ -484,6 +487,7 @@ union-case Fuaran.Core.EvalError.NewUnresolvedSource #5(System.String)
 union-case Fuaran.Core.FallBackReason.DeltaIsFullRefresh #2()
 union-case Fuaran.Core.FallBackReason.EnvChanged #5()
 union-case Fuaran.Core.FallBackReason.NewAggregateStepNotLast #1(System.String)
+union-case Fuaran.Core.FallBackReason.NewAggregateStepRepeated #11(System.String)
 union-case Fuaran.Core.FallBackReason.NewJoinNotRowPreserving #10(System.String)
 union-case Fuaran.Core.FallBackReason.NewRowIdentityUnusable #7(Fuaran.Core.DeltaDefect)
 union-case Fuaran.Core.FallBackReason.NewStepNotRowLocal #0(System.String)
