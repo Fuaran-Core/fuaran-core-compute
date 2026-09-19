@@ -78,9 +78,12 @@ let private referenceIds (pipeline: Transform list) (t: Table) : string list =
 /// The two assertions every case below makes: the incremental answer is the reference answer,
 /// and the refresh was RESTRICTED rather than a fall-back wearing the right result.
 let private expectRestrictedAndEqual (pipeline: Transform list) (after: Table) (s: IncrementalEval) =
-    Expect.equal (Ok s.Output) (DataFrame.evalPipeline pipeline after) "incremental result = reference result"
+    Expect.equal
+        (Ok(Incremental.result s))
+        (DataFrame.evalPipeline pipeline after)
+        "incremental result = reference result"
 
-    match s.Footprint.Recompute with
+    match (Incremental.footprint s).Recompute with
     | RowsRecomputed _
     | GroupsRecomputed _
     | ReusedPrior -> ()
@@ -239,12 +242,19 @@ let topNTests =
               let state = ok (Incremental.primeOn idw pipeline before)
               let d1 = ok (Delta.diff idw before out)
               let s1 = ok (Incremental.refreshOn idw pipeline state d1 out)
-              Expect.equal (Ok s1.Output) (DataFrame.evalPipeline pipeline out) "the refresh that evicts r4 is right"
+
+              Expect.equal
+                  (Ok(Incremental.result s1))
+                  (DataFrame.evalPipeline pipeline out)
+                  "the refresh that evicts r4 is right"
 
               let d2 = ok (Delta.diff idw out back)
               let s2 = ok (Incremental.refreshOn idw pipeline s1 d2 back)
 
-              Expect.isTrue (List.contains "r4" (idsOf s2.Output)) "the case reaches its own condition: r4 came back"
+              Expect.isTrue
+                  (List.contains "r4" (idsOf (Incremental.result s2)))
+                  "the case reaches its own condition: r4 came back"
+
               expectRestrictedAndEqual pipeline back s2
 
           testCase "a limit with dead rows IN FRONT of it counts the live frame, not the carried one"
@@ -452,14 +462,21 @@ let topNTests =
                   )
 
               let full = ok (Incremental.primeOn idw pipeline after)
-              Expect.equal full.Footprint.Recompute (Primed 5) "a full evaluation charges the filter over every row"
+
+              Expect.equal
+                  (Incremental.footprint full).Recompute
+                  (Primed 5)
+                  "a full evaluation charges the filter over every row"
 
               let next = step pipeline before after
 
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "the refresh charges the one row the delta named"
+              Expect.equal
+                  (Incremental.footprint next).Recompute
+                  (RowsRecomputed 1)
+                  "the refresh charges the one row the delta named"
 
-              Expect.equal next.Footprint.SourceRows 5 "`SourceRows` stays its own field"
-              Expect.equal next.Footprint.ResultRows 2 "and the result is the window"
+              Expect.equal (Incremental.footprint next).SourceRows 5 "`SourceRows` stays its own field"
+              Expect.equal (Incremental.footprint next).ResultRows 2 "and the result is the window"
 
               expectRestrictedAndEqual pipeline after next
 

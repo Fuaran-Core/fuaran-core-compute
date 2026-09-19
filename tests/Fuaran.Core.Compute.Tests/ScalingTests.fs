@@ -27,11 +27,16 @@ module Fuaran.Core.Tests.ScalingTests
 //
 //  The last case is the claim the incremental seam exists to make and the one
 //  the footprint could never state: with one row of twenty thousand edited, a
-//  RESTRICTED refresh finishes sooner than the full evaluation it replaces. It
-//  is measured over a pipeline whose row expression COSTS something, and that
-//  qualification is a finding of this phase rather than a convenience — see the
-//  note on `costlyPipeline` below and the cost section of
-//  docs/incremental-evaluation.md.
+//  RESTRICTED refresh finishes sooner than the full evaluation it replaces.
+//
+//  Phase 206 could assert that only for a pipeline whose row expression COSTS
+//  something, and recorded the qualification as a finding: with a single
+//  comparison the seam's own per-source-row bookkeeping outweighed the expression
+//  it avoided, so the refresh LOST, and 207 and 202 each re-measured the same
+//  answer one verb along. Phase 208 removed that bookkeeping and the
+//  one-comparison case is asserted here too, on all three pipelines. The pre-208
+//  figures are kept in each case's comment: they are what the assertion would
+//  have scored, which is the only evidence that it discriminates.
 // ---------------------------------------------------------------------------
 
 open System.Diagnostics
@@ -58,11 +63,19 @@ let private sizeRatio = float large / float small
 /// Twenty times the rows may cost at most FIVE times the linear expectation.
 ///
 /// The number is measured rather than chosen, and the measurement is the reason it is not tighter.
-/// The cheapest honest shape here is NOT linear: the grouping, the delta and the seam key rows
-/// through persistent maps over string and string-list keys, so they are n log n with a comparison
-/// whose own cost grows, on top of cache behaviour that gets worse with the working set. Post-fix,
-/// the three cases land at roughly 34, 52 and 44 against a linear expectation of 20 — repeatably,
-/// within six per cent across runs.
+/// The cheapest honest shape here is NOT linear: the grouping and the delta key rows through
+/// persistent maps over string and string-list keys, so they are n log n with a comparison whose own
+/// cost grows, on top of cache behaviour that gets worse with the working set. Post-206 the three
+/// cases landed at roughly 34, 52 and 44 against a linear expectation of 20.
+///
+/// **Phase 208 moved them UP rather than down, and the direction is worth understanding before
+/// anyone reads it as a regression.** Measured after: 28, 49 and 56, with the top-N at 42 and the
+/// group tail at 51. Each of these cases times prime + diff + refresh, and what 208 made cheaper is
+/// the refresh's FIXED per-row bookkeeping — which is proportionally a larger share of the 1,000-row
+/// leg than of the 20,000-row one, so removing it lowers both legs and RAISES their ratio. A ratio
+/// is a shape, not a cost: the absolute figures all fell (the refresh-versus-full cases below record
+/// by how much). The headroom to the bound of 100 is what has narrowed, which is the thing to watch
+/// if a later phase improves the small leg again.
 ///
 /// So the bound sits at 100: about twice the worst legitimate shape, and four times below the
 /// quadratic (400) the family exists to refuse, which the PRE-FIX code scored at 163, 413 and 440.
@@ -109,15 +122,18 @@ let private pipeline: Transform list =
 /// The same pipeline with a row expression that costs something to evaluate — sixteen nesting
 /// levels, 129 expression nodes, rather than one comparison.
 ///
-/// This is not a second instrument for the same claim; it is the instrument for a DIFFERENT one,
-/// and the phase's measurement is that the two answers differ. The seam's whole proposition is
-/// "evaluate the row expression once instead of n times", so what it saves is n−1 evaluations of
-/// THAT expression, while what it spends is its own per-row bookkeeping — an identity token, its
-/// uniqueness check, two lookups into the prior row-cell map, a group-membership entry. Those are
-/// string-keyed persistent-map operations and they do not shrink when the expression does. With a
-/// single `Ge` the saving is smaller than the spend and the seam loses on the clock; with real
-/// work in the expression it wins. See the "what it costs on the clock" section of
-/// docs/incremental-evaluation.md.
+/// It was the instrument for a DIFFERENT claim from the one-comparison case, and Phase 206's finding
+/// was that the two answers differed: the seam's whole proposition is "evaluate the row expression
+/// once instead of n times", so what it saves is n−1 evaluations of THAT expression, while what it
+/// spent was its own per-source-row bookkeeping — an identity token, its uniqueness check, two
+/// lookups into the prior row-cell map, a group-membership entry, all string-keyed
+/// persistent-map operations that did not shrink when the expression did.
+///
+/// **Phase 208 removed that spend, so both cases now assert.** What this pipeline still measures that
+/// the trivial one does not is the MARGIN: the full evaluation's cost rises with the expression while
+/// the refresh's barely moves, so this is where the seam's saving is largest and where a regression in
+/// the expression-avoidance half (rather than in the bookkeeping half) would show first. See the
+/// "what it costs on the clock" section of docs/incremental-evaluation.md.
 let private costlyPipeline: Transform list =
     // Addition and subtraction only, alternating, so the running value stays inside int32 whatever
     // the depth. Core refuses a silent wrap (Phase 39), so a multiplying chain overflows and the
@@ -337,7 +353,7 @@ let scalingTests =
                   // The answers must agree before their costs are worth comparing: a refresh that
                   // returned something else would be cheap for an uninteresting reason.
                   let refreshed = ok (Incremental.refreshOn idw p state delta after)
-                  Expect.equal (Ok refreshed.Output) (DataFrame.evalPipeline p after) "refresh = reference"
+                  Expect.equal (Ok(Incremental.result refreshed)) (DataFrame.evalPipeline p after) "refresh = reference"
 
                   let refreshMs =
                       bestMs 5 (fun () -> Incremental.refreshOn idw p state delta after |> ok |> ignore)
@@ -351,10 +367,15 @@ let scalingTests =
               let trivialRefresh, trivialFull = compare "one-comparison predicate" pipeline
               let costlyRefresh, costlyFull = compare "16-level row expression" costlyPipeline
 
-              // Reported, never asserted — see the comment above. An assertion here would pin a
-              // ratio between two costs that a faster machine moves for reasons this phase is not
-              // about, and it would read as a promise that the seam must stay slower.
-              ignore (trivialRefresh, trivialFull)
+              // Phase 208 — ASSERTED NOW, and the change is the point of that phase. Phase 206
+              // measured this case losing 3.4x and printed it unasserted; the cause was the seam's
+              // own per-source-row bookkeeping, which did not shrink when the row expression did.
+              // Measured on the pre-208 tree at 20,000 rows: refresh 72.3 ms vs full 21.1 ms — red.
+              // Measured after: 13.0 ms vs 26.3 ms.
+              Expect.isLessThan
+                  trivialRefresh
+                  trivialFull
+                  "ONE COMPARISON per row: the refresh must beat the full evaluation here too — this is what pays for the seam on a live board whose row expression is cheap"
 
               Expect.isLessThan
                   costlyRefresh
@@ -449,9 +470,9 @@ let scalingTests =
                   let delta = ok (Delta.diff idw before after)
 
                   let refreshed = ok (Incremental.refreshOn idw p state delta after)
-                  Expect.equal (Ok refreshed.Output) (DataFrame.evalPipeline p after) "refresh = reference"
+                  Expect.equal (Ok(Incremental.result refreshed)) (DataFrame.evalPipeline p after) "refresh = reference"
 
-                  Expect.equal (Table.rowCount refreshed.Output) 10 "and it is a top-10 board"
+                  Expect.equal (Table.rowCount (Incremental.result refreshed)) 10 "and it is a top-10 board"
 
                   let refreshMs =
                       bestMs 5 (fun () -> Incremental.refreshOn idw p state delta after |> ok |> ignore)
@@ -467,7 +488,14 @@ let scalingTests =
               let costlyRefresh, costlyFull =
                   compare "top-N, 16-level expression" costlyTopNPipeline
 
-              ignore (trivialRefresh, trivialFull)
+              // Phase 208 — asserted now. Pre-208 at 20,000 rows: refresh 102.5 ms vs full 70.0 ms
+              // — red. After: 25.8 ms vs 55.7 ms. The saving the top-N shape has over
+              // `Filter > GroupBy` (a full evaluation re-sorts the whole frame) was never enough on
+              // its own while the refresh paid for the table.
+              Expect.isLessThan
+                  trivialRefresh
+                  trivialFull
+                  "ONE COMPARISON per row: a top-10 board must not re-sort twenty thousand rows because one moved"
 
               Expect.isLessThan
                   costlyRefresh
@@ -510,9 +538,9 @@ let scalingTests =
                   let delta = ok (Delta.diff idw before after)
 
                   let refreshed = ok (Incremental.refreshOn idw p state delta after)
-                  Expect.equal (Ok refreshed.Output) (DataFrame.evalPipeline p after) "refresh = reference"
+                  Expect.equal (Ok(Incremental.result refreshed)) (DataFrame.evalPipeline p after) "refresh = reference"
 
-                  match refreshed.Footprint.Recompute with
+                  match (Incremental.footprint refreshed).Recompute with
                   | GroupsRecomputed _ -> ()
                   | other -> failtestf "%s: expected a maintained-group refresh, got %A" label other
 
@@ -531,7 +559,16 @@ let scalingTests =
               let costlyRefresh, costlyFull =
                   compare "group-tail, 16-level expression" costlyGroupTailPipeline
 
-              ignore (trivialRefresh, trivialFull)
+              // Phase 208 — asserted now, and this is the thinnest of the three margins, so the
+              // measured figures are recorded rather than left to be re-derived. Pre-208 at 20,000
+              // rows: refresh 69.8 ms vs full 19.7 ms — red, losing 3.5x. After: 10.4 ms vs 16.7 ms,
+              // winning 1.6x. The estimator is `bestMs`'s MINIMUM of five, which is why a 1.6x
+              // margin is a gate rather than a coin toss: measurement noise here is strictly
+              // additive, so no sample comes in under the true cost.
+              Expect.isLessThan
+                  trivialRefresh
+                  trivialFull
+                  "ONE COMPARISON per row: a Having over a live table must not re-group twenty thousand rows because one changed"
 
               Expect.isLessThan
                   costlyRefresh

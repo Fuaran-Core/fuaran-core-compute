@@ -63,9 +63,12 @@ let private step (pipeline: Transform list) (before: Table) (after: Table) =
 /// rather than a fall-back wearing the right result. A fall-back is always correct, so equality
 /// alone would pass on a phase that shipped nothing.
 let private expectRestrictedAndEqual (pipeline: Transform list) (after: Table) (s: IncrementalEval) =
-    Expect.equal (Ok s.Output) (DataFrame.evalPipeline pipeline after) "maintained result = reference result"
+    Expect.equal
+        (Ok(Incremental.result s))
+        (DataFrame.evalPipeline pipeline after)
+        "maintained result = reference result"
 
-    match s.Footprint.Recompute with
+    match (Incremental.footprint s).Recompute with
     | RowsRecomputed _
     | GroupsRecomputed _
     | ReusedPrior -> ()
@@ -213,11 +216,11 @@ let groupByTailTests =
               let s = step twoGroupBys before after
 
               Expect.equal
-                  (Ok s.Output)
+                  (Ok(Incremental.result s))
                   (DataFrame.evalPipeline twoGroupBys after)
                   "the answer is still the reference's"
 
-              match s.Footprint.Recompute with
+              match (Incremental.footprint s).Recompute with
               | FullRecompute(_, AggregateStepRepeated "groupBy") -> ()
               | other -> failtestf "expected a NAMED fall-back, got %A" other
 
@@ -323,15 +326,19 @@ let groupByTailTests =
               let s = step groupThenTopOne before after
 
               expectRestrictedAndEqual groupThenTopOne after s
-              Expect.equal (Table.rowCount s.Output) 1 "the cut kept one group"
+              Expect.equal (Table.rowCount (Incremental.result s)) 1 "the cut kept one group"
 
           testCase "a quiet delta over an unchanged source reuses the whole tail"
           <| fun _ ->
               let before = table baseRows
               let s = step having before before
 
-              Expect.equal s.Footprint.Recompute ReusedPrior "nothing changed and nothing was recomputed"
-              Expect.equal (Ok s.Output) (DataFrame.evalPipeline having before) "and the answer still stands"
+              Expect.equal (Incremental.footprint s).Recompute ReusedPrior "nothing changed and nothing was recomputed"
+
+              Expect.equal
+                  (Ok(Incremental.result s))
+                  (DataFrame.evalPipeline having before)
+                  "and the answer still stands"
 
           // ================= the empty decline class, as an assertion =================
 
@@ -365,11 +372,11 @@ let groupByTailTests =
                   let s = step pipeline before after
 
                   Expect.equal
-                      (Ok s.Output)
+                      (Ok(Incremental.result s))
                       (DataFrame.evalPipeline pipeline after)
                       (sprintf "%A: maintained = reference" fn)
 
-                  match s.Footprint.Recompute with
+                  match (Incremental.footprint s).Recompute with
                   | GroupsRecomputed _
                   | RowsRecomputed _
                   | ReusedPrior -> ()
@@ -394,17 +401,20 @@ let groupByTailTests =
               let delta = ok (Delta.diff idw before after)
               let refreshed = ok (Incremental.refreshOn idw groupThenDerive primed delta after)
 
-              Expect.equal (Ok refreshed.Output) (DataFrame.evalPipeline groupThenDerive after) "maintained = reference"
+              Expect.equal
+                  (Ok(Incremental.result refreshed))
+                  (DataFrame.evalPipeline groupThenDerive after)
+                  "maintained = reference"
 
               // Three groups exist; the `Derive` is the pipeline's only evaluating step, so the
               // prime charges three and a refresh touching one group must charge exactly one.
               Expect.equal
-                  (Incremental.rowsEvaluated primed.Footprint)
+                  (Incremental.rowsEvaluated (Incremental.footprint primed))
                   3
                   "the prime evaluated the tail for all three groups"
 
               Expect.equal
-                  (Incremental.rowsEvaluated refreshed.Footprint)
+                  (Incremental.rowsEvaluated (Incremental.footprint refreshed))
                   1
                   "the refresh evaluated the tail for the ONE affected group"
 
@@ -439,7 +449,7 @@ let groupByTailTests =
 
               // The shipped seam gets it right, which is the point of showing the model fail.
               let s = step groupThenDerive before after
-              Expect.equal (Ok s.Output) (Ok referenceOut) "the shipped tail answers as the reference does"
+              Expect.equal (Ok(Incremental.result s)) (Ok referenceOut) "the shipped tail answers as the reference does"
 
           // ================= the generated differential =================
 
@@ -496,12 +506,12 @@ let groupByTailTests =
                       let st2 = ok (Incremental.refreshOn idw pipeline st1 (ok (Delta.diff idw t1 t2)) t2)
 
                       Expect.equal
-                          (Ok st1.Output)
+                          (Ok(Incremental.result st1))
                           (DataFrame.evalPipeline pipeline t1)
                           (sprintf "%s iter=%d refresh 1 = reference" name iteration)
 
                       Expect.equal
-                          (Ok st2.Output)
+                          (Ok(Incremental.result st2))
                           (DataFrame.evalPipeline pipeline t2)
                           (sprintf "%s iter=%d refresh 2 = reference" name iteration)
 
@@ -515,7 +525,7 @@ let groupByTailTests =
               let restricted =
                   [ having; groupThenDerive; groupThenTopOne ]
                   |> List.filter (fun pipeline ->
-                      match (step pipeline before after).Footprint.Recompute with
+                      match (Incremental.footprint (step pipeline before after)).Recompute with
                       | GroupsRecomputed _
                       | RowsRecomputed _ -> true
                       | _ -> false)

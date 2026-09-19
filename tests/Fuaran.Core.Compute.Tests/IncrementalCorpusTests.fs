@@ -398,7 +398,7 @@ let private run (vec: Vector) =
     let full = ok (Incremental.primeOn idw vec.Pipeline vec.Changed)
     let delta = ok (Delta.diff idw vec.Source vec.Changed)
     let refreshed = ok (Incremental.refreshOn idw vec.Pipeline primed delta vec.Changed)
-    primed.Footprint, full.Footprint, refreshed
+    (Incremental.footprint primed), (Incremental.footprint full), refreshed
 
 let private corpus =
     lazy
@@ -421,7 +421,7 @@ let tests =
               let vec = readVector corpus.Value "point-edit-row-local"
               let prime, full, refreshed = run vec
 
-              Expect.equal refreshed.Output vec.Result "the refresh produces the recorded result"
+              Expect.equal (Incremental.result refreshed) vec.Result "the refresh produces the recorded result"
 
               Expect.equal
                   (Ok vec.Result)
@@ -430,7 +430,7 @@ let tests =
 
               Expect.equal prime vec.Prime "the recorded prime footprint"
               Expect.equal full vec.Full "the recorded full-evaluation footprint"
-              Expect.equal refreshed.Footprint vec.Refresh "the recorded refresh footprint"
+              Expect.equal (Incremental.footprint refreshed) vec.Refresh "the recorded refresh footprint"
 
           testCase "the sort vector's result is unchanged and its class is not: the recorded saving"
           <| fun _ ->
@@ -442,7 +442,7 @@ let tests =
               let prime, full, refreshed = run vec
 
               // (1) The pass criterion, unchanged by the widening and the reason it is safe.
-              Expect.equal refreshed.Output vec.Result "the refresh produces the recorded result"
+              Expect.equal (Incremental.result refreshed) vec.Result "the refresh produces the recorded result"
 
               Expect.equal
                   (Ok vec.Result)
@@ -476,13 +476,21 @@ let tests =
 
               Expect.equal prime.Recompute (Primed 6) "priming evaluates the filter over every row"
               Expect.equal full.Recompute (Primed 6) "so does a full evaluation over the changed source"
-              Expect.equal refreshed.Footprint.Recompute (RowsRecomputed 1) "the refresh re-evaluates one row"
 
-              Expect.equal refreshed.Footprint.SourceRows vec.Refresh.SourceRows "over the same source"
-              Expect.equal refreshed.Footprint.ResultRows vec.Refresh.ResultRows "producing the same result rows"
+              Expect.equal
+                  (Incremental.footprint refreshed).Recompute
+                  (RowsRecomputed 1)
+                  "the refresh re-evaluates one row"
+
+              Expect.equal (Incremental.footprint refreshed).SourceRows vec.Refresh.SourceRows "over the same source"
+
+              Expect.equal
+                  (Incremental.footprint refreshed).ResultRows
+                  vec.Refresh.ResultRows
+                  "producing the same result rows"
 
               Expect.isLessThan
-                  (Incremental.rowsEvaluated refreshed.Footprint)
+                  (Incremental.rowsEvaluated (Incremental.footprint refreshed))
                   (Incremental.rowsEvaluated full)
                   "strictly fewer row-evaluations than the full evaluation it is measured against"
 
@@ -495,7 +503,7 @@ let tests =
               let vec = readVector corpus.Value "window-declines-in-full"
               let prime, full, refreshed = run vec
 
-              Expect.equal refreshed.Output vec.Result "the refresh produces the recorded result"
+              Expect.equal (Incremental.result refreshed) vec.Result "the refresh produces the recorded result"
 
               Expect.equal
                   (Ok vec.Result)
@@ -514,10 +522,14 @@ let tests =
 
               Expect.equal prime vec.Prime "the recorded prime footprint"
               Expect.equal full vec.Full "the recorded full-evaluation footprint"
-              Expect.equal refreshed.Footprint.Recompute (RowsRecomputed 1) "the refresh re-evaluates one row"
+
+              Expect.equal
+                  (Incremental.footprint refreshed).Recompute
+                  (RowsRecomputed 1)
+                  "the refresh re-evaluates one row"
 
               Expect.isLessThan
-                  (Incremental.rowsEvaluated refreshed.Footprint)
+                  (Incremental.rowsEvaluated (Incremental.footprint refreshed))
                   (Incremental.rowsEvaluated vec.Refresh)
                   "strictly fewer row-evaluations than the decline it replaces"
 
@@ -530,7 +542,7 @@ let tests =
               let vec = readVector corpus.Value "join-declines-in-full"
               let prime, full, refreshed = run vec
 
-              Expect.equal refreshed.Output vec.Result "the refresh produces the recorded result"
+              Expect.equal (Incremental.result refreshed) vec.Result "the refresh produces the recorded result"
 
               Expect.equal
                   (Ok vec.Result)
@@ -546,19 +558,23 @@ let tests =
 
               Expect.equal prime vec.Prime "the recorded prime footprint"
               Expect.equal full vec.Full "the recorded full-evaluation footprint"
-              Expect.equal refreshed.Footprint.Recompute (RowsRecomputed 1) "the refresh re-evaluates one row"
+
+              Expect.equal
+                  (Incremental.footprint refreshed).Recompute
+                  (RowsRecomputed 1)
+                  "the refresh re-evaluates one row"
 
               // The join drops a row the filter kept, so the result is SMALLER than the prime's —
               // the recorded triple carries three result-row counts, not one.
               Expect.equal prime.ResultRows 3 "the prime kept three rows"
 
               Expect.equal
-                  refreshed.Footprint.ResultRows
+                  (Incremental.footprint refreshed).ResultRows
                   2
                   "and the refresh two, the moved key having left the relation"
 
               Expect.isLessThan
-                  (Incremental.rowsEvaluated refreshed.Footprint)
+                  (Incremental.rowsEvaluated (Incremental.footprint refreshed))
                   (Incremental.rowsEvaluated vec.Refresh)
                   "strictly fewer row-evaluations than the decline it replaces"
 
@@ -571,7 +587,7 @@ let tests =
               let vec = readVector corpus.Value "rank-declines-in-full"
               let prime, full, refreshed = run vec
 
-              Expect.equal refreshed.Output vec.Result "the refresh produces the recorded result"
+              Expect.equal (Incremental.result refreshed) vec.Result "the refresh produces the recorded result"
 
               Expect.equal
                   (Ok vec.Result)
@@ -597,10 +613,14 @@ let tests =
 
               Expect.equal prime vec.Prime "the recorded prime footprint"
               Expect.equal full vec.Full "the recorded full-evaluation footprint"
-              Expect.equal refreshed.Footprint.Recompute (RowsRecomputed 1) "the refresh re-evaluates one row"
+
+              Expect.equal
+                  (Incremental.footprint refreshed).Recompute
+                  (RowsRecomputed 1)
+                  "the refresh re-evaluates one row"
 
               Expect.isLessThan
-                  (Incremental.rowsEvaluated refreshed.Footprint)
+                  (Incremental.rowsEvaluated (Incremental.footprint refreshed))
                   (Incremental.rowsEvaluated vec.Refresh)
                   "strictly fewer row-evaluations than the decline it replaces"
 
@@ -617,8 +637,8 @@ let tests =
               let _, globalFull, globalRefresh = run global_
 
               Expect.equal
-                  (Incremental.rowsEvaluated globalRefresh.Footprint)
-                  (Incremental.rowsEvaluated boundedRefresh.Footprint)
+                  (Incremental.rowsEvaluated (Incremental.footprint globalRefresh))
+                  (Incremental.rowsEvaluated (Incremental.footprint boundedRefresh))
                   "the refresh costs the same"
 
               Expect.equal

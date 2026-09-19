@@ -184,7 +184,8 @@ quadratic one. The `Scaling` family in this repository's suite holds that shape 
 absolute time, because Core owns no clock and an absolute threshold is a test that eventually fails
 on a slow runner for a reason nobody can act on.
 
-The family itself reports slightly **higher** post-fix ratios — about 34, 52 and 44 — because it
+The family itself reports slightly **higher** post-fix ratios — about 34, 52 and 44 at Phase 206, and
+28, 49 and 56 after Phase 208 lowered both legs' absolute cost — because it
 uses the best of five timings rather than a median. Noise here is additive, so the minimum is the
 better estimate of the true cost, and it is at the 1,000-row end that a median is most inflated by
 fixed overhead: removing that inflation raises the ratio. The honest reading is that none of the
@@ -252,12 +253,73 @@ rises tenfold. The tail itself is charged by the GROUP count, which is small and
 admitting it moved the row-expression threshold not at all. What it bought is the same thing the
 `Limit` admission bought: the pipeline can be refreshed *at all*.
 
-Two practical consequences. A pipeline of cheap row-local predicates is better evaluated in full,
-and `Incremental.plan` will still say the refresh is restricted — correctly, because the footprint
-claim is about expression evaluations and is true. And a pipeline whose per-row work is real — a
-long derived expression, a `Case` ladder, string work — is exactly where the seam was designed to
-be used. Measure your own pipeline rather than reading either row as a rule: the threshold is a
-property of your expressions, and the two figures above bracket it.
+### Where the sixty milliseconds went — the profile (Phase 208)
+
+Three phases measured the total and agreed on it; none of them measured the SPLIT, and the split is
+what says whether the cost is reducible. Profiled at 20,000 rows with one row edited, on the three
+pipelines above, with a timestamp around each stage inside the seam and an outer stopwatch over the
+same call so the unaccounted remainder is visible rather than assumed (it was under 0.7 ms in every
+case):
+
+| stage | `Filter>GroupBy` | `Filter>Sort>Limit` | `Filter>GroupBy>Filter` |
+|---|---|---|---|
+| minting the row identity tokens | 14.2 ms (20%) | 26.3 ms (19%) | 11.9 ms (14%) |
+| building the per-row work items | 5.4 (8%) | 7.7 (6%) | 5.2 (6%) |
+| the row-local walk | 7.2 (10%) | **91.6 (66%)** | 7.0 (8%) |
+| writing the row cache back | **19.0 (27%)** | 14.2 (10%) | **25.3 (29%)** |
+| the maintained grouping | **25.2 (36%)** | — | **37.8 (43%)** |
+| the steps after the grouping | — | — | 0.02 (0%) |
+| assembling the output table | 0.005 | 0.011 | 0.004 |
+
+Evaluation is nowhere in it. Assembling the answer costs five microseconds; the group tail over
+seventeen groups costs twenty. What the sixty milliseconds bought was **string-keyed
+persistent-map traffic, all of it proportional to the table and none of it to the delta**: the row
+cache rebuilt from empty on every refresh (20,000 tree insertions, each a path copy, to serve a
+delta naming one row), a group identity minted per source row, a row-to-group map of 20,000 entries
+built to answer one row's question, and — on the top-N shape — three 20,000-entry string-keyed
+structures built inside the sort step and then read through a comparator that looked up both sides.
+
+### And after it — the refresh pays for the delta (Phase 208)
+
+The representation the state publishes was the reason none of that could be fixed: it was a
+consumer-visible contract, so each of the three phases left the keying as it found it. `0.27.0`
+makes the state opaque and re-keys it. The per-row caches are **positional arrays** indexed by the
+row's slot in the source's own row order, with the row's identity token carried alongside; a row
+still sitting where it sat is recognised by one comparison, a row that moved costs a lookup into an
+index built once on the first miss, a group identity is **carried** rather than re-minted for a row
+whose cells have not moved, and the partition is accumulated in mutable locals that never escape the
+function. Same machine, same 20,000 rows, same single edited row, same estimator:
+
+| pipeline, one `Ge` comparison per row | refresh before | refresh after | full evaluation | |
+|---|---|---|---|---|
+| `Filter > GroupBy` | 72.3 ms | **13.0 ms** | 26.3 ms | the seam **wins**, by 2.0× |
+| `Filter > Sort > Limit 10` | 102.5 ms | **25.8 ms** | 55.7 ms | the seam **wins**, by 2.2× |
+| `Filter > GroupBy > Filter` | 69.8 ms | **10.4 ms** | 16.7 ms | the seam **wins**, by 1.6× |
+
+**So the answer to "when does the seam pay" has changed, and the three tables above are kept as the
+record of what it used to be rather than as current advice.** A refresh is now cheaper than the full
+evaluation it replaces for a row expression of ONE COMPARISON, which is the shape a live board
+actually has, and the `Scaling` family asserts it on all three pipelines — the case those three
+phases each printed and deliberately did not assert. A costlier row expression widens the margin
+further; it is no longer what decides the question.
+
+What has NOT changed is the floor, and it is worth stating because it bounds what a later phase can
+buy. The refresh is handed the whole new source and must read every row of it to know what moved, so
+one pass over the frame is proportional to the table and nothing reachable from this entry point
+removes it. What is proportional to the delta is everything else: the keyed lookups, the identity
+derivations and the cache writes. `IncrementalRefreshCostTests` counts exactly that, clock-free, and
+holds the shape it replaced to the opposite result.
+
+The profile after the change says where the remaining time is, for whoever comes next: the row-local
+walk, which is now 40-60% of a refresh (and 86% of the top-N one, where it is the merge). Per row it
+allocates an option for the cache read, a tuple and a `Result` for the cell, and a fresh work record
+— four allocations to reuse one cached cell. That is the next thing to measure, not the next thing to
+assume.
+
+One practical consequence remains. `Incremental.plan` tells you whether a refresh will be restricted;
+it does not tell you whether it will be faster than a full evaluation for YOUR pipeline, and on a
+table small enough that a full evaluation is already a millisecond the question does not arise.
+Measure your own pipeline rather than reading any row above as a rule.
 
 ## What it does not do
 
@@ -270,6 +332,15 @@ property of your expressions, and the two figures above bracket it.
   and this seam how much of it to recompute.
 - **It does not persist.** `IncrementalEval` is in-memory state a consumer holds between refreshes.
   Losing it costs one full evaluation, never a wrong answer.
+- **It does not publish its caches.** From `0.27.0` the state's representation is private and a
+  consumer reads it through `Incremental.result` (the table), `Incremental.footprint` (what producing
+  it cost), `Incremental.strategy` and `Incremental.plan'` (how the next refresh will be answered),
+  `Incremental.source` (the table the next delta must describe the change FROM) and
+  `Incremental.pipelineOf` (the pipeline it was built for). The caches were never something to build
+  or edit — a hand-built state whose caches disagree with its source is a lie the evaluator cannot
+  detect — and publishing their shape made every change to HOW they are keyed a breaking change,
+  which is what kept a refresh paying for the whole table for three phases running. There is no wire
+  form and nothing to migrate: a state is in-memory and is rebuilt by one `prime`.
 
 ## Verifying your own adoption
 

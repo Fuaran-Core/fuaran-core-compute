@@ -6,7 +6,6 @@
 # See STABILITY.md "Public-surface baselines" for what each move class means.
 ctor Fuaran.Core.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
 ctor Fuaran.Core.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>)
-ctor Fuaran.Core.IncrementalEval..ctor(Fuaran.Core.IncrementalPlan, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, System.String, Fuaran.Core.Table, Fuaran.Core.Table, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Collections.FSharpList`1<System.String>>>, Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>>, Fuaran.Core.RecomputeFootprint, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>)
 ctor Fuaran.Core.IncrementalPlan..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.StepIncrementality>, Fuaran.Core.IncrementalStrategy)
 ctor Fuaran.Core.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, System.String, System.String, Fuaran.Core.AggFn)
 ctor Fuaran.Core.RecomputeFootprint..ctor(System.Int32, System.Int32, Fuaran.Core.Recompute)
@@ -223,6 +222,8 @@ method Fuaran.Core.Incremental.footprint(Fuaran.Core.IncrementalEval) : Fuaran.C
 method Fuaran.Core.Incremental.footprintString(Fuaran.Core.RecomputeFootprint) : System.String
 method Fuaran.Core.Incremental.isIncremental(Fuaran.Core.IncrementalPlan) : System.Boolean
 method Fuaran.Core.Incremental.joinKindName(Fuaran.Core.JoinKind) : System.String
+method Fuaran.Core.Incremental.pipelineOf(Fuaran.Core.IncrementalEval) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
+method Fuaran.Core.Incremental.plan'(Fuaran.Core.IncrementalEval) : Fuaran.Core.IncrementalPlan
 method Fuaran.Core.Incremental.plan(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>) : Fuaran.Core.IncrementalPlan
 method Fuaran.Core.Incremental.primeOn`1(Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.prime`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
@@ -231,6 +232,8 @@ method Fuaran.Core.Incremental.refreshOn`1(Fuaran.Core.RowIdentity`1<!!0>, Micro
 method Fuaran.Core.Incremental.refresh`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.IncrementalEval, Fuaran.Core.TableDelta, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.result(Fuaran.Core.IncrementalEval) : Fuaran.Core.Table
 method Fuaran.Core.Incremental.rowsEvaluated(Fuaran.Core.RecomputeFootprint) : System.Int32
+method Fuaran.Core.Incremental.source(Fuaran.Core.IncrementalEval) : Fuaran.Core.Table
+method Fuaran.Core.Incremental.strategy(Fuaran.Core.IncrementalEval) : Fuaran.Core.IncrementalStrategy
 method Fuaran.Core.Incremental.windowFnName(Fuaran.Core.WindowFn) : System.String
 method Fuaran.Core.NowGrainModule.ofTag(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.NowGrain>
 method Fuaran.Core.NowGrainModule.tag(Fuaran.Core.NowGrain) : System.String
@@ -268,20 +271,6 @@ record-field Fuaran.Core.Agg.Name #0 : System.String
 record-field Fuaran.Core.Agg.Of #2 : System.String
 record-field Fuaran.Core.ColumnKnowledge.Name #0 : System.String
 record-field Fuaran.Core.ColumnKnowledge.Type #1 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
-record-field Fuaran.Core.IncrementalEval.Env #2 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>
-record-field Fuaran.Core.IncrementalEval.Footprint #12 : Fuaran.Core.RecomputeFootprint
-record-field Fuaran.Core.IncrementalEval.GroupAggs #9 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
-record-field Fuaran.Core.IncrementalEval.GroupCells #13 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
-record-field Fuaran.Core.IncrementalEval.GroupMembers #8 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>>
-record-field Fuaran.Core.IncrementalEval.JoinKeys #11 : Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>>
-record-field Fuaran.Core.IncrementalEval.Output #5 : Fuaran.Core.Table
-record-field Fuaran.Core.IncrementalEval.Pipeline #1 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
-record-field Fuaran.Core.IncrementalEval.Plan #0 : Fuaran.Core.IncrementalPlan
-record-field Fuaran.Core.IncrementalEval.RowCells #6 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
-record-field Fuaran.Core.IncrementalEval.RowGroup #7 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>
-record-field Fuaran.Core.IncrementalEval.Scheme #3 : System.String
-record-field Fuaran.Core.IncrementalEval.SortOrders #10 : Microsoft.FSharp.Collections.FSharpMap`2<System.Int32, System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Collections.FSharpList`1<System.String>>>
-record-field Fuaran.Core.IncrementalEval.Source #4 : Fuaran.Core.Table
 record-field Fuaran.Core.IncrementalPlan.Steps #0 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.StepIncrementality>
 record-field Fuaran.Core.IncrementalPlan.Strategy #1 : Fuaran.Core.IncrementalStrategy
 record-field Fuaran.Core.PivotSpec.Agg #3 : Fuaran.Core.AggFn

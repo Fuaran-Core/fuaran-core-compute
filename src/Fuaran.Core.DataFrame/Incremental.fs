@@ -329,75 +329,97 @@ type RecomputeFootprint =
 /// The state an incremental evaluation carries between refreshes: the result, and the caches that
 /// let the next delta be answered without revisiting the unchanged rows.
 ///
-/// The fields are public because the columnar strand keeps its data transparent, but they are
-/// ENGINE-OWNED: build one with `Incremental.prime` and advance it with `Incremental.refresh`. A
-/// hand-built state whose caches disagree with its source is a lie the evaluator cannot detect.
+/// **The representation is PRIVATE (Phase 208), and that is the one deliberately breaking act of
+/// this phase.** It was public until `0.27.0` because the columnar strand keeps its data
+/// transparent — but the fields were always ENGINE-OWNED (a hand-built state whose caches disagree
+/// with its source is a lie the evaluator cannot detect), and publishing them meant that every
+/// change to HOW the caches are keyed was a breaking change. Three phases in a row (206, 207, 202)
+/// each met that wall and each left the keying as it found it, and 202 measured that even a field's
+/// POSITION in the record is published surface. The cost of the transparency was a refresh that
+/// paid for the whole TABLE on every tick: the per-row caches were string-keyed persistent maps,
+/// rebuilt from scratch, because that was the shape a consumer had been shown.
+///
+/// A consumer reads the state through `Incremental.result`, `Incremental.footprint`,
+/// `Incremental.strategy`, `Incremental.plan'` and `Incremental.source` — what consumers actually
+/// read, measured rather than guessed. The next representation change is a patch and not a release.
 type IncrementalEval =
-    {
-        /// The classification the state was built under.
-        Plan: IncrementalPlan
-        /// The pipeline it was built for — a refresh with a different pipeline evaluates in full.
-        Pipeline: Transform list
-        /// The evaluation env it was built under — a refresh with a different env evaluates in full.
-        Env: Map<string, Cell>
-        /// The identity scheme its row tokens were minted under.
-        Scheme: string
-        /// The source it was last evaluated against.
-        Source: Table
-        /// The pipeline's result over that source.
-        Output: Table
-        /// Per row token, the cells the row-local steps evaluated for it, in step order. A row a
-        /// `Filter` dropped keeps the (shorter) prefix it reached, so the drop verdict is cached too.
-        RowCells: Map<string, Cell list>
-        /// Per row token, the group token its row landed in (maintained-groups strategy only).
-        RowGroup: Map<string, string>
-        /// Per group token, its members' row tokens IN ORDER — what makes reusing a cached aggregate
-        /// safe for the order-sensitive aggregates (maintained-groups only).
-        GroupMembers: Map<string, string list>
-        /// Per group token, the aggregate cells last computed for it (maintained-groups only).
-        GroupAggs: Map<string, Cell list>
-        /// Per `Sort` step (indexed by its ordinal among the pipeline's sorts), the token order the
-        /// step's rows ARRIVED in and the token order it PRODUCED. Both halves are needed and
-        /// neither is redundant: the produced order is what a merge reuses, and the arrival order is
-        /// the only thing that says the reuse is still valid — a stable sort breaks ties by arrival
-        /// position, so a cached order whose unnamed rows arrived in a different order now would
-        /// merge those ties the wrong way round. `Delta.diff` reports a pure reordering as quiet, so
-        /// this cannot be inferred from the delta.
-        SortOrders: Map<int, string list * string list>
-        /// Per admitted `Join` step (indexed by its ordinal among the pipeline's admitted joins),
-        /// the joined relation's KEY INDEX as of this evaluation: its rows' key cells, projected
-        /// through the step's `on` pairs, in the relation's own row order (Phase 120).
-        ///
-        /// It is what says a cached match verdict is still valid. A filtering join's verdict for a
-        /// row depends on the row AND on the relation, and the delta describes only the source — so
-        /// a verdict reused because "the delta did not name this row" would answer a changed
-        /// relation with the previous relation's answer. The key index is the whole of what the
-        /// verdict reads, so a relation that moved in some other column legitimately keeps the
-        /// reuse; one whose keys moved does not.
-        JoinKeys: Map<int, Cell list list>
-        /// What producing `Output` cost.
-        Footprint: RecomputeFootprint
-        /// Phase 202 — per group token, the cells the steps AFTER the group-by evaluated for it, in
-        /// their own step order. The group-table twin of `RowCells`, and separate from it for two
-        /// reasons that are both load-bearing: the tail's step index restarts at 0 (so one map could
-        /// not serve both), and the two are keyed by different token vocabularies — a source row's
-        /// `Delta.refToken` and a group's `DataFrame.rowTokenString` — which must not be allowed to
-        /// meet in one keyspace where a collision would silently answer a row with a group's cells.
-        ///
-        /// A group's entry is reusable exactly when that group's aggregates were REUSED rather than
-        /// recomputed: its key cells and its aggregate cells are then byte-identical to the row the
-        /// tail last read, so every tail step's output for it is too. Empty when the pipeline has no
-        /// group-by or nothing after it.
-        ///
-        /// **Declared LAST rather than beside `GroupAggs`, where it belongs by subject** — 207's
-        /// union lesson has a record twin, and the Phase 183 classifier is what showed it. A record
-        /// field's POSITION is part of the published surface: placing this one among the group
-        /// fields reported `SortOrders`, `JoinKeys` and `Footprint` as three `retype` moves, because
-        /// their indices shifted, and it changes the structural-comparison precedence of a type
-        /// whose ordering nothing here intends to move. Appending it leaves every existing field
-        /// exactly where it was, and the subject grouping is served by this comment instead.
-        GroupCells: Map<string, Cell list>
-    }
+    private
+        {
+            /// The classification the state was built under.
+            Plan: IncrementalPlan
+            /// The pipeline it was built for — a refresh with a different pipeline evaluates in full.
+            Pipeline: Transform list
+            /// The evaluation env it was built under — a refresh with a different env evaluates in
+            /// full.
+            Env: Map<string, Cell>
+            /// The identity scheme its row tokens were minted under.
+            Scheme: string
+            /// The source it was last evaluated against.
+            Source: Table
+            /// The pipeline's result over that source.
+            Output: Table
+            /// Phase 208 — every source row's identity token, in the SOURCE's own row order. It is
+            /// what makes the three arrays below positional: a row still sitting at the index it
+            /// sat at last time is recognised by one pointer comparison, and only a row that moved
+            /// costs a lookup. Empty on a state the reference path built (which caches nothing).
+            Tokens: string[]
+            /// Phase 208 — aligned with `Tokens`: the cells the row-local steps evaluated for that
+            /// row, in step order. A row a `Filter` dropped keeps the (shorter) prefix it reached,
+            /// so the drop verdict is cached too.
+            ///
+            /// An ARRAY rather than the `Map<string, Cell list>` it was until `0.27.0`: the map was
+            /// rebuilt on every refresh, which is 20,000 `Map.add` into a string-keyed tree — ~27%
+            /// of a measured refresh at that size, to serve a delta naming one row. Writing a slot
+            /// is one store.
+            RowCells: Cell list[]
+            /// Phase 208 — aligned with `Tokens`: the group token that row's cells landed in, or
+            /// `null` for a row that no longer reached the grouping (it was filtered away) and on
+            /// every pipeline without a maintained `GroupBy`. It is what lets the next refresh CARRY
+            /// a group identity rather than re-minting it: the token is a pure function of the key
+            /// cells, so a row whose cells have not moved is in the group it was in.
+            RowGroups: string[]
+            /// Per group token, its members' row tokens IN ORDER — what makes reusing a cached
+            /// aggregate safe for the order-sensitive aggregates (maintained-groups only). Keyed by
+            /// group and therefore bounded by the GROUP count, which is what a grouping is for, so
+            /// this one stays a map.
+            GroupMembers: Map<string, string list>
+            /// Per group token, the aggregate cells last computed for it (maintained-groups only).
+            GroupAggs: Map<string, Cell list>
+            /// Per `Sort` step (indexed by its ordinal among the pipeline's sorts), the token order
+            /// the step's rows ARRIVED in and the token order it PRODUCED. Both halves are needed
+            /// and neither is redundant: the produced order is what a merge reuses, and the arrival
+            /// order is the only thing that says the reuse is still valid — a stable sort breaks
+            /// ties by arrival position, so a cached order whose unnamed rows arrived in a different
+            /// order now would merge those ties the wrong way round. `Delta.diff` reports a pure
+            /// reordering as quiet, so this cannot be inferred from the delta.
+            SortOrders: Map<int, string list * string list>
+            /// Per admitted `Join` step (indexed by its ordinal among the pipeline's admitted
+            /// joins), the joined relation's KEY INDEX as of this evaluation: its rows' key cells,
+            /// projected through the step's `on` pairs, in the relation's own row order (Phase 120).
+            ///
+            /// It is what says a cached match verdict is still valid. A filtering join's verdict for
+            /// a row depends on the row AND on the relation, and the delta describes only the source
+            /// — so a verdict reused because "the delta did not name this row" would answer a
+            /// changed relation with the previous relation's answer. The key index is the whole of
+            /// what the verdict reads, so a relation that moved in some other column legitimately
+            /// keeps the reuse; one whose keys moved does not.
+            JoinKeys: Map<int, Cell list list>
+            /// What producing `Output` cost.
+            Footprint: RecomputeFootprint
+            /// Phase 202 — per group token, the cells the steps AFTER the group-by evaluated for it,
+            /// in their own step order. The group-table twin of `RowCells`, and separate from it
+            /// because the tail's step index restarts at 0 and the two are keyed by different token
+            /// vocabularies — a source row's `Delta.refToken` and a group's
+            /// `DataFrame.rowTokenString` — which must not be allowed to meet in one keyspace where
+            /// a collision would silently answer a row with a group's cells. Bounded by the group
+            /// count, so it stays a map.
+            ///
+            /// A group's entry is reusable exactly when that group's aggregates were REUSED rather
+            /// than recomputed: its key cells and its aggregate cells are then byte-identical to the
+            /// row the tail last read, so every tail step's output for it is too. Empty when the
+            /// pipeline has no group-by or nothing after it.
+            GroupCells: Map<string, Cell list>
+        }
 
 /// The incremental evaluation seam: classify a pipeline, prime a state over a source, then refresh
 /// that state against a delta. Every result equals `DataFrame.evalPipelineWithInEnv` over the same
@@ -773,20 +795,54 @@ module Incremental =
 
         go [] 0 0 pipeline
 
-    /// One source row in flight: its identity token, whether the delta named it, whether it is still
-    /// alive after the filters so far, its current cells, the cells cached for it by the previous
-    /// evaluation, and the cells evaluated for it this time (reversed while accumulating).
+    /// One source row in flight: its identity token, its slot in the source's row order, the slot
+    /// it occupied in the PRIOR evaluation, whether the delta named it, whether its cells are still
+    /// byte-identical to the prior evaluation's, whether it is still alive after the filters so far,
+    /// its current cells, the cells cached for it by the previous evaluation, and the cells evaluated
+    /// for it this time (reversed while accumulating).
+    ///
+    /// Phase 208 — `Slot` and `Prior` are the two ints that make the state's caches positional:
+    /// `Slot` is where this row's results are written, `Prior` is where its cached results were read
+    /// from (`-1` when the prior evaluation did not hold this row at all).
     type private Work =
-        { Token: string
-          Affected: bool
-          Alive: bool
-          Cells: Cell list
-          Cached: Cell list
-          Fresh: Cell list }
+        {
+            Token: string
+            Slot: int
+            Prior: int
+            Affected: bool
+            /// Phase 208 — this row's cells are byte-identical to the ones the prior evaluation held
+            /// for it AT THIS POINT in the pipeline, so anything the prior evaluation computed FROM
+            /// them is still that computation's answer.
+            ///
+            /// It starts as "the delta did not name it and the prior evaluation held it", and every
+            /// admitted step either preserves it or clears it: `Filter` / `Limit` / `Join` decide
+            /// survival and touch no cell, `Sort` moves rows and touches no cell, `Project` permutes
+            /// cells deterministically, and `Derive` appends the very cell the cache supplied. A
+            /// `Window` CLEARS IT FOR EVERY ROW, because it recomputes its column over the frame it is
+            /// handed and a row that did not move can still get a different value when another row
+            /// did.
+            ///
+            /// **That `Window` clause is a correctness fix, not a bookkeeping nicety** — see the note
+            /// on `cellAt`.
+            Stable: bool
+            Alive: bool
+            Cells: Cell list
+            Cached: Cell list
+            Fresh: Cell list
+        }
 
-    /// The value a row contributes at this evaluating step: the cache when the delta did not name
-    /// the row and the cache reaches this far, otherwise a fresh evaluation. Returns the cell and
+    /// The value a row contributes at this evaluating step: the cache when the row's cells have not
+    /// moved and the cache reaches this far, otherwise a fresh evaluation. Returns the cell and
     /// whether it cost an evaluation — the footprint's unit of work.
+    ///
+    /// **Phase 208 — the condition is `Stable`, and it was `not Affected` until `0.27.0`, which was
+    /// WRONG after a `Window`.** A window recomputes its column over the whole frame it is handed,
+    /// so a row the delta never named can legitimately come out of it with a different cell; a step
+    /// after the window that reused its cached answer then answered a question that had moved.
+    /// Measured before it was fixed, on ten rows with one edited: `Filter > Window(cumulSum) >
+    /// Filter(on the window column)` and `Filter > Window(cumulSum) > Derive(off the window column)`
+    /// both DISAGREED with the reference evaluator, which is the one thing this seam promises never
+    /// to do. `IncrementalRefreshCostTests` holds both as go-red cases.
     let private cellAt
         (env: Map<string, Cell>)
         (cols: Schema)
@@ -794,7 +850,7 @@ module Incremental =
         (expr: ColExpr)
         (w: Work)
         : Result<Cell * bool, EvalError> =
-        let cached = if w.Affected then None else List.tryItem evalIdx w.Cached
+        let cached = if not w.Stable then None else List.tryItem evalIdx w.Cached
 
         match cached with
         | Some c -> Ok(c, false)
@@ -807,12 +863,14 @@ module Incremental =
     /// differs from the reference's on the first tie.
     let private mergeOrders
         (cmp: string -> string -> int)
-        (posOf: Map<string, int>)
+        (posOf: System.Collections.Generic.Dictionary<string, int>)
         (xs: string list)
         (ys: string list)
         : string list =
         let posAt t =
-            Map.tryFind t posOf |> Option.defaultValue System.Int32.MaxValue
+            match posOf.TryGetValue t with
+            | true, i -> i
+            | _ -> System.Int32.MaxValue
 
         let rec go acc xs ys =
             match xs, ys with
@@ -865,24 +923,41 @@ module Incremental =
             let deadWorks = works |> List.filter (fun w -> not w.Alive)
             let arrival = aliveWorks |> List.map (fun w -> w.Token)
 
-            let byToken = (Map.empty, aliveWorks) ||> List.fold (fun m w -> Map.add w.Token w m)
+            // Phase 208 — HASH indexes, not persistent maps. These three structures are rebuilt on
+            // every refresh and are the whole of what a sort's bookkeeping costs: at 20,000 rows
+            // they were 66% of a measured top-N refresh, because each was a string-keyed tree built
+            // by n insertions and then read n log n times through the comparator below. They are
+            // local to this step, never escape it, and are written once and read many times — which
+            // is the shape a dictionary is for. (The state's own caches are positional arrays for
+            // the same reason; what is NOT allowed is a mutable structure escaping into the state,
+            // which is why these stay inside the step.)
+            let byToken =
+                System.Collections.Generic.Dictionary<string, Work>(List.length aliveWorks)
+
+            aliveWorks |> List.iter (fun w -> byToken[w.Token] <- w)
 
             let posOf =
-                (Map.empty, List.indexed arrival) ||> List.fold (fun m (i, t) -> Map.add t i m)
+                System.Collections.Generic.Dictionary<string, int>(List.length aliveWorks)
+
+            arrival |> List.iteri (fun i t -> posOf[t] <- i)
 
             // The reference's own comparator, over the reference's own cells. A second comparator
             // here would agree on every corpus anyone thought to write and disagree on the first
             // null, the first tie and the first misspelled key.
             let cmp (a: string) (b: string) =
-                match Map.tryFind a byToken, Map.tryFind b byToken with
-                | Some wa, Some wb -> DataFrame.rowCompareBy cols by wa.Cells wb.Cells
+                match byToken.TryGetValue a with
+                | true, wa ->
+                    match byToken.TryGetValue b with
+                    | true, wb -> DataFrame.rowCompareBy cols by wa.Cells wb.Cells
+                    | _ -> 0
                 | _ -> 0
 
-            let unnamed =
-                aliveWorks
-                |> List.filter (fun w -> not w.Affected)
-                |> List.map (fun w -> w.Token)
-                |> Set.ofList
+            let unnamed = System.Collections.Generic.HashSet<string>()
+
+            aliveWorks
+            |> List.iter (fun w ->
+                if not w.Affected then
+                    unnamed.Add w.Token |> ignore)
 
             // The cached order may be reused only for rows that arrived in the SAME relative order
             // as last time. A stable sort breaks ties by arrival position, so a reordering among
@@ -893,7 +968,7 @@ module Incremental =
                 match Map.tryFind sortIdx prior.SortOrders with
                 | None -> None
                 | Some(prevArrival, prevOrder) ->
-                    let keep = List.filter (fun t -> Set.contains t unnamed)
+                    let keep = List.filter (fun t -> unnamed.Contains t)
 
                     if keep prevArrival = keep arrival then
                         Some(keep prevOrder)
@@ -905,13 +980,11 @@ module Incremental =
                 | None -> arrival |> List.sortWith cmp
                 | Some cachedUnnamed ->
                     let named =
-                        arrival
-                        |> List.filter (fun t -> not (Set.contains t unnamed))
-                        |> List.sortWith cmp
+                        arrival |> List.filter (fun t -> not (unnamed.Contains t)) |> List.sortWith cmp
 
                     mergeOrders cmp posOf cachedUnnamed named
 
-            let works2 = (ordered |> List.map (fun t -> Map.find t byToken)) @ deadWorks
+            let works2 = (ordered |> List.map (fun t -> byToken[t])) @ deadWorks
 
             walk
                 resolve
@@ -937,9 +1010,19 @@ module Incremental =
 
             DataFrame.windowStep cols (aliveWorks |> List.map (fun w -> w.Cells)) spec
             |> Result.bind (fun (cols2, rows2) ->
+                // Phase 208 — `Stable` is cleared for EVERY row here, and the dead ones too. The
+                // appended column is a function of the whole frame, so a row the delta never named
+                // gets a new cell whenever another row in its partition moved; anything a later step
+                // cached from the row's old cells is an answer to a question that has changed. The
+                // two shapes this was measured wrong on — a `Filter` and a `Derive` reading the
+                // window's column — are the go-red cases in `IncrementalRefreshCostTests`.
+                //
+                // A dead row's cells are not recomputed (it is not in the frame), so its cache is
+                // cleared rather than refreshed: it stops being reusable, which is the conservative
+                // reading and the only one available.
                 let ws =
-                    (List.map2 (fun (w: Work) row -> { w with Cells = row }) aliveWorks rows2)
-                    @ deadWorks
+                    (List.map2 (fun (w: Work) row -> { w with Cells = row; Stable = false }) aliveWorks rows2)
+                    @ (deadWorks |> List.map (fun w -> { w with Stable = false }))
 
                 walk resolve env prior cols2 ws evalIdx evaluated caches rest)
         // Phase 207 — a `Limit`. The rows alive AT THIS STEP, in the order they are in, are the
@@ -998,7 +1081,7 @@ module Incremental =
 
                     let verdictOf (w: Work) =
                         let cached =
-                            if w.Affected || relationMoved then
+                            if not w.Stable || relationMoved then
                                 None
                             else
                                 List.tryItem evalIdx w.Cached
@@ -1138,7 +1221,11 @@ module Incremental =
             /// recomputed: re-deriving it would mean re-tokenising the key cells, and a second
             /// derivation of an identity is a second thing that can disagree.
             Order: string list
-            RowGroup: Map<string, string>
+            /// Phase 208 — the group token each SOURCE ROW landed in, indexed by that row's slot in
+            /// the source's row order (`null` for a row the prefix filtered away). The positional
+            /// successor to the `Map<string, string>` this was until `0.27.0`, and the reason the
+            /// next refresh can CARRY a group identity instead of re-minting one per row.
+            RowGroups: string[]
             Members: Map<string, string list>
             Aggs: Map<string, Cell list>
             Recomputed: int
@@ -1155,23 +1242,33 @@ module Incremental =
     /// operations exactly — keys resolved first, then aggregates, then groups in first-appearance
     /// order — because the FIRST error the reference reports is part of its answer.
     ///
-    /// A group is reusable only when no named row is in it now or was in it before AND its ordered
-    /// member list is byte-identical to the cached one. The second condition is not redundant:
-    /// `First` / `Last` read position outright and a float `Sum` is order-sensitive in its last
-    /// bits, so a pure reordering of unnamed rows can move a group's aggregate.
+    /// **Phase 208 — a group is reusable exactly when every member's cells are STABLE and its ordered
+    /// member list is byte-identical to the cached one.** That is a statement of the whole of what a
+    /// cached aggregate depends on: the aggregate is a function of its members' cells in order, so
+    /// identical members in identical order with unmoved cells is identical input. The two conditions
+    /// are each load-bearing — `First` / `Last` read position outright and a float `Sum` is
+    /// order-sensitive in its last bits, so a pure reordering of unnamed rows can move a group's
+    /// aggregate.
+    ///
+    /// It replaces a `touched` set computed from the delta's named rows and the prior row-to-group
+    /// map, which needed a 20,000-entry map built per refresh to answer one row's question. The
+    /// third condition that map served — a group a named row LEFT — is carried by the member list:
+    /// a group that lost a member has a different ordered member list and is recomputed. What the
+    /// `Stable` form ADDS is the window case: a row whose cells moved because another row moved is
+    /// not stable, and its group is recomputed, which the named-row form got wrong.
     ///
     /// An untouched group cannot error: its cached cells came from a successful evaluation over
     /// members that have not moved, so the first error among the recomputed groups (in group order)
     /// is the first error overall.
     let private groupStep
         (cols: Schema)
-        (alive: (string * Cell list) list)
+        (alive: Work list)
+        (rowCount: int)
         (keys: string list)
         (aggs: Agg list)
-        (priorRowGroup: Map<string, string>)
+        (priorGroups: string[])
         (priorMembers: Map<string, string list>)
         (priorAggs: Map<string, Cell list>)
-        (namedRows: Set<string> option)
         : Result<GroupOutcome, EvalError> =
         let keyIdx = keys |> List.map (fun k -> colIndex cols k, k)
 
@@ -1197,59 +1294,80 @@ module Incremental =
                 // the same partition `evalGroupBy` builds, so the two never disagree about which
                 // rows are one group.
                 //
-                // Every accumulator is built in REVERSE and turned once below (Phase 206). The
-                // append forms re-walked a group's rows and tokens for each member it gained, so
-                // this fold was quadratic in the group size — and it is the reason a refresh that
-                // re-evaluated ONE row expression still scaled like a full evaluation after the
-                // frame reads were made linear. Prepending is O(1); the reversals are one pass.
-                // The group memberships are order-sensitive (`priorMembers = Some toks` decides
-                // reuse), so the turn is not cosmetic — it restores exactly the previous order.
-                let orderRev, groupsRev, rowGroup =
-                    (([], Map.empty, Map.empty), alive)
-                    ||> List.fold
-                        (fun (order, map: Map<string, Cell list * Cell list list * string list>, rg) (token, row) ->
-                            let k = idxs |> List.map (fun i -> List.item i row)
-                            let gt = DataFrame.rowTokenString k
-                            let rg2 = Map.add token gt rg
+                // Phase 206 removed a quadratic here: the accumulators were APPENDED to, so a group
+                // re-walked its own rows for each member it gained. Phase 208 removes what replaced
+                // it — the per-row `Map.add` into the partition map. A persistent map allocates a new
+                // path on every insertion even when it holds seventeen keys, so grouping 20,000 rows
+                // cost 20,000 tree-path copies to build a partition of seventeen; that was the
+                // largest single item left in a measured refresh. The accumulators below are MUTABLE
+                // and strictly local to this function: a dictionary from group token to a slot, and
+                // one growable list per slot. Nothing mutable escapes — `GroupOutcome` carries F#
+                // lists and maps exactly as before — and the members stay in arrival order by
+                // construction rather than by a reversal, which is what the order-sensitive reuse
+                // condition reads.
+                //
+                // Phase 208 — the group token is CARRIED for a row whose cells have not moved. It is
+                // a pure function of the key cells, so a `Stable` row that the prior evaluation
+                // placed in a group is in that group; minting it again would be re-deriving an
+                // identity the state already holds, which cost a `DataFrame.rowTokenString` per
+                // source row per refresh (~30-40% of a measured refresh at 20,000 rows). A row the
+                // prior evaluation did not reach — new, moved, filtered away last time, or any row of
+                // a prime — mints as before, so a carried token is never the only derivation.
+                //
+                // The key cells are needed only by the row that OPENS a group, so they are read
+                // lazily: a carried token that finds its group already open reads no cell at all.
+                let rowGroups: string[] = Array.zeroCreate rowCount
 
-                            match Map.tryFind gt map with
-                            | Some(k0, rows, toks) -> order, Map.add gt (k0, row :: rows, token :: toks) map, rg2
-                            | None -> gt :: order, Map.add gt (k, [ row ], [ token ]) map, rg2)
+                let keyCellsOf (row: Cell list) =
+                    idxs |> List.map (fun i -> List.item i row)
 
-                let order = List.rev orderRev
+                let slotOf = System.Collections.Generic.Dictionary<string, int>()
+                let order = ResizeArray<string>()
+                let groupKeys = ResizeArray<Cell list>()
+                let groupRows = ResizeArray<ResizeArray<Cell list>>()
+                let groupToks = ResizeArray<ResizeArray<string>>()
+                let groupStable = ResizeArray<bool>()
 
-                let groups =
-                    groupsRev |> Map.map (fun _ (k, rows, toks) -> k, List.rev rows, List.rev toks)
+                for w in alive do
+                    let row = w.Cells
 
-                let touched =
-                    match namedRows with
-                    | None -> None // every group is suspect
-                    | Some named ->
-                        let nowIn =
-                            alive
-                            |> List.filter (fun (t, _) -> Set.contains t named)
-                            |> List.choose (fun (t, _) -> Map.tryFind t rowGroup)
-                            |> Set.ofList
+                    let carried =
+                        if w.Stable && w.Prior >= 0 && w.Prior < priorGroups.Length then
+                            priorGroups[w.Prior]
+                        else
+                            null
 
-                        let wasIn =
-                            named
-                            |> Set.toList
-                            |> List.choose (fun t -> Map.tryFind t priorRowGroup)
-                            |> Set.ofList
+                    let gt =
+                        if not (isNull carried) then
+                            carried
+                        else
+                            DataFrame.rowTokenString (keyCellsOf row)
 
-                        Some(Set.union nowIn wasIn)
+                    rowGroups[w.Slot] <- gt
+
+                    match slotOf.TryGetValue gt with
+                    | true, gi ->
+                        groupRows[gi].Add row
+                        groupToks[gi].Add w.Token
+
+                        if not w.Stable then
+                            groupStable[gi] <- false
+                    | _ ->
+                        slotOf[gt] <- order.Count
+                        order.Add gt
+                        groupKeys.Add(keyCellsOf row)
+                        groupRows.Add(ResizeArray [ row ])
+                        groupToks.Add(ResizeArray [ w.Token ])
+                        groupStable.Add w.Stable
 
                 let recomputed = ref 0
                 let recomputedGroups = ref Set.empty
 
-                let cellsFor (gt: string) (grp: Cell list list) (toks: string list) =
+                let cellsFor (gt: string) (grp: Cell list list) (toks: string list) (allStable: bool) =
                     let reusable =
-                        match touched with
-                        | None -> false
-                        | Some t ->
-                            not (Set.contains gt t)
-                            && Map.tryFind gt priorMembers = Some toks
-                            && Map.containsKey gt priorAggs
+                        allStable
+                        && Map.tryFind gt priorMembers = Some toks
+                        && Map.containsKey gt priorAggs
 
                     if reusable then
                         Ok(Map.find gt priorAggs)
@@ -1261,17 +1379,20 @@ module Incremental =
                         |> traverse (fun (a, ty, ci) ->
                             DataFrame.aggregateCells a.Fn ty (grp |> List.map (List.item ci)))
 
-                order
-                |> traverse (fun gt ->
-                    let k, grp, toks = Map.find gt groups
+                List.init order.Count id
+                |> traverse (fun gi ->
+                    let gt = order[gi]
+                    let k = groupKeys[gi]
+                    let grp = List.ofSeq groupRows[gi]
+                    let toks = List.ofSeq groupToks[gi]
 
-                    cellsFor gt grp toks
+                    cellsFor gt grp toks groupStable[gi]
                     |> Result.map (fun aggVals -> gt, k @ aggVals, aggVals, toks))
                 |> Result.map (fun built ->
                     { Cols = keyCols @ aggCols
                       Rows = built |> List.map (fun (_, row, _, _) -> row)
                       Order = built |> List.map (fun (gt, _, _, _) -> gt)
-                      RowGroup = rowGroup
+                      RowGroups = rowGroups
                       Members = (Map.empty, built) ||> List.fold (fun m (gt, _, _, toks) -> Map.add gt toks m)
                       Aggs = (Map.empty, built) ||> List.fold (fun m (gt, _, a, _) -> Map.add gt a m)
                       Recomputed = recomputed.Value
@@ -1282,28 +1403,51 @@ module Incremental =
     /// Every source row's identity token, in row order, refusing whole if the witness cannot key the
     /// source uniquely. The token format is `Delta.refToken`'s, so a delta's `ByKey` refs and these
     /// tokens are the same strings by construction rather than by a second convention.
-    let private tokensOf (idw: RowIdentity<'Id>) (t: Table) : Result<string list, DeltaDefect> =
+    /// Phase 208 — two changes, both measured. The uniqueness check is a HASH set rather than a
+    /// persistent `Set<string>`: it is written n times and read n times and never escapes this
+    /// function, so the tree's log-n string comparisons and its node allocations bought nothing. And
+    /// a token equal to the one the PRIOR evaluation held at the same row index is returned as that
+    /// prior STRING INSTANCE rather than as the freshly minted equal copy — which is what lets
+    /// `runIncremental` recognise a row that has not moved with one pointer comparison instead of a
+    /// keyed lookup, and lets every later comparison take `String.Equals`'s reference fast path.
+    ///
+    /// The minting itself is NOT avoided, and cannot be while the seam is handed the whole new source:
+    /// a row's token is a function of its identity cell, and the only way to know a row's identity is
+    /// to read it. That is 207's finding, and it is the floor this phase works down to rather than
+    /// through.
+    let private tokensOf (idw: RowIdentity<'Id>) (priorTokens: string[]) (t: Table) : Result<string[], DeltaDefect> =
         let n = Table.rowCount t
         // Hoisted for the reason `Delta.keyIndex` hoists it (Phase 206): the witness's per-table
         // work belongs in the first application, not in every iteration of this loop.
         let keyAt = idw.KeyOf t
+        let tokens: string[] = Array.zeroCreate n
+        let seen = System.Collections.Generic.HashSet<string>(n)
+        let mutable defect = None
+        let mutable i = 0
 
-        let rec go i acc (seen: Set<string>) =
-            if i >= n then
-                Ok(List.rev acc)
-            else
-                match keyAt i with
-                | None -> Error(MissingIdentity(idw.Scheme, i))
-                | Some id ->
-                    let k = idw.KeyString id
-                    let token = Delta.refToken (ByKey k)
+        while defect.IsNone && i < n do
+            match keyAt i with
+            | None -> defect <- Some(MissingIdentity(idw.Scheme, i))
+            | Some id ->
+                let k = idw.KeyString id
+                let minted = Delta.refToken (ByKey k)
 
-                    if Set.contains token seen then
-                        Error(DuplicateIdentity(idw.Scheme, k))
+                let token =
+                    if i < priorTokens.Length && System.String.Equals(priorTokens[i], minted) then
+                        priorTokens[i]
                     else
-                        go (i + 1) (token :: acc) (Set.add token seen)
+                        minted
 
-        go 0 [] Set.empty
+                if seen.Add token then
+                    tokens[i] <- token
+                else
+                    defect <- Some(DuplicateIdentity(idw.Scheme, k))
+
+            i <- i + 1
+
+        match defect with
+        | Some d -> Error d
+        | None -> Ok tokens
 
     /// The tokens a delta names as present-and-changed (`RowAdded` / `RowChanged`) — the rows an
     /// incremental evaluation must re-evaluate.
@@ -1353,28 +1497,85 @@ module Incremental =
         (prefix: PrefixStep list)
         (final: (string list * Agg list * PrefixStep list) option)
         (source: Table)
-        (tokens: string list)
+        (tokens: string[])
         (prior: IncrementalEval option)
         (named: Set<string> option)
         (recomputeOf: int -> int -> Recompute)
         : Result<IncrementalEval, EvalError> =
+        let rowCount = tokens.Length
+
+        let priorTokens =
+            prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
+
         let priorCells =
-            prior |> Option.map (fun s -> s.RowCells) |> Option.defaultValue Map.empty
+            prior |> Option.map (fun s -> s.RowCells) |> Option.defaultValue [||]
+
+        let priorGroups =
+            prior |> Option.map (fun s -> s.RowGroups) |> Option.defaultValue [||]
+
+        // Phase 208 — where a row's cached results are read from. The common case is the whole
+        // point: a delta that changed a row's VALUE leaves every row at the index it already sat
+        // at, so `tokensOf` handed back the prior evaluation's own string instances and the test is
+        // one pointer comparison per row — no hashing, no tree, nothing keyed.
+        //
+        // A row that MOVED — inserted ahead of, removed from in front of, or reordered — costs a
+        // lookup, and the index those lookups read is built ONCE, on the first miss, never on a
+        // refresh that has no misses and never on a prime. That is the honest price of a structural
+        // change to the frame, and it is paid by the refresh that saw one rather than by every
+        // refresh in case one comes.
+        let mutable priorIndex: System.Collections.Generic.Dictionary<string, int> = null
+
+        let priorSlotOf (token: string) =
+            if priorTokens.Length = 0 then
+                -1
+            else
+                if isNull priorIndex then
+                    let d = System.Collections.Generic.Dictionary<string, int>(priorTokens.Length)
+
+                    for j in 0 .. priorTokens.Length - 1 do
+                        d[priorTokens[j]] <- j
+
+                    priorIndex <- d
+
+                match priorIndex.TryGetValue token with
+                | true, j -> j
+                | _ -> -1
 
         let works =
-            List.map2
-                (fun token cells ->
-                    { Token = token
-                      Affected =
-                        match named with
-                        | None -> true
-                        | Some ns -> Set.contains token ns || not (Map.containsKey token priorCells)
-                      Alive = true
-                      Cells = cells
-                      Cached = Map.tryFind token priorCells |> Option.defaultValue []
-                      Fresh = [] })
-                tokens
-                (rowsOf source)
+            rowsOf source
+            |> List.mapi (fun i cells ->
+                let token = tokens[i]
+
+                // The reference test is an OPTIMISATION and is unobservable, which is what makes it
+                // safe to write in a Fable-compiled library where strings are primitives and
+                // `ReferenceEquals` therefore compares by VALUE. Either way the answer is the same
+                // index: tokens are unique within a frame, so the only `j` with
+                // `priorTokens[j] = token` is `i` whenever `priorTokens[i] = token` — the fast path
+                // and the fallback cannot disagree, they can only differ in what they cost.
+                let priorSlot =
+                    if i < priorTokens.Length && System.Object.ReferenceEquals(token, priorTokens[i]) then
+                        i
+                    else
+                        priorSlotOf token
+
+                let affected =
+                    match named with
+                    | None -> true
+                    | Some ns -> priorSlot < 0 || Set.contains token ns
+
+                { Token = token
+                  Slot = i
+                  Prior = priorSlot
+                  Affected = affected
+                  Stable = not affected
+                  Alive = true
+                  Cells = cells
+                  Cached =
+                    if priorSlot >= 0 && priorSlot < priorCells.Length then
+                        priorCells[priorSlot]
+                    else
+                        []
+                  Fresh = [] })
 
         let priorCaches =
             match prior with
@@ -1385,11 +1586,27 @@ module Incremental =
 
         walk resolve env priorCaches source.Schema works 0 0 noCaches prefix
         |> Result.bind (fun (cols, ws, evaluated, caches) ->
-            let rowCells =
-                (Map.empty, ws) ||> List.fold (fun m w -> Map.add w.Token (List.rev w.Fresh) m)
+            // Phase 208 — the row cache written positionally, one array store per row, into a slot
+            // the row carried through the walk. It was a `Map.add` per row into a string-keyed tree,
+            // rebuilt from empty on every refresh, which measured as ~27% of a refresh at 20,000
+            // rows.
+            //
+            // A row whose cells never moved and whose every evaluating step read the cache has
+            // produced the list it was handed: `Fresh` reversed IS `Cached`, so the prior list is
+            // reused rather than rebuilt. The length test is what makes that exact — a row that died
+            // EARLIER this time (a `Limit` window that moved past it, a relation that stopped
+            // matching) stopped accumulating sooner, so its cache is genuinely shorter and is
+            // rebuilt.
+            let rowCells: Cell list[] = Array.zeroCreate rowCount
 
-            let aliveRows =
-                ws |> List.filter (fun w -> w.Alive) |> List.map (fun w -> w.Token, w.Cells)
+            for w in ws do
+                rowCells[w.Slot] <-
+                    if w.Stable && List.length w.Fresh = List.length w.Cached then
+                        w.Cached
+                    else
+                        List.rev w.Fresh
+
+            let aliveWorks = ws |> List.filter (fun w -> w.Alive)
 
             match final with
             | None ->
@@ -1399,29 +1616,27 @@ module Incremental =
                       Env = env
                       Scheme = scheme
                       Source = source
-                      Output = tableOf cols (aliveRows |> List.map snd)
+                      Output = tableOf cols (aliveWorks |> List.map (fun w -> w.Cells))
+                      Tokens = tokens
                       RowCells = rowCells
-                      RowGroup = Map.empty
+                      RowGroups = [||]
                       GroupMembers = Map.empty
                       GroupAggs = Map.empty
                       SortOrders = caches.SortOrders
                       JoinKeys = caches.JoinKeys
                       Footprint =
-                        { SourceRows = List.length tokens
-                          ResultRows = List.length aliveRows
+                        { SourceRows = rowCount
+                          ResultRows = List.length aliveWorks
                           Recompute = recomputeOf evaluated 0 }
                       GroupCells = Map.empty }
             | Some(keys, aggs, tail) ->
-                let priorRowGroup =
-                    prior |> Option.map (fun s -> s.RowGroup) |> Option.defaultValue Map.empty
-
                 let priorMembers =
                     prior |> Option.map (fun s -> s.GroupMembers) |> Option.defaultValue Map.empty
 
                 let priorAggs =
                     prior |> Option.map (fun s -> s.GroupAggs) |> Option.defaultValue Map.empty
 
-                groupStep cols aliveRows keys aggs priorRowGroup priorMembers priorAggs named
+                groupStep cols aliveWorks rowCount keys aggs priorGroups priorMembers priorAggs
                 |> Result.bind (fun g ->
                     // Phase 202 — one state shape whichever side of the branch below built it, so
                     // the tail cannot quietly record a different kind of answer from the no-tail
@@ -1433,14 +1648,15 @@ module Incremental =
                           Scheme = scheme
                           Source = source
                           Output = tableOf outCols outRows
+                          Tokens = tokens
                           RowCells = rowCells
-                          RowGroup = g.RowGroup
+                          RowGroups = g.RowGroups
                           GroupMembers = g.Members
                           GroupAggs = g.Aggs
                           SortOrders = caches'.SortOrders
                           JoinKeys = caches'.JoinKeys
                           Footprint =
-                            { SourceRows = List.length tokens
+                            { SourceRows = rowCount
                               ResultRows = List.length outRows
                               Recompute = recomputeOf evaluated' g.Recomputed }
                           GroupCells = groupCells }
@@ -1459,13 +1675,26 @@ module Incremental =
                         // then not the row the tail last read — or when the tail has no cache for
                         // it, which covers a prime, a group that has just come into existence, and
                         // a state built before this pipeline had a tail at all.
+                        //
+                        // Phase 208 — `Slot` and `Prior` are the group table's, not the source's:
+                        // the group cache is keyed by group token and bounded by the GROUP count (a
+                        // grouping is what makes that true), so it stays a map and needs no
+                        // positional slot. `Slot` is the group's index for the walk's own use and
+                        // `Prior` is `-1`, which is what says "this frame's cache is not read
+                        // positionally". `Stable` carries exactly what `Affected` carried here
+                        // before — the group's cells moved iff its aggregates were recomputed.
                         let groupWorks =
-                            List.map2
-                                (fun token row ->
-                                    { Token = token
-                                      Affected =
+                            List.mapi2
+                                (fun i token row ->
+                                    let affected =
                                         Set.contains token g.RecomputedGroups
                                         || not (Map.containsKey token priorGroupCells)
+
+                                    { Token = token
+                                      Slot = i
+                                      Prior = -1
+                                      Affected = affected
+                                      Stable = not affected
                                       Alive = true
                                       Cells = row
                                       Cached = Map.tryFind token priorGroupCells |> Option.defaultValue []
@@ -1512,8 +1741,9 @@ module Incremental =
               Scheme = scheme
               Source = source
               Output = output
-              RowCells = Map.empty
-              RowGroup = Map.empty
+              Tokens = [||]
+              RowCells = [||]
+              RowGroups = [||]
               GroupMembers = Map.empty
               GroupAggs = Map.empty
               SortOrders = Map.empty
@@ -1554,7 +1784,13 @@ module Incremental =
             // a disagreement, so it is taken rather than asserted away.
             runReference resolve env idw.Scheme pipeline p source (fun n -> FullRecompute(n, PipelineChanged))
         | _, Some(prefix, final) ->
-            match tokensOf idw source with
+            // Phase 208 — the prior evaluation's token array is handed to the minting so an unmoved
+            // row's token comes back as the prior STRING INSTANCE; `runIncremental`'s positional
+            // cache lookup is a pointer comparison off the back of that.
+            let priorTokens =
+                prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
+
+            match tokensOf idw priorTokens source with
             | Error defect ->
                 runReference resolve env idw.Scheme pipeline p source (fun n ->
                     FullRecompute(n, RowIdentityUnusable defect))
@@ -1706,11 +1942,41 @@ module Incremental =
         : Result<IncrementalEval, EvalError> =
         refresh DataFrame.noResolve Map.empty idw pipeline state delta source
 
+    // ---- reading a state (Phase 208) ----
+    //
+    // The state's representation is private, so these are the whole of what a consumer can read from
+    // one. The set is MEASURED rather than designed: every in-repo reader of an `IncrementalEval`
+    // read `Output` or `Footprint` and nothing else, and the two accessors for those predate this
+    // phase. `strategy` and `plan'` are here because a consumer that holds a state and wants to know
+    // whether its next refresh will be restricted should not have to re-run `plan` over the pipeline
+    // to find out, and `source` because the state pins the table the next delta must be measured
+    // against.
+
     /// The result the state currently holds.
     let result (s: IncrementalEval) : Table = s.Output
 
     /// What producing that result cost.
     let footprint (s: IncrementalEval) : RecomputeFootprint = s.Footprint
+
+    /// The classification the state was built under — the same value `plan` returns for the state's
+    /// own pipeline.
+    ///
+    /// Named `plan'` because `plan` is this module's pipeline classifier and the two are deliberately
+    /// the same answer read two ways: a consumer that has a state reads it here, and one that has
+    /// only a pipeline computes it there.
+    let plan' (s: IncrementalEval) : IncrementalPlan = s.Plan
+
+    /// How the state's next refresh will be answered: row-local propagation, a maintained grouping,
+    /// or the reference evaluator.
+    let strategy (s: IncrementalEval) : IncrementalStrategy = s.Plan.Strategy
+
+    /// The source the state was last evaluated against — the `before` table a delta handed to the
+    /// next `refresh` must describe the change FROM.
+    let source (s: IncrementalEval) : Table = s.Source
+
+    /// The pipeline the state was built for. A refresh with any other pipeline evaluates in full
+    /// (`PipelineChanged`), so this is what a consumer holding a state compares against.
+    let pipelineOf (s: IncrementalEval) : Transform list = s.Pipeline
 
     // ---- the one-shot form ----
 

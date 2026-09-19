@@ -48,7 +48,10 @@ let private step (pipeline: Transform list) (before: Table) (after: Table) =
     next, delta
 
 let private expectMatchesReference (pipeline: Transform list) (after: Table) (s: IncrementalEval) =
-    Expect.equal (Ok s.Output) (DataFrame.evalPipeline pipeline after) "incremental result = reference result"
+    Expect.equal
+        (Ok(Incremental.result s))
+        (DataFrame.evalPipeline pipeline after)
+        "incremental result = reference result"
 
 let private agg name fn ofCol : Agg = { Name = name; Fn = fn; Of = ofCol }
 
@@ -369,8 +372,8 @@ let tests =
               let next, delta = step pipeline baseTable changed
 
               Expect.equal (Delta.rowsWith RowChanged delta) [ ByKey "s:r2" ] "the diff named exactly the changed row"
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one row re-evaluated"
-              Expect.equal next.Footprint.SourceRows 5 "over a five-row source"
+              Expect.equal (Incremental.footprint next).Recompute (RowsRecomputed 1) "one row re-evaluated"
+              Expect.equal (Incremental.footprint next).SourceRows 5 "over a five-row source"
               expectMatchesReference pipeline changed next
 
           testCase "each row-local step that evaluates counts once per re-evaluated row"
@@ -388,7 +391,12 @@ let tests =
                   )
 
               let next, _ = step pipeline baseTable changed
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 2) "two evaluations for one changed row"
+
+              Expect.equal
+                  (Incremental.footprint next).Recompute
+                  (RowsRecomputed 2)
+                  "two evaluations for one changed row"
+
               expectMatchesReference pipeline changed next
 
           testCase "a change confined to one group recomputes one group"
@@ -404,11 +412,11 @@ let tests =
               let next, _ = step pipeline baseTable changed
 
               Expect.equal
-                  next.Footprint.Recompute
+                  (Incremental.footprint next).Recompute
                   (GroupsRecomputed(0, 1))
                   "one group recomputed, no row expressions evaluated (the pipeline has none)"
 
-              Expect.equal next.Footprint.ResultRows 3 "three groups in the result"
+              Expect.equal (Incremental.footprint next).ResultRows 3 "three groups in the result"
               expectMatchesReference pipeline changed next
 
           testCase "a quiet delta over an unchanged source reuses the prior result"
@@ -416,7 +424,7 @@ let tests =
               let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 2))) ]
               let next, delta = step pipeline baseTable baseTable
               Expect.isTrue (Delta.isQuiet delta) "the diff of a table with itself is quiet"
-              Expect.equal next.Footprint.Recompute ReusedPrior "nothing was re-evaluated"
+              Expect.equal (Incremental.footprint next).Recompute ReusedPrior "nothing was re-evaluated"
               expectMatchesReference pipeline baseTable next
 
           // ================= the traps =================
@@ -432,11 +440,11 @@ let tests =
               let reversed = table (List.rev baseRows)
               let next, delta = step pipeline baseTable reversed
               Expect.isTrue (Delta.isQuiet delta) "an identity diff calls a reordering quiet"
-              Expect.notEqual next.Footprint.Recompute ReusedPrior "the prior result was NOT reused"
+              Expect.notEqual (Incremental.footprint next).Recompute ReusedPrior "the prior result was NOT reused"
               expectMatchesReference pipeline reversed next
 
               Expect.notEqual
-                  (Ok next.Output)
+                  (Ok(Incremental.result next))
                   (DataFrame.evalPipeline pipeline baseTable)
                   "and the answer genuinely moved — the test would pass vacuously otherwise"
 
@@ -458,7 +466,7 @@ let tests =
               expectMatchesReference pipeline after next
 
               Expect.equal
-                  (next.Output.Schema |> List.map fst)
+                  ((Incremental.result next).Schema |> List.map fst)
                   [ "id"; "a"; "b"; "d" ]
                   "the derived column is present in the result"
 
@@ -467,7 +475,7 @@ let tests =
               let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))) ]
               let after = table (baseRows @ [ "r5", Int 6, Int 2; "r6", Int 7, Int 2 ])
               let next, _ = step pipeline baseTable after
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 2) "only the two new rows"
+              Expect.equal (Incremental.footprint next).Recompute (RowsRecomputed 2) "only the two new rows"
               expectMatchesReference pipeline after next
 
           testCase "a removal recomputes the group it emptied"
@@ -475,7 +483,7 @@ let tests =
               let pipeline = [ GroupBy([ "b" ], [ agg "n" Count "a" ]) ]
               let after = table (baseRows |> List.filter (fun (i, _, _) -> i <> "r4"))
               let next, _ = step pipeline baseTable after
-              Expect.equal next.Footprint.ResultRows 2 "the b=2 group is gone"
+              Expect.equal (Incremental.footprint next).ResultRows 2 "the b=2 group is gone"
               expectMatchesReference pipeline after next
 
           // ================= every way out, with its reason =================
@@ -493,11 +501,11 @@ let tests =
               let next, _ = step pipeline baseTable after
 
               Expect.equal
-                  next.Footprint.Recompute
+                  (Incremental.footprint next).Recompute
                   (FullRecompute(0, StepNotRowLocal "distinct"))
                   "the fall-back names the verb, and carries what the reference actually evaluated"
 
-              Expect.equal next.Footprint.SourceRows 6 "`SourceRows` stays its own field"
+              Expect.equal (Incremental.footprint next).SourceRows 6 "`SourceRows` stays its own field"
               expectMatchesReference pipeline after next
 
           testCase "a declined pipeline's PRIME is `Primed`, not the decline"
@@ -513,14 +521,17 @@ let tests =
                   (ReferenceOnly(StepNotRowLocal "distinct"))
                   "the pipeline is declined"
 
-              Expect.equal primed.Footprint.Recompute (Primed 5) "and its prime evaluated the filter over every row"
+              Expect.equal
+                  (Incremental.footprint primed).Recompute
+                  (Primed 5)
+                  "and its prime evaluated the filter over every row"
 
               let after = table (baseRows @ [ "r5", Int 8, Int 2 ])
               let delta = ok (Delta.diff idw baseTable after)
               let next = ok (Incremental.refreshOn idw pipeline primed delta after)
 
               Expect.equal
-                  next.Footprint.Recompute
+                  (Incremental.footprint next).Recompute
                   (FullRecompute(6, StepNotRowLocal "distinct"))
                   "the refresh is where the decline is reported"
 
@@ -532,7 +543,7 @@ let tests =
               // CHANGE, not because it must be re-run when nothing changed.
               let pipeline = [ Project [ "b", "b" ]; Distinct ]
               let next, _ = step pipeline baseTable baseTable
-              Expect.equal next.Footprint.Recompute ReusedPrior "an unchanged source needs no re-run"
+              Expect.equal (Incremental.footprint next).Recompute ReusedPrior "an unchanged source needs no re-run"
               expectMatchesReference pipeline baseTable next
 
           testCase "a FullRefresh delta falls back, and still answers correctly"
@@ -541,7 +552,12 @@ let tests =
               let after = table (baseRows @ [ "r5", Int 8, Int 2 ])
               let state = ok (Incremental.primeOn idw pipeline baseTable)
               let next = ok (Incremental.refreshOn idw pipeline state FullRefresh after)
-              Expect.equal next.Footprint.Recompute (FullRecompute(6, DeltaIsFullRefresh)) "the reason is the delta"
+
+              Expect.equal
+                  (Incremental.footprint next).Recompute
+                  (FullRecompute(6, DeltaIsFullRefresh))
+                  "the reason is the delta"
+
               expectMatchesReference pipeline after next
 
           testCase "an ordinal-addressed delta falls back rather than keying a cache by position"
@@ -551,7 +567,12 @@ let tests =
               let state = ok (Incremental.primeOn idw pipeline baseTable)
               let delta = Delta.diffByOrdinal baseTable after
               let next = ok (Incremental.refreshOn idw pipeline state delta after)
-              Expect.equal next.Footprint.Recompute (FullRecompute(6, OrdinalAddressing)) "the reason is the addressing"
+
+              Expect.equal
+                  (Incremental.footprint next).Recompute
+                  (FullRecompute(6, OrdinalAddressing))
+                  "the reason is the addressing"
+
               expectMatchesReference pipeline after next
 
           testCase "a schema change falls back as a schema change, not as a row change"
@@ -568,7 +589,12 @@ let tests =
               let delta = ok (Delta.diff idw baseTable wide)
               Expect.equal delta FullRefresh "an identity diff across schemas is a full refresh"
               let next = ok (Incremental.refreshOn idw pipeline state delta wide)
-              Expect.equal next.Footprint.Recompute (FullRecompute(5, SourceSchemaMoved)) "the schema is the reason"
+
+              Expect.equal
+                  (Incremental.footprint next).Recompute
+                  (FullRecompute(5, SourceSchemaMoved))
+                  "the schema is the reason"
+
               expectMatchesReference pipeline wide next
 
           testCase "a changed env falls back — a cached cell is no longer that row's value"
@@ -583,10 +609,10 @@ let tests =
                       Incremental.refresh DataFrame.noResolve env1 idw pipeline state (Delta.empty idw.Scheme) baseTable
                   )
 
-              Expect.equal next.Footprint.Recompute (FullRecompute(5, EnvChanged)) "the env is the reason"
+              Expect.equal (Incremental.footprint next).Recompute (FullRecompute(5, EnvChanged)) "the env is the reason"
 
               Expect.equal
-                  (Ok next.Output)
+                  (Ok(Incremental.result next))
                   (DataFrame.evalPipelineInEnv env1 pipeline baseTable)
                   "and the answer is the reference answer under the NEW env"
 
@@ -599,7 +625,11 @@ let tests =
               let next =
                   ok (Incremental.refreshOn idw p1 state (Delta.empty idw.Scheme) baseTable)
 
-              Expect.equal next.Footprint.Recompute (FullRecompute(5, PipelineChanged)) "the pipeline is the reason"
+              Expect.equal
+                  (Incremental.footprint next).Recompute
+                  (FullRecompute(5, PipelineChanged))
+                  "the pipeline is the reason"
+
               expectMatchesReference p1 baseTable next
 
           testCase "a column-invalidation delta re-evaluates every row (it names none)"
@@ -610,7 +640,7 @@ let tests =
               let next = ok (Incremental.refreshOn idw pipeline state delta baseTable)
 
               Expect.equal
-                  next.Footprint.Recompute
+                  (Incremental.footprint next).Recompute
                   (RowsRecomputed 5)
                   "every row is suspect — column invalidation names no rows"
 
@@ -634,11 +664,14 @@ let tests =
               let state = ok (Incremental.primeOn idw pipeline nullKeyed)
 
               Expect.equal
-                  state.Footprint.Recompute
+                  (Incremental.footprint state).Recompute
                   (FullRecompute(2, RowIdentityUnusable(MissingIdentity(idw.Scheme, 0))))
                   "the defect is carried, not swallowed"
 
-              Expect.equal (Ok state.Output) (DataFrame.evalPipeline pipeline nullKeyed) "and the answer is correct"
+              Expect.equal
+                  (Ok(Incremental.result state))
+                  (DataFrame.evalPipeline pipeline nullKeyed)
+                  "and the answer is correct"
 
           // ================= reporting =================
 
@@ -687,9 +720,9 @@ let tests =
               let t2 = table ((baseRows @ [ "r5", Int 6, Int 2 ]) @ [ "r6", Int 7, Int 2 ])
               let s2 = ok (Incremental.refreshOn idw pipeline s1 (ok (Delta.diff idw t1 t2)) t2)
 
-              Expect.equal s1.Footprint.Recompute (RowsRecomputed 2) "one new row, two evaluating steps"
-              Expect.equal s2.Footprint.Recompute (RowsRecomputed 2) "still two, over a larger source"
-              Expect.equal s2.Footprint.SourceRows 7 "the source grew"
+              Expect.equal (Incremental.footprint s1).Recompute (RowsRecomputed 2) "one new row, two evaluating steps"
+              Expect.equal (Incremental.footprint s2).Recompute (RowsRecomputed 2) "still two, over a larger source"
+              Expect.equal (Incremental.footprint s2).SourceRows 7 "the source grew"
               expectMatchesReference pipeline t2 s2
 
           // ================= the merged order (Phase 115) =================
@@ -710,14 +743,14 @@ let tests =
 
               let next, _ = step pipeline baseTable changed
 
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one filter predicate, not five"
+              Expect.equal (Incremental.footprint next).Recompute (RowsRecomputed 1) "one filter predicate, not five"
               expectMatchesReference pipeline changed next
 
               // A lone sort evaluates no expression at all, so a changed row costs nothing to
               // re-evaluate and the whole of the work is the merge, which the footprint does not
               // charge for — the same accounting a groupBy gets, and for the same reason.
               let lone, _ = step [ Transform.sortBy [ "a", Asc ] ] baseTable changed
-              Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a sort evaluates nothing"
+              Expect.equal (Incremental.footprint lone).Recompute (RowsRecomputed 0) "a sort evaluates nothing"
               expectMatchesReference [ Transform.sortBy [ "a", Asc ] ] changed lone
 
           testCase "the merge breaks a tie the way a stable sort does, not the way a cache would"
@@ -737,7 +770,9 @@ let tests =
               let next, _ = step pipeline baseTable changed
 
               Expect.equal
-                  (next.Output |> Table.tryColumn "id" |> Option.map (fun c -> c.Cells))
+                  ((Incremental.result next)
+                   |> Table.tryColumn "id"
+                   |> Option.map (fun c -> c.Cells))
                   (Some [ Str "r0"; Str "r1"; Str "r2"; Str "r3"; Str "r4" ])
                   "the tie keeps arrival order"
 
@@ -754,10 +789,12 @@ let tests =
               let next, delta = step pipeline baseTable reversed
 
               Expect.isTrue (Delta.isQuiet delta) "the diff named nothing"
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 0) "and nothing was re-evaluated"
+              Expect.equal (Incremental.footprint next).Recompute (RowsRecomputed 0) "and nothing was re-evaluated"
 
               Expect.equal
-                  (next.Output |> Table.tryColumn "id" |> Option.map (fun c -> c.Cells))
+                  ((Incremental.result next)
+                   |> Table.tryColumn "id"
+                   |> Option.map (fun c -> c.Cells))
                   (Some [ Str "r1"; Str "r0"; Str "r3"; Str "r2"; Str "r4" ])
                   "the order is the reference's over the REVERSED frame, not the cached one"
 
@@ -780,7 +817,7 @@ let tests =
 
               let next, _ = step pipeline baseTable changed
 
-              match next.Footprint.Recompute with
+              match (Incremental.footprint next).Recompute with
               | GroupsRecomputed(_, g) -> Expect.equal g 1 "only the group the changed row is in"
               | other -> failtestf "expected a maintained-group refresh, got %A" other
 
@@ -821,11 +858,11 @@ let tests =
 
               let next, _ = step pipeline baseTable changed
 
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one filter predicate, not five"
+              Expect.equal (Incremental.footprint next).Recompute (RowsRecomputed 1) "one filter predicate, not five"
               expectMatchesReference pipeline changed next
 
               let lone, _ = step [ lagOverB ] baseTable changed
-              Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a window evaluates nothing"
+              Expect.equal (Incremental.footprint lone).Recompute (RowsRecomputed 0) "a window evaluates nothing"
               expectMatchesReference [ lagOverB ] changed lone
 
           testCase "a bounded frame moves a row the delta did NOT name, and the column follows it"
@@ -848,7 +885,9 @@ let tests =
               Expect.equal (Delta.rowsWith RowChanged delta |> List.length) 1 "the delta named one row"
 
               Expect.equal
-                  (primed.Output |> Table.tryColumn "prev" |> Option.map (fun c -> c.Cells))
+                  ((Incremental.result primed)
+                   |> Table.tryColumn "prev"
+                   |> Option.map (fun c -> c.Cells))
                   (Some [ Null; Int 1; Null; Int 3; Null ])
                   "before: partition b=0 orders r0 (1) then r1 (2), so r1's predecessor is r0's value"
 
@@ -856,7 +895,9 @@ let tests =
               // the partition's first row and loses its predecessor, and r0 gains r1's value. BOTH
               // cells move, and the delta named only r0.
               Expect.equal
-                  (next.Output |> Table.tryColumn "prev" |> Option.map (fun c -> c.Cells))
+                  ((Incremental.result next)
+                   |> Table.tryColumn "prev"
+                   |> Option.map (fun c -> c.Cells))
                   (Some [ Int 2; Null; Null; Int 3; Null ])
                   "after: the unnamed neighbour's cell moved too"
 
@@ -887,11 +928,11 @@ let tests =
                   "and it classifies as the same case a bounded frame does"
 
               let next, _ = step pipeline baseTable changed
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one filter predicate, not five"
+              Expect.equal (Incremental.footprint next).Recompute (RowsRecomputed 1) "one filter predicate, not five"
               expectMatchesReference pipeline changed next
 
               let lone, _ = step [ cumulSumOverB ] baseTable changed
-              Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a window evaluates nothing"
+              Expect.equal (Incremental.footprint lone).Recompute (RowsRecomputed 0) "a window evaluates nothing"
               expectMatchesReference [ cumulSumOverB ] changed lone
 
           testCase "a ranked column follows a row the delta did NOT name"
@@ -913,12 +954,16 @@ let tests =
               Expect.equal (Delta.rowsWith RowChanged delta |> List.length) 1 "the delta named one row"
 
               Expect.equal
-                  (primed.Output |> Table.tryColumn "rk" |> Option.map (fun c -> c.Cells))
+                  ((Incremental.result primed)
+                   |> Table.tryColumn "rk"
+                   |> Option.map (fun c -> c.Cells))
                   (Some [ Int 1; Int 2; Int 1; Int 2; Int 1 ])
                   "before: r0 (1) ranks ahead of r1 (2) in partition b=0"
 
               Expect.equal
-                  (next.Output |> Table.tryColumn "rk" |> Option.map (fun c -> c.Cells))
+                  ((Incremental.result next)
+                   |> Table.tryColumn "rk"
+                   |> Option.map (fun c -> c.Cells))
                   (Some [ Int 2; Int 1; Int 1; Int 2; Int 1 ])
                   "after: the unnamed row's rank moved too"
 
@@ -1014,12 +1059,17 @@ let tests =
 
               let next, _ = step pipeline baseTable changed
 
-              Expect.equal next.Footprint.Recompute (RowsRecomputed 1) "one filter predicate, not five"
-              Expect.equal next.Output.Schema baseTable.Schema "a filtering join keeps the LEFT schema only"
+              Expect.equal (Incremental.footprint next).Recompute (RowsRecomputed 1) "one filter predicate, not five"
+
+              Expect.equal
+                  (Incremental.result next).Schema
+                  baseTable.Schema
+                  "a filtering join keeps the LEFT schema only"
+
               expectMatchesReference pipeline changed next
 
               let lone, _ = step [ semiOnLookup ] baseTable changed
-              Expect.equal lone.Footprint.Recompute (RowsRecomputed 0) "a join evaluates nothing"
+              Expect.equal (Incremental.footprint lone).Recompute (RowsRecomputed 0) "a join evaluates nothing"
               expectMatchesReference [ semiOnLookup ] changed lone
 
           testCase "the anti join is the semi join's complement, row for row"
@@ -1043,12 +1093,14 @@ let tests =
                   |> Option.defaultValue []
 
               Expect.equal
-                  (ids semi.Output @ ids anti.Output |> List.sort)
+                  (ids (Incremental.result semi) @ ids (Incremental.result anti) |> List.sort)
                   (ids changed |> List.sort)
                   "together they partition the rows"
 
               Expect.isEmpty
-                  (Set.intersect (Set.ofList (ids semi.Output)) (Set.ofList (ids anti.Output)))
+                  (Set.intersect
+                      (Set.ofList (ids (Incremental.result semi)))
+                      (Set.ofList (ids (Incremental.result anti))))
                   "and they overlap nowhere"
 
           testCase "a filtering join feeding a maintained group still maintains it"
@@ -1066,7 +1118,7 @@ let tests =
 
               let next, _ = step pipeline baseTable changed
 
-              match next.Footprint.Recompute with
+              match (Incremental.footprint next).Recompute with
               | GroupsRecomputed(_, g) -> Expect.equal g 1 "only the group the changed row is in"
               | other -> failtestf "expected a maintained-group refresh, got %A" other
 
@@ -1115,12 +1167,14 @@ let tests =
                   ok (Incremental.refresh after Map.empty idw pipeline state quiet baseTable)
 
               Expect.equal
-                  (Ok next.Output)
+                  (Ok(Incremental.result next))
                   (DataFrame.evalPipelineWith after pipeline baseTable)
                   "the answer is the reference's over the RELATION AS IT NOW STANDS"
 
               Expect.equal
-                  (next.Output |> Table.tryColumn "id" |> Option.map (fun c -> c.Cells))
+                  ((Incremental.result next)
+                   |> Table.tryColumn "id"
+                   |> Option.map (fun c -> c.Cells))
                   (Some [ Str "r2"; Str "r3" ])
                   "the rows matching the new relation, not the old one"
 
@@ -1129,5 +1183,5 @@ let tests =
               let same =
                   ok (Incremental.refresh before Map.empty idw pipeline state quiet baseTable)
 
-              Expect.equal same.Footprint.Recompute (RowsRecomputed 0) "an unmoved relation costs nothing"
-              Expect.equal same.Output state.Output "and answers exactly as before" ]
+              Expect.equal (Incremental.footprint same).Recompute (RowsRecomputed 0) "an unmoved relation costs nothing"
+              Expect.equal (Incremental.result same) (Incremental.result state) "and answers exactly as before" ]
