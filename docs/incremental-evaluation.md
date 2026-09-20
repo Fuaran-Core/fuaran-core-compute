@@ -429,39 +429,123 @@ widening would otherwise have pushed under it — a projected **6.62%** on dilut
 `46` were given a maintained group and a tail, which is the same trade the corpus's note on shapes
 `20`–`26` predicts: a thin class rises when the new draws answer it as well, rather than instead.
 
-### A second live defect, found and NOT fixed
+### A second live defect, found here and FIXED by Phase 215
 
-Adding these shapes surfaced a second wrong answer, on `0.28.0`, in a neighbouring class. It is
-reported here and deliberately left unfixed: a conformance-corpus phase that quietly patches the seam
-is how a finding stops being a finding.
+Adding these shapes surfaced a second wrong answer, on `0.28.0`, in a neighbouring class. Phase 212
+reported it and deliberately left it standing — a conformance-corpus phase that quietly patches the
+seam is how a finding stops being a finding. **Phase 215 fixed it**, and this section is now the
+record of what was wrong, which releases carry it, and how each half was measured.
 
-**A merged order whose sort key reads a column a window appended returns the wrong rows.** Phase 208
+**A merged order whose sort key read a column a window appended returned the wrong rows.** Phase 208
 replaced `not Affected` with `Stable` at the two sites it found — `cellAt` and the join's cached
-verdict — and left a third standing: the `WSort` arm builds its reusable set from `not w.Affected`,
-so a merge reuses the cached position of a row whose sort key a window has moved.
+verdict — and left a third standing: the `WSort` arm built its reusable set from `not w.Affected`, so
+a merge reused the cached POSITION of a row whose sort key a window had moved. The fix is that arm's
+reusable set reading `w.Stable`, which is the one-token completion of 208's own substitution.
 
-Probed in both directions:
+Probed in both directions, at `0.28.0` and again after the fix:
 
-| pipeline | verdict on `0.28.0` |
-|---|---|
-| `window(rank) > sort(rk) > limit` | **red** |
-| `window(rank) > derive(d = rk + a) > sort(d) > limit` | **red** |
-| `window(cumulSum) > sort(run) > limit` | **red** |
-| any of the three with the `limit` removed | **red** — the order itself is wrong; the cut is not needed |
-| `derive(d = a + b) > sort(d) > limit` (no window) | green |
-| `window(rank) > sort(b) > limit` (sort key is a source column) | green |
-| `sort(b, a) > window(rank)` (shape `21`) | green |
+| pipeline | `0.28.0` | after Phase 215 |
+|---|---|---|
+| `window(rank) > sort(rk) > limit` | **red** | green |
+| `window(rank) > derive(d = rk + a) > sort(d) > limit` | **red** | green |
+| `window(cumulSum) > sort(run) > limit` | **red** | green |
+| any of the three with the `limit` removed | **red** — the order itself is wrong; the cut is not needed | green |
+| `derive(d = a + b) > sort(d) > limit` (no window) | green | green |
+| `window(rank) > sort(b) > limit` (sort key is a source column) | green | green |
+| `sort(b, a) > window(rank)` (shape `21`) | green | green |
 
-So the window is load-bearing and the sort key must read the column it appended; neither the derive
-nor the truncation is required. Making `WSort`'s reusable set `w.Stable` — finishing Phase 208's own
-substitution — turns every red above green and leaves the whole 48-shape family green; that was
-measured and reverted, not shipped. Corpus shape `44` therefore sorts on a **source** column, and its
-comment says why; `IncrementalRefreshCostTests` carries the executable reproducer, which fails the
-moment the defect is fixed and names the two-line remedy.
+So the window was load-bearing and the sort key had to read the column it appended; neither the derive
+nor the truncation was required. All six pipelines are the regression case in
+`IncrementalRefreshCostTests`, which asserted the *presence* of the defect until this phase and
+asserts its absence now; the whole 48-shape family is green at every pinned seed.
 
-**If you run a `Sort` whose key reads a `Window`'s output through this seam, on any version up to and
-including `0.28.0`, your refresh can return the wrong rows.** Re-prime rather than refresh, or move
-the sort ahead of the window, until the fix lands.
+#### Which releases answer wrongly — measured against the released packages, not inferred
+
+The merged order (`mergeOrders` and the cached-order reuse it serves) arrived in `0.18.0`, and the
+reuse set was keyed on `not Affected` from that release to `0.28.0` inclusive. That span was measured
+rather than read off the source: a probe pinned to one published `Fuaran.Core.DataFrame` at a time
+ran `window(rank) > sort(rk)` through that package's own incremental seam and compared it with that
+same package's reference evaluator.
+
+| release | `window(rank) > sort(rk)` | `window(lag) > sort(prev)` | `window(rank) > sort(b)` — control |
+|---|---|---|---|
+| `0.16.0`, `0.17.0` | agrees | agrees | agrees |
+| `0.18.0` | *not measured — no package published to measure; see below* | | |
+| `0.19.0` – `0.28.0` (every released version) | **disagrees** | **disagrees** | agrees |
+
+The two green rows are the probe's falsifier: `0.16.0` and `0.17.0` predate the merged order
+entirely, so a probe that reported red there would be measuring something other than this defect.
+`0.18.0` carries the same reuse condition but admits **bounded-frame** windows only
+(`when DataFrame.windowFrameBounded spec.Fn`), so `window(rank)` is declined there and answers
+through the reference evaluator; the bounded-frame column of the table is why the release is still
+affected — `window(lag) > sort(prev)` is the shape that reaches it, and it is red from the first
+release that can be measured.
+
+**`0.26.0` is NOT where this began.** Phase 212's census, and the successor phase filed from it,
+both read the span as "`0.26.0` onward" by analogy with the `cellAt` defect Phase 208 fixed. That is
+wrong by seven releases: the two defects are siblings in kind and not in age, because `cellAt`'s
+predicate and the sort's are independent pieces of code that happened to be written the same way.
+
+#### Corpus shape `44` sorts on the window's column now, and it discriminates
+
+Phase 212 had to key shape `44`'s order on `b`, a source column, because sorting on `d` was red on
+the seam as shipped. Phase 215 moved it to `d`, and measured both directions over 40,000 generated
+samples (2 row bounds × 200 seeds × 100 iterations):
+
+| arm | shape `44` drawn | shape `44` not equivalent | any other shape not equivalent |
+|---|---|---|---|
+| pre-fix (`not Affected`, reintroduced for the measurement) | 842 | **6** | 0 |
+| shipped (`Stable`) | 842 | 0 | 0 |
+
+The six are `(bound 9, seed 33, iteration 3, changeFirstA)`, `(9, 40, 36, nullFirstA)`,
+`(9, 77, 8, nullFirstA)`, `(9, 114, 35, append)`, `(9, 122, 78, removeFirst)` and
+`(5, 144, 61, changeFirstA)`. The first of them is the eight-row table the regression case in
+`IncrementalRefreshCostTests` is built from.
+
+**The rate is worth stating rather than rounding away: 6 draws in 842 is 0.7%, and the four seeds the
+suite pins (`1`, `7`, `99`, `20260821`) are not among them.** A conformance family names the class
+for every host that runs it; it does not promise to reach an instance at any particular seed. That is
+the whole reason the fixed eight-row regression case stays in the suite beside the corpus — it
+reaches the defect on every run of every seed — and it is the reason a corpus shape is not, by
+itself, a regression test.
+
+## Which condition each reuse reads — the per-site audit (Phase 215)
+
+Two sessions found two sites of one substitution and a third was still standing, so this table is the
+census that stops a fourth. Every place the walk reuses something the prior evaluation computed is a
+row here, with the condition it reads and why that condition is the right one.
+
+The two conditions are **`not Affected`** — "the delta did not name this row" — and **`Stable`** —
+"this row's cells are byte-identical to the ones the prior evaluation held for it AT THIS POINT in
+the pipeline". They agree at the start of the walk (`Stable` is seeded as `not affected`) and part
+company at a `Window`, which clears `Stable` for every row because it recomputes its column over the
+whole frame.
+
+The rule the table makes concrete: **anything computed FROM a row's cells may be reused only on
+`Stable`.** `not Affected` is sound only where the thing reused is not a function of the row's cells
+at all.
+
+| site (`Incremental.fs`) | what it reuses | condition | why that one |
+|---|---|---|---|
+| `cellAt` | the cell an evaluating step (`Filter` predicate, `Derive` expression) computed for this row | `Stable` | the cell is a function of the row's cells; a window moves them without the delta naming the row. **Fixed by Phase 208** — it read `not Affected` to `0.26.0`. |
+| `walk`, `WJoin` arm — `verdictOf` | the cached `Semi`/`Anti` verdict | `Stable` **and** the right relation unmoved | the verdict is a function of the row's key cells *and* of the relation, and the delta describes neither the second nor a window's effect on the first. **Fixed by Phase 208.** |
+| `walk`, `WSort` arm — the reusable set | this row's cached POSITION in the merged order | `Stable` | a cached order is a cached answer: it is a function of every row's sort-key cells, which a window moves. **Fixed by Phase 215** — it read `not Affected` to `0.28.0`. |
+| `walk`, `WWindow` arm | nothing — it CLEARS `Stable`, for live rows and dead ones alike | — | it is the producer the other rows are about. A dead row's cells are not recomputed, so its cache is cleared rather than refreshed: the conservative reading, and the only one available. |
+| `runIncremental`'s row-cache write-back | the prior `Cached` list **as a list**, in place of rebuilding it from `Fresh` | `Stable` **and** the two lists the same length | this one is an IDENTITY claim rather than a reuse of a computation — `Fresh` reversed *is* `Cached` when every step read the cache — so it needs the same condition each of those steps needed, plus the length test for a row that died earlier this time. |
+| `groupStep` — the carried group token | this row's group identity from the prior evaluation | `Stable` **and** `Prior >= 0` | the token is a pure function of the key cells. A row the prior evaluation did not reach mints as before, so a carried token is never the only derivation. |
+| `groupStep` — `cellsFor`'s `allStable` | a group's cached aggregate cells | every member `Stable`, **and** the ordered member list unchanged, **and** a cached aggregate to reuse | an aggregate is a function of its members' cells, so one unstable member is enough to invalidate it; the ordered-member test is what makes a pure reordering — which `Delta.diff` reports as quiet — not reusable. |
+| the group table's own `Work` frame (the maintained-`GroupBy` tail) | the tail's cached cells for a group row | the group's aggregates were not recomputed | sound for the reason a source row's `not Affected` is not: a group row's cells are a function of its members alone, `groupStep` has just recomputed exactly the groups whose members moved, and **no window runs over the group table**. This is the one site where the delta-shaped condition is the right one, and it is right because it is not the delta's statement — it is the group step's. |
+
+**There is no `Affected` field any more.** Once the `WSort` arm moved to `Stable` it had no reader,
+and a never-read field whose meaning is the discredited condition is how a fourth site gets written.
+What the delta contributes is the seed of `Stable` at construction, and nothing else. The type is
+private to the module, so nothing public moved with it.
+
+**The one site that is not in this table is `evalIdx`-keyed positional reading itself** — every cache
+above is read by the row's `Prior` slot or by its token, never by its current position, which is what
+makes a `Sort` or a `Limit` in the middle of the pipeline safe to walk past. A cache read by the
+row's CURRENT index would be wrong at every row of every shape here, and would be caught by the first
+corpus draw rather than after three releases.
 
 ## Verifying your own adoption
 

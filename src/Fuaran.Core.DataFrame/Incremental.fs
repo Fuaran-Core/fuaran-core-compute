@@ -796,20 +796,27 @@ module Incremental =
         go [] 0 0 pipeline
 
     /// One source row in flight: its identity token, its slot in the source's row order, the slot
-    /// it occupied in the PRIOR evaluation, whether the delta named it, whether its cells are still
-    /// byte-identical to the prior evaluation's, whether it is still alive after the filters so far,
-    /// its current cells, the cells cached for it by the previous evaluation, and the cells evaluated
-    /// for it this time (reversed while accumulating).
+    /// it occupied in the PRIOR evaluation, whether its cells are still byte-identical to the prior
+    /// evaluation's, whether it is still alive after the filters so far, its current cells, the cells
+    /// cached for it by the previous evaluation, and the cells evaluated for it this time (reversed
+    /// while accumulating).
     ///
     /// Phase 208 — `Slot` and `Prior` are the two ints that make the state's caches positional:
     /// `Slot` is where this row's results are written, `Prior` is where its cached results were read
     /// from (`-1` when the prior evaluation did not hold this row at all).
+    ///
+    /// **Phase 215 — there is no `Affected` field, and its absence is load-bearing.** It carried
+    /// "the delta named this row", which is the condition three sites reused a cached answer on and
+    /// which was the wrong condition at every one of them (208 fixed two, 215 the third). Once the
+    /// last site moved to `Stable` it had no reader, and a never-read field whose meaning is the
+    /// discredited one is how a fourth site gets written. `Stable` is seeded from it at construction
+    /// — `not affected` below — and that is the whole of what the delta contributes. The per-site
+    /// census of which condition each reuse needs is in `docs/incremental-evaluation.md`.
     type private Work =
         {
             Token: string
             Slot: int
             Prior: int
-            Affected: bool
             /// Phase 208 — this row's cells are byte-identical to the ones the prior evaluation held
             /// for it AT THIS POINT in the pipeline, so anything the prior evaluation computed FROM
             /// them is still that computation's answer.
@@ -952,23 +959,36 @@ module Incremental =
                     | _ -> 0
                 | _ -> 0
 
-            let unnamed = System.Collections.Generic.HashSet<string>()
+            // **Phase 215 — the condition is `Stable`, and it was `not Affected` from `0.18.0` to
+            // `0.28.0` inclusive, which was WRONG after a `Window`.** This is the THIRD site of the
+            // substitution Phase 208 made at `cellAt` and at the join's cached verdict and did not
+            // finish here. A cached ORDER is a cached answer like any other: it is a function of
+            // every row's SORT-KEY CELLS, and a window recomputes its column over the whole frame,
+            // so a row the delta never named can arrive at this step with a different key. Keyed on
+            // "the delta did not name it", the merge then reused that row's cached POSITION and the
+            // refresh returned the rows in the wrong order — measured against the released packages
+            // themselves, `window(rank) > sort(rk)` disagrees with the reference evaluator on every
+            // release from `0.19.0` (the first that admits a partition-global window) through
+            // `0.28.0`, and `window(lag) > sort(prev)` with it, while the same pipeline sorting on a
+            // SOURCE column agrees. `IncrementalRefreshCostTests` holds all three as regression
+            // cases and `IncrementalDelta` shape `44` covers the class.
+            let stable = System.Collections.Generic.HashSet<string>()
 
             aliveWorks
             |> List.iter (fun w ->
-                if not w.Affected then
-                    unnamed.Add w.Token |> ignore)
+                if w.Stable then
+                    stable.Add w.Token |> ignore)
 
             // The cached order may be reused only for rows that arrived in the SAME relative order
             // as last time. A stable sort breaks ties by arrival position, so a reordering among
-            // unnamed rows moves the answer while naming no row at all — and `Delta.diff` reports a
+            // reused rows moves the answer while naming no row at all — and `Delta.diff` reports a
             // pure reordering as quiet, so nothing in the delta would have said so. This is the
             // ordered-member condition the maintained groups already carry, one verb along.
             let reusable =
                 match Map.tryFind sortIdx prior.SortOrders with
                 | None -> None
                 | Some(prevArrival, prevOrder) ->
-                    let keep = List.filter (fun t -> unnamed.Contains t)
+                    let keep = List.filter (fun t -> stable.Contains t)
 
                     if keep prevArrival = keep arrival then
                         Some(keep prevOrder)
@@ -978,11 +998,11 @@ module Incremental =
             let ordered =
                 match reusable with
                 | None -> arrival |> List.sortWith cmp
-                | Some cachedUnnamed ->
-                    let named =
-                        arrival |> List.filter (fun t -> not (unnamed.Contains t)) |> List.sortWith cmp
+                | Some cachedStable ->
+                    let moved =
+                        arrival |> List.filter (fun t -> not (stable.Contains t)) |> List.sortWith cmp
 
-                    mergeOrders cmp posOf cachedUnnamed named
+                    mergeOrders cmp posOf cachedStable moved
 
             let works2 = (ordered |> List.map (fun t -> byToken[t])) @ deadWorks
 
@@ -1566,7 +1586,6 @@ module Incremental =
                 { Token = token
                   Slot = i
                   Prior = priorSlot
-                  Affected = affected
                   Stable = not affected
                   Alive = true
                   Cells = cells
@@ -1681,8 +1700,11 @@ module Incremental =
                         // grouping is what makes that true), so it stays a map and needs no
                         // positional slot. `Slot` is the group's index for the walk's own use and
                         // `Prior` is `-1`, which is what says "this frame's cache is not read
-                        // positionally". `Stable` carries exactly what `Affected` carried here
-                        // before — the group's cells moved iff its aggregates were recomputed.
+                        // positionally". `Stable` is the group table's own statement — the group's
+                        // cells moved iff its aggregates were recomputed — and is sound here for
+                        // the reason a source row's is not: a group row's cells are a function of
+                        // its members alone, and `groupStep` has just recomputed exactly the groups
+                        // whose members moved. No window runs over the group table.
                         let groupWorks =
                             List.mapi2
                                 (fun i token row ->
@@ -1693,7 +1715,6 @@ module Incremental =
                                     { Token = token
                                       Slot = i
                                       Prior = -1
-                                      Affected = affected
                                       Stable = not affected
                                       Alive = true
                                       Cells = row
