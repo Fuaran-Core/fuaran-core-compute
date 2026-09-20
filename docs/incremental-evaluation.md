@@ -342,6 +342,127 @@ Measure your own pipeline rather than reading any row above as a rule.
   which is what kept a refresh paying for the whole table for three phases running. There is no wire
   form and nothing to migrate: a state is in-memory and is rebuilt by one `prime`.
 
+## A row-local step reading a cross-row column — the census (Phase 212)
+
+**Read this section before adopting `0.28.1` if you certify your own evaluator against
+`IncrementalDelta.laws`.** The corpus grew by ten shapes, every one of them red against the cache
+condition `0.26.0` shipped, so a host carrying that condition goes red at this pin. That is the
+point of the widening and it is described for adopters under `0.28.1` in `STABILITY.md`.
+
+### What the class is
+
+Phase 208 found a wrong answer in a published release. The per-row cache was keyed on *the delta did
+not name this row*, which is not the same statement as *this row's cells have not moved*: a `Window`
+recomputes its column over the whole frame it is handed, so a row nobody edited comes out of it with
+a different cell whenever another row in its partition moved. A step after the window then reused an
+answer to a question that had changed.
+
+The class is therefore **a row-local step (`Filter`, `Derive`, `Project`) reading a column whose
+value for row *r* depends on rows other than *r***. Three phases read this code without seeing it,
+because the family that exists to see it could not: `IncrementalDelta.laws` runs the shapes its
+corpus enumerates, and the corpus had no such shape.
+
+### The census, measured on `0.28.0` before anything was added
+
+Ten of the thirty-eight enumerated shapes carried a `Window`. In **eight** the window was the last
+step. In the two that continued (`23`, `37`) the next step was a `GroupBy`. **In none did a row-local
+step read a column a window appended.**
+
+Which cross-row steps can even produce a column for a later step to read:
+
+| producer | appends | status before Phase 212 |
+|---|---|---|
+| partition-global window (`cumulSum`, `rank`) | its output column | **reached by no row-local consumer** |
+| bounded-frame window (`lag`) | its output column | **reached by no row-local consumer** |
+| maintained group aggregate | the group table's aggregate columns | reached (`7`, `32`, `33`, `36`, `37`) — and **non-discriminating**, see below |
+| truncated order (`Limit`) | nothing | **absent by construction** — a `Limit` decides survival and appends no column, so there is nothing for a later step to read |
+| join-appended column | the right relation's schema | **absent by construction** — only a *combining* join appends one, and the seam declines combining joins (`JoinNotRowPreserving`), so the pipeline answers through the reference evaluator and the row cache is never consulted |
+
+And the (producer × consumer) matrix over the two producers that remain. Each cell names the shape
+that carries it:
+
+| | `Filter` on it | `Derive` over it | `Derive` overwriting it | `Project` renaming it, then read |
+|---|---|---|---|---|
+| **partition-global window** | `38`, `42`, `45` | `40`, `44` | `39`, `47` | `41` |
+| **bounded-frame window** | `39`, `43` | `38`, `45`, `46` | `41`, `47` | `40` |
+
+All eight cells were absent; all eight now have a shape, and **every one of the ten shapes
+discriminates**. With the pre-`0.28.0` predicate reintroduced at the two sites Phase 208 changed,
+those ten are exactly the pipelines that disagree with the reference evaluator — 22 to 84 samples of
+roughly 500 each — and the other thirty-eight stay green. No shape was dropped for failing to
+discriminate.
+
+Two cells are worth their own sentence because they are the ones an implementer gets wrong.
+A `Project` evaluates nothing, so it cannot itself return a stale answer; what its cell tests is that
+the taint **survives a rename**, which is why `40` and `41` read the renamed column with a later
+step. And the group-aggregate row of the first table is reached-but-non-discriminating on purpose:
+the group table's own stability condition is *this group's aggregates were recomputed*, which is
+sound, so those cells cannot carry the defect. Measured rather than assumed — of Phase 208's three
+regression pipelines, the `Filter` and the `Derive` go red under the old predicate and the maintained
+`GroupBy` stays green.
+
+### The adequacy demand, and what it cost
+
+`IncrementalDelta.demands` gains a third dimension, **`cross-row column read`**, with one verdict per
+producer class, conditioned on a restricted refresh like every class beside it. It follows a
+`Project`'s rename and a `Derive`'s propagation, because a renamed column is the same column.
+
+Measured over the sweep the suite pins — 2 row bounds × 300 seeds × 100 iterations, 60,000 samples —
+the two new verdicts are reached by **8.88%** and **8.93%** of samples, and the adequacy guard fires
+on 0 of 600 runs. Ten new pipelines dilute every class that did not grow, so the existing verdicts
+were re-measured too:
+
+| refresh class | over 38 shapes | over 48 shapes |
+|---|---|---|
+| `declined` | 10.45% | 8.23% |
+| `row-restricted` | 30.42% | 33.13% |
+| `group-restricted` | 16.85% | 15.45% |
+| `merged-order-restricted` | 13.87% | 13.35% |
+| `window-restricted` | 13.92% | 22.01% |
+| `partition-global-window-restricted` | 11.11% | 17.60% |
+| `relation-filtered-restricted` | 11.44% | 9.78% |
+| `top-n-restricted` | 11.03% | 11.04% |
+| `group-tail-restricted` | 8.37% | 8.88% |
+
+Every one clears the 7% floor the suite holds them to. `group-tail-restricted` is the one the
+widening would otherwise have pushed under it — a projected **6.62%** on dilution alone — so `42` and
+`46` were given a maintained group and a tail, which is the same trade the corpus's note on shapes
+`20`–`26` predicts: a thin class rises when the new draws answer it as well, rather than instead.
+
+### A second live defect, found and NOT fixed
+
+Adding these shapes surfaced a second wrong answer, on `0.28.0`, in a neighbouring class. It is
+reported here and deliberately left unfixed: a conformance-corpus phase that quietly patches the seam
+is how a finding stops being a finding.
+
+**A merged order whose sort key reads a column a window appended returns the wrong rows.** Phase 208
+replaced `not Affected` with `Stable` at the two sites it found — `cellAt` and the join's cached
+verdict — and left a third standing: the `WSort` arm builds its reusable set from `not w.Affected`,
+so a merge reuses the cached position of a row whose sort key a window has moved.
+
+Probed in both directions:
+
+| pipeline | verdict on `0.28.0` |
+|---|---|
+| `window(rank) > sort(rk) > limit` | **red** |
+| `window(rank) > derive(d = rk + a) > sort(d) > limit` | **red** |
+| `window(cumulSum) > sort(run) > limit` | **red** |
+| any of the three with the `limit` removed | **red** — the order itself is wrong; the cut is not needed |
+| `derive(d = a + b) > sort(d) > limit` (no window) | green |
+| `window(rank) > sort(b) > limit` (sort key is a source column) | green |
+| `sort(b, a) > window(rank)` (shape `21`) | green |
+
+So the window is load-bearing and the sort key must read the column it appended; neither the derive
+nor the truncation is required. Making `WSort`'s reusable set `w.Stable` — finishing Phase 208's own
+substitution — turns every red above green and leaves the whole 48-shape family green; that was
+measured and reverted, not shipped. Corpus shape `44` therefore sorts on a **source** column, and its
+comment says why; `IncrementalRefreshCostTests` carries the executable reproducer, which fails the
+moment the defect is fixed and names the two-line remedy.
+
+**If you run a `Sort` whose key reads a `Window`'s output through this seam, on any version up to and
+including `0.28.0`, your refresh can return the wrong rows.** Re-prime rather than refresh, or move
+the sort ahead of the window, until the fix lands.
+
 ## Verifying your own adoption
 
 The equivalence family `IncrementalDelta.laws` (in `Fuaran.Core.Conformance`) certifies the seam

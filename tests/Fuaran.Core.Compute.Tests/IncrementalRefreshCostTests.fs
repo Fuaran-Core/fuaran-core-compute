@@ -275,6 +275,23 @@ let refreshCostTests =
               // which is not the same statement — and a step after the window then reused an answer
               // to a question that had changed.
               //
+              // **Phase 212 put this class in the generated corpus (`IncrementalDelta`, shapes
+              // `38`–`47`) and this case STAYS, because the two answer different questions.** The
+              // corpus shapes are drawn: they reach the defect on a share of samples under some of
+              // the generator's edits, and what they certify is that the CLASS is covered for every
+              // host that runs the family. These three are a fixed eight-row table with one cell
+              // edited, so they reach it on every run of every seed, and they are the pipelines the
+              // wrong answer was measured on in `v0.26.0` — a regression test names the instance,
+              // a conformance family names the class, and losing either would lose something.
+              //
+              // The third case earns its place on a further measurement Phase 212 made: with the
+              // pre-`0.28.0` predicate reintroduced, the `Filter` and the `Derive` cases go RED and
+              // the maintained `GroupBy` stays GREEN. A group re-aggregates from its member rows and
+              // never consults the per-row cache, so it could not have carried this defect — which
+              // is exactly why the corpus's two window→`GroupBy` shapes (`23`, `37`) sat through the
+              // whole life of the bug without seeing it. It is kept as the recorded NEGATIVE: the
+              // boundary of the class, asserted rather than assumed.
+              //
               // On ten rows with one edited, `Filter > Window(cumulSum) > Filter(on the window
               // column)` and the same with a `Derive` both DISAGREED with the reference evaluator.
               // The condition is now `Stable` — "this row's cells are byte-identical to the ones the
@@ -334,6 +351,126 @@ let refreshCostTests =
                       (Ok(Incremental.result refreshed))
                       (DataFrame.evalPipeline p after)
                       (label + " after a Window: refresh = reference")
+
+          testCase "REPORTED, NOT FIXED: a merged order whose sort key reads a window's column"
+          <| fun _ ->
+              // ===================================================================================
+              //  A SECOND LIVE DEFECT, found by Phase 212's new corpus shapes and deliberately NOT
+              //  fixed here. Phase 212 is a conformance-corpus phase; its acceptance forbids an edit
+              //  under `Fuaran.Core.DataFrame`, because a corpus phase that quietly patches the seam
+              //  is how a finding stops being a finding. This case is the finding, executable.
+              //
+              //  WHAT IS WRONG. Phase 208 replaced the per-row cache condition `not Affected` ("the
+              //  delta did not name this row") with `Stable` ("this row's cells are byte-identical
+              //  to the ones the prior evaluation held"), because a `Window` recomputes its column
+              //  over the whole frame and moves rows the delta never named. It changed the two sites
+              //  it had found — `cellAt`, and the join's cached verdict — and left a THIRD standing:
+              //  `walk`'s `WSort` arm still builds its reusable set from `not w.Affected`. So a
+              //  merged order reuses the cached POSITION of a row whose sort key a window has moved.
+              //
+              //  MEASURED, in both directions, on 2026-09-20 at `0.28.0`:
+              //    * `window(rank) > sort(rk) > limit`                           RED
+              //    * `window(rank) > derive(d = rk + a) > sort(d) > limit`        RED
+              //    * `window(cumulSum) > sort(run) > limit`                       RED
+              //    * the same three with the LIMIT removed                        RED — the cut is
+              //      not needed; the ORDER itself is wrong
+              //    * `derive(d = a + b) > sort(d) > limit`  (no window)           green
+              //    * `window(rank) > sort(b) > limit`  (sort key is a SOURCE col) green
+              //    * `sort(b, a) > window(rank)`  (corpus shape `21`)             green
+              //  So the window is load-bearing and the sort key must READ the column it appended;
+              //  neither the derive nor the truncation is required.
+              //
+              //  THE CANDIDATE FIX, measured and reverted: making `WSort`'s `unnamed` set
+              //  `if w.Stable then` — the one-token change that finishes Phase 208's own
+              //  substitution — turns all of the above green and leaves the whole 48-shape family
+              //  green. It is not applied here.
+              //
+              //  WHEN IT IS FIXED: this test fails, and the remedy is to delete it and move corpus
+              //  shape `44`'s sort key from `b` to `d`, which is where it belonged.
+              // ===================================================================================
+              let win: WindowSpec =
+                  { PartitionBy = [ "b" ]
+                    OrderBy = [ "a", Asc ]
+                    Fn = Rank
+                    Of = "a"
+                    As = "rk" }
+
+              let mk (aCells: Cell list) =
+                  { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+                    Columns =
+                      [ Column.create "id" StringType [ for i in 0..7 -> Str("r" + string i) ]
+                        Column.create "a" IntType aCells
+                        Column.create "b" IntType [ Int 1; Int 0; Int 0; Int 1; Int 1; Int 0; Int 1; Int 2 ] ] }
+
+              // The generator's own counterexample, `IncrementalDelta` seed 33 iteration 3, with its
+              // `changeFirstA` edit: one cell of one row moves, and the ranks of five others move
+              // with it.
+              let before = mk [ Int -3; Int 1; Int 3; Int 6; Int 6; Int 4; Int 0; Int -1 ]
+              let after = mk [ Int 42; Int 1; Int 3; Int 6; Int 6; Int 4; Int 0; Int -1 ]
+
+              let p =
+                  [ Window win
+                    Derive("d", Binary(Add, Col "rk", Col "a"))
+                    Transform.sortBy [ "d", Asc ]
+                    Transform.limit 3 0 ]
+
+              match (Incremental.plan p).Strategy with
+              | ReferenceOnly r -> failtestf "expected an admitted pipeline, got ReferenceOnly %A" r
+              | _ -> ()
+
+              let state = ok (Incremental.primeOn idw p before)
+              let delta = ok (Delta.diff idw before after)
+              let refreshed = ok (Incremental.refreshOn idw p state delta after)
+
+              Expect.notEqual
+                  (Ok(Incremental.result refreshed))
+                  (DataFrame.evalPipeline p after)
+                  "the WSort reuse defect this case reports appears to be FIXED — delete this test and move IncrementalDelta shape 44's sort key from \"b\" back to \"d\""
+
+          testCase "the reported WSort defect needs the sort key to READ the window's column"
+          <| fun _ ->
+              // The other direction of the same probe, in the suite rather than in a session's
+              // memory: the two shapes that bound the finding. A merged order over a key derived
+              // from SOURCE columns alone is sound under `not Affected` — a row the delta did not
+              // name genuinely has the same key — and a merged order over a window's column is not.
+              // Without this half the report above would be a claim about one pipeline.
+              let mk (aCells: Cell list) =
+                  { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+                    Columns =
+                      [ Column.create "id" StringType [ for i in 0..7 -> Str("r" + string i) ]
+                        Column.create "a" IntType aCells
+                        Column.create "b" IntType [ Int 1; Int 0; Int 0; Int 1; Int 1; Int 0; Int 1; Int 2 ] ] }
+
+              let before = mk [ Int -3; Int 1; Int 3; Int 6; Int 6; Int 4; Int 0; Int -1 ]
+              let after = mk [ Int 42; Int 1; Int 3; Int 6; Int 6; Int 4; Int 0; Int -1 ]
+
+              let win: WindowSpec =
+                  { PartitionBy = [ "b" ]
+                    OrderBy = [ "a", Asc ]
+                    Fn = Rank
+                    Of = "a"
+                    As = "rk" }
+
+              let agrees (p: Transform list) =
+                  let state = ok (Incremental.primeOn idw p before)
+                  let delta = ok (Delta.diff idw before after)
+                  let refreshed = ok (Incremental.refreshOn idw p state delta after)
+                  Ok(Incremental.result refreshed) = DataFrame.evalPipeline p after
+
+              Expect.isTrue
+                  (agrees
+                      [ Derive("d", Binary(Add, Col "a", Col "b"))
+                        Transform.sortBy [ "d", Asc ]
+                        Transform.limit 3 0 ])
+                  "a merged order on a key derived from source columns alone is sound"
+
+              Expect.isTrue
+                  (agrees [ Window win; Transform.sortBy [ "b", Asc ]; Transform.limit 3 0 ])
+                  "a merged order on a SOURCE column is sound behind a window — which is why corpus shape 44 sorts on `b`"
+
+              Expect.isFalse
+                  (agrees [ Window win; Transform.sortBy [ "rk", Asc ]; Transform.limit 3 0 ])
+                  "and a merged order on the window's OWN column is the defect — no derive and no truncation required"
 
           testCase "a state's caches are engine-owned, and the accessors are what a consumer reads"
           <| fun _ ->
