@@ -525,6 +525,102 @@ let tests =
               | Error(MalformedShape d) -> Expect.stringContains d "descending" "names the alias"
               | other -> failtestf "expected MalformedShape, got %A" other
 
+          // ---- `0.28.0` (D48) — a column-naming member is spelled out: `columns` / `column` ----
+          //
+          // Three claims per member, each able to go red on its own: the canonical BYTES (a revert
+          // of the encoder fails this line), the pre-rename spelling still DECODING to the same
+          // tree and normalising to the canonical bytes on re-encode, and both spellings together
+          // being REFUSED by the existing ambiguity error rather than silently preferring one.
+
+          testCase "0.28.0 — project emits `columns`; `cols` decodes to the same tree and normalises"
+          <| fun _ ->
+              let pipeline = [ Project [ "name", "who"; "salary", "pay" ] ]
+              let canonical = DataFrameCodec.encodePipeline pipeline
+
+              Expect.equal
+                  canonical
+                  "[{\"$type\":\"project\",\"columns\":[{\"a\":\"name\",\"b\":\"who\"},{\"a\":\"salary\",\"b\":\"pay\"}]}]"
+                  "the canonical member is `columns`"
+
+              let legacy =
+                  """[{"$type":"project","cols":[{"a":"name","b":"who"},{"a":"salary","b":"pay"}]}]"""
+
+              match DataFrameCodec.decodePipeline legacy, DataFrameCodec.decodePipeline canonical with
+              | Ok viaAlias, Ok viaCanonical ->
+                  Expect.equal viaAlias pipeline "the `cols` alias decodes to the same tree"
+                  Expect.equal viaCanonical pipeline "and so does `columns`"
+
+                  Expect.equal
+                      (DataFrameCodec.encodePipeline viaAlias)
+                      canonical
+                      "an aliased document re-encodes as `columns`"
+              | other -> failtestf "expected both spellings to decode, got %A" other
+
+          testCase "0.28.0 — project carrying BOTH `columns` and `cols` is refused as ambiguous"
+          <| fun _ ->
+              match
+                  DataFrameCodec.decodePipeline
+                      """[{"$type":"project","columns":[{"a":"x","b":"x"}],"cols":[{"a":"y","b":"y"}]}]"""
+              with
+              | Error(MalformedShape d) ->
+                  Expect.stringContains d "\"columns\" (canonical)" "names `columns` as the canonical spelling"
+                  Expect.stringContains d "\"cols\" (alias)" "names `cols` as the alias"
+                  Expect.stringContains d "not both" "names the ambiguity"
+              | other -> failtestf "expected the ambiguity refusal, got %A" other
+
+          testCase "0.28.0 — a sort key emits `column`; `col` decodes to the same tree and normalises"
+          <| fun _ ->
+              let pipeline = [ Transform.sortBy [ "total", Desc ] ]
+              let canonical = DataFrameCodec.encodePipeline pipeline
+
+              Expect.equal
+                  canonical
+                  "[{\"$type\":\"sort\",\"by\":[{\"column\":\"total\",\"dir\":\"desc\"}]}]"
+                  "the canonical member is `column`"
+
+              match DataFrameCodec.decodePipeline """[{"$type":"sort","by":[{"col":"total","dir":"desc"}]}]""" with
+              | Ok viaAlias ->
+                  Expect.equal viaAlias pipeline "the pre-rename `col` spelling decodes to the same tree"
+                  Expect.equal (DataFrameCodec.encodePipeline viaAlias) canonical "and re-encodes as `column`"
+              | other -> failtestf "expected the `col` spelling to decode, got %A" other
+
+          testCase "0.28.0 — a sort key carrying BOTH `column` and `col` is refused as ambiguous"
+          <| fun _ ->
+              match
+                  DataFrameCodec.decodePipeline """[{"$type":"sort","by":[{"column":"a","col":"b","dir":"asc"}]}]"""
+              with
+              | Error(MalformedShape d) ->
+                  Expect.stringContains d "\"column\" (canonical)" "names `column` as the canonical spelling"
+                  Expect.stringContains d "\"col\" (alias)" "names `col` as the alias"
+                  Expect.stringContains d "not both" "names the ambiguity"
+              | other -> failtestf "expected the ambiguity refusal, got %A" other
+
+          testCase "0.28.0 — a window's frame ordering emits `column`, and `col` still decodes"
+          <| fun _ ->
+              let pipeline =
+                  [ Window
+                        { PartitionBy = [ "dept" ]
+                          OrderBy = [ "name", Asc ]
+                          Fn = Rank
+                          Of = "salary"
+                          As = "rk" } ]
+
+              let canonical = DataFrameCodec.encodePipeline pipeline
+
+              Expect.stringContains
+                  canonical
+                  "\"orderBy\":[{\"column\":\"name\",\"dir\":\"asc\"}]"
+                  "the frame ordering names `column`"
+
+              match
+                  DataFrameCodec.decodePipeline
+                      """[{"$type":"window","partitionBy":["dept"],"orderBy":[{"col":"name","dir":"asc"}],"fn":"rank","of":"salary","as":"rk"}]"""
+              with
+              | Ok viaAlias ->
+                  Expect.equal viaAlias pipeline "the pre-rename `col` spelling decodes to the same tree"
+                  Expect.equal (DataFrameCodec.encodePipeline viaAlias) canonical "and re-encodes as `column`"
+              | other -> failtestf "expected the `col` spelling to decode, got %A" other
+
           // ---- CumulSum rename (wire tag; legacy alias admitted) ----
 
           testCase "CumulSum — canonical tag is cumulSum; legacy cumSum coerces and normalises"
@@ -1611,7 +1707,8 @@ let tests =
                   Expect.equal (DataFrameCodec.encodePipeline p2) bytes "byte-identical"
 
               // ADDITIVE PROOF — a non-NTile window step carries no "n" key, so its wire is exactly
-              // what the pre-Phase-101 encoder produced.
+              // what the pre-Phase-101 encoder produced, save for the `0.28.0` frame-ordering member
+              // rename (`col` → `column`, D48) that is not this test's subject.
               Expect.equal
                   (DataFrameCodec.encodePipeline
                       [ Window
@@ -1620,8 +1717,8 @@ let tests =
                               Fn = Rank
                               Of = "salary"
                               As = "rk" } ])
-                  "[{\"$type\":\"window\",\"as\":\"rk\",\"fn\":\"rank\",\"of\":\"salary\",\"orderBy\":[{\"col\":\"salary\",\"dir\":\"desc\"}],\"partitionBy\":[\"dept\"]}]"
-                  "an existing window step's wire is byte-unchanged"
+                  "[{\"$type\":\"window\",\"as\":\"rk\",\"fn\":\"rank\",\"of\":\"salary\",\"orderBy\":[{\"column\":\"salary\",\"dir\":\"desc\"}],\"partitionBy\":[\"dept\"]}]"
+                  "a non-ntile window step still carries no \"n\" key"
 
               Expect.stringContains
                   (DataFrameCodec.encodePipeline
@@ -1798,14 +1895,16 @@ let slotTests =
 
               Expect.equal (Conformance.slotParamLaws 12500 120) results "same seed ⇒ identical report"
 
-          // The adoption claim, checked rather than asserted: every pre-0.23.0 pipeline is
-          // byte-identical on the wire, so a consumer that binds nothing pays nothing for the
-          // widening. This is the property that made a breaking DU change affordable.
-          testCase "a literal-only Sort/Limit is byte-identical to the pre-0.23.0 wire"
+          // The adoption claim, checked rather than asserted: the 0.23.0 slot widening costs a
+          // consumer that binds nothing NOTHING on the wire — a literal slot still encodes as the
+          // bare value, never as an object. `0.28.0` then renamed the key's MEMBER (`col` →
+          // `column`, D48), which moves these bytes for a reason that is not the widening; the
+          // property the widening promised is the SHAPE of the value, and it is unchanged.
+          testCase "a literal-only Sort/Limit slot still encodes as the bare value"
           <| fun _ ->
               Expect.equal
                   (DataFrameCodec.encodePipeline [ Transform.sortBy [ "total", Desc ]; Transform.limit 10 5 ])
-                  "[{\"$type\":\"sort\",\"by\":[{\"col\":\"total\",\"dir\":\"desc\"}]},{\"$type\":\"limit\",\"n\":10,\"offset\":5}]"
+                  "[{\"$type\":\"sort\",\"by\":[{\"column\":\"total\",\"dir\":\"desc\"}]},{\"$type\":\"limit\",\"n\":10,\"offset\":5}]"
                   "a literal slot is the bare value it always was"
 
           testCase "a param slot round-trips through the canonical wire"

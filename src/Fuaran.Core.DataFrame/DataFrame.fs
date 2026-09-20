@@ -3297,20 +3297,26 @@ module DataFrameCodec =
     /// A plain `(column, direction)` key — a `WindowSpec.OrderBy` entry. NOT a `Sort` key: a
     /// window's frame ordering was not asked for as a slot, and widening it too would be a breaking
     /// change taken on a symmetry argument rather than on a demand.
+    ///
+    /// `0.28.0` — the member is `column`, not `col`: a member whose only honest name is "the
+    /// column" is spelled out (DECISIONS D48). `col` remains a decode alias and is never emitted.
     let private orderJson (col: string, dir) =
-        JObj [ "col", JStr col; "dir", JStr(dirTag dir) ]
+        JObj [ "column", JStr col; "dir", JStr(dirTag dir) ]
 
     /// A `Sort` key, whose COLUMN is a slot (`0.23.0`). A literal encodes as the bare string it
-    /// always did, so every pre-`0.23.0` sort is byte-identical.
+    /// always did, so the slot widening cost a pre-`0.23.0` sort nothing on the wire; the MEMBER's
+    /// spelling then moved in `0.28.0` (`col` → `column`, D48), which is what does change its bytes.
     let private sortKeyJson (col: Slot<string>, dir) =
-        JObj [ "col", slotJson JStr col; "dir", JStr(dirTag dir) ]
+        JObj [ "column", slotJson JStr col; "dir", JStr(dirTag dir) ]
 
     /// The shared key decoder, parameterised over how the COLUMN half reads — so the alias set
-    /// (`column`, `descending`, `direction`) has one definition across a `Sort` key and a window's
+    /// (`col`, `descending`, `direction`) has one definition across a `Sort` key and a window's
     /// frame ordering rather than two that can drift.
     let private keyOfWith (colOf: JVal -> Result<'C, ColumnError>) el =
-        // Phase 92 — the sort-key aliases: `column` for `col`, boolean `descending` for `dir`.
-        fieldAliased "col" "column" el
+        // Phase 92 admitted `column` as an alias of `col`; `0.28.0` (D48) swapped which of the two
+        // is canonical, so both spellings still decode and `column` is what re-encodes. Boolean
+        // `descending` remains an alias for `dir`.
+        fieldAliased "column" "col" el
         |> Result.bind colOf
         |> Result.bind (fun n ->
             // Phase 93 — `direction` is a third observed spelling; a directionless entry is
@@ -3372,7 +3378,10 @@ module DataFrameCodec =
     let encodeTransform (t: Transform) : JVal =
         match t with
         | Filter pred -> Canon.typed "filter" [ "pred", encodeExpr pred ]
-        | Project pairs -> Canon.typed "project" [ "cols", JArr(pairs |> List.map pairJson) ]
+        // `0.28.0` (D48) — the member is `columns`, not `cols`: it holds the LIST of column renames,
+        // and `cols` is the estate's name for an integer column COUNT. `cols` remains a decode alias
+        // and is never emitted.
+        | Project pairs -> Canon.typed "project" [ "columns", JArr(pairs |> List.map pairJson) ]
         | Derive(name, expr) -> Canon.typed "derive" [ "name", JStr name; "expr", encodeExpr expr ]
         | GroupBy(keys, aggs) -> Canon.typed "groupBy" [ "keys", strList keys; "aggs", JArr(aggs |> List.map aggJson) ]
         | Join(src, on, how) ->
@@ -3518,7 +3527,9 @@ module DataFrameCodec =
                                 )
                             )
                 | "project" ->
-                    field "cols" el
+                    // `0.28.0` (D48) — `cols` is the pre-rename spelling, kept as a decode alias;
+                    // giving both is the same ambiguity refusal every other aliased member makes.
+                    fieldAliased "columns" "cols" el
                     |> Result.bind arrOf
                     |> Result.bind (mapM pairOf)
                     |> Result.map Project
