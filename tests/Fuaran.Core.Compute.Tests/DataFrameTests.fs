@@ -793,8 +793,13 @@ let tests =
 
           testCase "transformLaws certifies the reference against itself (and has teeth)"
           <| fun _ ->
-              // a conservative generator of safe (table, pipeline) samples over a fixed schema
-              let gen (rng: ConfRng.T) =
+              // a generator of (table, pipeline) samples over a fixed schema. Phase 223 — `strata`
+              // says how many pipeline shapes are drawn from: the first five are well-formed, and the
+              // sixth filters on a column the table does not carry, so the reference REFUSES it in
+              // every table. `gen` draws all six, so the Error/Error parity arm the family now guards
+              // is a stratum of the generator; `safeGen` is the old five-shape draw, kept as the
+              // refusal-free generator the must-fail case below runs.
+              let genOver (strata: int) (rng: ConfRng.T) =
                   let pick n r = ConfRng.intBelow n r
                   let n, r1 = pick 4 rng
                   let rows = n + 1
@@ -808,7 +813,7 @@ let tests =
                           [ col "g" StringType [ for i in 0 .. rows - 1 -> Str(if i % 2 = 0 then "a" else "b") ]
                             col "v" IntType [ for i in 0 .. rows - 1 -> mkInt i ] ]
 
-                  let stepKind, r2 = pick 5 r1
+                  let stepKind, r2 = pick strata r1
 
                   let pipeline =
                       match stepKind with
@@ -816,9 +821,13 @@ let tests =
                       | 1 -> [ Transform.sortBy [ "v", Asc ]; Distinct ]
                       | 2 -> [ Derive("w", Binary(Add, Col "v", Lit(Int 1))) ]
                       | 3 -> [ GroupBy([ "g" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ]
-                      | _ -> [ Transform.limit 2 0 ]
+                      | 4 -> [ Transform.limit 2 0 ]
+                      | _ -> [ Filter(Binary(Gt, Col "nope", Lit(Int 0))) ]
 
                   (table, pipeline), r2
+
+              let gen = genOver 6
+              let safeGen = genOver 5
 
               match Conformance.transformLaws DataFrame.evalPipeline gen 7 200 with
               | results when results |> List.forall (fun r -> r.Passed) -> ()
@@ -834,6 +843,17 @@ let tests =
 
               let teeth = Conformance.transformLaws broken gen 7 50
               Expect.isFalse (teeth |> List.forall (fun r -> r.Passed)) "a wrong evaluator is caught"
+
+              // Phase 223 — the must-fail case: over only well-formed pipelines every subject law
+              // passes, and the refused-pipeline guard is the one line that says the Error/Error arm
+              // was never compared.
+              Expect.equal
+                  (Conformance.transformLaws DataFrame.evalPipeline safeGen 7 200
+                   |> List.filter (fun r -> not r.Passed)
+                   |> List.map (fun r -> r.Law))
+                  [ SampleAdequacy.lawPrefix "Conformance.transformLaws"
+                    + "the sample reached every refused pipeline the laws distinguish" ]
+                  "a refusal-free generator turns transformLaws red on exactly the refused-pipeline guard"
 
           // ---- the shared canonical `$type` discipline (Stage 1 unification) ----
 
