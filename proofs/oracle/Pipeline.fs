@@ -69,6 +69,74 @@ let rec app = (fun ( l  :  Prims.list<'a> ) ( m  :  Prims.list<'a> ) -> (match (
      (h)::(app t m)
      end))
 
+
+let rec nth = (fun ( l  :  Prims.list<'a> ) ( i  :  Prims.nat ) -> (match (l) with
+| (x)::t -> begin
+      
+if (Prims.op_Equals i (Prims.parse_int "0")) then begin
+     x
+     end else begin
+     (nth t (i - (Prims.parse_int "1")))
+     end
+     end))
+
+
+let rec set_at = (fun ( i  :  Prims.nat ) ( v  :  'a ) ( l  :  Prims.list<'a> ) -> (match (l) with
+| [] -> begin
+     []
+     end
+| (x)::t -> begin
+      
+if (Prims.op_Equals i (Prims.parse_int "0")) then begin
+     (v)::t
+     end else begin
+     (x)::(set_at (i - (Prims.parse_int "1")) v t)
+     end
+     end))
+
+
+let rec names = (fun ( l  :  Prims.list<(Prims.string * 'b)> ) -> (match (l) with
+| [] -> begin
+     []
+     end
+| ((n, uu___))::t -> begin
+     (n)::(names t)
+     end))
+
+
+let rec assoc = (fun ( name  :  Prims.string ) ( l  :  Prims.list<(Prims.string * 'b)> ) -> (match (l) with
+| [] -> begin
+     FStar_Pervasives_Native.None
+     end
+| ((n, v))::t -> begin
+      
+if (Prims.op_Equals n name) then begin
+     FStar_Pervasives_Native.Some (v)
+     end else begin
+     (assoc name t)
+     end
+     end))
+
+
+let rec index_of = (fun ( name  :  Prims.string ) ( l  :  Prims.list<(Prims.string * 'b)> ) -> (match (l) with
+| [] -> begin
+     FStar_Pervasives_Native.None
+     end
+| ((n, uu___))::t -> begin
+      
+if (Prims.op_Equals n name) then begin
+     FStar_Pervasives_Native.Some ((Prims.parse_int "0"))
+     end else begin
+     (match ((index_of name t)) with
+| FStar_Pervasives_Native.Some (i) -> begin
+     FStar_Pervasives_Native.Some ((i + (Prims.parse_int "1")))
+     end
+| FStar_Pervasives_Native.None -> begin
+     FStar_Pervasives_Native.None
+     end)
+     end
+     end))
+
 type column_type =
 | IntType
 | FloatType
@@ -1580,6 +1648,179 @@ let __proj__Except__item___0 : transform  ->  data_source = (fun ( projectee  : 
      _0
      end))
 
+type eval_error =
+| UnknownColumn of Prims.string * Prims.list<Prims.string>
+| TypeError of Prims.string
+| AggError of Prims.string
+| JoinError of Prims.string
+| ArityError of Prims.string * Prims.int * Prims.int
+| UnresolvedSource of Prims.string
+| OverflowError of Prims.string
+| UnboundParam of Prims.string * Prims.list<Prims.string>
+| UnpinnedClock of now_grain
+
+
+let uu___is_UnknownColumn : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnknownColumn (_0, _1) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__UnknownColumn__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnknownColumn (_0, _1) -> begin
+     _0
+     end))
+
+
+let __proj__UnknownColumn__item___1 : eval_error  ->  Prims.list<Prims.string> = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnknownColumn (_0, _1) -> begin
+     _1
+     end))
+
+
+let uu___is_TypeError : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| TypeError (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__TypeError__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| TypeError (_0) -> begin
+     _0
+     end))
+
+
+let uu___is_AggError : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| AggError (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__AggError__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| AggError (_0) -> begin
+     _0
+     end))
+
+
+let uu___is_JoinError : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| JoinError (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__JoinError__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| JoinError (_0) -> begin
+     _0
+     end))
+
+
+let uu___is_ArityError : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| ArityError (_0, _1, _2) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__ArityError__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| ArityError (_0, _1, _2) -> begin
+     _0
+     end))
+
+
+let __proj__ArityError__item___1 : eval_error  ->  Prims.int = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| ArityError (_0, _1, _2) -> begin
+     _1
+     end))
+
+
+let __proj__ArityError__item___2 : eval_error  ->  Prims.int = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| ArityError (_0, _1, _2) -> begin
+     _2
+     end))
+
+
+let uu___is_UnresolvedSource : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnresolvedSource (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__UnresolvedSource__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnresolvedSource (_0) -> begin
+     _0
+     end))
+
+
+let uu___is_OverflowError : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| OverflowError (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__OverflowError__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| OverflowError (_0) -> begin
+     _0
+     end))
+
+
+let uu___is_UnboundParam : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnboundParam (_0, _1) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__UnboundParam__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnboundParam (_0, _1) -> begin
+     _0
+     end))
+
+
+let __proj__UnboundParam__item___1 : eval_error  ->  Prims.list<Prims.string> = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnboundParam (_0, _1) -> begin
+     _1
+     end))
+
+
+let uu___is_UnpinnedClock : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnpinnedClock (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__UnpinnedClock__item___0 : eval_error  ->  now_grain = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnpinnedClock (_0) -> begin
+     _0
+     end))
+
+
+type param_env = Prims.list<(Prims.string * cell)>
+
 
 let cost_of : frame  ->  transform  ->  Prims.nat = (fun ( f  :  frame ) ( step  :  transform ) -> (match (step) with
 | Filter (uu___) -> begin
@@ -1592,11 +1833,423 @@ let cost_of : frame  ->  transform  ->  Prims.nat = (fun ( f  :  frame ) ( step 
      (Prims.parse_int "0")
      end))
 
+type prims = {binary : bin_op  ->  cell  ->  cell  ->  outcome<cell, eval_error>; cast_cell : column_type  ->  cell  ->  outcome<cell, eval_error>; apply_fn : scalar_fn  ->  Prims.list<cell>  ->  outcome<cell, eval_error>; compare : cell  ->  cell  ->  FStar_Pervasives_Native.option<Prims.int>}
 
-type step_fn<'e> = frame  ->  transform  ->  outcome<frame, 'e>
+
+let __proj__Mkprims__item__binary : prims  ->  bin_op  ->  cell  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare} -> begin
+     binary
+     end))
 
 
-let rec go = (fun ( step  :  step_fn<'e> ) ( f  :  frame ) ( evaluated  :  Prims.nat ) ( p  :  Prims.list<transform> ) -> (match (p) with
+let __proj__Mkprims__item__cast_cell : prims  ->  column_type  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare} -> begin
+     cast_cell
+     end))
+
+
+let __proj__Mkprims__item__apply_fn : prims  ->  scalar_fn  ->  Prims.list<cell>  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare} -> begin
+     apply_fn
+     end))
+
+
+let __proj__Mkprims__item__compare : prims  ->  cell  ->  cell  ->  FStar_Pervasives_Native.option<Prims.int> = (fun ( projectee  :  prims ) -> (match (projectee) with
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare} -> begin
+     compare
+     end))
+
+
+type row_of = Prims.list<cell>
+
+
+let rec eval_expr : prims  ->  param_env  ->  schema  ->  row_of  ->  col_expr  ->  outcome<cell, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( x  :  col_expr ) -> (match (x) with
+| Col (name) -> begin
+     (match ((index_of name cols)) with
+| FStar_Pervasives_Native.Some (i) -> begin
+     Ok ((nth row i))
+     end
+| FStar_Pervasives_Native.None -> begin
+     Error (UnknownColumn (name, (names cols)))
+     end)
+     end
+| Lit (c) -> begin
+     Ok (c)
+     end
+| Param (name) -> begin
+     (match ((assoc name env)) with
+| FStar_Pervasives_Native.Some (c) -> begin
+     Ok (c)
+     end
+| FStar_Pervasives_Native.None -> begin
+     Error (UnboundParam (name, (names env)))
+     end)
+     end
+| Binary (op, a, b) -> begin
+     (match ((eval_expr pr env cols row a)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (av) -> begin
+     (match ((eval_expr pr env cols row b)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (bv) -> begin
+     (pr.binary op av bv)
+     end)
+     end)
+     end
+| Not (inner) -> begin
+     (match ((eval_expr pr env cols row inner)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (Bool (b)) -> begin
+     Ok (Bool ((not (b))))
+     end
+| Ok (Null) -> begin
+     Ok (Null)
+     end
+| Ok (uu___) -> begin
+     Error (TypeError ("not of a non-bool"))
+     end)
+     end
+| Coalesce (xs) -> begin
+     (eval_coalesce pr env cols row xs)
+     end
+| Case (cases, els) -> begin
+     (match ((eval_case pr env cols row cases)) with
+| FStar_Pervasives_Native.Some (r) -> begin
+     r
+     end
+| FStar_Pervasives_Native.None -> begin
+     (eval_expr pr env cols row els)
+     end)
+     end
+| Cast (ty, inner) -> begin
+     (match ((eval_expr pr env cols row inner)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (v) -> begin
+     (pr.cast_cell ty v)
+     end)
+     end
+| InList (subject, items) -> begin
+     (match ((eval_expr pr env cols row subject)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (Null) -> begin
+     Ok (Null)
+     end
+| Ok (sv) -> begin
+     (eval_in pr env cols row sv false items)
+     end)
+     end
+| IsNull (inner) -> begin
+     (match ((eval_expr pr env cols row inner)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (Null) -> begin
+     Ok (Bool (true))
+     end
+| Ok (uu___) -> begin
+     Ok (Bool (false))
+     end)
+     end
+| InParam (uu___, name) -> begin
+     Error (UnboundParam (name, (names env)))
+     end
+| Now (grain) -> begin
+     Error (UnpinnedClock (grain))
+     end
+| ApplyFn (fn, args) -> begin
+     (match ((eval_args pr env cols row args)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (vs) -> begin
+     (pr.apply_fn fn vs)
+     end)
+     end))
+and eval_coalesce : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<col_expr>  ->  outcome<cell, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
+| [] -> begin
+     Ok (Null)
+     end
+| (x)::rest -> begin
+     (match ((eval_expr pr env cols row x)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (Null) -> begin
+     (eval_coalesce pr env cols row rest)
+     end
+| Ok (c) -> begin
+     Ok (c)
+     end)
+     end))
+and eval_case : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<(col_expr * col_expr)>  ->  FStar_Pervasives_Native.option<outcome<cell, eval_error>> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( cases  :  Prims.list<(col_expr * col_expr)> ) -> (match (cases) with
+| [] -> begin
+     FStar_Pervasives_Native.None
+     end
+| ((when_e, then_e))::rest -> begin
+     (match ((eval_expr pr env cols row when_e)) with
+| Error (err) -> begin
+     FStar_Pervasives_Native.Some (Error (err))
+     end
+| Ok (Bool (true)) -> begin
+     FStar_Pervasives_Native.Some ((eval_expr pr env cols row then_e))
+     end
+| Ok (uu___) -> begin
+     (eval_case pr env cols row rest)
+     end)
+     end))
+and eval_in : prims  ->  param_env  ->  schema  ->  row_of  ->  cell  ->  Prims.bool  ->  Prims.list<col_expr>  ->  outcome<cell, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( sv  :  cell ) ( saw_null  :  Prims.bool ) ( items  :  Prims.list<col_expr> ) -> (match (items) with
+| [] -> begin
+     Ok ( 
+if saw_null then begin
+     Null
+     end else begin
+     Bool (false)
+     end)
+     end
+| (it)::rest -> begin
+     (match ((eval_expr pr env cols row it)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (Null) -> begin
+     (eval_in pr env cols row sv true rest)
+     end
+| Ok (iv) -> begin
+     (match ((pr.compare sv iv)) with
+| FStar_Pervasives_Native.Some (uu___) when (uu___ = (Prims.parse_int "0")) -> begin
+     Ok (Bool (true))
+     end
+| FStar_Pervasives_Native.Some (uu___) -> begin
+     (eval_in pr env cols row sv saw_null rest)
+     end
+| FStar_Pervasives_Native.None -> begin
+     Error (TypeError ("in: comparison between incompatible types"))
+     end)
+     end)
+     end))
+and eval_args : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<col_expr>  ->  outcome<Prims.list<cell>, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( args  :  Prims.list<col_expr> ) -> (match (args) with
+| [] -> begin
+     Ok ([])
+     end
+| (a)::rest -> begin
+     (match ((eval_expr pr env cols row a)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (v) -> begin
+     (match ((eval_args pr env cols row rest)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (vs) -> begin
+     Ok ((v)::vs)
+     end)
+     end)
+     end))
+
+
+let rec all_width : Prims.nat  ->  Prims.list<Prims.list<cell>>  ->  Prims.bool = (fun ( n  :  Prims.nat ) ( rows  :  Prims.list<Prims.list<cell>> ) -> (match (rows) with
+| [] -> begin
+     true
+     end
+| (r)::t -> begin
+     ((Prims.op_Equals (len r) n) && (all_width n t))
+     end))
+
+
+let wf : frame  ->  Prims.bool = (fun ( f  :  frame ) -> (all_width (len f.cols) f.rows))
+
+
+type wframe = frame
+
+
+let rows_ok : Prims.nat  ->  outcome<Prims.list<Prims.list<cell>>, eval_error>  ->  Prims.bool = (fun ( n  :  Prims.nat ) ( r  :  outcome<Prims.list<Prims.list<cell>>, eval_error> ) -> (match (r) with
+| Ok (rs) -> begin
+     (all_width n rs)
+     end
+| Error (uu___) -> begin
+     true
+     end))
+
+
+let rec filter_rows : prims  ->  param_env  ->  schema  ->  Prims.list<Prims.list<cell>>  ->  col_expr  ->  outcome<Prims.list<Prims.list<cell>>, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( rows  :  Prims.list<Prims.list<cell>> ) ( pred  :  col_expr ) -> (match (rows) with
+| [] -> begin
+     Ok ([])
+     end
+| (r)::rest -> begin
+     (match ((eval_expr pr env cols r pred)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (Bool (true)) -> begin
+     (match ((filter_rows pr env cols rest pred)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (rs) -> begin
+     Ok ((r)::rs)
+     end)
+     end
+| Ok (uu___) -> begin
+     (filter_rows pr env cols rest pred)
+     end)
+     end))
+
+
+let rec derive_cells : prims  ->  param_env  ->  schema  ->  Prims.list<Prims.list<cell>>  ->  col_expr  ->  outcome<Prims.list<cell>, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( rows  :  Prims.list<Prims.list<cell>> ) ( x  :  col_expr ) -> (match (rows) with
+| [] -> begin
+     Ok ([])
+     end
+| (r)::rest -> begin
+     (match ((eval_expr pr env cols r x)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (v) -> begin
+     (match ((derive_cells pr env cols rest x)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (vs) -> begin
+     Ok ((v)::vs)
+     end)
+     end)
+     end))
+
+
+let type_of : cell  ->  FStar_Pervasives_Native.option<column_type> = (fun ( c  :  cell ) -> (match (c) with
+| Int (uu___) -> begin
+     FStar_Pervasives_Native.Some (IntType)
+     end
+| Float (uu___) -> begin
+     FStar_Pervasives_Native.Some (FloatType)
+     end
+| Bool (uu___) -> begin
+     FStar_Pervasives_Native.Some (BoolType)
+     end
+| Str (uu___) -> begin
+     FStar_Pervasives_Native.Some (StringType)
+     end
+| Date (uu___) -> begin
+     FStar_Pervasives_Native.Some (DateType)
+     end
+| Timestamp (uu___) -> begin
+     FStar_Pervasives_Native.Some (TimestampType)
+     end
+| Null -> begin
+     FStar_Pervasives_Native.None
+     end))
+
+
+let rec first_type : Prims.list<cell>  ->  FStar_Pervasives_Native.option<column_type> = (fun ( cells  :  Prims.list<cell> ) -> (match (cells) with
+| [] -> begin
+     FStar_Pervasives_Native.None
+     end
+| (v)::t -> begin
+     (match ((type_of v)) with
+| FStar_Pervasives_Native.Some (ty) -> begin
+     FStar_Pervasives_Native.Some (ty)
+     end
+| FStar_Pervasives_Native.None -> begin
+     (first_type t)
+     end)
+     end))
+
+
+let infer_type : Prims.list<cell>  ->  column_type = (fun ( cells  :  Prims.list<cell> ) -> (match ((first_type cells)) with
+| FStar_Pervasives_Native.Some (ty) -> begin
+     ty
+     end
+| FStar_Pervasives_Native.None -> begin
+     StringType
+     end))
+
+
+let rec retype_at : Prims.nat  ->  column_type  ->  schema  ->  schema = (fun ( i  :  Prims.nat ) ( ty  :  column_type ) ( cols  :  schema ) -> (match (cols) with
+| [] -> begin
+     []
+     end
+| ((n, t))::rest -> begin
+      
+if (Prims.op_Equals i (Prims.parse_int "0")) then begin
+     (((n), (ty)))::rest
+     end else begin
+     (((n), (t)))::(retype_at (i - (Prims.parse_int "1")) ty rest)
+     end
+     end))
+
+
+let rec zip_replace : Prims.nat  ->  Prims.list<Prims.list<cell>>  ->  Prims.list<cell>  ->  Prims.list<Prims.list<cell>> = (fun ( i  :  Prims.nat ) ( rows  :  Prims.list<Prims.list<cell>> ) ( cells  :  Prims.list<cell> ) -> (match (((rows), (cells))) with
+| ([], []) -> begin
+     []
+     end
+| ((r)::rt, (v)::vt) -> begin
+     ((set_at i v r))::(zip_replace i rt vt)
+     end))
+
+
+let rec zip_append : Prims.list<Prims.list<cell>>  ->  Prims.list<cell>  ->  Prims.list<Prims.list<cell>> = (fun ( rows  :  Prims.list<Prims.list<cell>> ) ( cells  :  Prims.list<cell> ) -> (match (((rows), (cells))) with
+| ([], []) -> begin
+     []
+     end
+| ((r)::rt, (v)::vt) -> begin
+     ((app r ((v)::[])))::(zip_append rt vt)
+     end))
+
+
+let eval_derive : prims  ->  param_env  ->  wframe  ->  Prims.string  ->  col_expr  ->  outcome<wframe, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( f  :  wframe ) ( name  :  Prims.string ) ( x  :  col_expr ) -> (match ((derive_cells pr env f.cols f.rows x)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (cells) -> begin
+     (
+
+let ty = (infer_type cells)
+in (match ((index_of name f.cols)) with
+| FStar_Pervasives_Native.Some (i) -> begin
+     Ok ({cols = (retype_at i ty f.cols); rows = (zip_replace i f.rows cells)})
+     end
+| FStar_Pervasives_Native.None -> begin
+     Ok ({cols = (app f.cols ((((name), (ty)))::[])); rows = (zip_append f.rows cells)})
+     end))
+     end))
+
+
+type other_fn = wframe  ->  transform  ->  outcome<wframe, eval_error>
+
+
+let eval_step : prims  ->  other_fn  ->  param_env  ->  wframe  ->  transform  ->  outcome<wframe, eval_error> = (fun ( pr  :  prims ) ( other  :  other_fn ) ( env  :  param_env ) ( f  :  wframe ) ( t  :  transform ) -> (match (t) with
+| Filter (pred) -> begin
+     (match ((filter_rows pr env f.cols f.rows pred)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (rs) -> begin
+     Ok ({cols = f.cols; rows = rs})
+     end)
+     end
+| Derive (name, x) -> begin
+     (eval_derive pr env f name x)
+     end
+| uu___ -> begin
+     (other f t)
+     end))
+
+
+type step_fn<'e> = wframe  ->  transform  ->  outcome<wframe, 'e>
+
+
+let rec go = (fun ( step  :  step_fn<'e> ) ( f  :  wframe ) ( evaluated  :  Prims.nat ) ( p  :  Prims.list<transform> ) -> (match (p) with
 | [] -> begin
      Ok (((f), (evaluated)))
      end
@@ -1604,17 +2257,17 @@ let rec go = (fun ( step  :  step_fn<'e> ) ( f  :  frame ) ( evaluated  :  Prims
      (
 
 let cost = (cost_of f s)
-in (result_bind (step f s) (fun ( f'  :  frame ) -> (go step f' (evaluated + cost) rest))))
+in (result_bind (step f s) (fun ( f'  :  wframe ) -> (go step f' (evaluated + cost) rest))))
      end))
 
 
-let eval_counted = (fun ( step  :  step_fn<'e> ) ( p  :  Prims.list<transform> ) ( input  :  frame ) -> (go step input (Prims.parse_int "0") p))
+let eval_counted : prims  ->  other_fn  ->  param_env  ->  Prims.list<transform>  ->  wframe  ->  outcome<(wframe * Prims.nat), eval_error> = (fun ( pr  :  prims ) ( other  :  other_fn ) ( env  :  param_env ) ( p  :  Prims.list<transform> ) ( input  :  wframe ) -> (go (eval_step pr other env) input (Prims.parse_int "0") p))
 
 
-let eval_uncounted = (fun ( step  :  step_fn<'e> ) ( p  :  Prims.list<transform> ) ( input  :  frame ) -> (result_map FStar_Pervasives_Native.fst (eval_counted step p input)))
+let eval_uncounted : prims  ->  other_fn  ->  param_env  ->  Prims.list<transform>  ->  wframe  ->  outcome<wframe, eval_error> = (fun ( pr  :  prims ) ( other  :  other_fn ) ( env  :  param_env ) ( p  :  Prims.list<transform> ) ( input  :  wframe ) -> (result_map FStar_Pervasives_Native.fst (eval_counted pr other env p input)))
 
 
-let rec walk_ok = (fun ( step  :  step_fn<'e> ) ( f  :  frame ) ( p  :  Prims.list<transform> ) -> (match (p) with
+let rec walk_ok = (fun ( step  :  step_fn<'e> ) ( f  :  wframe ) ( p  :  Prims.list<transform> ) -> (match (p) with
 | [] -> begin
      true
      end
@@ -1629,7 +2282,7 @@ let rec walk_ok = (fun ( step  :  step_fn<'e> ) ( f  :  frame ) ( p  :  Prims.li
      end))
 
 
-let rec first_error = (fun ( step  :  step_fn<'e> ) ( f  :  frame ) ( p  :  Prims.list<transform> ) -> (match (p) with
+let rec first_error = (fun ( step  :  step_fn<'e> ) ( f  :  wframe ) ( p  :  Prims.list<transform> ) -> (match (p) with
 | [] -> begin
      FStar_Pervasives_Native.None
      end
@@ -1644,7 +2297,7 @@ let rec first_error = (fun ( step  :  step_fn<'e> ) ( f  :  frame ) ( p  :  Prim
      end))
 
 
-let rec cost = (fun ( step  :  step_fn<'e> ) ( f  :  frame ) ( p  :  Prims.list<transform> ) -> (match (p) with
+let rec cost = (fun ( step  :  step_fn<'e> ) ( f  :  wframe ) ( p  :  Prims.list<transform> ) -> (match (p) with
 | [] -> begin
      (Prims.parse_int "0")
      end
@@ -1745,29 +2398,174 @@ let rec within_limit : Prims.list<transform>  ->  Prims.bool = (fun ( p  :  Prim
      end))
 
 
-let step_work : frame  ->  transform  ->  Prims.nat = (fun ( f  :  frame ) ( s  :  transform ) -> (match (s) with
+let rec expr_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  col_expr  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( x  :  col_expr ) -> (match (x) with
+| Col (uu___) -> begin
+     (Prims.parse_int "1")
+     end
+| Lit (uu___) -> begin
+     (Prims.parse_int "1")
+     end
+| Param (uu___) -> begin
+     (Prims.parse_int "1")
+     end
+| InParam (uu___, uu___1) -> begin
+     (Prims.parse_int "1")
+     end
+| Now (uu___) -> begin
+     (Prims.parse_int "1")
+     end
+| Binary (uu___, a, b) -> begin
+     (((Prims.parse_int "1") + (expr_visits pr env cols row a)) + (match ((eval_expr pr env cols row a)) with
+| Ok (uu___1) -> begin
+     (expr_visits pr env cols row b)
+     end
+| Error (uu___1) -> begin
+     (Prims.parse_int "0")
+     end))
+     end
+| Not (a) -> begin
+     ((Prims.parse_int "1") + (expr_visits pr env cols row a))
+     end
+| Cast (uu___, a) -> begin
+     ((Prims.parse_int "1") + (expr_visits pr env cols row a))
+     end
+| IsNull (a) -> begin
+     ((Prims.parse_int "1") + (expr_visits pr env cols row a))
+     end
+| Coalesce (xs) -> begin
+     ((Prims.parse_int "1") + (coalesce_visits pr env cols row xs))
+     end
+| Case (cases, els) -> begin
+     (((Prims.parse_int "1") + (case_visits pr env cols row cases)) + (match ((eval_case pr env cols row cases)) with
+| FStar_Pervasives_Native.Some (uu___) -> begin
+     (Prims.parse_int "0")
+     end
+| FStar_Pervasives_Native.None -> begin
+     (expr_visits pr env cols row els)
+     end))
+     end
+| InList (subject, items) -> begin
+     (((Prims.parse_int "1") + (expr_visits pr env cols row subject)) + (match ((eval_expr pr env cols row subject)) with
+| Error (uu___) -> begin
+     (Prims.parse_int "0")
+     end
+| Ok (Null) -> begin
+     (Prims.parse_int "0")
+     end
+| Ok (sv) -> begin
+     (in_visits pr env cols row sv items)
+     end))
+     end
+| ApplyFn (uu___, args) -> begin
+     ((Prims.parse_int "1") + (args_visits pr env cols row args))
+     end))
+and coalesce_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<col_expr>  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
+| [] -> begin
+     (Prims.parse_int "0")
+     end
+| (x)::rest -> begin
+     ((expr_visits pr env cols row x) + (match ((eval_expr pr env cols row x)) with
+| Ok (Null) -> begin
+     (coalesce_visits pr env cols row rest)
+     end
+| uu___ -> begin
+     (Prims.parse_int "0")
+     end))
+     end))
+and case_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<(col_expr * col_expr)>  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( cases  :  Prims.list<(col_expr * col_expr)> ) -> (match (cases) with
+| [] -> begin
+     (Prims.parse_int "0")
+     end
+| ((when_e, then_e))::rest -> begin
+     ((expr_visits pr env cols row when_e) + (match ((eval_expr pr env cols row when_e)) with
+| Error (uu___) -> begin
+     (Prims.parse_int "0")
+     end
+| Ok (Bool (true)) -> begin
+     (expr_visits pr env cols row then_e)
+     end
+| Ok (uu___) -> begin
+     (case_visits pr env cols row rest)
+     end))
+     end))
+and in_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  cell  ->  Prims.list<col_expr>  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( sv  :  cell ) ( items  :  Prims.list<col_expr> ) -> (match (items) with
+| [] -> begin
+     (Prims.parse_int "0")
+     end
+| (it)::rest -> begin
+     ((expr_visits pr env cols row it) + (match ((eval_expr pr env cols row it)) with
+| Error (uu___) -> begin
+     (Prims.parse_int "0")
+     end
+| Ok (Null) -> begin
+     (in_visits pr env cols row sv rest)
+     end
+| Ok (iv) -> begin
+     (match ((pr.compare sv iv)) with
+| FStar_Pervasives_Native.Some (uu___) when (uu___ = (Prims.parse_int "0")) -> begin
+     (Prims.parse_int "0")
+     end
+| FStar_Pervasives_Native.Some (uu___) -> begin
+     (in_visits pr env cols row sv rest)
+     end
+| FStar_Pervasives_Native.None -> begin
+     (Prims.parse_int "0")
+     end)
+     end))
+     end))
+and args_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<col_expr>  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( args  :  Prims.list<col_expr> ) -> (match (args) with
+| [] -> begin
+     (Prims.parse_int "0")
+     end
+| (a)::rest -> begin
+     ((expr_visits pr env cols row a) + (match ((eval_expr pr env cols row a)) with
+| Ok (uu___) -> begin
+     (args_visits pr env cols row rest)
+     end
+| Error (uu___) -> begin
+     (Prims.parse_int "0")
+     end))
+     end))
+
+
+let rec rows_visits : prims  ->  param_env  ->  schema  ->  Prims.list<Prims.list<cell>>  ->  col_expr  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( rows  :  Prims.list<Prims.list<cell>> ) ( x  :  col_expr ) -> (match (rows) with
+| [] -> begin
+     (Prims.parse_int "0")
+     end
+| (r)::rest -> begin
+     ((expr_visits pr env cols r x) + (match ((eval_expr pr env cols r x)) with
+| Ok (uu___) -> begin
+     (rows_visits pr env cols rest x)
+     end
+| Error (uu___) -> begin
+     (Prims.parse_int "0")
+     end))
+     end))
+
+
+let step_work : prims  ->  param_env  ->  wframe  ->  transform  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( f  :  wframe ) ( s  :  transform ) -> (match (s) with
 | Filter (e) -> begin
-     ((len f.rows) * (expr_nodes e))
+     (rows_visits pr env f.cols f.rows e)
      end
 | Derive (uu___, e) -> begin
-     ((len f.rows) * (expr_nodes e))
+     (rows_visits pr env f.cols f.rows e)
      end
 | uu___ -> begin
      (Prims.parse_int "0")
      end))
 
 
-let rec work = (fun ( step  :  step_fn<'e> ) ( f  :  frame ) ( p  :  Prims.list<transform> ) -> (match (p) with
+let rec work : prims  ->  other_fn  ->  param_env  ->  wframe  ->  Prims.list<transform>  ->  Prims.nat = (fun ( pr  :  prims ) ( other  :  other_fn ) ( env  :  param_env ) ( f  :  wframe ) ( p  :  Prims.list<transform> ) -> (match (p) with
 | [] -> begin
      (Prims.parse_int "0")
      end
 | (s)::rest -> begin
-     (match ((step f s)) with
+     (match ((eval_step pr other env f s)) with
 | Ok (f') -> begin
-     ((step_work f s) + (work step f' rest))
+     ((step_work pr env f s) + (work pr other env f' rest))
      end
 | Error (uu___) -> begin
-     (step_work f s)
+     (step_work pr env f s)
      end)
      end))
 
