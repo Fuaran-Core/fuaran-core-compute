@@ -1,0 +1,52 @@
+name: publish-packages
+
+# Released distribution channel for this repository's four packages (Fuaran.Core.DataFrame,
+# Fuaran.Core.Column.Ops, Fuaran.Core.DataFrame.Conformance, Fuaran.Core.DataFrame.CSharp):
+# nuget.org — the public, no-auth-restore channel. Bump <Version> in Directory.Build.props, commit,
+# then tag vX.Y.Z and push the tag to trigger this workflow. A branch push reaches no job here.
+# Re-runs of the same tag are idempotent (--skip-duplicate).
+#
+# BEFORE THE FIRST TAG: the nuget.org Trusted Publishing policy for THIS repository
+# (Fuaran-Core/fuaran-core-compute, workflow publish-packages.yml) must be registered by the package
+# owner. Until it is, the run fails at the NuGet/login step — which reads like an authentication
+# problem and is the missing registration.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # `id-token: write` lets the job request the GitHub OIDC token that
+  # nuget.org's Trusted Publishing exchange turns into a short-lived API key.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      # nuget.config names a local folder feed two levels above the repository (the development
+      # loop's); NuGet refuses a missing folder source (NU1301), so an empty one is minted here and
+      # every Fuaran.Core package restores from nuget.org.
+      - name: Create the empty local feed directory
+        run: mkdir -p ../../local-nuget-feed
+      - name: Pack (every packable src project)
+        run: dotnet pack Fuaran.Core.Compute.slnx -c Release -o ${{ runner.temp }}/nupkgs
+      # Auth is Trusted Publishing (OIDC): a policy on nuget.org (repo owner / repo / this
+      # workflow's file name) exchanges the job's OIDC token for a 1-hour API key — no long-lived
+      # key secret to rotate.
+      - name: NuGet login (OIDC → temp API key)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ajwillshire # the policy creator (a nuget.org profile name is public, not a secret)
+      - name: Push to nuget.org
+        run: >
+          dotnet nuget push "${{ runner.temp }}/nupkgs/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+          --skip-duplicate

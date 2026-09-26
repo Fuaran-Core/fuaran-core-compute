@@ -46,5 +46,10 @@ change here too, so it advances this repository's draft slot rather than riding 
 is emitted by `--emit-laws` from this repository's evaluator and stamped with this repository's
 `<Version>`, and [`version-derives.json`](version-derives.json) declares the shared wire-format
 corpus copy as derived from it. Until the substrate removes the strand, both repositories can emit
-the file; the vectors are byte-identical and only the stamp differs, and the corpus copy follows
-this repository from the first release.
+the file; the vectors are byte-identical and only the `kitVersion` stamp differs (`0.32.0` there,
+this repository's version here), so the corpus copy can agree with only one of them. For that window
+this repository's CI compares against the corpus and PRINTS a drift rather than failing on it (it
+does not set `FUARAN_CORE_CORPUS_FRESHNESS`): made fatal on both sides, one producer's CI would be
+red on every push for a byte neither can change. The corpus copy is re-emitted from here, and the
+flag set in this repository's CI, in the change-set that answers the substrate's Phase 258 — the
+point at which this repository becomes the only producer.

@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      # The package-roster and surface checks read the repository's release TAGS: fetch the history
+      # and the tags, or a tag-less shallow clone reads as "nothing released yet".
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      # The shared wire-format conformance corpus, so the law-vector legs compare this repository's
+      # transform-laws.json against the corpus copy. Checked out INSIDE the workspace because
+      # actions/checkout refuses a path outside it; .gitignore carries the directory.
+      - name: Check out the wire-format conformance corpus
+        uses: actions/checkout@v4
+        with:
+          repository: fuaran-ui/fuaran-ui-specification
+          path: wire-format-fixtures
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      # nuget.config names a local folder feed two levels above the repository (the development
+      # loop's); NuGet refuses a missing folder source (NU1301), so an empty one is minted here and
+      # every Fuaran.Core package restores from nuget.org, exactly as an outside clone's does.
+      - name: Create the empty local feed directory
+        run: mkdir -p ../../local-nuget-feed
+      # The repository gate — the same command contributors run locally, so CI and local never
+      # diverge: tool restore + fantomas --check + the publication sweep + build + tests + the C#
+      # facade proof. FUARAN_CORE_CORPUS_DIR names the checkout above, so the law-vector leg
+      # compares against it and PRINTS any drift. It is not yet made FATAL
+      # (FUARAN_CORE_CORPUS_FRESHNESS): until the Fuaran.Core repository stops emitting the same
+      # file (its Phase 258), two producers stamp one corpus copy with two versions, and whichever
+      # the copy follows, the other's CI would be red on every push for a byte neither can change.
+      # DECISIONS.md D1 (6) records this; the flag is set here in the change-set that answers 258.
+      - name: Verify (./verify.ps1)
+        shell: pwsh
+        env:
+          FUARAN_CORE_CORPUS_DIR: ${{ github.workspace }}/wire-format-fixtures
+        run: ./verify.ps1
+
+  # The proof leg: proofs/ColumnOps.fst and proofs/Pipeline.fst (and Limits.fst, which Pipeline
+  # opens) checked by the PINNED F*/Z3 three times from a cold cache, the committed F# oracles held
+  # to a fresh extraction, and the host families (Proofs.Oracle, Proofs.Ladder, Proofs.Coverage)
+  # run. Windows because that is the release the pin names; the prover is cached by the pin file's
+  # hash, so a push that does not move the pin downloads nothing.
+  proofs:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Check out the wire-format conformance corpus
+        uses: actions/checkout@v4
+        with:
+          repository: fuaran-ui/fuaran-ui-specification
+          path: wire-format-fixtures
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Create the empty local feed directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force ../../local-nuget-feed | Out-Null
+      - name: Cache the pinned F* release
+        uses: actions/cache@v4
+        with:
+          path: proofs/.fstar
+          key: fstar-${{ runner.os }}-${{ hashFiles('proofs/fstar-pin.json') }}
+      - name: Proof leg (./proofs/check.ps1 -Runs 3)
+        shell: pwsh
+        env:
+          FUARAN_CORE_CORPUS_DIR: ${{ github.workspace }}/wire-format-fixtures
+        run: ./proofs/check.ps1 -Runs 3
