@@ -16,6 +16,10 @@
     <PackageVersion Include="Fuaran.Core.Conformance" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Fuaran.Core.CSharp" Version="$(FuaranCoreVersion)" />
     <!-- TEST-ONLY. -->
+    <!-- The composition suite's substrate (tests/ only): Propagation over a tree edited by Ops. -->
+    <PackageVersion Include="Fuaran.Core.Propagation" Version="$(FuaranCoreVersion)" />
+    <PackageVersion Include="Fuaran.Core.Ops" Version="$(FuaranCoreVersion)" />
+    <PackageVersion Include="Fuaran.Core.Tree" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Expecto" Version="9.0.4" />
   </ItemGroup>
 </Project>

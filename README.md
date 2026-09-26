@@ -89,6 +89,50 @@ measurements say where:
 So: `plan` tells you whether a refresh will be restricted, never whether it will be faster for your
 pipeline. Measure your own before adopting it for a row-preserving shape.
 
+## Composing with `Propagation` — an edit, one refreshed row, a column-granular dirty set
+
+`Column.Ops` is the bridge between a table edit and the two evaluators downstream of it. Worked once,
+over an `orders` table of 1,000 rows keyed by `id` and a `lines` pipeline that derives
+`amount = qty * price`:
+
+```fsharp
+open Fuaran.Core
+
+let rid = RowIdentity.byColumn "id"
+let op = SetCell("price", row, newPrice)                        // one cell of the 1,000-row table
+let orders' = ColumnOps.apply op orders |> Result.defaultWith (failwithf "%A")
+
+// The row half: deltaOf names the ONE row the edit moved, so the refresh evaluates one row.
+let delta = ColumnOps.deltaOf rid orders op                     // RowSet [ ByKey …, RowChanged ]
+let next = Incremental.refresh DataFrame.noResolve Map.empty rid lines state delta orders'
+// (Incremental.footprint next).Recompute = RowsRecomputed 1
+
+// The column half: changedColumns is the changed-parts function Propagation reads.
+let dirty =
+    Propagation.dirtyFromChangedParts partDeps (fun _ -> ColumnOps.changedColumns op) (Set.singleton "orders")
+// every node reading `price`, and everything downstream of it — not a node that reads only `id`
+```
+
+- **One row, where a column invalidation is every row.** The same edit handed to the refresh as a
+  column change (`Delta.ofChange rid.Scheme (ColumnOps.changeOf op)`) re-evaluates all 1,000 rows.
+  `deltaOf` is one row for a cell edit, the rows whose cell moved for a column edit, the removed and
+  added keys for a key edit, and `FullRefresh` wherever the op or the row identity cannot say more (a
+  schema change, a whole-table transform, an append reusing a key or carrying none).
+- **Only the first hop narrows.** `changedColumns` is `None` for an append, which moves every column,
+  and the dirty set then degrades to the node-level one. A node that reads a recomputed node is always
+  dirty: which of its columns moved is not known until it is recomputed.
+- **The sheet.** The `PropagationComposition` suite composes both halves: a source edited through
+  `Column.Ops`, a formula tree edited by `UpdateNode`, driven by `Propagation.evalFromWith` with each
+  table node's incremental state carried as its prior, and certified by the substrate's
+  `Conformance.propagationEvaluatorLawsWith` — including two evaluators the family must refuse, one
+  that trusts a stale prior and one whose prior-blind reading drifts from the reference. The sheet
+  is Phase 250's, carried here from the Fuaran.Core suite by Phase 261. `Propagation`, `Ops` and
+  `Tree` are test references of that suite only; no package here takes them.
+
+Whether the one-row refresh beats a full evaluation is the question the section above answers by
+pipeline shape — for a row-preserving node like `lines`, measure first
+([`docs/incremental-evaluation.md`](docs/incremental-evaluation.md), Phase 250).
+
 ## How it sits on the substrate
 
 The compute strand stands on five `Fuaran.Core` packages and on nothing above them:

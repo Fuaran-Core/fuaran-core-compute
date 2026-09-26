@@ -24,6 +24,9 @@
     <Compile Include="IncrementalTopNTests.fs" />
     <Compile Include="IncrementalGroupByTests.fs" />
     <Compile Include="IncrementalRefreshCostTests.fs" />
+    <!-- Phase 250's composition, carried from the substrate's suite by Phase 261: deltaOf,
+         changedColumns and the sheet that drives Propagation over Incremental through them. -->
+    <Compile Include="PropagationCompositionTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
@@ -69,6 +72,11 @@
     <PackageReference Include="Fuaran.Core.Wire" />
     <PackageReference Include="Fuaran.Core.OpStream" />
     <PackageReference Include="Fuaran.Core.Conformance" />
+    <!-- TEST-ONLY: the composition suite drives the substrate's Propagation over a tree edited by
+         Ops. No packable project takes these (the Compute boundary tests read src/ only). -->
+    <PackageReference Include="Fuaran.Core.Propagation" />
+    <PackageReference Include="Fuaran.Core.Ops" />
+    <PackageReference Include="Fuaran.Core.Tree" />
     <PackageReference Include="Expecto" />
   </ItemGroup>
 </Project>
