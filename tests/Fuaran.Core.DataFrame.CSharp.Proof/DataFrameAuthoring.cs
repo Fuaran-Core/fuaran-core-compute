@@ -12,7 +12,7 @@
 //  There is no `using Microsoft.FSharp.*` in this file and no cast to a Core type.
 //  The pipeline built here also goes out through Core's own canonical codec and
 //  comes back, so the claim is not merely that the facade builds something, but
-//  that what it builds is the wire the rest of the estate reads.
+//  that what it builds is the wire every other host reads.
 // ============================================================================
 
 namespace Fuaran.Core.CSharp.Proof;

@@ -24,7 +24,7 @@ namespace Fuaran.Core
 //  equality over a tie-free corpus cannot see, so the generated tables draw
 //  their sort keys from a range of three over up to six rows — ties are the
 //  common case, not the edge — and the sort-bearing pipelines put a sort in
-//  every position that matters: last (the shape the estate's recompute fixture
+//  every position that matters: last (the shape the wire corpus's recompute fixture
 //  family carries), before a type-inferring `Derive` and a `Filter`, and
 //  feeding an order-sensitive maintained `GroupBy` whose `First` / `Last`
 //  aggregates read the order the sort produced. The `reverse` edit is what
@@ -226,7 +226,7 @@ module IncrementalDelta =
               Filter(Binary(Lt, Col "a", Lit(Int 0))) ]
         | 10 -> [ Derive("a", Binary(Add, Col "a", Lit(Int 1))) ] // Derive OVERWRITING a column
         | 11 ->
-            // the shape the estate's recompute fixture family carries: a filter, then a sort.
+            // the shape the wire corpus's recompute fixture family carries: a filter, then a sort.
             [ Filter(Binary(Gt, Col "a", Lit(Int 0))); Transform.sortBy [ "a", Asc ] ]
         | 12 ->
             // a sort that is NOT last, followed by the two steps that read the order it produced —

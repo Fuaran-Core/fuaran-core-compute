@@ -729,7 +729,7 @@ let tests =
 
           testCase "a sort re-evaluates only the named rows, and the sort itself costs none"
           <| fun _ ->
-              // The shape the estate's recompute fixture family carries. The saving is NOT in the
+              // The shape the wire corpus's recompute fixture family carries. The saving is NOT in the
               // sorting — it is that the filter before it stops running over every row, which is
               // exactly what this pipeline cost while `sort` was declined.
               let pipeline =

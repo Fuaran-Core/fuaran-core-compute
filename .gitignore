@@ -1,0 +1,20 @@
+bin/
+obj/
+*.user
+.vs/
+.idea/
+artifacts/
+fable_modules/
+.fable/
+
+# The shared wire-format conformance corpus is a separate repository, and one of the places the
+# suite looks for it is inside this repository root — which is where CI checks it out, and the
+# simplest place for a contributor to clone it. Ignored so that cloning it there never makes the
+# tree look dirty.
+/wire-format-fixtures/
+
+# The proof leg (proofs/check.ps1) installs the pinned F* release beside the models and keeps its
+# per-invocation checked-module caches (proofs/obj/cache-<pid>) and fresh extractions under obj/;
+# neither is source.
+proofs/.fstar/
+proofs/obj/

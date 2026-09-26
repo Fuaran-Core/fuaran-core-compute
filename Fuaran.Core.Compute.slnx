@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Fuaran.Core.DataFrame/Fuaran.Core.DataFrame.fsproj" />
+    <Project Path="src/Fuaran.Core.Column.Ops/Fuaran.Core.Column.Ops.fsproj" />
+    <Project Path="src/Fuaran.Core.DataFrame.Conformance/Fuaran.Core.DataFrame.Conformance.fsproj" />
+    <Project Path="src/Fuaran.Core.DataFrame.CSharp/Fuaran.Core.DataFrame.CSharp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Fuaran.Core.Compute.Tests/Fuaran.Core.Compute.Tests.fsproj" />
+    <Project Path="tests/Fuaran.Core.DataFrame.CSharp.Proof/Fuaran.Core.DataFrame.CSharp.Proof.csproj" />
+  </Folder>
+  <Folder Name="/proofs/">
+    <Project Path="proofs/oracle/Fuaran.Core.Compute.Proofs.Oracle.fsproj" />
+  </Folder>
+</Solution>

@@ -79,7 +79,7 @@ let private sizeRatio = float large / float small
 ///
 /// So the bound sits at 100: about twice the worst legitimate shape, and four times below the
 /// quadratic (400) the family exists to refuse, which the PRE-FIX code scored at 163, 413 and 440.
-/// Both margins matter and they pull against each other; a false red costs a campaign a re-run and
+/// Both margins matter and they pull against each other; a false red costs a re-run and
 /// teaches people to re-run gates, which is dearer than the false green this could admit — and a
 /// false green here would need a quadratic to score under a hundred, which nothing measured does.
 let private ratioBound = 5.0 * sizeRatio

@@ -1,6 +1,6 @@
 # Incremental-recompute corpus vectors
 
-Five vectors of the estate's `incremental-recompute` conformance family — §12.7
+Five vectors of the wire corpus's `incremental-recompute` conformance family — §12.7
 of the app-composition wire specification — vendored here so the legs of
 `../../IncrementalCorpusTests.fs` run in any clone of this repository rather
 than reporting themselves skipped.

@@ -9,7 +9,7 @@ open Fuaran.Core
 //  Phase 115 — the incremental seam measured against a VENDORED corpus vector
 //  rather than against a table this file made up.
 //
-//  The estate carries a conformance family — `incremental-recompute`, §12.7 of
+//  The wire corpus carries a conformance family — `incremental-recompute`, §12.7 of
 //  the app-composition wire specification — whose vectors each pair a pipeline,
 //  a source, an edit stream and a required result with a RECORDED FOOTPRINT
 //  TRIPLE: what a prime over the source cost, what a full evaluation over the
@@ -64,7 +64,7 @@ let private vendoredCorpus () : string option =
         if budget < 0 || isNull dir then
             None
         else
-            let cand = Path.Combine(dir, "tests", "Fuaran.Core.Tests")
+            let cand = Path.Combine(dir, "tests", "Fuaran.Core.Compute.Tests")
 
             if File.Exists(Path.Combine(cand, "IncrementalTests.fs")) then
                 Some cand
@@ -95,7 +95,7 @@ let private resolveCorpus () : Result<string, string> =
         | Some dir -> Error(sprintf "the vendored corpus at '%s' is missing or malformed" dir)
         | None ->
             Error
-                "could not locate tests/Fuaran.Core.Tests (IncrementalTests.fs marker) from the CWD or the test binary"
+                "could not locate tests/Fuaran.Core.Compute.Tests (IncrementalTests.fs marker) from the CWD or the test binary"
 
 // ---- reading one vector ----
 //

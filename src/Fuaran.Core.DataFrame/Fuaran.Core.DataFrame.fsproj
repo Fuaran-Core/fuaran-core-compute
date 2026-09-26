@@ -17,8 +17,8 @@
     <Compile Include="Incremental.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Fuaran.Core.Column\Fuaran.Core.Column.fsproj" />
-    <ProjectReference Include="..\Fuaran.Core.Wire\Fuaran.Core.Wire.fsproj" />
+    <PackageReference Include="Fuaran.Core.Column" />
+    <PackageReference Include="Fuaran.Core.Wire" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

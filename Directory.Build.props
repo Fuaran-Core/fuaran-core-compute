@@ -1,0 +1,34 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarnOn>3390;$(WarnOn)</WarnOn>
+    <!-- The version every package in this repository ships at. 0.33.0 is the first version this
+         repository emits: the four ids shipped from the Fuaran.Core repository through 0.32.0, and
+         D6 of the split takes the next minor above the last emission there, so a consumer raising
+         its pin can never meet one version number with two contracts behind it (DECISIONS.md D1).
+         It is a DRAFT slot until it is tagged: STABILITY.md heads it "0.33.0 — DRAFT", and an
+         additive change rides it while a breaking one advances it. -->
+    <Version>0.33.0</Version>
+    <Authors>Andrew J. Willshire</Authors>
+    <Company>Diametrical Ltd</Company>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <Copyright>Copyright 2026 Diametrical Ltd</Copyright>
+    <PackageProjectUrl>https://github.com/Fuaran-Core/fuaran-core-compute</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Fuaran-Core/fuaran-core-compute</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- How this repository restores the Fuaran.Core packages it pins: from the public registry,
+         exactly as an outside clone does. The local folder feed in nuget.config is the development
+         loop's shadow at the same version, never the only source of a pin. -->
+    <FuaranRestorePath>public</FuaranRestorePath>
+  </PropertyGroup>
+  <!-- Fable source distribution. Every packable F# project ships its source + .fsproj under
+       `fable/` in the package, so a Fable-compiled consumer compiles the package from source —
+       alongside the `lib/` DLL for .NET. The standard dual-pack convention (Feliz / Thoth). The
+       Fuaran.Core packages these depend on ship their own `fable/` source, so Fable resolves the
+       whole graph transitively. The C# facade is .NET-only and is not covered by this rule. -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true' And '$(MSBuildProjectExtension)' == '.fsproj'">
+    <Content Include="$(MSBuildProjectFile)" PackagePath="fable\" />
+    <Content Include="*.fs" PackagePath="fable\" />
+  </ItemGroup>
+</Project>

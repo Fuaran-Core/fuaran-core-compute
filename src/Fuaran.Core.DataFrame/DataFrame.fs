@@ -3379,7 +3379,7 @@ module DataFrameCodec =
         match t with
         | Filter pred -> Canon.typed "filter" [ "pred", encodeExpr pred ]
         // `0.28.0` (D48) — the member is `columns`, not `cols`: it holds the LIST of column renames,
-        // and `cols` is the estate's name for an integer column COUNT. `cols` remains a decode alias
+        // and `cols` is the wire format's name for an integer column COUNT. `cols` remains a decode alias
         // and is never emitted.
         | Project pairs -> Canon.typed "project" [ "columns", JArr(pairs |> List.map pairJson) ]
         | Derive(name, expr) -> Canon.typed "derive" [ "name", JStr name; "expr", encodeExpr expr ]

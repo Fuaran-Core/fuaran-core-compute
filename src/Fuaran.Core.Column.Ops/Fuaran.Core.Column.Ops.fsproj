@@ -10,9 +10,9 @@
     <Compile Include="ColumnOps.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Fuaran.Core.Wire\Fuaran.Core.Wire.fsproj" />
-    <ProjectReference Include="..\Fuaran.Core.OpStream\Fuaran.Core.OpStream.fsproj" />
-    <ProjectReference Include="..\Fuaran.Core.Column\Fuaran.Core.Column.fsproj" />
+    <PackageReference Include="Fuaran.Core.Wire" />
+    <PackageReference Include="Fuaran.Core.OpStream" />
+    <PackageReference Include="Fuaran.Core.Column" />
     <ProjectReference Include="..\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
   </ItemGroup>
   <ItemGroup>

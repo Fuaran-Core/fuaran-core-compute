@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The repository root, the UTF-8 child-process reader, the committed conformance/ directory
+         and the shared-corpus lookup: the infrastructure the law-vector legs read. -->
+    <Compile Include="Snapshots.fs" />
+    <Compile Include="ChildProcess.fs" />
+    <Compile Include="OwnedConformance.fs" />
+    <Compile Include="SiblingCorpus.fs" />
+    <Compile Include="DataFrameTests.fs" />
+    <Compile Include="ColumnOpsTests.fs" />
+    <Compile Include="DeltaTests.fs" />
+    <Compile Include="IncrementalTests.fs" />
+    <Compile Include="IncrementalCorpusTests.fs" />
+    <Compile Include="ScalingTests.fs" />
+    <Compile Include="IncrementalTopNTests.fs" />
+    <Compile Include="IncrementalGroupByTests.fs" />
+    <Compile Include="IncrementalRefreshCostTests.fs" />
+    <Compile Include="LawVectorExport.fs" />
+    <Compile Include="LawVectorTests.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
+    <ProjectReference Include="..\..\src\Fuaran.Core.Column.Ops\Fuaran.Core.Column.Ops.fsproj" />
+    <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.Conformance\Fuaran.Core.DataFrame.Conformance.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="Fuaran.Core.Column" />
+    <PackageReference Include="Fuaran.Core.Wire" />
+    <PackageReference Include="Fuaran.Core.OpStream" />
+    <PackageReference Include="Fuaran.Core.Conformance" />
+    <PackageReference Include="Expecto" />
+  </ItemGroup>
+</Project>

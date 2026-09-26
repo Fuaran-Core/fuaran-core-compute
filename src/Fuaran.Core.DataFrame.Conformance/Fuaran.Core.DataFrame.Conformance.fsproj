@@ -21,12 +21,12 @@
     <Compile Include="DataFrameFamilies.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Fuaran.Core.Conformance\Fuaran.Core.Conformance.fsproj" />
-    <ProjectReference Include="..\Fuaran.Core.Column\Fuaran.Core.Column.fsproj" />
+    <PackageReference Include="Fuaran.Core.Conformance" />
+    <PackageReference Include="Fuaran.Core.Column" />
     <ProjectReference Include="..\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
     <ProjectReference Include="..\Fuaran.Core.Column.Ops\Fuaran.Core.Column.Ops.fsproj" />
-    <ProjectReference Include="..\Fuaran.Core.OpStream\Fuaran.Core.OpStream.fsproj" />
-    <ProjectReference Include="..\Fuaran.Core.Wire\Fuaran.Core.Wire.fsproj" />
+    <PackageReference Include="Fuaran.Core.OpStream" />
+    <PackageReference Include="Fuaran.Core.Wire" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
