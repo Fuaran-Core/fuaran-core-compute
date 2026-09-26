@@ -46,10 +46,19 @@ CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
 It rewrites EVERY drifted baseline, not only the one you were looking at: stage the baselines you
 meant to move by name.
 
-## 0.33.0 — DRAFT
+## 0.33.0 — released 2026-09-26 as `v0.33.0`
 
-**This section describes a DRAFT slot.** `<Version>` reads `0.33.0` and no `v0.33.0` tag exists; the
-slot is the first this repository emits (Phase 259).
+**This is the first slot this repository emits (Phase 259), and it is released.** It opens one minor above
+the last version the four ids shipped from the substrate repository (`0.32.0`), so every consumer's floor
+stays monotone across the change of producer.
+
+**Release record.** The cut-time Fable gate ran green against the candidate on 2026-09-26: the three F#
+packages at `0.33.0` compiled under Fable 5 over the substrate at `0.32.0` (a scratch project referencing
+`Fuaran.Core.DataFrame`, `Fuaran.Core.Column.Ops` and `Fuaran.Core.DataFrame.Conformance` from the candidate
+feed, every transitive `Fuaran.Core.*` package from the released `0.32.0`; `fable_modules` carried all three at
+`0.33.0`; the emitted program ran under node). The C# facade package is excused from Fable as its parent is.
+The full gate (`verify.ps1`) ran green on the release commit through the estate's gate queue, and the proof leg
+verified `ColumnOps` and `Pipeline` once at Phase 259.
 
 - **The producer changed; the contract did not (no class).** `Fuaran.Core.DataFrame`,
   `Fuaran.Core.Column.Ops`, `Fuaran.Core.DataFrame.Conformance` and `Fuaran.Core.DataFrame.CSharp`
