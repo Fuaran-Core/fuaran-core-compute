@@ -179,8 +179,12 @@ let tests =
               let lawNamed name (rs: LawResult list) = rs |> List.find (fun r -> r.Law = name)
 
               let law = "columnar inverse exists only for an applicable op"
-              let shipped = Conformance.columnarOpLawsWith ColumnOps.invert 4242 200
-              let preFix = Conformance.columnarOpLawsWith preFixInvert 4242 200
+
+              let shipped =
+                  Conformance.columnarOpLawsWith ColumnOps.invert Conformance.columnarOpStreamGen 4242 200
+
+              let preFix =
+                  Conformance.columnarOpLawsWith preFixInvert Conformance.columnarOpStreamGen 4242 200
 
               Expect.isTrue (lawNamed law shipped).Passed "the shipped invert satisfies the law"
               Expect.isFalse (lawNamed law preFix).Passed "the pre-181 clause does NOT"
