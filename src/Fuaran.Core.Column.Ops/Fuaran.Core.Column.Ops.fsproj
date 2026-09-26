@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Core.Column.Ops</PackageId>
+    <Description>Fuaran.Core.Column.Ops — a columnar op-algebra over Fuaran.Core.Column's Table (SetCell / SetColumn / InsertColumn / RemoveColumn / AppendRows / ApplyTransform) with a total apply / canApply, a partial invert (undo/redo), a structural Diff, a canonical wire codec, and a Fuaran.Core.OpStream StreamWitness — so table edits become an append-only, hash-chained, replayable, tamper-evident stream (the columnar analogue of the tree op-stream). No base type, no new witness field (the op DU is self-contained over Table; OpStream stays generic over its (apply, encode, decode) witness). FSharp.Core only, Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ColumnOps.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Fuaran.Core.Wire\Fuaran.Core.Wire.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.OpStream\Fuaran.Core.OpStream.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.Column\Fuaran.Core.Column.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

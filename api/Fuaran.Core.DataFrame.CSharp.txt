@@ -1,0 +1,258 @@
+# Fuaran.Core.DataFrame.CSharp — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Core.CSharp.CaseArm..ctor(Fuaran.Core.CSharp.Expr, Fuaran.Core.CSharp.Expr)
+ctor Fuaran.Core.CSharp.ColumnRename..ctor(System.String, System.String)
+ctor Fuaran.Core.CSharp.JoinKey..ctor(System.String, System.String)
+ctor Fuaran.Core.CSharp.SortKey..ctor(System.String, Fuaran.Core.CSharp.SortOrder)
+ctor Fuaran.Core.CSharp.SortSlot..ctor(Fuaran.Core.CSharp.ColumnSlot, Fuaran.Core.CSharp.SortOrder)
+ctor Fuaran.Core.CSharp.SortSlot..ctor(System.String, Fuaran.Core.CSharp.SortOrder)
+field Fuaran.Core.CSharp.BinaryOperator.Add : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.And : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Contains : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Div : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.EndsWith : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Eq : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Ge : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Gt : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Le : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Lt : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Mod : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Mul : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Ne : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Or : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.StartsWith : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.Sub : Fuaran.Core.CSharp.BinaryOperator (literal)
+field Fuaran.Core.CSharp.BinaryOperator.value__ : System.Int32
+field Fuaran.Core.CSharp.ClockGrain.Date : Fuaran.Core.CSharp.ClockGrain (literal)
+field Fuaran.Core.CSharp.ClockGrain.Timestamp : Fuaran.Core.CSharp.ClockGrain (literal)
+field Fuaran.Core.CSharp.ClockGrain.value__ : System.Int32
+field Fuaran.Core.CSharp.JoinMode.Anti : Fuaran.Core.CSharp.JoinMode (literal)
+field Fuaran.Core.CSharp.JoinMode.Inner : Fuaran.Core.CSharp.JoinMode (literal)
+field Fuaran.Core.CSharp.JoinMode.Left : Fuaran.Core.CSharp.JoinMode (literal)
+field Fuaran.Core.CSharp.JoinMode.Outer : Fuaran.Core.CSharp.JoinMode (literal)
+field Fuaran.Core.CSharp.JoinMode.Right : Fuaran.Core.CSharp.JoinMode (literal)
+field Fuaran.Core.CSharp.JoinMode.Semi : Fuaran.Core.CSharp.JoinMode (literal)
+field Fuaran.Core.CSharp.JoinMode.value__ : System.Int32
+field Fuaran.Core.CSharp.ScalarFunction.Abs : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Ceil : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Concat : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.DateDiffDays : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.DatePart : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Floor : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Greatest : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.IndexOf : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Least : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Length : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Lower : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Replace : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Round : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Sqrt : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Substr : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Trim : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.Upper : Fuaran.Core.CSharp.ScalarFunction (literal)
+field Fuaran.Core.CSharp.ScalarFunction.value__ : System.Int32
+field Fuaran.Core.CSharp.SortOrder.Asc : Fuaran.Core.CSharp.SortOrder (literal)
+field Fuaran.Core.CSharp.SortOrder.Desc : Fuaran.Core.CSharp.SortOrder (literal)
+field Fuaran.Core.CSharp.SortOrder.value__ : System.Int32
+field Fuaran.Core.CSharp.WindowFunctionKind.CompetitionRank : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.CumulMax : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.CumulMin : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.CumulSum : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.DenseRank : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.Lag : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.Lead : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.NTile : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.Rank : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.RollingMean : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.RollingSum : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.RowNumber : Fuaran.Core.CSharp.WindowFunctionKind (literal)
+field Fuaran.Core.CSharp.WindowFunctionKind.value__ : System.Int32
+method Fuaran.Core.CSharp.AggregateSpec.Equals(Fuaran.Core.CSharp.AggregateSpec) : System.Boolean
+method Fuaran.Core.CSharp.AggregateSpec.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.AggregateSpec.FromCore(Fuaran.Core.Agg) : Fuaran.Core.CSharp.AggregateSpec
+method Fuaran.Core.CSharp.AggregateSpec.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.AggregateSpec.Of(System.String, Fuaran.Core.CSharp.AggregateFunction, System.String) : Fuaran.Core.CSharp.AggregateSpec
+method Fuaran.Core.CSharp.AggregateSpec.ToCore() : Fuaran.Core.Agg
+method Fuaran.Core.CSharp.AggregateSpec.ToString() : System.String
+method Fuaran.Core.CSharp.CaseArm.Equals(Fuaran.Core.CSharp.CaseArm) : System.Boolean
+method Fuaran.Core.CSharp.CaseArm.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.CaseArm.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.CaseArm.ToString() : System.String
+method Fuaran.Core.CSharp.ColumnRename.Equals(Fuaran.Core.CSharp.ColumnRename) : System.Boolean
+method Fuaran.Core.CSharp.ColumnRename.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.ColumnRename.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.ColumnRename.ToString() : System.String
+method Fuaran.Core.CSharp.ColumnSlot.Equals(Fuaran.Core.CSharp.ColumnSlot) : System.Boolean
+method Fuaran.Core.CSharp.ColumnSlot.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.ColumnSlot.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.ColumnSlot.Literal(System.String) : Fuaran.Core.CSharp.ColumnSlot
+method Fuaran.Core.CSharp.ColumnSlot.Match`1(System.Func`2<System.String, !!0>, System.Func`2<System.String, !!0>) : !!0
+method Fuaran.Core.CSharp.ColumnSlot.Parameter(System.String) : Fuaran.Core.CSharp.ColumnSlot
+method Fuaran.Core.CSharp.ColumnSlot.ToString() : System.String
+method Fuaran.Core.CSharp.CountSlot.Equals(Fuaran.Core.CSharp.CountSlot) : System.Boolean
+method Fuaran.Core.CSharp.CountSlot.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.CountSlot.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.CountSlot.Literal(System.Int32) : Fuaran.Core.CSharp.CountSlot
+method Fuaran.Core.CSharp.CountSlot.Match`1(System.Func`2<System.Int32, !!0>, System.Func`2<System.String, !!0>) : !!0
+method Fuaran.Core.CSharp.CountSlot.Parameter(System.String) : Fuaran.Core.CSharp.CountSlot
+method Fuaran.Core.CSharp.CountSlot.ToString() : System.String
+method Fuaran.Core.CSharp.Expr.Apply(Fuaran.Core.CSharp.ScalarFunction, Fuaran.Core.CSharp.Expr[]) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Apply(Fuaran.Core.CSharp.ScalarFunction, System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.Expr>) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Binary(Fuaran.Core.CSharp.BinaryOperator, Fuaran.Core.CSharp.Expr, Fuaran.Core.CSharp.Expr) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Case(System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.CaseArm>, Fuaran.Core.CSharp.Expr) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Cast(Fuaran.Core.CSharp.ColumnKind, Fuaran.Core.CSharp.Expr) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Coalesce(Fuaran.Core.CSharp.Expr[]) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Coalesce(System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.Expr>) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Col(System.String) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Equals(Fuaran.Core.CSharp.Expr) : System.Boolean
+method Fuaran.Core.CSharp.Expr.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.Expr.FromCore(Fuaran.Core.ColExpr) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.Expr.InList(Fuaran.Core.CSharp.Expr, Fuaran.Core.CSharp.Expr[]) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.InList(Fuaran.Core.CSharp.Expr, System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.Expr>) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.InParam(Fuaran.Core.CSharp.Expr, System.String) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.IsNull(Fuaran.Core.CSharp.Expr) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Literal(Fuaran.Core.CSharp.CellValue) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Match`1(System.Func`2<System.String, !!0>, System.Func`2<Fuaran.Core.CSharp.CellValue, !!0>, System.Func`2<System.String, !!0>, System.Func`4<Fuaran.Core.CSharp.BinaryOperator, Fuaran.Core.CSharp.Expr, Fuaran.Core.CSharp.Expr, !!0>, System.Func`2<Fuaran.Core.CSharp.Expr, !!0>, System.Func`2<System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.Expr>, !!0>, System.Func`3<System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.CaseArm>, Fuaran.Core.CSharp.Expr, !!0>, System.Func`3<Fuaran.Core.CSharp.ColumnKind, Fuaran.Core.CSharp.Expr, !!0>, System.Func`3<Fuaran.Core.CSharp.ScalarFunction, System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.Expr>, !!0>, System.Func`3<Fuaran.Core.CSharp.Expr, System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.Expr>, !!0>, System.Func`2<Fuaran.Core.CSharp.Expr, !!0>, System.Func`3<Fuaran.Core.CSharp.Expr, System.String, !!0>, System.Func`2<Fuaran.Core.CSharp.ClockGrain, !!0>) : !!0
+method Fuaran.Core.CSharp.Expr.Not(Fuaran.Core.CSharp.Expr) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Now(Fuaran.Core.CSharp.ClockGrain) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Param(System.String) : Fuaran.Core.CSharp.Expr
+method Fuaran.Core.CSharp.Expr.Switch(System.Action`1<System.String>, System.Action`1<Fuaran.Core.CSharp.CellValue>, System.Action`1<System.String>, System.Action`3<Fuaran.Core.CSharp.BinaryOperator, Fuaran.Core.CSharp.Expr, Fuaran.Core.CSharp.Expr>, System.Action`1<Fuaran.Core.CSharp.Expr>, System.Action`1<System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.Expr>>, System.Action`2<System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.CaseArm>, Fuaran.Core.CSharp.Expr>, System.Action`2<Fuaran.Core.CSharp.ColumnKind, Fuaran.Core.CSharp.Expr>, System.Action`2<Fuaran.Core.CSharp.ScalarFunction, System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.Expr>>, System.Action`2<Fuaran.Core.CSharp.Expr, System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.Expr>>, System.Action`1<Fuaran.Core.CSharp.Expr>, System.Action`2<Fuaran.Core.CSharp.Expr, System.String>, System.Action`1<Fuaran.Core.CSharp.ClockGrain>) : System.Void
+method Fuaran.Core.CSharp.Expr.ToCore() : Fuaran.Core.ColExpr
+method Fuaran.Core.CSharp.Expr.ToString() : System.String
+method Fuaran.Core.CSharp.JoinKey.Equals(Fuaran.Core.CSharp.JoinKey) : System.Boolean
+method Fuaran.Core.CSharp.JoinKey.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.JoinKey.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.JoinKey.ToString() : System.String
+method Fuaran.Core.CSharp.Pipeline.Encode() : System.String
+method Fuaran.Core.CSharp.Pipeline.Equals(Fuaran.Core.CSharp.Pipeline) : System.Boolean
+method Fuaran.Core.CSharp.Pipeline.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.Pipeline.FromCore(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>) : Fuaran.Core.CSharp.Pipeline
+method Fuaran.Core.CSharp.Pipeline.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.Pipeline.Of(Fuaran.Core.CSharp.Step[]) : Fuaran.Core.CSharp.Pipeline
+method Fuaran.Core.CSharp.Pipeline.Of(System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.Step>) : Fuaran.Core.CSharp.Pipeline
+method Fuaran.Core.CSharp.Pipeline.ToCore() : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
+method Fuaran.Core.CSharp.Pipeline.ToString() : System.String
+method Fuaran.Core.CSharp.Pipeline.TryDecode(System.String, Fuaran.Core.CSharp.Pipeline&, System.String&) : System.Boolean
+method Fuaran.Core.CSharp.PivotStepSpec.Equals(Fuaran.Core.CSharp.PivotStepSpec) : System.Boolean
+method Fuaran.Core.CSharp.PivotStepSpec.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.PivotStepSpec.FromCore(Fuaran.Core.PivotSpec) : Fuaran.Core.CSharp.PivotStepSpec
+method Fuaran.Core.CSharp.PivotStepSpec.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.PivotStepSpec.Of(System.Collections.Generic.IEnumerable`1<System.String>, System.String, System.String, Fuaran.Core.CSharp.AggregateFunction) : Fuaran.Core.CSharp.PivotStepSpec
+method Fuaran.Core.CSharp.PivotStepSpec.ToCore() : Fuaran.Core.PivotSpec
+method Fuaran.Core.CSharp.PivotStepSpec.ToString() : System.String
+method Fuaran.Core.CSharp.SortKey.Equals(Fuaran.Core.CSharp.SortKey) : System.Boolean
+method Fuaran.Core.CSharp.SortKey.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.SortKey.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.SortKey.ToString() : System.String
+method Fuaran.Core.CSharp.SortSlot.Equals(Fuaran.Core.CSharp.SortSlot) : System.Boolean
+method Fuaran.Core.CSharp.SortSlot.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.SortSlot.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.SortSlot.ToString() : System.String
+method Fuaran.Core.CSharp.Step.Derive(System.String, Fuaran.Core.CSharp.Expr) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Equals(Fuaran.Core.CSharp.Step) : System.Boolean
+method Fuaran.Core.CSharp.Step.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.Step.Except(Fuaran.Core.CSharp.SourceValue) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Filter(Fuaran.Core.CSharp.Expr) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.FromCore(Fuaran.Core.Transform) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.Step.GroupBy(System.Collections.Generic.IEnumerable`1<System.String>, System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.AggregateSpec>) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Intersect(Fuaran.Core.CSharp.SourceValue) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Join(Fuaran.Core.CSharp.SourceValue, System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.JoinKey>, Fuaran.Core.CSharp.JoinMode) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Limit(Fuaran.Core.CSharp.CountSlot, Fuaran.Core.CSharp.CountSlot) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Limit(System.Int32, System.Int32) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Match`1(System.Func`2<Fuaran.Core.CSharp.Expr, !!0>, System.Func`2<System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.ColumnRename>, !!0>, System.Func`3<System.String, Fuaran.Core.CSharp.Expr, !!0>, System.Func`3<System.Collections.Generic.IReadOnlyList`1<System.String>, System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.AggregateSpec>, !!0>, System.Func`4<Fuaran.Core.CSharp.SourceValue, System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.JoinKey>, Fuaran.Core.CSharp.JoinMode, !!0>, System.Func`2<Fuaran.Core.CSharp.WindowStepSpec, !!0>, System.Func`2<Fuaran.Core.CSharp.PivotStepSpec, !!0>, System.Func`3<System.Collections.Generic.IReadOnlyList`1<System.String>, System.Collections.Generic.IReadOnlyList`1<System.String>, !!0>, System.Func`2<System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.SortSlot>, !!0>, System.Func`1<!!0>, System.Func`3<Fuaran.Core.CSharp.CountSlot, Fuaran.Core.CSharp.CountSlot, !!0>, System.Func`2<Fuaran.Core.CSharp.SourceValue, !!0>, System.Func`2<Fuaran.Core.CSharp.SourceValue, !!0>, System.Func`2<Fuaran.Core.CSharp.SourceValue, !!0>) : !!0
+method Fuaran.Core.CSharp.Step.Pivot(Fuaran.Core.CSharp.PivotStepSpec) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Project(Fuaran.Core.CSharp.ColumnRename[]) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Project(System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.ColumnRename>) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Sort(Fuaran.Core.CSharp.SortKey[]) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Sort(Fuaran.Core.CSharp.SortSlot[]) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Sort(System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.SortKey>) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Sort(System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.SortSlot>) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Switch(System.Action`1<Fuaran.Core.CSharp.Expr>, System.Action`1<System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.ColumnRename>>, System.Action`2<System.String, Fuaran.Core.CSharp.Expr>, System.Action`2<System.Collections.Generic.IReadOnlyList`1<System.String>, System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.AggregateSpec>>, System.Action`3<Fuaran.Core.CSharp.SourceValue, System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.JoinKey>, Fuaran.Core.CSharp.JoinMode>, System.Action`1<Fuaran.Core.CSharp.WindowStepSpec>, System.Action`1<Fuaran.Core.CSharp.PivotStepSpec>, System.Action`2<System.Collections.Generic.IReadOnlyList`1<System.String>, System.Collections.Generic.IReadOnlyList`1<System.String>>, System.Action`1<System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.SortSlot>>, System.Action, System.Action`2<Fuaran.Core.CSharp.CountSlot, Fuaran.Core.CSharp.CountSlot>, System.Action`1<Fuaran.Core.CSharp.SourceValue>, System.Action`1<Fuaran.Core.CSharp.SourceValue>, System.Action`1<Fuaran.Core.CSharp.SourceValue>) : System.Void
+method Fuaran.Core.CSharp.Step.ToCore() : Fuaran.Core.Transform
+method Fuaran.Core.CSharp.Step.ToString() : System.String
+method Fuaran.Core.CSharp.Step.Union(Fuaran.Core.CSharp.SourceValue) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Unpivot(System.Collections.Generic.IEnumerable`1<System.String>, System.Collections.Generic.IEnumerable`1<System.String>) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.Step.Window(Fuaran.Core.CSharp.WindowStepSpec) : Fuaran.Core.CSharp.Step
+method Fuaran.Core.CSharp.WindowFunction.Equals(Fuaran.Core.CSharp.WindowFunction) : System.Boolean
+method Fuaran.Core.CSharp.WindowFunction.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.WindowFunction.FromCore(Fuaran.Core.WindowFn) : Fuaran.Core.CSharp.WindowFunction
+method Fuaran.Core.CSharp.WindowFunction.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.WindowFunction.NTile(System.Int32) : Fuaran.Core.CSharp.WindowFunction
+method Fuaran.Core.CSharp.WindowFunction.ToCore() : Fuaran.Core.WindowFn
+method Fuaran.Core.CSharp.WindowFunction.ToString() : System.String
+method Fuaran.Core.CSharp.WindowStepSpec.Equals(Fuaran.Core.CSharp.WindowStepSpec) : System.Boolean
+method Fuaran.Core.CSharp.WindowStepSpec.Equals(System.Object) : System.Boolean
+method Fuaran.Core.CSharp.WindowStepSpec.FromCore(Fuaran.Core.WindowSpec) : Fuaran.Core.CSharp.WindowStepSpec
+method Fuaran.Core.CSharp.WindowStepSpec.GetHashCode() : System.Int32
+method Fuaran.Core.CSharp.WindowStepSpec.Of(System.Collections.Generic.IEnumerable`1<System.String>, System.Collections.Generic.IEnumerable`1<Fuaran.Core.CSharp.SortKey>, Fuaran.Core.CSharp.WindowFunction, System.String, System.String) : Fuaran.Core.CSharp.WindowStepSpec
+method Fuaran.Core.CSharp.WindowStepSpec.ToCore() : Fuaran.Core.WindowSpec
+method Fuaran.Core.CSharp.WindowStepSpec.ToString() : System.String
+property Fuaran.Core.CSharp.AggregateSpec.Function : Fuaran.Core.CSharp.AggregateFunction { get }
+property Fuaran.Core.CSharp.AggregateSpec.Name : System.String { get }
+property Fuaran.Core.CSharp.AggregateSpec.OfColumn : System.String { get }
+property Fuaran.Core.CSharp.CaseArm.Then : Fuaran.Core.CSharp.Expr { get }
+property Fuaran.Core.CSharp.CaseArm.When : Fuaran.Core.CSharp.Expr { get }
+property Fuaran.Core.CSharp.ColumnRename.Output : System.String { get }
+property Fuaran.Core.CSharp.ColumnRename.Source : System.String { get }
+property Fuaran.Core.CSharp.ColumnSlot.Column : System.String { get }
+property Fuaran.Core.CSharp.ColumnSlot.IsParameter : System.Boolean { get }
+property Fuaran.Core.CSharp.ColumnSlot.ParameterName : System.String { get }
+property Fuaran.Core.CSharp.CountSlot.IsParameter : System.Boolean { get }
+property Fuaran.Core.CSharp.CountSlot.ParameterName : System.String { get }
+property Fuaran.Core.CSharp.CountSlot.Value : System.Int32 { get }
+property Fuaran.Core.CSharp.JoinKey.LeftColumn : System.String { get }
+property Fuaran.Core.CSharp.JoinKey.RightColumn : System.String { get }
+property Fuaran.Core.CSharp.Pipeline.Steps : System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.Step> { get }
+property Fuaran.Core.CSharp.PivotStepSpec.Aggregate : Fuaran.Core.CSharp.AggregateFunction { get }
+property Fuaran.Core.CSharp.PivotStepSpec.Index : System.Collections.Generic.IReadOnlyList`1<System.String> { get }
+property Fuaran.Core.CSharp.PivotStepSpec.OnColumn : System.String { get }
+property Fuaran.Core.CSharp.PivotStepSpec.ValuesColumn : System.String { get }
+property Fuaran.Core.CSharp.SortKey.Column : System.String { get }
+property Fuaran.Core.CSharp.SortKey.Order : Fuaran.Core.CSharp.SortOrder { get }
+property Fuaran.Core.CSharp.SortSlot.Column : Fuaran.Core.CSharp.ColumnSlot { get }
+property Fuaran.Core.CSharp.SortSlot.Order : Fuaran.Core.CSharp.SortOrder { get }
+property Fuaran.Core.CSharp.Step.Distinct : Fuaran.Core.CSharp.Step { get }
+property Fuaran.Core.CSharp.WindowFunction.Buckets : System.Nullable`1<System.Int32> { get }
+property Fuaran.Core.CSharp.WindowFunction.CompetitionRank : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.CumulMax : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.CumulMin : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.CumulSum : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.DenseRank : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.Kind : Fuaran.Core.CSharp.WindowFunctionKind { get }
+property Fuaran.Core.CSharp.WindowFunction.Lag : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.Lead : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.Rank : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.RollingMean : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.RollingSum : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowFunction.RowNumber : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowStepSpec.AsColumn : System.String { get }
+property Fuaran.Core.CSharp.WindowStepSpec.Function : Fuaran.Core.CSharp.WindowFunction { get }
+property Fuaran.Core.CSharp.WindowStepSpec.OfColumn : System.String { get }
+property Fuaran.Core.CSharp.WindowStepSpec.OrderBy : System.Collections.Generic.IReadOnlyList`1<Fuaran.Core.CSharp.SortKey> { get }
+property Fuaran.Core.CSharp.WindowStepSpec.PartitionBy : System.Collections.Generic.IReadOnlyList`1<System.String> { get }
+type Fuaran.Core.CSharp.AggregateSpec (type)
+type Fuaran.Core.CSharp.BinaryOperator (type)
+type Fuaran.Core.CSharp.CaseArm (type)
+type Fuaran.Core.CSharp.ClockGrain (type)
+type Fuaran.Core.CSharp.ColumnRename (type)
+type Fuaran.Core.CSharp.ColumnSlot (type)
+type Fuaran.Core.CSharp.CountSlot (type)
+type Fuaran.Core.CSharp.Expr (type)
+type Fuaran.Core.CSharp.JoinKey (type)
+type Fuaran.Core.CSharp.JoinMode (type)
+type Fuaran.Core.CSharp.Pipeline (type)
+type Fuaran.Core.CSharp.PivotStepSpec (type)
+type Fuaran.Core.CSharp.ScalarFunction (type)
+type Fuaran.Core.CSharp.SortKey (type)
+type Fuaran.Core.CSharp.SortOrder (type)
+type Fuaran.Core.CSharp.SortSlot (type)
+type Fuaran.Core.CSharp.Step (type)
+type Fuaran.Core.CSharp.WindowFunction (type)
+type Fuaran.Core.CSharp.WindowFunctionKind (type)
+type Fuaran.Core.CSharp.WindowStepSpec (type)

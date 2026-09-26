@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Core.DataFrame.Conformance</PackageId>
+    <Description>Fuaran.Core.DataFrame.Conformance — the law families over the dataframe layer, beside the Fuaran.Core.Conformance kit they extend: transform parity against the DataFrame reference evaluator, the columnar op-algebra and op-stream (ColumnOps), incremental evaluation (evalFrom and the IncrementalDelta equivalence family), params and slot params, the static output-schema walk, the pinned evaluation clock, and aggregate-versus-GroupBy parity. The families ship in module DataFrameConformance; the pre-split Conformance.* spellings forward to them (marked for removal in Phase 258). FSharp.Core only, Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The families, in their own module. They read `ConfRng`, `LawResult`, `StreamGen` and the
+         adequacy guard from the kit, and nothing private of it. -->
+    <Compile Include="DataFrameConformance.fs" />
+    <!-- Phase 99 — the incremental-evaluation equivalence family, moved whole in Phase 257 under
+         its own module name. -->
+    <Compile Include="IncrementalDelta.fs" />
+    <!-- The pre-split spellings, forwarding to DataFrameConformance. After it, because each member
+         is a call into it. -->
+    <Compile Include="Forwards.fs" />
+    <!-- This package's share of the family roster. LAST, for the reason Families.fs is last in the
+         kit: it enumerates the families above as data and depends on none of them. -->
+    <Compile Include="DataFrameFamilies.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Fuaran.Core.Conformance\Fuaran.Core.Conformance.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.Column\Fuaran.Core.Column.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.Column.Ops\Fuaran.Core.Column.Ops.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.OpStream\Fuaran.Core.OpStream.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.Wire\Fuaran.Core.Wire.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

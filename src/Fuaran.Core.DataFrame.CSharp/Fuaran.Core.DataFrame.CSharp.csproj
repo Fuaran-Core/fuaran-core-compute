@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Core.DataFrame.CSharp</PackageId>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Description>Fuaran.Core.DataFrame.CSharp (Phase 257) — the dataframe half of the C#-shaped facade: ColExpr (Expr, CaseArm), Transform (Step, Pipeline and the named step specs), the slot types and the dataframe vocabularies (BinaryOperator, ScalarFunction, JoinMode, SortOrder, ClockGrain), in the Fuaran.Core.CSharp namespace they shipped in until Phase 257. Construction is factory methods, reading is Match / Switch, and nothing but the declared ToCore / FromCore bridge mentions an F# option, list, function or union type. Built over Fuaran.Core.CSharp, whose column and wire types (CellValue, TableValue, SourceValue, ColumnKind, AggregateFunction, JsonValue) it reads. .NET-only: not part of the Fable-clean set (a C# assembly is not Fable-compiled).</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Fuaran.Core.CSharp\Fuaran.Core.CSharp.csproj" />
+    <ProjectReference Include="..\Fuaran.Core.Column\Fuaran.Core.Column.fsproj" />
+    <ProjectReference Include="..\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

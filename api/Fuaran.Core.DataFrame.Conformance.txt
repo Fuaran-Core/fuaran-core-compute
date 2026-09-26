@@ -1,0 +1,54 @@
+# Fuaran.Core.DataFrame.Conformance — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Core.IncrementalSample..ctor(System.Int32, System.Int32, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.IncrementalStrategy, Fuaran.Core.RecomputeFootprint, Fuaran.Core.RecomputeFootprint, Fuaran.Core.RecomputeFootprint, System.Boolean, System.Boolean, System.String)
+method Fuaran.Core.Conformance.aggregateParityLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.columnarOpLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.columnarOpLawsWith(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.ColumnOp, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.ColumnOp, Fuaran.Core.ColumnRejection>>>, Fuaran.Core.StreamGen`2<Fuaran.Core.ColumnOp, Fuaran.Core.Table>, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.incrementalLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.incrementalLawsWith(Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>>, Fuaran.Core.StreamGen`2<Fuaran.Core.ColumnOp, Fuaran.Core.Table>, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.nowLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.paramLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.schemaWalkLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.slotParamLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.Conformance.transformLaws(Microsoft.FSharp.Core.FSharpFunc`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.ConfRng+T, System.Tuple`2<System.Tuple`2<Fuaran.Core.Table, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>>, Fuaran.Core.ConfRng+T>>, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.aggregateParityLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.columnarOpLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.columnarOpLawsWith(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.ColumnOp, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.ColumnOp, Fuaran.Core.ColumnRejection>>>, Fuaran.Core.StreamGen`2<Fuaran.Core.ColumnOp, Fuaran.Core.Table>, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.incrementalLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.incrementalLawsWith(Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>>, Fuaran.Core.StreamGen`2<Fuaran.Core.ColumnOp, Fuaran.Core.Table>, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.nowLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.paramLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.schemaWalkLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.slotParamLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.DataFrameConformance.transformLaws(Microsoft.FSharp.Core.FSharpFunc`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.ConfRng+T, System.Tuple`2<System.Tuple`2<Fuaran.Core.Table, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>>, Fuaran.Core.ConfRng+T>>, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.IncrementalDelta.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.IncrementalDelta.lawsWith(System.Int32, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Core.IncrementalDelta.report(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.IncrementalSample>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Core.IncrementalDelta.samples(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.IncrementalSample>
+method Fuaran.Core.IncrementalDelta.samplesWith(System.Int32, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.IncrementalSample>
+property Fuaran.Core.Conformance.columnarOpStreamGen : Fuaran.Core.StreamGen`2<Fuaran.Core.ColumnOp, Fuaran.Core.Table> { get }
+property Fuaran.Core.DataFrameConformance.columnarOpStreamGen : Fuaran.Core.StreamGen`2<Fuaran.Core.ColumnOp, Fuaran.Core.Table> { get }
+property Fuaran.Core.DataFrameFamilies.census : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.AdequacyClass>> { get }
+property Fuaran.Core.DataFrameFamilies.families : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Families+LawFamily> { get }
+property Fuaran.Core.DataFrameFamilies.refusalAudit : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Families+RefusalAudit> { get }
+property Fuaran.Core.DataFrameFamilies.roster : Fuaran.Core.Families+Roster { get }
+property Fuaran.Core.IncrementalDelta.demands : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.AdequacyDemand`1<Fuaran.Core.IncrementalSample>> { get }
+record-field Fuaran.Core.IncrementalSample.Edit #9 : System.String
+record-field Fuaran.Core.IncrementalSample.Equivalent #7 : System.Boolean
+record-field Fuaran.Core.IncrementalSample.Full #5 : Fuaran.Core.RecomputeFootprint
+record-field Fuaran.Core.IncrementalSample.Iteration #1 : System.Int32
+record-field Fuaran.Core.IncrementalSample.Pipeline #2 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
+record-field Fuaran.Core.IncrementalSample.Prime #4 : Fuaran.Core.RecomputeFootprint
+record-field Fuaran.Core.IncrementalSample.PrimeEquivalent #8 : System.Boolean
+record-field Fuaran.Core.IncrementalSample.Refresh #6 : Fuaran.Core.RecomputeFootprint
+record-field Fuaran.Core.IncrementalSample.Seed #0 : System.Int32
+record-field Fuaran.Core.IncrementalSample.Strategy #3 : Fuaran.Core.IncrementalStrategy
+type Fuaran.Core.Conformance (module)
+type Fuaran.Core.DataFrameConformance (module)
+type Fuaran.Core.DataFrameFamilies (module)
+type Fuaran.Core.IncrementalDelta (module)
+type Fuaran.Core.IncrementalSample (record)
