@@ -57,8 +57,8 @@ packages at `0.33.0` compiled under Fable 5 over the substrate at `0.32.0` (a sc
 `Fuaran.Core.DataFrame`, `Fuaran.Core.Column.Ops` and `Fuaran.Core.DataFrame.Conformance` from the candidate
 feed, every transitive `Fuaran.Core.*` package from the released `0.32.0`; `fable_modules` carried all three at
 `0.33.0`; the emitted program ran under node). The C# facade package is excused from Fable as its parent is.
-The full gate (`verify.ps1`) ran green on the release commit through the estate's gate queue, and the proof leg
-verified `ColumnOps` and `Pipeline` once at Phase 259.
+The full gate (`verify.ps1`) ran green on the release commit, and the proof leg verified `ColumnOps` and
+`Pipeline` once at Phase 259.
 
 - **The producer changed; the contract did not (no class).** `Fuaran.Core.DataFrame`,
   `Fuaran.Core.Column.Ops`, `Fuaran.Core.DataFrame.Conformance` and `Fuaran.Core.DataFrame.CSharp`
