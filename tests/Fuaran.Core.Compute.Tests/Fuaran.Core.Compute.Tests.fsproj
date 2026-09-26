@@ -12,6 +12,9 @@
     <Compile Include="ChildProcess.fs" />
     <Compile Include="OwnedConformance.fs" />
     <Compile Include="SiblingCorpus.fs" />
+    <!-- The law-family roster share this repository ships; early, because the roster, census
+         and vacuity checks below read it. -->
+    <Compile Include="KitRoster.fs" />
     <Compile Include="DataFrameTests.fs" />
     <Compile Include="ColumnOpsTests.fs" />
     <Compile Include="DeltaTests.fs" />
@@ -26,10 +29,20 @@
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
          standing Version, the release tags), and the committed public-surface baseline per
          package under api/, rendered from IL metadata and classified when it moves. -->
+    <!-- The families this repository ships, held to its assembly, its census and its reference
+         runs. WitnessTaking before Vacuity, which reuses its reference pipelines; after
+         LawVectorExport.fs, whose transform sample the census runs. -->
+    <Compile Include="ConformanceFamiliesTests.fs" />
+    <Compile Include="WitnessTakingFamiliesTests.fs" />
+    <Compile Include="SampleAdequacyTests.fs" />
+    <Compile Include="ConformanceVacuityTests.fs" />
     <Compile Include="PackageRosterTests.fs" />
     <Compile Include="PublicSurfaceTests.fs" />
     <!-- The compute boundary, held from this side: the substrate by package, and only the five
          packages the strand stands on. After PublicSurfaceTests, whose assembly locator it reuses. -->
+    <!-- The committed WIRE-surface baseline per wire-bearing package (api/wire/). Reads
+         PublicSurfaceTests.fs and PackageRosterTests.fs, so it follows both. -->
+    <Compile Include="WireSurfaceTests.fs" />
     <Compile Include="ComputeBoundaryTests.fs" />
     <!-- The F* oracles as hosts: the extracted ColumnOps and Pipeline models run beside production
          (the Proofs.Oracle family the proof leg's host step runs). -->

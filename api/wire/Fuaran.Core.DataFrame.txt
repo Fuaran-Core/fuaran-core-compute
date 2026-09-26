@@ -2,7 +2,7 @@
 # The canonical bytes of a document set reaching every member and discriminator this package emits:
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
-#   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Tests
+#   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
 # class since v0.30.0: first snapshot
 doc	pipeline	sha256:550548d3d7bf089a8a45fcb797fe094f1cc6caa13de897c823d29bfbb14072b2	[{"$type":"filter","pred":{"$type":"col","name":"s"}}]
 doc	pipeline / AggFn.Count	sha256:da304afcc9a509331438f6e1935f5d6da8b2571473b82423518c6a8819b82c8e	[{"$type":"groupBy","aggs":[{"fn":"count","name":"s","of":"s"}],"keys":["s"]}]
