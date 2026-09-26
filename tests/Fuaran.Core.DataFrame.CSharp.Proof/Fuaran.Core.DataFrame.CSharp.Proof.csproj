@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Fuaran.Core.CSharp.Proof</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Phase 257 — the dataframe half of the facade proves its own coverage over its own
+         assembly. The legs that are not about either half (the check ledger, the coverage walk,
+         the surface rule and its decoys) and the column-layer halves of the partial generator and
+         rebuild walk are compiled from the facade proof beside this one, so there is one copy of
+         each: they travel with this project as a copy when the dataframe layer leaves. -->
+    <Compile Include="..\Fuaran.Core.CSharp.Proof\Check.cs" Link="Shared\Check.cs" />
+    <Compile Include="..\Fuaran.Core.CSharp.Proof\Coverage.cs" Link="Shared\Coverage.cs" />
+    <Compile Include="..\Fuaran.Core.CSharp.Proof\Surface.cs" Link="Shared\Surface.cs" />
+    <Compile Include="..\Fuaran.Core.CSharp.Proof\Generators.cs" Link="Shared\Generators.cs" />
+    <Compile Include="..\Fuaran.Core.CSharp.Proof\Rebuild.cs" Link="Shared\Rebuild.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.CSharp\Fuaran.Core.DataFrame.CSharp.csproj" />
+    <!-- `ConfRng`, as in the facade proof: the seeded, Fable-identical draw stream. -->
+    <ProjectReference Include="..\..\src\Fuaran.Core.Conformance\Fuaran.Core.Conformance.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

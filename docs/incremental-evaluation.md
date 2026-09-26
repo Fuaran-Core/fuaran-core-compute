@@ -626,7 +626,7 @@ corpus draw rather than after three releases.
 
 ## Verifying your own adoption
 
-The equivalence family `IncrementalDelta.laws` (in `Fuaran.Core.Conformance`) certifies the seam
+The equivalence family `IncrementalDelta.laws` (in `Fuaran.Core.DataFrame.Conformance` since Phase 257) certifies the seam
 itself against the reference evaluator over a generated corpus. A consumer does not need to re-run
 it, but the pattern is worth copying for your own pipelines: evaluate both ways and assert equality,
 then assert the footprint. The first catches a wrong answer; the second catches the subtler
