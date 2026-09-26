@@ -81,6 +81,8 @@ Copy-Item $pinFile (Join-Path $scratch 'fstar-pin.json')
 # Two models: one true, one refuted by a plain type error (F* Error 19).
 Set-Content (Join-Path $scratch 'LegGood.fst') "module LegGood`n`nlet one : nat = 1`n"
 Set-Content (Join-Path $scratch 'LegBad.fst') "module LegBad`n`nlet minus_one : nat = -1`n"
+# A TRUE model whose query name contains "fails": a success line naming it must not read as a failure.
+Set-Content (Join-Path $scratch 'LegFailsName.fst') "module LegFailsName`n`nlet this_never_fails (x: nat) : nat = x + 1`n"
 
 # Budgets for both, with floors of 0 — a module that checks in a second must not trip the floor.
 @{
@@ -88,6 +90,7 @@ Set-Content (Join-Path $scratch 'LegBad.fst') "module LegBad`n`nlet minus_one : 
     modules = @(
         @{ module = 'LegGood'; budgetSeconds = 60; floorSeconds = 0 }
         @{ module = 'LegBad'; budgetSeconds = 60; floorSeconds = 0 }
+        @{ module = 'LegFailsName'; budgetSeconds = 60; floorSeconds = 0 }
     )
 } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $scratch 'modules.json')
 
@@ -165,6 +168,19 @@ Assert-That 'C. HOST RUN — and does not print proofs: green' (-not $c.Green) (
 $d = Invoke-Leg ($base + @{ Modules = @('LegBad'); ProofOnly = @('LegBad') })
 Assert-That 'D. CHECK — a model with a type error exits NON-ZERO' ($d.Exit -ne 0) "exit $($d.Exit): $(Show-Tail $d)"
 Assert-That 'D. CHECK — and does not print proofs: green' (-not $d.Green) (Show-Tail $d)
+# Recorded 2026-09-25: a sibling copy of this kit printed `<module>.fst verified` over a refused
+# model and went red only later. The per-module line is held too, not only the closing verdict.
+Assert-That 'D. CHECK — and prints NO LegBad.fst verified line' (-not [bool](@($d.Lines -match 'LegBad\.fst verified').Count)) (Show-Tail $d)
+Assert-That 'D. CHECK — and fails at the CHECK step, naming the module' ([bool](@($d.Lines -match '==== proofs: LegBad\.fst did NOT verify').Count)) (Show-Tail $d)
+
+# ---- E. A SUCCESS LINE THAT NAMES A FAILURE ------------------------------------------------------
+
+# Recorded 2026-09-26: the zero-exit diagnostic check matched `Quake[^\n]*fail` and refused TreeOps.fst,
+# whose query `relocation_diamond_fails_for_a_remove` had `proved 8/8 goals`. A quake line is a failure
+# unless it reads `proved N/N goals`; a query's NAME is not a verdict.
+$e = Invoke-Leg ($base + @{ Modules = @('LegFailsName'); ProofOnly = @('LegFailsName') })
+Assert-That 'E. NAMES — a true model whose query name contains "fails" exits 0' ($e.Exit -eq 0) "exit $($e.Exit): $(Show-Tail $e)"
+Assert-That 'E. NAMES — and prints proofs: green' $e.Green (Show-Tail $e)
 
 Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
 

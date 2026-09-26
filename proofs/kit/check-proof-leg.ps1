@@ -321,7 +321,11 @@ $diagnosticPattern = [regex]::new(
     '|\berrors?\s+(were|was)\s+reported\b' +
     '|Failed to prove' +
     '|Unexpected' +
-    '|Quake[^\n]*(fail|Fail|FAIL)')
+    # A quake line is a failure unless it reads `proved N/N goals` with equal counts. Matching
+    # `fail` anywhere refused TreeOps.fst over a query NAMED `..._fails_...` (2026-09-26). The
+    # whitespace sits INSIDE the lookahead: outside it, `\s+` backtracks to a shorter match and
+    # the lookahead then sees `\tproved`, never `proved`.
+    '|^\s*Quake:\s*query\s*\([^)]*\)(?!\s*proved\s+(\d+)/\2\s+goals\b)')
 
 function Test-ProverDiagnostic([System.Collections.Generic.List[string]] $lines) {
     foreach ($line in $lines) {
@@ -772,6 +776,16 @@ for ($run = 1; $run -le $Runs; $run++) {
                 continue
             }
 
+            # AN EXIT OF 0 IS NOT A VERDICT ON ITS OWN (recorded 2026-09-25). The green line
+            # below is printed only when the prover exited 0 AND said nothing was wrong: the pinned
+            # prover is measured to exit 0 over `* Error 317` at extraction (section 4), and a leg
+            # that trusted the exit code alone printed `verified` over an Error 12 in a sibling
+            # copy of this kit. A diagnostic on a zero exit is a REFUTATION, never retried.
+            if (Test-ProverDiagnostic $checked.Lines) {
+                Write-Host "==== proofs: $module.fst — the prover exited 0 but reported an error; see $($checked.LogPath)" -ForegroundColor Red
+                Fail "$module.fst did NOT verify (run $run of $Runs)" 1
+            }
+
             $budget = if ($budgets.ContainsKey($module)) { $budgets[$module] } else { $null }
 
             # A RETRY's clock measures a cache the aborted attempt had already half-filled, so it
@@ -921,6 +935,13 @@ foreach ($module in $Modules) {
         }
 
         Fail "extraction produced no $module.fs under $out"
+    }
+
+    # A file on disk and an exit of 0 are still not a clean extraction when the prover reported an
+    # error beside them (recorded 2026-09-25): the diff below would compare a file the prover
+    # itself said is wrong.
+    if (Test-ProverDiagnostic $extracted.Lines) {
+        Fail "extraction of $module to F# failed — the prover exited 0 but reported an error. Transcript: $($extracted.LogPath)"
     }
 
     # Compare LF-normalised: the extractor writes LF and the repository pins LF, but a checkout
