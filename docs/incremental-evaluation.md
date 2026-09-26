@@ -298,8 +298,9 @@ function. Same machine, same 20,000 rows, same single edited row, same estimator
 
 **So the answer to "when does the seam pay" has changed, and the three tables above are kept as the
 record of what it used to be rather than as current advice.** A refresh is now cheaper than the full
-evaluation it replaces for a row expression of ONE COMPARISON, which is the shape a live board
-actually has, and the `Scaling` family asserts it on all three pipelines — the case those three
+evaluation it replaces for a row expression of ONE COMPARISON, in a pipeline that shrinks the table
+(the next section measures the opposite for one that keeps every row), which is the shape a live
+board actually has, and the `Scaling` family asserts it on all three pipelines — the case those three
 phases each printed and deliberately did not assert. A costlier row expression widens the margin
 further; it is no longer what decides the question.
 
@@ -315,6 +316,82 @@ walk, which is now 40-60% of a refresh (and 86% of the top-N one, where it is th
 allocates an option for the cache read, a tuple and a `Result` for the cell, and a fresh work record
 — four allocations to reuse one cached cell. That is the next thing to measure, not the next thing to
 assume.
+
+### Row-preserving pipelines — the opposite, measured by a consumer (Phase 250)
+
+**The paragraph above holds for the pipelines it measured, and not for a pipeline that keeps every
+row.** Those three shapes all SHRINK the table: a `Filter`, a `GroupBy`, a `Limit`. A pipeline made
+only of row-local steps (`Derive`, `Case`) outputs a whole n-row table, which the refresh still has
+to assemble. Its per-row bookkeeping then costs more than the row expression it saves, when that
+expression is one `Mul` and one `Ge`.
+
+A downstream spreadsheet-shaped consumer measured it (Phase 250). The sheet is an `orders` source
+feeding two table nodes: `lines`, which keeps every row (`Derive amount = qty * price`, then
+`Derive big = amount >= threshold`), and `byRegion`, which is `Derive amount` then a `GroupBy` over
+five regions. Then cell nodes over both. **Provenance, stated because the numbers depend on it:**
+measured by a consumer, on `0.30.0`, in a Debug build, on one Windows 11 ARMv8 laptop (12 logical
+processors, .NET 10.0.11). Each figure is the median of three process runs, each the median of five
+timed repetitions after a warm-up. A ratio is taken within a run, with its range over the three
+runs in brackets. Every timed refresh was checked equal to the full evaluation outside the timed
+region, and the footprints confirm the restricted path was taken. Cell and append edits reached
+`Incremental` as row-addressed deltas, the shape `ColumnOps.deltaOf` now builds. Column edits
+reached it as a column invalidation.
+
+**Each table node alone** — `DataFrame.evalPipelineInEnv` over the node's source, divided by
+`Incremental.refresh` over the same source and delta; above 1 the refresh wins:
+
+| rows | edit | `lines` (keeps every row) | `byRegion` (group-by) |
+|---|---|---|---|
+| 1,000 | cell | 1.02 (1.01 to 1.08) | 1.26 (1.25 to 1.28) |
+| 1,000 | column | 0.71 (0.71 to 0.72) | 0.87 (0.85 to 0.89) |
+| 1,000 | row append | 1.03 (0.98 to 1.18) | 1.27 (1.26 to 1.31) |
+| 10,000 | cell | 0.78 (0.68 to 0.79) | 1.91 (1.83 to 2.08) |
+| 10,000 | column | 0.48 (0.34 to 0.63) | 0.81 (0.79 to 0.87) |
+| 10,000 | row append | 0.80 (0.76 to 0.82) | 1.65 (1.48 to 1.74) |
+| 100,000 | cell | 0.88 (0.77 to 1.04) | 1.09 (1.06 to 1.13) |
+| 100,000 | column | 0.67 (0.61 to 0.71) | 0.77 (0.73 to 0.81) |
+| 100,000 | row append | 0.78 (0.78 to 0.79) | 1.08 (1.05 to 1.09) |
+
+**The whole sheet** — `Propagation.eval` of every node, divided by the node-level refresh with
+`Incremental.refresh` inside each dirty table node; above 1 the incremental path wins:
+
+| rows | cell | column | row append |
+|---|---|---|---|
+| 1,000 | 1.34 (1.11 to 1.34) | 0.76 (0.76 to 0.82) | 1.09 (1.07 to 1.14) |
+| 10,000 | 0.94 (0.91 to 1.45) | 0.37 (0.34 to 0.63) | 0.67 (0.66 to 1.00) |
+| 100,000 | 0.79 (0.71 to 0.84) | 0.52 (0.50 to 0.67) | 0.87 (0.81 to 0.91) |
+
+The 10,000-row column edit was the noisiest cell (its full evaluation ranged from 25.5 to 50.4 ms
+over the three runs), so read its range as the reading.
+
+**Where full evaluation wins, on this measurement:**
+
+- **A node that keeps every row loses above 1,000 rows, on every edit** (0.48× to 0.88×). At 1,000
+  rows it breaks even on a cell or an append edit (1.02×, 1.03×) and loses on a column edit (0.71×).
+- **A group-by node wins on cell and append edits at every measured size, and the margin shrinks
+  with size**: 1.91× at 10,000 rows on a cell edit, 1.09× at 100,000. It loses on a column edit
+  at every size (0.77× to 0.87×).
+- **End to end, the sheet's incremental refresh never paid for itself above 1,000 rows.** It lost
+  at 10,000 and 100,000 rows on every edit, and on a column edit at every size. At 1,000 rows it
+  won only on the cell and append edits.
+
+**So qualify the advice above by the pipeline's shape.** A refresh is cheaper than a full
+evaluation for a pipeline that SHRINKS the table. For one that keeps every row, measure before
+adopting, and expect a full evaluation to win once the table is past a few thousand rows unless
+the row expression is expensive. The 16-level expression in the `Scaling` family is the shape
+where the seam wins by an order of magnitude. The `Scaling` family asserts the shrinking shapes and
+not this one, because one consumer's sheet is evidence for a qualification, not a rule. The same
+consumer measured a `SetColumn` at 100,000 rows at 210 ms to apply and chain, and an `AppendRows` at
+38 ms. That op-side cost comes before any evaluation, and it is the input a later phase on the
+refresh's O(n) floor should start from.
+
+**Two changes since this measurement, neither re-measured here.** A cell edit reached this sheet as
+one row only because the consumer built the delta by hand. `ColumnOps.deltaOf` now builds it: one
+row for a cell edit, the changed rows for a column edit. The column edits above went through a
+column invalidation instead, which is not what `deltaOf` produces. And `Propagation.evalFromWith`
+now carries each table node's incremental state through the driver instead of beside it. That
+closes a correctness gap, not a cost gap. The consumer's next measurement cycle is where both
+are re-read.
 
 One practical consequence remains. `Incremental.plan` tells you whether a refresh will be restricted;
 it does not tell you whether it will be faster than a full evaluation for YOUR pipeline, and on a

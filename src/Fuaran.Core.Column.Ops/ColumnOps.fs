@@ -457,6 +457,104 @@ module ColumnOps =
         | RemoveColumn _
         | ApplyTransform _ -> FullChange
 
+    /// The columns a columnar op moved, as a part set for `Propagation.dirtyFromChangedParts`
+    /// (Phase 250) — the column-vocabulary adapter the tree-generic propagation strand takes as a
+    /// parameter and never names itself. Read off `changeOf`: a value edit moved its one column;
+    /// anything else — an append (every column gains cells), a schema change, a whole-table
+    /// transform — is `None`, "unknown or all", which every reader meets.
+    let changedColumns (op: ColumnOp) : Set<string> option =
+        match changeOf op with
+        | ColumnValuesChanged col -> Some(Set.singleton col)
+        | RowsAppended
+        | SchemaChanged _
+        | FullChange -> None
+
+    /// The row delta a columnar op induces on the table it is applied to (Phase 250), built from
+    /// the op and the BEFORE table rather than by diffing before against after (`Delta.diff` is a
+    /// full pass over both tables). `changeOf` lifts a cell edit to a whole-column invalidation, so a
+    /// one-cell edit reaches `Incremental` as every row; this reaches it as one.
+    ///
+    /// Row identity is the caller's witness, opaque here — which columns form the key is not
+    /// assumed, so identity is read from the rows themselves:
+    ///
+    /// - `SetCell` — the edited row, by its key BEFORE and AFTER the edit. The same key: that row
+    ///   `RowChanged` (or the empty delta when the cell already held the value). Different keys (the
+    ///   edit wrote a key column): the old key `RowRemoved` and the new one `RowAdded`.
+    /// - `SetColumn` — when no row's identity moves, every row whose cell in that column differs,
+    ///   `RowChanged`; when any identity moves, `FullRefresh`.
+    /// - `AppendRows` — each appended row `RowAdded`, when every one has a key that is new to the
+    ///   table and unique among them.
+    /// - `InsertColumn`, `RemoveColumn`, `ApplyTransform` — `FullRefresh`: the schema or the whole
+    ///   table moved, which is what the top element is for.
+    ///
+    /// `FullRefresh` is also the answer wherever identity is missing (a row the witness cannot key)
+    /// or the op does not apply to `before` — an op with no result has no delta of its own, and the
+    /// top is always a true description. The delta's scheme is `rid.Scheme`. Pure, total.
+    let deltaOf (rid: RowIdentity<'Id>) (before: Table) (op: ColumnOp) : TableDelta =
+        let keysOf (t: Table) =
+            let keyOf = rid.KeyOf t
+            Array.init (Table.rowCount t) (fun i -> keyOf i |> Option.map rid.KeyString)
+
+        let rowSet (rows: (RowRef * RowChange) list) = Delta.ofRows rid.Scheme rows
+
+        match op with
+        | InsertColumn _
+        | RemoveColumn _
+        | ApplyTransform _ -> FullRefresh
+        | _ ->
+            match apply op before with
+            | Error _ -> FullRefresh
+            | Ok after ->
+                match op with
+                | SetCell(col, row, value) ->
+                    let unchanged =
+                        match Table.tryColumn col before with
+                        | Some c -> List.item row c.Cells = value
+                        | None -> false
+
+                    match
+                        rid.KeyOf before row |> Option.map rid.KeyString,
+                        rid.KeyOf after row |> Option.map rid.KeyString
+                    with
+                    | Some _, Some _ when unchanged -> Delta.empty rid.Scheme
+                    | Some k0, Some k1 when k0 = k1 -> rowSet [ ByKey k0, RowChanged ]
+                    | Some k0, Some k1 -> rowSet [ ByKey k0, RowRemoved; ByKey k1, RowAdded ]
+                    | _ -> FullRefresh
+                | SetColumn col ->
+                    let k0 = keysOf before
+                    let k1 = keysOf after
+
+                    if k0 <> k1 || Array.exists Option.isNone k0 then
+                        FullRefresh
+                    else
+                        match Table.tryColumn col.Name before with
+                        | None -> FullRefresh
+                        | Some old ->
+                            List.zip old.Cells col.Cells
+                            |> List.indexed
+                            |> List.choose (fun (i, (a, b)) ->
+                                if a = b then None else Some(ByKey k0[i].Value, RowChanged))
+                            |> rowSet
+                | AppendRows _ ->
+                    let n0 = Table.rowCount before
+                    let k0 = keysOf before
+                    let k1 = keysOf after
+                    let added = k1[n0..] |> List.ofArray
+                    let existing = k0 |> Array.choose id |> Set.ofArray
+
+                    let fresh =
+                        added |> List.forall Option.isSome
+                        && (added |> List.choose id |> List.distinct |> List.length) = added.Length
+                        && added |> List.forall (fun k -> not (Set.contains k.Value existing))
+
+                    if fresh then
+                        added |> List.map (fun k -> ByKey k.Value, RowAdded) |> rowSet
+                    else
+                        FullRefresh
+                | InsertColumn _
+                | RemoveColumn _
+                | ApplyTransform _ -> FullRefresh
+
     /// The `Fuaran.Core.OpStream` `StreamWitness` for the columnar op-algebra — `apply` + the wire
     /// `encode`/`decode`. With it, `OpStream.append` / `verifyChain` / `replay` / `toJsonl` chain,
     /// verify, replay, and persist a table-edit stream with NO core change (the witness pattern, GP2;

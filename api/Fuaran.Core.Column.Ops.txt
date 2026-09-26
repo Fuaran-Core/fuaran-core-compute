@@ -22,8 +22,10 @@ method Fuaran.Core.ColumnOps.apply(Fuaran.Core.ColumnOp, Fuaran.Core.Table) : Mi
 method Fuaran.Core.ColumnOps.applyAll(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.ColumnOp>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.ColumnRejection>
 method Fuaran.Core.ColumnOps.canApply(Fuaran.Core.ColumnOp, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Core.ColumnRejection>
 method Fuaran.Core.ColumnOps.changeOf(Fuaran.Core.ColumnOp) : Fuaran.Core.Change
+method Fuaran.Core.ColumnOps.changedColumns(Fuaran.Core.ColumnOp) : Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpSet`1<System.String>>
 method Fuaran.Core.ColumnOps.decode(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.ColumnOp, System.String>
 method Fuaran.Core.ColumnOps.decodeJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.ColumnOp, System.String>
+method Fuaran.Core.ColumnOps.deltaOf`1(Fuaran.Core.RowIdentity`1<!!0>, Fuaran.Core.Table, Fuaran.Core.ColumnOp) : Fuaran.Core.TableDelta
 method Fuaran.Core.ColumnOps.encode(Fuaran.Core.ColumnOp) : System.String
 method Fuaran.Core.ColumnOps.encodeJson(Fuaran.Core.ColumnOp) : Fuaran.Core.JVal
 method Fuaran.Core.ColumnOps.invert(Fuaran.Core.ColumnOp, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.ColumnOp, Fuaran.Core.ColumnRejection>
