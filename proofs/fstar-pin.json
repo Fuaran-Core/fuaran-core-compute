@@ -1,0 +1,10 @@
+{
+  "$comment": "Phase 131 \u2014 the pinned prover. F* releases weekly and this release removed proof hints outright, so an unpinned prover is a gate that changes under you; check.ps1 refuses any other version. The release zip bundles Z3, which is why one pin covers both.",
+  "fstar": "v2026.09.06",
+  "z3": "4.13.3",
+  "windows": {
+    "asset": "fstar-v2026.09.06-Windows_NT-x86_64.zip",
+    "url": "https://github.com/FStarLang/FStar/releases/download/v2026.09.06/fstar-v2026.09.06-Windows_NT-x86_64.zip",
+    "sha256": "dbd13ddb75a08b98c1ed3def78728727aa9998d5a1d36ce9b6fc5cff5d9d58be"
+  }
+}

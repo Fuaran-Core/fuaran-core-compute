@@ -1,0 +1,215 @@
+{
+  "kind": "copies",
+  "producer": "fuaran-core-compute",
+  "$adoptionNote": "Two kinds of record are declared here and they run in OPPOSITE directions. (1) The transform law vectors: this repository EMITS conformance/laws/transform-laws.json, and the shared wire-format corpus carries the declared copy the other hosts certify against; `check` is `fingerprint` because the two repositories may differ in end-of-line policy and nothing else. (2) Everything this repository COPIED from the Fuaran.Core repository (Phase 259): the proof-leg kit (verbatim), the prover pin, the two hand-written oracle shims, the Limits model and its extraction that Pipeline opens, and the five C# facade-proof legs shared with that repository's facade proof. For those, the canonical file is the CONSUMER path and the copy is the source here, declared in this file rather than in that repository's because an adopter must be able to adopt without editing the repository it adopts from. The registry compares the two files and reports any difference whichever side moved; every such record's `regen` says which side is canonical — re-copy FROM the Fuaran.Core repository, never the other way. `bytes` for the pin (a hash-verified declaration), `fingerprint` for the rest.",
+  "records": [
+    {
+      "source": "conformance/laws/transform-laws.json",
+      "consumers": [
+        "Fuaran/Fuaran-UI/wire-format-fixtures/laws/transform-laws.json"
+      ],
+      "check": "fingerprint",
+      "regen": "cd Fuaran/Fuaran-Core-Compute; dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-laws ../Fuaran-UI/wire-format-fixtures"
+    },
+    {
+      "source": "proofs/fstar-pin.json",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/fstar-pin.json"
+      ],
+      "check": "bytes",
+      "regen": "THE PIN: one number, in one place, with every copy of it named. A prover bump is a proof-leg re-check, not a file copy: re-run `pwsh ./proofs/check.ps1` after copying. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/fstar-pin.json; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/check-proof-leg.ps1",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/check-proof-leg.ps1"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/check-proof-leg.ps1; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/check-proof-leg.tests.ps1",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/check-proof-leg.tests.ps1"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/check-proof-leg.tests.ps1; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/extraction-post-pass.ps1",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/extraction-post-pass.ps1"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/extraction-post-pass.ps1; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/extraction-post-pass.tests.ps1",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/extraction-post-pass.tests.ps1"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/extraction-post-pass.tests.ps1; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/LADDER.md",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/LADDER.md"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/LADDER.md; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/measure-relocation-halts.ps1",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/measure-relocation-halts.ps1"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/measure-relocation-halts.ps1; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/measure-relocation-halts.tests.ps1",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/measure-relocation-halts.tests.ps1"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/measure-relocation-halts.tests.ps1; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/README.md",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/README.md"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/README.md; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/templates/check.ps1",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/templates/check.ps1"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/templates/check.ps1; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/templates/ci-proofs-job.yml",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/templates/ci-proofs-job.yml"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/templates/ci-proofs-job.yml; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/templates/Instance.fst.template",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/templates/Instance.fst.template"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/templates/Instance.fst.template; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/templates/modules.json",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/templates/modules.json"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/templates/modules.json; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/templates/MutualTypes.fst",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/templates/MutualTypes.fst"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/templates/MutualTypes.fst; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/templates/oracle.fsproj.template",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/templates/oracle.fsproj.template"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/templates/oracle.fsproj.template; never edit this copy."
+    },
+    {
+      "source": "proofs/kit/templates/proofs.json",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/kit/templates/proofs.json"
+      ],
+      "check": "fingerprint",
+      "regen": "The proof-leg kit, copied verbatim. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/kit/templates/proofs.json; never edit this copy."
+    },
+    {
+      "source": "proofs/oracle/Prims.fs",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/oracle/Prims.fs"
+      ],
+      "check": "fingerprint",
+      "regen": "The hand-written runtime floor the extractor's output compiles against; it grows as models reach for more of F*'s library. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/oracle/Prims.fs; never edit this copy."
+    },
+    {
+      "source": "proofs/oracle/FStar_Pervasives_Native.fs",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/oracle/FStar_Pervasives_Native.fs"
+      ],
+      "check": "fingerprint",
+      "regen": "The second half of the same runtime floor. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/oracle/FStar_Pervasives_Native.fs; never edit this copy."
+    },
+    {
+      "source": "proofs/Limits.fst",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/Limits.fst"
+      ],
+      "check": "fingerprint",
+      "regen": "The section-21 resource limits as named premises; copied because Pipeline.fst opens it. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/Limits.fst; never edit this copy."
+    },
+    {
+      "source": "proofs/oracle/Limits.fs",
+      "consumers": [
+        "Fuaran/Fuaran-Core/proofs/oracle/Limits.fs"
+      ],
+      "check": "fingerprint",
+      "regen": "The committed extraction of Limits.fst; the leg holds it to a fresh extraction here too. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/oracle/Limits.fs; never edit this copy."
+    },
+    {
+      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Check.cs",
+      "consumers": [
+        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Check.cs"
+      ],
+      "check": "fingerprint",
+      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Check.cs; never edit this copy."
+    },
+    {
+      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Coverage.cs",
+      "consumers": [
+        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Coverage.cs"
+      ],
+      "check": "fingerprint",
+      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Coverage.cs; never edit this copy."
+    },
+    {
+      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Generators.cs",
+      "consumers": [
+        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Generators.cs"
+      ],
+      "check": "fingerprint",
+      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Generators.cs; never edit this copy."
+    },
+    {
+      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Rebuild.cs",
+      "consumers": [
+        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Rebuild.cs"
+      ],
+      "check": "fingerprint",
+      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Rebuild.cs; never edit this copy."
+    },
+    {
+      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Surface.cs",
+      "consumers": [
+        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Surface.cs"
+      ],
+      "check": "fingerprint",
+      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Surface.cs; never edit this copy."
+    }
+  ]
+}

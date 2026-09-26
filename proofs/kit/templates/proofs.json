@@ -1,0 +1,58 @@
+{
+  "kind": "proofs",
+  "subject": "<Your-Repo>",
+  "$comment": "TEMPLATE: copy to <repo>/proofs.json (the REPOSITORY ROOT, not proofs/), set `subject` to the repository's name, and replace the `claims` array. This is the repository's claims ladder, declared as data: `proofs/README.md`'s own ladder — what is PROVED, what is only TESTED, what is ASSUMED — in the schema `proofs/kit/LADDER.md` specifies, so the question does not have to be answered by reading prose and hoping two documents use the same words. Something NOT claimed is either absent or a `policy` row that says so and points at the document stating it — never a row at a level that asserts coverage. Levels are the CLOSED set proved | tested | assumed | policy — the set is closed on purpose, because a ladder that can grow a level can hide a demotion. Authored by hand, never generated: editing the ladder means editing this file and the README together. Make it CHECKED rather than trusted by writing the host family described below; the kit ships the leg that runs it, not the family itself, because what a row must be held to is a property of your tree.",
+  "$levels": {
+    "proved": "A theorem in a model the leg actually checks, with no assume and no admit under --report_assumes error. `evidence` names the ONE top-level declaration the claim is (`theorem`), the model file, and the pin; further declarations the claim rests on go in `supporting`, and are checked the same way.",
+    "tested": "A differential or conformance family, not a proof. `evidence.family` names the family as the test sources spell it (or the script, for a check a script performs), `evidence.cases` names its cases, and they must exist.",
+    "assumed": "A premise the proof rests on and does not discharge. `evidence.assumption` states it in one sentence, in the terms a reader could go and check it in.",
+    "policy": "Stated, not proved: a POSTURE the proved rows are only as good as — which prover is pinned, how many cold runs a check is, that an edited model without a re-extraction fails — or a BOUNDARY, a mechanism no theorem here addresses, stated so its absence from the rungs above is not read as a claim that failed. `evidence.document` names where it is stated."
+  },
+  "$hostFamily": "The check the kit cannot ship for you, and the one that makes this file worth having. Hold every row to the tree: a `proved` row's `evidence.theorem` is a top-level val / let / let rec of that name in the model it names; that model is one the leg actually checks (parse it out of `proofs/check.ps1`'s $modules line, so a model added without a claim is caught); a `tested` row's cases exist in the family it names; every checked module has at least one `proved` row; every row's `phase` and `level` are the closed forms. Put a go-red fixture beside each clause, so a green ladder is known to be one that could have failed. What it must NOT check is the prose: row-to-README agreement stays a human act, and row-to-tree agreement is the half a check can settle.",
+  "claims": [
+    {
+      "id": "<claim-id>",
+      "level": "proved",
+      "claim": "What is proved, stated so that a reader can tell what it does NOT cover. The boundary is the load-bearing half of a claim row.",
+      "phase": "<repo>#<phase>",
+      "evidence": {
+        "theorem": "<the top-level declaration's name>",
+        "model": "proofs/<Model>.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "<model>-agrees-with-production",
+      "level": "tested",
+      "claim": "The extracted model and the shipped code answer the same over the named cases. The only evidence that the proved model is about the code that runs; agreement over the inputs drawn, never over all inputs.",
+      "phase": "<repo>#<phase>",
+      "evidence": {
+        "family": "Proofs.Oracle",
+        "cases": [
+          "<a case name, as the family spells it>"
+        ],
+        "model": "proofs/<Model>.fst"
+      }
+    },
+    {
+      "id": "extractor-and-compiler-trusted",
+      "level": "assumed",
+      "claim": "What every proved row stands on and none discharges: the code that runs is the extraction, and nothing verifies that extraction preserves meaning.",
+      "phase": "<repo>#<phase>",
+      "class": "premise",
+      "evidence": {
+        "assumption": "the F* extractor and the F# compiler are correct"
+      }
+    },
+    {
+      "id": "proof-leg",
+      "level": "policy",
+      "claim": "Which prover is pinned, how many cold-cache runs a check is, and that a model edited without re-extracting fails the leg — the reproducibility posture the proved rows above are only as good as. Policy, not algebra: no theorem addresses it. The posture also says what the leg COSTS: each module's cold-run budget is declared in proofs/modules.json, measured on every run and printed beside the measurement, with an overshoot named as a warning and `check.ps1 -Strict` for a session that wants one red. The numbers live there rather than in a row here, because a wall-clock budget is a claim at none of this ladder's four levels and is per module where a row is per claim.",
+      "phase": "<repo>#<phase>",
+      "evidence": {
+        "document": "proofs/README.md",
+        "budgets": "proofs/modules.json"
+      }
+    }
+  ]
+}

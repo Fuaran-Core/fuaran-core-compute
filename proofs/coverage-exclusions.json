@@ -1,0 +1,24 @@
+{
+  "kind": "proofCoverageExclusions",
+  "subject": "fuaran-core-compute",
+  "$comment": "Coverage is TOTAL OR DECLARED: every packable package in this repository is either named by a model in `modules.json` (its `packages`) or has an entry here, and a package in neither fails the `Proofs.Coverage` family. An entry is a RECORDED DECISION, not an excuse: it names the package, the closed reason, and enough prose for a later reader to disagree with it; deleting an entry is how that reader asks for a theorem. The check runs BOTH WAYS: an entry naming a package that is no longer packable, or one that has since gained a model, fails too. The two entries and their reasons are carried unchanged from the Fuaran.Core repository's file, where Phase 257 wrote them (Phase 259); the reason vocabulary below is the subset those entries use.",
+  "reasons": {
+    "facade": "The package is a surface over packages that ARE modelled and adds no semantics of its own — what a theorem here would state is its callee's theorem, restated in a second syntax. A defect in a facade is a mapping defect, which is what the certification tests it carries are for.",
+    "content-free-seam": "The package is a generic seam whose content is supplied entirely by the domain — Core owns no concrete computation here to state a theorem ABOUT. What it can promise is the shape of the seam, and that is stated where a domain meets it rather than as a theorem over a model of nothing."
+  },
+  "exclusions": [
+    {
+      "package": "Fuaran.Core.DataFrame.CSharp",
+      "reason": "facade",
+      "phase": "fuaran-core#257",
+      "note": "The dataframe half of the C# authoring facade, split out of `Fuaran.Core.CSharp` by Phase 257 with no change to what it is. It constructs the `ColExpr` and `Transform` values `Fuaran.Core.DataFrame` constructs, so every claim a theorem here would make is a claim about that package, which `proofs/Pipeline.fst` models. What is its own is the one-line-per-case MAPPING, held by its certification tests (`tests/Fuaran.Core.DataFrame.CSharp.Proof`) for the reason its parent's is."
+    },
+    {
+      "package": "Fuaran.Core.DataFrame.Conformance",
+      "reason": "content-free-seam",
+      "phase": "fuaran-core#257",
+      "note": "The law families over the dataframe layer, split out of the kit by Phase 257 (the Fuaran.Core repository's DECISIONS.md D68), and excused for the kit's own reason: a family states an obligation, so a model of `columnarOpLaws` would be a model of the statement of one. The computation those families certify is modelled where it lives — `proofs/ColumnOps.fst` for `Fuaran.Core.Column.Ops` and `proofs/Pipeline.fst` for `Fuaran.Core.DataFrame` — and what can be checked about the families themselves (that the roster is complete, that each runs at a reference witness, that each forward reaches its home) `ConformanceFamiliesTests` and `ConformanceVacuityTests` check."
+    }
+  ],
+  "$retired": "Phase 154 RETIRED the `Fuaran.Core.DataFrame` entry (`law-tested-by-design`, citing `Conformance.incrementalLaws`, filed by Phase 203): the package has a model now — `proofs/Pipeline.fst`, the counted pipeline driver over an abstract step evaluator — and clause 1's second direction fails an exclusion for a package that has since gained one. What that entry declined is still declined and is still a recorded decision, only now it is the model's own: the fourteen verb SEMANTICS are the step evaluator, a parameter, and stay with the laws the entry named (`incrementalLaws`, `schemaWalkLaws`, `aggregateParityLaws`) rather than with a theorem — see `pipeline-step-evaluator-abstract` in `../proofs.json` and theorem 14 in `README.md`. The supersession of D14's reading for this package is `DECISIONS.md` D57 (operator decision 2026-09-25), which is where the decision lives; an operator who wants a verb proved reads that row and that entry, not this file."
+}

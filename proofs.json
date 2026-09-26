@@ -1,0 +1,308 @@
+{
+  "kind": "proofs",
+  "subject": "fuaran-core-compute",
+  "$comment": "This repository's claims ladder, declared as data: what is PROVED, what is only TESTED, what is ASSUMED, at the closed level set proved | tested | assumed | policy, in the schema `proofs/kit/LADDER.md` defines. A `not claimed` item is the ABSENCE of a row, never a row. Authored by hand, never generated. The rows were carried from the Fuaran.Core repository's ladder with the two models and the extraction they cover (Phase 259), unchanged — each keeps the `fuaran-core#NNN` phase that proved it, which is provenance, not an address in this repository. It is CHECKED rather than trusted: the proof leg's host step runs the `Proofs.Ladder` family (tests/Fuaran.Core.Compute.Tests/ProofsLadderTests.fs), which holds every row to the tree — the levels and classes are the closed forms, a proved row's theorem is a top-level declaration of the model it names and that model is one `proofs/check.ps1` checks, every checked module has a proved row, and a tested row's named cases exist in the `Proofs.Oracle` family beside the model it names.",
+  "claims": [
+    {
+      "id": "extractor-and-compiler-trusted",
+      "level": "assumed",
+      "claim": "The proof leg holds the committed oracle to a fresh extraction byte for byte, which makes 'the oracle is the model' a checked claim; it does not make the F# backend correct. The least-examined link in the chain, and named as such.",
+      "phase": "fuaran-core#131",
+      "class": "premise",
+      "evidence": {
+        "assumption": "the F* extractor and the F# compiler are correct"
+      }
+    },
+    {
+      "id": "proof-leg",
+      "level": "policy",
+      "claim": "Which prover is pinned, how many cold-cache runs a check is, and that a model edited without re-extracting fails the leg — the reproducibility posture the proved rows above are only as good as. Policy, not algebra: no theorem addresses it. Since Phase 148 the posture also says what the leg COSTS: each module's cold-run budget is declared in proofs/modules.json, measured on every run and printed beside the measurement, with an overshoot named as a warning — prover time varies by machine and by load, so it is a smoke detector rather than a gate — and `check.ps1 -Strict` for a session that wants one red. The numbers live there rather than in a row here, because a wall-clock budget is a claim at none of this ladder's four levels and is per module where a row is per claim.",
+      "phase": "fuaran-core#131",
+      "evidence": {
+        "document": "proofs/README.md",
+        "budgets": "proofs/modules.json"
+      }
+    },
+    {
+      "id": "wire-resource-limits",
+      "level": "proved",
+      "claim": "WIRE_FORMAT section 21's eight resource limits, carried as named premises in one place so that a changed limit moves one constant rather than a paragraph of prose, with the two RELATIONS between them that the section's own argument uses: every bound admits something, and the node-depth bound sits below the syntactic-depth bound with room for the worst-shaped kind — which is what makes 'a host must never report a node-depth breach as a syntax-depth breach' a fact about the table rather than a hope about it. The module models no enforcement: section 21.2's host obligations are about code it does not describe, and what a consumer gets here is a number with a caption. `canonical-form-roundtrip` takes exactly one of the eight.",
+      "phase": "fuaran-core#149",
+      "evidence": {
+        "theorem": "depth_bounds_do_not_alias",
+        "model": "proofs/Limits.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "column-apply-total",
+      "level": "proved",
+      "claim": "The columnar apply engine reaches exactly one outcome on every operation, every table and every evaluator — the type of the function in the model, discharged by construction — and WHICH rejection each of the six clauses can raise is characterised per clause (`raisable`), not listed. The corollary read off it, `apply_never_not_invertible`: the eighth rejection class is `invert`'s alone and `apply` cannot produce it. The `ApplyTransform` clause raises exactly `TransformRejected`, carrying whatever the evaluator said, because the pipeline is a parameter the algebra never interprets.",
+      "phase": "fuaran-core#176",
+      "evidence": {
+        "theorem": "apply_total",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "column-reject-identity",
+      "level": "proved",
+      "claim": "A refused columnar step leaves the caller holding the input table; for a script (`applyAll`) it is the all-or-nothing discipline stated at an arbitrary failure position in an arbitrary script, so however many intermediate tables the prefix built, none escapes. A rejected `ApplyTransform` — the one operation whose acceptance replaces the table wholesale — is inside that quantifier and is stated on its own as `reject_identity_transform`: `apply` builds nothing before the evaluator answers, so there is no partial table to escape.",
+      "phase": "fuaran-core#176",
+      "evidence": {
+        "theorem": "reject_identity",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "column-canapply-agrees",
+      "level": "proved",
+      "claim": "The dry run answers exactly what the mutating call answers — the same verdict and, on a refusal, the same rejection. The F# says this in a comment (\"they can never disagree\"); here it is the theorem, and the differential asserts it on each side separately as well as across them.",
+      "phase": "fuaran-core#176",
+      "evidence": {
+        "theorem": "canapply_agrees",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "column-apply-preserves-wf",
+      "level": "proved",
+      "claim": "Every accepted STRUCTURAL operation preserves table well-formedness — the schema is the columns' (name, type) projection, no two columns share a name, every column is the row count long, every cell fits its column's type — unconditionally, for the five operations the algebra itself computes. Nothing in production computes this predicate; it is what `Table`'s doc comment states and `Column.create` deliberately does not check, written down so that the round trip and the diff have a hypothesis to stand on. `ApplyTransform` preserves it under the one premise the evaluator is asked for (`apply_preserves_wf_ev`), and so does every accepted script (`apply_all_preserves_wf`).",
+      "phase": "fuaran-core#176",
+      "evidence": {
+        "theorem": "apply_preserves_wf",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "column-invert-round-trip",
+      "level": "proved",
+      "claim": "On a well-formed table, the inverse of an accepted `SetCell`, `SetColumn`, `InsertColumn` or `RemoveColumn` is itself accepted at the result and restores the input EXACTLY — the doc comment's defining law `apply (invert op t) (apply op t) = t`, sampled by `Conformance.columnarOpLaws`, as a theorem. Well-formedness is load-bearing and the differential shows it: on a table with a repeated name or an ill-typed cell the round trip fails on production, and the count of those failures is asserted non-zero so the hypothesis cannot quietly become decoration.",
+      "phase": "fuaran-core#176",
+      "evidence": {
+        "theorem": "invert_roundtrip",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "column-invert-partial-characterised",
+      "level": "proved",
+      "claim": "The partial cases of `invert`, characterised. `AppendRows` and `ApplyTransform` are `NotInvertible` on every table, before the guard and so without running the evaluator (`invert_not_invertible`). On the four operations that can have an inverse, `invert` refuses EXACTLY the pre-states `apply` refuses, with the SAME rejection, and answers wherever `apply` does — an equality of verdicts. Phase 176 could state this for only three of them, and only for the pre-states those three READ: where `apply` went on to refuse the VALUE — a cell of the wrong type, a column of the wrong length — `invert` had already answered `Ok`, and on `InsertColumn` it answered without reading anything at all. Phase 181's `canApply` guard makes the fourth operation true of it and drops the value-refusal exception with it.",
+      "phase": "fuaran-core#181",
+      "evidence": {
+        "theorem": "invert_refuses_as_apply",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "column-invert-only-for-applicable",
+      "level": "proved",
+      "claim": "An inverse exists ONLY for an applicable operation — over all six operations, any table and any evaluator. This is the clause a caller deriving `invert op pre` beside every op it attempts needs: what it is handed is either a rejection or an operation the table would have taken. Phase 176 proved it FALSE of the shipped engine, and the theorem that did so is kept rather than deleted: `invert` on `InsertColumn` read nothing from the pre-state (`invert_insert_reads_nothing`), so the inverse it derived for an insert REFUSED as a duplicate was a remove that succeeded at the pre-state and took the column that was already there (`refused_insert_inverse_is_live`) — a caller lost a column the refused operation never touched. Phase 181 guards `ColumnOps.invert` with `canApply`, as the tree engine's `Ops.invert` already was, and the two negative theorems are now about `invert_pre181`, the model's copy of the clause as it stood, with the shipped refusal stated in the same lemma so neither half can be re-proved while the other quietly stops holding. The guard is proved to consult no evaluator (`invert_ignores_evaluator`), which is why the two never-invertible operations answer ahead of it: `invert` does not run a pipeline to report that it has no inverse.",
+      "phase": "fuaran-core#181",
+      "evidence": {
+        "theorem": "invert_only_for_applicable",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "column-diff-applicable",
+      "level": "proved",
+      "claim": "Every script `Diff.toOps` emits applies to the table it was computed against and yields the other table, on well-formed tables — the doc comment's promise (\"apply-ing it in order yields after\") as a theorem over both branches. The column-granular branch walks `after`'s columns replacing each changed one in place, with the invariant that what the walk has passed is already `after`'s and what it has not reached is still `before`'s; the rebuild branch removes every column (in any order, since the names are distinct) and refills in order, with the invariant that the table so far is a prefix of `after`. Both branches are reached by the differential and asserted on production and on the model.",
+      "phase": "fuaran-core#176",
+      "evidence": {
+        "theorem": "diff_applicable",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "columnar-differential",
+      "level": "tested",
+      "claim": "The extracted columnar model agrees with the shipped `ColumnOps.apply`, `canApply`, `invert`, `applyAll` and `toOps` over generated tables and op scripts — tables drawn with the well-formedness invariant deliberately broken one draw in ten (a repeated name, a column a row long or short, a schema that is not the columns' projection, a cell of the wrong type), because `apply` is total over all of them and the model must agree there too. Compared per probe: the verdict, an accepted result through the bridge, a rejection by class AND payload, the dry run against the mutating call on each side, the derived inverse as an operation, the round trip asserted exactly where the pre-state is well-formed and only counted where it is not, the invariant on production's result judged by the model's own `wf`, and every script whole. Over pairs: the emitted diff script, and the reconstruction asserted on both sides where both tables are well-formed, both branches counted. The go-red hands the differential a BLIND cell bridge — every present cell read as a string — and requires it to lose on the type check. A fourth case pins Phase 176's finding and its closure together on the shipped engine: `ColumnOps.invert` refuses a duplicate insert with the rejection `apply` gave, the model's guarded `invert` refuses it too, and the model's `invert_pre181` still derives the live remove — so a reverted guard and a lost finding each go red. Agreement is over the pools drawn, never over all inputs.",
+      "phase": "fuaran-core#176",
+      "evidence": {
+        "family": "Proofs.Oracle",
+        "model": "proofs/ColumnOps.fst",
+        "cases": [
+          "the columnar oracle agrees with ColumnOps.apply, canApply and invert over generated tables and scripts",
+          "the columnar oracle agrees with ColumnOps.toOps and applyAll, and the diff reconstructs on well-formed pairs",
+          "a columnar oracle handed a BLIND cell bridge DISAGREES with ColumnOps.apply — the measurement can fail",
+          "a REFUSED insert has no inverse — `refused_insert_inverse_is_live` is now about `invert_pre181`"
+        ]
+      }
+    },
+    {
+      "id": "column-cell-carrier-opaque",
+      "level": "assumed",
+      "claim": "THE CARRIER PREMISE. The model reads a present cell as its type and an OPAQUE carrier, and two cells are equal exactly when their types and carriers are; production compares the six value constructors structurally. The bridge renders each value to a carrier that parses back exactly (an int in decimal, a float through the round-trip `R` format, a bool as its word, the three string-carried kinds verbatim), so on every finite value the two readings agree — and on a NaN float they do not: `Float nan <> Float nan` in production, `\"NaN\" = \"NaN\"` in the model. Where the algebra compares cells (`Diff.toOps`'s changed-column test) a table holding a NaN is therefore one the model and production can diff differently. Nothing in the algebra looks inside a carrier, which is why the abstraction is right; the generator draws no NaN and says so. Permanent: the model cannot represent IEEE equality without modelling the float, which is finding 2's cost and not this theorem's.",
+      "phase": "fuaran-core#176",
+      "class": "model-bridge",
+      "closes": "permanent",
+      "evidence": {
+        "assumption": "a present cell is its type and an opaque carrier compared as a string; production's structural cell equality agrees except at a NaN float"
+      }
+    },
+    {
+      "id": "column-transform-evaluator-abstract",
+      "level": "assumed",
+      "claim": "`ApplyTransform` runs a `DataFrame` pipeline the algebra does not interpret, and the model takes the evaluator as a PARAMETER — exactly as Phase 135 made `float i` a parameter and Phase 138 made `ReplaceChildren` one. Every theorem about `apply` is therefore about the ENVELOPE of that clause — replace the table wholesale on `Ok`, `TransformRejected` carrying the evaluator's words on `Error`, nothing built before it answers — and nothing about what the pipeline computes. The one place the abstraction has content is well-formedness: that `DataFrame.evalPipeline` returns coherent, name-distinct, uniform, typed tables is stated as the hypothesis `ev_preserves_wf` and discharged nowhere. The differential instantiates the parameter at production's own evaluator through the bridge, so the envelope is compared; the pipeline is not. Unscheduled: modelling `DataFrame.evalPipeline` is its own phase and nobody has taken it.",
+      "phase": "fuaran-core#176",
+      "class": "model-bridge",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "the pipeline evaluator is a parameter; that it returns well-formed tables is a hypothesis this repository does not discharge"
+      }
+    },
+    {
+      "id": "pipeline-eval-total",
+      "level": "proved",
+      "claim": "`DataFrame.evalPipelineWithInEnvCounted` is TOTAL, and its two outcomes are characterised: it returns `Ok` exactly when every step of the walk succeeds — and then the count is the walk's cost, charged step by step where each step stands — and otherwise it returns the FIRST failing step's own error, verbatim (`go_ok_iff`, `go_count`, `go_error`). The driver invents no refusal: there is no clause in `go` that produces an `Error` a step did not, which is what makes the §21.8 finding below a theorem rather than an observation. Termination is structural on the pipeline and checked by the prover — and, since Phase 234, inside a step: the expression evaluator, the filter and the derive are clauses (`eval_expr` with its four loops, `filter_rows`, `eval_derive`, `eval_step`), total by structural recursion over the closed DUs, with the one partial operation on the modelled path (`List.item i row` in the `Col` arm) in range on a well-formed frame by refinement and `evalDerive`'s `List.map2` lengths likewise. Over any cell primitives, any twelve-verb evaluator, any param environment, any pipeline and any well-formed input frame; the twelve verbs' semantics and the cell primitives are the model's parameters and no theorem is about one.",
+      "phase": "fuaran-core#154",
+      "evidence": {
+        "theorem": "eval_total",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "go_ok_iff",
+          "go_count",
+          "go_error",
+          "walk_ok",
+          "first_error",
+          "cost",
+          "eval_step",
+          "eval_expr",
+          "filter_rows",
+          "eval_derive"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-budget-monotone",
+      "level": "proved",
+      "claim": "The count is MONOTONE IN THE PIPELINE PREFIX: if `p ++ q` evaluates to `Ok (_, m')` then `p` evaluates to `Ok (_, m)` with `m <= m'`. The fold over a concatenation is the fold over the prefix continued over the suffix from the prefix's frame and count (`go_app`), and a count never goes down because the driver only ever adds (`go_count_ge`). What is deliberately NOT claimed is a bound in the INPUT's row count: a `Join` or a `Union` can grow the frame, and the count is charged where each step stands — which is exactly what monotone-in-the-prefix says and what a bound in the input would not. This is Core's half of the attested-stack programme's budget-monotonicity theorem, and the ladder names NO consuming phase: the Program-tier theorem (`fuaran#1716`) shipped without a Core-evaluator row, neither proving nor axiomatising this evaluator, so the row stands alone until a consumer cites it.",
+      "phase": "fuaran-core#154",
+      "evidence": {
+        "theorem": "budget_monotone",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "go_app",
+          "go_count_ge"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-work-bounded-by-expr-limit",
+      "level": "proved",
+      "claim": "Under the §21.8 expression-node limit taken as a HYPOTHESIS on the pipeline — `within_limit`: every expression a `Filter` or a `Derive` carries has at most `Limits.max_expr_nodes` nodes, counted one per constructor occurrence through every list an expression carries (`expr_nodes`) — the expression WORK a walk does is at most the count it reports times the limit: `work <= cost * max_expr_nodes` (`work_bounded`, from `step_work_bounded` per step). Since Phase 234 `work` is NOT a definition: it is the number of `evalExpr` invocations the concretely modelled evaluator makes at each charged step (`rows_visits` over the step's rows, `expr_visits` per row, following every short circuit), and the bound on it is PROVED (`rows_visits_le`, from `visits_le_nodes` — the row below). Phase 154 had defined `work` as rows times nodes and said `evalExpr` visits a node at most once; that sentence is now the theorem. For the two expression-evaluating steps the bound is unconditional on any parameter; for the twelve other verbs it rests on their evaluating no expression (`pipeline-step-evaluator-abstract`), the same assumption `costOf` makes in charging them nothing. The bound is a hypothesis and not a refusal because that is all it is on this tree: see `pipeline-limit-unenforced`.",
+      "phase": "fuaran-core#234",
+      "evidence": {
+        "theorem": "work_bounded",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "step_work_bounded",
+          "rows_visits_le",
+          "rows_visits",
+          "expr_visits",
+          "expr_nodes",
+          "within_limit",
+          "work"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-visits-le-nodes",
+      "level": "proved",
+      "claim": "ONE ROW'S evaluation of an expression makes at most as many `evalExpr` invocations as the expression has nodes (`visits_le_nodes`): `expr_visits` counts the invocations `eval_expr` makes on that row, itself included, following every short circuit exactly as the evaluator takes it — a `Binary` whose left operand fails never evaluates its right, a `Coalesce` stops at the first non-null, a `Case` at the first true `when` and reads its `else` only when none was, an `InList` at the first match and reads no item when its subject is null, an `ApplyFn` at the first failing argument — and it is at most `expr_nodes`. A mutual induction over the expression and its three list walks, over any cell primitives (a function of cells cannot re-enter the evaluator) and any row. Over a step's rows, stopping at the first that fails as `evalFilter` and `evalDerive` do, the invocations are at most rows times nodes (`rows_visits_le`). This is what \"the evaluator is structural and visits a node at most once\" MEANS, proved of the modelled evaluator rather than said of the host's; it is the lemma `work_bounded` stands on, and the Opus arm of Phase 154's same-task trial is where its formulation came from (branch `phase-154`, deleted once this phase shipped).",
+      "phase": "fuaran-core#234",
+      "evidence": {
+        "theorem": "visits_le_nodes",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "rows_visits_le",
+          "expr_visits",
+          "coalesce_le",
+          "case_le",
+          "in_le",
+          "args_le",
+          "eval_expr"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-limit-unenforced",
+      "level": "proved",
+      "claim": "THE FINDING. `Limits.max_expr_nodes` (§21.8, 512) is enforced NOWHERE under `src/`: a pipeline OUTSIDE the limit whose every step succeeds evaluates to `Ok` (`over_limit_not_refused`), because the driver has no clause that reads the bound — the limit is a premise a caller may assume and never a refusal the evaluator performs. The differential asserts the same on the shipped evaluator with a 513-node expression, so an enforcement added later turns that case red and sends its author here. Whether a conformant host MUST refuse such a pipeline before evaluation (§21.2's obligation, stated for the decoder and \"every walk\") is a decision for a later operator act; this phase records it and changes nothing, because adding the refusal would breach its own zero-impact constraint on the evaluator.",
+      "phase": "fuaran-core#154",
+      "evidence": {
+        "theorem": "over_limit_not_refused",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
+      "id": "pipeline-uncounted-is-projection",
+      "level": "proved",
+      "claim": "`DataFrame.evalPipelineWithInEnv` is `evalPipelineWithInEnvCounted … |> Result.map fst` and nothing else — the one-line identity the source is (`uncounted_is_projection`, discharged by definition), and so the uncounted path succeeds exactly when the walk does, with the counted path's frame (`uncounted_ok_iff`). This row REPLACES the `counted_agrees` the phase was chartered with: there is no second path for the counted one to agree with, so an agreement lemma would relate one path to itself. The differential pins the identity on production over the vectors and the sample, so a second path — a counter, a check, a refusal added to one entry point and not the other — turns that case red.",
+      "phase": "fuaran-core#154",
+      "evidence": {
+        "theorem": "uncounted_is_projection",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "uncounted_ok_iff"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-differential",
+      "level": "tested",
+      "claim": "The extracted driver agrees with the shipped `DataFrame.evalPipelineWithInEnvCounted` on the TABLE (byte for byte through `ColumnCodec.encode`) and the COUNT, or on the named `EvalError`, with the cell primitives instantiated at production's own (each read through the public `evalExprInRow` on a one-node expression) and the twelve verbs at production's own one verb at a time through `evalPipelineWithInEnv resolve env [ step ]` — so every `Filter` and `Derive` is evaluated by the MODEL's evaluator, loop and short circuits, and compared to production's table — over the sixteen `conformance/laws/transform-laws.json` vectors decoded with the shipped codec (each file verdict cross-checked against the reference's), and four hundred generated pipelines at seed 154: the vectors' own table recipe, widened in the pipeline to one to four steps over all fourteen verbs and expressions over all thirteen kinds, with a `Ref` resolver, a param env, embedded and referenced right-hand sources, and slots that are literals or params. Every pipeline is also crossed to the model and back and must return unchanged. Since Phase 234 the evaluator is also compared ON ITS OWN: the model's `eval_expr` against `evalExprInRow`, cell for cell and error for error, over 2,095 expression-row pairs at seed 234 (six hundred depth-three expressions, each on every row of a drawn table) reaching all thirteen kinds, with `expr_visits` held to `expr_nodes` on every pair and the sample required to reach both a short circuit and a full walk; and `work_bounded`'s inequality is read numerically over the four hundred pipelines, with the visits required to exceed the count on some. Three go-reds: a lock-step step evaluator that runs production's own Derive while the bridge crosses it as a Distinct — a model whose count skips one step kind — must lose on the count and on nothing else; a bridge that negates every Filter under the faithful evaluator must lose on the table; and a node counter that forgets a `Case`'s arms — a model that under-counts a nested expression — must be exceeded by the visit count. Agreement is over the pools drawn, never over all inputs, and the twelve verbs' SEMANTICS and the cell primitives are shared with production by construction rather than compared.",
+      "phase": "fuaran-core#234",
+      "evidence": {
+        "family": "Proofs.Oracle",
+        "model": "proofs/Pipeline.fst",
+        "cases": [
+          "the pipeline oracle agrees with DataFrame.evalPipelineWithInEnvCounted on table and count over the transform-laws vectors and a generated sample that reaches every verb and every expression kind",
+          "a pipeline oracle whose count skips one step kind DISAGREES with DataFrame.evalPipelineWithInEnvCounted on the count and on nothing else — the measurement can fail",
+          "`uncounted_is_projection` on the shipped evaluator — evalPipelineWithInEnv is the counted path projected, over the vectors and the sample",
+          "the finding holds on the shipped evaluator — an expression over `Limits.max_expr_nodes` is evaluated, never refused",
+          "the concrete expression evaluator agrees with DataFrame.evalExprInRow cell for cell and error for error over generated expressions and rows, and its visit count never exceeds the node count",
+          "a model that under-counts a nested expression's nodes DISAGREES with the evaluator's visit count — the node bound can fail",
+          "`work_bounded` on the shipped primitives — over every generated pipeline within the limit the evaluator's visits are at most the count times `Limits.max_expr_nodes`, and exceed the count where an expression has more than one node"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-step-evaluator-abstract",
+      "level": "assumed",
+      "claim": "THE TWELVE-VERB PREMISE (the id predates Phase 234, when the whole step evaluator was the parameter). `evalStep resolve env`'s twelve arms that evaluate no expression — `Project`, `GroupBy`, `Join`, `Window`, `Pivot`, `Unpivot`, `Sort`, `Distinct`, `Limit`, `Union`, `Intersect`, `Except`: group aggregation, windows, pivots, joins, the set operations — are the model's parameter (`other_fn : wframe -> transform -> outcome wframe eval_error`, the resolver and the env closed over), exactly as Phase 176 made the pipeline evaluator one and Phase 186 the node evaluator; the `Filter` and `Derive` arms are clauses since Phase 234. What is ASSUMED of the twelve is their type — on a well-formed frame each returns a well-formed frame or a named error — and that each evaluates NO expression, which is a fact about the source (those arms carry no `ColExpr` and reach neither `evalExpr` nor `evalExprInRow`) and what `costOf` already asserts in charging them nothing; `work` charges them no expression work on that basis, so `work_bounded` rests on this row for those steps and on nothing for the other two. Every theorem holds for every such evaluator, so nothing here is a claim about any of the twelve verbs' semantics; those stay with the laws the retired `Fuaran.Core.DataFrame` coverage exclusion named (`incrementalLaws`, `schemaWalkLaws`, `aggregateParityLaws`) and with `Conformance.transformLaws` at every host. The differential instantiates the parameter at production's own primitives, so the verbs are exercised and shared, not modelled. `unscheduled` rather than `permanent`: a model of a verb is possible verb by verb (the Phase 176 precedent modelled a table algebra with a validity mask; Phase 234 is the precedent for the two that evaluate an expression), and nobody has taken one.",
+      "phase": "fuaran-core#234",
+      "class": "model-bridge",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "the twelve verbs that evaluate no expression are a parameter typed to return a well-formed frame or an error; their semantics are neither modelled nor claimed, and that they evaluate no expression is read off the source, not proved"
+      }
+    },
+    {
+      "id": "pipeline-cell-primitives-abstract",
+      "level": "assumed",
+      "claim": "THE CELL-PRIMITIVES PREMISE. The four operator-class primitives `evalExpr`'s `Binary` arm dispatches to (`arith` / `comparison` / `logical` / `stringPred`, taken as ONE function of the operator, which is what the arm's `match op with …` makes of them), `castCell`, `applyScalar` and `compareCells` are the model's parameter (`prims`, a record of four functions): the arithmetic, the coercions and the pinned float layout, over a `cell` whose float is an opaque carrier (`column-cell-carrier-opaque`). What is ASSUMED of them is only their type — each is a total function of its arguments returning a cell or a named error — and, because a function of cells cannot call `evalExpr`, that none of them evaluates an expression; no theorem reads a cell they produce, `eval_expr` threads their outcome and nothing else, and `visits_le_nodes` holds for every such record. The differential instantiates the record at production's own primitives, each read through the public `evalExprInRow` on a one-node expression over literals, so the model's evaluator runs production's arithmetic under the model's recursion. What a primitive computes stays with `Conformance.transformLaws` at every host. `unscheduled` rather than `permanent`: the integer, boolean and string arms are modellable clause for clause on the Phase 149 precedent (`canon-numeral-layouts` kept only the float layout opaque), and nobody has taken them.",
+      "phase": "fuaran-core#234",
+      "class": "model-bridge",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "the cell primitives are a record of total functions the host supplies; what they compute is neither modelled nor claimed, and that none of them evaluates an expression is a fact of their type"
+      }
+    }
+  ]
+}

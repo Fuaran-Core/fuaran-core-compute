@@ -1,0 +1,12 @@
+{
+  "kind": "version",
+  "producer": "fuaran-core-compute",
+  "$note": "The files this repository DERIVES from its own <Version>, and where their published copies live. conformance/laws/transform-laws.json carries a kitVersion stamp read from the Fuaran.Core.DataFrame assembly this repository builds, so a version cut re-emits it, and the shared wire-format corpus's copy is re-emitted with it (Phase 259; until then the Fuaran.Core repository emitted it, and its own entry is removed when that repository removes the compute strand in Phase 258).",
+  "derives": [
+    {
+      "emit": "dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-laws",
+      "writes": "conformance/laws/transform-laws.json",
+      "copiedTo": "Fuaran/Fuaran-UI/wire-format-fixtures:laws/transform-laws.json"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- THE ORACLE: the F* models beside this file (../<Model>.fst), extracted to F# by F*'s F# code
+       generator and compiled as an ordinary assembly, so the test suite can run each model beside
+       the production code it is about. Never packed: nothing extracted enters a shipped assembly.
+       Every <Model>.fs below except the two runtime shims is GENERATED — regenerate with
+       `pwsh ../check.ps1 -Extract`; the proof leg fails when a committed file and a fresh
+       extraction differ, which is what makes "the oracle IS the model" a checked claim.
+       Adopted from the proof-leg kit's oracle.fsproj.template (Phase 259). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <!-- The extracted code is not this repository's style: generated, and formatted by the
+         extractor. Fantomas does not run over proofs/, and the warnings the extraction style
+         raises (unused pattern variables, less-generic constructs) are the extractor's to keep. -->
+    <NoWarn>$(NoWarn);FS0058;FS0064;FS1182</NoWarn>
+    <!-- The F# backend emits pre-F#-8 layout (match arms at column 1 inside a parenthesised
+         lambda), which F# 10's strict indentation rejects outright. Relaxed for THIS project only.
+         A mutual TYPE group is handled a step earlier, by the kit's extraction post-pass. -->
+    <OtherFlags>$(OtherFlags) --strict-indentation-</OtherFlags>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The hand-written runtime floor, copied from the kit's repository. NOT generated and NOT
+         diffed by the leg. -->
+    <Compile Include="Prims.fs" />
+    <Compile Include="FStar_Pervasives_Native.fs" />
+    <!-- The WIRE_FORMAT section-21 resource limits as named premises (../Limits.fst), copied from
+         the kit's repository: Pipeline opens it for the expression-node limit it takes as a
+         hypothesis. -->
+    <Compile Include="Limits.fs" />
+    <!-- The model of the COMPUTE strand's op algebra (../ColumnOps.fst): `ColumnOps.apply` /
+         `canApply` / `invert` / `Diff.toOps` over a table with a validity mask. Opens nothing. -->
+    <Compile Include="ColumnOps.fs" />
+    <!-- The model of the COUNTED PIPELINE DRIVER and its expression evaluator (../Pipeline.fst).
+         Opens `Limits`, so it follows it. -->
+    <Compile Include="Pipeline.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

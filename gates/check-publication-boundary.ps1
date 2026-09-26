@@ -66,7 +66,17 @@ $carried = @(
     @{ What = 'the copyright holder''s registered name (Diametrical Ltd)'
        Where = 'LICENSE, NOTICE, Directory.Build.props (Company, Copyright)'
        Why  = 'the Apache-2.0 licence and the package metadata name the copyright holder; that is a legal fact, not a reference' }
+    @{ What = 'the word "estate" in two sentences of the proof-leg kit''s README'
+       Where = 'proofs/kit/README.md (the two lines that say "the estate''s")'
+       Why  = 'the file is a VERBATIM copy declared in copies.json; editing the copy would put it in permanent drift from its source, so the wording is fixed at the source (the Fuaran.Core repository) and re-copied' }
 )
+
+# A carried hit is exempt only when BOTH its file and its text match: a new hit in the same file,
+# or the same word somewhere else, is still a failure. A file-level allowlist would let the next
+# reference through on the strength of a decision that was about something else.
+function Test-Carried($hit) {
+    ($hit.File -eq 'proofs/kit/README.md' -and $hit.Text -match "\bthe estate's\b")
+}
 
 $files = @(git ls-files) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) }
 if (-not $files) {
@@ -107,6 +117,12 @@ foreach ($c in $carried) {
     Write-Host ("  {0}" -f $c.What)
     Write-Host ("    in:  {0}" -f $c.Where)
     Write-Host ("    why: {0}" -f $c.Why)
+}
+
+$exempt = @($hits | Where-Object { Test-Carried $_ })
+$hits = @($hits | Where-Object { -not (Test-Carried $_) })
+foreach ($h in $exempt) {
+    Write-Host "  carried: $($h.File):$($h.Line)"
 }
 
 if ($hits.Count -gt 0) {

@@ -1,0 +1,115 @@
+(*
+   Instance.fst.template — the fold-confluence theorem, instantiated at a domain by filling holes
+   (fuaran-core Phase 175). TEMPLATE: the text below the `(* ==== END OF PREAMBLE ==== *)` line, with every
+   `{{HOLE}}` replaced, is a complete F* module; this preamble is dropped and never reaches the
+   instance.
+
+   WHAT IT INSTANTIATES. `DagFold.fold_confluence` is generic over an operation type, a state type,
+   a rejection type, an apply function and a footprint function, and it carries ONE hypothesis about
+   the domain — `independence_diamond fp apply`, the promise that footprint-independent operations
+   which both apply at a state commute there. A domain that PROVES that promise for its own algebra
+   gets the theorem with no hypothesis about the domain left, and the halt half of the theorem with
+   no hypothesis at all. `Skeleton.fst` beside this kit is the first instance — the skeleton-op tree
+   algebra of `TreeOps.fst` — and `tests/Fuaran.Core.Tests/ProofsLadderTests.fs` reproduces it from
+   this file byte for byte, so the template and its instance cannot drift apart silently.
+
+   THE INSTANTIATION CONTRACT. Three rules, all mechanical:
+     1. Drop everything through the `(* ==== END OF PREAMBLE ==== *)` line below.
+     2. Replace every `{{HOLE}}` with the value the table gives; the same hole may occur many times
+        and every occurrence takes the same value. Two holes are prose (HEADER, TRAILER) and the
+        rest are identifiers.
+     3. The result contains no `{{`. A hole left unfilled is a refusal, not a default.
+   Nothing else is edited: a line of the fixed text that a domain needs to change is a finding about
+   the template, and goes back to the kit's repository rather than into a fork of it.
+
+   THE HOLES.
+     {{MODULE}}          the instance's module name (`Skeleton`).
+     {{DOMAIN}}          the module carrying the domain's algebra, opened beside `DagFold`
+                         (`TreeOps`).
+     {{OP}} {{STATE}} {{REJ}}
+                         the domain's operation, state and rejection types, as `{{DOMAIN}}` names
+                         them (`op`, `tree`, `rejection`).
+     {{APPLY}}           `{{OP}} -> {{STATE}} -> outcome {{STATE}} {{REJ}}` — the algebra the
+                         theorem is about. Where the domain's apply is only lawful on well-formed
+                         states, this is the GUARDED apply (`wapply`: `Ops.apply` declining a step
+                         off, or onto, a state carrying an id twice), and the guard is where the
+                         `tree-algebra-well-formed-states` obligation is stated rather than assumed.
+     {{FOOTPRINT}}       `{{OP}} -> footprint` (`op_fp`).
+     {{FOLD}}            the name of the instance's fold; the two theorems are named from it as
+                         `{{FOLD}}_confluence` and `{{FOLD}}_confluence_halt` (`skeleton_fold`).
+     {{DIAMOND}}         THE OBLIGATION, discharged. A lemma of type
+                         `unit -> Lemma (independence_diamond #{{OP}} #{{STATE}} #{{REJ}} {{FOOTPRINT}} {{APPLY}})`
+                         declared in `{{DOMAIN}}` (`op_independence_diamond`). This is the
+                         `independence-diamond` row of the kit's ladder: a domain running only the
+                         conformance kit has it SAMPLED by `Conformance.footprintLaws`; an instance
+                         of this template has it PROVED, and the instance's own `proofs.json` says
+                         so at level `proved`.
+     {{PROD_APPLY}} {{PROD_FOOTPRINT}} {{PROD_FOLD}}
+                         the production names the instance's comments cite — the F# apply, footprint
+                         and fold the model is an oracle for (`Ops.apply`, `Ops.footprint`,
+                         `FoldConfluence.foldOnce`). Prose only; nothing is checked against them.
+     {{HEADER}}          the interior of the opening comment: what the instance's composite says,
+                         which boundaries remain and where each is stated, and the licence line.
+                         Prose; no trailing newline.
+     {{TRAILER}}         everything after the theorem — the instance's own evidence, or empty.
+                         `Skeleton.fst` carries a non-vacuity witness here (`batch_lanes_fold`: a
+                         lane the theorem could not previously be stated about, folded), and an
+                         instance without one has nothing that goes red if its alphabet is quietly
+                         narrowed. Prose and code; no trailing newline.
+
+   WHAT REMAINS IN THE `requires`, AND IS NOT A HOLE. `lanes_apply {{APPLY}} ls1 s0` — that every
+   lane of the set in hand applies cleanly from the base state. It is a statement about the lane
+   set, not a promise about the domain, and it is the `lanes-apply` row of the ladder, sampled by
+   `Conformance.concurrencyLaws` at the instance's witness exactly as it is at this repository's.
+
+   WHAT THIS TEMPLATE DOES NOT GIVE. The apply-engine preservation theorems (`Preservation.fst`),
+   the diff theorems (`TreeDiff.fst`) and the tree algebra's own diamond (`TreeOps.fst`) are stated
+   ABOUT the skeleton-op tree algebra, not generically over a domain. A domain whose state IS that
+   tree under those operations inherits them by copying the four files and declaring the copies; a
+   domain with its own algebra models its own apply, and `{{DIAMOND}}` is the theorem it must
+   prove about it before this template applies. That is not a limitation of the template so much as
+   what the template is for: the fold theorem is the generic half, and the diamond is the half that
+   is the domain's.
+*)
+(* ==== END OF PREAMBLE ==== *)
+(*
+{{HEADER}}
+*)
+module {{MODULE}}
+
+open DagFold
+open {{DOMAIN}}
+
+(* The fold at this algebra, with the domain's apply and footprint already supplied — the
+   function the theorems below are about, and the one the differential host runs, so the oracle
+   compared against production is the one the theorem names rather than a re-assembly of parts. *)
+let {{FOLD}} (s0:{{STATE}}) (lanes:list (list {{OP}}))
+  : Tot (lane_outcome {{OP}} {{STATE}} {{REJ}}) =
+  fold_once {{APPLY}} {{FOOTPRINT}} s0 lanes
+
+(* THE HALT HALF — no hypothesis at all. Whether a lane set halts, and the canonical report it
+   halts with, are properties of `{{PROD_FOOTPRINT}}` alone; nothing about `{{PROD_APPLY}}`, nothing about
+   well-formedness, and nothing about the op alphabet is used. *)
+val {{FOLD}}_confluence_halt
+  (s0:{{STATE}}) (ls1 ls2:list (list {{OP}})) (p:perm (list {{OP}}) ls1 ls2)
+  : Lemma (requires not (is_empty (all_conflicts {{FOOTPRINT}} ls1)))
+          (ensures outcome_equiv ({{FOLD}} s0 ls1) ({{FOLD}} s0 ls2))
+
+let {{FOLD}}_confluence_halt s0 ls1 ls2 p =
+  fold_confluence_halt {{APPLY}} {{FOOTPRINT}} s0 ls1 ls2 p
+
+(* THE THEOREM. `DagFold.fold_confluence`'s domain hypothesis is discharged by
+   `{{DOMAIN}}.{{DIAMOND}}`, so what remains in the `requires` is `lanes_apply` — not a
+   promise about the domain but a statement about the lane set in hand, that every lane applies
+   cleanly from the base state, which is the lane set `{{PROD_FOLD}}`'s generators
+   produce and the only one the fold half was ever about. *)
+val {{FOLD}}_confluence
+  (s0:{{STATE}}) (ls1 ls2:list (list {{OP}})) (p:perm (list {{OP}}) ls1 ls2)
+  : Lemma (requires lanes_apply {{APPLY}} ls1 s0)
+          (ensures outcome_equiv ({{FOLD}} s0 ls1) ({{FOLD}} s0 ls2))
+
+let {{FOLD}}_confluence s0 ls1 ls2 p =
+  {{DIAMOND}} ();
+  fold_confluence {{APPLY}} {{FOOTPRINT}} s0 ls1 ls2 p
+
+{{TRAILER}}

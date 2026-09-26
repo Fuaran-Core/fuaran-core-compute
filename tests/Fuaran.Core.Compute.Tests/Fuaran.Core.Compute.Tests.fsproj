@@ -31,6 +31,13 @@
     <!-- The compute boundary, held from this side: the substrate by package, and only the five
          packages the strand stands on. After PublicSurfaceTests, whose assembly locator it reuses. -->
     <Compile Include="ComputeBoundaryTests.fs" />
+    <!-- The F* oracles as hosts: the extracted ColumnOps and Pipeline models run beside production
+         (the Proofs.Oracle family the proof leg's host step runs). -->
+    <Compile Include="ProofOracleTests.fs" />
+    <!-- The claims ladder and the coverage declaration held to the tree (Proofs.Ladder,
+         Proofs.Coverage). After ProofOracleTests.fs, whose case names the ladder reads, and
+         PackageRosterTests.fs, whose roster the coverage rule reads. -->
+    <Compile Include="ProofsLadderTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
@@ -40,6 +47,8 @@
     <!-- The C# facade: referenced so its built assembly sits beside this suite's, where the
          public-surface and boundary legs read its metadata. Nothing here calls it. -->
     <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.CSharp\Fuaran.Core.DataFrame.CSharp.csproj" />
+    <!-- The F*-extracted oracle (never packed; see proofs/README.md). -->
+    <ProjectReference Include="..\..\proofs\oracle\Fuaran.Core.Compute.Proofs.Oracle.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- TEMPLATE: copy to <repo>/proofs/oracle/<Your>.Proofs.Oracle.fsproj, rename it, and add it to
+       the solution. It is deliberately NOT named `.fsproj` here so that no build, glob or solution
+       tool in the kit's host repository ever picks the template up.
+
+       THE ORACLE: the F* models beside this file (../<Model>.fst), extracted to F# by F*'s F# code
+       generator and compiled as an ordinary assembly, so the test suite can run each model beside
+       the production code it is about. Never packed: nothing extracted enters a shipped assembly.
+       Every <Model>.fs below is GENERATED — regenerate with `pwsh ../check.ps1 -Extract`; the proof
+       leg fails when a committed file and a fresh extraction differ, which is what makes "the
+       oracle IS the model" a checked claim rather than an asserted one. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <!-- The extracted code is not your repository's style: generated, and formatted by the
+         extractor. Keep your formatter off proofs/, and let the warnings the extraction style
+         raises (unused pattern variables, less-generic constructs) stay the extractor's to keep. -->
+    <NoWarn>$(NoWarn);FS0058;FS0064;FS1182</NoWarn>
+    <!-- The F# backend emits pre-F#-8 layout (match arms at column 1 inside a parenthesised
+         lambda), which F# 10's strict indentation rejects outright. Relax it for THIS project only
+         — it is a property of the extractor's output, not of anything you wrote. -->
+    <!-- WHAT THIS FLAG DOES NOT COVER. The backend also emits a mutual TYPE group with the `and`
+         one space in, and F# rejects THAT with FS0010 whether or not this relaxation is in force.
+         It is handled a step earlier: the leg's EXTRACT stage runs the kit's
+         extraction-post-pass.ps1 over each fresh extraction before the byte diff, so your
+         committed oracles are text this project can build. See the kit README, "The extraction
+         post-pass" — including the condition under which that pass is retired. -->
+    <OtherFlags>$(OtherFlags) --strict-indentation-</OtherFlags>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The hand-written runtime floor, copied from the kit. NOT generated and NOT diffed by the
+         leg: the leg holds the GENERATED files to a fresh extraction, and these two are the floor
+         they stand on. `Prims.fs` closes the gap for the names F*'s F# backend emits from `Prims`;
+         `FStar_Pervasives_Native.fs` does the same for F*'s `option` and the pair projections. A
+         model that reaches for another library type means adding to this floor. -->
+    <Compile Include="Prims.fs" />
+    <Compile Include="FStar_Pervasives_Native.fs" />
+    <!-- One line per model, in the SAME dependency order as check.ps1's $modules: a model must
+         follow anything it opens. Annotate each with what it models and which model (if any) it
+         opens — the compile order is the only place that dependency is written down. -->
+    <Compile Include="FirstModel.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

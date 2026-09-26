@@ -1,0 +1,37 @@
+# TEMPLATE: the CI job that runs the proof leg. Paste into your workflow's `jobs:` block and edit
+# the two marked lines. It is a SEPARATE job from your ordinary build/test job on purpose — the leg
+# takes minutes and downloads a ~200 MB prover, so a repository that folded it into the main job
+# would pay for it on every change and would learn to skip it.
+#
+#   windows-latest      the pinned release below is the Windows one; on another runner set
+#                       FSTAR_HOME to a matching release and the pin's version check still applies.
+#   the cache key       hashes fstar-pin.json, so bumping the pin invalidates the cache and the next
+#                       run downloads the new release. That is the whole mechanism: the pin moves in
+#                       one place and CI follows it with no second edit.
+#   -Runs 3             three cold-cache verifications of every model, which is the reproducibility
+#                       claim made literal. Not a timeout: a timeout says a run died and nothing
+#                       about which module. The per-module budgets do that, in modules.json.
+proofs:
+  runs-on: windows-latest
+  steps:
+    - uses: actions/checkout@v4
+    # EDIT: any sibling corpus or fixture repository your host step needs; delete if none.
+    # - name: Check out the conformance corpus
+    #   uses: actions/checkout@v4
+    #   with:
+    #     repository: <owner>/<corpus-repo>
+    #     path: <checkout-path>
+    - uses: actions/setup-dotnet@v4
+      with:
+        global-json-file: global.json
+    - name: Cache the pinned F* release
+      uses: actions/cache@v4
+      with:
+        path: proofs/.fstar
+        key: fstar-${{ runner.os }}-${{ hashFiles('proofs/fstar-pin.json') }}
+    - name: Proof leg (./proofs/check.ps1 -Runs 3)
+      shell: pwsh
+      # EDIT: any environment your host step needs; delete if none.
+      # env:
+      #   <YOUR_CORPUS_DIR>: ${{ github.workspace }}/<checkout-path>
+      run: ./proofs/check.ps1 -Runs 3
