@@ -9,23 +9,19 @@
     <RootNamespace>Fuaran.Core.CSharp.Proof</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Phase 257 — the dataframe half of the facade proves its own coverage over its own
-         assembly. The legs that are not about either half (the check ledger, the coverage walk,
-         the surface rule and its decoys) and the column-layer halves of the partial generator and
-         rebuild walk are compiled from the facade proof beside this one, so there is one copy of
-         each: they travel with this project as a copy when the dataframe layer leaves. -->
-    <Compile Include="..\Fuaran.Core.CSharp.Proof\Check.cs" Link="Shared\Check.cs" />
-    <Compile Include="..\Fuaran.Core.CSharp.Proof\Coverage.cs" Link="Shared\Coverage.cs" />
-    <Compile Include="..\Fuaran.Core.CSharp.Proof\Surface.cs" Link="Shared\Surface.cs" />
-    <Compile Include="..\Fuaran.Core.CSharp.Proof\Generators.cs" Link="Shared\Generators.cs" />
-    <Compile Include="..\Fuaran.Core.CSharp.Proof\Rebuild.cs" Link="Shared\Rebuild.cs" />
+    <!-- The dataframe half of the facade proves its own coverage over its own assembly. The legs
+         that are not about either half of the facade (the check ledger, the coverage walk, the
+         surface rule and its decoys) and the column-layer halves of the partial generator and
+         rebuild walk live in the Fuaran.Core repository's facade proof, which proves the other
+         half; they travelled here as COPIES under Shared/ (Phase 259), declared in copies.json so
+         a drift between the two is named. The default compile glob picks them up. -->
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.CSharp\Fuaran.Core.DataFrame.CSharp.csproj" />
-    <!-- `ConfRng`, as in the facade proof: the seeded, Fable-identical draw stream. -->
-    <ProjectReference Include="..\..\src\Fuaran.Core.Conformance\Fuaran.Core.Conformance.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
+    <!-- `ConfRng`, as in the substrate's facade proof: the seeded, Fable-identical draw stream. -->
+    <PackageReference Include="Fuaran.Core.Conformance" />
   </ItemGroup>
 </Project>

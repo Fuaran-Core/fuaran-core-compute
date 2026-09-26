@@ -2,7 +2,7 @@
 
 A one-page on-ramp for a consumer that already evaluates a `Transform` pipeline with
 `DataFrame.evalPipeline` and wants a refresh to cost the rows that changed rather than the rows it
-has. Read it alongside [`ADOPTION.md`](ADOPTION.md); nothing here replaces the reference evaluator,
+has. Read it alongside the substrate's [`ADOPTION.md`](https://github.com/Fuaran-Core/fuaran-core/blob/main/docs/ADOPTION.md); nothing here replaces the reference evaluator,
 and adopting it is reversible at any point.
 
 Everything below is in `Fuaran.Core.DataFrame` (`0.11.0`), FSharp.Core-only and Fable-clean.
@@ -424,7 +424,7 @@ Measure your own pipeline rather than reading any row above as a rule.
 **Read this section before adopting `0.28.1` if you certify your own evaluator against
 `IncrementalDelta.laws`.** The corpus grew by ten shapes, every one of them red against the cache
 condition `0.26.0` shipped, so a host carrying that condition goes red at this pin. That is the
-point of the widening and it is described for adopters under `0.28.1` in `STABILITY.md`.
+point of the widening and it is described for adopters under `0.28.1` in the Fuaran.Core repository's `STABILITY.md`, where versions before `0.33.0` are recorded.
 
 ### What the class is
 

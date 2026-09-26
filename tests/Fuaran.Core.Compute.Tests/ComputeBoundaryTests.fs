@@ -1,23 +1,24 @@
-/// Phase 257 — the compute boundary, held.
+/// The compute boundary, held from this side (Phase 259, mirroring the Fuaran.Core repository's own
+/// test from Phase 257).
 ///
-/// DECISIONS.md D66 rules that `Fuaran.Core.DataFrame` and `Fuaran.Core.Column.Ops` leave this
-/// repository for one of their own, and D68 records how the line was prepared inside it first: the
-/// families and the facade half that read them moved into `Fuaran.Core.DataFrame.Conformance` and
-/// `Fuaran.Core.DataFrame.CSharp`, so the later move is a copy of whole assemblies. That only stays
-/// true while nothing on this side of the line reaches across it again, and a helper that does is
-/// the easiest change in the world to make. So this test refuses it, on two readings, because each
-/// misses what the other sees:
+/// The substrate's test refuses an UPWARD reference: no spine assembly may reach the compute layer.
+/// This one holds the other half of the same line. The four packages this repository produces stand
+/// on exactly five substrate packages — `Fuaran.Core.Column` and `Fuaran.Core.Wire` (the table and
+/// the canonical JSON the dataframe is built over), `Fuaran.Core.OpStream` (which records columnar
+/// edits), `Fuaran.Core.Conformance` (the kit the dataframe families extend) and `Fuaran.Core.CSharp`
+/// (the facade the dataframe half is built over) — and they take each by PACKAGE, never by project.
+/// A sixth substrate reference, or a reference to anything that is not a public package, is a design
+/// question for a seam, not a line to add to a project file.
 ///
-///   * the PROJECT FILES — every spine project's `ProjectReference` closure, walked through the
-///     projects it names, so a reference that arrives through an intermediate project is caught;
-///   * the BUILT ASSEMBLIES — each spine dll's own assembly-reference table, read from its
-///     metadata (the list `Assembly.GetReferencedAssemblies` returns, read without loading the
-///     assembly into this process). The compiler writes a reference there for every assembly a
-///     compiled construct actually uses, so an `open` that resolved against a transitively
-///     available assembly shows up here even where no project file names it.
+/// Two readings, because each misses what the other sees:
 ///
-/// The compute side is the two ids that leave plus the two assemblies this phase cut beside them;
-/// a spine assembly referencing either new one reaches `DataFrame` through it.
+///   * the PROJECT FILES — every project under `src/`: its `PackageReference`s must name only
+///     FSharp.Core and the five, and its `ProjectReference`s only the other compute projects;
+///   * the BUILT ASSEMBLIES — each compute dll's assembly-reference table, read from its metadata
+///     (without loading it). The compiler writes a reference there for every assembly a compiled
+///     construct actually uses, so an `open` that resolved against an assembly arriving TRANSITIVELY
+///     (the kit brings most of the substrate with it) shows up here even though no project file names
+///     it.
 module Fuaran.Core.Tests.ComputeBoundaryTests
 
 open System
@@ -27,27 +28,7 @@ open System.Reflection.PortableExecutable
 open System.Xml.Linq
 open Expecto
 
-/// The spine: every assembly that stays in this repository when the compute layer leaves (D66).
-let spine: string list =
-    [ "Fuaran.Core.Tree"
-      "Fuaran.Core.Ops"
-      "Fuaran.Core.OpStream"
-      "Fuaran.Core.OpStream.Dag"
-      "Fuaran.Core.Wire"
-      "Fuaran.Core.Column"
-      "Fuaran.Core.Validator"
-      "Fuaran.Core.Function"
-      "Fuaran.Core.Query"
-      "Fuaran.Core.Projection"
-      "Fuaran.Core.Propagation"
-      "Fuaran.Core.AiSurface"
-      "Fuaran.Core.Idl"
-      "Fuaran.Core.Idl.Codegen"
-      "Fuaran.Core.Idl.Cli"
-      "Fuaran.Core.Conformance"
-      "Fuaran.Core.CSharp" ]
-
-/// The compute side of the line.
+/// The four assemblies this repository produces.
 let compute: Set<string> =
     set
         [ "Fuaran.Core.DataFrame"
@@ -55,28 +36,44 @@ let compute: Set<string> =
           "Fuaran.Core.DataFrame.Conformance"
           "Fuaran.Core.DataFrame.CSharp" ]
 
+/// The substrate packages the compute strand stands on — and nothing above them.
+let allowedSubstrate: Set<string> =
+    set
+        [ "Fuaran.Core.Column"
+          "Fuaran.Core.Wire"
+          "Fuaran.Core.OpStream"
+          "Fuaran.Core.Conformance"
+          "Fuaran.Core.CSharp" ]
+
+/// The only non-substrate package a shipped project may take.
+let allowedOther: Set<string> = set [ "FSharp.Core" ]
+
 // ---------------------------------------------------------------------------
-//  the pure rule, so it has a go-red
+//  the pure rules, so each has a go-red
 // ---------------------------------------------------------------------------
 
-/// Every (spine assembly, compute assembly) pair such that the compute assembly is reachable from
-/// the spine one through `edges` — a map from an assembly to the assemblies it references
-/// directly. Reachability rather than adjacency, so an intermediate hop cannot launder a crossing.
-let crossings (edges: Map<string, string list>) (spineNames: string list) : (string * string) list =
-    let rec reach (seen: Set<string>) (frontier: string list) =
-        match frontier with
-        | [] -> seen
-        | x :: rest ->
-            let next =
-                edges
-                |> Map.tryFind x
-                |> Option.defaultValue []
-                |> List.filter (fun n -> not (Set.contains n seen))
+/// A project's references that break the line: a package outside the allowed set, or a project
+/// outside this repository's four. `(project, offending reference)` pairs.
+let violations (projects: Map<string, string list * string list>) : (string * string) list =
+    [ for KeyValue(name, (packages, projectRefs)) in projects do
+          for p in packages do
+              if not (Set.contains p allowedSubstrate || Set.contains p allowedOther) then
+                  yield name, "package " + p
 
-            reach (Set.union seen (Set.ofList next)) (next @ rest)
+          for r in projectRefs do
+              if not (Set.contains r compute) then
+                  yield name, "project " + r ]
 
-    [ for s in spineNames do
-          for c in reach Set.empty [ s ] |> Set.intersect compute |> Set.toList -> s, c ]
+/// A built assembly's references into the Fuaran family that break the line: any `Fuaran.*`
+/// assembly that is neither one of the four nor one of the allowed five.
+let assemblyViolations (refs: Map<string, string list>) : (string * string) list =
+    [ for KeyValue(name, rs) in refs do
+          for r in rs do
+              if
+                  r.StartsWith("Fuaran.", StringComparison.Ordinal)
+                  && not (Set.contains r compute || Set.contains r allowedSubstrate)
+              then
+                  yield name, r ]
 
 // ---------------------------------------------------------------------------
 //  reading the tree
@@ -90,29 +87,32 @@ let private projectFileOf (name: string) : string option =
     |> List.map (fun ext -> Path.Combine(srcDir (), name, name + ext))
     |> List.tryFind File.Exists
 
-/// The `ProjectReference` targets a project file names, as assembly names — read as XML, so a
-/// project name that appears in a COMMENT (the kit's own project file explains in one why it no
-/// longer references the dataframe layer) is not read as a reference.
-let private projectReferencesOf (projectFile: string) : string list =
-    XDocument.Load(projectFile).Descendants()
-    |> Seq.filter (fun e -> e.Name.LocalName = "ProjectReference")
-    |> Seq.choose (fun e ->
-        match e.Attribute(XName.Get "Include") with
-        | null -> None
-        | a -> Some(Path.GetFileNameWithoutExtension(a.Value.Replace('\\', '/'))))
-    |> Seq.toList
+/// The `PackageReference` ids and the `ProjectReference` targets (as assembly names) a project file
+/// names — read as XML, so a name in a COMMENT is not read as a reference.
+let private referencesOf (projectFile: string) : string list * string list =
+    let elements = XDocument.Load(projectFile).Descendants() |> Seq.toList
 
-/// The project-reference graph over every project under `src/`.
-let private projectEdges () : Map<string, string list> =
+    let includes (local: string) =
+        elements
+        |> List.filter (fun e -> e.Name.LocalName = local)
+        |> List.choose (fun e ->
+            match e.Attribute(XName.Get "Include") with
+            | null -> None
+            | a -> Some a.Value)
+
+    includes "PackageReference",
+    includes "ProjectReference"
+    |> List.map (fun p -> Path.GetFileNameWithoutExtension(p.Replace('\\', '/')))
+
+/// Every project under `src/`, with its references.
+let private projectReferences () : Map<string, string list * string list> =
     Directory.GetDirectories(srcDir ())
     |> Array.choose (fun d ->
         let name = Path.GetFileName d
-
-        projectFileOf name |> Option.map (fun p -> name, projectReferencesOf p))
+        projectFileOf name |> Option.map (fun p -> name, referencesOf p))
     |> Map.ofArray
 
-/// The assembly-reference table of a built dll: the names `Assembly.GetReferencedAssemblies`
-/// would return, read from the metadata so nothing is loaded.
+/// The assembly-reference table of a built dll, read from the metadata so nothing is loaded.
 let internal referencedAssemblies (dllPath: string) : string list =
     use stream = File.OpenRead dllPath
     use pe = new PEReader(stream)
@@ -120,9 +120,9 @@ let internal referencedAssemblies (dllPath: string) : string list =
 
     [ for h in md.AssemblyReferences -> md.GetString((md.GetAssemblyReference h).Name) ]
 
-/// The built dll for a spine assembly: the copy in this test's own output when the suite
-/// references it, otherwise the project's own build output, preferring this binary's
-/// configuration (`PublicSurfaceTests.assemblyFor`, the surface gate's own locator).
+/// The built dll for a compute assembly: the copy beside this suite (the suite references all four),
+/// otherwise the project's own build output (`PublicSurfaceTests.assemblyFor`, the surface gate's own
+/// locator).
 let private builtAssembly (name: string) : Result<string, string> =
     let local = Path.Combine(AppContext.BaseDirectory, name + ".dll")
 
@@ -143,85 +143,99 @@ let tests =
         "Compute boundary"
         [
 
-          testCase "the rule goes red on a direct crossing, an indirect one, and neither"
+          testCase "the project rule goes red on a sixth substrate package, a private package and a project reference"
           <| fun _ ->
-              // The go-red, over a synthetic graph: a spine project gaining a DataFrame reference,
-              // one gaining it through an intermediate hop, and the clean graph beside them.
               let clean =
                   Map.ofList
-                      [ "Fuaran.Core.Query", [ "Fuaran.Core.Column"; "Fuaran.Core.Function" ]
-                        "Fuaran.Core.Column", [ "Fuaran.Core.Wire" ]
-                        "Fuaran.Core.DataFrame", [ "Fuaran.Core.Column" ] ]
+                      [ "Fuaran.Core.DataFrame", ([ "FSharp.Core"; "Fuaran.Core.Column"; "Fuaran.Core.Wire" ], [])
+                        "Fuaran.Core.Column.Ops", ([ "Fuaran.Core.OpStream" ], [ "Fuaran.Core.DataFrame" ]) ]
 
-              Expect.isEmpty (crossings clean [ "Fuaran.Core.Query" ]) "a clean graph crosses nothing"
+              Expect.isEmpty (violations clean) "a clean graph breaks nothing"
 
-              let direct = clean |> Map.add "Fuaran.Core.Query" [ "Fuaran.Core.DataFrame" ]
-
-              Expect.equal
-                  (crossings direct [ "Fuaran.Core.Query" ])
-                  [ "Fuaran.Core.Query", "Fuaran.Core.DataFrame" ]
-                  "a direct reference to DataFrame is a crossing"
-
-              let indirect =
+              let above =
                   clean
-                  |> Map.add "Fuaran.Core.Query" [ "Fuaran.Core.Hop" ]
-                  |> Map.add "Fuaran.Core.Hop" [ "Fuaran.Core.Column.Ops" ]
+                  |> Map.add "Fuaran.Core.DataFrame" ([ "Fuaran.Core.Column"; "Fuaran.Core.Propagation" ], [])
 
               Expect.equal
-                  (crossings indirect [ "Fuaran.Core.Query" ])
-                  [ "Fuaran.Core.Query", "Fuaran.Core.Column.Ops" ]
-                  "a reference through an intermediate project is a crossing too"
+                  (violations above)
+                  [ "Fuaran.Core.DataFrame", "package Fuaran.Core.Propagation" ]
+                  "a substrate package above the five is a violation"
 
-          testCase "no spine project references the compute side, directly or through another project"
+              let privatePackage =
+                  clean
+                  |> Map.add "Fuaran.Core.DataFrame" ([ "Fuaran.Core.Column"; "Acme.Internal" ], [])
+
+              Expect.equal
+                  (violations privatePackage)
+                  [ "Fuaran.Core.DataFrame", "package Acme.Internal" ]
+                  "a package outside the allowed set is a violation, whatever it is"
+
+              let byProject =
+                  clean |> Map.add "Fuaran.Core.DataFrame" ([], [ "Fuaran.Core.Column" ])
+
+              Expect.equal
+                  (violations byProject)
+                  [ "Fuaran.Core.DataFrame", "project Fuaran.Core.Column" ]
+                  "the substrate taken by PROJECT is a violation — it is taken by package"
+
+          testCase "the assembly rule goes red on a transitive substrate assembly and stays quiet on the rest"
           <| fun _ ->
-              let edges = projectEdges ()
+              let refs =
+                  Map.ofList
+                      [ "Fuaran.Core.DataFrame.Conformance",
+                        [ "System.Runtime"
+                          "FSharp.Core"
+                          "Fuaran.Core.Conformance"
+                          "Fuaran.Core.DataFrame"
+                          "Fuaran.Core.Tree" ] ]
 
-              for name in spine do
-                  Expect.isTrue
-                      (Map.containsKey name edges)
-                      (sprintf "%s has no project under src/ — the spine list names a project that is not there" name)
+              Expect.equal
+                  (assemblyViolations refs)
+                  [ "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Tree" ]
+                  "an assembly the kit brings transitively is a violation once compiled code uses it"
 
-              let found = crossings edges spine
+          testCase "every project under src/ takes the substrate by package, and only the five"
+          <| fun _ ->
+              let projects = projectReferences ()
+
+              Expect.equal
+                  (projects |> Map.keys |> Set.ofSeq)
+                  compute
+                  "src/ holds exactly this repository's four projects"
+
+              let found = violations projects
 
               Expect.isEmpty
                   found
                   (sprintf
-                      "spine project(s) reach the compute side through their ProjectReferences: %s. D66/D68: the compute layer leaves this repository; a spine project that needs it is a design question for the compute repository's seam, not a reference to add here."
+                      "project(s) under src/ reference outside the line: %s. The compute strand stands on Column, Wire, OpStream, Conformance and CSharp, taken by package; anything more is a seam to design, not a reference to add."
                       (render found))
 
-          testCase "no built spine assembly references the compute side"
+              // Not vacuous: the reader does find the packages a project names.
+              let dataFramePackages = projects["Fuaran.Core.DataFrame"] |> fst
+              Expect.contains dataFramePackages "Fuaran.Core.Column" "DataFrame's package references name Column"
+
+          testCase "no built compute assembly references a substrate assembly above the five"
           <| fun _ ->
               let refs =
-                  [ for name in spine ->
+                  [ for name in compute ->
                         match builtAssembly name with
                         | Ok dll -> name, referencedAssemblies dll
                         | Error e -> failtestf "%s" e ]
+                  |> Map.ofList
 
-              let found =
-                  [ for name, rs in refs do
-                        for r in rs do
-                            if Set.contains r compute then
-                                yield name, r ]
+              let found = assemblyViolations refs
 
               Expect.isEmpty
                   found
                   (sprintf
-                      "built spine assembly(ies) carry a reference to the compute side in their metadata: %s. The compiler writes a reference for every assembly a compiled construct uses, so an `open` that resolved against a transitively available assembly lands here even where no project file names it."
+                      "built compute assembly(ies) reference a substrate assembly outside the five: %s. The compiler writes a reference for every assembly a compiled construct uses, so a type that arrived transitively through the kit lands here even though no project file names it."
                       (render found))
 
-              // The reading is not vacuous: the kit's own dll references the spine it runs over,
-              // so a table that read as empty would be a broken reader rather than a clean line.
-              let kit = refs |> List.find (fun (n, _) -> n = "Fuaran.Core.Conformance") |> snd
-              Expect.contains kit "Fuaran.Core.Column" "the kit's reference table names Column, which it reads"
-
-          testCase "the compute side does reference the spine it is built over"
-          <| fun _ ->
-              // The other direction is allowed, and is what makes the line a line: the two new
-              // assemblies read the kit and the facade below them. Checked so the reader above is
-              // seen to find a reference where one exists.
+              // Not vacuous: each reads the substrate it is built over.
               for name, below in
-                  [ "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Conformance"
+                  [ "Fuaran.Core.DataFrame", "Fuaran.Core.Column"
+                    "Fuaran.Core.Column.Ops", "Fuaran.Core.OpStream"
+                    "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Conformance"
                     "Fuaran.Core.DataFrame.CSharp", "Fuaran.Core.CSharp" ] do
-                  match builtAssembly name with
-                  | Error e -> failtestf "%s" e
-                  | Ok dll -> Expect.contains (referencedAssemblies dll) below (sprintf "%s references %s" name below) ]
+                  Expect.contains refs[name] below (sprintf "%s references %s" name below) ]

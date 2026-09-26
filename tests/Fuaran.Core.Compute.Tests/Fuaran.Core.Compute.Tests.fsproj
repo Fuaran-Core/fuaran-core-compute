@@ -23,12 +23,23 @@
     <Compile Include="IncrementalRefreshCostTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
+    <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
+         standing Version, the release tags), and the committed public-surface baseline per
+         package under api/, rendered from IL metadata and classified when it moves. -->
+    <Compile Include="PackageRosterTests.fs" />
+    <Compile Include="PublicSurfaceTests.fs" />
+    <!-- The compute boundary, held from this side: the substrate by package, and only the five
+         packages the strand stands on. After PublicSurfaceTests, whose assembly locator it reuses. -->
+    <Compile Include="ComputeBoundaryTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Core.Column.Ops\Fuaran.Core.Column.Ops.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.Conformance\Fuaran.Core.DataFrame.Conformance.fsproj" />
+    <!-- The C# facade: referenced so its built assembly sits beside this suite's, where the
+         public-surface and boundary legs read its metadata. Nothing here calls it. -->
+    <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.CSharp\Fuaran.Core.DataFrame.CSharp.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
