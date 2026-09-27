@@ -21,5 +21,6 @@
     <PackageVersion Include="Fuaran.Core.Ops" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Fuaran.Core.Tree" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Expecto" Version="9.0.4" />
+    <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" /><!-- BENCHMARK-ONLY: benchmarks/, not packable. -->
   </ItemGroup>
 </Project>

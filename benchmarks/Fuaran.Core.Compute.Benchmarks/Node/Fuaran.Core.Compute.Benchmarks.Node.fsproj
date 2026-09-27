@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The node leg of the compute benchmarks (Phase 262): a plain timing harness over the SAME corpus
+    as the BenchmarkDotNet project (it compiles ../Corpus.fs), written to be compiled by Fable and
+    run under node, and runnable on .NET as well. FSharp.Core plus the dataframe package's own
+    sources: no timing library, no JavaScript bindings, so the same program is the measurement on
+    both hosts. It prints one median table per shape.
+
+    A member of Fuaran.Core.Compute.slnx so the verify gate's solution build compiles it on .NET;
+    the gate never runs it. run-node.ps1 beside this file compiles it with Fable and runs it.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <!-- Under Fable the entry project's properties govern the whole transpiled graph. Nullness off,
+         so the program compiles the way a consumer that RUNS under node compiles. -->
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Corpus.fs" Link="Corpus.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

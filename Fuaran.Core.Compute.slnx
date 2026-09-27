@@ -9,6 +9,10 @@
     <Project Path="tests/Fuaran.Core.Compute.Tests/Fuaran.Core.Compute.Tests.fsproj" />
     <Project Path="tests/Fuaran.Core.DataFrame.CSharp.Proof/Fuaran.Core.DataFrame.CSharp.Proof.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Fuaran.Core.Compute.Benchmarks/Fuaran.Core.Compute.Benchmarks.fsproj" />
+    <Project Path="benchmarks/Fuaran.Core.Compute.Benchmarks/Node/Fuaran.Core.Compute.Benchmarks.Node.fsproj" />
+  </Folder>
   <Folder Name="/proofs/">
     <Project Path="proofs/oracle/Fuaran.Core.Compute.Proofs.Oracle.fsproj" />
   </Folder>
