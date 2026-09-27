@@ -156,7 +156,17 @@ let private topNRefreshLossBound = 5.0
 /// the pre-phase tree by a factor of eighteen. The dense diff costs 5.6 ms against 3.0 to 3.3 ms, 1.7
 /// to 2.0 times, at both sizes. Three leaves half as much again for a loaded machine; it is not a
 /// number to raise when the evaluator moves, because the evaluator is not in it.
-let private diffFloorBound = 3.0
+///
+/// **Phase 282 moved the bound from the clock to the allocator, and tightened it from three to two.**
+/// The claim is about work — the keying plus a constant, not a token string per cell — so it is held
+/// on the bytes the diff allocates against the bytes the keying allocates, on the calling thread,
+/// where no other process can reach it. Measured: 1.50 times at 20,000 rows and 1.52 at 1,000, the
+/// same on every run, where the clock read 1.8 to 2.1 and 4.1 under an injected token-per-cell
+/// regression that allocates 3.23 times the floor (red here). The pre-272 row-token diff minted
+/// strings per CELL, several times the keying's one per row. The diff's key count is asserted
+/// beside it, exactly: one per row per table, so Phase 273's regression (a second minting, which
+/// the clock scored at 2.14 against its bound of 3, green) is red too.
+let private diffFloorAllocBound = 2.0
 
 /// A table of `n` rows over four columns — a string identity, a grouping key of bounded cardinality,
 /// and two integer measures. The identity is what `RowIdentity.byColumn` keys on; the grouping key
@@ -345,7 +355,10 @@ let private keepByIndexLookup (steps: int ref) (lo: int) (keep: int) (frame: int
 ///
 /// The collection before each sample is for the same reason in the other direction: a collection
 /// triggered by the PREVIOUS sample's garbage must not be billed to this one.
-let private bestMs (runs: int) (f: unit -> unit) : float =
+///
+/// Phase 282 made it public so every clock figure in the suite uses the same estimator: `PlanTests`
+/// timed with a MEAN of five, which carried exactly the noise this function was written to remove.
+let bestMs (runs: int) (f: unit -> unit) : float =
     f ()
 
     [ for _ in 1..runs ->
@@ -355,6 +368,26 @@ let private bestMs (runs: int) (f: unit -> unit) : float =
           f ()
           sw.Stop()
           sw.Elapsed.TotalMilliseconds ]
+    |> List.min
+
+/// Phase 282 — the bytes one call of `f` allocates on the calling thread: a COUNT of work, exact and
+/// indifferent to what else the machine is doing.
+///
+/// Three calls first, so the JIT has settled the code: a method still running in its first tier can
+/// allocate what the optimised tier keeps on the stack, and the figure should not depend on which
+/// tier happened to run. Then the minimum of three samples, for the same reason `bestMs` takes one —
+/// anything else on the thread can only ADD bytes. `GC.GetAllocatedBytesForCurrentThread` counts the
+/// calling thread alone, so neither another test nor another process can move it; Phase 273 used the
+/// same counter to settle a dispute its clock could not.
+let allocatedBytes (f: unit -> unit) : int64 =
+    f ()
+    f ()
+    f ()
+
+    [ for _ in 1..3 ->
+          let before = System.GC.GetAllocatedBytesForCurrentThread()
+          f ()
+          System.GC.GetAllocatedBytesForCurrentThread() - before ]
     |> List.min
 
 /// Measure `f` at both sizes and report `(smallMs, largeMs, ratio)`, printing the row so a gate log
@@ -390,16 +423,76 @@ let private scalingAt (label: string) (lo: int) (hi: int) (mk: int -> (unit -> u
 let private joinSmall = 250
 let private joinLarge = 5_000
 
+// ---------------------------------------------------------------------------
+//  Phase 282 — the clock leg.
+//
+//  Every case below `clockTests` asserts TIME, and none of them runs in the
+//  main suite. `clockTests` carries no `[<Tests>]` attribute, so the default
+//  run cannot discover it (exclusion by construction, not by a filter that
+//  could match nothing); the test entry point runs it alone, in its own
+//  process, when asked: `dotnet run --project tests/Fuaran.Core.Compute.Tests
+//  -- --clock-leg`. `verify.ps1` runs that after the main suite.
+//
+//  Three things make the leg measure the code rather than the machine:
+//    - nothing else runs in the process (the main suite's parallel lists used
+//      to run beside `testSequenced`, which orders its own cases only);
+//    - the process asks for above-normal scheduling priority, so ordinary
+//      work elsewhere on the machine yields to it for the seconds it runs;
+//    - a case fails only if it fails on each of THREE attempts. A regression
+//      fails every time; a loaded window rarely fails three times running.
+//      Every attempt is printed.
+//  The leg counts the cases whose bodies actually ran and the entry point
+//  fails it on fewer than `clockInventory`: a filter that matches nothing
+//  passes vacuously, and one with the wrong separator has done that here.
+// ---------------------------------------------------------------------------
+
+/// How many cases the clock leg holds: the CLOCK rows of the inventory in docs/incremental-evaluation.md
+/// ("The gate measures work, not the machine"). A literal, deliberately, and pinned against the list
+/// by a main-suite case: the leg's run count is checked against THIS number, so a case dropped from
+/// the list without the inventory moving is red in both places.
+let clockInventory = 14
+
+let mutable private clockRuns = 0
+
+/// The number of clock cases whose bodies have run in this process.
+let clockCasesRun () = clockRuns
+
+/// How many attempts a clock case gets. A timing assertion is red only if it is red on every one.
+let private clockAttempts = 3
+
+/// A clock case: `body` runs up to `clockAttempts` times, and the case fails only when every attempt
+/// fails. Only an assertion failure is retried; anything else (an evaluation error) is a defect and
+/// fails at once. A correctness assertion inside `body` is retried with it, harmlessly: it is
+/// deterministic, so it fails every attempt.
+let private clockCase (name: string) (body: unit -> unit) : Test =
+    testCase name
+    <| fun _ ->
+        clockRuns <- clockRuns + 1
+
+        let rec attempt (k: int) =
+            printfn "  [clock] %s: attempt %d of %d" name k clockAttempts
+
+            try
+                body ()
+
+                if k > 1 then
+                    printfn "  [clock] %s: green on attempt %d" name k
+            with :? AssertException as e when k < clockAttempts ->
+                printfn "  [clock] %s: attempt %d red: %s" name k (e.Message.Trim())
+                attempt (k + 1)
+
+        attempt 1
+
 // `testSequenced`, not `testList` alone: every case here measures the clock, and Expecto runs a
 // suite in parallel by default, so an unsequenced timing family measures whatever else the runner
 // happened to schedule beside it. That is not merely noise — it is noise that grows with the
-// machine's core count, which is the one axis a gate must not be sensitive to.
-[<Tests>]
-let scalingTests =
+// machine's core count, which is the one axis a gate must not be sensitive to. Since Phase 282 the
+// leg is also its own process, so there is nothing else in it to schedule.
+let clockTests =
     testSequenced
     <| testList
-        "Scaling"
-        [ testCase "the reference evaluator is linear in the row count"
+        "Clock"
+        [ clockCase "the reference evaluator is linear in the row count"
           <| fun _ ->
               let _, _, r =
                   scaling "DataFrame.evalPipeline" (fun t -> DataFrame.evalPipeline pipeline t |> ok |> ignore)
@@ -409,14 +502,20 @@ let scalingTests =
                   ratioBound
                   "ten times the rows must not cost thirty times the time — a per-row list walk does"
 
-          testCase "Delta.diff is linear in the row count"
+          clockCase "Delta.diff is linear in the row count"
           <| fun _ ->
               let _, _, r =
-                  scaling "Delta.diff" (fun t -> Delta.diff idw t (editOne t) |> ok |> ignore)
+                  // Phase 282 — a FRESH `before` per sample. Since Phase 273 `Delta.diff` reads back the
+                  // keys it minted for a table object it has met, so diffing the same `t` every sample
+                  // timed the `after` side alone: a per-row list walk injected into the `before` loop
+                  // scored a linear 18.8 here. A fresh record over the same columns is a table the
+                  // diff has never keyed, so both sides are measured.
+                  scaling "Delta.diff" (fun t ->
+                      Delta.diff idw { t with Columns = t.Columns } (editOne t) |> ok |> ignore)
 
               Expect.isLessThan r ratioBound "the diff reads every row's cells — once each, not once per row"
 
-          testCase "the incremental refresh is linear in the row count"
+          clockCase "the incremental refresh is linear in the row count"
           <| fun _ ->
               let _, _, r =
                   scaling "Incremental.refreshOn" (fun t ->
@@ -427,7 +526,7 @@ let scalingTests =
 
               Expect.isLessThan r ratioBound "the refresh inherits the source scan — it must inherit a linear one"
 
-          testCase "a restricted refresh beats the full evaluation on the clock"
+          clockCase "a restricted refresh beats the full evaluation on the clock"
           <| fun _ ->
               // The claim the seam exists to make, and the one the footprint instrument cannot
               // state: evaluating one row expression instead of twenty thousand must SHOW as time.
@@ -482,57 +581,7 @@ let scalingTests =
 
           // ================= Phase 207 — the top-N board =================
 
-          testCase "the top-N step itself is a single pass, and the obvious shape is not"
-          <| fun _ ->
-              // The go-red half of the claim below, and the reason it is a finding rather than an
-              // assertion of the status quo: BOTH shapes are measured on the same instrument over
-              // the same two sizes, and the naive one is required to FAIL the bound the shipped one
-              // passes. Without that, "the maintenance is linear" is a sentence no run can refute.
-              //
-              // The instrument is a COUNT of element visits, exact and clock-free — see the note on
-              // the two models above for the two confounds that made the timed form report the
-              // naive shape as passing.
-              let visits (f: int ref -> int list -> int list) (n: int) =
-                  let c = ref 0
-                  f c [ 0 .. n - 1 ] |> ignore
-                  float c.Value
-
-              let ratioOf f = visits f large / visits f small
-
-              let shipped = ratioOf (fun c -> keepPositional c 0 10)
-              let naive = ratioOf (fun c -> keepByIndexLookup c 0 10)
-
-              printfn
-                  "  [scaling] %-28s positional %6.2f   index-lookup %8.2f   (bound %.0f, linear %.0f)"
-                  "limit step (visits)"
-                  shipped
-                  naive
-                  ratioBound
-                  sizeRatio
-
-              // The answers agree — a cost comparison between two functions that compute different
-              // things is not a finding about cost.
-              Expect.equal
-                  (keepPositional (ref 0) 0 10 [ 0 .. large - 1 ])
-                  (keepByIndexLookup (ref 0) 0 10 [ 0 .. large - 1 ])
-                  "both shapes keep the same rows"
-
-              Expect.equal
-                  (visits (fun c -> keepPositional c 0 10) large)
-                  (float large)
-                  "the shipped shape visits each element exactly once — one pass, by count and not by inspection"
-
-              Expect.isGreaterThan
-                  naive
-                  ratioBound
-                  "the index-lookup shape is QUADRATIC — if this ever passes the bound, the bound has stopped discriminating and the case below proves nothing"
-
-              Expect.equal
-                  shipped
-                  sizeRatio
-                  "and the shipped shape is EXACTLY linear: twenty times the rows, twenty times the visits"
-
-          testCase "a top-N refresh is linear in the row count"
+          clockCase "a top-N refresh is linear in the row count"
           <| fun _ ->
               let _, _, r =
                   scaling "Incremental top-N refresh" (fun t ->
@@ -549,7 +598,7 @@ let scalingTests =
               // this family exists to make is from FOUR HUNDRED.
               Expect.isLessThan r ratioBound "admitting the limit must not add a third quadratic class to the walk"
 
-          testCase "a top-N refresh beats the full evaluation on the clock"
+          clockCase "a top-N refresh beats the full evaluation on the clock"
           <| fun _ ->
               // The claim the admission was asked for: a top-10 board over a live table should not
               // re-sort and re-filter twenty thousand rows because one of them moved.
@@ -605,7 +654,7 @@ let scalingTests =
 
           // ================= Phase 202 — the steps after a maintained group-by =================
 
-          testCase "a group-tail refresh is linear in the row count"
+          clockCase "a group-tail refresh is linear in the row count"
           <| fun _ ->
               // The obligation this phase inherits rather than chooses: Phase 206 cleared two
               // quadratic classes out of this seam and recorded a third it did not close, so a
@@ -623,7 +672,7 @@ let scalingTests =
 
               Expect.isLessThan r ratioBound "the group tail must not put a third quadratic class back"
 
-          testCase "a group-tail refresh, measured against the full evaluation"
+          clockCase "a group-tail refresh, measured against the full evaluation"
           <| fun _ ->
               // Measured and reported UNFLATTERINGLY, on the terms Phase 206 set: the trivial
               // predicate is the shape where this seam LOSES, because its per-source-row
@@ -679,7 +728,7 @@ let scalingTests =
 
           // ================= Phase 263 — resolved column indices =================
 
-          testCase "a step's cost does not depend on WHICH column it names"
+          clockCase "a step's cost does not depend on WHICH column it names"
           <| fun _ ->
               // The evaluator used to look a `Col` up by NAME on every row it evaluated, then walk
               // the row list to that index — and the sort comparator did both for every key on
@@ -761,7 +810,7 @@ let scalingTests =
 
           // ================= Phase 264 — the hash join and the one-pass pivot =================
 
-          testCase "a join is linear in the row count"
+          clockCase "a join is linear in the row count"
           <| fun _ ->
               // Two tables of `n` rows on one integer key, overlapping by half, joined Outer: half the
               // left rows match one right row each, the other half match none, and half the right
@@ -794,7 +843,7 @@ let scalingTests =
 
               Expect.isLessThan r ratioBound "a join must not compare every left row with every right row"
 
-          testCase "a pivot is linear in the row count"
+          clockCase "a pivot is linear in the row count"
           <| fun _ ->
               // `n` rows over `n / 10` index groups and ten on-values: the group count grows with
               // the table, which is exactly where the per-pair scan the one-pass pivot replaced was
@@ -831,7 +880,7 @@ let scalingTests =
 
           // ================= Phase 265 — grouping and distinct on one cell comparer =================
 
-          testCase "a group-by over n distinct keys is linear in the row count"
+          clockCase "a group-by over n distinct keys is linear in the row count"
           <| fun _ ->
               // Every row its own group: the high-cardinality end, where the partition's own cost is
               // the whole cost. The pre-265 partition minted two strings per key cell and inserted the
@@ -869,7 +918,7 @@ let scalingTests =
 
               Expect.isLessThan r ratioBound "a group-by must stay linear or n-log-n in its key count"
 
-          testCase "a distinct is linear in the row count"
+          clockCase "a distinct is linear in the row count"
           <| fun _ ->
               // Every distinct row twice, over a string and an integer column, so half the rows are
               // found already seen and half are new: both halves of the membership test are timed.
@@ -895,71 +944,7 @@ let scalingTests =
 
           // ================= Phase 272 — the table-fed caller's other half =================
 
-          testCase "Delta.diff costs what keying the two tables costs, at either size"
-          <| fun _ ->
-              // A table-fed caller (the everyday one: a fresh `Table` per tick) pays `Delta.diff`
-              // against the prior source and THEN the refresh, so the diff is half of what the seam
-              // costs it. Until Phase 272 that half was the larger one by far: see `diffFloorBound`.
-              //
-              // The instrument is the diff's own FLOOR rather than the evaluator, on purpose. A diff
-              // by identity must ask the witness for every row's key in both tables — `KeyString` is
-              // the only thing that can say what a key is — so minting those strings is work no
-              // implementation of this signature avoids. Held against that, the bound says "the diff
-              // costs the keying plus a constant", which is a statement about the diff alone: it does
-              // not move when the evaluator gets faster, so it is not a threshold a later phase has
-              // to loosen for someone else's improvement.
-              let keying (t: Table) =
-                  let keyAt = idw.KeyOf t
-                  let n = Table.rowCount t
-                  let keys: string[] = Array.zeroCreate n
-
-                  for i in 0 .. n - 1 do
-                      match keyAt i with
-                      | Some k -> keys[i] <- idw.KeyString k
-                      | None -> ()
-
-                  keys
-
-              // The LARGE size first, for the reason `scalingAt` gives: its runs promote the code to
-              // the optimised tier before the small leg is timed.
-              //
-              // Phase 273 — every sample diffs FRESH table objects. `Delta.diff` remembers the keys it
-              // minted for a table and reads them back when it meets that very object again, so
-              // re-diffing the same two tables would time a diff that mints nothing and hold it
-              // against a floor it no longer pays. A fresh record over the same columns is what a
-              // caller that has never keyed either table hands in.
-              let fresh (t: Table) : Table = { t with Columns = t.Columns }
-
-              for n in [ large; small ] do
-                  let before = build n
-                  let after = editOne before
-
-                  let diffMs =
-                      bestMs 5 (fun () -> Delta.diff idw (fresh before) (fresh after) |> ok |> ignore)
-
-                  let floorMs =
-                      bestMs 5 (fun () ->
-                          keying before |> ignore
-                          keying after |> ignore)
-
-                  let fullMs =
-                      bestMs 5 (fun () -> DataFrame.evalPipeline pipeline after |> ok |> ignore)
-
-                  printfn
-                      "  [scaling] %-28s diff %7.2f ms vs keying %7.2f ms (x%.2f) vs full %7.2f ms @ %d"
-                      "Delta.diff against its floor"
-                      diffMs
-                      floorMs
-                      (diffMs / floorMs)
-                      fullMs
-                      n
-
-                  Expect.isLessThan
-                      diffMs
-                      (diffFloorBound * floorMs)
-                      "the diff must cost the keying of both tables and a constant factor more, not a token string per cell"
-
-          testCase "the table-fed tick, measured against the full evaluation it would replace"
+          clockCase "the table-fed tick, measured against the full evaluation it would replace"
           <| fun _ ->
               // What a table-fed caller pays per tick — `Delta.diff` plus the refresh — against the
               // full evaluation of the new source, printed for the three pipelines above and NOT
@@ -1006,3 +991,166 @@ let scalingTests =
                       fullMs
                       (tickMs / fullMs)
                       large ]
+
+/// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
+let private countingId (minted: int ref) : RowIdentity<Cell> =
+    { idw with
+        KeyString =
+            fun c ->
+                minted.Value <- minted.Value + 1
+                idw.KeyString c }
+
+/// The keying floor of a diff by identity: every row's key, minted once through the witness.
+let private keying (w: RowIdentity<Cell>) (t: Table) : string[] =
+    let keyAt = w.KeyOf t
+    let n = Table.rowCount t
+    let keys: string[] = Array.zeroCreate n
+
+    for i in 0 .. n - 1 do
+        match keyAt i with
+        | Some k -> keys[i] <- w.KeyString k
+        | None -> ()
+
+    keys
+
+// The main suite's half of the family: the claims a COUNT can state. Phase 282 moved every case
+// whose claim is about time to `clockTests` above; what stays here asserts work, exactly, and prints
+// the clock figure beside it so the gate log still carries the numbers.
+[<Tests>]
+let scalingTests =
+    testList
+        "Scaling"
+        [ testCase "the clock leg holds exactly the inventory's CLOCK cases"
+          <| fun _ ->
+              // The leg's own run count is checked against `clockInventory` by the entry point; this
+              // pins the inventory against the list, so neither can move without the other.
+              Expect.equal
+                  (Test.toTestCodeList clockTests |> Seq.length)
+                  clockInventory
+                  "the clock leg's case count is the inventory's — update both, and the doc's table"
+
+          testCase "the top-N step itself is a single pass, and the obvious shape is not"
+          <| fun _ ->
+              // The go-red half of the claim below, and the reason it is a finding rather than an
+              // assertion of the status quo: BOTH shapes are measured on the same instrument over
+              // the same two sizes, and the naive one is required to FAIL the bound the shipped one
+              // passes. Without that, "the maintenance is linear" is a sentence no run can refute.
+              //
+              // The instrument is a COUNT of element visits, exact and clock-free — see the note on
+              // the two models above for the two confounds that made the timed form report the
+              // naive shape as passing.
+              let visits (f: int ref -> int list -> int list) (n: int) =
+                  let c = ref 0
+                  f c [ 0 .. n - 1 ] |> ignore
+                  float c.Value
+
+              let ratioOf f = visits f large / visits f small
+
+              let shipped = ratioOf (fun c -> keepPositional c 0 10)
+              let naive = ratioOf (fun c -> keepByIndexLookup c 0 10)
+
+              printfn
+                  "  [scaling] %-28s positional %6.2f   index-lookup %8.2f   (bound %.0f, linear %.0f)"
+                  "limit step (visits)"
+                  shipped
+                  naive
+                  ratioBound
+                  sizeRatio
+
+              // The answers agree — a cost comparison between two functions that compute different
+              // things is not a finding about cost.
+              Expect.equal
+                  (keepPositional (ref 0) 0 10 [ 0 .. large - 1 ])
+                  (keepByIndexLookup (ref 0) 0 10 [ 0 .. large - 1 ])
+                  "both shapes keep the same rows"
+
+              Expect.equal
+                  (visits (fun c -> keepPositional c 0 10) large)
+                  (float large)
+                  "the shipped shape visits each element exactly once — one pass, by count and not by inspection"
+
+              Expect.isGreaterThan
+                  naive
+                  ratioBound
+                  "the index-lookup shape is QUADRATIC — if this ever passes the bound, the bound has stopped discriminating and the case below proves nothing"
+
+              Expect.equal
+                  shipped
+                  sizeRatio
+                  "and the shipped shape is EXACTLY linear: twenty times the rows, twenty times the visits"
+
+          testCase "Delta.diff costs what keying the two tables costs, at either size"
+          <| fun _ ->
+              // A table-fed caller (the everyday one: a fresh `Table` per tick) pays `Delta.diff`
+              // against the prior source and THEN the refresh, so the diff is half of what the seam
+              // costs it. Until Phase 272 that half was the larger one by far: see `diffFloorAllocBound`.
+              //
+              // The instrument is the diff's own FLOOR rather than the evaluator, on purpose. A diff
+              // by identity must ask the witness for every row's key in both tables — `KeyString` is
+              // the only thing that can say what a key is — so minting those strings is work no
+              // implementation of this signature avoids. Held against that, the bound says "the diff
+              // costs the keying plus a constant", which is a statement about the diff alone: it does
+              // not move when the evaluator gets faster, so it is not a threshold a later phase has
+              // to loosen for someone else's improvement.
+              //
+              // Phase 282 — COUNTED, where Phases 272 and 273 timed it. Two counts, one per way the
+              // claim can break: the keys the diff mints (exactly one per row per table — a diff
+              // that mints a key twice is Phase 273's regression) and the bytes it allocates against
+              // the bytes the keying allocates (a token string per cell is Phase 272's). The clock
+              // figures are printed beside them, unasserted.
+              //
+              // Phase 273 — every call diffs FRESH table objects. `Delta.diff` remembers the keys it
+              // minted for a table and reads them back when it meets that very object again, so
+              // re-diffing the same two tables would measure a diff that mints nothing and hold it
+              // against a floor it no longer pays. A fresh record over the same columns is what a
+              // caller that has never keyed either table hands in.
+              let fresh (t: Table) : Table = { t with Columns = t.Columns }
+
+              for n in [ large; small ] do
+                  let before = build n
+                  let after = editOne before
+
+                  let minted = ref 0
+
+                  Delta.diff (countingId minted) (fresh before) (fresh after) |> ok |> ignore
+
+                  let diffBytes =
+                      allocatedBytes (fun () -> Delta.diff idw (fresh before) (fresh after) |> ok |> ignore)
+
+                  let floorBytes =
+                      allocatedBytes (fun () ->
+                          keying idw before |> ignore
+                          keying idw after |> ignore)
+
+                  let diffMs =
+                      bestMs 5 (fun () -> Delta.diff idw (fresh before) (fresh after) |> ok |> ignore)
+
+                  let floorMs =
+                      bestMs 5 (fun () ->
+                          keying idw before |> ignore
+                          keying idw after |> ignore)
+
+                  let allocRatio = float diffBytes / float floorBytes
+
+                  printfn
+                      "  [scaling] %-28s keys %d for %d rows; diff %d B vs keying %d B (x%.2f); clock diff %.2f ms vs keying %.2f ms (x%.2f) @ %d"
+                      "Delta.diff against its floor"
+                      minted.Value
+                      (2 * n)
+                      diffBytes
+                      floorBytes
+                      allocRatio
+                      diffMs
+                      floorMs
+                      (diffMs / floorMs)
+                      n
+
+                  Expect.equal
+                      minted.Value
+                      (2 * n)
+                      "the diff mints each row's key once per table — a second minting is the work Phase 273 removed"
+
+                  Expect.isLessThan
+                      allocRatio
+                      diffFloorAllocBound
+                      "the diff must allocate the keying of both tables and a constant factor more, not a token string per cell" ]

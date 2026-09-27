@@ -664,7 +664,8 @@ is the failure this phase was cut to stop. It was red on the pre-phase tree by a
 (the row-token diff at 53 times its floor: 154.2 ms against 2.89 ms at 20,000 rows, Debug) and is
 green at 1.7 to 2.0 times after. Beside it, "the table-fed tick" prints (diff + refresh) ÷ full for
 the three `Scaling` pipelines on every gate run, unasserted, so the counter-example to the 1.5×
-claim travels with the claim the family does make.
+claim travels with the claim the family does make. (Phase 282 moved that bound from the clock to
+the allocator and tightened it to two times: see "The gate measures work, not the machine" below.)
 
 ### A tick mints each row's key once (Phase 273)
 
@@ -843,6 +844,91 @@ cannot be removed and the row walk. Phase 274 carries that bar.
 **What the tick still costs.** One `KeyString` per row of the new table per tick. That is the floor
 for this signature: a caller that hands in a whole new table has not said which rows it touched, and
 only the witness can say what a key is.
+
+### The gate measures work, not the machine (Phase 282)
+
+**The rule.** A new performance claim in this suite is a COUNT if a count exists, and a clock
+assertion only in the isolated clock leg. A count is exact and indifferent to load: the keys a
+witness mints, the chunks a refresh touches, the rows the footprint evaluated, the bytes a call
+allocates on its own thread (`ScalingTests.allocatedBytes`). The clock is for a claim that is about
+time, and there it runs alone, estimated with `bestMs`, and red only if red on three attempts.
+
+**Why.** On 2026-09-27 the gate went red five times with no regression behind any of them. The timing
+cases ran inside the whole suite, in one process with every parallel test list, on a machine other
+sessions shared. The same flake reproduced on demand: the pre-phase tree under a CPU burner on every
+core went red on two `Scaling` cases, "a restricted refresh beats the full evaluation" (one comparison,
+refresh 69.4 ms against a full 12.4 ms, 5.6 times against the bound of 4) and the group-tail case.
+Load inflated the refresh, which allocates, more than the full pass, so the ratio did not cancel.
+
+**How the leg runs.** `ScalingTests.clockTests` has no `[<Tests>]` attribute, so the main suite
+cannot discover it. It is excluded by construction, not by a filter. `verify.ps1` runs it after the
+main suite, in its own process:
+
+```
+dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build -- --clock-leg
+```
+
+The leg raises its own scheduling priority to above normal (on a host that refuses, it says so and
+runs anyway). Each case gets three attempts and prints every one. The entry point counts the cases
+whose bodies ran and fails the leg (exit 2) on fewer than `clockInventory`: 0 of 14 with a filter that
+matches nothing, 1 of 14 with one that matches one case. A main-suite case pins `clockInventory`
+against the list's length, so neither moves alone.
+
+**The inventory.** Seventeen wall-clock assertion sites in `ScalingTests.fs` (one of them asserted at
+two sizes) and one in `PlanTests.fs`, not the 21 and 2 the phase was written against. The
+Phase 207 limit-step case was already counted (element visits), and "the table-fed tick" asserts no
+time. It prints figures and moves to the leg only so that the main suite runs no timing work.
+
+| Case | Claim | Class | Runs in |
+|---|---|---|---|
+| the reference evaluator is linear | complexity; guards a per-row list walk | CLOCK — no counter sees the walk | leg |
+| `Delta.diff` is linear | complexity; guards a per-row list walk | CLOCK — same | leg |
+| the incremental refresh is linear | complexity of prime + diff + refresh | CLOCK — same | leg |
+| a restricted refresh beats the full evaluation (both assertions) | time: loss bound, and the win | CLOCK | leg |
+| a top-N refresh is linear | complexity | CLOCK | leg |
+| a top-N refresh beats the full evaluation (both) | time | CLOCK | leg |
+| a group-tail refresh is linear | complexity | CLOCK | leg |
+| a group-tail refresh against the full evaluation (both) | time | CLOCK | leg |
+| a step's cost does not depend on which column | time ratio, guards a per-row name lookup | CLOCK — no counter sees the lookup | leg |
+| a join / a pivot / a group-by over n keys / a distinct is linear | complexity; guard quadratic scans | CLOCK — same | leg |
+| the table-fed tick (printed, unasserted) | none | CLOCK work, no clock assertion | leg |
+| `Delta.diff` costs what keying costs (1,000 and 20,000 rows) | work: the keying and a constant | COUNTABLE — keys minted, bytes allocated | main suite |
+| `Filter > Sort > Limit 10`: the fused pair against the full sort (`PlanTests`) | work: the top-n does less than the sort | COUNTABLE — bytes allocated | main suite |
+| the top-N step is a single pass (Phase 207) | work | already counted (visits) | main suite |
+
+Fourteen cases in the leg. The rest of the premise needed correcting too. The seam's counters see
+the work a refresh does: rows evaluated, chunks touched (Phase 268's regression, an untouched chunk
+evaluated again, is already a count in `IncrementalRefreshCostTests`), and keys minted. None of them
+sees a walk inside the evaluator or the diff, and allocation does not either, because walking a list
+allocates nothing. Measured: a per-row `List.item` walk injected into `Delta.diff`'s row loop left
+the counted diff case green, with 2n keys and 1.50 times the keying's bytes, the same as without it.
+The same injection scored 252 to 451 on the clock. So every linearity case stays on the clock, and
+only the two work claims whose regression a count can see were converted.
+
+**The conversions, each shown red by an injected regression** (the logs are kept with the phase record):
+
+- `Delta.diff` against its floor now asserts the key count (exactly one per row per table) and
+  the diff's allocation against the keying's, at most `diffFloorAllocBound` = 2 times. Measured, 1.50 at
+  20,000 rows and 1.52 at 1,000, where the clock read 1.8 to 2.1 against its bound of 3. A second
+  minting per row (Phase 273's regression) gives 3n keys and is red, although the clock scored it
+  at 2.14 and would have passed it. A token string minted per cell (Phase 272's regression) is
+  3.23 times the floor's bytes and red. Bound tightened from 3 to 2.
+- The fused top-n in `PlanTests` allocates 579 KB against the full sort's 11.2 MB (19.3 times), and
+  must allocate at least four times fewer bytes. A top-n that sorts everything allocates 9.4 MB and
+  is red, while its clock (33.4 ms against 38.8 ms) would have passed the old `planned < written`.
+  That case also used a mean of five; its printed clock figures now use `bestMs`.
+
+**The leg still catches a regression.** With the per-row walk injected into the diff, four leg cases
+(the diff, the refresh, the top-N refresh and the group-tail refresh, all linear) were red on all three
+attempts, both quiet and under the full-core burner. They scored 144 to 451 against the bound of 100.
+
+**The acceptance under load.** The patched gate's two test stages, run five times back to back under
+the burner (one busy process per logical core, 8): main suite 436 of 436 green each time, clock leg
+14 of 14 green each time, no second attempt needed. Leg figures under that load: `Filter > GroupBy`
+refresh 37.7 to 41.3 ms against a full 11.0 to 11.7 ms (3.4 to 3.6 times against the bound of 4), and
+top-N 54.4 to 57.6 against 16.0 to 18.4 ms (3.1 to 3.6 against 5). No threshold was loosened.
+`cheapRefreshLossBound` and `topNRefreshLossBound` moved to the leg unchanged, and Phase 274 owns
+them. The margin under the first one is thin: quiet, it reads about 3.3.
 
 ## What it does not do
 

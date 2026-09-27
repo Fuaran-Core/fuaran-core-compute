@@ -15,7 +15,6 @@ module Fuaran.Core.Tests.PlanTests
 //  it.
 // ---------------------------------------------------------------------------
 
-open System.Diagnostics
 open Expecto
 open Fuaran.Core
 
@@ -70,6 +69,9 @@ let private partialPred = Filter(Binary(Gt, Cast(IntType, Col "s"), Lit(Int 5)))
 let private strDerive = Derive("u", ApplyFn(Upper, [ Col "s" ]))
 let private intDerive = Derive("d", Binary(Add, Col "i", Col "i"))
 let private floatDerive = Derive("g", Binary(Mul, Col "f", Lit(Float 2.0)))
+
+/// Phase 282 — how many times fewer bytes the fused top-n must allocate than the full sort.
+let private fusedTopNWorkMargin = 4.0
 
 [<Tests>]
 let planTests =
@@ -355,8 +357,13 @@ let planTests =
 
           // ---- the acceptance: Filter > Sort > Limit 10 at 20,000 rows ----
 
-          testCase "Filter > Sort > Limit 10 at 20,000 rows: the fused pair is faster than the full sort"
+          testCase "Filter > Sort > Limit 10 at 20,000 rows: the fused pair does less work than the full sort"
           <| fun _ ->
+              // Phase 282 — COUNTED, where Phase 269 timed it (with a mean of five, which carried the
+              // noise the family's `bestMs` minimum exists to remove). The claim is about WORK — the
+              // top-n keeps ten rows in order where the sort orders all of them — so it is held on the
+              // bytes each form allocates on this thread, which no other process can move. The clock
+              // figures, on `bestMs`, are printed beside it.
               let rows =
                   [ for k in 0..19_999 ->
                         Some((k * 7919) % 10_007),
@@ -372,30 +379,36 @@ let planTests =
                     Transform.sortBy [ "f", Desc; "i", Asc ]
                     Transform.limit 10 0 ]
 
-              let time (f: unit -> Result<Table, EvalError>) =
-                  f () |> ignore // warm
-                  let sw = Stopwatch.StartNew()
+              let plannedRun () =
+                  DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline prepared
+                  |> ok
+                  |> ignore
 
-                  for _ in 1..5 do
-                      f () |> ignore
+              let writtenRun () =
+                  DataFrame.evalPipelineWithInEnvAsWritten
+                      DataFrame.noResolve
+                      Map.empty
+                      pipeline
+                      (DataFrame.toTable prepared)
+                  |> ok
+                  |> ignore
 
-                  sw.Elapsed.TotalMilliseconds / 5.0
-
-              let planned =
-                  time (fun () -> DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline prepared)
-
-              let written =
-                  time (fun () ->
-                      DataFrame.evalPipelineWithInEnvAsWritten
-                          DataFrame.noResolve
-                          Map.empty
-                          pipeline
-                          (DataFrame.toTable prepared))
+              let plannedBytes = ScalingTests.allocatedBytes plannedRun
+              let writtenBytes = ScalingTests.allocatedBytes writtenRun
+              let plannedMs = ScalingTests.bestMs 5 plannedRun
+              let writtenMs = ScalingTests.bestMs 5 writtenRun
 
               printfn
-                  "Phase 269 — Filter > Sort > Limit 10 at 20,000 rows: planned %.2f ms, as written %.2f ms"
-                  planned
-                  written
+                  "Phase 269 — Filter > Sort > Limit 10 at 20,000 rows: planned %d B, as written %d B (x%.2f); clock planned %.2f ms, as written %.2f ms"
+                  plannedBytes
+                  writtenBytes
+                  (float writtenBytes / float plannedBytes)
+                  plannedMs
+                  writtenMs
 
               agree pipeline t
-              Expect.isLessThan planned written "the top-n does less than the full sort" ]
+
+              Expect.isLessThan
+                  (float plannedBytes * fusedTopNWorkMargin)
+                  (float writtenBytes)
+                  "the top-n does less than the full sort" ]
