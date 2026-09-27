@@ -3405,51 +3405,111 @@ module DataFrame =
     // The cells every verb produces are the cells the row form produced; the transform law
     // vectors hold them so.
 
-    let private evalFilter (env: Map<string, Cell>) (f: Frame) (pred: ColExpr) : Result<Frame, EvalError> =
-        // Compiled once for the step (Phase 266), run once per logical row in logical order; a
-        // typed boolean root is read unboxed. The rows kept become the frame's selection.
-        let compiled = compileExpr f (resolveExpr env f.Cols pred)
-        let slot = compiled.Slot
+    /// The comparison kernel a comparison operator is; `None` off the comparisons.
+    let private cmpOpOf (op: BinOp) : CmpOp option =
+        match op with
+        | Lt -> Some CLt
+        | Le -> Some CLe
+        | Gt -> Some CGt
+        | Ge -> Some CGe
+        | Eq -> Some CEq
+        | Ne -> Some CNe
+        | _ -> None
 
-        let keep: int -> bool =
-            match compiled.Node with
-            | NBool r ->
-                fun p ->
-                    let b = r p
-                    (not slot.Null) && b
-            | NNull -> fun _ -> false
-            | NInt _
-            | NFloat _
-            | NStr _
-            | NCell _ ->
-                let r = compiled.Run
+    /// The physical rows on which a filter predicate is `true`, as a selection bitmap (Phase 270)
+    /// — where the predicate is built from `And` and `Or` over comparisons of a typed numeric
+    /// column with a constant (either side), and `None` for any other predicate, which the
+    /// compiled path answers. Such a predicate raises no error on any row: a comparison of a
+    /// present int or float with a present number is always decided, and an absent row compares
+    /// null, which a filter drops. `And` keeps the rows both sides keep and `Or` the rows either
+    /// side keeps, which is Kleene logic read at `true`.
+    let rec internal filterBits (k: KernelSet) (f: Frame) (e: ResolvedExpr) : uint32[] option =
+        let leaf (op: CmpOp) (i: int) (c: Cell) : uint32[] option =
+            match f.Vecs[i], c with
+            | Ints(vals, mask), Int x -> Some(k.CmpInts op vals mask x f.Count)
+            | Floats(vals, mask), Float x -> Some(k.CmpFloats op vals mask x f.Count)
+            | Floats(vals, mask), Int x -> Some(k.CmpFloats op vals mask (float x) f.Count)
+            | _ -> None
 
-                fun p ->
-                    match r p with
-                    | Bool true -> true
-                    | _ -> false
+        match e with
+        | RBinary(And, a, b) -> Option.map2 k.And (filterBits k f a) (filterBits k f b)
+        | RBinary(Or, a, b) -> Option.map2 k.Or (filterBits k f a) (filterBits k f b)
+        | RBinary(op, RCol i, RConst c) -> cmpOpOf op |> Option.bind (fun o -> leaf o i c)
+        | RBinary(op, RConst c, RCol i) -> cmpOpOf op |> Option.bind (fun o -> leaf (Kernels.flip o) i c)
+        | _ -> None
 
-        let phys = Frame.physical f
-        let kept = ResizeArray<int>()
-        let mutable failed = None
-        let mutable i = 0
+    let private evalFilter
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (pred: ColExpr)
+        : Result<Frame, EvalError> =
+        let resolved = resolveExpr env f.Cols pred
 
-        while Option.isNone failed && i < phys.Length do
-            slot.Error <- None
-            let p = phys[i]
-            let k = keep p
+        match filterBits k f resolved with
+        | Some bits ->
+            // The comparison kernels (Phase 270): the predicate's rows as a bitmap over the whole
+            // vector, read back in the frame's logical order.
+            match f.Sel with
+            | None -> Ok(Frame.select f (k.Selection bits))
+            | Some sel -> Ok(Frame.select f (sel |> Array.filter (Kernels.isSet bits)))
+        | None ->
+            // Compiled once per morsel (Phase 266; Phase 270's morsels), run once per logical row
+            // in logical order within it; a typed boolean root is read unboxed. Each morsel keeps
+            // its rows, and the morsels' rows in morsel order become the frame's selection; the
+            // first morsel that met an error answers it, which is the first error in row order.
+            let phys = Frame.physical f
+            let m = Kernels.morselCount phys.Length
+            let kept: int[][] = Array.create m [||]
+            let errors: EvalError option[] = Array.create m None
 
-            match slot.Error with
-            | Some e -> failed <- Some e
-            | None ->
-                if k then
-                    kept.Add p
+            let run (j: int) : bool =
+                let compiled = compileExpr f resolved
+                let slot = compiled.Slot
 
-                i <- i + 1
+                let keep: int -> bool =
+                    match compiled.Node with
+                    | NBool r ->
+                        fun p ->
+                            let b = r p
+                            (not slot.Null) && b
+                    | NNull -> fun _ -> false
+                    | NInt _
+                    | NFloat _
+                    | NStr _
+                    | NCell _ ->
+                        let r = compiled.Run
 
-        match failed with
-        | Some e -> Error e
-        | None -> Ok(Frame.select f (kept.ToArray()))
+                        fun p ->
+                            match r p with
+                            | Bool true -> true
+                            | _ -> false
+
+                let hi = Kernels.morselEnd phys.Length j
+                let mine = ResizeArray<int>()
+                let mutable i = Kernels.morselStart j
+
+                while Option.isNone errors[j] && i < hi do
+                    slot.Error <- None
+                    let p = phys[i]
+                    let keepIt = keep p
+
+                    match slot.Error with
+                    | Some e -> errors[j] <- Some e
+                    | None ->
+                        if keepIt then
+                            mine.Add p
+
+                        i <- i + 1
+
+                kept[j] <- mine.ToArray()
+                Option.isNone errors[j]
+
+            k.RunMorsels m run
+
+            match Array.tryPick id errors with
+            | Some e -> Error e
+            | None -> Ok(Frame.select f (Array.concat kept))
 
     let private evalProject (f: Frame) (pairs: (string * string) list) : Result<Frame, EvalError> =
         let resolve (src, out) =
@@ -3467,83 +3527,145 @@ module DataFrame =
             let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
             Frame.project f idx (resolved |> List.map (fun (o, ty, _) -> o, ty)))
 
+    /// A step's compiled tree has one shape: `compileExpr` is a function of the frame and the
+    /// resolved expression, so every morsel's tree has the kind of root the first one has.
+    let private sameShape () : 'a =
+        invalidOp "a step's compiled trees disagree on their root's kind"
+
     let private evalDerive
+        (k: KernelSet)
         (env: Map<string, Cell>)
         (f: Frame)
         (name: string)
         (expr: ColExpr)
         : Result<Frame, EvalError> =
-        // Compiled once for the step (Phase 266), run once per logical row, in logical order,
-        // stopping at the first row that records an error. A typed root is written straight into
-        // its carrier at the row's physical position; the boxed root's cells are packed under the
-        // type they infer. The new vector is the frame's physical length, present exactly at the
-        // rows the frame holds, and every other vector is shared.
-        let compiled = compileExpr f (resolveExpr env f.Cols expr)
-        let slot = compiled.Slot
+        // Compiled once per morsel (Phase 266; Phase 270's morsels), run once per logical row, in
+        // logical order within the morsel, stopping at the first row that records an error; the
+        // first morsel that met one answers it, which is the first error in row order. A typed
+        // root is written straight into its carrier at the row's physical position — morsels
+        // write disjoint positions — and the boxed root's cells are packed under the type they
+        // infer. The new vector is the frame's physical length, present exactly at the rows the
+        // frame holds, and every other vector is shared.
+        let resolved = resolveExpr env f.Cols expr
+        let first = compileExpr f resolved
         let phys = Frame.physical f
         let n = phys.Length
         let count = f.Count
-        let failed: EvalError option ref = ref None
+        let m = Kernels.morselCount n
+        let errors: EvalError option[] = Array.create m None
 
-        let fill (r: int -> 'a) (vals: 'a[]) (mask: bool[]) : unit =
-            let mutable i = 0
+        // Run `rowOf tree` at every logical row of every morsel, each morsel through its own tree.
+        let run (rowOf: CompiledExpr -> int -> unit) : EvalError option =
+            k.RunMorsels m (fun j ->
+                let c = if j = 0 then first else compileExpr f resolved
+                let slot = c.Slot
+                let row = rowOf c
+                let hi = Kernels.morselEnd n j
+                let mutable i = Kernels.morselStart j
 
-            while Option.isNone failed.Value && i < n do
-                slot.Error <- None
-                let p = phys[i]
-                let v = r p
+                while Option.isNone errors[j] && i < hi do
+                    slot.Error <- None
+                    row i
 
-                match slot.Error with
-                | Some e -> failed.Value <- Some e
-                | None ->
-                    if not slot.Null then
-                        vals[p] <- v
-                        mask[p] <- true
+                    match slot.Error with
+                    | Some e -> errors[j] <- Some e
+                    | None -> i <- i + 1
 
-                    i <- i + 1
+                Option.isNone errors[j])
+
+            Array.tryPick id errors
 
         // The derived column's type is the type of its first present cell, `StringType` when there
         // is none (`inferCellType`): an all-null typed vector types as the reference types it.
-        let typed (r: int -> 'a) (mk: 'a[] -> bool[] -> Vec) (ty: ColumnType) : ColumnType * Vec =
+        let typed
+            (read: CompiledExpr -> int -> 'a)
+            (mk: 'a[] -> bool[] -> Vec)
+            (ty: ColumnType)
+            : Result<ColumnType * Vec, EvalError> =
             let vals: 'a[] = Array.zeroCreate count
             let mask: bool[] = Array.zeroCreate count
-            fill r vals mask
 
-            if Vec.anyPresent mask phys then
-                ty, mk vals mask
-            else
-                StringType, Strs(StringType, Array.zeroCreate count, mask)
+            let failed =
+                run (fun c ->
+                    let r = read c
+                    let slot = c.Slot
 
-        let ty, vec =
-            match compiled.Node with
-            | NInt r -> typed r (fun v m -> Ints(v, m)) IntType
-            | NFloat r -> typed r (fun v m -> Floats(v, m)) FloatType
-            | NBool r -> typed r (fun v m -> Bools(v, m)) BoolType
-            | NStr(sty, r) -> typed r (fun v m -> Strs(sty, v, m)) sty
-            | NNull -> StringType, Strs(StringType, Array.zeroCreate count, Array.zeroCreate count)
-            | NCell r ->
+                    fun i ->
+                        let p = phys[i]
+                        let v = r p
+
+                        if Option.isNone slot.Error && not slot.Null then
+                            vals[p] <- v
+                            mask[p] <- true)
+
+            match failed with
+            | Some e -> Error e
+            | None ->
+                if Vec.anyPresent mask phys then
+                    Ok(ty, mk vals mask)
+                else
+                    Ok(StringType, Strs(StringType, Array.zeroCreate count, mask))
+
+        let derived =
+            match first.Node with
+            | NInt _ ->
+                typed
+                    (fun c ->
+                        match c.Node with
+                        | NInt r -> r
+                        | _ -> sameShape ())
+                    (fun v m -> Ints(v, m))
+                    IntType
+            | NFloat _ ->
+                typed
+                    (fun c ->
+                        match c.Node with
+                        | NFloat r -> r
+                        | _ -> sameShape ())
+                    (fun v m -> Floats(v, m))
+                    FloatType
+            | NBool _ ->
+                typed
+                    (fun c ->
+                        match c.Node with
+                        | NBool r -> r
+                        | _ -> sameShape ())
+                    (fun v m -> Bools(v, m))
+                    BoolType
+            | NStr(sty, _) ->
+                typed
+                    (fun c ->
+                        match c.Node with
+                        | NStr(_, r) -> r
+                        | _ -> sameShape ())
+                    (fun v m -> Strs(sty, v, m))
+                    sty
+            | NNull -> Ok(StringType, Strs(StringType, Array.zeroCreate count, Array.zeroCreate count))
+            | NCell _ ->
                 let cells: Cell[] = Array.zeroCreate n
-                let mutable i = 0
 
-                while Option.isNone failed.Value && i < n do
-                    slot.Error <- None
-                    let c = r phys[i]
+                let failed =
+                    run (fun c ->
+                        let r =
+                            match c.Node with
+                            | NCell r -> r
+                            | _ -> sameShape ()
 
-                    match slot.Error with
-                    | Some e -> failed.Value <- Some e
-                    | None ->
-                        cells[i] <- c
-                        i <- i + 1
+                        let slot = c.Slot
 
-                match failed.Value with
-                | Some _ -> StringType, Cells [||]
+                        fun i ->
+                            let cell = r phys[i]
+
+                            if Option.isNone slot.Error then
+                                cells[i] <- cell)
+
+                match failed with
+                | Some e -> Error e
                 | None ->
                     let ty = cells |> Array.tryPick Cell.typeOf |> Option.defaultValue StringType
-                    ty, Vec.packAt ty count (fun i -> phys[i]) cells
+                    Ok(ty, Vec.packAt ty count (fun i -> phys[i]) cells)
 
-        match failed.Value with
-        | Some e -> Error e
-        | None -> Ok(Frame.withColumn f name ty vec)
+        derived |> Result.map (fun (ty, vec) -> Frame.withColumn f name ty vec)
 
     /// One column of a group's members — physical rows, in member order — as the cell list an
     /// aggregate reads: built from the back, so it is one pass and one cons per member, and read
@@ -4425,18 +4547,20 @@ module DataFrame =
     /// side paid at the boundary, without unpacking a frame it would only gather again.
     let private rowsOfTable (t: Table) : Cell[][] = RowAccess.rows t |> List.toArray
 
-    /// One step over the frame. Internal so the suite can hold the frame's well-formedness after
-    /// every step of a generated pipeline; every entry point folds through it.
-    let internal evalStep
+    /// One step over the frame, running the row-local verbs through the kernel set `k` (Phase 270).
+    /// Internal so the suite can run both members of the kernel pair on one host and hold their
+    /// answers equal; every entry point folds through it with `Kernels.host`.
+    let internal evalStepWith
+        (k: KernelSet)
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (f: Frame)
         (t: Transform)
         : Result<Frame, EvalError> =
         match t with
-        | Filter pred -> evalFilter env f pred
+        | Filter pred -> evalFilter k env f pred
         | Project pairs -> evalProject f pairs
-        | Derive(name, expr) -> evalDerive env f name expr
+        | Derive(name, expr) -> evalDerive k env f name expr
         | GroupBy(keys, aggs) -> evalGroupBy f keys aggs
         // `0.23.0` — resolve the scalar slots against the SAME env `ColExpr.Param` reads, then call
         // the unchanged reference primitives. `evalSort` / `evalLimit` still take resolved values,
@@ -4470,14 +4594,30 @@ module DataFrame =
             evalSource resolve other
             |> Result.bind (fun t -> evalSetOp "except" false f t.Schema (rowsOfTable t))
 
+    /// One step over the frame through the host kernels (`Kernels.host`, chosen when the package is
+    /// compiled). Internal so the suite can hold the frame's well-formedness after every step of a
+    /// generated pipeline.
+    let internal evalStep
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (t: Transform)
+        : Result<Frame, EvalError> =
+        evalStepWith Kernels.host resolve env f t
+
     /// A `Ref`-rejecting resolver — the default for embedded-only pipelines (and the conformance kit).
     let noResolve: string -> Result<Table, EvalError> =
         fun r -> Error(UnresolvedSource r)
 
     /// The reference evaluator over a prepared source, reporting alongside its answer how many row
     /// evaluations at steps it cost (Phase 267) — the one driver every entry point folds through;
-    /// see `evalPipelineWithInEnvCounted` for what the count means.
-    let private evalPreparedCountedWith
+    /// see `evalPipelineWithInEnvCounted` for what the count means. `k` is the kernel set the
+    /// row-local verbs run through (Phase 270); `fused` says whether a `Sort` followed by a `Limit`
+    /// runs as the stable top-n kernel (Phase 269) or as the two steps written. The pipeline is
+    /// folded AS GIVEN: the planning is the callers' (`evalPreparedCountedWith`, which every entry
+    /// point reaches, plans; `evalPreparedCountedAsWritten` does not).
+    let private evalPreparedCountedFolding
+        (k: KernelSet)
         (fused: bool)
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
@@ -4509,38 +4649,50 @@ module DataFrame =
             | step :: rest ->
                 let cost = costOf f step
 
-                evalStep resolve env f step
+                evalStepWith k resolve env f step
                 |> Result.bind (fun f' -> go f' (evaluated + cost) rest)
 
         go prepared.Frame.Value 0 pipeline
 
-    /// The reference evaluator over a prepared source, reporting alongside its answer how many
-    /// row evaluations at steps it cost (Phase 267) — the one driver every entry point folds
-    /// through; see `evalPipelineWithInEnvCounted` for what the count means. Since Phase 269 the
-    /// pipeline is PLANNED before it is folded (`Planner.rewrite` over the source's schema) and the
-    /// `Sort` > `Limit` pair is run as one kernel: the answer is the reference's, errors included
-    /// (`Conformance.plannerLaws`), and the count is the planned walk's, which is the honest one.
-    let internal evalPreparedCounted
+    /// The reference evaluator over a prepared source through the kernel set `k` (Phase 270),
+    /// reporting alongside its answer how many row evaluations at steps it cost (Phase 267) — the
+    /// one driver every entry point folds through; see `evalPipelineWithInEnvCounted` for what the
+    /// count means. Since Phase 269 the pipeline is PLANNED before it is folded (`Planner.rewrite`
+    /// over the source's schema) and the `Sort` > `Limit` pair is run as one kernel: the answer is
+    /// the reference's, errors included (`Conformance.plannerLaws`), and the count is the planned
+    /// walk's, which is the honest one. Internal so the suite can run both members of the kernel
+    /// pair on one host and hold their answers equal; every entry point passes `Kernels.host`.
+    let internal evalPreparedCountedWith
+        (k: KernelSet)
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (pipeline: Transform list)
         (prepared: Prepared)
         : Result<Table * int, EvalError> =
         let frame = prepared.Frame.Value
-        evalPreparedCountedWith true resolve env (Planner.rewrite frame.Cols pipeline) prepared
+        evalPreparedCountedFolding k true resolve env (Planner.rewrite frame.Cols pipeline) prepared
+
+    /// `evalPreparedCountedWith` through the host kernels.
+    let internal evalPreparedCounted
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<Table * int, EvalError> =
+        evalPreparedCountedWith Kernels.host resolve env pipeline prepared
 
     /// The reference evaluator over the pipeline EXACTLY AS WRITTEN (Phase 269): no rewrite, no
-    /// fused kernel — every step folded in the order and the form the caller gave, which is the
-    /// semantics the planner is held to. The planned entry points answer the same; this one exists
-    /// so that the claim is checkable (`Conformance.plannerLaws`) and so that a host certifying a
-    /// planner of its own has the reference to certify against.
+    /// fused kernel — every step folded in the order and the form the caller gave, through the host
+    /// kernels, which is the semantics the planner is held to. The planned entry points answer the
+    /// same; this one exists so that the claim is checkable (`Conformance.plannerLaws`) and so that
+    /// a host certifying a planner of its own has the reference to certify against.
     let internal evalPreparedCountedAsWritten
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (pipeline: Transform list)
         (prepared: Prepared)
         : Result<Table * int, EvalError> =
-        evalPreparedCountedWith false resolve env pipeline prepared
+        evalPreparedCountedFolding Kernels.host false resolve env pipeline prepared
 
     /// Prepare a table once for many evaluations (Phase 267): the `Table` boundary — one typed
     /// unpack per column — paid here rather than by every pipeline that reads the source. The table

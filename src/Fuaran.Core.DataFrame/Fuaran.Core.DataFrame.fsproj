@@ -10,6 +10,10 @@
     <!-- Phase 267 — the dense columnar frame: the typed vectors, masks and selection the evaluator
          works over. First, because DataFrame.fs evaluates over it. -->
     <Compile Include="Frame.fs" />
+    <!-- Phase 270 — the host kernels the row-local verbs run: a portable member (the Fable path)
+         and, outside Fable, a native member over System.Runtime.Intrinsics and the thread pool,
+         chosen at compile time. Before DataFrame.fs: the evaluator takes its kernel set as a value. -->
+    <Compile Include="Kernels.fs" />
     <Compile Include="DataFrame.fs" />
     <!-- Phase 269 — the planner's public face over the engine in DataFrame.fs. After DataFrame.fs
          (it forwards to `DataFrame.Planner`), before Incremental.fs (the seam plans through it). -->
