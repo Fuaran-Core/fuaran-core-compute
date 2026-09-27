@@ -17,6 +17,13 @@
     <Compile Include="Incremental.fs" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Phase 266 — the suite holds the compiled expression form to the reference evaluator over
+         generated triples and checks that its sample reached every typed kernel; the compiler, its
+         typer and the kernel census are internal (this repository's working forms, not a contract),
+         so the test assembly is the one assembly that may see them. No public surface moves. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Fuaran.Core.Column" />
     <PackageReference Include="Fuaran.Core.Wire" />
   </ItemGroup>

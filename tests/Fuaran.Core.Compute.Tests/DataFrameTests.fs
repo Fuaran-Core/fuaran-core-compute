@@ -2813,3 +2813,566 @@ let tokenEqualityTests =
               match cellsOf "k" out with
               | Float z :: _ -> Expect.isTrue (System.Double.IsNegative z) "the -0.0 that opened the group"
               | other -> failtestf "unexpected key cells %A" other ]
+
+// ---- Phase 266: the compiled expression form and the static typer ------------------------------
+//
+// `evalFilter` and `evalDerive` compile a step's expression once into a closure tree and run it
+// per row; `evalExprInRow` stays the reference. The law below holds the two together over generated
+// (schema, expression, row) triples, cell for cell and error for error, and guards its own sample:
+// every typed kernel and the boxed fall-back must be reached, present cells and nulls and errors
+// must all occur, or the green proves less than it says.
+
+/// The schema every generated expression is typed against: two columns per family, so a binary
+/// node can draw both operands from one family and reach the family's kernel.
+let private typedSchema: Schema =
+    [ "i", IntType
+      "j", IntType
+      "f", FloatType
+      "g", FloatType
+      "s", StringType
+      "t", StringType
+      "d", DateType
+      "e", DateType
+      "ts", TimestampType
+      "tt", TimestampType
+      "b", BoolType
+      "c", BoolType ]
+
+let private typedEnv: Map<string, Cell> =
+    Map.ofList [ "p", Int 7; "q", Str "ab"; "pf", Float 2.5; "pn", Null ]
+
+/// A cell of any family, for a literal or a cell that disagrees with its column's declared type.
+let private anyCell (rng: System.Random) : Cell =
+    match rng.Next 12 with
+    | 0 -> Null
+    | 1 -> Int(rng.Next(-5, 6))
+    | 2 ->
+        Int(
+            if rng.Next 2 = 0 then
+                System.Int32.MaxValue
+            else
+                System.Int32.MinValue
+        )
+    | 3 -> Float(float (rng.Next(-20, 21)) / 4.0)
+    | 4 -> Float(if rng.Next 2 = 0 then nan else infinity)
+    | 5 -> Float 0.0
+    | 6 -> Str [ ""; "ab"; "abc"; "b"; "2024-01-05"; "12"; "x" ].[rng.Next 7]
+    | 7 -> Date [ "2024-01-05"; "2024-02-29"; "1999-12-31" ].[rng.Next 3]
+    | 8 -> Timestamp [ "2024-01-05T10:00:00Z"; "2024-01-05T09:59:59Z" ].[rng.Next 2]
+    | 9 -> Bool(rng.Next 2 = 0)
+    | 10 -> Int 0
+    | _ -> Str "ab"
+
+/// A cell conforming to a column type.
+let private conformingCell (rng: System.Random) (ty: ColumnType) : Cell =
+    match ty with
+    | IntType ->
+        Int(
+            if rng.Next 10 = 0 then
+                System.Int32.MaxValue
+            else
+                rng.Next(-5, 6)
+        )
+    | FloatType ->
+        match rng.Next 8 with
+        | 0 -> Float nan
+        | 1 -> Float -0.0
+        | 2 -> Float infinity
+        | _ -> Float(float (rng.Next(-20, 21)) / 4.0)
+    | StringType -> Str [ ""; "ab"; "abc"; "b"; "2024-01-05"; "12" ].[rng.Next 6]
+    | DateType -> Date [ "2024-01-05"; "2024-02-29"; "1999-12-31" ].[rng.Next 3]
+    | TimestampType -> Timestamp [ "2024-01-05T10:00:00Z"; "2024-01-05T09:59:59Z" ].[rng.Next 2]
+    | BoolType -> Bool(rng.Next 2 = 0)
+
+/// A row over `typedSchema`: mostly conforming cells, some nulls, and now and then a cell that
+/// disagrees with its column — the case a typed kernel must hand to the reference arm.
+let private typedRow (rng: System.Random) : Cell[] =
+    typedSchema
+    |> List.map (fun (_, ty) ->
+        match rng.Next 20 with
+        | 0 -> anyCell rng
+        | 1
+        | 2
+        | 3 -> Null
+        | _ -> conformingCell rng ty)
+    |> List.toArray
+
+let private colsOfType (ty: ColumnType) : string list =
+    typedSchema |> List.filter (fun (_, t) -> t = ty) |> List.map fst
+
+let private pick (rng: System.Random) (xs: 'a list) : 'a = List.item (rng.Next(List.length xs)) xs
+
+let private allBinOps: BinOp list =
+    [ Add
+      Sub
+      Mul
+      Div
+      Mod
+      Eq
+      Ne
+      Lt
+      Le
+      Gt
+      Ge
+      And
+      Or
+      Contains
+      StartsWith
+      EndsWith ]
+
+let private allFns: ScalarFn list =
+    [ Abs
+      Round
+      Floor
+      Ceil
+      Length
+      Lower
+      Upper
+      Substr
+      DatePart
+      Concat
+      Trim
+      Replace
+      DateDiffDays
+      Sqrt
+      Least
+      Greatest
+      IndexOf ]
+
+let private allTypes: ColumnType list =
+    [ IntType; FloatType; StringType; DateType; TimestampType; BoolType ]
+
+/// A generated expression of bounded depth. Binary nodes draw their operands from one family two
+/// times in three, so the typed kernels are reached often; the rest of the draws mix families and
+/// node kinds freely, so the boxed arm, the error paths and the mixed typings are reached too.
+let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
+    let leaf () =
+        match rng.Next 10 with
+        | 0 -> Lit(anyCell rng)
+        | 1 -> Param(pick rng [ "p"; "q"; "pf"; "pn"; "unbound" ])
+        | 2 when rng.Next 6 = 0 -> Now NowGrain.Date
+        | _ -> Col(pick rng (List.map fst typedSchema))
+
+    let familyCol (ty: ColumnType) = Col(pick rng (colsOfType ty))
+
+    if depth <= 0 then
+        leaf ()
+    else
+        let sub () = genExpr rng (depth - 1)
+
+        match rng.Next 14 with
+        | 0
+        | 1
+        | 2
+        | 3
+        | 4 ->
+            let op = pick rng allBinOps
+
+            if rng.Next 3 = 0 then
+                Binary(op, sub (), sub ())
+            else
+                let family =
+                    match op with
+                    | Add
+                    | Sub
+                    | Mul
+                    | Mod
+                    | Div -> pick rng [ IntType; IntType; FloatType ]
+                    | Eq
+                    | Ne
+                    | Lt
+                    | Le
+                    | Gt
+                    | Ge -> pick rng allTypes
+                    | And
+                    | Or -> BoolType
+                    | Contains
+                    | StartsWith
+                    | EndsWith -> StringType
+
+                let operand () =
+                    match rng.Next 6 with
+                    | 0 -> sub ()
+                    | 1 -> Lit(conformingCell rng family)
+                    | 2 when family = IntType -> familyCol FloatType
+                    | _ -> familyCol family
+
+                Binary(op, operand (), operand ())
+        | 5 -> Not(sub ())
+        | 6 -> Coalesce(List.init (rng.Next 4) (fun _ -> sub ()))
+        | 7 -> Case(List.init (1 + rng.Next 2) (fun _ -> sub (), sub ()), sub ())
+        | 8 -> Cast(pick rng allTypes, sub ())
+        | 9
+        | 10 -> ApplyFn(pick rng allFns, List.init (rng.Next 4) (fun _ -> sub ()))
+        | 11 -> InList(sub (), List.init (rng.Next 4) (fun _ -> sub ()))
+        | 12 -> IsNull(sub ())
+        | _ -> InParam(sub (), pick rng [ "p"; "unbound" ])
+
+/// Two evaluation outcomes agree when both are the same error, or both are cells with one token
+/// (`NaN` is not equal to itself structurally, and is one token).
+let private sameOutcome (a: Result<Cell, EvalError>) (b: Result<Cell, EvalError>) : bool =
+    match a, b with
+    | Ok x, Ok y -> DataFrame.cellToken x = DataFrame.cellToken y
+    | Error e1, Error e2 -> e1 = e2
+    | _ -> false
+
+let private oneRowTable (row: Cell[]) : Table =
+    { Schema = typedSchema
+      Columns = typedSchema |> List.mapi (fun i (name, ty) -> col name ty [ row[i] ]) }
+
+/// The compiled evaluation of one (expression, row), through the internal entry the steps use.
+let private compiledOutcome (e: ColExpr) (row: Cell[]) : Result<Cell, EvalError> * DataFrame.Kernel list =
+    let compiled =
+        DataFrame.compileExpr typedSchema (DataFrame.resolveExpr typedEnv typedSchema e)
+
+    DataFrame.runCompiled compiled row, compiled.Kernels
+
+let private referenceOutcome (e: ColExpr) (row: Cell[]) : Result<Cell, EvalError> =
+    DataFrame.evalExprInRow typedEnv typedSchema (List.ofArray row) e
+
+/// The kernel a binary node over two columns of a type compiles to, with conforming cells.
+let private kernelCases: (DataFrame.Kernel * BinOp * ColumnType) list =
+    [ DataFrame.IntArith, Add, IntType
+      DataFrame.IntArith, Mod, IntType
+      DataFrame.FloatArith, Mul, FloatType
+      DataFrame.FloatArith, Div, IntType
+      DataFrame.NumCompare, Lt, FloatType
+      DataFrame.NumCompare, Ge, IntType
+      DataFrame.OrdinalCompare, Gt, StringType
+      DataFrame.OrdinalCompare, Eq, DateType
+      DataFrame.OrdinalCompare, Le, TimestampType
+      DataFrame.StrPredicate, Contains, StringType
+      DataFrame.Logical, And, BoolType
+      DataFrame.Logical, Or, BoolType ]
+
+[<Tests>]
+let compiledExprLaws =
+    testList
+        "DataFrame.CompiledExpr"
+        [ testCase "the compiled form equals evalExprInRow cell for cell and error for error over generated triples"
+          <| fun _ ->
+              let rng = System.Random 266
+              let kernelHits = System.Collections.Generic.Dictionary<DataFrame.Kernel, int>()
+              let mutable present = 0
+              let mutable nulls = 0
+              let mutable errors = 0
+              let mutable checkedTriples = 0
+
+              for _ in 1..4000 do
+                  let e = genExpr rng (rng.Next 5)
+                  let row = typedRow rng
+                  let expected = referenceOutcome e row
+                  let actual, kernels = compiledOutcome e row
+
+                  if not (sameOutcome expected actual) then
+                      failtestf "compiled %A differs from the reference %A on expr=%A row=%A" actual expected e row
+
+                  // The step loops are the compiled form's real callers: a one-row `Derive` must
+                  // produce the same cell or the same error, and a one-row `Filter` must keep the
+                  // row exactly when the reference says `Bool true`.
+                  let derived =
+                      DataFrame.evalPipelineInEnv typedEnv [ Derive("out", e) ] (oneRowTable row)
+                      |> Result.map (fun t -> List.head (cellsOf "out" t))
+
+                  if not (sameOutcome expected derived) then
+                      failtestf "Derive %A differs from the reference %A on expr=%A row=%A" derived expected e row
+
+                  let filtered =
+                      DataFrame.evalPipelineInEnv typedEnv [ Filter e ] (oneRowTable row)
+                      |> Result.map Table.rowCount
+
+                  let expectedRows =
+                      expected
+                      |> Result.map (fun c ->
+                          match c with
+                          | Bool true -> 1
+                          | _ -> 0)
+
+                  if filtered <> expectedRows then
+                      failtestf
+                          "Filter kept %A rows, the reference says %A, on expr=%A row=%A"
+                          filtered
+                          expectedRows
+                          e
+                          row
+
+                  checkedTriples <- checkedTriples + 1
+
+                  for k in kernels do
+                      kernelHits[k] <-
+                          (match kernelHits.TryGetValue k with
+                           | true, n -> n + 1
+                           | _ -> 1)
+
+                  match expected with
+                  | Ok Null -> nulls <- nulls + 1
+                  | Ok _ -> present <- present + 1
+                  | Error _ -> errors <- errors + 1
+
+              // Adequacy: the boxed fall-back and every typed kernel compiled into the sample, and the
+              // three outcome classes all occurred — a law over a sample missing any of them is a
+              // green that proves less than it claims.
+              let hits (k: DataFrame.Kernel) =
+                  match kernelHits.TryGetValue k with
+                  | true, n -> n
+                  | _ -> 0
+
+              for k in
+                  [ DataFrame.IntArith
+                    DataFrame.FloatArith
+                    DataFrame.NumCompare
+                    DataFrame.OrdinalCompare
+                    DataFrame.StrPredicate
+                    DataFrame.Logical
+                    DataFrame.Boxed ] do
+                  Expect.isGreaterThan (hits k) 30 (sprintf "the sample reached kernel %A" k)
+
+              Expect.isGreaterThan checkedTriples 3999 "every triple was checked"
+              Expect.isGreaterThan present 400 "present cells occurred"
+              Expect.isGreaterThan nulls 200 "nulls occurred"
+              Expect.isGreaterThan errors 200 "errors occurred"
+
+          testCase
+              "each typed kernel's fast path, its null propagation and its mistyped-cell fall-back match the reference"
+          <| fun _ ->
+              let rng = System.Random 2660
+
+              for kernel, op, ty in kernelCases do
+                  let cols = colsOfType ty
+                  let a, b = List.head cols, List.item 1 cols
+                  let ai = typedSchema |> List.findIndex (fun (n, _) -> n = a)
+                  let bi = typedSchema |> List.findIndex (fun (n, _) -> n = b)
+                  let e = Binary(op, Col a, Col b)
+
+                  let check (label: string) (row: Cell[]) (classify: Result<Cell, EvalError> -> bool) =
+                      let expected = referenceOutcome e row
+                      let actual, kernels = compiledOutcome e row
+                      Expect.equal kernels [ kernel ] (sprintf "%A over %s compiles to its kernel" op label)
+
+                      if not (sameOutcome expected actual) then
+                          failtestf "%A %s: compiled %A, reference %A, row %A" op label actual expected row
+
+                      Expect.isTrue (classify expected) (sprintf "%A %s reached the outcome it targets" op label)
+
+                  for _ in 1..40 do
+                      // conforming cells on both sides: the fast path, answering a present cell
+                      let row = typedRow rng
+                      row[ai] <- conformingCell rng ty
+                      row[bi] <- conformingCell rng ty
+
+                      check "fast path" row (fun r ->
+                          match r with
+                          | Ok Null -> op = Div || op = Mod // a zero divisor answers null
+                          | Ok _ -> true
+                          | Error _ -> ty = IntType && (op = Add || op = Mul)) // int32 overflow
+
+                      // a null operand: null propagates (the logical pair three-valued)
+                      let row = typedRow rng
+                      row[ai] <- Null
+                      row[bi] <- conformingCell rng ty
+                      check "null operand" row (fun _ -> true)
+
+                      // a cell disagreeing with its column: the kernel hands the pair to the arm
+                      let row = typedRow rng
+                      row[ai] <- Str "not what the column declares"
+                      row[bi] <- conformingCell rng ty
+                      check "mistyped cell" row (fun _ -> true)
+
+          testCase
+              "the first error in row order is the one a Derive reports, and the first in a row the one a row reports"
+          <| fun _ ->
+              let t =
+                  tbl
+                      [ "x", IntType; "s", StringType ]
+                      [ col "x" IntType [ Int 1; Int System.Int32.MaxValue; Null; Int 3 ]
+                        col "s" StringType [ Str "a"; Str "b"; Str "c"; Str "d" ] ]
+
+              // row 2 overflows; row 4 would too, and row 3 is null: row 2's error is the answer.
+              match DataFrame.evalPipeline [ Derive("y", Binary(Add, Col "x", Lit(Int 1))) ] t with
+              | Error(OverflowError d) -> Expect.stringContains d "add overflowed" "row 2's overflow"
+              | other -> failtestf "expected the overflow, got %A" other
+
+              // Left operand first: the arithmetic type error, not the cast's, though both fail.
+              let e = Binary(Add, Binary(Add, Col "s", Lit(Int 1)), Cast(IntType, Lit(Str "zz")))
+
+              match DataFrame.evalPipeline [ Derive("y", e) ] t with
+              | Error(TypeError d) -> Expect.equal d "arithmetic on a non-numeric operand" "the left error"
+              | other -> failtestf "expected the left operand's error, got %A" other
+
+              // A filter stops at the erroring row as well, whatever rows follow.
+              match DataFrame.evalPipeline [ Filter(Binary(Gt, Col "x", Lit(Str "1"))) ] t with
+              | Error(TypeError _) -> ()
+              | other -> failtestf "expected a comparison error, got %A" other
+
+          testCase "a compiled tree is reusable across rows: an error on one row leaves the next row's answer intact"
+          <| fun _ ->
+              let e = Binary(Add, Col "i", Lit(Int 1))
+
+              let compiled =
+                  DataFrame.compileExpr typedSchema (DataFrame.resolveExpr typedEnv typedSchema e)
+
+              let bad = typedRow (System.Random 1)
+              bad[0] <- Str "x"
+              let good = typedRow (System.Random 2)
+              good[0] <- Int 41
+              Expect.isError (DataFrame.runCompiled compiled bad) "the bad row errors"
+              Expect.equal (DataFrame.runCompiled compiled good) (Ok(Int 42)) "the good row answers"
+              Expect.isError (DataFrame.runCompiled compiled bad) "and errors again"
+
+          testCase "a 129-node integer expression compiles to a chain of integer kernels and equals the reference"
+          <| fun _ ->
+              // Sixteen levels of alternating addition and subtraction over two int columns — the
+              // deep shape the scaling suite times — over rows with nulls and one mistyped cell.
+              let rec nest n e =
+                  if n = 0 then
+                      e
+                  else
+                      nest
+                          (n - 1)
+                          (Binary(
+                              Sub,
+                              Binary(Add, e, Binary(Add, Col "j", Lit(Int 2))),
+                              Binary(Add, Col "j", Lit(Int 1))
+                          ))
+
+              let e = nest 16 (Col "i")
+              let rng = System.Random 129
+
+              for _ in 1..200 do
+                  let row = typedRow rng
+                  let expected = referenceOutcome e row
+                  let actual, kernels = compiledOutcome e row
+                  Expect.equal (List.length kernels) 64 "sixty-four binary nodes"
+                  Expect.isTrue (kernels |> List.forall ((=) DataFrame.IntArith)) "every node is the integer kernel"
+
+                  if not (sameOutcome expected actual) then
+                      failtestf "compiled %A differs from the reference %A on row %A" actual expected row
+
+          testCase "a Derive and a Filter over many rows run as loops: 50,000 rows evaluate"
+          <| fun _ ->
+              let n = 50_000
+
+              let t = tbl [ "x", IntType ] [ col "x" IntType [ for k in 1..n -> Int k ] ]
+
+              let out =
+                  DataFrame.evalPipeline
+                      [ Derive("y", Binary(Mul, Col "x", Lit(Int 2)))
+                        Filter(Binary(Gt, Col "y", Lit(Int n))) ]
+                      t
+                  |> okTable
+
+              Expect.equal (Table.rowCount out) (n / 2) "half the rows pass" ]
+
+// ---- Phase 266: the typer ----------------------------------------------------------------------
+
+[<Tests>]
+let exprTypingTests =
+    testList
+        "DataFrame.Typing"
+        [ testCase "the typer decides each family from the schema and declines what the schema does not decide"
+          <| fun _ ->
+              let cases: (string * ColExpr * ColumnType option) list =
+                  [ "int + int", Binary(Add, Col "i", Col "j"), Some IntType
+                    "int + float", Binary(Add, Col "i", Col "f"), Some FloatType
+                    "int / int", Binary(Div, Col "i", Col "j"), Some FloatType
+                    "float mod", Binary(Mod, Col "f", Col "j"), None
+                    "str + int", Binary(Add, Col "s", Col "i"), None
+                    "int < float", Binary(Lt, Col "i", Col "f"), Some BoolType
+                    "str = str", Binary(Eq, Col "s", Col "t"), Some BoolType
+                    "str = date", Binary(Eq, Col "s", Col "d"), None
+                    "contains", Binary(Contains, Col "s", Lit(Str "a")), Some BoolType
+                    "and", Binary(And, Col "b", Col "c"), Some BoolType
+                    "and null literal", Binary(And, Col "b", Lit Null), Some BoolType
+                    "not bool", Not(Col "b"), Some BoolType
+                    "not int", Not(Col "i"), None
+                    "null literal", Lit Null, None
+                    "null + int", Binary(Add, Lit Null, Col "i"), None
+                    "param", Param "p", None
+                    "now", Now NowGrain.Date, None
+                    "unknown column", Col "nope", None
+                    "coalesce same", Coalesce [ Col "i"; Lit(Int 0) ], Some IntType
+                    "coalesce mixed", Coalesce [ Col "i"; Col "f" ], None
+                    "case null else", Case([ Col "b", Col "s" ], Lit Null), Some StringType
+                    "case mixed arms", Case([ Col "b", Col "s" ], Col "i"), None
+                    "cast from string", Cast(IntType, Col "s"), Some IntType
+                    "in list", InList(Col "i", [ Lit(Int 1) ]), Some BoolType
+                    "is null", IsNull(Col "nope"), Some BoolType
+                    "concat", ApplyFn(Concat, [ Col "s"; Col "i" ]), Some StringType
+                    "length", ApplyFn(Length, [ Col "s" ]), Some IntType
+                    "abs int", ApplyFn(Abs, [ Col "i" ]), Some IntType
+                    "abs float", ApplyFn(Abs, [ Col "f" ]), Some FloatType
+                    "abs str", ApplyFn(Abs, [ Col "s" ]), None
+                    "round", ApplyFn(Round, [ Col "i" ]), Some FloatType
+                    "least mixed", ApplyFn(Least, [ Col "i"; Col "f" ]), None
+                    "greatest ints", ApplyFn(Greatest, [ Col "i"; Col "j" ]), Some IntType
+                    "wrong arity", ApplyFn(Length, [ Col "s"; Col "t" ]), None
+                    "date diff", ApplyFn(DateDiffDays, [ Col "d"; Col "e" ]), Some IntType ]
+
+              for label, e, expected in cases do
+                  Expect.equal (DataFrame.typeOf typedSchema e) expected label
+
+          testCase "a Derive's column type is decided exactly where inferCellType's fall-back and the static type agree"
+          <| fun _ ->
+              let cases: (string * ColExpr * ColumnType option) list =
+                  [ "strings", ApplyFn(Concat, [ Col "s"; Lit(Str "!") ]), Some StringType
+                    "null literal", Lit Null, Some StringType
+                    "a name the schema lacks", Col "nope", None
+                    "ints", Binary(Add, Col "i", Lit(Int 1)), None
+                    "bools", Binary(Gt, Col "i", Lit(Int 1)), None
+                    "cast to string", Cast(StringType, Col "i"), Some StringType
+                    "cast to int", Cast(IntType, Col "s"), None
+                    "param", Param "p", None ]
+
+              for label, e, expected in cases do
+                  Expect.equal (DataFrame.derivedColumnType typedSchema e) expected label
+
+          testCase
+              "SchemaWalk types a string-valued Derive, keeps None elsewhere, and agrees with evaluation on empty and full frames"
+          <| fun _ ->
+              let walk (pipeline: Transform list) =
+                  SchemaWalk.ofPipeline people.Schema pipeline
+
+              Expect.equal
+                  (SchemaWalk.typeOf "tag" (walk [ Derive("tag", ApplyFn(Upper, [ Col "dept" ])) ]))
+                  (Some StringType)
+                  "an upper-cased string column is typed"
+
+              Expect.equal
+                  (SchemaWalk.typeOf "raise" (walk [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ]))
+                  None
+                  "an integer derive stays undecided: an empty frame would type it String"
+
+              Expect.equal
+                  (SchemaWalk.typeOf "salary" (walk [ Derive("salary", Cast(StringType, Col "salary")) ]))
+                  (Some StringType)
+                  "a retype in place through a string cast is typed"
+
+              Expect.equal
+                  (SchemaWalk.typeOf "n" (walk [ Derive("n", Lit Null) ]))
+                  (Some StringType)
+                  "an all-null derive is String, as the evaluator's fall-back makes it"
+
+              // Over an OPEN knowledge the walk cannot see `dept`, so a derive OF it is undecided —
+              // while an `Upper` of it is still a string on every row it answers at all, whatever
+              // `dept` turns out to be: the typing is a claim about present values, never about
+              // which rows error.
+              let openKnowledge = SchemaKnowledge.AtLeast([], "declared nothing")
+
+              let overOpen (expr: ColExpr) =
+                  SchemaWalk.ofTransform SchemaWalk.noSources openKnowledge (Derive("u", expr))
+                  |> SchemaWalk.typeOf "u"
+
+              Expect.equal (overOpen (Col "dept")) None "a column the walk cannot see leaves the derive undecided"
+
+              Expect.equal
+                  (overOpen (ApplyFn(Upper, [ Col "dept" ])))
+                  (Some StringType)
+                  "a string function of it is a string whenever it is a value"
+
+              // The claim holds where it is made: an emptied frame and a full one both give String.
+              for pipeline in
+                  [ [ Filter(Lit(Bool false)); Derive("tag", ApplyFn(Upper, [ Col "dept" ])) ]
+                    [ Derive("tag", ApplyFn(Upper, [ Col "dept" ])) ] ] do
+                  let evaluated = run pipeline |> okTable
+                  let actual = evaluated.Schema |> List.find (fun (n, _) -> n = "tag") |> snd
+                  Expect.equal (SchemaWalk.typeOf "tag" (walk pipeline)) (Some actual) "walk and evaluator agree" ]

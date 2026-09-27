@@ -965,9 +965,26 @@ module DataFrame =
     /// A total comparison between two *present, same-family* cells. `None` ⇒ incomparable (a type
     /// error). Numerics compare as float; strings/date/timestamp by ordinal (ISO sorts
     /// chronologically); bool false < true.
+    /// The numeric family's comparison, in the float carrier every numeric cell is compared in. One
+    /// definition, because the compiled comparison kernel (Phase 266) and `compareCells` must agree
+    /// on every float, `NaN` and `-0.0` included, on every host — two calls to one function do.
+    let private compareNum (x: float) (y: float) : int = compare x y
+
+    /// A numeric cell's value in the float carrier. Total only over the numeric family; a caller
+    /// has matched the family before it reads this.
+    let private numOf (c: Cell) : float =
+        match c with
+        | Int i -> float i
+        | Float f -> f
+        | Bool _
+        | Str _
+        | Date _
+        | Timestamp _
+        | Null -> nan
+
     let private compareCells (a: Cell) (b: Cell) : int option =
         match a, b with
-        | (Int _ | Float _), (Int _ | Float _) -> Some(compare (asNum a) (asNum b))
+        | (Int _ | Float _), (Int _ | Float _) -> Some(compareNum (numOf a) (numOf b))
         | Bool x, Bool y -> Some(compare x y)
         | Str x, Str y -> Some(System.String.CompareOrdinal(x, y))
         | Date x, Date y -> Some(System.String.CompareOrdinal(x, y))
@@ -986,11 +1003,19 @@ module DataFrame =
     /// Range-check an `int64` arithmetic result against the `int32` band (Phase 39). A value outside
     /// the band is a named `OverflowError`, never a silent two's-complement wrap (which diverges
     /// .NET-vs-JS and breaks three-host parity). `ctx` names the operation for the message.
+    let private inInt32Range (r: int64) : bool =
+        r >= int64 System.Int32.MinValue && r <= int64 System.Int32.MaxValue
+
+    /// The named overflow an integer operation `ctx` reports for the out-of-band result `r` — the
+    /// one message, whether the reference arm or the compiled integer kernel (Phase 266) raises it.
+    let private overflowed (ctx: string) (r: int64) : EvalError =
+        OverflowError(ctx + " overflowed int32: " + string r)
+
     let private checkedInt (ctx: string) (r: int64) : Result<Cell, EvalError> =
-        if r >= int64 System.Int32.MinValue && r <= int64 System.Int32.MaxValue then
+        if inInt32Range r then
             Ok(Int(int r))
         else
-            Error(OverflowError(ctx + " overflowed int32: " + string r))
+            Error(overflowed ctx r)
 
     let private arith (op: BinOp) (a: Cell) (b: Cell) : Result<Cell, EvalError> =
         match a, b with
@@ -1438,6 +1463,22 @@ module DataFrame =
         | StartsWith
         | EndsWith -> stringPred op av bv
 
+    /// `Not` over one cell: three-valued, and a typed error off the boolean family.
+    let private notCell (c: Cell) : Result<Cell, EvalError> =
+        match c with
+        | Bool b -> Ok(Bool(not b))
+        | Null -> Ok Null
+        | _ -> Error(TypeError "not of a non-bool")
+
+    /// One step of `InList`'s membership test: does the present item match the present subject
+    /// under the pinned cell ordering? Incomparable families are the typed error; the null
+    /// bookkeeping around the steps is the caller's loop.
+    let private inMatch (subject: Cell) (item: Cell) : Result<bool, EvalError> =
+        match compareCells subject item with
+        | Some 0 -> Ok true
+        | Some _ -> Ok false
+        | None -> Error(TypeError "in: comparison between incompatible types")
+
     /// Evaluate a resolved expression against one row held as an array — the reference expression
     /// evaluator. Every `Param` was read from the environment at resolution; a hit is its bound
     /// `Cell`, and a miss is the strict `UnboundParam` naming the param and the bound set (GP4/GP5)
@@ -1450,12 +1491,7 @@ module DataFrame =
         | RBinary(op, a, b) ->
             evalResolved row a
             |> Result.bind (fun av -> evalResolved row b |> Result.bind (fun bv -> binaryOp op av bv))
-        | RNot inner ->
-            evalResolved row inner
-            |> Result.bind (function
-                | Bool b -> Ok(Bool(not b))
-                | Null -> Ok Null
-                | _ -> Error(TypeError "not of a non-bool"))
+        | RNot inner -> evalResolved row inner |> Result.bind notCell
         | RCoalesce exprs ->
             let rec go =
                 function
@@ -1495,10 +1531,10 @@ module DataFrame =
                                 match iv with
                                 | Null -> go true rest
                                 | _ ->
-                                    match compareCells sv iv with
-                                    | Some 0 -> Ok(Bool true)
-                                    | Some _ -> go sawNull rest
-                                    | None -> Error(TypeError "in: comparison between incompatible types"))
+                                    match inMatch sv iv with
+                                    | Ok true -> Ok(Bool true)
+                                    | Ok false -> go sawNull rest
+                                    | Error e -> Error e)
 
                     go false items)
         | RIsNull inner ->
@@ -1514,6 +1550,717 @@ module DataFrame =
                 | a :: rest -> evalResolved row a |> Result.bind (fun v -> evalArgs (v :: acc) rest)
 
             evalArgs [] args |> Result.bind (applyScalar fn)
+
+    // ---- static typing of expressions (Phase 266) ----
+    //
+    // What a node's PRESENT values can be, decided from a step's schema and nothing else. Three
+    // states rather than two: a node that never produces a present value — a null literal, a name
+    // that failed to resolve — is compatible with every type, and folding it into "unknown" would
+    // cost the type of every `Case` whose else is `Lit Null`, the commonest idiom in the algebra.
+    //
+    // A typing is a claim about VALUES, never about errors: `Of IntType` says every present cell the
+    // node produces is an `Int`, and says nothing about the rows on which it produces an error
+    // instead. That is the claim a static reader needs, and it is the claim the compiler below
+    // specialises on — with the tag still checked per row, so a column whose cells disagree with
+    // its declared type is answered by the reference arm rather than by a wrong kernel.
+
+    /// The static type of a node's present values.
+    type internal Typing =
+        /// No present value is ever produced: every row answers `Null` or an error.
+        | Absent
+        /// Every present value carries this type.
+        | Of of ColumnType
+        /// Undecidable from the schema: a `Param` the reader has no env for, a `Coalesce` of mixed
+        /// operands, an operator over operands it would refuse.
+        | Unknown
+
+    /// The typing rules, one per node kind — shared by the two walks below (over `ColExpr` for a
+    /// static reader, inside the compiler for the resolved form), so each rule has one source.
+    module internal Typing =
+
+        /// The least typing covering both: `Absent` is the identity, two equal types agree, and
+        /// anything else is `Unknown`.
+        let join (a: Typing) (b: Typing) : Typing =
+            match a, b with
+            | Absent, t
+            | t, Absent -> t
+            | Of x, Of y -> if x = y then Of x else Unknown
+            | Unknown, _
+            | _, Unknown -> Unknown
+
+        let joinAll (ts: Typing list) : Typing = List.fold join Absent ts
+
+        /// A literal's typing: its cell's type, or `Absent` for the null literal.
+        let ofCell (c: Cell) : Typing =
+            match Cell.typeOf c with
+            | Some ty -> Of ty
+            | None -> Absent
+
+        /// The `ColumnType option` view — a decided type, or `None` for both `Absent` and `Unknown`.
+        let toOption (t: Typing) : ColumnType option =
+            match t with
+            | Of ty -> Some ty
+            | Absent
+            | Unknown -> None
+
+        let private numeric (t: Typing) : bool =
+            match t with
+            | Of IntType
+            | Of FloatType -> true
+            | Absent
+            | Of _
+            | Unknown -> false
+
+        let private boolLike (t: Typing) : bool =
+            match t with
+            | Absent
+            | Of BoolType -> true
+            | Of _
+            | Unknown -> false
+
+        /// A binary node's typing. Null propagates through every operator but the logical pair
+        /// BEFORE any type is examined, so an `Absent` operand makes the node `Absent` there; the
+        /// logical pair is three-valued, so an `Absent` operand beside a boolean is still boolean.
+        let binary (op: BinOp) (a: Typing) (b: Typing) : Typing =
+            let nullPropagating (decide: unit -> Typing) : Typing =
+                match a, b with
+                | Absent, _
+                | _, Absent -> Absent
+                | _ -> decide ()
+
+            match op with
+            | Add
+            | Sub
+            | Mul ->
+                nullPropagating (fun () ->
+                    match a, b with
+                    | Of IntType, Of IntType -> Of IntType
+                    | (Of IntType | Of FloatType), (Of IntType | Of FloatType) -> Of FloatType
+                    | _ -> Unknown)
+            | Div -> nullPropagating (fun () -> if numeric a && numeric b then Of FloatType else Unknown)
+            | Mod ->
+                nullPropagating (fun () ->
+                    match a, b with
+                    | Of IntType, Of IntType -> Of IntType
+                    | _ -> Unknown)
+            | Eq
+            | Ne
+            | Lt
+            | Le
+            | Gt
+            | Ge ->
+                nullPropagating (fun () ->
+                    match a, b with
+                    | (Of IntType | Of FloatType), (Of IntType | Of FloatType)
+                    | Of StringType, Of StringType
+                    | Of DateType, Of DateType
+                    | Of TimestampType, Of TimestampType
+                    | Of BoolType, Of BoolType -> Of BoolType
+                    | _ -> Unknown)
+            | And
+            | Or -> if boolLike a && boolLike b then join a b else Unknown
+            | Contains
+            | StartsWith
+            | EndsWith ->
+                nullPropagating (fun () ->
+                    match a, b with
+                    | Of StringType, Of StringType -> Of BoolType
+                    | _ -> Unknown)
+
+        let not' (a: Typing) : Typing =
+            match a with
+            | Absent -> Absent
+            | Of BoolType -> Of BoolType
+            | Of _
+            | Unknown -> Unknown
+
+        /// A cast's present values are always of the target type, whatever it was cast from: a
+        /// value the cast cannot convert is an error, not a cell of another type.
+        let cast (ty: ColumnType) (a: Typing) : Typing =
+            match a with
+            | Absent -> Absent
+            | Of _
+            | Unknown -> Of ty
+
+        /// Membership is three-valued: a null subject answers null, everything else a boolean.
+        let inList (subject: Typing) : Typing =
+            match subject with
+            | Absent -> Absent
+            | Of _
+            | Unknown -> Of BoolType
+
+        /// The presence test is total: always a boolean, never null.
+        let isNull: Typing = Of BoolType
+
+        /// A `Case` produces one of its then-branches or its else.
+        let case (thens: Typing list) (els: Typing) : Typing = joinAll (els :: thens)
+
+        /// A scalar function's typing, total over `ScalarFn`. An arity the function refuses is an
+        /// error on every row, so `Absent`; a null argument propagates exactly where the function
+        /// propagates it (the subject of `Substr`, the date of `DatePart`, any argument of the
+        /// variadic and two-string functions, the one argument of a unary function).
+        let applyFn (fn: ScalarFn) (args: Typing list) : Typing =
+            let arity (n: int) : bool = List.length args = n
+            let anyAbsent = args |> List.exists (fun t -> t = Absent)
+
+            let unary (decide: Typing -> Typing) : Typing =
+                if not (arity 1) then
+                    Absent
+                else
+                    match List.head args with
+                    | Absent -> Absent
+                    | t -> decide t
+
+            match fn with
+            | Abs ->
+                unary (fun t ->
+                    match t with
+                    | Of IntType -> Of IntType
+                    | Of FloatType -> Of FloatType
+                    | Absent
+                    | Of _
+                    | Unknown -> Unknown)
+            | Round
+            | Floor
+            | Ceil
+            | Sqrt -> unary (fun _ -> Of FloatType)
+            | Length -> unary (fun _ -> Of IntType)
+            | Lower
+            | Upper
+            | Trim -> unary (fun _ -> Of StringType)
+            | Substr ->
+                if not (arity 3) then
+                    Absent
+                else
+                    match List.head args with
+                    | Absent -> Absent
+                    | _ -> Of StringType
+            | DatePart ->
+                if not (arity 2) then
+                    Absent
+                else
+                    match List.item 1 args with
+                    | Absent -> Absent
+                    | _ -> Of IntType
+            | Concat ->
+                if List.isEmpty args || anyAbsent then
+                    Absent
+                else
+                    Of StringType
+            | Replace -> if not (arity 3) || anyAbsent then Absent else Of StringType
+            | DateDiffDays -> if not (arity 2) || anyAbsent then Absent else Of IntType
+            | Least
+            | Greatest ->
+                if List.isEmpty args || anyAbsent then
+                    Absent
+                else
+                    joinAll args
+            | IndexOf -> if not (arity 2) || anyAbsent then Absent else Of IntType
+
+    /// The static typing of an expression over a schema, with no env — the typer a static reader
+    /// (`SchemaWalk`, a planner) asks. Total over the closed `ColExpr` union with no catch-all. A
+    /// `Param` is `Unknown` because its cell is the env's; a `Now` is `Unknown` because its cell is
+    /// the clock witness's; a column the schema does not carry is `Unknown` because the schema in
+    /// hand may be open.
+    let rec internal typing (cols: Schema) (e: ColExpr) : Typing =
+        let go = typing cols
+
+        match e with
+        | Col name ->
+            match colType cols name with
+            | Some ty -> Of ty
+            | None -> Unknown
+        | Lit c -> Typing.ofCell c
+        | Param _
+        | Now _ -> Unknown
+        | Binary(op, a, b) -> Typing.binary op (go a) (go b)
+        | Not x -> Typing.not' (go x)
+        | Coalesce xs -> Typing.joinAll (List.map go xs)
+        | Case(cases, els) -> Typing.case (cases |> List.map (fun (_, t) -> go t)) (go els)
+        | Cast(ty, x) -> Typing.cast ty (go x)
+        | ApplyFn(fn, args) -> Typing.applyFn fn (List.map go args)
+        | InList(subject, _) -> Typing.inList (go subject)
+        | IsNull _ -> Typing.isNull
+        // A bound list param evaluates as the `InList` it substitutes to; an unbound one is an
+        // error on every row. Either way the present values are booleans.
+        | InParam(subject, _) -> Typing.inList (go subject)
+
+    /// The static type of an expression's present values over a schema, or `None` where the schema
+    /// does not decide it. Internal in this phase: its public exposure moves the package surface and
+    /// rides Phase 267's version cut.
+    let internal typeOf (cols: Schema) (e: ColExpr) : ColumnType option = Typing.toOption (typing cols e)
+
+    /// The column type a `Derive` of `e` produces, where the expression alone decides it.
+    ///
+    /// The evaluator types a derived column from its FIRST PRESENT cell and falls back to
+    /// `StringType` when there is none (`inferCellType`), so a static answer is sound only where
+    /// the two agree on every frame: an expression whose present values are all strings, or that
+    /// has none, is `StringType` over a full frame and over an empty one alike. Any other static
+    /// type is that type over a frame with a present cell and `StringType` over an empty or
+    /// all-null one — which no schema can decide, so it stays `None`.
+    let internal derivedColumnType (cols: Schema) (e: ColExpr) : ColumnType option =
+        match typing cols e with
+        | Absent
+        | Of StringType -> Some StringType
+        | Of _
+        | Unknown -> None
+
+    // ---- compilation to a closure tree (Phase 266) ----
+    //
+    // `evalResolved` walks the expression tree per row and threads a `Result` through every node —
+    // a closure allocation per node per row through `Result.bind`, and under Fable a result object
+    // as well, with the row loop continuing through the continuation so a JavaScript host spent a
+    // stack frame per row. The compiled form below walks the tree ONCE per step and returns a
+    // closure tree over the array row: each node is a function of the row, specialised where the
+    // typer above decides its operands' types and the reference arm where it does not.
+    //
+    // Errors travel through one slot per compiled tree instead of a `Result` per node. A node that
+    // meets an error records it — the FIRST one wins, and every ancestor returns as soon as a child
+    // has recorded one — so the error a row reports is the one `evalResolved` reports, and the
+    // nodes visited are the nodes it visits. The slot is reset by the caller before each row, which
+    // is why the tree is a per-step object and never shared across steps or threads.
+    //
+    // Semantics are the reference's by construction rather than by re-statement: every typed kernel
+    // handles exactly the tag combinations the reference arm handles the same way, and hands every
+    // other combination — a cell that disagrees with its column's declared type included — to that
+    // arm. The law in the suite holds the compiled form to `evalExprInRow` cell for cell and error
+    // for error over generated (schema, expression, row) triples.
+
+    /// The kernel a compiled binary node runs, chosen once per step from its operands' typings.
+    type internal Kernel =
+        /// `Add`/`Sub`/`Mul`/`Mod` over two `Int` operands: int64 accumulation, int32 range check.
+        | IntArith
+        /// `Add`/`Sub`/`Mul`/`Div` over the numeric family with a `Float` result.
+        | FloatArith
+        /// The six comparisons over the numeric family, in the float carrier.
+        | NumCompare
+        /// The six comparisons over two strings, two dates or two timestamps, ordinal.
+        | OrdinalCompare
+        /// `Contains`/`StartsWith`/`EndsWith` over two strings, ordinal.
+        | StrPredicate
+        /// Kleene `And`/`Or` over booleans.
+        | Logical
+        /// The reference arm, for operands the typer could not decide.
+        | Boxed
+
+    /// The one error slot a compiled tree reports through.
+    type internal ErrorSlot = { mutable Error: EvalError option }
+
+    /// A step's compiled expression: one closure tree over the array row, and the slot it reports
+    /// through. `Kernels` lists the kernel of every binary node in the tree, in compile order, so a
+    /// sample can be checked for reaching each of them.
+    type internal CompiledExpr =
+        { Run: Cell[] -> Cell
+          Slot: ErrorSlot
+          Kernels: Kernel list }
+
+    let private kernelOf (op: BinOp) (a: Typing) (b: Typing) : Kernel =
+        let intLike (t: Typing) =
+            match t with
+            | Absent
+            | Of IntType -> true
+            | Of _
+            | Unknown -> false
+
+        let numLike (t: Typing) =
+            match t with
+            | Absent
+            | Of IntType
+            | Of FloatType -> true
+            | Of _
+            | Unknown -> false
+
+        let strLike (t: Typing) =
+            match t with
+            | Absent
+            | Of StringType -> true
+            | Of _
+            | Unknown -> false
+
+        let boolLike (t: Typing) =
+            match t with
+            | Absent
+            | Of BoolType -> true
+            | Of _
+            | Unknown -> false
+
+        let ordinalFamily =
+            match a, b with
+            | (Absent | Of StringType), (Absent | Of StringType)
+            | (Absent | Of DateType), (Absent | Of DateType)
+            | (Absent | Of TimestampType), (Absent | Of TimestampType) -> true
+            | _ -> false
+
+        match op with
+        | Add
+        | Sub
+        | Mul ->
+            if intLike a && intLike b then IntArith
+            elif numLike a && numLike b then FloatArith
+            else Boxed
+        | Div -> if numLike a && numLike b then FloatArith else Boxed
+        | Mod -> if intLike a && intLike b then IntArith else Boxed
+        | Eq
+        | Ne
+        | Lt
+        | Le
+        | Gt
+        | Ge ->
+            if numLike a && numLike b then NumCompare
+            elif ordinalFamily then OrdinalCompare
+            else Boxed
+        | And
+        | Or -> if boolLike a && boolLike b then Logical else Boxed
+        | Contains
+        | StartsWith
+        | EndsWith -> if strLike a && strLike b then StrPredicate else Boxed
+
+    /// The comparison a comparison operator tests on the ordering's answer; `None` for an operator
+    /// that is not a comparison, which `kernelOf` never pairs with a comparison kernel.
+    let private comparisonTest (op: BinOp) : (int -> bool) option =
+        match op with
+        | Eq -> Some(fun c -> c = 0)
+        | Ne -> Some(fun c -> c <> 0)
+        | Lt -> Some(fun c -> c < 0)
+        | Le -> Some(fun c -> c <= 0)
+        | Gt -> Some(fun c -> c > 0)
+        | Ge -> Some(fun c -> c >= 0)
+        | _ -> None
+
+    /// The ordinal predicate a string operator tests; `None` off the string-predicate family.
+    let private stringTest (op: BinOp) : (string -> string -> bool) option =
+        match op with
+        | Contains -> Some(fun s t -> s.Contains(t, System.StringComparison.Ordinal))
+        | StartsWith -> Some(fun s t -> s.StartsWith(t, System.StringComparison.Ordinal))
+        | EndsWith -> Some(fun s t -> s.EndsWith(t, System.StringComparison.Ordinal))
+        | _ -> None
+
+    /// The float-carrier arithmetic an operator performs; `None` off the float family (`Mod` is
+    /// integer-only in the reference, so it is not here).
+    let private floatArith (op: BinOp) : (float -> float -> Cell) option =
+        match op with
+        | Add -> Some(fun x y -> Float(x + y))
+        | Sub -> Some(fun x y -> Float(x - y))
+        | Mul -> Some(fun x y -> Float(x * y))
+        | Div -> Some(fun x y -> if y = 0.0 then Null else Float(x / y))
+        | _ -> None
+
+    /// Compile a resolved expression over a step's schema into a closure tree — once per step,
+    /// before the row loop. `cols` is the schema the expression was resolved against, so a column
+    /// index in it names a column the typer can read the declared type of.
+    let internal compileExpr (cols: Schema) (e: ResolvedExpr) : CompiledExpr =
+        let slot: ErrorSlot = { Error = None }
+        let kernels = ResizeArray<Kernel>()
+        let types = cols |> List.map snd |> List.toArray
+
+        // Record an error — the first one in the row wins — and answer a cell the caller will
+        // discard: every ancestor checks the slot before it reads a child's answer.
+        let fail (err: EvalError) : Cell =
+            if Option.isNone slot.Error then
+                slot.Error <- Some err
+
+            Null
+
+        let erred () : bool = Option.isSome slot.Error
+
+        let unwrap (r: Result<Cell, EvalError>) : Cell =
+            match r with
+            | Ok c -> c
+            | Error err -> fail err
+
+        /// The integer kernel's operation, with the reference's overflow rule and message.
+        let intArith (op: BinOp) : (int64 -> int64 -> Cell) option =
+            let ranged (ctx: string) (r: int64) : Cell =
+                if inInt32Range r then
+                    Int(int r)
+                else
+                    fail (overflowed ctx r)
+
+            match op with
+            | Add -> Some(fun x y -> ranged "add" (x + y))
+            | Sub -> Some(fun x y -> ranged "sub" (x - y))
+            | Mul -> Some(fun x y -> ranged "mul" (x * y))
+            // int64 remainder avoids the .NET `Int32.MinValue % -1` OverflowException (Phase 39).
+            | Mod -> Some(fun x y -> if y = 0L then Null else ranged "mod" (x % y))
+            | _ -> None
+
+        /// A binary node: evaluate the left operand, then the right, then combine — stopping at the
+        /// first recorded error exactly where `evalResolved`'s `Result.bind` chain stops.
+        let binaryNode (op: BinOp) (kernel: Kernel) (ra: Cell[] -> Cell) (rb: Cell[] -> Cell) : Cell[] -> Cell =
+            let boxed (x: Cell) (y: Cell) : Cell = unwrap (binaryOp op x y)
+
+            let both (combine: Cell -> Cell -> Cell) : Cell[] -> Cell =
+                fun row ->
+                    let x = ra row
+
+                    if erred () then
+                        Null
+                    else
+                        let y = rb row
+                        if erred () then Null else combine x y
+
+            match kernel with
+            | Boxed -> both boxed
+            | IntArith ->
+                match intArith op with
+                | Some k ->
+                    both (fun x y ->
+                        match x, y with
+                        | Int i, Int j -> k (int64 i) (int64 j)
+                        | Null, _
+                        | _, Null -> Null
+                        | _ -> boxed x y)
+                | None -> both boxed
+            | FloatArith ->
+                match floatArith op with
+                | Some k ->
+                    // Two `Int`s under `Add`/`Sub`/`Mul` are INTEGER arithmetic in the reference
+                    // (a typed kernel was chosen because a `Float` was declared, so the pair is a
+                    // cell disagreeing with its column); only `Div` divides them as floats.
+                    let ints: int -> int -> Cell =
+                        match op with
+                        | Div -> fun i j -> k (float i) (float j)
+                        | _ -> fun i j -> boxed (Int i) (Int j)
+
+                    both (fun x y ->
+                        match x, y with
+                        | Float p, Float q -> k p q
+                        | Int i, Float q -> k (float i) q
+                        | Float p, Int j -> k p (float j)
+                        | Int i, Int j -> ints i j
+                        | Null, _
+                        | _, Null -> Null
+                        | _ -> boxed x y)
+                | None -> both boxed
+            | NumCompare ->
+                match comparisonTest op with
+                | Some test ->
+                    both (fun x y ->
+                        match x, y with
+                        | Int i, Int j -> Bool(test (compare i j))
+                        | Float p, Float q -> Bool(test (compareNum p q))
+                        | Int i, Float q -> Bool(test (compareNum (float i) q))
+                        | Float p, Int j -> Bool(test (compareNum p (float j)))
+                        | Null, _
+                        | _, Null -> Null
+                        | _ -> boxed x y)
+                | None -> both boxed
+            | OrdinalCompare ->
+                match comparisonTest op with
+                | Some test ->
+                    both (fun x y ->
+                        match x, y with
+                        | Str p, Str q
+                        | Date p, Date q
+                        | Timestamp p, Timestamp q -> Bool(test (System.String.CompareOrdinal(p, q)))
+                        | Null, _
+                        | _, Null -> Null
+                        | _ -> boxed x y)
+                | None -> both boxed
+            | StrPredicate ->
+                match stringTest op with
+                | Some test ->
+                    both (fun x y ->
+                        match x, y with
+                        | Str s, Str t -> Bool(test s t)
+                        | Null, _
+                        | _, Null -> Null
+                        | _ -> boxed x y)
+                | None -> both boxed
+            | Logical ->
+                match op with
+                | And ->
+                    both (fun x y ->
+                        match x, y with
+                        | Bool p, Bool q -> Bool(p && q)
+                        | Bool false, Null
+                        | Null, Bool false -> Bool false
+                        | Bool true, Null
+                        | Null, Bool true
+                        | Null, Null -> Null
+                        | _ -> boxed x y)
+                | Or ->
+                    both (fun x y ->
+                        match x, y with
+                        | Bool p, Bool q -> Bool(p || q)
+                        | Bool true, Null
+                        | Null, Bool true -> Bool true
+                        | Bool false, Null
+                        | Null, Bool false
+                        | Null, Null -> Null
+                        | _ -> boxed x y)
+                | _ -> both boxed
+
+        let rec go (e: ResolvedExpr) : Typing * (Cell[] -> Cell) =
+            match e with
+            | RCol i -> Of types[i], (fun row -> row[i])
+            | RConst c -> Typing.ofCell c, (fun _ -> c)
+            | RFail err -> Absent, (fun _ -> fail err)
+            | RBinary(op, a, b) ->
+                let ta, ra = go a
+                let tb, rb = go b
+                let kernel = kernelOf op ta tb
+                kernels.Add kernel
+                Typing.binary op ta tb, binaryNode op kernel ra rb
+            | RNot inner ->
+                let t, r = go inner
+
+                Typing.not' t,
+                fun row ->
+                    let v = r row
+                    if erred () then Null else unwrap (notCell v)
+            | RCoalesce exprs ->
+                let ts, rs = exprs |> List.map go |> List.unzip
+                let rs = List.toArray rs
+
+                Typing.joinAll ts,
+                fun row ->
+                    let mutable result = Null
+                    let mutable i = 0
+                    let mutable searching = true
+
+                    while searching && i < rs.Length do
+                        let v = rs[i]row
+
+                        if erred () then
+                            searching <- false
+                        else
+                            match v with
+                            | Null -> i <- i + 1
+                            | present ->
+                                result <- present
+                                searching <- false
+
+                    result
+            | RCase(cases, elseExpr) ->
+                let arms =
+                    cases
+                    |> List.map (fun (w, t) ->
+                        let _, rw = go w
+                        let tt, rt = go t
+                        tt, rw, rt)
+
+                let tElse, rElse = go elseExpr
+                let whens = arms |> List.map (fun (_, rw, _) -> rw) |> List.toArray
+                let thens = arms |> List.map (fun (_, _, rt) -> rt) |> List.toArray
+
+                Typing.case (arms |> List.map (fun (tt, _, _) -> tt)) tElse,
+                fun row ->
+                    let mutable result = Null
+                    let mutable i = 0
+                    let mutable searching = true
+
+                    while searching && i < whens.Length do
+                        let w = whens[i]row
+
+                        if erred () then
+                            searching <- false
+                        else
+                            match w with
+                            | Bool true ->
+                                result <- thens[i]row
+                                searching <- false
+                            | _ -> i <- i + 1
+
+                    if searching then rElse row else result
+            | RCast(ty, inner) ->
+                let t, r = go inner
+
+                Typing.cast ty t,
+                fun row ->
+                    let v = r row
+                    if erred () then Null else unwrap (castCell ty v)
+            | RInList(subject, items) ->
+                let ts, rs = go subject
+                let ri = items |> List.map (go >> snd) |> List.toArray
+
+                Typing.inList ts,
+                fun row ->
+                    let sv = rs row
+
+                    if erred () then
+                        Null
+                    else
+                        match sv with
+                        | Null -> Null
+                        | _ ->
+                            // SQL three-valued membership: any equal => true; no match seen a null
+                            // => null; the first incomparable item is the error.
+                            let mutable result = Null
+                            let mutable decided = false
+                            let mutable sawNull = false
+                            let mutable i = 0
+
+                            while not decided && i < ri.Length do
+                                let iv = ri[i]row
+
+                                if erred () then
+                                    decided <- true
+                                else
+                                    match iv with
+                                    | Null ->
+                                        sawNull <- true
+                                        i <- i + 1
+                                    | _ ->
+                                        match inMatch sv iv with
+                                        | Ok true ->
+                                            result <- Bool true
+                                            decided <- true
+                                        | Ok false -> i <- i + 1
+                                        | Error err ->
+                                            result <- fail err
+                                            decided <- true
+
+                            if decided then result
+                            elif sawNull then Null
+                            else Bool false
+            | RIsNull inner ->
+                let _, r = go inner
+
+                Typing.isNull,
+                fun row ->
+                    let v = r row
+
+                    if erred () then
+                        Null
+                    else
+                        match v with
+                        | Null -> Bool true
+                        | _ -> Bool false
+            | RApplyFn(fn, args) ->
+                let ts, rs = args |> List.map go |> List.unzip
+                let rs = List.toArray rs
+
+                Typing.applyFn fn ts,
+                fun row ->
+                    // Arguments left to right, stopping at the first error, as `evalArgs` does.
+                    let vals: Cell[] = Array.zeroCreate rs.Length
+                    let mutable i = 0
+
+                    while not (erred ()) && i < rs.Length do
+                        vals[i] <- rs[i]row
+                        i <- i + 1
+
+                    if erred () then
+                        Null
+                    else
+                        unwrap (applyScalar fn (List.ofArray vals))
+
+        let _, run = go e
+
+        { Run = run
+          Slot = slot
+          Kernels = List.ofSeq kernels }
+
+    /// Evaluate a compiled expression against one row, in the reference's envelope: the slot is
+    /// reset, the tree runs, and the first error it recorded — or the cell — is the answer.
+    let internal runCompiled (c: CompiledExpr) (row: Cell[]) : Result<Cell, EvalError> =
+        c.Slot.Error <- None
+        let v = c.Run row
+
+        match c.Slot.Error with
+        | Some err -> Error err
+        | None -> Ok v
 
     // ---- type inference for derived/melted columns ----
 
@@ -1591,18 +2338,32 @@ module DataFrame =
         (rows: Cell[] list)
         (pred: ColExpr)
         : Result<Cell[] list, EvalError> =
-        let resolved = resolveExpr env cols pred
+        // Compiled once for the step (Phase 266), run once per row; the row loop is a loop, not a
+        // recursion through a continuation, so a JavaScript host spends no stack per row.
+        let compiled = compileExpr cols (resolveExpr env cols pred)
+        let slot = compiled.Slot
+        let run = compiled.Run
+        let mutable acc = []
+        let mutable rest = rows
+        let mutable failed = None
 
-        let rec go acc =
-            function
-            | [] -> Ok(List.rev acc)
-            | row :: rest ->
-                match evalResolved row resolved with
-                | Ok(Bool true) -> go (row :: acc) rest
-                | Ok _ -> go acc rest
-                | Error e -> Error e
+        while Option.isNone failed && not (List.isEmpty rest) do
+            let row = List.head rest
+            slot.Error <- None
+            let v = run row
 
-        go [] rows
+            match slot.Error with
+            | Some e -> failed <- Some e
+            | None ->
+                match v with
+                | Bool true -> acc <- row :: acc
+                | _ -> ()
+
+                rest <- List.tail rest
+
+        match failed with
+        | Some e -> Error e
+        | None -> Ok(List.rev acc)
 
     let private evalProject (f: Frame) (pairs: (string * string) list) : Result<Frame, EvalError> =
         let resolve (src, out) =
@@ -1635,14 +2396,29 @@ module DataFrame =
         (name: string)
         (expr: ColExpr)
         : Result<Frame, EvalError> =
-        let resolved = resolveExpr env f.Cols expr
+        // Compiled once for the step (Phase 266), run once per row, in row order, stopping at the
+        // first row that records an error — the same cell and the same error `evalResolved` gave
+        // per row, without the continuation per row that overflowed the JavaScript stack.
+        let compiled = compileExpr f.Cols (resolveExpr env f.Cols expr)
+        let slot = compiled.Slot
+        let run = compiled.Run
+        let mutable acc = []
+        let mutable rest = f.Rows
+        let mutable failed = None
 
-        let rec go acc =
-            function
-            | [] -> Ok(List.rev acc)
-            | row :: rest -> evalResolved row resolved |> Result.bind (fun c -> go (c :: acc) rest)
+        while Option.isNone failed && not (List.isEmpty rest) do
+            slot.Error <- None
+            let c = run (List.head rest)
 
-        go [] f.Rows
+            match slot.Error with
+            | Some e -> failed <- Some e
+            | None ->
+                acc <- c :: acc
+                rest <- List.tail rest
+
+        (match failed with
+         | Some e -> Error e
+         | None -> Ok(List.rev acc))
         |> Result.map (fun newCells ->
             let ty = inferType newCells
 
@@ -2978,8 +3754,21 @@ module SchemaWalk =
             )
 
         // The name is declared; the type is inferred from the cells the expression produced, so it
-        // is data-dependent and stays unknown.
-        | Derive(name, _) -> upsert { Name = name; Type = None } input
+        // is data-dependent — except where the expression alone decides it (Phase 266): a column
+        // whose present cells can only be strings, or that has none, is `StringType` on every
+        // frame, because that is also the evaluator's fall-back for a column with no present cell.
+        // Any other static type would be wrong on an empty or all-null frame, so it stays unknown.
+        // The typer reads the columns whose types are known; one the walk cannot type reads as
+        // absent, which types the expression as undecidable rather than as anything false.
+        | Derive(name, expr) ->
+            let known =
+                columns input
+                |> List.choose (fun c -> c.Type |> Option.map (fun ty -> c.Name, ty))
+
+            upsert
+                { Name = name
+                  Type = DataFrame.derivedColumnType known expr }
+                input
 
         // GroupBy closes the set too: the key columns then one column per aggregate, and nothing
         // survives that was not named.
