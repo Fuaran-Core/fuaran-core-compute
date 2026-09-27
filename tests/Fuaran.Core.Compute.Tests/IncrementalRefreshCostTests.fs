@@ -1407,3 +1407,123 @@ let keyOnceTests =
                   (Ok d)
                   (Delta.diff (RowIdentity.byColumns [ "id"; "grp" ]) (build small) (editSome 5 (build small)))
                   "and answers as a cold diff does" ]
+
+// ---------------------------------------------------------------------------
+//  Phase 274 — the refresh's bookkeeping, held over columns.
+//
+//  The refresh walked one `Work` record per source row, rebuilt it at every
+//  step, copied a row per `Derive` and transposed the source in and the result
+//  out; since Phase 274 it holds the frame as column arrays with a slot order,
+//  so a one-row refresh allocates a few machine words per source row rather
+//  than a record and a row copy per row per step. `ScalingTests` holds the
+//  clock half (the table-fed tick within 1.5 times the full evaluation); this
+//  is the counted half, on the calling thread's allocation counter, which no
+//  other process can move.
+// ---------------------------------------------------------------------------
+
+/// How many bytes a one-row refresh may allocate per SOURCE ROW, whatever the pipeline. Measured on
+/// this family's Debug build at 20,000 rows after Phase 274: 65 to 98 bytes per row across the
+/// pipelines below (the token and slot arrays, one cell array per evaluating step, and the result's
+/// lists). On the pre-274 tree the row-local derive alone allocated 896 bytes per row — red here by
+/// four and a half times. The bound sits between the two, about twice the measured figure.
+let private refreshBytesPerRowBound = 200.0
+
+/// The group tail beside `tickPipelines`: the second walk, over the group table.
+let private bookkeepingPipelines: (string * Transform list) list =
+    tickPipelines
+    @ [ "filter > groupBy > filter", pipeline @ [ Filter(Binary(Gt, Col "n", Lit(Int 0))) ] ]
+
+[<Tests>]
+let columnarBookkeepingTests =
+    testList
+        "the refresh's bookkeeping is columnar"
+        [ testCase "a one-row refresh allocates a bounded few words per source row"
+          <| fun _ ->
+              for label, p in bookkeepingPipelines do
+                  let n = large
+                  let before = build n
+                  let after = editSome 1 before
+                  let state = ok (Incremental.primeOn idw p before)
+                  let delta = ok (Delta.diff idw before after)
+                  let refreshed = ok (Incremental.refreshOn idw p state delta after)
+
+                  Expect.equal
+                      (Ok(Incremental.result refreshed))
+                      (DataFrame.evalPipeline p after)
+                      (sprintf "%s: refresh = reference" label)
+
+                  let bytes =
+                      ScalingTests.allocatedBytes (fun () ->
+                          Incremental.refreshOn idw p state delta after |> ok |> ignore)
+
+                  let perRow = float bytes / float n
+                  printfn "  [bookkeeping] %-26s refresh allocates %9d B for %d rows (%.1f B/row)" label bytes n perRow
+
+                  Expect.isLessThan
+                      perRow
+                      refreshBytesPerRowBound
+                      (sprintf
+                          "%s: a one-row refresh must allocate at most %.0f bytes per source row, not a record and a row copy per row per step"
+                          label
+                          refreshBytesPerRowBound)
+
+          testCase "a refresh answers as the reference does, however many rows moved"
+          <| fun _ ->
+              // The columnar walk's own paths: a merge placing several moved rows at once (by
+              // bisection into the held order), a slot order that is no longer every row after a
+              // filter, a result column handed back as the source's own list, and every row edited.
+              for label, p in bookkeepingPipelines do
+                  for d in [ 1; 5; 40; small ] do
+                      let before = build small
+                      let after = editSome d before
+                      let state = ok (Incremental.primeOn idw p before)
+                      let delta = ok (Delta.diff idw before after)
+                      let once = ok (Incremental.refreshOn idw p state delta after)
+
+                      Expect.equal
+                          (Ok(Incremental.result once))
+                          (DataFrame.evalPipeline p after)
+                          (sprintf "%s, %d rows edited: refresh = reference" label d)
+
+                      // and again from the refreshed state, back to the original
+                      let back = ok (Delta.diff idw after before)
+                      let twice = ok (Incremental.refreshOn idw p once back before)
+
+                      Expect.equal
+                          (Ok(Incremental.result twice))
+                          (DataFrame.evalPipeline p before)
+                          (sprintf "%s, %d rows edited and restored: refresh = reference" label d)
+
+          testCase "a ragged source column is padded, never handed back as the source's own list"
+          <| fun _ ->
+              // A column shorter than the table reads `Null` past its end (the total `Column.cell`
+              // policy the reference pads by), so the result's column is NOT the source's list.
+              let t = build 50
+
+              let ragged =
+                  { t with
+                      Columns =
+                          t.Columns
+                          |> List.map (fun c ->
+                              if c.Name = "grp" then
+                                  { c with
+                                      Cells = List.truncate 30 c.Cells }
+                              else
+                                  c) }
+
+              let p = [ Derive("b", Binary(Mul, Col "a", Lit(Int 2))) ]
+              let edited = editSome 3 ragged
+              let state = ok (Incremental.primeOn idw p ragged)
+
+              Expect.equal
+                  (Ok(Incremental.result state))
+                  (DataFrame.evalPipeline p ragged)
+                  "prime over a ragged source = reference"
+
+              let refreshed =
+                  ok (Incremental.refreshOn idw p state (ok (Delta.diff idw ragged edited)) edited)
+
+              Expect.equal
+                  (Ok(Incremental.result refreshed))
+                  (DataFrame.evalPipeline p edited)
+                  "refresh over a ragged source = reference" ]

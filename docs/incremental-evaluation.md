@@ -654,7 +654,8 @@ rearrangement inside `Delta.fs` and `Incremental.fs` reaches 1.5× for `lines` a
   resting on any measurement (the walk loses on .NET at 8 rows too), so it was not written either.
   No degrade reason was added, so the decline list is unchanged.
 - **The loss bounds** `cheapRefreshLossBound` and `topNRefreshLossBound` in `ScalingTests.fs` stand
-  as they were: they bound the refresh, and nothing here moved the refresh.
+  as they were: they bound the refresh, and nothing here moved the refresh. (Phase 274 retired both
+  into the tick family: see "Columnar refresh bookkeeping" below.)
 
 **The invariant the new family enforces.** `Scaling`'s "Delta.diff costs what keying the two tables
 costs" holds the diff to at most **three times its floor** — the minting of both tables' keys
@@ -876,25 +877,27 @@ against the list's length, so neither moves alone.
 
 **The inventory.** Seventeen wall-clock assertion sites in `ScalingTests.fs` (one of them asserted at
 two sizes) and one in `PlanTests.fs`, not the 21 and 2 the phase was written against. The
-Phase 207 limit-step case was already counted (element visits), and "the table-fed tick" asserts no
-time. It prints figures and moves to the leg only so that the main suite runs no timing work.
+Phase 207 limit-step case was already counted (element visits), and "the table-fed tick" asserted no
+time. It printed figures and moved to the leg only so that the main suite ran no timing work.
+(Phase 274 made it assert; the rows below carry that phase's changes.)
 
 | Case | Claim | Class | Runs in |
 |---|---|---|---|
 | the reference evaluator is linear | complexity; guards a per-row list walk | CLOCK — no counter sees the walk | leg |
 | `Delta.diff` is linear | complexity; guards a per-row list walk | CLOCK — same | leg |
 | the incremental refresh is linear | complexity of prime + diff + refresh | CLOCK — same | leg |
-| a restricted refresh beats the full evaluation (both assertions) | time: loss bound, and the win | CLOCK | leg |
+| a restricted refresh beats the full evaluation | time: the win (the loss bound retired by Phase 274) | CLOCK | leg |
 | a top-N refresh is linear | complexity | CLOCK | leg |
-| a top-N refresh beats the full evaluation (both) | time | CLOCK | leg |
+| a top-N refresh beats the full evaluation | time: the win (the loss bound retired by Phase 274) | CLOCK | leg |
 | a group-tail refresh is linear | complexity | CLOCK | leg |
-| a group-tail refresh against the full evaluation (both) | time | CLOCK | leg |
+| a group-tail refresh against the full evaluation | time: the win (the loss bound retired by Phase 274) | CLOCK | leg |
 | a step's cost does not depend on which column | time ratio, guards a per-row name lookup | CLOCK — no counter sees the lookup | leg |
 | a join / a pivot / a group-by over n keys / a distinct is linear | complexity; guard quadratic scans | CLOCK — same | leg |
-| the table-fed tick (printed, unasserted) | none | CLOCK work, no clock assertion | leg |
+| the table-fed tick at most 1.5× the full evaluation (Phase 274; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running | CLOCK; its countable part is the Phase 274 row below | leg |
 | `Delta.diff` costs what keying costs (1,000 and 20,000 rows) | work: the keying and a constant | COUNTABLE — keys minted, bytes allocated | main suite |
 | `Filter > Sort > Limit 10`: the fused pair against the full sort (`PlanTests`) | work: the top-n does less than the sort | COUNTABLE — bytes allocated | main suite |
 | the top-N step is a single pass (Phase 207) | work | already counted (visits) | main suite |
+| a one-row refresh allocates a bounded few words per source row (Phase 274) | work: the bookkeeping per row | COUNTABLE — bytes allocated | main suite |
 
 Fourteen cases in the leg. The rest of the premise needed correcting too. The seam's counters see
 the work a refresh does: rows evaluated, chunks touched (Phase 268's regression, an untouched chunk
@@ -928,7 +931,177 @@ the burner (one busy process per logical core, 8): main suite 436 of 436 green e
 refresh 37.7 to 41.3 ms against a full 11.0 to 11.7 ms (3.4 to 3.6 times against the bound of 4), and
 top-N 54.4 to 57.6 against 16.0 to 18.4 ms (3.1 to 3.6 against 5). No threshold was loosened.
 `cheapRefreshLossBound` and `topNRefreshLossBound` moved to the leg unchanged, and Phase 274 owns
-them. The margin under the first one is thin: quiet, it reads about 3.3.
+them. The margin under the first one is thin: quiet, it reads about 3.3. (Phase 274 retired both into
+the tick family; the refresh they bounded now reads about 0.6 of the full evaluation.)
+
+### Columnar refresh bookkeeping, and the tick held at 1.5× (Phase 274)
+
+**The verdict first.** After Phase 273 a tick minted each key once, and what was left of the refresh's
+cost was its own bookkeeping. This phase rewrote that bookkeeping over columns. The refresh of a
+one-row edit went from 3 to 15 full evaluations on the cheap corpus nodes on .NET to 0.5 to 0.9, and
+the table-fed tick (diff + refresh) went from 2.4 to 16.9 to about 1 to 2.4. On **node**, every
+corpus node at every size now ticks at **1.25× the full evaluation or less**. On **.NET, in a Release
+build, the 1.5× bar is still not met** on the cheapest nodes at 20,000 and 100,000 rows: `lines` (1.4
+to 2.2×), `filter > groupBy` (1.4 to 1.8×) and `filter > sort > limit` (1.7 to 2.4×), with
+`byRegion`, `filter > groupBy > filter` and the `CumulSum` window at 1.4 to 1.5×, inside the noise of
+the bar. What stops them is the diff, not the refresh: `Delta.diff` alone costs **0.9 to 1.3 full
+evaluations** of those nodes in Release, because it must mint one `KeyString` per row of the new
+table and pair the rows. A refresh that cost nothing at all would still leave `lines` at 1.27× at
+20,000 rows in the run below. So the shard's stop rule applies, and **what to do about those shapes is
+an operator decision**, recorded as open below. The bar was not loosened.
+
+**What the gate asserts.** "The table-fed tick costs at most 1.5 times the full evaluation it
+replaces" (`ScalingTests`, clock leg) holds the tick of the three one-comparison `Scaling` pipelines
+(`filter > groupBy`, the top-10 board, the group tail) at 1,000, 20,000 and 100,000 rows, best of
+five, with the ratio taken within one run. In the gate's own Debug build it reads 0.59 to 0.95 at
+1,000 and 20,000 rows and 0.72 to 1.24 at 100,000 rows. It was red on the pre-phase tree at 1.70×
+(the first cell, 1,000 rows, on all three attempts). It replaces `cheapRefreshLossBound` (4.0) and
+`topNRefreshLossBound` (5.0). A tick is the refresh plus the diff, so a tick within 1.5 is a refresh
+within 1.5: tighter than either bound, and it does not move when the evaluator gets faster. Neither
+bound is left as a threshold of its own. The three "beats the full evaluation" cases keep their
+costly-expression assertions and still print the one-comparison figures.
+
+Where the claim is countable, it is counted in the main suite. "A one-row refresh allocates a
+bounded few words per source row" (`IncrementalRefreshCostTests`) holds the refresh's allocation to
+at most 200 bytes per source row at 20,000 rows, on a row-local, a maintained-group, a top-N and a
+group-tail pipeline. It measures 65 to 98 bytes per row. On the pre-phase tree the row-local refresh
+allocated 896 bytes per row, so the case was red by four and a half times. Two correctness cases sit
+beside it: every pipeline refreshed after 1, 5, 40 and all rows moved and back again, and a ragged
+source column (see below).
+
+**What changed.** The walk held one `Work` record per source row. Every step rebuilt the records,
+every `Derive` copied every row's array to append one cell, and the source was transposed into rows
+and the result back into columns. Now:
+
+- **The frame is column-major.** Each column is an array indexed by *slot* (the row's index in the
+  frame the walk started from), and the rows alive at a step are an `int[]` of slots in the
+  reference frame's order. `Filter` and `Limit` write a new order (a `Limit` is one array slice),
+  `Sort` permutes it, `Project` permutes the column arrays, and `Derive` adds one array: the step's
+  own cells. The cells a step evaluated are the cache the next refresh reads (`StepCells`, one array
+  per evaluating step, `null` where a row did not reach the step), so the per-row `Cell list` cache
+  and its rebuild are gone.
+- **Source columns are unpacked lazily.** A column no step reads (an identity or a label carried to
+  the result) is never unpacked. When the slot order is still every row in order, the result hands
+  back the consumer's own `Cell list`: the same move the reference frame's `Origins` make. The
+  length is checked, so a ragged column is padded with `Null` exactly as `RowAccess.columns` pads it
+  and is never handed back.
+- **A re-evaluated row fills only the columns its expression reads** into one scratch array per step,
+  and is evaluated by the reference's own `DataFrame.evalResolved`.
+- **A sort merges moved rows by bisection.** Each moved row finds its place in the held order by
+  binary search under the same comparator and arrival tiebreak, and the runs in between are copied
+  whole: O(m log n) comparisons for m moved rows, where the list merge compared up to n times to place
+  one. The held orders are slot arrays, and the reuse test is one lockstep pass that allocates nothing.
+- **The maintained group-by's caches are positional.** Each row carries its group's index rather than
+  its token, and members and aggregates are arrays aligned with the group order. That removes a
+  persistent `Map.add` per group per refresh, which cost 2.5 to 3 full evaluations on the
+  high-cardinality group-by (n/2 groups) and now costs 0.5 to 0.75.
+
+**What did not change.** Every footprint and every degrade reason. `Stable` is still the condition
+at every reuse site (Phases 208 and 215), and `Window` still clears it for every row. Cached orders
+are still reused only for rows whose relative arrival has not moved. Groups are still reused only
+when every member is stable and the ordered member list is identical. The incremental law family,
+the `IncrementalDelta` corpus and its control vector, and every other case in the suite pass
+unchanged. The state is a private record, so no public signature moved, and the API baseline is
+byte-identical.
+
+**The baseline and the result, both hosts.** Measured with Phase 272's probe: every Phase 262 corpus
+node, a one-row edit, and the best of five batched samples of at least 40 ms. The full evaluation is
+the planned one (`DataFrame.evalPipelineInEnv`). "Diff" is `Delta.diff` against the prior source the
+state last saw, into a fresh table, so it mints the new table's keys once. "Refresh" is the refresh
+handed that diff's delta. "Tick" is the two together, timed as one. Before is the post-273 tree and
+after is this phase's, each in one run. The machine was shared, so read ratios within a row, not
+milliseconds across tables. Cells above 1.5× are in bold.
+
+.NET 10 (Release):
+
+| node | rows | before: full (ms) | before: diff ÷ full | before: refresh ÷ full | before: tick ÷ full | after: full (ms) | after: diff ÷ full | after: refresh ÷ full | after: tick ÷ full |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| lines | 1,000 | 0.187 | 0.77× | 2.98× | 3.43× | 0.172 | 0.37× | 0.49× | 0.84× |
+| lines | 20,000 | 3.255 | 1.46× | 11.07× | 11.78× | 3.215 | 1.27× | 0.89× | **2.18×** |
+| lines | 100,000 | 25.559 | 0.99× | 14.62× | 16.90× | 20.320 | 0.91× | 0.65× | **1.55×** |
+| byRegion | 1,000 | 0.171 | 0.43× | 2.35× | 3.30× | 0.152 | 0.43× | 0.57× | 1.06× |
+| byRegion | 20,000 | 4.094 | 1.11× | 5.08× | 5.70× | 4.787 | 0.89× | 0.51× | 1.43× |
+| byRegion | 100,000 | 23.320 | 1.00× | 10.99× | 10.86× | 21.172 | 0.99× | 0.49× | 1.46× |
+| filter-groupby | 1,000 | 0.197 | 0.37× | 1.81× | 2.36× | 0.154 | 0.42× | 0.59× | 1.18× |
+| filter-groupby | 20,000 | 5.885 | 0.90× | 3.36× | 4.43× | 7.456 | 0.47× | 0.27× | 0.82× |
+| filter-groupby | 100,000 | 23.188 | 0.96× | 6.26× | 7.21× | 21.891 | 0.75× | 0.57× | **1.64×** |
+| filter-sort-limit | 1,000 | 0.140 | 0.52× | 4.22× | 4.86× | 0.134 | 0.49× | 0.67× | 1.22× |
+| filter-sort-limit | 20,000 | 3.573 | 0.83× | 7.10× | 9.92× | 2.961 | 1.26× | 0.78× | **2.38×** |
+| filter-sort-limit | 100,000 | 17.996 | 1.20× | 10.63× | 12.81× | 16.822 | 1.16× | 0.75× | **1.70×** |
+| filter-groupby-filter | 1,000 | 0.168 | 0.43× | 2.06× | 2.81× | 0.152 | 0.42× | 0.60× | 1.14× |
+| filter-groupby-filter | 20,000 | 7.744 | 0.51× | 1.83× | 2.69× | 4.796 | 0.81× | 0.70× | 1.41× |
+| filter-groupby-filter | 100,000 | 22.531 | 1.11× | 8.40× | 8.36× | 20.867 | 1.08× | 0.61× | 1.43× |
+| inner join | 1,000 | 0.893 | 0.09× | 1.00× | 1.14× | 0.724 | 0.09× | 1.06× | 1.23× |
+| inner join | 20,000 | 42.703 | 0.08× | 0.96× | 1.26× | 37.453 | 0.10× | 1.05× | 1.12× |
+| inner join | 100,000 | 200.742 | 0.12× | 0.96× | 1.14× | 173.016 | 0.11× | 0.98× | 1.09× |
+| group-by high-card | 1,000 | 0.355 | 0.20× | 2.46× | 2.64× | 0.309 | 0.21× | 0.50× | 0.78× |
+| group-by high-card | 20,000 | 17.287 | 0.26× | 2.59× | 2.68× | 13.594 | 0.26× | 0.75× | 0.65× |
+| group-by high-card | 100,000 | 85.172 | 0.30× | 3.00× | 3.23× | 77.492 | 0.24× | 0.61× | 0.91× |
+| pivot | 1,000 | 0.495 | 0.16× | 1.03× | 1.28× | 0.418 | 0.16× | 1.05× | 1.29× |
+| pivot | 20,000 | 15.992 | 0.32× | 1.55× | 1.47× | 17.203 | 0.24× | 0.82× | 1.16× |
+| pivot | 100,000 | 73.969 | 0.33× | 1.02× | 1.36× | 66.328 | 0.29× | 1.02× | 1.25× |
+| window CumulSum | 1,000 | 0.469 | 0.15× | 1.55× | 1.59× | 0.406 | 0.16× | 1.30× | **1.52×** |
+| window CumulSum | 20,000 | 28.055 | 0.18× | 1.64× | 1.49× | 23.312 | 0.20× | 1.25× | 1.33× |
+| window CumulSum | 100,000 | 150.570 | 0.17× | 1.80× | 1.76× | 138.648 | 0.15× | 1.17× | 1.35× |
+| sort two keys | 1,000 | 0.320 | 0.24× | 1.40× | 1.77× | 0.287 | 0.24× | 0.24× | 0.52× |
+| sort two keys | 20,000 | 9.504 | 0.37× | 2.44× | 3.59× | 10.164 | 0.52× | 0.19× | 0.62× |
+| sort two keys | 100,000 | 78.672 | 0.34× | 2.04× | 2.34× | 77.859 | 0.26× | 0.16× | 0.44× |
+
+node 24 via Fable 5:
+
+| node | rows | before: full (ms) | before: diff ÷ full | before: refresh ÷ full | before: tick ÷ full | after: full (ms) | after: diff ÷ full | after: refresh ÷ full | after: tick ÷ full |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| lines | 1,000 | 1.187 | 0.23× | 1.26× | 1.42× | 1.094 | 0.21× | 0.49× | 0.69× |
+| lines | 20,000 | 24.508 | 0.30× | 2.33× | 2.33× | 20.996 | 0.23× | 0.54× | 0.77× |
+| lines | 100,000 | 123.008 | 0.22× | 2.93× | 3.15× | 110.000 | 0.24× | 0.51× | 0.75× |
+| byRegion | 1,000 | 1.968 | 0.14× | 0.83× | 0.92× | 1.594 | 0.13× | 0.49× | 0.62× |
+| byRegion | 20,000 | 38.000 | 0.15× | 0.89× | 1.00× | 32.000 | 0.16× | 0.55× | 0.70× |
+| byRegion | 100,000 | 193.000 | 0.18× | 1.41× | 1.66× | 158.000 | 0.21× | 0.53× | 0.75× |
+| filter-groupby | 1,000 | 1.781 | 0.13× | 0.72× | 0.84× | 1.531 | 0.14× | 0.60× | 0.73× |
+| filter-groupby | 20,000 | 33.004 | 0.16× | 1.00× | 0.97× | 32.500 | 0.16× | 0.69× | 0.85× |
+| filter-groupby | 100,000 | 161.992 | 0.14× | 1.32× | 1.52× | 153.000 | 0.22× | 0.65× | 0.86× |
+| filter-sort-limit | 1,000 | 2.750 | 0.08× | 0.73× | 0.82× | 2.344 | 0.09× | 0.40× | 0.49× |
+| filter-sort-limit | 20,000 | 53.984 | 0.09× | 1.26× | 1.33× | 50.992 | 0.12× | 0.45× | 0.58× |
+| filter-sort-limit | 100,000 | 276.000 | 0.09× | 1.28× | 1.46× | 244.992 | 0.10× | 0.43× | 0.52× |
+| filter-groupby-filter | 1,000 | 1.813 | 0.12× | 0.74× | 0.86× | 1.625 | 0.14× | 0.63× | 0.73× |
+| filter-groupby-filter | 20,000 | 37.500 | 0.18× | 0.95× | 1.01× | 32.000 | 0.18× | 0.66× | 0.81× |
+| filter-groupby-filter | 100,000 | 165.008 | 0.15× | 1.27× | 1.59× | 154.000 | 0.21× | 0.68× | 0.90× |
+| inner join | 1,000 | 4.626 | 0.06× | 1.00× | 1.05× | 4.125 | 0.07× | 1.00× | 1.11× |
+| inner join | 20,000 | 122.992 | 0.05× | 0.98× | 1.04× | 107.992 | 0.06× | 1.03× | 1.09× |
+| inner join | 100,000 | 680.000 | 0.06× | 1.01× | 1.11× | 596.992 | 0.07× | 1.02× | 1.14× |
+| group-by high-card | 1,000 | 2.688 | 0.10× | 0.98× | 1.09× | 2.312 | 0.11× | 0.46× | 0.58× |
+| group-by high-card | 20,000 | 58.008 | 0.12× | 1.26× | 1.41× | 50.000 | 0.12× | 0.50× | 0.65× |
+| group-by high-card | 100,000 | 294.000 | 0.11× | 1.56× | 1.68× | 262.008 | 0.14× | 0.53× | 0.68× |
+| pivot | 1,000 | 3.125 | 0.10× | 0.98× | 1.10× | 2.688 | 0.10× | 1.00× | 1.14× |
+| pivot | 20,000 | 65.000 | 0.17× | 1.05× | 1.15× | 51.008 | 0.13× | 1.02× | 1.20× |
+| pivot | 100,000 | 321.000 | 0.16× | 1.01× | 1.15× | 251.992 | 0.12× | 1.02× | 1.15× |
+| window CumulSum | 1,000 | 1.844 | 0.15× | 0.92× | 1.10× | 1.656 | 0.16× | 1.06× | 1.25× |
+| window CumulSum | 20,000 | 44.000 | 0.15× | 1.02× | 1.07× | 37.000 | 0.17× | 1.00× | 1.19× |
+| window CumulSum | 100,000 | 227.000 | 0.14× | 1.21× | 1.39× | 198.000 | 0.15× | 1.07× | 1.24× |
+| sort two keys | 1,000 | 2.625 | 0.10× | 0.57× | 0.69× | 2.438 | 0.11× | 0.38× | 0.47× |
+| sort two keys | 20,000 | 88.000 | 0.08× | 0.47× | 0.56× | 79.000 | 0.07× | 0.22× | 0.28× |
+| sort two keys | 100,000 | 547.000 | 0.06× | 0.54× | 0.66× | 486.000 | 0.05× | 0.20× | 0.25× |
+
+A second .NET run of the four shapes that failed or came close, the same day on the same tree
+(tick ÷ full at 1,000 / 20,000 / 100,000 rows): `lines` 1.05 / 1.43 / 1.56, `filter > groupBy`
+0.97 / 1.81 / 1.44, `filter > sort > limit` 1.05 / 2.40 / 1.94, `CumulSum` window 0.97 / 1.47 / 1.49.
+The cells move by a third between runs. The diff's share does not: it stays at 0.9 to 1.3 of the full
+evaluation on every one of these nodes at 20,000 and 100,000 rows.
+
+**Why .NET and not node.** On node the diff costs 0.05 to 0.25 of a full evaluation, because the
+evaluator there is slower relative to string minting. On .NET the typed kernels (Phases 266 to 270)
+make a one-comparison or two-`Derive` evaluation about as cheap as minting one string per row. The
+remaining refresh cost is structural: it builds the result's `Cell list`s, which the full evaluation
+builds too, and it reads the new table's keys. Making the refresh cheaper cannot take a tick below
+its diff.
+
+**Open — for the operator (the shard's stop rule).** On .NET, Release, the table-fed tick of `lines`,
+`filter > groupBy` and `filter > sort > limit` stays above 1.5× at 20,000 and 100,000 rows, as
+measured above (up to 2.4×). The shard names three options: degrade those shapes by plan on .NET,
+accept a stated per-shape bound, or deprecate the table-fed path on .NET. For the third, a caller
+that edits through `ColumnOps.applyPrepared` and refreshes with `refreshPrepared` already pays neither
+the diff nor the keying for a `Derive`-only pipeline (Phase 268). Until that decision, the gate holds
+1.5× on the three `Scaling` pipelines in its own build, and nothing was loosened.
 
 ## What it does not do
 
@@ -1136,14 +1309,14 @@ at all.
 
 | site (`Incremental.fs`) | what it reuses | condition | why that one |
 |---|---|---|---|
-| `cellAt` | the cell an evaluating step (`Filter` predicate, `Derive` expression) computed for this row | `Stable` | the cell is a function of the row's cells; a window moves them without the delta naming the row. **Fixed by Phase 208** — it read `not Affected` to `0.26.0`. |
-| `walk`, `WJoin` arm — `verdictOf` | the cached `Semi`/`Anti` verdict | `Stable` **and** the right relation unmoved | the verdict is a function of the row's key cells *and* of the relation, and the delta describes neither the second nor a window's effect on the first. **Fixed by Phase 208.** |
+| `cachedAt` (read by `evalStep`; `cellAt` before Phase 274) | the cell an evaluating step (`Filter` predicate, `Derive` expression) computed for this row | `Stable` | the cell is a function of the row's cells; a window moves them without the delta naming the row. **Fixed by Phase 208** — it read `not Affected` to `0.26.0`. |
+| `walk`, `WJoin` arm (`verdictOf` before Phase 274) | the cached `Semi`/`Anti` verdict | `Stable` **and** the right relation unmoved | the verdict is a function of the row's key cells *and* of the relation, and the delta describes neither the second nor a window's effect on the first. **Fixed by Phase 208.** |
 | `walk`, `WSort` arm — the reusable set | this row's cached POSITION in the merged order | `Stable` | a cached order is a cached answer: it is a function of every row's sort-key cells, which a window moves. **Fixed by Phase 215** — it read `not Affected` to `0.28.0`. |
 | `walk`, `WWindow` arm | nothing — it CLEARS `Stable`, for live rows and dead ones alike | — | it is the producer the other rows are about. A dead row's cells are not recomputed, so its cache is cleared rather than refreshed: the conservative reading, and the only one available. |
-| `runIncremental`'s row-cache write-back | the prior `Cached` list **as a list**, in place of rebuilding it from `Fresh` | `Stable` **and** the two lists the same length | this one is an IDENTITY claim rather than a reuse of a computation — `Fresh` reversed *is* `Cached` when every step read the cache — so it needs the same condition each of those steps needed, plus the length test for a row that died earlier this time. |
-| `groupStep` — the carried group token | this row's group identity from the prior evaluation | `Stable` **and** `Prior >= 0` | the token is a pure function of the key cells. A row the prior evaluation did not reach mints as before, so a carried token is never the only derivation. |
+| `runIncremental`'s row-cache write-back (until Phase 274) | the prior `Cached` list **as a list**, in place of rebuilding it from `Fresh` | `Stable` **and** the two lists the same length | an IDENTITY claim rather than a reuse of a computation. Gone since Phase 274: each evaluating step writes its own cell array once, so there is no per-row list to reuse. |
+| `groupStep` — the carried group (its token until Phase 274, its index since) | this row's group identity from the prior evaluation | `Stable` **and** `Prior >= 0` | the token is a pure function of the key cells. A row the prior evaluation did not reach mints as before, so a carried token is never the only derivation. |
 | `groupStep` — `cellsFor`'s `allStable` | a group's cached aggregate cells | every member `Stable`, **and** the ordered member list unchanged, **and** a cached aggregate to reuse | an aggregate is a function of its members' cells, so one unstable member is enough to invalidate it; the ordered-member test is what makes a pure reordering — which `Delta.diff` reports as quiet — not reusable. |
-| the group table's own `Work` frame (the maintained-`GroupBy` tail) | the tail's cached cells for a group row | the group's aggregates were not recomputed | sound for the reason a source row's `not Affected` is not: a group row's cells are a function of its members alone, `groupStep` has just recomputed exactly the groups whose members moved, and **no window runs over the group table**. This is the one site where the delta-shaped condition is the right one, and it is right because it is not the delta's statement — it is the group step's. |
+| the group table's own frame (the maintained-`GroupBy` tail) | the tail's cached cells for a group row | the group's aggregates were not recomputed | sound for the reason a source row's `not Affected` is not: a group row's cells are a function of its members alone, `groupStep` has just recomputed exactly the groups whose members moved, and **no window runs over the group table**. This is the one site where the delta-shaped condition is the right one, and it is right because it is not the delta's statement — it is the group step's. |
 
 **There is no `Affected` field any more.** Once the `WSort` arm moved to `Stable` it had no reader,
 and a never-read field whose meaning is the discredited condition is how a fourth site gets written.

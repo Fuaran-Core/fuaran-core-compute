@@ -40,14 +40,16 @@ module Fuaran.Core.Tests.ScalingTests
 //
 //  Phase 265 made the full evaluation of the group-by pipelines about twice as
 //  fast, and two of those one-comparison cases (the plain grouping and the group
-//  tail) became a bounded LOSS rather than a win: see `cheapRefreshLossBound`.
-//  The costly-expression cases and the top-N case still assert the win.
+//  tail) became a bounded LOSS rather than a win, under a loss bound that
+//  Phases 269 and 270 raised again. The costly-expression cases still assert
+//  the win.
 //
 //  Phase 272 added the table-fed caller's other half: `Delta.diff`, which such
 //  a caller runs before every refresh and which cost up to thirty-six times the
 //  evaluation it fed. It is held against its own floor (the keying of both
-//  tables), and the whole tick is measured and printed beside it, unasserted,
-//  with the reason in that case's comment.
+//  tables). Phase 274 rewrote the refresh's bookkeeping over columns and holds
+//  the whole tick — diff plus refresh — within `tickBound` of the full
+//  evaluation, which retired both loss bounds.
 // ---------------------------------------------------------------------------
 
 open System.Diagnostics
@@ -95,56 +97,27 @@ let private sizeRatio = float large / float small
 /// false green here would need a quadratic to score under a hundred, which nothing measured does.
 let private ratioBound = 5.0 * sizeRatio
 
-/// Phase 265 — how far a restricted refresh may fall BEHIND the full evaluation on a pipeline whose
-/// row expression is a single comparison. Until Phase 265 those cases asserted that the refresh WINS;
-/// that phase made the full evaluation of `Filter > GroupBy` about twice as fast (a hash partition in
-/// place of a persistent map over minted token strings) while the refresh, whose grouping was
-/// already carried, kept its per-source-row bookkeeping, so on the cheapest pipeline the full pass
-/// now finishes first. BenchmarkDotNet medians at 20,000 rows, Release, before and after the phase:
-/// `Filter > GroupBy` refresh 11.7 ms against a full 14.4 ms, then 12.5 ms against 8.3 ms; the group
-/// tail 12.0 ms against 18.8 ms, then 11.0 ms against 7.8 ms. This family's own Release runs after it
-/// scored the refresh at 1.5 to 2.1 times the full evaluation, and a Debug build (the gate's) at
-/// about 1.0.
+/// Phase 274 — what a table-fed caller's tick (`Delta.diff` of the prior source against the new one,
+/// then the refresh) may cost against the full evaluation of the new source it replaces: one and a
+/// half times, at every size this family measures.
 ///
-/// The bound was three times. What the Phase 208 cases were written to refuse is the pre-208 seam,
-/// whose bookkeeping cost about 70 ms at this size — some ten times today's full evaluation, so it
-/// is refused by a wide margin — and a refresh that regresses by half again is refused too. Whether
-/// the seam should win this case outright again is a question for its per-row bookkeeping, not for
-/// this bound.
+/// It replaces two loss bounds, and neither survives as a threshold of its own. `cheapRefreshLossBound`
+/// (Phase 265 at three, raised to four at Phase 270) and `topNRefreshLossBound` (Phase 269, five) held
+/// the REFRESH of the one-comparison pipelines within a stated loss to the full evaluation, and were
+/// raised each time the evaluator got faster and the refresh did not, because the refresh walked one
+/// `Work` record per source row, copied a row per `Derive` and transposed the source in and the result
+/// out. Phase 274 rewrote that bookkeeping over columns, and a tick is the refresh plus the diff, so a
+/// tick within 1.5 is a refresh within 1.5 — a tighter statement than either bound made, and one that
+/// no longer moves with the evaluator: it asks the incremental seam to cost no more than re-running,
+/// which is the seam's whole claim.
 ///
-/// Phase 267 brought the one-comparison top-N case under the same bound. The columnar frame made a
-/// full `Filter > Sort > Limit` a selection and a permutation over shared vectors, with the sort
-/// comparing typed carriers, while the refresh still merges one row into an order it holds over
-/// boxed rows: this family's Debug runs at 20,000 rows, quiet machine, before and after the phase —
-/// refresh 57.1 ms against a full 91.1 ms, then 43.3 ms against 21.7 ms — so the refresh now trails
-/// by about two times, and the bound refuses the same regressions here as above.
-///
-/// Phase 270 made the full pass faster again and raised the bound to four. The comparison kernels
-/// answer a one-comparison `Filter` over a typed column as a bitmap, where the refresh still walks
-/// its maintained groups: the group-tail case's Debug runs at 20,000 rows, the tree before and after
-/// the phase interleaved three times on one machine — refresh 36.9, 36.4, 38.1 ms against a full
-/// 15.3, 16.6, 15.4 ms (2.2 to 2.5 times), then 30.8, 32.1, 35.4 ms against 12.8, 11.5, 12.3 ms (2.4
-/// to 2.9 times), and 3.1 once inside the whole suite. The refresh did not move; the full pass did.
-/// Four still refuses the pre-208 seam (about six times today's full evaluation) and a refresh that
-/// regresses by half again.
-let private cheapRefreshLossBound = 4.0
-
-/// Phase 269 — the same bound for the one-comparison TOP-N case, which that phase moved out from
-/// under `cheapRefreshLossBound`. The planner runs `Sort` > `Limit` as one stable top-n, so a full
-/// `Filter > Sort > Limit 10` no longer sorts twenty thousand rows: Debug figures on this family
-/// before the phase were about 43 ms full against a 41 to 56 ms refresh, and after it 15 to 17 ms
-/// full against the same refresh — the refresh, whose merge into a held order was the saving, now
-/// LOSES to the fused full evaluation by about three times, and at three the bound was a coin toss
-/// on a loaded machine (56.0 against 52.3 on one run, 41.1 against 44.3 on the next). Five is above
-/// the loss measured and below the ten times the pre-208 seam lost by. Whether the seam should win
-/// this case again is a question for its per-row bookkeeping, which is where the 41 ms goes.
-let private topNRefreshLossBound = 5.0
-
-// Phase 272 was asked to retire the bound above and `cheapRefreshLossBound` into one family holding
-// `Delta.diff` + refresh to 1.5 times the full evaluation, and measured why that family cannot be
-// green from the table-fed entry point: see the "table-fed tick" case below and "What it costs on
-// the clock" in docs/incremental-evaluation.md. Both bounds therefore stand as they were; neither
-// was loosened.
+/// Measured on the pre-phase tree, in this family's Debug build: red at every size (see the case).
+/// After it the family reads about 1.0 at 20,000 rows. The Release tables for every Phase 262
+/// corpus node, on .NET and on node, are in docs/incremental-evaluation.md ("Columnar refresh
+/// bookkeeping"); they say where the bound is NOT met in a Release build on .NET, and why that is the
+/// diff's keying floor rather than the refresh. That finding is the operator's to decide, not this
+/// number's to absorb: do not raise it.
+let private tickBound = 1.5
 
 /// Phase 272 — how much `Delta.diff` may cost beyond minting both tables' keys through the witness,
 /// which is the floor of any diff by identity (`KeyString` is the only thing that can say what a key
@@ -562,17 +535,12 @@ let clockTests =
               let trivialRefresh, trivialFull = compare "one-comparison predicate" pipeline
               let costlyRefresh, costlyFull = compare "16-level row expression" costlyPipeline
 
-              // Phase 208 asserted a WIN here, and the change was the point of that phase. Phase 206
-              // measured this case losing 3.4x and printed it unasserted; the cause was the seam's
-              // own per-source-row bookkeeping, which did not shrink when the row expression did.
-              // Measured on the pre-208 tree at 20,000 rows: refresh 72.3 ms vs full 21.1 ms — red.
-              // Measured after: 13.0 ms vs 26.3 ms. Phase 265 made the full evaluation faster rather
-              // than the refresh slower, and the case is now a bounded LOSS: see
-              // `cheapRefreshLossBound` for the figures and what the bound still refuses.
-              Expect.isLessThan
-                  trivialRefresh
-                  (cheapRefreshLossBound * trivialFull)
-                  "ONE COMPARISON per row: the refresh must stay within the bounded loss to the full evaluation — the pre-208 bookkeeping would lose by about ten times"
+              // Phase 208 asserted a WIN here for both pipelines; Phases 265 and 270 made the full
+              // evaluation faster and the one-comparison case a bounded loss (`cheapRefreshLossBound`,
+              // three and then four). Phase 274 retired that bound into the table-fed tick family
+              // below, which holds the refresh AND the diff within `tickBound` of the full evaluation
+              // for this pipeline; the one-comparison figure is still printed here.
+              ignore (trivialRefresh, trivialFull)
 
               Expect.isLessThan
                   costlyRefresh
@@ -635,17 +603,12 @@ let clockTests =
               let costlyRefresh, costlyFull =
                   compare "top-N, 16-level expression" costlyTopNPipeline
 
-              // Phase 208 — asserted then. Pre-208 at 20,000 rows: refresh 102.5 ms vs full 70.0 ms
-              // — red. After: 25.8 ms vs 55.7 ms. The saving the top-N shape has over
-              // `Filter > GroupBy` (a full evaluation re-sorts the whole frame) was never enough on
-              // its own while the refresh paid for the table. Phase 267 made the full evaluation
-              // faster rather than the refresh slower (57.1 ms vs 91.1 ms before it, 43.3 ms vs
-              // 21.7 ms after), and the case is now a bounded LOSS: see `cheapRefreshLossBound`.
-              // Phase 269 — the full evaluation is the fused top-n now: see `topNRefreshLossBound`.
-              Expect.isLessThan
-                  trivialRefresh
-                  (topNRefreshLossBound * trivialFull)
-                  "ONE COMPARISON per row: a top-10 refresh must stay within the bounded loss to the fused top-n over twenty thousand rows — the pre-208 seam would lose by about ten times"
+              // Phase 208 asserted a win here; Phases 267 and 269 made the full evaluation (the fused
+              // top-n since 269) faster and the one-comparison case a bounded loss
+              // (`topNRefreshLossBound`, five). Phase 274 retired that bound into the table-fed tick
+              // family below, which holds this pipeline's refresh AND diff within `tickBound` of the
+              // fused top-n; the one-comparison figure is still printed here.
+              ignore (trivialRefresh, trivialFull)
 
               Expect.isLessThan
                   costlyRefresh
@@ -709,17 +672,12 @@ let clockTests =
               let costlyRefresh, costlyFull =
                   compare "group-tail, 16-level expression" costlyGroupTailPipeline
 
-              // Phase 208 asserted a win here, and this was the thinnest of the three margins, so the
-              // measured figures are recorded rather than left to be re-derived. Pre-208 at 20,000
-              // rows: refresh 69.8 ms vs full 19.7 ms — red, losing 3.5x. After: 10.4 ms vs 16.7 ms,
-              // winning 1.6x. The estimator is `bestMs`'s MINIMUM of five, so measurement noise here
-              // is strictly additive and no sample comes in under the true cost. Phase 265 made the
-              // full evaluation faster and the case a bounded LOSS — `cheapRefreshLossBound` has the
-              // figures (BenchmarkDotNet after it: refresh 11.0 ms vs full 7.8 ms).
-              Expect.isLessThan
-                  trivialRefresh
-                  (cheapRefreshLossBound * trivialFull)
-                  "ONE COMPARISON per row: a Having over a live table must stay within the bounded loss to re-grouping twenty thousand rows — the pre-208 seam would lose by about ten times"
+              // Phase 208 asserted a win here (pre-208 at 20,000 rows: refresh 69.8 ms vs full
+              // 19.7 ms; after, 10.4 ms vs 16.7 ms). Phase 265 made the full evaluation faster and the
+              // one-comparison case a bounded loss under `cheapRefreshLossBound`; Phase 274 retired
+              // that bound into the table-fed tick family below, which holds this pipeline's refresh
+              // AND diff within `tickBound` of the full evaluation. The figure is still printed here.
+              ignore (trivialRefresh, trivialFull)
 
               Expect.isLessThan
                   costlyRefresh
@@ -942,55 +900,64 @@ let clockTests =
 
               Expect.isLessThan r ratioBound "a distinct must stay linear or n-log-n in its row count"
 
-          // ================= Phase 272 — the table-fed caller's other half =================
+          // ================= Phase 274 — the table-fed tick, held (272.t3) =================
 
-          clockCase "the table-fed tick, measured against the full evaluation it would replace"
+          clockCase "the table-fed tick costs at most 1.5 times the full evaluation it replaces"
           <| fun _ ->
               // What a table-fed caller pays per tick — `Delta.diff` plus the refresh — against the
-              // full evaluation of the new source, printed for the three pipelines above and NOT
-              // asserted. Phase 272 set out to assert this at 1.5 times and measured why it cannot be
-              // from this entry point. In a Release build the diff's floor alone — the keying above,
-              // plus the one hash pass that proves the keys unique — is one and a half to two and a
-              // half full evaluations of a one-comparison pipeline at 20,000 and 100,000 rows, before
-              // the refresh has done anything; and the refresh itself walks one `Work` record per
-              // source row, which the vectorised evaluator does not. (This Debug build flatters the
-              // diff, whose cost is allocation, against an evaluator whose loops are unoptimised, so
-              // read the Release tables in the doc rather than these lines for the verdict.) The
-              // figures are printed so the gate log carries the counter-example beside the claim the
-              // family does make; see "What it costs on the clock" in docs/incremental-evaluation.md.
-              for label, p in
-                  [ "tick: filter > groupBy", pipeline
-                    "tick: filter > sort > limit", topNPipeline
-                    "tick: group tail", groupTailPipeline ] do
-                  let before = build large
-                  let after = editOne before
-                  let state = ok (Incremental.primeOn idw p before)
-                  let delta = ok (Delta.diff idw before after)
+              // full evaluation of the new source, for a ONE-ROW edit, on the three one-comparison
+              // pipelines above (the cheapest full evaluations this family has, so the hardest case
+              // for the seam), at each size, best of five, the ratio taken within one run.
+              //
+              // Phase 272 printed this unasserted as the counter-example to the claim; Phase 273
+              // removed two of the tick's three key mintings; Phase 274 rewrote the refresh's
+              // bookkeeping over columns and asserts it. RED on the pre-274 tree in this Debug build
+              // (log in the phase's run scratch, figures in docs/incremental-evaluation.md): the
+              // one-`Work`-record-per-row refresh alone cost several full evaluations at 20,000 and
+              // 100,000 rows. The Release tables, every corpus node, both hosts, are in the doc.
+              for n in [ small; large; 100_000 ] do
+                  for label, p in
+                      [ "tick: filter > groupBy", pipeline
+                        "tick: filter > sort > limit", topNPipeline
+                        "tick: group tail", groupTailPipeline ] do
+                      let before = build n
+                      let after = editOne before
+                      let state = ok (Incremental.primeOn idw p before)
 
-                  // Phase 273 — the tick a caller pays: the prior source is the one the state last
-                  // evaluated (its keys were minted when it was, and are read back), the new one is
-                  // a table nothing has keyed yet — a fresh object per sample, so no sample reads the
-                  // previous sample's keys for it.
-                  let tickMs =
-                      bestMs 5 (fun () ->
+                      // The tick a caller pays (Phase 273): the prior source is the one the state
+                      // last evaluated (its keys were minted when it was, and are read back), the
+                      // new one a table nothing has keyed yet — a fresh object per sample, so no
+                      // sample reads the previous sample's keys for it.
+                      let tick () =
                           let a = { after with Columns = after.Columns }
                           let d = ok (Delta.diff idw before a)
-                          Incremental.refreshOn idw p state d a |> ok |> ignore)
+                          ok (Incremental.refreshOn idw p state d a)
 
-                  let fullMs = bestMs 5 (fun () -> DataFrame.evalPipeline p after |> ok |> ignore)
+                      Expect.equal
+                          (Ok(Incremental.result (tick ())))
+                          (DataFrame.evalPipeline p after)
+                          "the tick answers what the reference answers"
 
-                  Expect.equal
-                      (Incremental.refreshOn idw p state delta after |> Result.map Incremental.result)
-                      (DataFrame.evalPipeline p after)
-                      "the tick answers what the reference answers"
+                      let tickMs = bestMs 5 (fun () -> tick () |> ignore)
+                      let fullMs = bestMs 5 (fun () -> DataFrame.evalPipeline p after |> ok |> ignore)
 
-                  printfn
-                      "  [scaling] %-28s diff+refresh %7.2f ms vs full %7.2f ms (x%.2f) @ %d"
-                      label
-                      tickMs
-                      fullMs
-                      (tickMs / fullMs)
-                      large ]
+                      printfn
+                          "  [scaling] %-28s diff+refresh %7.2f ms vs full %7.2f ms (x%.2f, bound x%.1f) @ %d"
+                          label
+                          tickMs
+                          fullMs
+                          (tickMs / fullMs)
+                          tickBound
+                          n
+
+                      Expect.isLessThan
+                          tickMs
+                          (tickBound * fullMs)
+                          (sprintf
+                              "%s @ %d: a one-row tick (diff + refresh) must cost at most %.1f times the full evaluation it replaces"
+                              label
+                              n
+                              tickBound) ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
 let private countingId (minted: int ref) : RowIdentity<Cell> =

@@ -370,40 +370,43 @@ type IncrementalEval =
             /// The pipeline's result over that source — lazy for the same reason `Source` is.
             Output: Lazy<Table>
             /// Phase 208 — every source row's identity token, in the SOURCE's own row order. It is
-            /// what makes the three arrays below positional: a row still sitting at the index it
+            /// what makes the arrays below positional: a row still sitting at the index it
             /// sat at last time is recognised by one pointer comparison, and only a row that moved
             /// costs a lookup. Empty on a state the reference path built (which caches nothing).
             Tokens: string[]
-            /// Phase 208 — aligned with `Tokens`: the cells the row-local steps evaluated for that
-            /// row, in step order. A row a `Filter` dropped keeps the (shorter) prefix it reached,
-            /// so the drop verdict is cached too.
+            /// Phase 274 — the cells the row-local steps evaluated, one array per evaluating step
+            /// in step order, each aligned with `Tokens`; `null` where the row did not reach that
+            /// step. A row a `Filter` dropped keeps the prefix it reached, so the drop verdict is
+            /// cached too.
             ///
-            /// An ARRAY rather than the `Map<string, Cell list>` it was until `0.27.0`: the map was
-            /// rebuilt on every refresh, which is 20,000 `Map.add` into a string-keyed tree — ~27%
-            /// of a measured refresh at that size, to serve a delta naming one row. Writing a slot
-            /// is one store.
-            RowCells: Cell list[]
-            /// Phase 208 — aligned with `Tokens`: the group token that row's cells landed in, or
-            /// `null` for a row that no longer reached the grouping (it was filtered away) and on
-            /// every pipeline without a maintained `GroupBy`. It is what lets the next refresh CARRY
-            /// a group identity rather than re-minting it: the token is a pure function of the key
-            /// cells, so a row whose cells have not moved is in the group it was in.
-            RowGroups: string[]
-            /// Per group token, its members' row tokens IN ORDER — what makes reusing a cached
-            /// aggregate safe for the order-sensitive aggregates (maintained-groups only). Keyed by
-            /// group and therefore bounded by the GROUP count, which is what a grouping is for, so
-            /// this one stays a map.
-            GroupMembers: Map<string, string list>
-            /// Per group token, the aggregate cells last computed for it (maintained-groups only).
-            GroupAggs: Map<string, Cell list>
-            /// Per `Sort` step (indexed by its ordinal among the pipeline's sorts), the token order
-            /// the step's rows ARRIVED in and the token order it PRODUCED. Both halves are needed
+            /// Column-major since `0.35.0`. It was one `Cell list` per row (an array of them since
+            /// `0.27.0`, a `Map<string, Cell list>` before that), which a refresh rebuilt row by row;
+            /// a step's cells are now one array the walk writes once.
+            StepCells: Cell[][]
+            /// Phase 208 — aligned with `Tokens`: the index into `GroupOrder` of the group that
+            /// row's cells landed in, or `-1` for a row that no longer reached the grouping (it was
+            /// filtered away); empty on every pipeline without a maintained `GroupBy`. It is what
+            /// lets the next refresh CARRY a group identity rather than re-minting it: a group is a
+            /// pure function of the key cells, so a row whose cells have not moved is in the group
+            /// it was in. (The group's token until Phase 274; the index is what the next refresh
+            /// reads without hashing.)
+            RowGroups: int[]
+            /// Aligned with `GroupOrder`: each group's members' row tokens IN ORDER — what makes
+            /// reusing a cached aggregate safe for the order-sensitive aggregates (maintained-groups
+            /// only). Positional since Phase 274; a map keyed by group token before, which a refresh
+            /// rebuilt one `Map.add` per group.
+            GroupMembers: string list[]
+            /// Aligned with `GroupOrder`: the aggregate cells last computed for each group.
+            GroupAggs: Cell list[]
+            /// Per `Sort` step (indexed by its ordinal among the pipeline's sorts), the order the
+            /// step's rows ARRIVED in and the order it PRODUCED, as slots of the frame the sort ran
+            /// over (Phase 274: source slots in the prefix, `GroupOrder` slots in the tail). Both halves are needed
             /// and neither is redundant: the produced order is what a merge reuses, and the arrival
             /// order is the only thing that says the reuse is still valid — a stable sort breaks
             /// ties by arrival position, so a cached order whose unnamed rows arrived in a different
             /// order now would merge those ties the wrong way round. `Delta.diff` reports a pure
             /// reordering as quiet, so this cannot be inferred from the delta.
-            SortOrders: Map<int, string list * string list>
+            SortOrders: Map<int, int[] * int[]>
             /// Per admitted `Join` step (indexed by its ordinal among the pipeline's admitted
             /// joins), the joined relation's KEY INDEX as of this evaluation: its rows' key cells,
             /// projected through the step's `on` pairs, in the relation's own row order (Phase 120).
@@ -417,19 +420,21 @@ type IncrementalEval =
             JoinKeys: Map<int, Cell list list>
             /// What producing `Output` cost.
             Footprint: RecomputeFootprint
-            /// Phase 202 — per group token, the cells the steps AFTER the group-by evaluated for it,
-            /// in their own step order. The group-table twin of `RowCells`, and separate from it
-            /// because the tail's step index restarts at 0 and the two are keyed by different token
-            /// vocabularies — a source row's `Delta.refToken` and a group's
-            /// `DataFrame.rowTokenString` — which must not be allowed to meet in one keyspace where
-            /// a collision would silently answer a row with a group's cells. Bounded by the group
-            /// count, so it stays a map.
+            /// Phase 202 — the maintained `GroupBy`'s group tokens, in the group table's order (the
+            /// order the steps after it walked); empty when the pipeline has no maintained group-by.
+            GroupOrder: string[]
+            /// Phase 202 — the cells the tail steps evaluated, one array per evaluating step, each
+            /// aligned with `GroupOrder` (column-major since Phase 274, a map of per-group lists
+            /// before). The group-table twin of `StepCells`, and separate from it because the tail's
+            /// step index restarts at 0 and the two are keyed by different token vocabularies — a
+            /// source row's `Delta.refToken` and a group's `DataFrame.rowTokenString` — which must
+            /// not be allowed to meet in one keyspace where a collision would silently answer a row
+            /// with a group's cells.
             ///
-            /// A group's entry is reusable exactly when that group's aggregates were REUSED rather
+            /// A group's cells are reusable exactly when that group's aggregates were REUSED rather
             /// than recomputed: its key cells and its aggregate cells are then byte-identical to the
-            /// row the tail last read, so every tail step's output for it is too. Empty when the
-            /// pipeline has no group-by or nothing after it.
-            GroupCells: Map<string, Cell list>
+            /// row the tail last read, so every tail step's output for it is too.
+            TailCells: Cell[][]
             /// Phase 268 — the result as a chunked version, where the state was produced by the
             /// chunked path (`primePrepared` / `refreshPrepared` over a pipeline of `Derive`s): its
             /// output columns share every chunk the source did not move, and the next chunked
@@ -786,7 +791,7 @@ module Incremental =
     /// The `sorts` and `joins` ordinals CONTINUE through it rather than restarting, which is what
     /// lets the tail's cached orders and key indexes live in the state's existing `SortOrders` /
     /// `JoinKeys` maps with no second keyspace to keep disjoint. (The per-row CELL caches cannot
-    /// share that way — see `IncrementalEval.GroupCells`.)
+    /// share that way — see `IncrementalEval.TailCells`.)
     ///
     /// **A collision would be SAFE today, and the continuation is not what makes it so — measured,
     /// because the first version of this comment claimed the opposite.** Restarting the tail's
@@ -843,117 +848,239 @@ module Incremental =
 
         go [] 0 0 pipeline
 
-    /// One source row in flight: its identity token, its slot in the source's row order, the slot
-    /// it occupied in the PRIOR evaluation, whether its cells are still byte-identical to the prior
-    /// evaluation's, whether it is still alive after the filters so far, its current cells, the cells
-    /// cached for it by the previous evaluation, and the cells evaluated for it this time (reversed
-    /// while accumulating).
+    /// Phase 274 — the frame the walk holds, COLUMN-major. It was a list of per-row `Work` records
+    /// until `0.35.0`: every step rebuilt one record per row, a `Derive` copied every row's array to
+    /// append one cell, and the rows were transposed in from the source and out into the result, so
+    /// a refresh that re-evaluated one row paid three allocations per row per step to say so. The
+    /// cost the gate measured was that bookkeeping, not the evaluation it saves (11 to 15 full
+    /// evaluations at 20,000 to 100,000 rows on .NET for a two-`Derive` pipeline).
     ///
-    /// Phase 208 — `Slot` and `Prior` are the two ints that make the state's caches positional:
-    /// `Slot` is where this row's results are written, `Prior` is where its cached results were read
-    /// from (`-1` when the prior evaluation did not hold this row at all).
+    /// A column is an array indexed by SLOT — the row's index in the frame the walk started from
+    /// (the source for the prefix, the group table for the tail) — and `Order` is the slots alive at
+    /// this step, in the order the reference frame holds them. So `Filter` and `Limit` write a new
+    /// `Order`, `Sort` permutes it, `Project` permutes the column arrays, and `Derive` adds ONE array.
+    /// A slot outside `Order` is dead at this step: its cells are never read again this walk.
     ///
-    /// **Phase 215 — there is no `Affected` field, and its absence is load-bearing.** It carried
-    /// "the delta named this row", which is the condition three sites reused a cached answer on and
-    /// which was the wrong condition at every one of them (208 fixed two, 215 the third). Once the
-    /// last site moved to `Stable` it had no reader, and a never-read field whose meaning is the
-    /// discredited one is how a fourth site gets written. `Stable` is seeded from it at construction
-    /// — `not affected` below — and that is the whole of what the delta contributes. The per-site
-    /// census of which condition each reuse needs is in `docs/incremental-evaluation.md`.
-    type private Work =
-        {
-            Token: string
-            Slot: int
-            Prior: int
-            /// Phase 208 — this row's cells are byte-identical to the ones the prior evaluation held
-            /// for it AT THIS POINT in the pipeline, so anything the prior evaluation computed FROM
-            /// them is still that computation's answer.
-            ///
-            /// It starts as "the delta did not name it and the prior evaluation held it", and every
-            /// admitted step either preserves it or clears it: `Filter` / `Limit` / `Join` decide
-            /// survival and touch no cell, `Sort` moves rows and touches no cell, `Project` permutes
-            /// cells deterministically, and `Derive` appends the very cell the cache supplied. A
-            /// `Window` CLEARS IT FOR EVERY ROW, because it recomputes its column over the frame it is
-            /// handed and a row that did not move can still get a different value when another row
-            /// did.
-            ///
-            /// **That `Window` clause is a correctness fix, not a bookkeeping nicety** — see the note
-            /// on `cellAt`.
-            Stable: bool
-            Alive: bool
-            Cells: Cell[]
-            Cached: Cell list
-            Fresh: Cell list
-        }
+    /// `Origins` co-indexes with `Data`: the source `Cell list` an array was unpacked from, while the
+    /// column is still exactly that list, unpadded — the frame's own twin of the reference frame's
+    /// `Origins`, and for the same reason: an output column the walk did not touch, over a frame whose
+    /// `Order` is still every slot in slot order, IS the consumer's list, and handing it back costs
+    /// nothing. No array in a frame is ever written after the step that made it; a step that changes
+    /// a column makes a new array.
+    type private WalkFrame =
+        { Cols: Schema
+          Data: Cell[][]
+          Origins: Cell list option[]
+          Order: int[] }
 
-    /// The value a row contributes at this evaluating step: the cache when the row's cells have not
-    /// moved and the cache reaches this far, otherwise a fresh evaluation. Returns the cell and
-    /// whether it cost an evaluation — the footprint's unit of work.
+    /// Phase 274 — the per-slot facts the walk reads beside the frame, and the cells it records. The
+    /// arrays are owned by one evaluation and never escape into the state except `Steps`, which is
+    /// written once per evaluating step and not touched after.
     ///
-    /// **Phase 208 — the condition is `Stable`, and it was `not Affected` until `0.27.0`, which was
-    /// WRONG after a `Window`.** A window recomputes its column over the whole frame it is handed,
-    /// so a row the delta never named can legitimately come out of it with a different cell; a step
-    /// after the window that reused its cached answer then answered a question that had moved.
-    /// Measured before it was fixed, on ten rows with one edited: `Filter > Window(cumulSum) >
-    /// Filter(on the window column)` and `Filter > Window(cumulSum) > Derive(off the window column)`
-    /// both DISAGREED with the reference evaluator, which is the one thing this seam promises never
-    /// to do. `IncrementalRefreshCostTests` holds both as go-red cases.
+    /// `Stable` is the successor of the per-row flag of the same name (Phase 208): the slot's cells
+    /// are byte-identical to the ones the prior evaluation held for it AT THIS POINT in the
+    /// pipeline, so anything the prior evaluation computed FROM them is still that computation's
+    /// answer. It starts as "the delta did not name the row and the prior evaluation held it", and
+    /// every admitted step preserves it except `Window`, which CLEARS IT FOR EVERY SLOT: it
+    /// recomputes its column over the whole frame, so a row that did not move can still get a
+    /// different cell when another row did. That clause is a correctness fix (Phase 208; the
+    /// go-red cases are in `IncrementalRefreshCostTests`), and so is reading `Stable` rather than
+    /// "the delta named it" at every reuse site (Phase 215; the per-site census is in
+    /// `docs/incremental-evaluation.md`). There is still no field saying "the delta named this row":
+    /// it is the discredited condition, and a field nobody should read is how a site comes to read it.
     ///
-    /// `expr` is the step's expression already resolved against its schema and env (Phase 263):
-    /// the evaluating steps resolve once, before their row loop, through the reference's own
-    /// `DataFrame.resolveExpr`, and this evaluates it through the reference's own
-    /// `DataFrame.evalResolved` — the array twin of `DataFrame.evalExprInRow`, so a re-evaluated
-    /// cell is still the reference's cell.
-    let private cellAt (evalIdx: int) (expr: DataFrame.ResolvedExpr) (w: Work) : Result<Cell * bool, EvalError> =
-        let cached = if not w.Stable then None else List.tryItem evalIdx w.Cached
+    /// `Prior` is where each slot's cached cells are read from — the slot the row occupied in the
+    /// PRIOR evaluation's frame, `-1` when that frame did not hold it — and `PriorSteps` is that
+    /// evaluation's cells, one array per evaluating step, indexed by ITS slots (`null` where the row
+    /// did not reach the step). `Steps` accumulates this evaluation's, one array per evaluating step,
+    /// indexed by this frame's slots: the walk's `evalIdx` is always `Steps.Count`.
+    type private WalkRows =
+        { Tokens: string[]
+          Prior: int[]
+          Stable: bool[]
+          PriorSteps: Cell[][]
+          PriorCount: int
+          Steps: ResizeArray<Cell[]> }
 
-        match cached with
-        | Some c -> Ok(c, false)
-        | None -> DataFrame.evalResolved w.Cells expr |> Result.map (fun c -> c, true)
+    /// The value the prior evaluation computed at evaluating step `evalIdx` for the row now at slot
+    /// `s`, where it may still be reused — the row is `Stable` and the prior evaluation reached that
+    /// step for it — or `null`. The one reuse test every evaluating step makes, so the condition has
+    /// one statement.
+    let private cachedAt (r: WalkRows) (evalIdx: int) (s: int) : Cell =
+        if not r.Stable[s] || evalIdx >= r.PriorSteps.Length then
+            Unchecked.defaultof<Cell>
+        else
+            let p = r.Prior[s]
+            let a = r.PriorSteps[evalIdx]
 
-    /// Merge two already-ordered token sequences into one, under the reference comparator, breaking
-    /// a tie by ARRIVAL position. That tiebreak is what makes the merge equal to `List.sortWith` over
-    /// the whole frame: `List.sortWith` is stable, and a stable sort is exactly a sort by
-    /// (key, arrival position). Dropping it would leave an order that is correctly sorted and
-    /// differs from the reference's on the first tie.
-    let private mergeOrders
-        (cmp: string -> string -> int)
-        (posOf: System.Collections.Generic.Dictionary<string, int>)
-        (xs: string list)
-        (ys: string list)
-        : string list =
-        let posAt t =
-            match posOf.TryGetValue t with
-            | true, i -> i
-            | _ -> System.Int32.MaxValue
+            if p >= 0 && p < a.Length then
+                a[p]
+            else
+                Unchecked.defaultof<Cell>
 
-        let rec go acc xs ys =
-            match xs, ys with
-            | [], rest
-            | rest, [] -> List.rev acc @ rest
-            | x :: xt, y :: yt ->
-                let c = cmp x y
-                let c = if c <> 0 then c else compare (posAt x) (posAt y)
+    /// The column array at `c`. A source column the frame was built over is unpacked from its list
+    /// the first time a step reads it (Phase 274): a column no step reads — an identity or a label
+    /// carried through to the result — is never unpacked at all, and the result hands its list back.
+    /// The write is a memo of the array the list already determines, never a change of contents.
+    let private column (f: WalkFrame) (c: int) : Cell[] =
+        let a = f.Data[c]
 
-                if c <= 0 then go (x :: acc) xt ys else go (y :: acc) xs yt
+        if not (isNull a) then
+            a
+        else
+            let unpacked = List.toArray f.Origins[c].Value
+            f.Data[c] <- unpacked
+            unpacked
 
-        go [] xs ys
+    /// The columns an expression reads, each once.
+    let private columnsRead (e: DataFrame.ResolvedExpr) : int[] =
+        let seen = System.Collections.Generic.HashSet<int>()
+
+        let rec go e =
+            match e with
+            | DataFrame.RCol i -> seen.Add i |> ignore
+            | DataFrame.RConst _
+            | DataFrame.RFail _ -> ()
+            | DataFrame.RBinary(_, a, b) ->
+                go a
+                go b
+            | DataFrame.RNot a
+            | DataFrame.RCast(_, a)
+            | DataFrame.RIsNull a -> go a
+            | DataFrame.RCoalesce xs
+            | DataFrame.RApplyFn(_, xs) -> List.iter go xs
+            | DataFrame.RCase(arms, otherwise) ->
+                arms
+                |> List.iter (fun (w, t) ->
+                    go w
+                    go t)
+
+                go otherwise
+            | DataFrame.RInList(a, xs) ->
+                go a
+                List.iter go xs
+
+        go e
+        Seq.toArray seen
+
+    /// The row at slot `s` written into `into` at the columns `cols` — the array form
+    /// `DataFrame.evalResolved` reads. A scratch array per step, refilled per evaluated row at just
+    /// the columns the step's expression reads: the evaluator reads cells out of it and keeps none of
+    /// it, so a row costs no allocation of its own.
+    let private fillRow (f: WalkFrame) (cols: int[]) (s: int) (into: Cell[]) =
+        for c in cols do
+            into[c] <- (column f c)[s]
+
+    /// Per prior slot, the slot that row holds now (`-1` where it is gone) — the inverse of
+    /// `WalkRows.Prior`, which is what translates an order the prior evaluation recorded in its own
+    /// numbering into this one.
+    let private currentOf (r: WalkRows) : int[] =
+        let cur = Array.create r.PriorCount -1
+
+        for s in 0 .. r.Prior.Length - 1 do
+            let p = r.Prior[s]
+
+            if p >= 0 && p < cur.Length then
+                cur[p] <- s
+
+        cur
+
+    /// Merge two already-ordered slot sequences into one, under the reference comparator, breaking a
+    /// tie by ARRIVAL position. That tiebreak is what makes the merge equal to a stable sort of the
+    /// whole frame: a stable sort is exactly a sort by (key, arrival position). Dropping it would
+    /// leave an order that is correctly sorted and differs from the reference's on the first tie.
+    let private mergeOrders (cmp: int -> int -> int) (posOf: int[]) (xs: int[]) (ys: int[]) : int[] =
+        // `x` goes out before `y` exactly when the linear merge would take it first.
+        let before (x: int) (y: int) =
+            let c = cmp x y
+            if c <> 0 then c < 0 else posOf[x] < posOf[y]
+
+        // Phase 274 — each `y` finds its place in `xs` by bisection, and the runs of `xs` between
+        // are copied whole: `xs` is sorted under that same total order (it is the cached order of
+        // rows whose keys and relative arrival have not moved), so "goes out before `y`" holds for a
+        // prefix of it. A merge of m moved rows into n cached ones compares O(m log n) times, where
+        // walking both lists compared up to n times to place one row.
+        let out: int[] = Array.zeroCreate (xs.Length + ys.Length)
+        let mutable lo = 0
+        let mutable k = 0
+
+        for y in ys do
+            let mutable a = lo
+            let mutable b = xs.Length
+
+            while a < b do
+                let m = (a + b) / 2
+
+                if before xs[m] y then a <- m + 1 else b <- m
+
+            Array.blit xs lo out k (a - lo)
+            k <- k + (a - lo)
+            lo <- a
+            out[k] <- y
+            k <- k + 1
+
+        Array.blit xs lo out k (xs.Length - lo)
+        out
 
     /// The per-step state the walk reads from the prior evaluation and writes for the next one,
     /// carried as one value rather than as a parameter per admitted step. It is the shape of every
     /// state-keeping step's cache: keyed by that step's ordinal in the pipeline, valid only while
     /// the pipeline is the one the state was built for.
+    ///
+    /// Phase 274 — a sort's two orders are SLOT arrays in the numbering of the frame the sort ran
+    /// over (source slots in the prefix, group slots in the tail); `WalkRows.Prior` translates them.
     type private WalkCaches =
-        { SortOrders: Map<int, string list * string list>
+        { SortOrders: Map<int, int[] * int[]>
           JoinKeys: Map<int, Cell list list> }
 
     let private noCaches: WalkCaches =
         { SortOrders = Map.empty
           JoinKeys = Map.empty }
 
-    /// Walk the propagating prefix, threading the schema and the rows. Dead rows are carried (so
-    /// their cached prefix survives for the next refresh) but never evaluated and never counted —
-    /// exactly as in the reference evaluator, which has already dropped them from its frame.
+    /// One evaluating step's pass over the rows alive at it: the cached cell where `cachedAt` allows
+    /// it, a fresh evaluation through the reference's own `DataFrame.evalResolved` otherwise (the
+    /// expression resolved once for the step, Phase 263, so a re-evaluated cell is still the
+    /// reference's cell). Returns the step's cells by slot and the running count of row
+    /// evaluations — the footprint's unit of work, charged only for a cell actually evaluated.
+    /// The first error in frame order is the answer, as it is the reference's.
+    let private evalStep
+        (r: WalkRows)
+        (f: WalkFrame)
+        (evalIdx: int)
+        (resolved: DataFrame.ResolvedExpr)
+        (evaluated: int)
+        : Result<Cell[] * int, EvalError> =
+        let step: Cell[] = Array.zeroCreate r.Stable.Length
+        let scratch: Cell[] = Array.zeroCreate f.Data.Length
+        let reads = columnsRead resolved
+        let mutable n = evaluated
+        let mutable failed = None
+        let mutable k = 0
+
+        while failed.IsNone && k < f.Order.Length do
+            let s = f.Order[k]
+            let cached = cachedAt r evalIdx s
+
+            if not (isNull (box cached)) then
+                step[s] <- cached
+            else
+                fillRow f reads s scratch
+
+                match DataFrame.evalResolved scratch resolved with
+                | Ok c ->
+                    step[s] <- c
+                    n <- n + 1
+                | Error e -> failed <- Some e
+
+            k <- k + 1
+
+        match failed with
+        | Some e -> Error e
+        | None -> Ok(step, n)
+
+    /// Walk the propagating prefix, threading the frame. Dead rows leave `Order` and take no further
+    /// part — exactly as in the reference evaluator, which has already dropped them — while what
+    /// they reached stays recorded in `Steps`, so their cached prefix survives for the next refresh.
     ///
     /// `prior` is the state's caches and is read-only; `caches` accumulates the ones this walk
     /// produced, which is what the next refresh will read.
@@ -961,336 +1088,341 @@ module Incremental =
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (prior: WalkCaches)
-        (cols: Schema)
-        (works: Work list)
-        (evalIdx: int)
+        (r: WalkRows)
+        (f: WalkFrame)
         (evaluated: int)
         (caches: WalkCaches)
         (steps: PrefixStep list)
-        : Result<Schema * Work list * int * WalkCaches, EvalError> =
+        : Result<WalkFrame * int * WalkCaches, EvalError> =
+        let evalIdx = r.Steps.Count
+
         match steps with
-        | [] -> Ok(cols, works, evaluated, caches)
+        | [] -> Ok(f, evaluated, caches)
         | WSort(sortIdx, by) :: rest ->
-            // The rows the sort orders, in the order they arrived. Dead rows are not in the frame
-            // at all — the reference dropped them at the filter that killed them — so they are
-            // carried past the step (their cached prefix is still wanted) but take no part in it.
-            let aliveWorks = works |> List.filter (fun w -> w.Alive)
-            let deadWorks = works |> List.filter (fun w -> not w.Alive)
-            let arrival = aliveWorks |> List.map (fun w -> w.Token)
+            // The rows the sort orders, in the order they arrived.
+            let arrival = f.Order
+            let posOf: int[] = Array.zeroCreate r.Stable.Length
 
-            // Phase 208 — HASH indexes, not persistent maps. These three structures are rebuilt on
-            // every refresh and are the whole of what a sort's bookkeeping costs: at 20,000 rows
-            // they were 66% of a measured top-N refresh, because each was a string-keyed tree built
-            // by n insertions and then read n log n times through the comparator below. They are
-            // local to this step, never escape it, and are written once and read many times — which
-            // is the shape a dictionary is for. (The state's own caches are positional arrays for
-            // the same reason; what is NOT allowed is a mutable structure escaping into the state,
-            // which is why these stay inside the step.)
-            let byToken =
-                System.Collections.Generic.Dictionary<string, Work>(List.length aliveWorks)
+            for k in 0 .. arrival.Length - 1 do
+                posOf[arrival[k]] <- k
 
-            aliveWorks |> List.iter (fun w -> byToken[w.Token] <- w)
+            // The reference's own comparator, over the reference's own cells, keys resolved once for
+            // the step (Phase 263). A second comparator would agree on every corpus anyone thought to
+            // write and disagree on the first null, the first tie and the first misspelled key — so
+            // the two rows are written into scratch arrays at the key columns only (the comparator
+            // reads nothing else) and compared by `DataFrame.compareResolved` itself.
+            let keys = DataFrame.resolveSortKeys f.Cols by
+            let ra: Cell[] = Array.zeroCreate f.Data.Length
+            let rb: Cell[] = Array.zeroCreate f.Data.Length
 
-            let posOf =
-                System.Collections.Generic.Dictionary<string, int>(List.length aliveWorks)
+            let cmp (a: int) (b: int) =
+                for (i, _) in keys do
+                    let col = column f i
+                    ra[i] <- col[a]
+                    rb[i] <- col[b]
 
-            arrival |> List.iteri (fun i t -> posOf[t] <- i)
+                DataFrame.compareResolved keys ra rb
 
-            // The reference's own comparator, over the reference's own cells. A second comparator
-            // here would agree on every corpus anyone thought to write and disagree on the first
-            // null, the first tie and the first misspelled key.
+            // A total order: the comparator, then arrival position — a stable sort by construction,
+            // whichever algorithm the host's array sort is.
+            let sortSlots (xs: int[]) =
+                xs
+                |> Array.sortWith (fun a b ->
+                    let c = cmp a b
+                    if c <> 0 then c else compare posOf[a] posOf[b])
+
+            // **Phase 215 — the reuse condition is `Stable`.** A cached ORDER is a cached answer
+            // like any other: a function of every row's SORT-KEY CELLS, and a window recomputes its
+            // column over the whole frame, so a row the delta never named can arrive here with a
+            // different key. Keyed on "the delta did not name it", `window(rank) > sort(rk)` and
+            // `window(lag) > sort(prev)` disagreed with the reference on every release from `0.19.0`
+            // to `0.28.0`; `IncrementalRefreshCostTests` holds them and `IncrementalDelta` shape `44`
+            // covers the class.
             //
-            // The keys are resolved once for the step (Phase 263) and compared through
-            // `DataFrame.compareResolved`, the array twin of `DataFrame.rowCompareBy`.
-            let keys = DataFrame.resolveSortKeys cols by
-
-            let cmp (a: string) (b: string) =
-                match byToken.TryGetValue a with
-                | true, wa ->
-                    match byToken.TryGetValue b with
-                    | true, wb -> DataFrame.compareResolved keys wa.Cells wb.Cells
-                    | _ -> 0
-                | _ -> 0
-
-            // **Phase 215 — the condition is `Stable`, and it was `not Affected` from `0.18.0` to
-            // `0.28.0` inclusive, which was WRONG after a `Window`.** This is the THIRD site of the
-            // substitution Phase 208 made at `cellAt` and at the join's cached verdict and did not
-            // finish here. A cached ORDER is a cached answer like any other: it is a function of
-            // every row's SORT-KEY CELLS, and a window recomputes its column over the whole frame,
-            // so a row the delta never named can arrive at this step with a different key. Keyed on
-            // "the delta did not name it", the merge then reused that row's cached POSITION and the
-            // refresh returned the rows in the wrong order — measured against the released packages
-            // themselves, `window(rank) > sort(rk)` disagrees with the reference evaluator on every
-            // release from `0.19.0` (the first that admits a partition-global window) through
-            // `0.28.0`, and `window(lag) > sort(prev)` with it, while the same pipeline sorting on a
-            // SOURCE column agrees. `IncrementalRefreshCostTests` holds all three as regression
-            // cases and `IncrementalDelta` shape `44` covers the class.
-            let stable = System.Collections.Generic.HashSet<string>()
-
-            aliveWorks
-            |> List.iter (fun w ->
-                if w.Stable then
-                    stable.Add w.Token |> ignore)
-
-            // The cached order may be reused only for rows that arrived in the SAME relative order
-            // as last time. A stable sort breaks ties by arrival position, so a reordering among
-            // reused rows moves the answer while naming no row at all — and `Delta.diff` reports a
-            // pure reordering as quiet, so nothing in the delta would have said so. This is the
-            // ordered-member condition the maintained groups already carry, one verb along.
+            // The cached order may be reused only for rows that arrived in the SAME relative order as
+            // last time. A stable sort breaks ties by arrival position, so a reordering among reused
+            // rows moves the answer while naming no row at all — and `Delta.diff` reports a pure
+            // reordering as quiet, so nothing in the delta would have said so.
             let reusable =
                 match Map.tryFind sortIdx prior.SortOrders with
                 | None -> None
                 | Some(prevArrival, prevOrder) ->
-                    let keep = List.filter (fun t -> stable.Contains t)
+                    let cur = currentOf r
 
-                    if keep prevArrival = keep arrival then
-                        Some(keep prevOrder)
+                    // A prior slot's row, now, where it is still stable; -1 otherwise.
+                    let stableNow (p: int) =
+                        let s = if p >= 0 && p < cur.Length then cur[p] else -1
+                        if s >= 0 && r.Stable[s] then s else -1
+
+                    // The stable rows' prior arrival, read in step with their arrival now: equal
+                    // sequences, compared without building either.
+                    let mutable i = 0
+                    let mutable j = 0
+                    let mutable same = true
+
+                    while same && (i < prevArrival.Length || j < arrival.Length) do
+                        if i < prevArrival.Length && stableNow prevArrival[i] < 0 then
+                            i <- i + 1
+                        elif j < arrival.Length && not r.Stable[arrival[j]] then
+                            j <- j + 1
+                        elif i < prevArrival.Length && j < arrival.Length then
+                            same <- stableNow prevArrival[i] = arrival[j]
+                            i <- i + 1
+                            j <- j + 1
+                        else
+                            same <- false
+
+                    if same then
+                        let kept = ResizeArray<int>(prevOrder.Length)
+
+                        for p in prevOrder do
+                            let s = stableNow p
+
+                            if s >= 0 then
+                                kept.Add s
+
+                        Some(kept.ToArray())
                     else
                         None
 
             let ordered =
                 match reusable with
-                | None -> arrival |> List.sortWith cmp
+                | None -> sortSlots arrival
                 | Some cachedStable ->
-                    let moved =
-                        arrival |> List.filter (fun t -> not (stable.Contains t)) |> List.sortWith cmp
-
+                    let moved = arrival |> Array.filter (fun s -> not r.Stable[s]) |> sortSlots
                     mergeOrders cmp posOf cachedStable moved
-
-            let works2 = (ordered |> List.map (fun t -> byToken[t])) @ deadWorks
 
             walk
                 resolve
                 env
                 prior
-                cols
-                works2
-                evalIdx
+                r
+                { f with Order = ordered }
                 evaluated
                 { caches with
                     SortOrders = Map.add sortIdx (arrival, ordered) caches.SortOrders }
                 rest
         // Phase 120 — a bounded-frame `Window`. The column is recomputed over the rows alive AT
         // THIS STEP, in the order they are in, through the reference's own window step: the walked
-        // frame IS the reference's frame here (that is the walk's invariant, and the same one the
-        // maintained `GroupBy` and the type-inferring `Derive` read), so the appended column is the
-        // reference's column by construction rather than by a second implementation agreeing with
-        // it. `evalIdx` does not advance and `evaluated` does not move: a window evaluates no
-        // expression, so it caches no cell and the reference's own counter charges it nothing.
+        // frame IS the reference's frame here (the walk's invariant), so the appended column is the
+        // reference's column by construction. `evaluated` does not move and no step is recorded: a
+        // window evaluates no expression, so it caches no cell and the reference charges it nothing.
         | WWindow spec :: rest ->
-            let aliveWorks = works |> List.filter (fun w -> w.Alive)
-            let deadWorks = works |> List.filter (fun w -> not w.Alive)
+            let every = Array.init f.Data.Length id
 
-            DataFrame.windowStepRows cols (aliveWorks |> List.map (fun w -> w.Cells)) spec
+            let rows =
+                f.Order
+                |> Array.map (fun s ->
+                    let row: Cell[] = Array.zeroCreate f.Data.Length
+                    fillRow f every s row
+                    row)
+                |> List.ofArray
+
+            DataFrame.windowStepRows f.Cols rows spec
             |> Result.bind (fun (cols2, rows2) ->
-                // Phase 208 — `Stable` is cleared for EVERY row here, and the dead ones too. The
-                // appended column is a function of the whole frame, so a row the delta never named
-                // gets a new cell whenever another row in its partition moved; anything a later step
-                // cached from the row's old cells is an answer to a question that has changed. The
-                // two shapes this was measured wrong on — a `Filter` and a `Derive` reading the
-                // window's column — are the go-red cases in `IncrementalRefreshCostTests`.
-                //
-                // A dead row's cells are not recomputed (it is not in the frame), so its cache is
-                // cleared rather than refreshed: it stops being reusable, which is the conservative
-                // reading and the only one available.
-                let ws =
-                    (List.map2 (fun (w: Work) row -> { w with Cells = row; Stable = false }) aliveWorks rows2)
-                    @ (deadWorks |> List.map (fun w -> { w with Stable = false }))
+                let width = List.length cols2
+                let data2 = Array.init width (fun _ -> Array.zeroCreate r.Stable.Length)
 
-                walk resolve env prior cols2 ws evalIdx evaluated caches rest)
-        // Phase 207 — a `Limit`. The rows alive AT THIS STEP, in the order they are in, are the
-        // reference's frame here (the walk's invariant), so keeping `[offset, offset + n)` of them
-        // is exactly what `DataFrame.evalLimit` does to that frame — the same `max 0` clamps on
-        // both slots, written as a membership test so the arithmetic cannot overflow the way a
-        // precomputed `offset + n` would at `System.Int32.MaxValue`.
-        //
-        // A row outside the window leaves exactly as a `Filter`'s dropped row leaves: it stops
-        // being alive, is carried on so its cached prefix survives, and takes no further part. That
-        // is also what makes a row RE-ENTERING the window correct with no extra machinery — a dead
-        // row accumulates no `Fresh` cell, so its cached prefix stops where it died, and `cellAt`'s
-        // `List.tryItem evalIdx` misses at every step past that point and evaluates afresh.
-        //
-        // `evalIdx` does not advance and `evaluated` does not move: a limit evaluates no
-        // expression, caches no cell, and the reference's own counter charges it nothing. The pass
-        // is SINGLE and positional — no index lookup per row — which is the whole of what keeps it
-        // off the quadratic list Phase 206 spent itself clearing.
+                rows2
+                |> List.iteri (fun k (row: Cell[]) ->
+                    let s = f.Order[k]
+
+                    for c in 0 .. width - 1 do
+                        data2[c][s] <- row[c])
+
+                // `Stable` is cleared for EVERY slot, dead ones too: the appended column is a
+                // function of the whole frame (see `WalkRows`).
+                Array.fill r.Stable 0 r.Stable.Length false
+
+                walk
+                    resolve
+                    env
+                    prior
+                    r
+                    { Cols = cols2
+                      Data = data2
+                      Origins = Array.create width None
+                      Order = f.Order }
+                    evaluated
+                    caches
+                    rest)
+        // Phase 207 — a `Limit`: keep `[offset, offset + n)` of the rows alive AT THIS STEP, which is
+        // exactly what `DataFrame.evalLimit` does to that frame — the same `max 0` clamps, written
+        // as a membership test so the arithmetic cannot overflow at `System.Int32.MaxValue`. A row
+        // outside the window leaves as a `Filter`'s dropped row leaves, and a row RE-ENTERING it on a
+        // later refresh finds no cached cell past the step it died at, so it is evaluated afresh.
         | WLimit(n, offset) :: rest ->
             let lo = max 0 offset
             let keep = max 0 n
 
-            let rec go acc i =
-                function
-                | [] -> List.rev acc
-                | (w: Work) :: tail ->
-                    if not w.Alive then
-                        go (w :: acc) i tail
-                    else
-                        go
-                            ({ w with
-                                Alive = (i >= lo && i - lo < keep) }
-                             :: acc)
-                            (i + 1)
-                            tail
+            // The positions `i` with `i >= lo && i - lo < keep`, as one slice: the window's end is
+            // taken as `lo + keep` only where that cannot pass the frame's length, so it cannot
+            // overflow either.
+            let len = f.Order.Length
 
-            walk resolve env prior cols (go [] 0 works) evalIdx evaluated caches rest
+            let stop =
+                if lo >= len then lo
+                elif keep > len - lo then len
+                else lo + keep
+
+            let kept = if stop > lo then Array.sub f.Order lo (stop - lo) else [||]
+
+            walk resolve env prior r { f with Order = kept } evaluated caches rest
         // Phase 120 — a filtering join (`Semi` / `Anti`): a `Filter` whose predicate reads a
-        // relation instead of an expression. The verdict is cached in the same per-row cell list a
-        // `Filter`'s is, so `evalIdx` advances; `evaluated` does not move, because the reference's
-        // own counter charges a join nothing.
+        // relation instead of an expression. The verdict is recorded as a `Filter`'s is, so it is an
+        // evaluating step; `evaluated` does not move, because the reference charges a join nothing.
         //
-        // Reuse is conditioned on the RELATION as well as on the delta. The delta describes the
-        // source only, so a row it did not name can still have a different verdict — the joined
-        // relation may have gained or lost the key it matched on. When the key index has moved,
-        // every row's verdict is recomputed at this step and the prefix's reuse is untouched.
+        // Reuse is conditioned on the RELATION as well as on `Stable`: the delta describes the
+        // source only, so a row it did not name can still have a different verdict when the joined
+        // relation gained or lost the key it matched on. When the key index has moved, every row's
+        // verdict is recomputed at this step.
         | WJoin(joinIdx, src, on, keepMatched) :: rest ->
             DataFrame.evalSource resolve src
             |> Result.bind (fun rightTable ->
-                DataFrame.joinKeyIndices cols rightTable.Schema on
+                DataFrame.joinKeyIndices f.Cols rightTable.Schema on
                 |> Result.bind (fun (li, ri) ->
                     let rightKeys =
-                        rowsOf rightTable |> List.map (fun r -> ri |> List.map (fun j -> r[j]))
+                        rowsOf rightTable |> List.map (fun row -> ri |> List.map (fun j -> row[j]))
 
                     let relationMoved = Map.tryFind joinIdx prior.JoinKeys <> Some rightKeys
+                    let step: Cell[] = Array.zeroCreate r.Stable.Length
+                    let kept = ResizeArray<int>(f.Order.Length)
 
-                    let verdictOf (w: Work) =
+                    for s in f.Order do
                         let cached =
-                            if not w.Stable || relationMoved then
-                                None
+                            if relationMoved then
+                                Unchecked.defaultof<Cell>
                             else
-                                List.tryItem evalIdx w.Cached
+                                cachedAt r evalIdx s
 
-                        match cached with
-                        | Some c -> c
-                        | None ->
-                            let leftKeys = li |> List.map (fun i -> w.Cells[i])
-                            let matched = rightKeys |> List.exists (DataFrame.joinKeysMatch leftKeys)
-                            Bool(matched = keepMatched)
-
-                    let ws =
-                        works
-                        |> List.map (fun w ->
-                            if not w.Alive then
-                                w
+                        let v =
+                            if not (isNull (box cached)) then
+                                cached
                             else
-                                let v = verdictOf w
+                                let leftKeys = li |> List.map (fun i -> (column f i)[s])
+                                let matched = rightKeys |> List.exists (DataFrame.joinKeysMatch leftKeys)
+                                Bool(matched = keepMatched)
 
-                                { w with
-                                    Alive = (v = Bool true)
-                                    Fresh = v :: w.Fresh })
+                        step[s] <- v
+
+                        if v = Bool true then
+                            kept.Add s
+
+                    r.Steps.Add step
 
                     walk
                         resolve
                         env
                         prior
-                        cols
-                        ws
-                        (evalIdx + 1)
+                        r
+                        { f with Order = kept.ToArray() }
                         evaluated
                         { caches with
                             JoinKeys = Map.add joinIdx rightKeys caches.JoinKeys }
                         rest))
         | WFilter pred :: rest ->
-            let resolved = DataFrame.resolveExpr env cols pred
+            let resolved = DataFrame.resolveExpr env f.Cols pred
 
-            let rec go acc n =
-                function
-                | [] -> Ok(List.rev acc, n)
-                | (w: Work) :: tail ->
-                    if not w.Alive then
-                        go (w :: acc) n tail
-                    else
-                        match cellAt evalIdx resolved w with
-                        | Error e -> Error e
-                        | Ok(c, didWork) ->
-                            let w' =
-                                { w with
-                                    Alive = (c = Bool true)
-                                    Fresh = c :: w.Fresh }
-
-                            go (w' :: acc) (if didWork then n + 1 else n) tail
-
-            go [] evaluated works
-            |> Result.bind (fun (ws, n) -> walk resolve env prior cols ws (evalIdx + 1) n caches rest)
+            evalStep r f evalIdx resolved evaluated
+            |> Result.bind (fun (step, n) ->
+                r.Steps.Add step
+                let kept = f.Order |> Array.filter (fun s -> step[s] = Bool true)
+                walk resolve env prior r { f with Order = kept } n caches rest)
         | WProject pairs :: rest ->
             let resolveOne (src, out) =
-                match colIndex cols src with
-                | None -> Error(UnknownColumn(src, available cols))
-                | Some i -> Ok(out, snd (List.item i cols), i)
+                match colIndex f.Cols src with
+                | None -> Error(UnknownColumn(src, available f.Cols))
+                | Some i -> Ok(out, snd (List.item i f.Cols), i)
 
             traverse resolveOne pairs
             |> Result.bind (fun resolved ->
-                let cols2 = resolved |> List.map (fun (o, ty, _) -> o, ty)
                 let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
 
-                let ws =
-                    works
-                    |> List.map (fun w ->
-                        if w.Alive then
-                            { w with
-                                Cells = idx |> Array.map (fun i -> w.Cells[i]) }
-                        else
-                            w)
-
-                walk resolve env prior cols2 ws evalIdx evaluated caches rest)
+                walk
+                    resolve
+                    env
+                    prior
+                    r
+                    { f with
+                        Cols = resolved |> List.map (fun (o, ty, _) -> o, ty)
+                        Data = idx |> Array.map (fun i -> f.Data[i])
+                        Origins = idx |> Array.map (fun i -> f.Origins[i]) }
+                    evaluated
+                    caches
+                    rest)
         | WDerive(name, expr) :: rest ->
-            let resolved = DataFrame.resolveExpr env cols expr
+            let resolved = DataFrame.resolveExpr env f.Cols expr
 
-            let rec go acc n =
-                function
-                | [] -> Ok(List.rev acc, n)
-                | (w: Work) :: tail ->
-                    if not w.Alive then
-                        go (w :: acc) n tail
-                    else
-                        match cellAt evalIdx resolved w with
-                        | Error e -> Error e
-                        | Ok(c, didWork) ->
-                            go ({ w with Fresh = c :: w.Fresh } :: acc) (if didWork then n + 1 else n) tail
+            evalStep r f evalIdx resolved evaluated
+            |> Result.bind (fun (step, n) ->
+                r.Steps.Add step
 
-            go [] evaluated works
-            |> Result.bind (fun (ws, n) ->
-                // A derived column's TYPE is a function of the whole column, not of one row, so it
-                // is inferred over the cells of the rows alive AT THIS STEP in source order —
-                // precisely the set the reference evaluator holds here. This is the one place a
-                // row-local step is not row-local, and reading it off a cache would type the column
-                // differently from the reference the moment a filter downstream dropped the only
-                // typed row.
-                let newCells =
-                    ws |> List.filter (fun w -> w.Alive) |> List.map (fun w -> List.head w.Fresh)
+                // A derived column's TYPE is a function of the whole column, not of one row: the
+                // type of its first present cell among the rows alive AT THIS STEP in frame order —
+                // `DataFrame.inferCellType`'s pick, over precisely the set the reference evaluator
+                // holds here. Reading it off a cache would type the column differently from the
+                // reference the moment a filter downstream dropped the only typed row.
+                let ty =
+                    f.Order
+                    |> Array.tryPick (fun s -> Cell.typeOf step[s])
+                    |> Option.defaultValue StringType
 
-                let ty = DataFrame.inferCellType newCells
-
-                let cols2, ws2 =
-                    match colIndex cols name with
+                // The step's cells ARE the derived column: live at every slot in `Order`, and a slot
+                // outside it is never read again this walk.
+                let f2 =
+                    match colIndex f.Cols name with
                     | Some i ->
-                        (cols |> List.mapi (fun j (n2, t) -> if j = i then n2, ty else n2, t)),
-                        (ws
-                         |> List.map (fun w ->
-                             if w.Alive then
-                                 // A copy with the cell replaced — never a write into the
-                                 // array this row arrived with, which the prior frame may hold.
-                                 let cells = Array.copy w.Cells
-                                 cells[i] <- List.head w.Fresh
-                                 { w with Cells = cells }
-                             else
-                                 w))
+                        { f with
+                            Cols = f.Cols |> List.mapi (fun j (n2, t) -> if j = i then n2, ty else n2, t)
+                            Data = f.Data |> Array.mapi (fun j a -> if j = i then step else a)
+                            Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o) }
                     | None ->
-                        (cols @ [ name, ty ]),
-                        (ws
-                         |> List.map (fun w ->
-                             if w.Alive then
-                                 { w with
-                                     Cells = Array.append w.Cells [| List.head w.Fresh |] }
-                             else
-                                 w))
+                        { f with
+                            Cols = f.Cols @ [ name, ty ]
+                            Data = Array.append f.Data [| step |]
+                            Origins = Array.append f.Origins [| None |] }
 
-                walk resolve env prior cols2 ws2 (evalIdx + 1) n caches rest)
+                walk resolve env prior r f2 n caches rest)
+
+    /// The frame's rows alive at its end, as a table under its schema — the transpose `tableOf`
+    /// would do over row arrays, one column at a time. A column whose array is still the source's
+    /// own list, over a frame whose `Order` is every slot in slot order, hands that list back.
+    let private tableOfFrame (f: WalkFrame) (slotCount: int) : Table =
+        let identity =
+            f.Order.Length = slotCount
+            && (let mutable same = true
+                let mutable i = 0
+
+                while same && i < f.Order.Length do
+                    same <- f.Order[i] = i
+                    i <- i + 1
+
+                same)
+
+        { Schema = f.Cols
+          Columns =
+            f.Cols
+            |> List.mapi (fun ci (name, ty) ->
+                let cells =
+                    match f.Origins[ci] with
+                    | Some origin when identity -> origin
+                    | _ ->
+                        let a = column f ci
+                        let mutable acc = []
+
+                        for k in f.Order.Length - 1 .. -1 .. 0 do
+                            acc <- a[f.Order[k]] :: acc
+
+                        acc
+
+                Column.create name ty cells) }
 
     // ---- the maintained-group step ----
 
-    /// The outcome of a maintained `GroupBy`: the result schema and rows, the row-to-group map, the
-    /// per-group ordered member tokens, the per-group aggregate cells, and how many groups were
-    /// recomputed rather than reused.
+    /// The outcome of a maintained `GroupBy`: the result schema and rows, and the group caches the
+    /// state records — all POSITIONAL, aligned with `Order` (Phase 274; they were maps keyed by
+    /// group token, which a refresh rebuilt by one `Map.add` per group — a persistent tree of every
+    /// group, per refresh, on a high-cardinality key).
     type private GroupOutcome =
         {
             Cols: Schema
@@ -1299,56 +1431,54 @@ module Incremental =
             /// walk pair each group row with the identity its cache is keyed by. Carried rather than
             /// recomputed: re-deriving it would mean re-tokenising the key cells, and a second
             /// derivation of an identity is a second thing that can disagree.
-            Order: string list
-            /// Phase 208 — the group token each SOURCE ROW landed in, indexed by that row's slot in
-            /// the source's row order (`null` for a row the prefix filtered away). The positional
-            /// successor to the `Map<string, string>` this was until `0.27.0`, and the reason the
-            /// next refresh can CARRY a group identity instead of re-minting one per row.
-            RowGroups: string[]
-            Members: Map<string, string list>
-            Aggs: Map<string, Cell list>
+            Order: string[]
+            /// Phase 208 — the index into `Order` of the group each SOURCE ROW landed in, by that
+            /// row's slot in the source's row order (`-1` for a row the prefix filtered away). It is
+            /// what lets the next refresh CARRY a group identity instead of re-minting one per row.
+            RowGroups: int[]
+            /// Per group, its members' row tokens IN ORDER.
+            Members: string list[]
+            /// Per group, the aggregate cells computed or reused for it.
+            Aggs: Cell list[]
             Recomputed: int
-            /// Phase 202 — the tokens of the groups whose aggregates were RECOMPUTED, beside the count
-            /// of them. The count is the footprint's; this is what the tail walk reads to decide which
+            /// Phase 202 — per group, whether its aggregates were RECOMPUTED; `Recomputed` counts the
+            /// `true`s. The count is the footprint's; this is what the tail walk reads to decide which
             /// group rows it must re-evaluate, and the two cannot disagree because both are written by
-            /// the same branch. A group absent from this set has key cells and aggregate cells
+            /// the same branch. A group not recomputed has key cells and aggregate cells
             /// byte-identical to the ones the tail last saw.
-            RecomputedGroups: Set<string>
+            RecomputedAt: bool[]
         }
 
-    /// Recompute a final `GroupBy` over the walked rows, recomputing only the affected groups'
+    /// The prior evaluation's group caches, positional as `GroupOutcome` records them.
+    type private PriorGroups =
+        { Order: string[]
+          RowGroups: int[]
+          Members: string list[]
+          Aggs: Cell list[] }
+
+    /// Recompute a final `GroupBy` over the walked frame, recomputing only the affected groups'
     /// aggregates and reusing the cached cells for the rest. Mirrors `evalGroupBy`'s order of
     /// operations exactly — keys resolved first, then aggregates, then groups in first-appearance
     /// order — because the FIRST error the reference reports is part of its answer.
     ///
     /// **Phase 208 — a group is reusable exactly when every member's cells are STABLE and its ordered
-    /// member list is byte-identical to the cached one.** That is a statement of the whole of what a
-    /// cached aggregate depends on: the aggregate is a function of its members' cells in order, so
-    /// identical members in identical order with unmoved cells is identical input. The two conditions
-    /// are each load-bearing — `First` / `Last` read position outright and a float `Sum` is
+    /// member list is byte-identical to the cached one.** That is the whole of what a cached
+    /// aggregate depends on: the aggregate is a function of its members' cells in order. Both
+    /// conditions are load-bearing — `First` / `Last` read position outright and a float `Sum` is
     /// order-sensitive in its last bits, so a pure reordering of unnamed rows can move a group's
-    /// aggregate.
-    ///
-    /// It replaces a `touched` set computed from the delta's named rows and the prior row-to-group
-    /// map, which needed a 20,000-entry map built per refresh to answer one row's question. The
-    /// third condition that map served — a group a named row LEFT — is carried by the member list:
-    /// a group that lost a member has a different ordered member list and is recomputed. What the
-    /// `Stable` form ADDS is the window case: a row whose cells moved because another row moved is
-    /// not stable, and its group is recomputed, which the named-row form got wrong.
+    /// aggregate — and a group a named row LEFT has a different member list, so it is recomputed.
     ///
     /// An untouched group cannot error: its cached cells came from a successful evaluation over
     /// members that have not moved, so the first error among the recomputed groups (in group order)
     /// is the first error overall.
     let private groupStep
-        (cols: Schema)
-        (alive: Work list)
-        (rowCount: int)
+        (f: WalkFrame)
+        (r: WalkRows)
         (keys: string list)
         (aggs: Agg list)
-        (priorGroups: string[])
-        (priorMembers: Map<string, string list>)
-        (priorAggs: Map<string, Cell list>)
+        (prior: PriorGroups)
         : Result<GroupOutcome, EvalError> =
+        let cols = f.Cols
         let keyIdx = keys |> List.map (fun k -> colIndex cols k, k)
 
         match keyIdx |> List.tryPick (fun (i, k) -> if Option.isNone i then Some k else None) with
@@ -1369,132 +1499,120 @@ module Incremental =
                     resolvedAggs
                     |> List.map (fun (a, ty, _) -> a.Name, DataFrame.aggregateType a.Fn ty)
 
-                // Group, preserving first-appearance order, keyed by the pinned canonical token —
-                // the same partition `evalGroupBy` builds, so the two never disagree about which
-                // rows are one group.
+                // Group, preserving first-appearance order — the same partition `evalGroupBy`
+                // builds, so the two never disagree about which rows are one group. The accumulators
+                // are MUTABLE and strictly local (Phase 208); nothing mutable escapes.
                 //
-                // Phase 206 removed a quadratic here: the accumulators were APPENDED to, so a group
-                // re-walked its own rows for each member it gained. Phase 208 removes what replaced
-                // it — the per-row `Map.add` into the partition map. A persistent map allocates a new
-                // path on every insertion even when it holds seventeen keys, so grouping 20,000 rows
-                // cost 20,000 tree-path copies to build a partition of seventeen; that was the
-                // largest single item left in a measured refresh. The accumulators below are MUTABLE
-                // and strictly local to this function: a dictionary from group token to a slot, and
-                // one growable list per slot. Nothing mutable escapes — `GroupOutcome` carries F#
-                // lists and maps exactly as before — and the members stay in arrival order by
-                // construction rather than by a reversal, which is what the order-sensitive reuse
-                // condition reads.
-                //
-                // Phase 208 — the group token is CARRIED for a row whose cells have not moved. It is
-                // a pure function of the key cells, so a `Stable` row that the prior evaluation
-                // placed in a group is in that group; minting it again would be re-deriving an
-                // identity the state already holds, which cost a `DataFrame.rowTokenString` per
-                // source row per refresh (~30-40% of a measured refresh at 20,000 rows). A row the
-                // prior evaluation did not reach — new, moved, filtered away last time, or any row of
-                // a prime — mints as before, so a carried token is never the only derivation.
-                //
-                // The key cells are needed only by the row that OPENS a group, so they are read
-                // lazily: a carried token that finds its group already open reads no cell at all.
-                //
-                // Phase 265 — a row with NO carried token finds its group by TOKEN equality over its
-                // key cells (`DataFrame.CellKey`, the relation `evalGroupBy` partitions by), and the
-                // group token is minted once per GROUP, by the row that opens it, rather than once per
-                // row: a prime, or a refresh whose rows moved, used to pay a `rowTokenString` for
-                // every such row. So two tables index the same slots — by carried token and by key
-                // cells — and every group is entered in BOTH when it opens, whichever kind of row
-                // opened it. They cannot disagree about a group: a carried token is the token of its
-                // row's key cells (it was minted from them, and a `Stable` row's cells have not
-                // moved), and `CellKey` equality is token equality, which a law in the suite holds.
-                let rowGroups: string[] = Array.zeroCreate rowCount
-
-                let bySlotToken = System.Collections.Generic.Dictionary<string, int>()
+                // The group is CARRIED for a row whose cells have not moved (Phase 208): a group is a
+                // pure function of the key cells, so a `Stable` row the prior evaluation placed in a
+                // group is in that group. Since Phase 274 what is carried is the prior group's INDEX,
+                // and `current` translates it to this evaluation's, so a carried row costs two array
+                // reads where it cost a hash of its group token. A row with no carried group finds
+                // its group by TOKEN equality over its key cells (`DataFrame.CellKey`, Phase 265), and
+                // a group's token is minted once, by the row that opens it — or carried from the prior
+                // group when that row carries one. The two routes cannot disagree about a group: a
+                // carried group's token is the token of its row's key cells (it was minted from them,
+                // and a `Stable` row's cells have not moved), and `CellKey` equality is token
+                // equality, which a law in the suite holds.
+                let rowGroups: int[] = Array.create r.Stable.Length -1
+                let current: int[] = Array.create prior.Order.Length -1
                 let bySlotCells = DataFrame.CellKey.slots ()
                 let probe: Cell[] = Array.zeroCreate idxs.Length
 
-                let readKey (row: Cell[]) =
+                let readKey (s: int) =
                     for j in 0 .. idxs.Length - 1 do
-                        probe[j] <- row[idxs[j]]
+                        probe[j] <- (column f idxs[j])[s]
 
                 let order = ResizeArray<string>()
+                let priorIdx = ResizeArray<int>()
                 let groupKeys = ResizeArray<Cell list>()
-                let groupRows = ResizeArray<ResizeArray<Cell[]>>()
-                let groupToks = ResizeArray<ResizeArray<string>>()
+                let groupSlots = ResizeArray<ResizeArray<int>>()
                 let groupStable = ResizeArray<bool>()
 
-                // Open the next group for `row`, whose key cells are in `probe`, under token `gt`.
-                let openGroup (gt: string) (w: Work) =
-                    bySlotToken[gt] <- order.Count
+                // Open the next group for slot `s`, whose key cells are in `probe`, under token `gt`;
+                // `pg` is the prior group it continues, where the opener carried one.
+                let openGroup (gt: string) (pg: int) (s: int) =
+                    let gi = order.Count
                     order.Add gt
+                    priorIdx.Add pg
                     groupKeys.Add(List.ofArray probe)
-                    let rows = ResizeArray<Cell[]>()
-                    rows.Add w.Cells
-                    groupRows.Add rows
-                    let toks = ResizeArray<string>()
-                    toks.Add w.Token
-                    groupToks.Add toks
-                    groupStable.Add w.Stable
+                    let slots = ResizeArray<int>()
+                    slots.Add s
+                    groupSlots.Add slots
+                    groupStable.Add r.Stable[s]
+                    gi
 
-                let join (gi: int) (w: Work) =
-                    groupRows[gi].Add w.Cells
-                    groupToks[gi].Add w.Token
+                let join (gi: int) (s: int) =
+                    groupSlots[gi].Add s
 
-                    if not w.Stable then
+                    if not r.Stable[s] then
                         groupStable[gi] <- false
 
-                for w in alive do
-                    let row = w.Cells
-
+                for s in f.Order do
                     let carried =
-                        if w.Stable && w.Prior >= 0 && w.Prior < priorGroups.Length then
-                            priorGroups[w.Prior]
-                        else
-                            null
+                        let p = r.Prior[s]
 
-                    // The carried token's slot, or -1 (no token carried, or one no group holds yet).
-                    let carriedSlot =
-                        if isNull carried then
+                        if r.Stable[s] && p >= 0 && p < prior.RowGroups.Length then
+                            prior.RowGroups[p]
+                        else
                             -1
-                        else
-                            match bySlotToken.TryGetValue carried with
-                            | true, gi -> gi
-                            | _ -> -1
 
-                    if carriedSlot >= 0 then
-                        rowGroups[w.Slot] <- carried
-                        join carriedSlot w
+                    let carriedGroup = if carried >= 0 then current[carried] else -1
+
+                    if carriedGroup >= 0 then
+                        rowGroups[s] <- carriedGroup
+                        join carriedGroup s
                     else
-                        readKey row
+                        readKey s
 
-                        match DataFrame.CellKey.slotOf bySlotCells probe order.Count with
-                        | gi, false ->
-                            rowGroups[w.Slot] <- order[gi]
-                            join gi w
-                        | _, true ->
-                            // The opener's token: carried when it has one, minted from its cells when not.
-                            let gt =
-                                if isNull carried then
-                                    DataFrame.rowTokenStringOfArray probe
+                        let gi =
+                            match DataFrame.CellKey.slotOf bySlotCells probe order.Count with
+                            | gi, false ->
+                                join gi s
+                                gi
+                            | _, true ->
+                                if carried >= 0 then
+                                    openGroup prior.Order[carried] carried s
                                 else
-                                    carried
+                                    openGroup (DataFrame.rowTokenStringOfArray probe) -1 s
 
-                            rowGroups[w.Slot] <- gt
-                            openGroup gt w
+                        if carried >= 0 then
+                            current[carried] <- gi
 
-                let recomputed = ref 0
-                let recomputedGroups = ref Set.empty
+                        rowGroups[s] <- gi
 
-                // Is a group's member list NOW exactly `prior`, in order? Read off the growable list
-                // (Phase 265), so a reused group builds no second copy of its members: the reuse
-                // test used to compare a freshly built token list with the prior one, and the fresh
-                // list was then kept although it was equal to the list the state already held.
-                let sameMembers (prior: string list) (now: ResizeArray<string>) =
-                    let mutable rest = prior
+                // The prior index of a group no carried row opened — a lookup by its token, through an
+                // index built on the first such group that needs one and never otherwise.
+                let mutable priorAt: System.Collections.Generic.Dictionary<string, int> = null
+
+                let priorOf (gi: int) =
+                    if priorIdx[gi] >= 0 then
+                        priorIdx[gi]
+                    elif prior.Order.Length = 0 then
+                        -1
+                    else
+                        if isNull priorAt then
+                            let d = System.Collections.Generic.Dictionary<string, int>(prior.Order.Length)
+
+                            for j in 0 .. prior.Order.Length - 1 do
+                                d[prior.Order[j]] <- j
+
+                            priorAt <- d
+
+                        match priorAt.TryGetValue order[gi] with
+                        | true, j -> j
+                        | _ -> -1
+
+                // Is a group's member list NOW exactly `members`, in order? Compared token by token
+                // against the growable slot list, so a reused group builds no second copy.
+                let sameMembers (members: string list) (now: ResizeArray<int>) =
+                    let mutable rest = members
                     let mutable i = 0
                     let mutable same = true
 
                     while same && i < now.Count do
                         match rest with
-                        | t :: tail when System.String.Equals(t, now[i]) ->
+                        | t :: tail when System.String.Equals(t, r.Tokens[now[i]]) ->
                             rest <- tail
                             i <- i + 1
                         | _ -> same <- false
@@ -1503,52 +1621,67 @@ module Incremental =
 
                 // One aggregate's source cells over a group's members, in member order, built from
                 // the back — only for a group that is recomputed.
-                let columnOf (members: ResizeArray<Cell[]>) (ci: int) : Cell list =
+                let columnOf (members: ResizeArray<int>) (ci: int) : Cell list =
+                    let a = column f ci
                     let mutable acc = []
 
                     for j in members.Count - 1 .. -1 .. 0 do
-                        acc <- members[j][ci] :: acc
+                        acc <- a[members[j]] :: acc
 
                     acc
 
-                // A group's aggregates and the member list the state records for it: reused
-                // (with the prior list itself) when every member is stable, the members are the
-                // prior members in the prior order, and the prior aggregates are cached; recomputed
-                // otherwise. The same three conditions as before Phase 265.
-                let cellsFor (gi: int) =
-                    let gt = order[gi]
+                let groupCount = order.Count
+                let members: string list[] = Array.zeroCreate groupCount
+                let aggCells: Cell list[] = Array.zeroCreate groupCount
+                let recomputedAt: bool[] = Array.zeroCreate groupCount
+                let mutable recomputed = 0
+                let mutable failed = None
+                let mutable gi = 0
 
-                    let priorToks =
-                        if groupStable[gi] then
-                            Map.tryFind gt priorMembers
-                        else
-                            None
+                // A group's aggregates and the member list the state records for it: reused (with
+                // the prior list itself) when every member is stable, the members are the prior
+                // members in the prior order, and the prior aggregates are cached; recomputed
+                // otherwise.
+                while failed.IsNone && gi < groupCount do
+                    let pg = if groupStable[gi] then priorOf gi else -1
 
-                    match priorToks with
-                    | Some toks when sameMembers toks groupToks[gi] && Map.containsKey gt priorAggs ->
-                        Ok(Map.find gt priorAggs, toks)
-                    | _ ->
-                        recomputed.Value <- recomputed.Value + 1
-                        recomputedGroups.Value <- Set.add gt recomputedGroups.Value
+                    if
+                        pg >= 0
+                        && pg < prior.Members.Length
+                        && pg < prior.Aggs.Length
+                        && sameMembers prior.Members[pg] groupSlots[gi]
+                    then
+                        members[gi] <- prior.Members[pg]
+                        aggCells[gi] <- prior.Aggs[pg]
+                    else
+                        recomputed <- recomputed + 1
+                        recomputedAt[gi] <- true
 
-                        resolvedAggs
-                        |> traverse (fun (a, ty, ci) -> DataFrame.aggregateCells a.Fn ty (columnOf groupRows[gi] ci))
-                        |> Result.map (fun aggVals -> aggVals, List.ofSeq groupToks[gi])
+                        match
+                            resolvedAggs
+                            |> traverse (fun (a, ty, ci) ->
+                                DataFrame.aggregateCells a.Fn ty (columnOf groupSlots[gi] ci))
+                        with
+                        | Ok vals ->
+                            aggCells[gi] <- vals
+                            let slots = groupSlots[gi]
+                            members[gi] <- List.init slots.Count (fun j -> r.Tokens[slots[j]])
+                        | Error e -> failed <- Some e
 
-                List.init order.Count id
-                |> traverse (fun gi ->
-                    cellsFor gi
-                    |> Result.map (fun (aggVals, toks) ->
-                        order[gi], List.toArray (groupKeys[gi] @ aggVals), aggVals, toks))
-                |> Result.map (fun built ->
-                    { Cols = keyCols @ aggCols
-                      Rows = built |> List.map (fun (_, row, _, _) -> row)
-                      Order = built |> List.map (fun (gt, _, _, _) -> gt)
-                      RowGroups = rowGroups
-                      Members = (Map.empty, built) ||> List.fold (fun m (gt, _, _, toks) -> Map.add gt toks m)
-                      Aggs = (Map.empty, built) ||> List.fold (fun m (gt, _, a, _) -> Map.add gt a m)
-                      Recomputed = recomputed.Value
-                      RecomputedGroups = recomputedGroups.Value }))
+                    gi <- gi + 1
+
+                match failed with
+                | Some e -> Error e
+                | None ->
+                    Ok
+                        { Cols = keyCols @ aggCols
+                          Rows = List.init groupCount (fun gi -> List.toArray (groupKeys[gi] @ aggCells[gi]))
+                          Order = order.ToArray()
+                          RowGroups = rowGroups
+                          Members = members
+                          Aggs = aggCells
+                          Recomputed = recomputed
+                          RecomputedAt = recomputedAt })
 
     // ---- identity tokens ----
 
@@ -1674,6 +1807,29 @@ module Incremental =
 
     // ---- evaluation ----
 
+    /// The source's columns as the walk's frame: one array per schema column, padded with `Null`
+    /// exactly as `RowAccess.columns` pads (a name the table does not carry, or a column shorter
+    /// than the table, reads `Null` — the total `Column.cell` policy), and beside each the source's
+    /// own list where the array is that list unpadded.
+    let private frameOf (t: Table) (n: int) : WalkFrame =
+        let unpacked =
+            t.Schema
+            |> List.map (fun (name, _) ->
+                match Table.tryColumn name t with
+                | Some c ->
+                    if List.length c.Cells = n then
+                        null, Some c.Cells
+                    else
+                        let a = List.toArray c.Cells
+                        Array.init n (fun i -> if i < a.Length then a[i] else Null), None
+                | None -> Array.create n Null, None)
+            |> List.toArray
+
+        { Cols = t.Schema
+          Data = unpacked |> Array.map fst
+          Origins = unpacked |> Array.map snd
+          Order = Array.init n id }
+
     /// Run the incremental path over `source`, re-evaluating the rows in `named` (`None` = all).
     /// `prior` supplies the caches; an absent prior is the primed case. `tokens` is the source's
     /// identity tokens, already computed by the caller (which had to compute them to know the
@@ -1698,22 +1854,17 @@ module Incremental =
         let priorTokens =
             prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
 
-        let priorCells =
-            prior |> Option.map (fun s -> s.RowCells) |> Option.defaultValue [||]
-
-        let priorGroups =
-            prior |> Option.map (fun s -> s.RowGroups) |> Option.defaultValue [||]
+        let priorSteps =
+            prior |> Option.map (fun s -> s.StepCells) |> Option.defaultValue [||]
 
         // Phase 208 — where a row's cached results are read from. The common case is the whole
         // point: a delta that changed a row's VALUE leaves every row at the index it already sat
-        // at, so `tokensOf` handed back the prior evaluation's own string instances and the test is
+        // at, so the tokens come back as the prior evaluation's own string instances and the test is
         // one pointer comparison per row — no hashing, no tree, nothing keyed.
         //
         // A row that MOVED — inserted ahead of, removed from in front of, or reordered — costs a
         // lookup, and the index those lookups read is built ONCE, on the first miss, never on a
-        // refresh that has no misses and never on a prime. That is the honest price of a structural
-        // change to the frame, and it is paid by the refresh that saw one rather than by every
-        // refresh in case one comes.
+        // refresh that has no misses and never on a prime.
         let mutable priorIndex: System.Collections.Generic.Dictionary<string, int> = null
 
         let priorSlotOf (token: string) =
@@ -1732,40 +1883,36 @@ module Incremental =
                 | true, j -> j
                 | _ -> -1
 
-        let works =
-            rowsOf source
-            |> List.mapi (fun i cells ->
-                let token = tokens[i]
+        let priorOf: int[] = Array.zeroCreate rowCount
+        let stable: bool[] = Array.zeroCreate rowCount
 
-                // The reference test is an OPTIMISATION and is unobservable, which is what makes it
-                // safe to write in a Fable-compiled library where strings are primitives and
-                // `ReferenceEquals` therefore compares by VALUE. Either way the answer is the same
-                // index: tokens are unique within a frame, so the only `j` with
-                // `priorTokens[j] = token` is `i` whenever `priorTokens[i] = token` — the fast path
-                // and the fallback cannot disagree, they can only differ in what they cost.
-                let priorSlot =
-                    if i < priorTokens.Length && System.Object.ReferenceEquals(token, priorTokens[i]) then
-                        i
-                    else
-                        priorSlotOf token
+        for i in 0 .. rowCount - 1 do
+            let token = tokens[i]
 
-                let affected =
-                    match named with
-                    | None -> true
-                    | Some ns -> priorSlot < 0 || Set.contains token ns
+            // The reference test is an OPTIMISATION and is unobservable, which is what makes it safe
+            // in a Fable-compiled library where strings are primitives and `ReferenceEquals` compares
+            // by VALUE: tokens are unique within a frame, so the only `j` with `priorTokens[j] =
+            // token` is `i` whenever `priorTokens[i] = token`.
+            let ps =
+                if i < priorTokens.Length && System.Object.ReferenceEquals(token, priorTokens[i]) then
+                    i
+                else
+                    priorSlotOf token
 
-                { Token = token
-                  Slot = i
-                  Prior = priorSlot
-                  Stable = not affected
-                  Alive = true
-                  Cells = cells
-                  Cached =
-                    if priorSlot >= 0 && priorSlot < priorCells.Length then
-                        priorCells[priorSlot]
-                    else
-                        []
-                  Fresh = [] })
+            priorOf[i] <- ps
+
+            stable[i] <-
+                match named with
+                | None -> false
+                | Some ns -> ps >= 0 && not (Set.contains token ns)
+
+        let rows =
+            { Tokens = tokens
+              Prior = priorOf
+              Stable = stable
+              PriorSteps = priorSteps
+              PriorCount = priorTokens.Length
+              Steps = ResizeArray<Cell[]>() }
 
         let priorCaches =
             match prior with
@@ -1774,29 +1921,9 @@ module Incremental =
                   JoinKeys = s.JoinKeys }
             | None -> noCaches
 
-        walk resolve env priorCaches source.Schema works 0 0 noCaches prefix
-        |> Result.bind (fun (cols, ws, evaluated, caches) ->
-            // Phase 208 — the row cache written positionally, one array store per row, into a slot
-            // the row carried through the walk. It was a `Map.add` per row into a string-keyed tree,
-            // rebuilt from empty on every refresh, which measured as ~27% of a refresh at 20,000
-            // rows.
-            //
-            // A row whose cells never moved and whose every evaluating step read the cache has
-            // produced the list it was handed: `Fresh` reversed IS `Cached`, so the prior list is
-            // reused rather than rebuilt. The length test is what makes that exact — a row that died
-            // EARLIER this time (a `Limit` window that moved past it, a relation that stopped
-            // matching) stopped accumulating sooner, so its cache is genuinely shorter and is
-            // rebuilt.
-            let rowCells: Cell list[] = Array.zeroCreate rowCount
-
-            for w in ws do
-                rowCells[w.Slot] <-
-                    if w.Stable && List.length w.Fresh = List.length w.Cached then
-                        w.Cached
-                    else
-                        List.rev w.Fresh
-
-            let aliveWorks = ws |> List.filter (fun w -> w.Alive)
+        walk resolve env priorCaches rows (frameOf source rowCount) 0 noCaches prefix
+        |> Result.bind (fun (frame, evaluated, caches) ->
+            let stepCells = rows.Steps.ToArray()
 
             match final with
             | None ->
@@ -1808,34 +1935,42 @@ module Incremental =
                       Scheme = scheme
                       Source = Prepared.ready source
                       Prepared = prepared
-                      Output = Prepared.ready (tableOf cols (aliveWorks |> List.map (fun w -> w.Cells)))
+                      Output = Prepared.ready (tableOfFrame frame rowCount)
                       Tokens = tokens
-                      RowCells = rowCells
+                      StepCells = stepCells
                       RowGroups = [||]
-                      GroupMembers = Map.empty
-                      GroupAggs = Map.empty
+                      GroupMembers = [||]
+                      GroupAggs = [||]
                       SortOrders = caches.SortOrders
                       JoinKeys = caches.JoinKeys
                       Footprint =
                         { SourceRows = rowCount
-                          ResultRows = List.length aliveWorks
+                          ResultRows = frame.Order.Length
                           Recompute = recomputeOf evaluated 0 }
-                      GroupCells = Map.empty
+                      GroupOrder = [||]
+                      TailCells = [||]
                       ChunkedOutput = None
                       ChunksTouched = None }
             | Some(keys, aggs, tail) ->
-                let priorMembers =
-                    prior |> Option.map (fun s -> s.GroupMembers) |> Option.defaultValue Map.empty
+                let priorGroups =
+                    match prior with
+                    | Some s ->
+                        { Order = s.GroupOrder
+                          RowGroups = s.RowGroups
+                          Members = s.GroupMembers
+                          Aggs = s.GroupAggs }
+                    | None ->
+                        { Order = [||]
+                          RowGroups = [||]
+                          Members = [||]
+                          Aggs = [||] }
 
-                let priorAggs =
-                    prior |> Option.map (fun s -> s.GroupAggs) |> Option.defaultValue Map.empty
-
-                groupStep cols aliveWorks rowCount keys aggs priorGroups priorMembers priorAggs
+                groupStep frame rows keys aggs priorGroups
                 |> Result.bind (fun g ->
                     // Phase 202 — one state shape whichever side of the branch below built it, so
                     // the tail cannot quietly record a different kind of answer from the no-tail
                     // case it generalises.
-                    let finish outCols outRows groupCells evaluated' (caches': WalkCaches) =
+                    let finish output resultRows tailCells evaluated' (caches': WalkCaches) =
                         { Plan = p
                           Pipeline = pipeline
                           Planned = pipeline
@@ -1843,9 +1978,9 @@ module Incremental =
                           Scheme = scheme
                           Source = Prepared.ready source
                           Prepared = prepared
-                          Output = Prepared.ready (tableOf outCols outRows)
+                          Output = Prepared.ready output
                           Tokens = tokens
-                          RowCells = rowCells
+                          StepCells = stepCells
                           RowGroups = g.RowGroups
                           GroupMembers = g.Members
                           GroupAggs = g.Aggs
@@ -1853,9 +1988,10 @@ module Incremental =
                           JoinKeys = caches'.JoinKeys
                           Footprint =
                             { SourceRows = rowCount
-                              ResultRows = List.length outRows
+                              ResultRows = resultRows
                               Recompute = recomputeOf evaluated' g.Recomputed }
-                          GroupCells = groupCells
+                          GroupOrder = g.Order
+                          TailCells = tailCells
                           ChunkedOutput = None
                           ChunksTouched = None }
 
@@ -1863,59 +1999,72 @@ module Incremental =
                         // The pipeline every pre-202 state was built for. Taken as its own branch
                         // rather than as `walk … []` so a maintained group-by that ends the
                         // pipeline pays nothing at all for a cache it has nothing to put in.
-                        Ok(finish g.Cols g.Rows Map.empty evaluated caches)
+                        Ok(finish (tableOf g.Cols g.Rows) (List.length g.Rows) [||] evaluated caches)
                     else
-                        let priorGroupCells =
-                            prior |> Option.map (fun s -> s.GroupCells) |> Option.defaultValue Map.empty
-
-                        // The group table as a frame of `Work`, keyed by group token. A group is
-                        // AFFECTED exactly when `groupStep` recomputed its aggregates — its row is
-                        // then not the row the tail last read — or when the tail has no cache for
-                        // it, which covers a prime, a group that has just come into existence, and
-                        // a state built before this pipeline had a tail at all.
+                        // The group table as a frame of its own, slot = group index. A group is
+                        // STABLE exactly when `groupStep` reused its aggregates — its row is then the
+                        // row the tail last read — and the prior tail frame held it; a prime, a group
+                        // that has just come into existence and a recomputed group are evaluated. The
+                        // statement is sound here for the reason a source row's needs more care: a
+                        // group row's cells are a function of its members alone, and `groupStep` has
+                        // just recomputed exactly the groups whose members moved. No window runs over
+                        // the group table.
                         //
-                        // Phase 208 — `Slot` and `Prior` are the group table's, not the source's:
-                        // the group cache is keyed by group token and bounded by the GROUP count (a
-                        // grouping is what makes that true), so it stays a map and needs no
-                        // positional slot. `Slot` is the group's index for the walk's own use and
-                        // `Prior` is `-1`, which is what says "this frame's cache is not read
-                        // positionally". `Stable` is the group table's own statement — the group's
-                        // cells moved iff its aggregates were recomputed — and is sound here for
-                        // the reason a source row's is not: a group row's cells are a function of
-                        // its members alone, and `groupStep` has just recomputed exactly the groups
-                        // whose members moved. No window runs over the group table.
-                        let groupWorks =
-                            List.mapi2
-                                (fun i token row ->
-                                    let affected =
-                                        Set.contains token g.RecomputedGroups
-                                        || not (Map.containsKey token priorGroupCells)
+                        // Its cache is the prior evaluation's `TailCells`, indexed by that
+                        // evaluation's group slots (`GroupOrder`), and a separate cache from
+                        // `StepCells` because the two are keyed by different token vocabularies — a
+                        // source row's `Delta.refToken` and a group's `DataFrame.rowTokenString` —
+                        // which must not meet in one keyspace. The step index restarts at 0;
+                        // `evaluated` does not, because the footprint counts row evaluations on ONE
+                        // scale across the pipeline.
+                        let priorOrder = priorGroups.Order
 
-                                    { Token = token
-                                      Slot = i
-                                      Prior = -1
-                                      Stable = not affected
-                                      Alive = true
-                                      Cells = row
-                                      Cached = Map.tryFind token priorGroupCells |> Option.defaultValue []
-                                      Fresh = [] })
-                                g.Order
-                                g.Rows
+                        let priorTail =
+                            prior |> Option.map (fun s -> s.TailCells) |> Option.defaultValue [||]
+
+                        let priorAt = System.Collections.Generic.Dictionary<string, int>(priorOrder.Length)
+
+                        for j in 0 .. priorOrder.Length - 1 do
+                            priorAt[priorOrder[j]] <- j
+
+                        let groupOrder = g.Order
+                        let groupCount = groupOrder.Length
+
+                        let groupPrior =
+                            groupOrder
+                            |> Array.map (fun token ->
+                                match priorAt.TryGetValue token with
+                                | true, j -> j
+                                | _ -> -1)
+
+                        let groupRows =
+                            { Tokens = groupOrder
+                              Prior = groupPrior
+                              Stable = Array.init groupCount (fun gi -> groupPrior[gi] >= 0 && not g.RecomputedAt[gi])
+                              PriorSteps = priorTail
+                              PriorCount = priorOrder.Length
+                              Steps = ResizeArray<Cell[]>() }
+
+                        let rowArrays = List.toArray g.Rows
+                        let width = List.length g.Cols
+
+                        let groupFrame =
+                            { Cols = g.Cols
+                              Data = Array.init width (fun c -> rowArrays |> Array.map (fun row -> row[c]))
+                              Origins = Array.create width None
+                              Order = Array.init groupCount id }
 
                         // The SAME walk as the prefix, one frame along: its invariant is that the
                         // frame it holds is the frame the reference evaluator would have handed the
-                        // next step, and `groupStep` mirrors `evalGroupBy` exactly, so the group
-                        // table it is handed here is the reference's group table. `evalIdx` restarts
-                        // at 0 because `GroupCells` is its own cache; `evaluated` does not, because
-                        // the footprint counts row evaluations on ONE scale across the pipeline.
-                        walk resolve env priorCaches g.Cols groupWorks 0 evaluated caches tail
-                        |> Result.map (fun (outCols, tws, evaluated', caches') ->
-                            let groupCells =
-                                (Map.empty, tws) ||> List.fold (fun m w -> Map.add w.Token (List.rev w.Fresh) m)
-
-                            let outRows = tws |> List.filter (fun w -> w.Alive) |> List.map (fun w -> w.Cells)
-
-                            finish outCols outRows groupCells evaluated' caches')))
+                        // next step, and `groupStep` mirrors `evalGroupBy` exactly.
+                        walk resolve env priorCaches groupRows groupFrame evaluated caches tail
+                        |> Result.map (fun (tailFrame, evaluated', caches') ->
+                            finish
+                                (tableOfFrame tailFrame groupCount)
+                                tailFrame.Order.Length
+                                (groupRows.Steps.ToArray())
+                                evaluated'
+                                caches')))
 
     /// Evaluate through the reference evaluator and wrap the answer in a cache-free state — the
     /// always-available degradation. A refresh over such a state re-primes, so a fall-back costs a
@@ -1948,17 +2097,18 @@ module Incremental =
               Prepared = prepared
               Output = Prepared.ready output
               Tokens = [||]
-              RowCells = [||]
+              StepCells = [||]
               RowGroups = [||]
-              GroupMembers = Map.empty
-              GroupAggs = Map.empty
+              GroupMembers = [||]
+              GroupAggs = [||]
               SortOrders = Map.empty
               JoinKeys = Map.empty
               Footprint =
                 { SourceRows = Table.rowCount source
                   ResultRows = Table.rowCount output
                   Recompute = recompute evaluated }
-              GroupCells = Map.empty
+              GroupOrder = [||]
+              TailCells = [||]
               ChunkedOutput = None
               ChunksTouched = None })
 
@@ -2272,17 +2422,18 @@ module Incremental =
           Prepared = Some prepared
           Output = out.Source
           Tokens = [||]
-          RowCells = [||]
+          StepCells = [||]
           RowGroups = [||]
-          GroupMembers = Map.empty
-          GroupAggs = Map.empty
+          GroupMembers = [||]
+          GroupAggs = [||]
           SortOrders = Map.empty
           JoinKeys = Map.empty
           Footprint =
             { SourceRows = prepared.Count
               ResultRows = out.Count
               Recompute = recompute }
-          GroupCells = Map.empty
+          GroupOrder = [||]
+          TailCells = [||]
           ChunkedOutput = Some out
           ChunksTouched = Some touched }
 
