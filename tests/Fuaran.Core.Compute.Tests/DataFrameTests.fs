@@ -1979,3 +1979,520 @@ let slotTests =
               match (Incremental.plan [ Transform.sortBy [ "a", Asc ] ]).Strategy with
               | ReferenceOnly r -> failtestf "a literal sort must still be planned, got a fall-back: %A" r
               | _ -> () ]
+
+// ---- Phase 264: the join, pivot and window answers the pre-phase evaluator gave ----
+//
+// Every expected table below was captured by RUNNING the nested-loop join, the per-pair pivot scan
+// and the list-skipping rolling window at the commit before Phase 264 replaced them, over fixtures
+// built to discriminate: duplicate keys on both sides, a null key on each side, an `Int` key that
+// `cellEq` matches to a `Float` one (and `0` to `-0.0`), `NaN` keys (which `cellEq` matches to each
+// other), right rows no left row matches, a pivot with a null on-value, a repeated index key and two
+// numerically-equal on-values, and rolling windows whose leading run is null and whose sums are
+// order-sensitive in the last bit. Equality with THOSE answers is the acceptance, not a reading of
+// the semantics.
+
+/// A cell rendered exactly: a float by its round-trip text, so `-0.0`, `NaN` and the last bit of a
+/// sum are visible to the comparison (structural equality on `Float nan` is false, and `%A` rounds).
+let private exactCell (c: Cell) : string =
+    match c with
+    | Float f -> "f:" + f.ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+    | other -> sprintf "%A" other
+
+let private expectOracle (label: string) (expected: (string * Cell list) list) (actual: Table) =
+    Expect.equal
+        (actual.Columns |> List.map (fun c -> c.Name, c.Cells |> List.map exactCell))
+        (expected |> List.map (fun (n, cs) -> n, cs |> List.map exactCell))
+        label
+
+let private strs xs = xs |> List.map Str
+
+let private joinLeft =
+    tbl
+        [ "k", IntType; "lv", StringType ]
+        [ col "k" IntType [ Int 1; Int 2; Null; Int 1; Int 4; Int 0 ]
+          col "lv" StringType (strs [ "a"; "b"; "c"; "d"; "e"; "f" ]) ]
+
+let private joinRight =
+    tbl
+        [ "k", FloatType; "rv", StringType ]
+        [ col "k" FloatType [ Float 1.0; Float 3.0; Null; Float 1.0; Float 2.0; Float -0.0 ]
+          col "rv" StringType (strs [ "x"; "y"; "z"; "w"; "v"; "u" ]) ]
+
+let private join2Left =
+    tbl
+        [ "s", StringType; "f", FloatType; "lv", StringType ]
+        [ col "s" StringType [ Str "p"; Str "p"; Str "q"; Null; Str "p" ]
+          col "f" FloatType [ Float nan; Float 1.5; Float nan; Float 1.5; Float infinity ]
+          col "lv" StringType (strs [ "a"; "b"; "c"; "d"; "e" ]) ]
+
+let private join2Right =
+    tbl
+        [ "s", StringType; "f", FloatType; "rv", StringType ]
+        [ col "s" StringType [ Str "p"; Str "q"; Str "p"; Str "p"; Str "p" ]
+          col "f" FloatType [ Float nan; Float nan; Float 1.5; Float 2.0; Float infinity ]
+          col "rv" StringType (strs [ "x"; "y"; "z"; "w"; "v" ]) ]
+
+let private pivotSrc =
+    tbl
+        [ "g", StringType; "h", IntType; "o", StringType; "v", FloatType ]
+        [ col "g" StringType [ Str "a"; Str "b"; Str "a"; Str "a"; Str "b"; Null; Str "a"; Str "b" ]
+          col "h" IntType [ Int 1; Int 1; Int 1; Int 2; Int 1; Int 1; Int 1; Int 1 ]
+          col "o" StringType [ Str "x"; Str "y"; Str "x"; Null; Str "x"; Str "y"; Str "z"; Str "y" ]
+          col
+              "v"
+              FloatType
+              [ Float 0.1
+                Float 2.0
+                Float 0.2
+                Float 4.0
+                Float 5.0
+                Float 6.0
+                Float 0.3
+                Null ] ]
+
+let private pivotNumericOn =
+    tbl
+        [ "g", StringType; "o", FloatType; "v", IntType ]
+        [ col "g" StringType [ Str "a"; Str "a"; Str "b"; Str "a"; Str "b"; Str "a" ]
+          col "o" FloatType [ Int 1; Float 1.0; Int 2; Float nan; Float nan; Null ]
+          col "v" IntType [ Int 10; Int 20; Int 30; Int 40; Int 50; Int 60 ] ]
+
+let private windowSrc =
+    tbl
+        [ "p", StringType; "ord", IntType; "v", FloatType ]
+        [ col "p" StringType (strs [ "A"; "B"; "A"; "A"; "B"; "A"; "B"; "A"; "A"; "A" ])
+          col "ord" IntType ([ 5; 1; 3; 1; 2; 2; 3; 4; 6; 7 ] |> List.map Int)
+          col
+              "v"
+              FloatType
+              [ Float 1e16
+                Null
+                Float 0.1
+                Null
+                Int 3
+                Null
+                Float 0.7
+                Float 0.2
+                Float -1e16
+                Float 1.0 ] ]
+
+/// The pre-phase answer for `join1 Inner`.
+let private oJoin1Inner: (string * Cell list) list =
+    [ "k", [ Int 1; Int 1; Int 2; Int 1; Int 1; Int 0 ]
+      "lv", [ Str "a"; Str "a"; Str "b"; Str "d"; Str "d"; Str "f" ]
+      "k_right", [ Float 1.0; Float 1.0; Float 2.0; Float 1.0; Float 1.0; Float -0.0 ]
+      "rv", [ Str "x"; Str "w"; Str "v"; Str "x"; Str "w"; Str "u" ] ]
+
+/// The pre-phase answer for `join1 Left`.
+let private oJoin1Left: (string * Cell list) list =
+    [ "k", [ Int 1; Int 1; Int 2; Null; Int 1; Int 1; Int 4; Int 0 ]
+      "lv", [ Str "a"; Str "a"; Str "b"; Str "c"; Str "d"; Str "d"; Str "e"; Str "f" ]
+      "k_right",
+      [ Float 1.0
+        Float 1.0
+        Float 2.0
+        Null
+        Float 1.0
+        Float 1.0
+        Null
+        Float -0.0 ]
+      "rv", [ Str "x"; Str "w"; Str "v"; Null; Str "x"; Str "w"; Null; Str "u" ] ]
+
+/// The pre-phase answer for `join1 Right`.
+let private oJoin1Right: (string * Cell list) list =
+    [ "k", [ Int 1; Int 1; Int 2; Int 1; Int 1; Int 0; Null; Null ]
+      "lv", [ Str "a"; Str "a"; Str "b"; Str "d"; Str "d"; Str "f"; Null; Null ]
+      "k_right",
+      [ Float 1.0
+        Float 1.0
+        Float 2.0
+        Float 1.0
+        Float 1.0
+        Float -0.0
+        Float 3.0
+        Null ]
+      "rv", [ Str "x"; Str "w"; Str "v"; Str "x"; Str "w"; Str "u"; Str "y"; Str "z" ] ]
+
+/// The pre-phase answer for `join1 Outer`.
+let private oJoin1Outer: (string * Cell list) list =
+    [ "k", [ Int 1; Int 1; Int 2; Null; Int 1; Int 1; Int 4; Int 0; Null; Null ]
+      "lv",
+      [ Str "a"
+        Str "a"
+        Str "b"
+        Str "c"
+        Str "d"
+        Str "d"
+        Str "e"
+        Str "f"
+        Null
+        Null ]
+      "k_right",
+      [ Float 1.0
+        Float 1.0
+        Float 2.0
+        Null
+        Float 1.0
+        Float 1.0
+        Null
+        Float -0.0
+        Float 3.0
+        Null ]
+      "rv",
+      [ Str "x"
+        Str "w"
+        Str "v"
+        Null
+        Str "x"
+        Str "w"
+        Null
+        Str "u"
+        Str "y"
+        Str "z" ] ]
+
+/// The pre-phase answer for `join1 Semi`.
+let private oJoin1Semi: (string * Cell list) list =
+    [ "k", [ Int 1; Int 2; Int 1; Int 0 ]
+      "lv", [ Str "a"; Str "b"; Str "d"; Str "f" ] ]
+
+/// The pre-phase answer for `join1 Anti`.
+let private oJoin1Anti: (string * Cell list) list =
+    [ "k", [ Null; Int 4 ]; "lv", [ Str "c"; Str "e" ] ]
+
+/// The pre-phase answer for `join2 Inner`.
+let private oJoin2Inner: (string * Cell list) list =
+    [ "s", [ Str "p"; Str "p"; Str "q"; Str "p" ]
+      "f", [ Float nan; Float 1.5; Float nan; Float infinity ]
+      "lv", [ Str "a"; Str "b"; Str "c"; Str "e" ]
+      "s_right", [ Str "p"; Str "p"; Str "q"; Str "p" ]
+      "f_right", [ Float nan; Float 1.5; Float nan; Float infinity ]
+      "rv", [ Str "x"; Str "z"; Str "y"; Str "v" ] ]
+
+/// The pre-phase answer for `join2 Left`.
+let private oJoin2Left: (string * Cell list) list =
+    [ "s", [ Str "p"; Str "p"; Str "q"; Null; Str "p" ]
+      "f", [ Float nan; Float 1.5; Float nan; Float 1.5; Float infinity ]
+      "lv", [ Str "a"; Str "b"; Str "c"; Str "d"; Str "e" ]
+      "s_right", [ Str "p"; Str "p"; Str "q"; Null; Str "p" ]
+      "f_right", [ Float nan; Float 1.5; Float nan; Null; Float infinity ]
+      "rv", [ Str "x"; Str "z"; Str "y"; Null; Str "v" ] ]
+
+/// The pre-phase answer for `join2 Right`.
+let private oJoin2Right: (string * Cell list) list =
+    [ "s", [ Str "p"; Str "p"; Str "q"; Str "p"; Null ]
+      "f", [ Float nan; Float 1.5; Float nan; Float infinity; Null ]
+      "lv", [ Str "a"; Str "b"; Str "c"; Str "e"; Null ]
+      "s_right", [ Str "p"; Str "p"; Str "q"; Str "p"; Str "p" ]
+      "f_right", [ Float nan; Float 1.5; Float nan; Float infinity; Float 2.0 ]
+      "rv", [ Str "x"; Str "z"; Str "y"; Str "v"; Str "w" ] ]
+
+/// The pre-phase answer for `join2 Outer`.
+let private oJoin2Outer: (string * Cell list) list =
+    [ "s", [ Str "p"; Str "p"; Str "q"; Null; Str "p"; Null ]
+      "f", [ Float nan; Float 1.5; Float nan; Float 1.5; Float infinity; Null ]
+      "lv", [ Str "a"; Str "b"; Str "c"; Str "d"; Str "e"; Null ]
+      "s_right", [ Str "p"; Str "p"; Str "q"; Null; Str "p"; Str "p" ]
+      "f_right", [ Float nan; Float 1.5; Float nan; Null; Float infinity; Float 2.0 ]
+      "rv", [ Str "x"; Str "z"; Str "y"; Null; Str "v"; Str "w" ] ]
+
+/// The pre-phase answer for `join2 Semi`.
+let private oJoin2Semi: (string * Cell list) list =
+    [ "s", [ Str "p"; Str "p"; Str "q"; Str "p" ]
+      "f", [ Float nan; Float 1.5; Float nan; Float infinity ]
+      "lv", [ Str "a"; Str "b"; Str "c"; Str "e" ] ]
+
+/// The pre-phase answer for `join2 Anti`.
+let private oJoin2Anti: (string * Cell list) list =
+    [ "s", [ Null ]; "f", [ Float 1.5 ]; "lv", [ Str "d" ] ]
+
+/// The pre-phase answer for `pivot2 Sum`.
+let private oPivot2Sum: (string * Cell list) list =
+    [ "g", [ Str "a"; Str "b"; Str "a"; Null ]
+      "h", [ Int 1; Int 1; Int 2; Int 1 ]
+      "x", [ Float 0.30000000000000004; Float 5.0; Null; Null ]
+      "y", [ Null; Float 2.0; Null; Float 6.0 ]
+      "z", [ Float 0.3; Null; Null; Null ] ]
+
+/// The pre-phase answer for `pivot2 Mean`.
+let private oPivot2Mean: (string * Cell list) list =
+    [ "g", [ Str "a"; Str "b"; Str "a"; Null ]
+      "h", [ Int 1; Int 1; Int 2; Int 1 ]
+      "x", [ Float 0.15000000000000002; Float 5.0; Null; Null ]
+      "y", [ Null; Float 2.0; Null; Float 6.0 ]
+      "z", [ Float 0.3; Null; Null; Null ] ]
+
+/// The pre-phase answer for `pivot2 First`.
+let private oPivot2First: (string * Cell list) list =
+    [ "g", [ Str "a"; Str "b"; Str "a"; Null ]
+      "h", [ Int 1; Int 1; Int 2; Int 1 ]
+      "x", [ Float 0.1; Float 5.0; Null; Null ]
+      "y", [ Null; Float 2.0; Null; Float 6.0 ]
+      "z", [ Float 0.3; Null; Null; Null ] ]
+
+/// The pre-phase answer for `pivot2 Last`.
+let private oPivot2Last: (string * Cell list) list =
+    [ "g", [ Str "a"; Str "b"; Str "a"; Null ]
+      "h", [ Int 1; Int 1; Int 2; Int 1 ]
+      "x", [ Float 0.2; Float 5.0; Null; Null ]
+      "y", [ Null; Null; Null; Float 6.0 ]
+      "z", [ Float 0.3; Null; Null; Null ] ]
+
+/// The pre-phase answer for `pivot2 Count`.
+let private oPivot2Count: (string * Cell list) list =
+    [ "g", [ Str "a"; Str "b"; Str "a"; Null ]
+      "h", [ Int 1; Int 1; Int 2; Int 1 ]
+      "x", [ Int 2; Int 1; Int 0; Int 0 ]
+      "y", [ Int 0; Int 1; Int 0; Int 1 ]
+      "z", [ Int 1; Int 0; Int 0; Int 0 ] ]
+
+/// The pre-phase answer for `pivot2 Min`.
+let private oPivot2Min: (string * Cell list) list =
+    [ "g", [ Str "a"; Str "b"; Str "a"; Null ]
+      "h", [ Int 1; Int 1; Int 2; Int 1 ]
+      "x", [ Float 0.1; Float 5.0; Null; Null ]
+      "y", [ Null; Float 2.0; Null; Float 6.0 ]
+      "z", [ Float 0.3; Null; Null; Null ] ]
+
+/// The pre-phase answer for `pivot1 Sum`.
+let private oPivot1Sum: (string * Cell list) list =
+    [ "g", [ Str "a"; Str "b"; Null ]
+      "x", [ Float 0.30000000000000004; Float 5.0; Null ]
+      "y", [ Null; Float 2.0; Float 6.0 ]
+      "z", [ Float 0.3; Null; Null ] ]
+
+/// The pre-phase answer for `pivotNum Sum`.
+let private oPivotnumSum: (string * Cell list) list =
+    [ "g", [ Str "a"; Str "b" ]
+      "\"NaN\"", [ Int 40; Int 50 ]
+      "\"NaN\"", [ Int 40; Int 50 ]
+      "1", [ Int 30; Null ]
+      "1", [ Int 30; Null ]
+      "2", [ Null; Int 30 ] ]
+
+/// The pre-phase answer for `window RollingSum`.
+let private oWindowRollingsum: (string * Cell list) list =
+    [ "p",
+      [ Str "A"
+        Str "B"
+        Str "A"
+        Str "A"
+        Str "B"
+        Str "A"
+        Str "B"
+        Str "A"
+        Str "A"
+        Str "A" ]
+      "ord", [ Int 5; Int 1; Int 3; Int 1; Int 2; Int 2; Int 3; Int 4; Int 6; Int 7 ]
+      "v",
+      [ Float 10000000000000000.0
+        Null
+        Float 0.1
+        Null
+        Int 3
+        Null
+        Float 0.7
+        Float 0.2
+        Float -10000000000000000.0
+        Float 1.0 ]
+      "w",
+      [ Float 10000000000000000.0
+        Null
+        Float 0.1
+        Null
+        Float 3.0
+        Null
+        Float 3.7
+        Float 0.30000000000000004
+        Float 0.0
+        Float 1.0 ] ]
+
+/// The pre-phase answer for `window RollingMean`.
+let private oWindowRollingmean: (string * Cell list) list =
+    [ "p",
+      [ Str "A"
+        Str "B"
+        Str "A"
+        Str "A"
+        Str "B"
+        Str "A"
+        Str "B"
+        Str "A"
+        Str "A"
+        Str "A" ]
+      "ord", [ Int 5; Int 1; Int 3; Int 1; Int 2; Int 2; Int 3; Int 4; Int 6; Int 7 ]
+      "v",
+      [ Float 10000000000000000.0
+        Null
+        Float 0.1
+        Null
+        Int 3
+        Null
+        Float 0.7
+        Float 0.2
+        Float -10000000000000000.0
+        Float 1.0 ]
+      "w",
+      [ Float 3333333333333333.5
+        Null
+        Float 0.1
+        Null
+        Float 3.0
+        Null
+        Float 1.85
+        Float 0.15000000000000002
+        Float 0.0
+        Float 0.3333333333333333 ] ]
+
+/// The pre-phase answer for `window RowNumber`.
+let private oWindowRownumber: (string * Cell list) list =
+    [ "p",
+      [ Str "A"
+        Str "B"
+        Str "A"
+        Str "A"
+        Str "B"
+        Str "A"
+        Str "B"
+        Str "A"
+        Str "A"
+        Str "A" ]
+      "ord", [ Int 5; Int 1; Int 3; Int 1; Int 2; Int 2; Int 3; Int 4; Int 6; Int 7 ]
+      "v",
+      [ Float 10000000000000000.0
+        Null
+        Float 0.1
+        Null
+        Int 3
+        Null
+        Float 0.7
+        Float 0.2
+        Float -10000000000000000.0
+        Float 1.0 ]
+      "w", [ Int 5; Int 1; Int 3; Int 1; Int 2; Int 2; Int 3; Int 4; Int 6; Int 7 ] ]
+
+/// The pre-phase answer for `window CumulSum`.
+let private oWindowCumulsum: (string * Cell list) list =
+    [ "p",
+      [ Str "A"
+        Str "B"
+        Str "A"
+        Str "A"
+        Str "B"
+        Str "A"
+        Str "B"
+        Str "A"
+        Str "A"
+        Str "A" ]
+      "ord", [ Int 5; Int 1; Int 3; Int 1; Int 2; Int 2; Int 3; Int 4; Int 6; Int 7 ]
+      "v",
+      [ Float 10000000000000000.0
+        Null
+        Float 0.1
+        Null
+        Int 3
+        Null
+        Float 0.7
+        Float 0.2
+        Float -10000000000000000.0
+        Float 1.0 ]
+      "w",
+      [ Float 10000000000000000.0
+        Float 0.0
+        Float 0.1
+        Float 0.0
+        Float 3.0
+        Float 0.0
+        Float 3.7
+        Float 0.30000000000000004
+        Float 0.0
+        Float 1.0 ] ]
+
+[<Tests>]
+let phase264OracleTests =
+    testList
+        "DataFrame.Phase264Oracle"
+        [ testCase "Phase 264 — the hash join reproduces the nested loop: duplicates, nulls, Int/Float and -0.0 keys"
+          <| fun _ ->
+              let join how =
+                  DataFrame.evalPipeline [ Join(Embedded joinRight, [ "k", "k" ], how) ] joinLeft
+                  |> okTable
+
+              expectOracle "inner" oJoin1Inner (join Inner)
+              expectOracle "left" oJoin1Left (join Left)
+
+              expectOracle
+                  "right: unmatched right rows after every left-side row, in right order"
+                  oJoin1Right
+                  (join Right)
+
+              expectOracle "outer" oJoin1Outer (join Outer)
+              expectOracle "semi" oJoin1Semi (join Semi)
+              expectOracle "anti" oJoin1Anti (join Anti)
+
+          testCase "Phase 264 — the hash join reproduces the nested loop on a two-column key with NaN and a null"
+          <| fun _ ->
+              let join how =
+                  DataFrame.evalPipeline [ Join(Embedded join2Right, [ "s", "s"; "f", "f" ], how) ] join2Left
+                  |> okTable
+
+              expectOracle "inner" oJoin2Inner (join Inner)
+              expectOracle "left" oJoin2Left (join Left)
+              expectOracle "right" oJoin2Right (join Right)
+              expectOracle "outer" oJoin2Outer (join Outer)
+              expectOracle "semi" oJoin2Semi (join Semi)
+              expectOracle "anti" oJoin2Anti (join Anti)
+
+          testCase "Phase 264 — the one-pass pivot reproduces the per-pair scan: null on-value, repeated index key"
+          <| fun _ ->
+              let pivot index agg =
+                  DataFrame.evalPipeline
+                      [ Pivot
+                            { Index = index
+                              On = "o"
+                              Values = "v"
+                              Agg = agg } ]
+                      pivotSrc
+                  |> okTable
+
+              expectOracle "sum, cells aggregated in frame order" oPivot2Sum (pivot [ "g"; "h" ] Sum)
+              expectOracle "mean" oPivot2Mean (pivot [ "g"; "h" ] Mean)
+              expectOracle "first" oPivot2First (pivot [ "g"; "h" ] First)
+              expectOracle "last" oPivot2Last (pivot [ "g"; "h" ] Last)
+              expectOracle "count: an absent pair aggregates the empty list" oPivot2Count (pivot [ "g"; "h" ] Count)
+              expectOracle "min" oPivot2Min (pivot [ "g"; "h" ] Min)
+              expectOracle "one index column" oPivot1Sum (pivot [ "g" ] Sum)
+
+          testCase "Phase 264 — the one-pass pivot keeps the cellEq matching: Int 1 and Float 1.0, NaN and NaN"
+          <| fun _ ->
+              DataFrame.evalPipeline
+                  [ Pivot
+                        { Index = [ "g" ]
+                          On = "o"
+                          Values = "v"
+                          Agg = Sum } ]
+                  pivotNumericOn
+              |> okTable
+              |> expectOracle "numerically-equal on-values each collect every cellEq match" oPivotnumSum
+
+          testCase "Phase 264 — rolling windows and the scatter restore reproduce the pre-phase bits"
+          <| fun _ ->
+              let window fn =
+                  DataFrame.evalPipeline
+                      [ Window
+                            { PartitionBy = [ "p" ]
+                              OrderBy = [ "ord", Asc ]
+                              Fn = fn
+                              Of = "v"
+                              As = "w" } ]
+                      windowSrc
+                  |> okTable
+
+              expectOracle "rolling sum: a leading null run, order-sensitive sums" oWindowRollingsum (window RollingSum)
+              expectOracle "rolling mean" oWindowRollingmean (window RollingMean)
+
+              expectOracle
+                  "row number: input order restored across interleaved partitions"
+                  oWindowRownumber
+                  (window RowNumber)
+
+              expectOracle "cumulative sum is untouched" oWindowCumulsum (window CumulSum) ]

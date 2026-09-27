@@ -1635,6 +1635,39 @@ module DataFrame =
         List.length leftKeys = List.length rightKeys
         && List.forall2 cellEq leftKeys rightKeys
 
+    /// One key cell as a hash token that two cells share EXACTLY when `cellEq` holds between them, or
+    /// `None` for `Null`, which `cellEq` matches to nothing (itself included). `cellToken` alone is
+    /// not that token: it type-tags `Int 1` and `Float 1.0` apart, while `cellEq` compares the numeric
+    /// family as floats and matches them. So an `Int` is tokenised through its float value — the
+    /// `Float` branch of `cellToken`, which also puts `-0.0` with `0.0` and every `NaN` in one bucket,
+    /// both exactly `compareCells`' answer. Every other family compares by ordinal or boolean identity
+    /// within its own tag, which is what `cellToken` already encodes (Phase 264).
+    let private cellEqToken (c: Cell) : string option =
+        match c with
+        | Null -> None
+        | Int i -> Some(cellToken (Float(float i)))
+        | other -> Some(cellToken other)
+
+    /// A join key's hash token over its projected key cells — `cellEqToken` per cell, length-prefixed
+    /// so the concatenation is injective — or `None` when any key cell is `Null`. Two keys share a
+    /// token exactly when `joinKeyEq` holds between them.
+    let private joinKeyToken (keys: Cell[]) : string option =
+        let tokens = keys |> Array.map cellEqToken
+
+        if tokens |> Array.exists Option.isNone then
+            None
+        else
+            Some(tokens |> Array.map (Option.get >> lengthPrefixed) |> String.concat "")
+
+    /// Append `v` to the list `d` holds under `k`, creating it on first sight — arrival order kept.
+    let private addTo (d: System.Collections.Generic.Dictionary<string, ResizeArray<'v>>) (k: string) (v: 'v) =
+        match d.TryGetValue k with
+        | true, vs -> vs.Add v
+        | _ ->
+            let vs = ResizeArray()
+            vs.Add v
+            d[k] <- vs
+
     let private evalJoin
         (f: Frame)
         (right: Frame)
@@ -1644,8 +1677,31 @@ module DataFrame =
         match joinKeyIdx f.Cols right.Cols on with
         | Error e -> Error e
         | Ok(li, ri) ->
-            let keyMatch (lr: Cell[]) (rr: Cell[]) =
-                joinKeyEq (li |> List.map (fun i -> lr[i])) (ri |> List.map (fun j -> rr[j]))
+            let keyOf (idx: int list) (row: Cell[]) =
+                joinKeyToken (idx |> List.map (fun i -> row[i]) |> List.toArray)
+
+            // Phase 264 — a hash join. The right rows are indexed ONCE by key token, each token
+            // holding its right row indices in arrival order; a right row with a null key is left
+            // out, since `cellEq` matches it to nothing. Probing per left row, in left order, and
+            // emitting that row's matches in right arrival order is exactly the order the nested
+            // loop produced, which filtered the whole right frame per left row: O(n × m) key
+            // comparisons, each allocating two key lists.
+            let rightRows = List.toArray right.Rows
+            let index = System.Collections.Generic.Dictionary<string, ResizeArray<int>>()
+
+            rightRows
+            |> Array.iteri (fun j rr ->
+                match keyOf ri rr with
+                | Some k -> addTo index k j
+                | None -> ())
+
+            let matchesOf (lr: Cell[]) : ResizeArray<int> option =
+                match keyOf li lr with
+                | Some k ->
+                    match index.TryGetValue k with
+                    | true, js -> Some js
+                    | _ -> None
+                | None -> None
 
             // The combining joins (Inner / Left / Right / Outer) — left cols ++ right cols.
             let combiningJoin () =
@@ -1662,24 +1718,31 @@ module DataFrame =
 
                 let combine (lr: Cell[]) (rr: Cell[]) = Array.append lr rr
 
+                // A right row is matched when some left row's probe emitted it — `keyMatch` is
+                // symmetric, so that is exactly the reverse scan's "some left row matches it".
+                let matched = Array.create rightRows.Length false
+
                 let leftSide =
                     f.Rows
                     |> List.collect (fun lr ->
-                        let matches = right.Rows |> List.filter (keyMatch lr)
+                        match matchesOf lr, how with
+                        | None, (Left | Outer) -> [ combine lr rightNulls ]
+                        | None, (Inner | Right) -> []
+                        | Some js, _ ->
+                            List.init js.Count (fun n ->
+                                let j = js[n]
+                                matched[j] <- true
+                                combine lr rightRows[j]))
 
-                        match matches, how with
-                        | [], (Left | Outer) -> [ combine lr rightNulls ]
-                        | [], (Inner | Right) -> []
-                        | ms, _ -> ms |> List.map (combine lr))
-
-                // right-only unmatched rows (for Right / Outer)
+                // right-only unmatched rows (for Right / Outer), after every left-side row, in right
+                // order — read from the matched flags rather than a second pass the other way.
                 let rightOnly =
                     match how with
                     | Right
                     | Outer ->
-                        right.Rows
-                        |> List.filter (fun rr -> not (f.Rows |> List.exists (fun lr -> keyMatch lr rr)))
-                        |> List.map (fun rr -> combine leftNulls rr)
+                        [ for j in 0 .. rightRows.Length - 1 do
+                              if not matched[j] then
+                                  combine leftNulls rightRows[j] ]
                     | _ -> []
 
                 { Cols = outCols
@@ -1690,11 +1753,9 @@ module DataFrame =
             // input order and multiplicity preserved (no fan-out, no right columns to project away).
             | Semi
             | Anti ->
-                let matched lr = right.Rows |> List.exists (keyMatch lr)
-
                 Ok
                     { Cols = f.Cols
-                      Rows = f.Rows |> List.filter (fun lr -> matched lr = (how = Semi)) }
+                      Rows = f.Rows |> List.filter (fun lr -> (matchesOf lr).IsSome = (how = Semi)) }
             | Inner
             | Left
             | Right
@@ -1833,16 +1894,30 @@ module DataFrame =
                             |> List.map Float
                         | RollingMean
                         | RollingSum ->
-                            // trailing window of up to 3 (current + 2 preceding), present values only
-                            vals
-                            |> List.mapi (fun i _ ->
-                                let lo = max 0 (i - 2)
-                                let window = vals |> List.skip lo |> List.truncate (i - lo + 1)
-                                let nums = window |> List.choose asNum
+                            // trailing window of up to 3 (current + 2 preceding), present values only.
+                            //
+                            // Phase 264 — the values are read by index from an array; `List.skip lo`
+                            // walked the partition from its head for every row, quadratic in the
+                            // partition size. Each window is still summed FRESH, left to right from
+                            // zero, exactly as `List.sum` did: a running add/subtract accumulator
+                            // would be linear too, but it changes the last bit of a float sum, and
+                            // therefore the wire bytes. Three reads per row is already linear.
+                            let arr = List.toArray vals
 
-                                if List.isEmpty nums then Null
-                                elif spec.Fn = RollingSum then Float(List.sum nums)
-                                else Float(List.sum nums / float (List.length nums)))
+                            List.init arr.Length (fun i ->
+                                let mutable sum = 0.0
+                                let mutable count = 0
+
+                                for j in max 0 (i - 2) .. i do
+                                    match asNum arr[j] with
+                                    | Some x ->
+                                        sum <- sum + x
+                                        count <- count + 1
+                                    | None -> ()
+
+                                if count = 0 then Null
+                                elif spec.Fn = RollingSum then Float sum
+                                else Float(sum / float count))
                         // Phase 101 — SQL RANK(): a tied block shares its LOWEST rank and the next
                         // distinct order key skips by the block's size (1, 1, 3 — where the dense
                         // `Rank`/`DenseRank` above give 1, 1, 2).
@@ -1888,8 +1963,14 @@ module DataFrame =
                             vals |> List.scan pick Null |> List.tail
 
                     List.map2 (fun (i, _) out -> i, out) ordered outs)
-                |> List.sortBy fst
-                |> List.map snd
+
+            // Restore input order by scattering each output to its row's tag (Phase 264) — every tag
+            // in 0 .. n-1 occurs exactly once, so this is the `List.sortBy fst` it replaces, in one
+            // pass.
+            let restored = Array.create (List.length f.Rows) Null
+
+            for i, out in computed do
+                restored[i] <- out
 
             let ty =
                 match spec.Fn with
@@ -1909,7 +1990,7 @@ module DataFrame =
 
             Ok
                 { Cols = f.Cols @ [ spec.As, ty ]
-                  Rows = List.map2 (fun row out -> Array.append row [| out |]) f.Rows computed }
+                  Rows = f.Rows |> List.mapi (fun i row -> Array.append row [| restored[i] |]) }
 
     let private evalPivot (f: Frame) (spec: PivotSpec) : Result<Frame, EvalError> =
         let need name =
@@ -1940,43 +2021,66 @@ module DataFrame =
                         |> List.distinct
                         |> List.sortBy cellString
 
-                    // index groups, first-appearance order; dedup on the canonical token (Phase 41) but
-                    // carry the original index-key cells for the output rows
-                    let order =
-                        f.Rows
-                        |> List.fold
-                            (fun (ord, seen: Set<string list>) row ->
-                                let k = indexKey row
-                                let kt = groupKey k
+                    // Phase 264 — ONE pass groups the value cells by (index group, pivot column). The
+                    // per-pair filter it replaces scanned the whole frame for every (group, on-value)
+                    // pair, re-minting the index token per row inside the filter: O(g × v × n).
+                    //
+                    // An on-value's column set, keyed by the `cellEq` token: a row lands in EVERY
+                    // column whose on-value `cellEq` matches its own, which is what the filter
+                    // selected. Usually that is one column; two on-values `List.distinct` keeps apart
+                    // but `cellEq` equates (`Int 1` and `Float 1.0`, or two `NaN`s) are two columns,
+                    // and each collects every row either matches.
+                    let onCount = List.length onValues
+                    let columnsOf = System.Collections.Generic.Dictionary<string, ResizeArray<int>>()
 
-                                if Set.contains kt seen then
-                                    ord, seen
-                                else
-                                    // Prepended, turned below (Phase 206): appending re-walked the
-                                    // index-key list for every DISTINCT key, so a pivot over a
-                                    // high-cardinality index was quadratic in that cardinality.
-                                    (k, kt) :: ord, Set.add kt seen)
-                            ([], Set.empty)
-                        |> fst
-                        |> List.rev
+                    onValues
+                    |> List.iteri (fun c ov ->
+                        match cellEqToken ov with
+                        | Some t -> addTo columnsOf t c
+                        | None -> ())
+
+                    // Index groups in first-appearance order, deduplicated on the canonical token
+                    // (Phase 41; `rowTokenString` is injective, so it partitions exactly as the token
+                    // list did), carrying the original index-key cells for the output rows. Each
+                    // group's cells arrive in frame order, which is the order the filter aggregated.
+                    let groupOf = System.Collections.Generic.Dictionary<string, int>()
+                    let groups = ResizeArray<Cell list * ResizeArray<Cell>[]>()
+
+                    for row in f.Rows do
+                        let k = indexKey row
+                        let kt = rowTokenString k
+
+                        let g =
+                            match groupOf.TryGetValue kt with
+                            | true, g -> g
+                            | _ ->
+                                let g = groups.Count
+                                groupOf[kt] <- g
+                                groups.Add((k, Array.init onCount (fun _ -> ResizeArray())))
+                                g
+
+                        match cellEqToken row[onIdx] with
+                        | Some t ->
+                            match columnsOf.TryGetValue t with
+                            | true, cs ->
+                                let _, cells = groups[g]
+
+                                for c in cs do
+                                    cells[c].Add(row[valIdx])
+                            | _ -> ()
+                        | None -> ()
 
                     let idxCols = spec.Index |> List.map (fun n -> n, colType f.Cols n |> Option.get)
 
                     let pivotCols =
                         onValues |> List.map (fun ov -> cellString ov, aggType spec.Agg valType)
 
-                    order
-                    |> traverseResult (fun (k, kt) ->
-                        let cellsFor ov =
-                            let matching =
-                                f.Rows
-                                |> List.filter (fun row -> groupKey (indexKey row) = kt && cellEq (row[onIdx]) ov)
-                                |> List.map (fun row -> row[valIdx])
-
-                            aggCells spec.Agg valType matching
-
-                        onValues
-                        |> traverseResult cellsFor
+                    // An absent pair aggregates the EMPTY list, exactly as a filter that matched no
+                    // row did — `Null` or `Int 0` by the aggregate's own rule.
+                    List.ofSeq groups
+                    |> traverseResult (fun (k, cells) ->
+                        List.init onCount id
+                        |> traverseResult (fun c -> cells[c] |> List.ofSeq |> aggCells spec.Agg valType)
                         |> Result.map (fun vals -> List.toArray (k @ vals)))
                     |> Result.map (fun rows ->
                         { Cols = idxCols @ pivotCols

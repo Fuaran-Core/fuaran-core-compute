@@ -294,6 +294,28 @@ let private scaling (label: string) (f: Table -> unit) : float * float * float =
     printfn "  [scaling] %-28s %7.2f ms @ %d -> %8.2f ms @ %d   ratio %6.2f" label a small b large r
     a, b, r
 
+/// `scaling` over caller-built inputs at two caller-chosen sizes (Phase 264), returning the ratio. The
+/// join and pivot cases build their own tables, and the shape they refuse was quadratic at sizes a
+/// test could not afford to reach with `build`'s twenty thousand rows: the pre-phase join at that
+/// size is four hundred million key comparisons.
+let private scalingAt (label: string) (lo: int) (hi: int) (mk: int -> (unit -> unit)) : float =
+    let fLo = mk lo
+    let fHi = mk hi
+    // The LARGE size first: its runs promote the evaluator's code to the JIT's optimised tier before
+    // the small leg is timed. Timed small-first, the small leg ran partly unoptimised and its inflated
+    // figure deflated the ratio — the pre-phase join scored 126 that way rather than a quadratic's
+    // four hundred, too close to the bound to discriminate.
+    let b = bestMs 5 fHi
+    let a = bestMs 5 fLo
+    let r = if a <= 0.0 then infinity else b / a
+    printfn "  [scaling] %-28s %7.2f ms @ %d -> %8.2f ms @ %d   ratio %6.2f" label a lo b hi r
+    r
+
+/// The join and pivot cases' two sizes: the same twenty-fold step as `small` to `large`, so the same
+/// `ratioBound` applies, at a quarter of the rows.
+let private joinSmall = 250
+let private joinLarge = 5_000
+
 // `testSequenced`, not `testList` alone: every case here measures the clock, and Expecto runs a
 // suite in parallel by default, so an unsequenced timing family measures whatever else the runner
 // happened to schedule beside it. That is not merely noise — it is noise that grows with the
@@ -655,4 +677,74 @@ let scalingTests =
               Expect.isLessThan
                   r
                   2.0
-                  "naming the last of two hundred columns must not cost several times naming the first" ]
+                  "naming the last of two hundred columns must not cost several times naming the first"
+
+          // ================= Phase 264 — the hash join and the one-pass pivot =================
+
+          testCase "a join is linear in the row count"
+          <| fun _ ->
+              // Two tables of `n` rows on one integer key, overlapping by half, joined Outer: half the
+              // left rows match one right row each, the other half match none, and half the right
+              // rows are unmatched — so both the probe and the right-only pass are exercised and the
+              // output stays linear (one and a half times `n` rows). The nested loop the hash join
+              // replaced filtered the whole right frame per left row and then scanned the whole left
+              // frame per right row: quadratic, whatever the output size.
+              //
+              // Measured in a Release build, the pre-264 evaluator against this one: before, 9.14 ms
+              // at 250 rows and 3806 ms at 5,000, ratio 416.5 (red, a quadratic's signature); after,
+              // 0.40 ms and 9.7 ms, ratio 24.5.
+              let side (n: int) (offset: int) (payload: string) : Table =
+                  { Schema = [ "k", IntType; payload, IntType ]
+                    Columns =
+                      [ Column.create "k" IntType [ for i in 0 .. n - 1 -> Int(i + offset) ]
+                        Column.create payload IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+
+              let joinOf (n: int) =
+                  let left = side n 0 "l"
+                  let pipeline = [ Join(Embedded(side n (n / 2) "r"), [ "k", "k" ], Outer) ]
+                  fun () -> DataFrame.evalPipeline pipeline left |> ok
+
+              Expect.equal
+                  (Table.rowCount (joinOf joinSmall ()))
+                  (joinSmall + joinSmall / 2)
+                  "matched, left-only and right-only rows all present"
+
+              let r =
+                  scalingAt "DataFrame join (outer)" joinSmall joinLarge (fun n -> joinOf n >> ignore)
+
+              Expect.isLessThan r ratioBound "a join must not compare every left row with every right row"
+
+          testCase "a pivot is linear in the row count"
+          <| fun _ ->
+              // `n` rows over `n / 10` index groups and ten on-values: the group count grows with
+              // the table, which is exactly where the per-pair scan the one-pass pivot replaced was
+              // quadratic — it filtered all `n` rows for each of the (n / 10) x 10 pairs.
+              //
+              // Measured in a Release build, the pre-264 evaluator against this one: before, 2.00 ms
+              // at 250 rows and 768 ms at 5,000, ratio 384.8 (red); after, 0.26 ms and 4.4 ms, ratio
+              // about 17.
+              let src (n: int) : Table =
+                  { Schema = [ "g", IntType; "o", StringType; "v", IntType ]
+                    Columns =
+                      [ Column.create "g" IntType [ for i in 0 .. n - 1 -> Int(i % (n / 10)) ]
+                        Column.create "o" StringType [ for i in 0 .. n - 1 -> Str("o" + string (i % 10)) ]
+                        Column.create "v" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+
+              let pivotOf (n: int) =
+                  let t = src n
+
+                  let pipeline =
+                      [ Pivot
+                            { Index = [ "g" ]
+                              On = "o"
+                              Values = "v"
+                              Agg = Sum } ]
+
+                  fun () -> DataFrame.evalPipeline pipeline t |> ok
+
+              Expect.equal (Table.rowCount (pivotOf joinSmall ())) (joinSmall / 10) "one row per index group"
+
+              let r =
+                  scalingAt "DataFrame pivot" joinSmall joinLarge (fun n -> pivotOf n >> ignore)
+
+              Expect.isLessThan r ratioBound "a pivot must not scan the frame once per (group, on-value) pair" ]
