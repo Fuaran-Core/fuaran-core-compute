@@ -168,6 +168,30 @@ Requirements: the .NET SDK pinned in [`global.json`](global.json).
 The substrate packages restore from nuget.org; `nuget.config` also names a local folder feed so a
 maintainer's fresh pack of the substrate shadows the released package at the same version.
 
+## Benchmarks
+
+`benchmarks/Fuaran.Core.Compute.Benchmarks` is a BenchmarkDotNet harness over a fixed corpus: a
+spreadsheet-shaped sheet (two nodes over an `orders` table, each beside a hand-written
+arrays-and-loops arm that is the yardstick), the three `Scaling` pipelines, and a join, a
+high-cardinality group-by, a pivot, a window and a two-key sort. Allocations are measured on every
+benchmark. The verify gate builds it and never runs it; run it by hand, in Release:
+
+```powershell
+dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks -- --check        # assert the corpus, time nothing
+dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks -- --filter '*'   # every benchmark
+dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks -- --filter '*Sheet*'
+```
+
+The node leg times the same corpus through the Fable-compiled sources. It needs `node` and a Fable
+toolchain, which this repository does not carry: point `-FableFrom` at a directory whose dotnet tool
+manifest provides `fable`.
+
+```powershell
+pwsh benchmarks/Fuaran.Core.Compute.Benchmarks/Node/run-node.ps1 -FableFrom <dir> [-Runs 10]
+```
+
+Recorded runs are under [`benchmarks/results/`](benchmarks/results/), one file per date and machine.
+
 ## Proofs
 
 `proofs/ColumnOps.fst` models the columnar op algebra — `apply` / `canApply` / `invert` /

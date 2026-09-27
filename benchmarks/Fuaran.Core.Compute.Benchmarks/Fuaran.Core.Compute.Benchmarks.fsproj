@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The compute strand's benchmark harness (Phase 262): BenchmarkDotNet over a fixed corpus, with
+    MemoryDiagnoser on every benchmark. A member of Fuaran.Core.Compute.slnx so the verify gate's
+    solution build compiles it; the gate never RUNS it. Run it by hand, in Release only: the
+    README's "Benchmarks" section has the commands.
+
+    Not packable and never shipped: BenchmarkDotNet is a harness-only dependency, so none of the
+    packages under src/ gains it. That is also why no fable-exclusions.json entry exists for this
+    project: the Fable surface is derived from the PACKABLE projects under src/, which this is not.
+
+    The node leg lives in Node/ beside this file and compiles Corpus.fs from here, so both hosts
+    time one corpus. Node/ is excluded from this project's default items.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- BenchmarkDotNet refuses a non-optimised build, and a figure from one would be misleading. -->
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Node/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Corpus.fs" />
+    <Compile Include="Benchmarks.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>
