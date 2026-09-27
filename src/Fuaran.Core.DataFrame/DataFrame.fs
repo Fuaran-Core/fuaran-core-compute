@@ -756,13 +756,26 @@ module DataFrame =
 
     /// Map a `Result`-returning function over a list, short-circuiting on the first `Error` (the
     /// standard traverse — threads `EvalError` out of per-element work without an exception).
+    ///
+    /// A loop, not a recursion through `Result.bind` (Phase 265): that recursion is a tail call only
+    /// where the compiler emits one, so a build without tail calls, and every JavaScript host, spent a
+    /// stack frame per element — and a group-by over twenty thousand distinct keys traverses twenty
+    /// thousand groups. Same order, same first error.
     let private traverseResult (f: 'a -> Result<'b, EvalError>) (xs: 'a list) : Result<'b list, EvalError> =
-        let rec go acc =
-            function
-            | [] -> Ok(List.rev acc)
-            | x :: rest -> f x |> Result.bind (fun y -> go (y :: acc) rest)
+        let mutable acc = []
+        let mutable rest = xs
+        let mutable failed = None
 
-        go [] xs
+        while Option.isNone failed && not (List.isEmpty rest) do
+            match f (List.head rest) with
+            | Ok y ->
+                acc <- y :: acc
+                rest <- List.tail rest
+            | Error e -> failed <- Some e
+
+        match failed with
+        | Some e -> Error e
+        | None -> Ok(List.rev acc)
 
     // ---- pinned scalar semantics ----
 
@@ -828,11 +841,126 @@ module DataFrame =
     let internal rowTokenStringOfArray (cells: Cell[]) : string =
         cells |> Array.map (cellToken >> lengthPrefixed) |> String.concat ""
 
-    let private groupKey (cells: Cell list) : string list = rowToken cells
+    // ---- the two cell equalities the evaluator partitions by (Phase 265) ----
+    //
+    // Two relations over cells sit side by side here, and they are DIFFERENT on purpose:
+    //
+    //   * TOKEN equality — `CellKey` below: `cellToken` string equality without the string. Type-tagged
+    //     (`Int 1` and `Float 1.0` are two values), `-0.0` equal to `0.0`, one `NaN` bucket, and `Null` a
+    //     value equal to itself. `GroupBy`, `Distinct`, `Intersect`/`Except`, `Pivot`'s index groups,
+    //     `Window`'s partitions and the seam's maintained grouping partition on it.
+    //   * `cellEq` equality — `cellEqToken` below it: a join key's and a pivot on-value's match. The
+    //     numeric family compares as floats (`Int 1` MATCHES `Float 1.0`), and a `Null` matches nothing,
+    //     itself included.
+    //
+    // A verb that swapped one for the other would still type-check and would silently merge or split
+    // groups, so each call site names the relation it means.
 
-    /// `groupKey` over a whole row held as an array — what `Distinct` and the set ops key on.
-    let private rowGroupKey (row: Cell[]) : string list =
-        row |> Array.map cellToken |> List.ofArray
+    /// Token equality over cells as an equality and a hash with no string minted (Phase 265). Two cells
+    /// are `equals` EXACTLY when their `cellToken`s are the same string, and `equals` cells `hashCell` alike,
+    /// so a hash table keyed through `row` partitions exactly as a map keyed on the token did.
+    /// The float case is the one to read: a finite float's token is its canonical round-trip layout,
+    /// which is injective except that `-0.0` and `0.0` share `"0"` — exactly IEEE equality — while the
+    /// three non-finite tokens are fixed, so `NaN` is equal to `NaN` here although IEEE says it is not.
+    /// A law in the suite holds `equals a b = (cellToken a = cellToken b)` over cells drawn to reach
+    /// every case.
+    ///
+    /// Internal: a hash table's comparer is how the evaluator partitions, not a surface a consumer
+    /// composes; `cellToken` / `rowTokenString` stay the public statement of the rule, and the delta
+    /// layer still keys row identity on them.
+    module internal CellKey =
+
+        /// Token equality between two cells — `cellToken a = cellToken b`, computed without the tokens.
+        let equals (a: Cell) (b: Cell) : bool =
+            match a, b with
+            | Int x, Int y -> x = y
+            | Float x, Float y -> x = y || (System.Double.IsNaN x && System.Double.IsNaN y)
+            | Bool x, Bool y -> x = y
+            | Str x, Str y
+            | Date x, Date y
+            | Timestamp x, Timestamp y -> System.String.Equals(x, y)
+            | Null, Null -> true
+            | _ -> false
+
+        /// A hash that agrees with `equals`: the tag is mixed in, `-0.0` hashes as `0.0` and every `NaN`
+        /// alike. Mixed with bitwise operators only, so the value stays a 32-bit integer on every host.
+        let hashCell (c: Cell) : int =
+            let mix (tag: int) (h: int) = (tag <<< 24) ^^^ h
+
+            match c with
+            | Int i -> mix 1 (hash i)
+            | Float f ->
+                if System.Double.IsNaN f then mix 2 0x7ff80000
+                elif f = 0.0 then mix 2 0
+                else mix 2 (hash f)
+            | Bool b -> mix 3 (if b then 1 else 0)
+            | Str s -> mix 4 (hash s)
+            | Date s -> mix 5 (hash s)
+            | Timestamp s -> mix 6 (hash s)
+            | Null -> mix 7 0
+
+        /// Token equality over rows of cells, cell by cell: two rows are equal exactly when their
+        /// `rowTokenString`s are (that string is length-prefixed per cell and so injective: equal
+        /// strings mean equal lengths and equal tokens position by position).
+        let row: System.Collections.Generic.IEqualityComparer<Cell[]> =
+            { new System.Collections.Generic.IEqualityComparer<Cell[]> with
+                member _.Equals(a, b) =
+                    if a.Length <> b.Length then
+                        false
+                    else
+                        let mutable same = true
+                        let mutable i = 0
+
+                        while same && i < a.Length do
+                            same <- equals a[i] b[i]
+                            i <- i + 1
+
+                        same
+
+                member _.GetHashCode cells =
+                    let mutable h = cells.Length
+
+                    for c in cells do
+                        h <- ((h <<< 5) ^^^ (h >>> 27)) ^^^ hashCell c
+
+                    h }
+
+        /// A fresh slot table: token-equal rows of cells to a slot number.
+        let slots () : System.Collections.Generic.Dictionary<Cell[], int> =
+            System.Collections.Generic.Dictionary<Cell[], int>(row)
+
+        /// Look `probe`'s cells up in `table`, opening slot `next` on a miss; returns the slot and
+        /// whether this call opened it. Every caller passes the count of the groups it has opened,
+        /// so slots number from 0 in first-appearance order, the order every caller emits in. The
+        /// count is the CALLER's and never `table.Count`: the Fable runtime's dictionary counts its
+        /// entries by walking every bucket, so reading it once per opened group made a group-by
+        /// over ten thousand keys quadratic under JavaScript (measured: 190 ms against 9 ms for a
+        /// `Distinct` over the same rows). The probe is a scratch buffer the caller refills per
+        /// row, so a row that finds its slot allocates nothing; only a row that OPENS a slot stores
+        /// a copy, which the table then owns — the caller may overwrite the probe freely.
+        let inline slotOf
+            (table: System.Collections.Generic.Dictionary<Cell[], int>)
+            (probe: Cell[])
+            (next: int)
+            : int * bool =
+            match table.TryGetValue probe with
+            | true, s -> s, false
+            | _ ->
+                table[Array.copy probe] <- next
+                next, true
+
+    /// One key cell as a hash token that two cells share EXACTLY when `cellEq` holds between them, or
+    /// `None` for `Null`, which `cellEq` matches to nothing (itself included). NOT `CellKey`'s relation
+    /// (see above): `cellToken` type-tags `Int 1` and `Float 1.0` apart, while `cellEq` compares the
+    /// numeric family as floats and matches them. So an `Int` is tokenised through its float value —
+    /// the `Float` branch of `cellToken`, which also puts `-0.0` with `0.0` and every `NaN` in one
+    /// bucket, both exactly `compareCells`' answer. Every other family compares by ordinal or boolean
+    /// identity within its own tag, which is what `cellToken` already encodes (Phase 264).
+    let private cellEqToken (c: Cell) : string option =
+        match c with
+        | Null -> None
+        | Int i -> Some(cellToken (Float(float i)))
+        | other -> Some(cellToken other)
 
     /// A total comparison between two *present, same-family* cells. `None` ⇒ incomparable (a type
     /// error). Numerics compare as float; strings/date/timestamp by ordinal (ISO sorts
@@ -1526,38 +1654,49 @@ module DataFrame =
                 { Cols = f.Cols @ [ name, ty ]
                   Rows = List.map2 (fun row c -> Array.append row [| c |]) f.Rows newCells })
 
+    /// One column of a group's member rows, in member order, as the cell list an aggregate reads —
+    /// built from the back, so it is one pass and one cons per member.
+    let private columnOf (members: ResizeArray<Cell[]>) (ci: int) : Cell list =
+        let mutable acc = []
+
+        for j in members.Count - 1 .. -1 .. 0 do
+            acc <- members[j][ci] :: acc
+
+        acc
+
     let private evalGroupBy (f: Frame) (keys: string list) (aggs: Agg list) : Result<Frame, EvalError> =
         let keyIdx = keys |> List.map (fun k -> colIndex f.Cols k, k)
 
         match keyIdx |> List.tryPick (fun (i, k) -> if Option.isNone i then Some k else None) with
         | Some missing -> Error(UnknownColumn(missing, available f.Cols))
         | None ->
-            let idxs = keyIdx |> List.map (fun (i, _) -> Option.get i)
+            let idxs = keyIdx |> List.map (fun (i, _) -> Option.get i) |> List.toArray
 
-            let keyOf (row: Cell[]) = idxs |> List.map (fun i -> row[i])
-
-            // group, preserving first-appearance order of keys; key the map on the canonical token
-            // (Phase 41) so float keys group host-identically, but carry the original key cells for output
+            // Group, preserving first-appearance order of keys, by TOKEN equality (`CellKey`; Phase 41's
+            // canonical token, so float keys group host-identically), carrying the first row's key
+            // cells for the output.
             //
-            // Both accumulators are built in REVERSE and turned once at the end (Phase 206).
-            // `rows @ [ row ]` re-walks a group for every member it gains, and `order @ [ kt ]`
-            // re-walks the key list for every new key — so this fold was quadratic in the group
-            // size AND, on a high-cardinality grouping, quadratic in the row count. Prepending is
-            // O(1) and the two reversals are one further pass each. Same order, same groups.
-            let orderRev, groupsRev =
-                f.Rows
-                |> List.fold
-                    (fun (order, map: Map<string list, Cell list * Cell[] list>) row ->
-                        let k = keyOf row
-                        let kt = groupKey k
+            // Phase 265 — a hash table from the key cells to a slot, and one growable member list per
+            // slot, all local to this step. The persistent map it replaces was keyed on the token LIST,
+            // so every row minted two strings per key cell and every insertion copied a tree path
+            // compared by walking string lists. Slots open in first-appearance order and members are
+            // appended in frame order, so the groups and their order are the ones the map produced.
+            let slots = CellKey.slots ()
+            let probe: Cell[] = Array.zeroCreate idxs.Length
+            let groupKeys = ResizeArray<Cell[]>()
+            let groupRows = ResizeArray<ResizeArray<Cell[]>>()
 
-                        match Map.tryFind kt map with
-                        | Some(k0, rows) -> order, Map.add kt (k0, row :: rows) map
-                        | None -> kt :: order, Map.add kt (k, [ row ]) map)
-                    ([], Map.empty)
+            for row in f.Rows do
+                for j in 0 .. idxs.Length - 1 do
+                    probe[j] <- row[idxs[j]]
 
-            let order = List.rev orderRev
-            let groups = groupsRev |> Map.map (fun _ (k, rows) -> k, List.rev rows)
+                match CellKey.slotOf slots probe groupKeys.Count with
+                | g, false -> groupRows[g].Add row
+                | _, true ->
+                    groupKeys.Add(Array.copy probe)
+                    let members = ResizeArray<Cell[]>()
+                    members.Add row
+                    groupRows.Add members
 
             // resolve each agg's source column + type
             let resolveAgg (a: Agg) =
@@ -1575,35 +1714,53 @@ module DataFrame =
                 let keyCols = keys |> List.map (fun k -> k, colType f.Cols k |> Option.get)
                 let aggCols = resolvedAggs |> List.map (fun (a, ty, _) -> a.Name, aggType a.Fn ty)
 
-                order
-                |> traverseResult (fun kt ->
-                    let k, grp = Map.find kt groups
+                // One output row per group, in slot order, written straight into its array: the key
+                // cells, then each aggregate in declaration order. The first error — in group order,
+                // then aggregate order, exactly as a traverse over groups of a traverse over
+                // aggregates reports it — stops the loop.
+                let aggArr = List.toArray resolvedAggs
+                let nk = idxs.Length
+                let rows = ResizeArray<Cell[]>(groupKeys.Count)
+                let mutable failed = None
+                let mutable g = 0
 
-                    resolvedAggs
-                    |> traverseResult (fun (a, ty, ci) -> aggCells a.Fn ty (grp |> List.map (fun r -> r[ci])))
-                    |> Result.map (fun aggVals -> List.toArray (k @ aggVals)))
-                |> Result.map (fun rows ->
-                    { Cols = keyCols @ aggCols
-                      Rows = rows }))
+                while Option.isNone failed && g < groupKeys.Count do
+                    let out: Cell[] = Array.zeroCreate (nk + aggArr.Length)
+                    Array.blit groupKeys[g] 0 out 0 nk
+                    let mutable j = 0
+
+                    while Option.isNone failed && j < aggArr.Length do
+                        let a, ty, ci = aggArr[j]
+
+                        match aggCells a.Fn ty (columnOf groupRows[g] ci) with
+                        | Ok c -> out[nk + j] <- c
+                        | Error e -> failed <- Some e
+
+                        j <- j + 1
+
+                    rows.Add out
+                    g <- g + 1
+
+                match failed with
+                | Some e -> Error e
+                | None ->
+                    Ok
+                        { Cols = keyCols @ aggCols
+                          Rows = List.ofSeq rows })
 
     let private evalSort (f: Frame) (by: (string * SortDir) list) : Frame =
         { f with
             Rows = f.Rows |> List.sortWith (compareResolved (resolveSortKeys f.Cols by)) }
 
     let private evalDistinct (f: Frame) : Frame =
-        // dedup on the canonical token (Phase 41) so float-bearing rows dedup host-identically
-        let rec go (seen: Set<string list>) acc =
-            function
-            | [] -> List.rev acc
-            | row :: rest ->
-                let kt = rowGroupKey row
+        // Dedup by TOKEN equality over the whole row (`CellKey`; Phase 41's canonical token, so
+        // float-bearing rows dedup host-identically), keeping each row's first appearance. Phase 265: a
+        // hash set local to the step, keyed on the row array itself, replaces a persistent set of token
+        // lists — no string is minted and no row is copied.
+        let seen = System.Collections.Generic.HashSet<Cell[]>(CellKey.row)
 
-                if Set.contains kt seen then
-                    go seen acc rest
-                else
-                    go (Set.add kt seen) (row :: acc) rest
-
-        { f with Rows = go Set.empty [] f.Rows }
+        { f with
+            Rows = f.Rows |> List.filter (fun row -> seen.Add row) }
 
     let private evalLimit (f: Frame) (n: int) (offset: int) : Frame =
         let skipped = f.Rows |> List.skip (min (max 0 offset) (List.length f.Rows))
@@ -1634,19 +1791,6 @@ module DataFrame =
     let private joinKeyEq (leftKeys: Cell list) (rightKeys: Cell list) : bool =
         List.length leftKeys = List.length rightKeys
         && List.forall2 cellEq leftKeys rightKeys
-
-    /// One key cell as a hash token that two cells share EXACTLY when `cellEq` holds between them, or
-    /// `None` for `Null`, which `cellEq` matches to nothing (itself included). `cellToken` alone is
-    /// not that token: it type-tags `Int 1` and `Float 1.0` apart, while `cellEq` compares the numeric
-    /// family as floats and matches them. So an `Int` is tokenised through its float value — the
-    /// `Float` branch of `cellToken`, which also puts `-0.0` with `0.0` and every `NaN` in one bucket,
-    /// both exactly `compareCells`' answer. Every other family compares by ordinal or boolean identity
-    /// within its own tag, which is what `cellToken` already encodes (Phase 264).
-    let private cellEqToken (c: Cell) : string option =
-        match c with
-        | Null -> None
-        | Int i -> Some(cellToken (Float(float i)))
-        | other -> Some(cellToken other)
 
     /// A join key's hash token over its projected key cells — `cellEqToken` per cell, length-prefixed
     /// so the concatenation is injective — or `None` when any key cell is `Null`. Two keys share a
@@ -1775,13 +1919,15 @@ module DataFrame =
         if available f.Cols <> available other.Cols then
             Error(JoinError(verb + " requires matching column names"))
         else
-            let rightKeys = other.Rows |> List.map rowGroupKey |> Set.ofList
+            // TOKEN equality over whole rows (`CellKey`), in a hash set local to the step (Phase 265).
+            let rightRows = System.Collections.Generic.HashSet<Cell[]>(CellKey.row)
+
+            for row in other.Rows do
+                rightRows.Add row |> ignore
 
             Ok
                 { f with
-                    Rows =
-                        f.Rows
-                        |> List.filter (fun row -> Set.contains (rowGroupKey row) rightKeys = keepPresent) }
+                    Rows = f.Rows |> List.filter (fun row -> rightRows.Contains row = keepPresent) }
 
     /// Does the window function read the `Of` column at all? The positional/ranking family
     /// (`RowNumber` / the three ranks / `NTile`) is computed entirely from the ORDER key, so its
@@ -1807,37 +1953,35 @@ module DataFrame =
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available f.Cols))
         | _ ->
-            let partIdx = spec.PartitionBy |> List.choose (colIndex f.Cols)
-
-            let partKey (row: Cell[]) = partIdx |> List.map (fun i -> row[i])
+            let partIdx = spec.PartitionBy |> List.choose (colIndex f.Cols) |> List.toArray
 
             // The ORDER keys resolved once for the step (Phase 263), not once per comparison.
             let orderKeys = resolveSortKeys f.Cols spec.OrderBy
 
-            // tag each row with its original position so we can restore input order after windowing
-            let tagged = f.Rows |> List.mapi (fun i row -> i, row)
+            // Partition by TOKEN equality over the partition cells (`CellKey`; Phase 41's canonical
+            // token, so float partition keys group host-identically), each row tagged with its
+            // original position so input order is restored after windowing; the partition cells are
+            // not needed for output. Phase 265: a hash table to a slot and one growable member list
+            // per slot, local to the step, in place of a persistent map over token lists. Partitions
+            // are visited in first-appearance order where the map visited them in token order; every
+            // output is scattered back to its row's tag below, so the visiting order reaches nothing.
+            let slots = CellKey.slots ()
+            let probe: Cell[] = Array.zeroCreate partIdx.Length
+            let partitionRows = ResizeArray<ResizeArray<int * Cell[]>>()
 
-            // partition (first-appearance order), then order within partition
-            let partitions =
-                tagged
-                |> List.fold
-                    (fun (order, map: Map<string list, (int * Cell[]) list>) (i, row) ->
-                        // partition on the canonical token (Phase 41) — float partition keys group
-                        // host-identically; the partition cells are not needed for output (rows are
-                        // restored to input order by their tag)
-                        let k = groupKey (partKey row)
+            f.Rows
+            |> List.iteri (fun i row ->
+                for j in 0 .. partIdx.Length - 1 do
+                    probe[j] <- row[partIdx[j]]
 
-                        // Prepended and turned below (Phase 206) — `rs @ [ i, row ]` re-walked the
-                        // partition for every row it gained, which is quadratic in the partition
-                        // size. The order accumulator is discarded here (the map's own key order
-                        // drives the collect), but it is prepended too rather than left as the one
-                        // quadratic in a fold that no longer has any.
-                        match Map.tryFind k map with
-                        | Some rs -> order, Map.add k ((i, row) :: rs) map
-                        | None -> k :: order, Map.add k [ i, row ] map)
-                    ([], Map.empty)
-                |> snd
-                |> Map.map (fun _ rs -> List.rev rs)
+                match CellKey.slotOf slots probe partitionRows.Count with
+                | p, false -> partitionRows[p].Add((i, row))
+                | _, true ->
+                    let members = ResizeArray<int * Cell[]>()
+                    members.Add((i, row))
+                    partitionRows.Add members)
+
+            let partitions = partitionRows |> Seq.map List.ofSeq |> List.ofSeq
 
             let ofIdx = colIndex f.Cols spec.Of
 
@@ -1848,8 +1992,7 @@ module DataFrame =
 
             let computed =
                 partitions
-                |> Map.toList
-                |> List.collect (fun (_, members) ->
+                |> List.collect (fun members ->
                     let ordered =
                         members |> List.sortWith (fun (_, a) (_, b) -> compareResolved orderKeys a b)
 
@@ -2011,7 +2154,7 @@ module DataFrame =
                 |> Result.bind (fun valIdx ->
                     let valType = snd (List.item valIdx f.Cols)
 
-                    let indexKey (row: Cell[]) = idxIdx |> List.map (fun i -> row[i])
+                    let idxArr = List.toArray idxIdx
 
                     // distinct on-values (sorted by canonical string for a deterministic column order)
                     let onValues =
@@ -2039,24 +2182,24 @@ module DataFrame =
                         | Some t -> addTo columnsOf t c
                         | None -> ())
 
-                    // Index groups in first-appearance order, deduplicated on the canonical token
-                    // (Phase 41; `rowTokenString` is injective, so it partitions exactly as the token
-                    // list did), carrying the original index-key cells for the output rows. Each
-                    // group's cells arrive in frame order, which is the order the filter aggregated.
-                    let groupOf = System.Collections.Generic.Dictionary<string, int>()
+                    // Index groups in first-appearance order by TOKEN equality over the index cells
+                    // (`CellKey`; Phase 41's canonical token — NOT the `cellEq` relation the on-values
+                    // match by above), carrying the first row's index-key cells for the output rows.
+                    // Each group's cells arrive in frame order, which is the order the filter
+                    // aggregated. Phase 265: keyed on the cells, so no row token is minted per row.
+                    let groupOf = CellKey.slots ()
+                    let probe: Cell[] = Array.zeroCreate idxArr.Length
                     let groups = ResizeArray<Cell list * ResizeArray<Cell>[]>()
 
                     for row in f.Rows do
-                        let k = indexKey row
-                        let kt = rowTokenString k
+                        for j in 0 .. idxArr.Length - 1 do
+                            probe[j] <- row[idxArr[j]]
 
                         let g =
-                            match groupOf.TryGetValue kt with
-                            | true, g -> g
-                            | _ ->
-                                let g = groups.Count
-                                groupOf[kt] <- g
-                                groups.Add((k, Array.init onCount (fun _ -> ResizeArray())))
+                            match CellKey.slotOf groupOf probe groups.Count with
+                            | g, false -> g
+                            | g, true ->
+                                groups.Add((List.ofArray probe, Array.init onCount (fun _ -> ResizeArray())))
                                 g
 
                         match cellEqToken row[onIdx] with

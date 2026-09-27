@@ -2496,3 +2496,320 @@ let phase264OracleTests =
                   (window RowNumber)
 
               expectOracle "cumulative sum is untouched" oWindowCumulsum (window CumulSum) ]
+
+// ---- Phase 265 — token equality under the partitioning verbs ----
+//
+// `GroupBy`, `Distinct`, `Intersect`/`Except`, `Pivot`'s index groups, `Window`'s partitions and the
+// seam's maintained grouping partition through one internal comparer rather than through minted
+// token strings. The law: two cells land in ONE group exactly when their `cellToken`s are the same
+// string. It is asserted through each verb's public behaviour over a pair of one-cell rows, so it
+// holds the comparer's equality AND its hash — a hash table whose hash split two equal cells would
+// report two groups — and it holds the wiring: a verb keyed on the join's `cellEq` relation instead
+// would merge `Int 1` with `Float 1.0` and split two nulls, and fail here.
+
+/// Cells drawn to reach every case of the token: both zeroes, two `NaN` bit patterns, both
+/// infinities, `Int` against `Float` of equal value, adjacent floats, equal strings under the three
+/// string tags, strings that spell another tag's token, the `int32` extremes, and `Null`.
+let private tokenCasePool: Cell list =
+    [ Int 0
+      Int 1
+      Int -1
+      Int System.Int32.MaxValue
+      Int System.Int32.MinValue
+      Float 0.0
+      Float -0.0
+      Float 1.0
+      Float -1.0
+      Float 0.1
+      Float(0.1 + 0.2)
+      Float 0.3
+      Float nan
+      Float(System.BitConverter.Int64BitsToDouble 0x7ff8000000000001L)
+      Float infinity
+      Float -infinity
+      Float System.Double.Epsilon
+      Float System.Double.MaxValue
+      Float 1.0000000000000002
+      Float 1e16
+      Float(1e16 + 2.0)
+      Float 2147483647.0
+      Bool true
+      Bool false
+      Str ""
+      Str "a"
+      Str "1"
+      Str "i:1"
+      Str "NaN"
+      Str "2026-01-01"
+      Date "2026-01-01"
+      Date "a"
+      Timestamp "2026-01-01"
+      Timestamp "a"
+      Null ]
+
+/// A seeded draw of further cells, crowded into small ranges so that equal tokens recur: integers,
+/// floats that are sometimes integral and sometimes a negative zero, and short strings under all
+/// three string tags.
+let private drawnCells (seed: int) (count: int) : Cell list =
+    let mutable state = uint32 seed
+
+    let next (bound: int) =
+        state <- state * 1664525u + 1013904223u
+        int ((state >>> 8) % uint32 bound)
+
+    [ for _ in 1..count ->
+          match next 7 with
+          | 0 -> Int(next 5 - 2)
+          | 1 -> Float(float (next 5 - 2))
+          | 2 -> Float(float (next 9 - 4) / 4.0)
+          | 3 -> Str(string (char (int 'a' + next 3)))
+          | 4 -> Date(string (char (int 'a' + next 3)))
+          | 5 -> Timestamp(string (char (int 'a' + next 3)))
+          | _ -> if next 2 = 0 then Null else Float -0.0 ]
+
+/// One partition count per verb, for the two-row frame `[a; b]` (or `a` against `b` for the set
+/// operations): 1 when the verb put the two cells together, 2 when it kept them apart.
+let private partitionsBy (a: Cell) (b: Cell) : (string * int) list =
+    let pair: Table =
+        tbl
+            [ "id", StringType; "k", StringType; "o", StringType; "v", IntType ]
+            [ col "id" StringType [ Str "r0"; Str "r1" ]
+              col "k" StringType [ a; b ]
+              col "o" StringType [ Str "x"; Str "x" ]
+              col "v" IntType [ Int 1; Int 2 ] ]
+
+    let one (c: Cell) : Table =
+        tbl [ "k", StringType ] [ col "k" StringType [ c ] ]
+
+    let rows (r: Result<Table, EvalError>) = r |> okTable |> Table.rowCount
+    let countGroups = GroupBy([ "k" ], [ { Name = "n"; Fn = Count; Of = "v" } ])
+
+    let windowTogether =
+        let t =
+            DataFrame.evalPipeline
+                [ Window
+                      { PartitionBy = [ "k" ]
+                        OrderBy = [ "v", Asc ]
+                        Fn = RowNumber
+                        Of = "v"
+                        As = "rn" } ]
+                pair
+            |> okTable
+
+        // the second row numbers 2 exactly when it shares the first row's partition
+        if cellsOf "rn" t = [ Int 1; Int 2 ] then 1 else 2
+
+    let seamGroups =
+        match Incremental.primeOn (RowIdentity.byColumn "id") [ countGroups ] pair with
+        | Ok state -> Table.rowCount (Incremental.result state)
+        | Error e -> failtestf "prime failed: %s" (DataFrame.errorString e)
+
+    [ "GroupBy", rows (DataFrame.evalPipeline [ countGroups ] pair)
+      "Distinct", rows (DataFrame.evalPipeline [ Project [ "k", "k" ]; Distinct ] pair)
+      "Intersect", 2 - rows (DataFrame.evalPipeline [ Intersect(Embedded(one b)) ] (one a))
+      "Except", 1 + rows (DataFrame.evalPipeline [ Except(Embedded(one b)) ] (one a))
+      "Pivot",
+      rows (
+          DataFrame.evalPipeline
+              [ Pivot
+                    { Index = [ "k" ]
+                      On = "o"
+                      Values = "v"
+                      Agg = Sum } ]
+              pair
+      )
+      "Window", windowTogether
+      "Incremental GroupBy", seamGroups ]
+
+[<Tests>]
+let tokenEqualityTests =
+    testList
+        "DataFrame.TokenEquality"
+        [ testCase "the pool reaches every case the law must cover"
+          <| fun _ ->
+              // The pool is the law's teeth; this pins that it still has them: an Int and a Float of
+              // equal value with different tokens, two zeroes with one token, two NaNs with one token,
+              // one string under three tags with three tokens, and a string spelling a token.
+              let tok = DataFrame.cellToken
+              Expect.notEqual (tok (Int 1)) (tok (Float 1.0)) "Int 1 and Float 1.0 are two tokens"
+              Expect.equal (tok (Float 0.0)) (tok (Float -0.0)) "the two zeroes are one token"
+
+              Expect.equal
+                  (tok (Float nan))
+                  (tok (Float(System.BitConverter.Int64BitsToDouble 0x7ff8000000000001L)))
+                  "two NaN bit patterns are one token"
+
+              Expect.equal
+                  (List.distinct [ tok (Str "a"); tok (Date "a"); tok (Timestamp "a") ]
+                   |> List.length)
+                  3
+                  "one string under three tags is three tokens"
+
+              Expect.notEqual (tok (Str "i:1")) (tok (Int 1)) "a string spelling a token is not that token"
+
+          testCase "every partitioning verb puts two cells together exactly when their tokens are equal"
+          <| fun _ ->
+              let pool = tokenCasePool @ drawnCells 265 25
+              let mutable checkedPairs = 0
+              let mutable together = 0
+
+              for a in pool do
+                  for b in pool do
+                      let expected =
+                          if DataFrame.cellToken a = DataFrame.cellToken b then
+                              1
+                          else
+                              2
+
+                      if expected = 1 then
+                          together <- together + 1
+
+                      for verb, got in partitionsBy a b do
+                          if got <> expected then
+                              failtestf
+                                  "%s partitioned %A and %A into %d group(s); their tokens say %d"
+                                  verb
+                                  a
+                                  b
+                                  got
+                                  expected
+
+                      checkedPairs <- checkedPairs + 1
+
+              // vacuity: the pairs that must merge include more than each cell with itself
+              Expect.isGreaterThan together (List.length pool) "some DISTINCT cells share a token"
+              Expect.equal checkedPairs (List.length pool * List.length pool) "every pair was checked"
+
+          testCase "a multi-column key partitions exactly as the row token does"
+          <| fun _ ->
+              // Two key columns, so the comparer's cell-by-cell walk and its combined hash are what
+              // decide; a row whose cells match position by position is one group, and no other.
+              let cells =
+                  drawnCells 2651 24 @ [ Int 1; Float 1.0; Null; Float nan; Str "a"; Date "a" ]
+
+              let n = List.length cells
+              let mutable state = 7u
+
+              let next () =
+                  state <- state * 1664525u + 1013904223u
+                  int ((state >>> 8) % uint32 n)
+
+              for _ in 1..600 do
+                  let a1, a2, b1, b2 = cells[next ()], cells[next ()], cells[next ()], cells[next ()]
+
+                  let expected =
+                      if DataFrame.rowTokenString [ a1; a2 ] = DataFrame.rowTokenString [ b1; b2 ] then
+                          1
+                      else
+                          2
+
+                  let t =
+                      tbl
+                          [ "k1", StringType; "k2", StringType; "v", IntType ]
+                          [ col "k1" StringType [ a1; b1 ]
+                            col "k2" StringType [ a2; b2 ]
+                            col "v" IntType [ Int 1; Int 2 ] ]
+
+                  let grouped =
+                      DataFrame.evalPipeline [ GroupBy([ "k1"; "k2" ], [ { Name = "n"; Fn = Count; Of = "v" } ]) ] t
+                      |> okTable
+                      |> Table.rowCount
+
+                  let distinct =
+                      DataFrame.evalPipeline [ Project [ "k1", "k1"; "k2", "k2" ]; Distinct ] t
+                      |> okTable
+                      |> Table.rowCount
+
+                  Expect.equal grouped expected (sprintf "GroupBy over [%A; %A] and [%A; %A]" a1 a2 b1 b2)
+                  Expect.equal distinct expected (sprintf "Distinct over [%A; %A] and [%A; %A]" a1 a2 b1 b2)
+
+          testCase "the comparer itself: equal exactly when the tokens are, and equal cells hash alike"
+          <| fun _ ->
+              // The verbs above observe the comparer only through a hash table, which never calls
+              // `Equals` on two rows whose hashes differ — so an `Equals` that ignored a cell would
+              // hide behind the hash. This case reads the comparer directly. It is internal to the
+              // package (a hash table's comparer is not a consumer surface), so it is reached by
+              // reflection, and a missing member fails the case rather than skipping it.
+              let flags =
+                  System.Reflection.BindingFlags.Static
+                  ||| System.Reflection.BindingFlags.Public
+                  ||| System.Reflection.BindingFlags.NonPublic
+
+              let cellKey =
+                  match typeof<JoinKind>.Assembly.GetType "Fuaran.Core.DataFrame+CellKey" with
+                  | null -> failtest "the internal CellKey module was not found"
+                  | t -> t
+
+              let memberOf (name: string) =
+                  match cellKey.GetMethod(name, flags) with
+                  | null -> failtestf "CellKey.%s was not found" name
+                  | m -> m
+
+              let equalsM = memberOf "equals"
+              let hashM = memberOf "hashCell"
+
+              let rowComparer =
+                  match cellKey.GetProperty("row", flags) with
+                  | null -> failtest "CellKey.row was not found"
+                  | p -> p.GetValue null :?> System.Collections.Generic.IEqualityComparer<Cell[]>
+
+              let equals (a: Cell) (b: Cell) =
+                  equalsM.Invoke(null, [| box a; box b |]) :?> bool
+
+              let hashOf (c: Cell) = hashM.Invoke(null, [| box c |]) :?> int
+
+              let pool = tokenCasePool @ drawnCells 2652 25
+
+              for a in pool do
+                  for b in pool do
+                      let tokensEqual = DataFrame.cellToken a = DataFrame.cellToken b
+
+                      if equals a b <> tokensEqual then
+                          failtestf "equals %A %A = %b, but the tokens say %b" a b (not tokensEqual) tokensEqual
+
+                      if tokensEqual && hashOf a <> hashOf b then
+                          failtestf "%A and %A are equal but hash apart" a b
+
+              // Rows: every pair over a small cell set, lengths one to three, including rows that
+              // agree on a prefix and differ after it — the case a short-circuiting walk gets wrong.
+              let small =
+                  [ Int 1; Float 1.0; Float -0.0; Float 0.0; Float nan; Null; Str "a"; Date "a" ]
+
+              let rows =
+                  [ for x in small -> [| x |] ]
+                  @ [ for x in small do
+                          for y in small -> [| x; y |] ]
+                  @ [ for y in small -> [| Int 1; Str "a"; y |] ]
+
+              for r1 in rows do
+                  for r2 in rows do
+                      let tokensEqual =
+                          DataFrame.rowTokenString (List.ofArray r1) = DataFrame.rowTokenString (List.ofArray r2)
+
+                      if rowComparer.Equals(r1, r2) <> tokensEqual then
+                          failtestf "row Equals %A %A disagrees with the row tokens (%b)" r1 r2 tokensEqual
+
+                      if tokensEqual && rowComparer.GetHashCode r1 <> rowComparer.GetHashCode r2 then
+                          failtestf "rows %A and %A are equal but hash apart" r1 r2
+
+          testCase "groups come out in first-appearance order with the first row's key cells"
+          <| fun _ ->
+              // -0.0 opens the zero group and 0.0 joins it; the output carries the OPENER's cell.
+              let t =
+                  tbl
+                      [ "k", FloatType; "v", IntType ]
+                      [ col "k" FloatType [ Float -0.0; Float nan; Float 0.0; Float 2.0; Float nan ]
+                        col "v" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ]
+
+              let out =
+                  DataFrame.evalPipeline [ GroupBy([ "k" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ] t
+                  |> okTable
+
+              let keys = cellsOf "k" out |> List.map DataFrame.cellToken
+              Expect.equal keys (List.map DataFrame.cellToken [ Float -0.0; Float nan; Float 2.0 ]) "opener order"
+              Expect.equal (cellsOf "s" out) [ Int 4; Int 7; Int 4 ] "members in frame order"
+
+              // the opener's cell itself, not a canonical representative: its sign survives
+              match cellsOf "k" out with
+              | Float z :: _ -> Expect.isTrue (System.Double.IsNegative z) "the -0.0 that opened the group"
+              | other -> failtestf "unexpected key cells %A" other ]

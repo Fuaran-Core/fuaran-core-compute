@@ -685,13 +685,24 @@ module Incremental =
 
     let private available (cols: Schema) : string list = cols |> List.map fst
 
+    /// A loop rather than a recursion through `Result.bind` (Phase 265), for the reason
+    /// `DataFrame`'s own traverse gives: the maintained grouping traverses one element per group, and
+    /// without tail calls the recursion spent a stack frame on each. Same order, same first error.
     let private traverse (f: 'a -> Result<'b, EvalError>) (xs: 'a list) : Result<'b list, EvalError> =
-        let rec go acc =
-            function
-            | [] -> Ok(List.rev acc)
-            | x :: rest -> f x |> Result.bind (fun y -> go (y :: acc) rest)
+        let mutable acc = []
+        let mutable rest = xs
+        let mutable failed = None
 
-        go [] xs
+        while Option.isNone failed && not (List.isEmpty rest) do
+            match f (List.head rest) with
+            | Ok y ->
+                acc <- y :: acc
+                rest <- List.tail rest
+            | Error e -> failed <- Some e
+
+        match failed with
+        | Some e -> Error e
+        | None -> Ok(List.rev acc)
 
     // The seam's own transposes (Phase 206). These read and wrote the source column-by-column
     // through per-index list access, so the seam inherited the reference evaluator's quadratic even
@@ -1310,7 +1321,7 @@ module Incremental =
         match keyIdx |> List.tryPick (fun (i, k) -> if Option.isNone i then Some k else None) with
         | Some missing -> Error(UnknownColumn(missing, available cols))
         | None ->
-            let idxs = keyIdx |> List.map (fun (i, _) -> Option.get i)
+            let idxs = keyIdx |> List.map (fun (i, _) -> Option.get i) |> List.toArray
 
             let resolveAgg (a: Agg) =
                 match colType cols a.Of with
@@ -1351,16 +1362,51 @@ module Incremental =
                 //
                 // The key cells are needed only by the row that OPENS a group, so they are read
                 // lazily: a carried token that finds its group already open reads no cell at all.
+                //
+                // Phase 265 — a row with NO carried token finds its group by TOKEN equality over its
+                // key cells (`DataFrame.CellKey`, the relation `evalGroupBy` partitions by), and the
+                // group token is minted once per GROUP, by the row that opens it, rather than once per
+                // row: a prime, or a refresh whose rows moved, used to pay a `rowTokenString` for
+                // every such row. So two tables index the same slots — by carried token and by key
+                // cells — and every group is entered in BOTH when it opens, whichever kind of row
+                // opened it. They cannot disagree about a group: a carried token is the token of its
+                // row's key cells (it was minted from them, and a `Stable` row's cells have not
+                // moved), and `CellKey` equality is token equality, which a law in the suite holds.
                 let rowGroups: string[] = Array.zeroCreate rowCount
 
-                let keyCellsOf (row: Cell[]) = idxs |> List.map (fun i -> row[i])
+                let bySlotToken = System.Collections.Generic.Dictionary<string, int>()
+                let bySlotCells = DataFrame.CellKey.slots ()
+                let probe: Cell[] = Array.zeroCreate idxs.Length
 
-                let slotOf = System.Collections.Generic.Dictionary<string, int>()
+                let readKey (row: Cell[]) =
+                    for j in 0 .. idxs.Length - 1 do
+                        probe[j] <- row[idxs[j]]
+
                 let order = ResizeArray<string>()
                 let groupKeys = ResizeArray<Cell list>()
                 let groupRows = ResizeArray<ResizeArray<Cell[]>>()
                 let groupToks = ResizeArray<ResizeArray<string>>()
                 let groupStable = ResizeArray<bool>()
+
+                // Open the next group for `row`, whose key cells are in `probe`, under token `gt`.
+                let openGroup (gt: string) (w: Work) =
+                    bySlotToken[gt] <- order.Count
+                    order.Add gt
+                    groupKeys.Add(List.ofArray probe)
+                    let rows = ResizeArray<Cell[]>()
+                    rows.Add w.Cells
+                    groupRows.Add rows
+                    let toks = ResizeArray<string>()
+                    toks.Add w.Token
+                    groupToks.Add toks
+                    groupStable.Add w.Stable
+
+                let join (gi: int) (w: Work) =
+                    groupRows[gi].Add w.Cells
+                    groupToks[gi].Add w.Token
+
+                    if not w.Stable then
+                        groupStable[gi] <- false
 
                 for w in alive do
                     let row = w.Cells
@@ -1371,57 +1417,96 @@ module Incremental =
                         else
                             null
 
-                    let gt =
-                        if not (isNull carried) then
-                            carried
+                    // The carried token's slot, or -1 (no token carried, or one no group holds yet).
+                    let carriedSlot =
+                        if isNull carried then
+                            -1
                         else
-                            DataFrame.rowTokenString (keyCellsOf row)
+                            match bySlotToken.TryGetValue carried with
+                            | true, gi -> gi
+                            | _ -> -1
 
-                    rowGroups[w.Slot] <- gt
+                    if carriedSlot >= 0 then
+                        rowGroups[w.Slot] <- carried
+                        join carriedSlot w
+                    else
+                        readKey row
 
-                    match slotOf.TryGetValue gt with
-                    | true, gi ->
-                        groupRows[gi].Add row
-                        groupToks[gi].Add w.Token
+                        match DataFrame.CellKey.slotOf bySlotCells probe order.Count with
+                        | gi, false ->
+                            rowGroups[w.Slot] <- order[gi]
+                            join gi w
+                        | _, true ->
+                            // The opener's token: carried when it has one, minted from its cells when not.
+                            let gt =
+                                if isNull carried then
+                                    DataFrame.rowTokenStringOfArray probe
+                                else
+                                    carried
 
-                        if not w.Stable then
-                            groupStable[gi] <- false
-                    | _ ->
-                        slotOf[gt] <- order.Count
-                        order.Add gt
-                        groupKeys.Add(keyCellsOf row)
-                        groupRows.Add(ResizeArray [ row ])
-                        groupToks.Add(ResizeArray [ w.Token ])
-                        groupStable.Add w.Stable
+                            rowGroups[w.Slot] <- gt
+                            openGroup gt w
 
                 let recomputed = ref 0
                 let recomputedGroups = ref Set.empty
 
-                let cellsFor (gt: string) (grp: Cell[] list) (toks: string list) (allStable: bool) =
-                    let reusable =
-                        allStable
-                        && Map.tryFind gt priorMembers = Some toks
-                        && Map.containsKey gt priorAggs
+                // Is a group's member list NOW exactly `prior`, in order? Read off the growable list
+                // (Phase 265), so a reused group builds no second copy of its members: the reuse
+                // test used to compare a freshly built token list with the prior one, and the fresh
+                // list was then kept although it was equal to the list the state already held.
+                let sameMembers (prior: string list) (now: ResizeArray<string>) =
+                    let mutable rest = prior
+                    let mutable i = 0
+                    let mutable same = true
 
-                    if reusable then
-                        Ok(Map.find gt priorAggs)
-                    else
+                    while same && i < now.Count do
+                        match rest with
+                        | t :: tail when System.String.Equals(t, now[i]) ->
+                            rest <- tail
+                            i <- i + 1
+                        | _ -> same <- false
+
+                    same && List.isEmpty rest
+
+                // One aggregate's source cells over a group's members, in member order, built from
+                // the back — only for a group that is recomputed.
+                let columnOf (members: ResizeArray<Cell[]>) (ci: int) : Cell list =
+                    let mutable acc = []
+
+                    for j in members.Count - 1 .. -1 .. 0 do
+                        acc <- members[j][ci] :: acc
+
+                    acc
+
+                // A group's aggregates and the member list the state records for it: reused
+                // (with the prior list itself) when every member is stable, the members are the
+                // prior members in the prior order, and the prior aggregates are cached; recomputed
+                // otherwise. The same three conditions as before Phase 265.
+                let cellsFor (gi: int) =
+                    let gt = order[gi]
+
+                    let priorToks =
+                        if groupStable[gi] then
+                            Map.tryFind gt priorMembers
+                        else
+                            None
+
+                    match priorToks with
+                    | Some toks when sameMembers toks groupToks[gi] && Map.containsKey gt priorAggs ->
+                        Ok(Map.find gt priorAggs, toks)
+                    | _ ->
                         recomputed.Value <- recomputed.Value + 1
                         recomputedGroups.Value <- Set.add gt recomputedGroups.Value
 
                         resolvedAggs
-                        |> traverse (fun (a, ty, ci) ->
-                            DataFrame.aggregateCells a.Fn ty (grp |> List.map (fun r -> r[ci])))
+                        |> traverse (fun (a, ty, ci) -> DataFrame.aggregateCells a.Fn ty (columnOf groupRows[gi] ci))
+                        |> Result.map (fun aggVals -> aggVals, List.ofSeq groupToks[gi])
 
                 List.init order.Count id
                 |> traverse (fun gi ->
-                    let gt = order[gi]
-                    let k = groupKeys[gi]
-                    let grp = List.ofSeq groupRows[gi]
-                    let toks = List.ofSeq groupToks[gi]
-
-                    cellsFor gt grp toks groupStable[gi]
-                    |> Result.map (fun aggVals -> gt, List.toArray (k @ aggVals), aggVals, toks))
+                    cellsFor gi
+                    |> Result.map (fun (aggVals, toks) ->
+                        order[gi], List.toArray (groupKeys[gi] @ aggVals), aggVals, toks))
                 |> Result.map (fun built ->
                     { Cols = keyCols @ aggCols
                       Rows = built |> List.map (fun (_, row, _, _) -> row)

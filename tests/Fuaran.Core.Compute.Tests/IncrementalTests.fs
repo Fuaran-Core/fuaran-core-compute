@@ -1184,4 +1184,59 @@ let tests =
                   ok (Incremental.refresh before Map.empty idw pipeline state quiet baseTable)
 
               Expect.equal (Incremental.footprint same).Recompute (RowsRecomputed 0) "an unmoved relation costs nothing"
-              Expect.equal (Incremental.result same) (Incremental.result state) "and answers exactly as before" ]
+              Expect.equal (Incremental.result same) (Incremental.result state) "and answers exactly as before"
+
+          // ================= Phase 265 — the maintained grouping's two lookups =================
+
+          testCase "a row found by its key cells joins the group a carried token opened"
+          <| fun _ ->
+              // The maintained grouping finds a row's group by the token it CARRIED from the prior
+              // evaluation when its cells have not moved, and by its KEY CELLS when they have (or
+              // when it is new). Both must land in one group table: here every group is opened by a
+              // stable row carrying its token, and a later row that must be looked up by its cells
+              // belongs to it under token equality — `0.0` to the group `-0.0` opened, a second NaN
+              // bit pattern to the NaN group. A grouping that kept the two lookups apart would open
+              // those groups twice, and the answer would carry five rows where the reference has
+              // three.
+              let floats (rows: (string * Cell * int) list) : Table =
+                  { Schema = [ "id", StringType; "k", FloatType; "v", IntType ]
+                    Columns =
+                      [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+                        Column.create "k" FloatType (rows |> List.map (fun (_, k, _) -> k))
+                        Column.create "v" IntType (rows |> List.map (fun (_, _, v) -> Int v)) ] }
+
+              let otherNaN = Float(System.BitConverter.Int64BitsToDouble 0x7ff8000000000001L)
+
+              let before =
+                  floats
+                      [ "r0", Float -0.0, 1
+                        "r1", Float nan, 2
+                        "r2", Float 1.0, 3
+                        "r3", Float 0.0, 4 ]
+
+              let after =
+                  floats
+                      [ "r0", Float -0.0, 1
+                        "r1", Float nan, 2
+                        "r2", Float 1.0, 3
+                        "r3", Float 0.0, 40
+                        "r4", otherNaN, 5 ]
+
+              let pipeline = [ GroupBy([ "k" ], [ agg "s" Sum "v"; agg "n" Count "v" ]) ]
+
+              let next, _ = step pipeline before after
+
+              // Compared by token, cell for cell: a table holding a NaN is never `=` to itself.
+              let tokens (t: Table) =
+                  t.Schema, t.Columns |> List.map (fun c -> c.Cells |> List.map DataFrame.cellToken)
+
+              Expect.equal
+                  (tokens (Incremental.result next))
+                  (tokens (ok (DataFrame.evalPipeline pipeline after)))
+                  "incremental result = reference result"
+
+              Expect.equal (Table.rowCount (Incremental.result next)) 3 "three groups, as the reference has"
+
+              match (Incremental.footprint next).Recompute with
+              | GroupsRecomputed(_, g) -> Expect.equal g 2 "the zero group and the NaN group; the 1.0 group is reused"
+              | other -> failtestf "expected a maintained-group refresh, got %A" other ]
