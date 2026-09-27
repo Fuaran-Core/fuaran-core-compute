@@ -478,7 +478,7 @@ module Delta =
     /// then costs a string equality rather than a table scan. Computed lazily at the point of use,
     /// so a diff that refuses on a keying defect never pays for it.
     let private rowTokens (t: Table) : string[] =
-        RowAccess.rows t |> List.map DataFrame.rowTokenString |> List.toArray
+        RowAccess.rows t |> List.map DataFrame.rowTokenStringOfArray |> List.toArray
 
     /// Index a table's rows by identity, refusing whole if the witness cannot key every row uniquely.
     let private keyIndex (idw: RowIdentity<'Id>) (t: Table) : Result<(string * int) list, DeltaDefect> =
