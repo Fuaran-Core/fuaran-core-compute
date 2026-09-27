@@ -3622,3 +3622,398 @@ let frameTests =
                               As = "i" } ])
                   [ "i", IntType; "j", IntType; "i", IntType ]
                   "a Window appends its column even where the name exists" ]
+
+// ---------------------------------------------------------------------------
+//  Phase 270 — the kernel pair. The evaluator runs its row-local verbs through
+//  a kernel set chosen when the package is compiled: the portable member under
+//  Fable, the native member (vector compares, the thread pool) on .NET. The
+//  portable member compiles on .NET too, so both run here, on one host, and
+//  are held equal — kernel by kernel, over the transform law vectors, over the
+//  generated sample, and over frames many morsels long.
+// ---------------------------------------------------------------------------
+
+/// A pipeline evaluated through one member of the kernel pair: the public driver's own fold over a
+/// prepared source, with that member in place of the host's.
+let private evalWith
+    (k: KernelSet)
+    (env: Map<string, Cell>)
+    (pipeline: Transform list)
+    (t: Table)
+    : Result<Table, EvalError> =
+    DataFrame.evalPreparedCountedWith k DataFrame.noResolve env pipeline (DataFrame.prepare t)
+    |> Result.map fst
+
+/// An answer as the bytes the parity contract compares: the canonical wire string of a table, and
+/// the refusal's text — the pair must refuse with the SAME error, the first one in row order.
+let private wireOf (r: Result<Table, EvalError>) : string =
+    match r with
+    | Ok t -> "ok " + ColumnCodec.encode (Embedded t)
+    | Error e -> "error " + DataFrame.errorString e
+
+let private allCmpOps = [ CLt; CLe; CGt; CGe; CEq; CNe ]
+
+/// The per-row definition every comparison kernel answers: present, and the pinned ordering holds.
+let private cmpDefinition (op: CmpOp) (count: int) (present: int -> bool) (cmp: int -> int) : bool[] =
+    Array.init count (fun p -> present p && Kernels.holds op (cmp p))
+
+/// A bitmap read back one row at a time, with every bit past `count` required clear.
+let private bitsOf (bits: uint32[]) (count: int) : bool[] =
+    Expect.equal bits.Length (Kernels.words count) "one word per 32 rows"
+
+    for p in count .. bits.Length * 32 - 1 do
+        Expect.isFalse (Kernels.isSet bits p) (sprintf "bit %d past the %d rows is clear" p count)
+
+    Array.init count (Kernels.isSet bits)
+
+/// A predicate the comparison kernels answer: `And` / `Or` over comparisons of a typed numeric
+/// column with a constant — a literal or a bound param — on either side.
+let rec private kernelPred (rng: System.Random) (depth: int) : ColExpr =
+    if depth <= 0 || rng.Next 3 = 0 then
+        let column, constant =
+            match rng.Next 5 with
+            | 0 -> pick rng (colsOfType IntType), Lit(conformingCell rng IntType)
+            | 1 -> pick rng (colsOfType IntType), Param "p"
+            | 2 -> pick rng (colsOfType FloatType), Lit(conformingCell rng FloatType)
+            | 3 -> pick rng (colsOfType FloatType), Param "pf"
+            | _ -> pick rng (colsOfType FloatType), Lit(Int(rng.Next(-5, 6)))
+
+        let op = pick rng [ Lt; Le; Gt; Ge; Eq; Ne ]
+
+        if rng.Next 2 = 0 then
+            Binary(op, Col column, constant)
+        else
+            Binary(op, constant, Col column)
+    else
+        Binary(pick rng [ And; Or ], kernelPred rng (depth - 1), kernelPred rng (depth - 1))
+
+/// A table over `typedSchema` whose every cell conforms to its column or is null, so every column
+/// unpacks TYPED and the kernels are reachable.
+let private conformingTable (rng: System.Random) (n: int) : Table =
+    { Schema = typedSchema
+      Columns =
+        typedSchema
+        |> List.map (fun (name, ty) ->
+            col name ty [ for _ in 1..n -> if rng.Next 8 = 0 then Null else conformingCell rng ty ]) }
+
+/// The float aggregates a reassociated reduction would change the last bit of.
+let private floatAggs (over: string) : Agg list =
+    [ { Name = "sum"; Fn = Sum; Of = over }
+      { Name = "mean"; Fn = Mean; Of = over }
+      { Name = "sd"; Fn = StdDev; Of = over } ]
+
+/// A member of a JSON object, for reading the law vector file.
+let private jsonMember (name: string) (el: JVal) : JVal option =
+    match el with
+    | JObj ms -> ms |> List.tryPick (fun (k, v) -> if k = name then Some v else None)
+    | _ -> None
+
+/// A string member of a JSON object.
+let private jsonText (name: string) (el: JVal) : string option =
+    match jsonMember name el with
+    | Some(JStr s) -> Some s
+    | _ -> None
+
+[<Tests>]
+let kernelTests =
+    testList
+        "Kernels"
+        [ testCase "each kernel of the pair answers as the other, and both as the per-row definition"
+          <| fun _ ->
+              let rng = System.Random 270
+              let ints = [| System.Int32.MinValue; System.Int32.MaxValue; -1; 0; 1; 7 |]
+              let floats = [| nan; -0.0; 0.0; infinity; -infinity; 1.5; -2.25; 7.0 |]
+
+              let anyInt () =
+                  if rng.Next 2 = 0 then
+                      ints[rng.Next ints.Length]
+                  else
+                      rng.Next(-8, 9)
+
+              let anyFloat () =
+                  if rng.Next 2 = 0 then
+                      floats[rng.Next floats.Length]
+                  else
+                      float (rng.Next(-8, 9)) / 2.0
+
+              for trial in 1..400 do
+                  let count = pick rng [ 0; 1; 15; 16; 17; 31; 32; 33; 63; 64; 65; rng.Next 3000 ]
+                  let mask = Array.init count (fun _ -> rng.Next 5 <> 0)
+                  let iv = Array.init count (fun _ -> anyInt ())
+                  let fv = Array.init count (fun _ -> anyFloat ())
+                  let ik = anyInt ()
+                  let fk = anyFloat ()
+
+                  for op in allCmpOps do
+                      let pi = Kernels.portable.CmpInts op iv mask ik count
+                      let ni = Kernels.native.CmpInts op iv mask ik count
+                      Expect.equal ni pi (sprintf "trial %d: int %A %d over %d rows" trial op ik count)
+
+                      Expect.equal
+                          (bitsOf pi count)
+                          (cmpDefinition op count (fun p -> mask[p]) (fun p -> compare iv[p] ik))
+                          "the int kernel is the per-row definition"
+
+                      let pf = Kernels.portable.CmpFloats op fv mask fk count
+                      let nf = Kernels.native.CmpFloats op fv mask fk count
+                      Expect.equal nf pf (sprintf "trial %d: float %A %g over %d rows" trial op fk count)
+
+                      Expect.equal
+                          (bitsOf pf count)
+                          (cmpDefinition op count (fun p -> mask[p]) (fun p -> compare fv[p] fk))
+                          "the float kernel is the per-row definition, NaN and -0.0 included"
+
+                  let a = Kernels.portable.CmpInts CGe iv mask ik count
+                  let b = Kernels.portable.CmpFloats CLt fv mask fk count
+                  Expect.equal (Kernels.native.And a b) (Kernels.portable.And a b) "And agrees"
+                  Expect.equal (Kernels.native.Or a b) (Kernels.portable.Or a b) "Or agrees"
+
+                  Expect.equal
+                      (bitsOf (Kernels.portable.And a b) count)
+                      (Array.map2 (&&) (bitsOf a count) (bitsOf b count))
+                      "And is both"
+
+                  Expect.equal
+                      (bitsOf (Kernels.portable.Or a b) count)
+                      (Array.map2 (||) (bitsOf a count) (bitsOf b count))
+                      "Or is either"
+
+                  let expected =
+                      [| for p in 0 .. count - 1 do
+                             if Kernels.isSet a p then
+                                 p |]
+
+                  Expect.equal
+                      (Kernels.portable.Selection a)
+                      expected
+                      "the portable selection is the set rows, ascending"
+
+                  Expect.equal (Kernels.native.Selection a) expected "the native selection is the set rows, ascending"
+
+          testCase "the morsel runner runs every morsel once, and the portable member stops at the first failure"
+          <| fun _ ->
+              for m in [ 0; 1; 2; 7 ] do
+                  for k in [ Kernels.portable; Kernels.native ] do
+                      let ran: int[] = Array.zeroCreate m
+
+                      k.RunMorsels m (fun j ->
+                          System.Threading.Interlocked.Increment(&ran[j]) |> ignore
+                          true)
+
+                      Expect.equal ran (Array.create m 1) (sprintf "%d morsels, each run once" m)
+
+              let ran: int[] = Array.zeroCreate 5
+
+              Kernels.portable.RunMorsels 5 (fun j ->
+                  ran[j] <- 1
+                  j <> 2)
+
+              Expect.equal ran [| 1; 1; 1; 0; 0 |] "the portable member stops after the morsel that failed"
+              Expect.equal (Kernels.morselCount 0) 0 "no rows, no morsels"
+              Expect.equal (Kernels.morselCount Kernels.MorselRows) 1 "a full morsel is one"
+              Expect.equal (Kernels.morselCount (Kernels.MorselRows + 1)) 2 "one row more is two"
+
+              Expect.equal
+                  (Kernels.morselEnd (Kernels.MorselRows + 1) 1)
+                  (Kernels.MorselRows + 1)
+                  "the last morsel is short"
+
+          testCase "the transform law vectors answer byte-identically through both members of the pair"
+          <| fun _ ->
+              let path =
+                  System.IO.Path.Combine(OwnedConformance.root (), "laws", "transform-laws.json")
+
+              let doc =
+                  match Json.parse (System.IO.File.ReadAllText path) with
+                  | Ok d -> d
+                  | Error m -> failtestf "the vector file did not parse: %s" m
+
+              let vectors =
+                  match jsonMember "vectors" doc with
+                  | Some(JArr items) -> items
+                  | _ -> failtest "the vector file carries no vectors"
+
+              Expect.isGreaterThan vectors.Length 0 "there are vectors to run"
+
+              for v in vectors do
+                  let id = jsonText "id" v |> Option.defaultValue "?"
+                  let input = jsonMember "input" v |> Option.get
+                  let expected = jsonMember "expected" v |> Option.get
+
+                  let pipeline =
+                      match DataFrameCodec.decodePipeline (jsonText "pipeline" input |> Option.get) with
+                      | Ok p -> p
+                      | Error e -> failtestf "%s: the pipeline did not decode (%s)" id (ColumnCodec.errorString e)
+
+                  let table =
+                      match ColumnCodec.decode (jsonText "source" input |> Option.get) with
+                      | Ok(Embedded t) -> t
+                      | other -> failtestf "%s: the source is not an embedded table (%A)" id other
+
+                  let portable = evalWith Kernels.portable Map.empty pipeline table
+                  let native = evalWith Kernels.native Map.empty pipeline table
+                  Expect.equal (wireOf native) (wireOf portable) (sprintf "%s: the two members agree" id)
+
+                  match jsonText "verdict" expected, portable with
+                  | Some "ok", Ok t ->
+                      Expect.equal
+                          (ColumnCodec.encode (Embedded t))
+                          (jsonText "table" expected |> Option.get)
+                          (sprintf "%s: the answer is the vector's, byte for byte" id)
+                  | Some "error", Error _ -> ()
+                  | verdict, r -> failtestf "%s: the vector says %A, the pair answered %A" id verdict r
+
+          testCase "a generated sample over the whole algebra answers byte-identically through both members"
+          <| fun _ ->
+              let mutable compared = 0
+
+              for table, pipeline in frameSample 270 400 do
+                  let portable = evalWith Kernels.portable typedEnv pipeline table
+                  let native = evalWith Kernels.native typedEnv pipeline table
+                  Expect.equal (wireOf native) (wireOf portable) (sprintf "the members agree over %A" pipeline)
+
+                  Expect.equal
+                      (wireOf native)
+                      (wireOf (DataFrame.evalPipelineInEnv typedEnv pipeline table))
+                      "and the host is the native member"
+
+                  compared <- compared + 1
+
+              Expect.equal compared 400 "every draw compared"
+
+          testCase
+              "over frames many morsels long, Filter, Derive and the float aggregates answer byte-identically through both members"
+          <| fun _ ->
+              // Frames of two to three morsels, so the native member runs morsels on the thread
+              // pool and the comparison kernels read whole vectors; the float `Sum` / `Mean` /
+              // `StdDev` over what the steps kept are the reductions a reassociation would move.
+              let rng = System.Random 2700
+              let mutable kernelPaths = 0
+
+              for trial in 1..4 do
+                  let n = Kernels.MorselRows * (2 + rng.Next 2) + rng.Next 100
+                  let table = conformingTable rng n
+                  let frame = Frame.ofTable table
+                  let pred = kernelPred rng 3
+
+                  if
+                      DataFrame.filterBits Kernels.host frame (DataFrame.resolveExpr typedEnv frame.Cols pred)
+                      |> Option.isSome
+                  then
+                      kernelPaths <- kernelPaths + 1
+
+                  let key = pick rng [ "b"; "s"; "d" ]
+
+                  let pipelines =
+                      [ [ Filter pred; GroupBy([ key ], floatAggs "f") ]
+                        [ Filter(genExpr rng 2); GroupBy([ key ], floatAggs "g") ]
+                        [ Derive("x", genExpr rng 2)
+                          Filter(kernelPred rng 2)
+                          GroupBy([ key ], floatAggs "f") ]
+                        [ Transform.sortBy [ "g", Desc ]
+                          Filter pred
+                          Derive("y", Binary(Mul, Col "f", Col "g")) ] ]
+
+                  for pipeline in pipelines do
+                      let portable = evalWith Kernels.portable typedEnv pipeline table
+                      let native = evalWith Kernels.native typedEnv pipeline table
+
+                      Expect.equal
+                          (wireOf native)
+                          (wireOf portable)
+                          (sprintf "trial %d: the members agree over %d rows and %A" trial n pipeline)
+
+              Expect.equal kernelPaths 4 "every drawn kernel predicate took the comparison kernels"
+
+          testCase "the first error in row order answers, whichever morsel meets it"
+          <| fun _ ->
+              // Two rows overflow `i + j`, one in the second morsel and one in the third, each with
+              // its own message; the earlier one is the answer, as a sequential walk gives it.
+              let n = Kernels.MorselRows * 3 + 10
+              let early = Kernels.MorselRows + 100
+              let late = Kernels.MorselRows * 2 + 5
+
+              let table =
+                  tbl
+                      [ "i", IntType; "j", IntType ]
+                      [ col
+                            "i"
+                            IntType
+                            [ for p in 0 .. n - 1 -> Int(if p = early || p = late then System.Int32.MaxValue else 0) ]
+                        col
+                            "j"
+                            IntType
+                            [ for p in 0 .. n - 1 ->
+                                  Int(
+                                      if p = early then 1
+                                      elif p = late then 2
+                                      else p % 7
+                                  ) ] ]
+
+              let sum = Binary(Add, Col "i", Col "j")
+
+              for pipeline in [ [ Derive("s", sum) ]; [ Filter(Binary(Gt, sum, Lit(Int 0))) ] ] do
+                  let portable = evalWith Kernels.portable Map.empty pipeline table
+                  let native = evalWith Kernels.native Map.empty pipeline table
+                  Expect.equal (wireOf native) (wireOf portable) "the members agree"
+
+                  match portable with
+                  | Error e ->
+                      Expect.stringContains (DataFrame.errorString e) "2147483648" "the earlier row's overflow answers"
+                  | Ok _ -> failtest "an overflowing row refuses the step"
+
+          testCase "a float Sum over a kept selection is the left-to-right fold of the kept rows, on both members"
+          <| fun _ ->
+              // Values whose sum depends on the order it is taken in: a reassociated reduction —
+              // per-morsel partial sums, a vector accumulator — lands on a different last bit.
+              let rng = System.Random 27
+              let n = Kernels.MorselRows * 3 + 77
+              let iv = Array.init n (fun _ -> rng.Next(-5, 6))
+
+              let fv =
+                  Array.init n (fun _ -> float (rng.Next 1000) * 0.1 + 1e-7 * float (rng.Next 1000))
+
+              let table =
+                  tbl
+                      [ "i", IntType; "f", FloatType ]
+                      [ col "i" IntType [ for v in iv -> Int v ]
+                        col "f" FloatType [ for v in fv -> Float v ] ]
+
+              let pipeline =
+                  [ Filter(Binary(Ge, Col "i", Lit(Int 0)))
+                    Derive("one", Lit(Int 1))
+                    GroupBy([ "one" ], [ { Name = "sum"; Fn = Sum; Of = "f" } ]) ]
+
+              let mutable fold = 0.0
+
+              for p in 0 .. n - 1 do
+                  if iv[p] >= 0 then
+                      fold <- fold + fv[p]
+
+              // The teeth: the same rows summed per morsel and the partials then added land elsewhere,
+              // so a reassociating kernel could not pass the assertion below by accident.
+              let partials =
+                  [ for j in 0 .. Kernels.morselCount n - 1 ->
+                        let mutable s = 0.0
+
+                        for p in Kernels.morselStart j .. Kernels.morselEnd n j - 1 do
+                            if iv[p] >= 0 then
+                                s <- s + fv[p]
+
+                        s ]
+
+              Expect.notEqual
+                  (System.BitConverter.DoubleToInt64Bits(List.sum partials))
+                  (System.BitConverter.DoubleToInt64Bits fold)
+                  "the sample is order-sensitive"
+
+              for k in [ Kernels.portable; Kernels.native ] do
+                  match evalWith k Map.empty pipeline table with
+                  | Ok t ->
+                      match cellsOf "sum" t with
+                      | [ Float s ] ->
+                          Expect.equal
+                              (System.BitConverter.DoubleToInt64Bits s)
+                              (System.BitConverter.DoubleToInt64Bits fold)
+                              "the sum is the sequential fold, to the last bit"
+                      | other -> failtestf "one sum expected, got %A" other
+                  | Error e -> failtestf "evaluation failed: %s" (DataFrame.errorString e) ]

@@ -100,7 +100,7 @@ let private ratioBound = 5.0 * sizeRatio
 /// scored the refresh at 1.5 to 2.1 times the full evaluation, and a Debug build (the gate's) at
 /// about 1.0.
 ///
-/// The bound is three times. What the Phase 208 cases were written to refuse is the pre-208 seam,
+/// The bound was three times. What the Phase 208 cases were written to refuse is the pre-208 seam,
 /// whose bookkeeping cost about 70 ms at this size — some ten times today's full evaluation, so it
 /// is refused by a wide margin — and a refresh that regresses by half again is refused too. Whether
 /// the seam should win this case outright again is a question for its per-row bookkeeping, not for
@@ -112,7 +112,16 @@ let private ratioBound = 5.0 * sizeRatio
 /// boxed rows: this family's Debug runs at 20,000 rows, quiet machine, before and after the phase —
 /// refresh 57.1 ms against a full 91.1 ms, then 43.3 ms against 21.7 ms — so the refresh now trails
 /// by about two times, and the bound refuses the same regressions here as above.
-let private cheapRefreshLossBound = 3.0
+///
+/// Phase 270 made the full pass faster again and raised the bound to four. The comparison kernels
+/// answer a one-comparison `Filter` over a typed column as a bitmap, where the refresh still walks
+/// its maintained groups: the group-tail case's Debug runs at 20,000 rows, the tree before and after
+/// the phase interleaved three times on one machine — refresh 36.9, 36.4, 38.1 ms against a full
+/// 15.3, 16.6, 15.4 ms (2.2 to 2.5 times), then 30.8, 32.1, 35.4 ms against 12.8, 11.5, 12.3 ms (2.4
+/// to 2.9 times), and 3.1 once inside the whole suite. The refresh did not move; the full pass did.
+/// Four still refuses the pre-208 seam (about six times today's full evaluation) and a refresh that
+/// regresses by half again.
+let private cheapRefreshLossBound = 4.0
 
 /// A table of `n` rows over four columns — a string identity, a grouping key of bounded cardinality,
 /// and two integer measures. The identity is what `RowIdentity.byColumn` keys on; the grouping key

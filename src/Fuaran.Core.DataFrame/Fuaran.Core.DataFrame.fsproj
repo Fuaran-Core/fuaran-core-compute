@@ -10,6 +10,10 @@
     <!-- Phase 267 — the dense columnar frame: the typed vectors, masks and selection the evaluator
          works over. First, because DataFrame.fs evaluates over it. -->
     <Compile Include="Frame.fs" />
+    <!-- Phase 270 — the host kernels the row-local verbs run: a portable member (the Fable path)
+         and, outside Fable, a native member over System.Runtime.Intrinsics and the thread pool,
+         chosen at compile time. Before DataFrame.fs: the evaluator takes its kernel set as a value. -->
+    <Compile Include="Kernels.fs" />
     <Compile Include="DataFrame.fs" />
     <!-- Phase 98 — the typed delta representation. After DataFrame.fs: it reads the pinned
          canonical row token and the Phase 34 `Change` it projects to/from. -->
