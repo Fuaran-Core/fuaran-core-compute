@@ -707,23 +707,22 @@ module internal RowAccess =
                     Array.init n (fun i -> if i < a.Length then a[i] else Null)
             | None -> Array.create n Null)
 
-    /// Every row of the table, in row order — the transpose.
-    let rows (t: Table) : Cell list list =
-        let cols = columns t
+    /// Every row of the table, in row order — the transpose. Each row is an ARRAY of the schema's
+    /// width (Phase 263), so a consumer that reads a cell by its column index pays one load for it
+    /// rather than a walk down a row list. The arrays are fresh, and no reader in this assembly
+    /// writes into one it did not allocate itself: a derived row is a copy.
+    let rows (t: Table) : Cell[] list =
+        let cols = columns t |> List.toArray
         let n = Table.rowCount t
-        [ for i in 0 .. n - 1 -> cols |> List.map (fun a -> a[i]) ]
+        [ for i in 0 .. n - 1 -> cols |> Array.map (fun a -> a[i]) ]
 
     /// The transpose back: full-width `rows` in row order, under the schema `cols`.
     ///
-    /// The direct form — `rows |> List.map (fun row -> List.item ci row)` once per column — walks
-    /// every row list once per column, so it is quadratic in the COLUMN count. Reading each row into
-    /// an array once makes it one read per cell. A row narrower than the schema throws here exactly
-    /// as `List.item` did; that shape is a defect upstream and staying loud about it is the point.
-    let toColumns (cols: Schema) (rows: Cell list list) : Column list =
-        let arrs = rows |> List.map List.toArray
-
+    /// One read per cell. A row narrower than the schema throws here, as the list form's
+    /// `List.item` did; that shape is a defect upstream and staying loud about it is the point.
+    let toColumns (cols: Schema) (rows: Cell[] list) : Column list =
         cols
-        |> List.mapi (fun ci (name, ty) -> Column.create name ty (arrs |> List.map (fun r -> r[ci])))
+        |> List.mapi (fun ci (name, ty) -> Column.create name ty (rows |> List.map (fun r -> r[ci])))
 
 /// The pure reference evaluator + the algebra's pinned semantics. Every host evaluator is
 /// certified byte-identical to this through `Conformance.transformLaws`.
@@ -731,7 +730,9 @@ module DataFrame =
 
     // ---- internal row-oriented frame (the evaluator's working form) ----
 
-    type private Frame = { Cols: Schema; Rows: Cell list list }
+    // Rows are arrays (Phase 263): every verb reads a cell by a column index it resolved once for
+    // the step, which on a list was a walk from the row's head per read.
+    type private Frame = { Cols: Schema; Rows: Cell[] list }
 
     // One transpose each way (Phase 206). These were the evaluator's per-index readers — a
     // `Column.cell i c` per row per column going in, a `List.item ci row` per column per row coming
@@ -812,16 +813,26 @@ module DataFrame =
     /// so `GroupBy` / `Distinct` / `Window` / `Pivot` partition identically on every host.
     let rowToken (cells: Cell list) : string list = cells |> List.map cellToken
 
+    /// One cell token's length-prefixed form — the injective encoding `rowTokenString` joins.
+    let private lengthPrefixed (t: string) : string = string (String.length t) + ":" + t
+
     /// The single-string form of a row's canonical token, LENGTH-PREFIXED per cell so it is
     /// injective (Phase 98). A bare concatenation gives `["a"; "bc"]` and `["ab"; "c"]` the same
     /// string — a collision between two distinct rows, which is exactly what a token exists to
     /// prevent. Row identity and row-content comparison both key on this.
     let rowTokenString (cells: Cell list) : string =
-        rowToken cells
-        |> List.map (fun t -> string (String.length t) + ":" + t)
-        |> String.concat ""
+        rowToken cells |> List.map lengthPrefixed |> String.concat ""
+
+    /// `rowTokenString` over a row held as an array (Phase 263) — the same string, cell for cell,
+    /// built through the same `cellToken` and the same `lengthPrefixed`, so the two cannot disagree.
+    let internal rowTokenStringOfArray (cells: Cell[]) : string =
+        cells |> Array.map (cellToken >> lengthPrefixed) |> String.concat ""
 
     let private groupKey (cells: Cell list) : string list = rowToken cells
+
+    /// `groupKey` over a whole row held as an array — what `Distinct` and the set ops key on.
+    let private rowGroupKey (row: Cell[]) : string list =
+        row |> Array.map cellToken |> List.ofArray
 
     /// A total comparison between two *present, same-family* cells. `None` ⇒ incomparable (a type
     /// error). Numerics compare as float; strings/date/timestamp by ordinal (ISO sorts
@@ -1214,79 +1225,134 @@ module DataFrame =
                 | Str subj, Str needle -> Ok(Int(subj.IndexOf(needle, System.StringComparison.Ordinal)))
                 | _ -> Error(TypeError "indexOf expects (string, string)"))
 
-    /// Evaluate a `ColExpr` against one row (resolved through `cols`), reading `Param`s from the
-    /// evaluation environment `env` (Phase 77). A `Param` hit resolves to its bound `Cell`; a miss is
-    /// a strict `UnboundParam` naming the param + the bound set (GP4/GP5) — never a throw, never a
-    /// silent default.
-    let rec private evalExpr
-        (env: Map<string, Cell>)
-        (cols: Schema)
-        (row: Cell list)
-        (e: ColExpr)
-        : Result<Cell, EvalError> =
+    /// A `ColExpr` with every name it reads already resolved against one step's schema and env
+    /// (Phase 263) — the per-step, index-resolved twin the evaluator walks once per row.
+    ///
+    /// The unresolved form looked each `Col` up by NAME in the schema and then walked the row list
+    /// to that index, on every row, for every reference. Resolution is a pure function of the
+    /// schema and the env, and both are fixed for the whole step, so it is done once before the row
+    /// loop. It changes WHEN a name is looked up and nothing about what an evaluation answers:
+    ///
+    /// - a name that does not resolve becomes `RFail` carrying the very error the per-row lookup
+    ///   raised, and that error is still raised only when an evaluation REACHES the node — a
+    ///   missing column in an untaken `Case` branch, behind a `Coalesce` that stopped early, or in a
+    ///   step over no rows is still no error at all;
+    /// - a bound `Param` becomes its cell, an unbound one, an `InParam` and an unpinned `Now` become
+    ///   `RFail`s with the errors they gave, and every other node keeps its shape and its
+    ///   evaluation order, so the first error an evaluation meets is the one it met before.
+    ///
+    /// Internal, never public: this is the evaluator's working form, not a contract. The incremental
+    /// seam in this assembly resolves through `resolveExpr` and evaluates through `evalResolved`; the
+    /// public `evalExprInRow` is the two composed over a list row.
+    type internal ResolvedExpr =
+        | RCol of int
+        | RConst of Cell
+        | RFail of EvalError
+        | RBinary of BinOp * ResolvedExpr * ResolvedExpr
+        | RNot of ResolvedExpr
+        | RCoalesce of ResolvedExpr list
+        | RCase of (ResolvedExpr * ResolvedExpr) list * ResolvedExpr
+        | RCast of ColumnType * ResolvedExpr
+        | RInList of ResolvedExpr * ResolvedExpr list
+        | RIsNull of ResolvedExpr
+        | RApplyFn of ScalarFn * ResolvedExpr list
+
+    /// Resolve a `ColExpr` against a step's schema `cols` and evaluation environment `env` (Phase
+    /// 77's params) — once per step, before its row loop. See `ResolvedExpr` for what is and is not
+    /// moved by doing it here.
+    let rec internal resolveExpr (env: Map<string, Cell>) (cols: Schema) (e: ColExpr) : ResolvedExpr =
+        let go = resolveExpr env cols
+
         match e with
         | Col name ->
             match colIndex cols name with
-            | Some i -> Ok(List.item i row)
-            | None -> Error(UnknownColumn(name, available cols))
-        | Lit c -> Ok c
+            | Some i -> RCol i
+            | None -> RFail(UnknownColumn(name, available cols))
+        | Lit c -> RConst c
         | Param name ->
             match Map.tryFind name env with
-            | Some c -> Ok c
-            | None -> Error(UnboundParam(name, env |> Map.toList |> List.map fst))
-        | Binary(op, a, b) ->
-            evalExpr env cols row a
-            |> Result.bind (fun av ->
-                evalExpr env cols row b
-                |> Result.bind (fun bv ->
-                    match op with
-                    | Add
-                    | Sub
-                    | Mul
-                    | Div
-                    | Mod -> arith op av bv
-                    | Eq
-                    | Ne
-                    | Lt
-                    | Le
-                    | Gt
-                    | Ge -> comparison op av bv
-                    | And
-                    | Or -> logical op av bv
-                    | Contains
-                    | StartsWith
-                    | EndsWith -> stringPred op av bv))
-        | Not inner ->
-            evalExpr env cols row inner
+            | Some c -> RConst c
+            | None -> RFail(UnboundParam(name, env |> Map.toList |> List.map fst))
+        | Binary(op, a, b) -> RBinary(op, go a, go b)
+        | Not inner -> RNot(go inner)
+        | Coalesce exprs -> RCoalesce(List.map go exprs)
+        | Case(cases, elseExpr) -> RCase(cases |> List.map (fun (w, t) -> go w, go t), go elseExpr)
+        | Cast(ty, inner) -> RCast(ty, go inner)
+        | InList(subject, items) -> RInList(go subject, List.map go items)
+        | IsNull inner -> RIsNull(go inner)
+        // List params resolve by substitution (`substituteListParams`) BEFORE evaluation — one that
+        // reaches the evaluator is unbound, same strictness as a scalar `Param`. The subject is
+        // never evaluated, exactly as before.
+        | InParam(_, name) -> RFail(UnboundParam(name, env |> Map.toList |> List.map fst))
+        // A `now` resolves by substitution against a pinned clock (`substituteNow`) BEFORE
+        // evaluation, exactly as a list param does. One that reaches here has no clock, and Core has
+        // none to fall back on — reading the host's real clock here would make the answer depend on
+        // when the pipeline ran, which is the property `Now` exists to keep.
+        | Now grain -> RFail(UnpinnedClock grain)
+        | ApplyFn(fn, args) -> RApplyFn(fn, List.map go args)
+
+    let private binaryOp (op: BinOp) (av: Cell) (bv: Cell) : Result<Cell, EvalError> =
+        match op with
+        | Add
+        | Sub
+        | Mul
+        | Div
+        | Mod -> arith op av bv
+        | Eq
+        | Ne
+        | Lt
+        | Le
+        | Gt
+        | Ge -> comparison op av bv
+        | And
+        | Or -> logical op av bv
+        | Contains
+        | StartsWith
+        | EndsWith -> stringPred op av bv
+
+    /// Evaluate a resolved expression against one row held as an array — the reference expression
+    /// evaluator. Every `Param` was read from the environment at resolution; a hit is its bound
+    /// `Cell`, and a miss is the strict `UnboundParam` naming the param and the bound set (GP4/GP5)
+    /// — never a throw, never a silent default.
+    let rec internal evalResolved (row: Cell[]) (e: ResolvedExpr) : Result<Cell, EvalError> =
+        match e with
+        | RCol i -> Ok(row[i])
+        | RConst c -> Ok c
+        | RFail err -> Error err
+        | RBinary(op, a, b) ->
+            evalResolved row a
+            |> Result.bind (fun av -> evalResolved row b |> Result.bind (fun bv -> binaryOp op av bv))
+        | RNot inner ->
+            evalResolved row inner
             |> Result.bind (function
                 | Bool b -> Ok(Bool(not b))
                 | Null -> Ok Null
                 | _ -> Error(TypeError "not of a non-bool"))
-        | Coalesce exprs ->
+        | RCoalesce exprs ->
             let rec go =
                 function
                 | [] -> Ok Null
                 | x :: rest ->
-                    evalExpr env cols row x
+                    evalResolved row x
                     |> Result.bind (function
                         | Null -> go rest
                         | c -> Ok c)
 
             go exprs
-        | Case(cases, elseExpr) ->
+        | RCase(cases, elseExpr) ->
             let rec go =
                 function
-                | [] -> evalExpr env cols row elseExpr
+                | [] -> evalResolved row elseExpr
                 | (whenE, thenE) :: rest ->
-                    evalExpr env cols row whenE
+                    evalResolved row whenE
                     |> Result.bind (function
-                        | Bool true -> evalExpr env cols row thenE
+                        | Bool true -> evalResolved row thenE
                         | _ -> go rest)
 
             go cases
-        | Cast(ty, inner) -> evalExpr env cols row inner |> Result.bind (castCell ty)
-        | InList(subject, items) ->
-            evalExpr env cols row subject
+        | RCast(ty, inner) -> evalResolved row inner |> Result.bind (castCell ty)
+        | RInList(subject, items) ->
+            evalResolved row subject
             |> Result.bind (fun sv ->
                 match sv with
                 | Null -> Ok Null
@@ -1296,7 +1362,7 @@ module DataFrame =
                         function
                         | [] -> Ok(if sawNull then Null else Bool false)
                         | it :: rest ->
-                            evalExpr env cols row it
+                            evalResolved row it
                             |> Result.bind (fun iv ->
                                 match iv with
                                 | Null -> go true rest
@@ -1307,27 +1373,17 @@ module DataFrame =
                                     | None -> Error(TypeError "in: comparison between incompatible types"))
 
                     go false items)
-        | IsNull inner ->
-            evalExpr env cols row inner
+        | RIsNull inner ->
+            evalResolved row inner
             |> Result.map (fun v ->
                 match v with
                 | Null -> Bool true
                 | _ -> Bool false)
-        | InParam(_, name) ->
-            // List params resolve by substitution (`substituteListParams`) BEFORE evaluation —
-            // one that reaches the evaluator is unbound, same strictness as a scalar `Param`.
-            Error(UnboundParam(name, env |> Map.toList |> List.map fst))
-        | Now grain ->
-            // A `now` resolves by substitution against a pinned clock (`substituteNow`) BEFORE
-            // evaluation, exactly as a list param does. One that reaches here has no clock, and
-            // Core has none to fall back on — reading the host's real clock here would make the
-            // answer depend on when the pipeline ran, which is the property `Now` exists to keep.
-            Error(UnpinnedClock grain)
-        | ApplyFn(fn, args) ->
+        | RApplyFn(fn, args) ->
             let rec evalArgs acc =
                 function
                 | [] -> Ok(List.rev acc)
-                | a :: rest -> evalExpr env cols row a |> Result.bind (fun v -> evalArgs (v :: acc) rest)
+                | a :: rest -> evalResolved row a |> Result.bind (fun v -> evalArgs (v :: acc) rest)
 
             evalArgs [] args |> Result.bind (applyScalar fn)
 
@@ -1366,44 +1422,54 @@ module DataFrame =
 
     // ---- sort (pinned: stable; nulls last regardless of direction) ----
 
-    let private rowKeyCompare (cols: Schema) (by: (string * SortDir) list) (r1: Cell list) (r2: Cell list) : int =
+    /// A sort's keys resolved against one step's schema (Phase 263): each named column's index with
+    /// its direction, in key order. A name the schema does not carry is DROPPED here, which is the
+    /// comparator's pinned "unknown columns skipped" — the per-comparison lookup skipped it on every
+    /// comparison, and resolving once skips it once.
+    let internal resolveSortKeys (cols: Schema) (by: (string * SortDir) list) : (int * SortDir) list =
+        by
+        |> List.choose (fun (name, dir) -> colIndex cols name |> Option.map (fun i -> i, dir))
+
+    /// The pinned row ordering over resolved keys and array rows — multi-key, nulls last regardless
+    /// of direction. The comparator `evalSort`, `Window`'s ordering and the incremental seam's merge
+    /// all call, so there is one definition of the order.
+    let internal compareResolved (keys: (int * SortDir) list) (r1: Cell[]) (r2: Cell[]) : int =
         let rec go =
             function
             | [] -> 0
-            | (name, dir) :: rest ->
-                match colIndex cols name with
-                | None -> go rest
-                | Some i ->
-                    let a = List.item i r1
-                    let b = List.item i r2
+            | (i, dir) :: rest ->
+                let a = r1[i]
+                let b = r2[i]
 
-                    let c =
-                        match Cell.isNull a, Cell.isNull b with
-                        | true, true -> 0
-                        | true, false -> 1 // null sorts last
-                        | false, true -> -1
-                        | false, false ->
-                            match compareCells a b with
-                            | Some c -> if dir = Asc then c else -c
-                            | None -> 0
+                let c =
+                    match Cell.isNull a, Cell.isNull b with
+                    | true, true -> 0
+                    | true, false -> 1 // null sorts last
+                    | false, true -> -1
+                    | false, false ->
+                        match compareCells a b with
+                        | Some c -> if dir = Asc then c else -c
+                        | None -> 0
 
-                    if c <> 0 then c else go rest
+                if c <> 0 then c else go rest
 
-        go by
+        go keys
 
     // ---- per-verb evaluation ----
 
     let private evalFilter
         (env: Map<string, Cell>)
         (cols: Schema)
-        (rows: Cell list list)
+        (rows: Cell[] list)
         (pred: ColExpr)
-        : Result<Cell list list, EvalError> =
+        : Result<Cell[] list, EvalError> =
+        let resolved = resolveExpr env cols pred
+
         let rec go acc =
             function
             | [] -> Ok(List.rev acc)
             | row :: rest ->
-                match evalExpr env cols row pred with
+                match evalResolved row resolved with
                 | Ok(Bool true) -> go (row :: acc) rest
                 | Ok _ -> go acc rest
                 | Error e -> Error e
@@ -1423,10 +1489,17 @@ module DataFrame =
 
         go [] pairs
         |> Result.map (fun resolved ->
+            let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
+
             { Cols = resolved |> List.map (fun (o, ty, _) -> o, ty)
-              Rows =
-                f.Rows
-                |> List.map (fun row -> resolved |> List.map (fun (_, _, i) -> List.item i row)) })
+              Rows = f.Rows |> List.map (fun row -> idx |> Array.map (fun i -> row[i])) })
+
+    /// A row with the cell at `i` replaced — a copy, never a write into the row it was handed, which
+    /// other frames may still hold.
+    let private withCellAt (i: int) (c: Cell) (row: Cell[]) : Cell[] =
+        let copy = Array.copy row
+        copy[i] <- c
+        copy
 
     let private evalDerive
         (env: Map<string, Cell>)
@@ -1434,10 +1507,12 @@ module DataFrame =
         (name: string)
         (expr: ColExpr)
         : Result<Frame, EvalError> =
+        let resolved = resolveExpr env f.Cols expr
+
         let rec go acc =
             function
             | [] -> Ok(List.rev acc)
-            | row :: rest -> evalExpr env f.Cols row expr |> Result.bind (fun c -> go (c :: acc) rest)
+            | row :: rest -> evalResolved row resolved |> Result.bind (fun c -> go (c :: acc) rest)
 
         go [] f.Rows
         |> Result.map (fun newCells ->
@@ -1446,11 +1521,10 @@ module DataFrame =
             match colIndex f.Cols name with
             | Some i ->
                 { Cols = f.Cols |> List.mapi (fun j (n, t) -> if j = i then n, ty else n, t)
-                  Rows =
-                    List.map2 (fun row c -> row |> List.mapi (fun j cell -> if j = i then c else cell)) f.Rows newCells }
+                  Rows = List.map2 (fun row c -> withCellAt i c row) f.Rows newCells }
             | None ->
                 { Cols = f.Cols @ [ name, ty ]
-                  Rows = List.map2 (fun row c -> row @ [ c ]) f.Rows newCells })
+                  Rows = List.map2 (fun row c -> Array.append row [| c |]) f.Rows newCells })
 
     let private evalGroupBy (f: Frame) (keys: string list) (aggs: Agg list) : Result<Frame, EvalError> =
         let keyIdx = keys |> List.map (fun k -> colIndex f.Cols k, k)
@@ -1460,8 +1534,7 @@ module DataFrame =
         | None ->
             let idxs = keyIdx |> List.map (fun (i, _) -> Option.get i)
 
-            let keyOf row =
-                idxs |> List.map (fun i -> List.item i row)
+            let keyOf (row: Cell[]) = idxs |> List.map (fun i -> row[i])
 
             // group, preserving first-appearance order of keys; key the map on the canonical token
             // (Phase 41) so float keys group host-identically, but carry the original key cells for output
@@ -1474,7 +1547,7 @@ module DataFrame =
             let orderRev, groupsRev =
                 f.Rows
                 |> List.fold
-                    (fun (order, map: Map<string list, Cell list * Cell list list>) row ->
+                    (fun (order, map: Map<string list, Cell list * Cell[] list>) row ->
                         let k = keyOf row
                         let kt = groupKey k
 
@@ -1507,15 +1580,15 @@ module DataFrame =
                     let k, grp = Map.find kt groups
 
                     resolvedAggs
-                    |> traverseResult (fun (a, ty, ci) -> aggCells a.Fn ty (grp |> List.map (List.item ci)))
-                    |> Result.map (fun aggVals -> k @ aggVals))
+                    |> traverseResult (fun (a, ty, ci) -> aggCells a.Fn ty (grp |> List.map (fun r -> r[ci])))
+                    |> Result.map (fun aggVals -> List.toArray (k @ aggVals)))
                 |> Result.map (fun rows ->
                     { Cols = keyCols @ aggCols
                       Rows = rows }))
 
     let private evalSort (f: Frame) (by: (string * SortDir) list) : Frame =
         { f with
-            Rows = f.Rows |> List.sortWith (rowKeyCompare f.Cols by) }
+            Rows = f.Rows |> List.sortWith (compareResolved (resolveSortKeys f.Cols by)) }
 
     let private evalDistinct (f: Frame) : Frame =
         // dedup on the canonical token (Phase 41) so float-bearing rows dedup host-identically
@@ -1523,7 +1596,7 @@ module DataFrame =
             function
             | [] -> List.rev acc
             | row :: rest ->
-                let kt = groupKey row
+                let kt = rowGroupKey row
 
                 if Set.contains kt seen then
                     go seen acc rest
@@ -1571,8 +1644,8 @@ module DataFrame =
         match joinKeyIdx f.Cols right.Cols on with
         | Error e -> Error e
         | Ok(li, ri) ->
-            let keyMatch (lr: Cell list) (rr: Cell list) =
-                joinKeyEq (li |> List.map (fun i -> List.item i lr)) (ri |> List.map (fun j -> List.item j rr))
+            let keyMatch (lr: Cell[]) (rr: Cell[]) =
+                joinKeyEq (li |> List.map (fun i -> lr[i])) (ri |> List.map (fun j -> rr[j]))
 
             // The combining joins (Inner / Left / Right / Outer) — left cols ++ right cols.
             let combiningJoin () =
@@ -1584,10 +1657,10 @@ module DataFrame =
                     |> List.map (fun (n, ty) -> (if Set.contains n leftNames then n + "_right" else n), ty)
 
                 let outCols = f.Cols @ rightCols
-                let leftNulls = f.Cols |> List.map (fun _ -> Null)
-                let rightNulls = right.Cols |> List.map (fun _ -> Null)
+                let leftNulls = Array.create (List.length f.Cols) Null
+                let rightNulls = Array.create (List.length right.Cols) Null
 
-                let combine lr rr = lr @ rr
+                let combine (lr: Cell[]) (rr: Cell[]) = Array.append lr rr
 
                 let leftSide =
                     f.Rows
@@ -1641,13 +1714,13 @@ module DataFrame =
         if available f.Cols <> available other.Cols then
             Error(JoinError(verb + " requires matching column names"))
         else
-            let rightKeys = other.Rows |> List.map groupKey |> Set.ofList
+            let rightKeys = other.Rows |> List.map rowGroupKey |> Set.ofList
 
             Ok
                 { f with
                     Rows =
                         f.Rows
-                        |> List.filter (fun row -> Set.contains (groupKey row) rightKeys = keepPresent) }
+                        |> List.filter (fun row -> Set.contains (rowGroupKey row) rightKeys = keepPresent) }
 
     /// Does the window function read the `Of` column at all? The positional/ranking family
     /// (`RowNumber` / the three ranks / `NTile`) is computed entirely from the ORDER key, so its
@@ -1675,8 +1748,10 @@ module DataFrame =
         | _ ->
             let partIdx = spec.PartitionBy |> List.choose (colIndex f.Cols)
 
-            let partKey row =
-                partIdx |> List.map (fun i -> List.item i row)
+            let partKey (row: Cell[]) = partIdx |> List.map (fun i -> row[i])
+
+            // The ORDER keys resolved once for the step (Phase 263), not once per comparison.
+            let orderKeys = resolveSortKeys f.Cols spec.OrderBy
 
             // tag each row with its original position so we can restore input order after windowing
             let tagged = f.Rows |> List.mapi (fun i row -> i, row)
@@ -1685,7 +1760,7 @@ module DataFrame =
             let partitions =
                 tagged
                 |> List.fold
-                    (fun (order, map: Map<string list, (int * Cell list) list>) (i, row) ->
+                    (fun (order, map: Map<string list, (int * Cell[]) list>) (i, row) ->
                         // partition on the canonical token (Phase 41) — float partition keys group
                         // host-identically; the partition cells are not needed for output (rows are
                         // restored to input order by their tag)
@@ -1705,9 +1780,9 @@ module DataFrame =
 
             let ofIdx = colIndex f.Cols spec.Of
 
-            let valueAt row =
+            let valueAt (row: Cell[]) =
                 match ofIdx with
-                | Some i -> List.item i row
+                | Some i -> row[i]
                 | None -> Null
 
             let computed =
@@ -1715,8 +1790,7 @@ module DataFrame =
                 |> Map.toList
                 |> List.collect (fun (_, members) ->
                     let ordered =
-                        members
-                        |> List.sortWith (fun (_, a) (_, b) -> rowKeyCompare f.Cols spec.OrderBy a b)
+                        members |> List.sortWith (fun (_, a) (_, b) -> compareResolved orderKeys a b)
 
                     let vals = ordered |> List.map (snd >> valueAt)
 
@@ -1737,7 +1811,7 @@ module DataFrame =
                                 let step =
                                     match prev with
                                     | None -> 1
-                                    | Some p -> if rowKeyCompare f.Cols spec.OrderBy p row = 0 then 0 else 1
+                                    | Some p -> if compareResolved orderKeys p row = 0 then 0 else 1
 
                                 Some row, step :: acc)
                             |> snd
@@ -1778,7 +1852,7 @@ module DataFrame =
                                 (fun (acc, i, cur, prev) (_, row) ->
                                     let r =
                                         match prev with
-                                        | Some p when rowKeyCompare f.Cols spec.OrderBy p row = 0 -> cur
+                                        | Some p when compareResolved orderKeys p row = 0 -> cur
                                         | _ -> i + 1
 
                                     (Int r :: acc), i + 1, r, Some row)
@@ -1835,7 +1909,7 @@ module DataFrame =
 
             Ok
                 { Cols = f.Cols @ [ spec.As, ty ]
-                  Rows = List.map2 (fun row out -> row @ [ out ]) f.Rows computed }
+                  Rows = List.map2 (fun row out -> Array.append row [| out |]) f.Rows computed }
 
     let private evalPivot (f: Frame) (spec: PivotSpec) : Result<Frame, EvalError> =
         let need name =
@@ -1856,13 +1930,12 @@ module DataFrame =
                 |> Result.bind (fun valIdx ->
                     let valType = snd (List.item valIdx f.Cols)
 
-                    let indexKey row =
-                        idxIdx |> List.map (fun i -> List.item i row)
+                    let indexKey (row: Cell[]) = idxIdx |> List.map (fun i -> row[i])
 
                     // distinct on-values (sorted by canonical string for a deterministic column order)
                     let onValues =
                         f.Rows
-                        |> List.map (fun row -> List.item onIdx row)
+                        |> List.map (fun row -> row[onIdx])
                         |> List.filter (fun c -> not (Cell.isNull c))
                         |> List.distinct
                         |> List.sortBy cellString
@@ -1897,13 +1970,14 @@ module DataFrame =
                         let cellsFor ov =
                             let matching =
                                 f.Rows
-                                |> List.filter (fun row ->
-                                    groupKey (indexKey row) = kt && cellEq (List.item onIdx row) ov)
-                                |> List.map (fun row -> List.item valIdx row)
+                                |> List.filter (fun row -> groupKey (indexKey row) = kt && cellEq (row[onIdx]) ov)
+                                |> List.map (fun row -> row[valIdx])
 
                             aggCells spec.Agg valType matching
 
-                        onValues |> traverseResult cellsFor |> Result.map (fun vals -> k @ vals))
+                        onValues
+                        |> traverseResult cellsFor
+                        |> Result.map (fun vals -> List.toArray (k @ vals)))
                     |> Result.map (fun rows ->
                         { Cols = idxCols @ pivotCols
                           Rows = rows }))))
@@ -1933,9 +2007,9 @@ module DataFrame =
                 let rows =
                     f.Rows
                     |> List.collect (fun row ->
-                        let idCells = idIdx |> List.map (fun i -> List.item i row)
+                        let idCells = idIdx |> List.map (fun i -> row[i]) |> List.toArray
 
-                        List.map2 (fun name vi -> idCells @ [ Str name; List.item vi row ]) valueVars valIdx)
+                        List.map2 (fun name vi -> Array.append idCells [| Str name; row[vi] |]) valueVars valIdx)
 
                 { Cols = cols; Rows = rows }))
 
@@ -2169,8 +2243,12 @@ module DataFrame =
     /// Evaluate one `ColExpr` against a single row, resolving `Param`s from `env` — the reference
     /// expression evaluator itself. Exposed so an incremental evaluator computes a re-evaluated
     /// cell through the same path as a full evaluation rather than a copy of it.
+    ///
+    /// Its twin inside this assembly is `resolveExpr` once per step and `evalResolved` once per
+    /// array row (Phase 263) — the same evaluator, split at the point where the names are looked up,
+    /// which is how the incremental seam calls it. This list form is that pair composed.
     let evalExprInRow (env: Map<string, Cell>) (cols: Schema) (row: Cell list) (e: ColExpr) : Result<Cell, EvalError> =
-        evalExpr env cols row e
+        evalResolved (List.toArray row) (resolveExpr env cols e)
 
     /// Compute one aggregate over a cell list of the given source type, in the evaluator's
     /// `EvalError` envelope — what `GroupBy` calls per group. Exposed so an incremental evaluator
@@ -2198,8 +2276,11 @@ module DataFrame =
     /// It is a comparator, so it says nothing about STABILITY: `Sort`'s stability comes from
     /// `List.sortWith` being stable over the frame order, and a caller reproducing the reference
     /// ordering must reproduce that too, not only this function.
+    ///
+    /// Its twin inside this assembly is `resolveSortKeys` once per step and `compareResolved` once
+    /// per comparison of array rows (Phase 263); this list form is that pair composed.
     let rowCompareBy (cols: Schema) (by: (string * SortDir) list) (r1: Cell list) (r2: Cell list) : int =
-        rowKeyCompare cols by r1 r2
+        compareResolved (resolveSortKeys cols by) (List.toArray r1) (List.toArray r2)
 
     /// Is this window function's frame BOUNDED — its output for a row a function of the rows within
     /// a fixed offset of it in its partition's order (Phase 120)?
@@ -2248,6 +2329,19 @@ module DataFrame =
         (rows: Cell list list)
         (spec: WindowSpec)
         : Result<Schema * Cell list list, EvalError> =
+        evalWindow
+            { Cols = cols
+              Rows = rows |> List.map List.toArray }
+            spec
+        |> Result.map (fun f -> f.Cols, f.Rows |> List.map List.ofArray)
+
+    /// `windowStep` over array rows (Phase 263) — the twin the incremental seam calls, whose
+    /// working rows are arrays already, so it pays no conversion either way.
+    let internal windowStepRows
+        (cols: Schema)
+        (rows: Cell[] list)
+        (spec: WindowSpec)
+        : Result<Schema * Cell[] list, EvalError> =
         evalWindow { Cols = cols; Rows = rows } spec
         |> Result.map (fun f -> f.Cols, f.Rows)
 

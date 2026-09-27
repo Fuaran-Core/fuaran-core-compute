@@ -11,7 +11,8 @@ namespace Fuaran.Core
 //
 //   * THE REFERENCE EVALUATOR STAYS THE ORACLE. Everything here is a
 //     restriction of `DataFrame.evalPipeline`, never a second semantics: a
-//     re-evaluated cell goes through `DataFrame.evalExprInRow`, a recomputed
+//     re-evaluated cell goes through `DataFrame.evalExprInRow`'s array twin
+//     (`resolveExpr` once per step, `evalResolved` per row), a recomputed
 //     aggregate through `DataFrame.aggregateCells`, a derived column's type
 //     through `DataFrame.inferCellType`. One implementation, called on fewer
 //     rows. The conformance family certifies the two results identical for
@@ -696,9 +697,12 @@ module Incremental =
     // through per-index list access, so the seam inherited the reference evaluator's quadratic even
     // when it evaluated a single row expression — and that is why a restricted refresh used to
     // finish AFTER the full evaluation it replaces. Same rows, same table, one traversal each.
-    let private rowsOf (t: Table) : Cell list list = RowAccess.rows t
+    //
+    // The rows are arrays (Phase 263), as the reference evaluator's frame's are: the walk reads a
+    // cell by a column index it resolved once for the step, and appends or replaces one by copy.
+    let private rowsOf (t: Table) : Cell[] list = RowAccess.rows t
 
-    let private tableOf (cols: Schema) (rows: Cell list list) : Table =
+    let private tableOf (cols: Schema) (rows: Cell[] list) : Table =
         { Schema = cols
           Columns = RowAccess.toColumns cols rows }
 
@@ -833,7 +837,7 @@ module Incremental =
             /// on `cellAt`.
             Stable: bool
             Alive: bool
-            Cells: Cell list
+            Cells: Cell[]
             Cached: Cell list
             Fresh: Cell list
         }
@@ -850,18 +854,18 @@ module Incremental =
     /// Filter(on the window column)` and `Filter > Window(cumulSum) > Derive(off the window column)`
     /// both DISAGREED with the reference evaluator, which is the one thing this seam promises never
     /// to do. `IncrementalRefreshCostTests` holds both as go-red cases.
-    let private cellAt
-        (env: Map<string, Cell>)
-        (cols: Schema)
-        (evalIdx: int)
-        (expr: ColExpr)
-        (w: Work)
-        : Result<Cell * bool, EvalError> =
+    ///
+    /// `expr` is the step's expression already resolved against its schema and env (Phase 263):
+    /// the evaluating steps resolve once, before their row loop, through the reference's own
+    /// `DataFrame.resolveExpr`, and this evaluates it through the reference's own
+    /// `DataFrame.evalResolved` — the array twin of `DataFrame.evalExprInRow`, so a re-evaluated
+    /// cell is still the reference's cell.
+    let private cellAt (evalIdx: int) (expr: DataFrame.ResolvedExpr) (w: Work) : Result<Cell * bool, EvalError> =
         let cached = if not w.Stable then None else List.tryItem evalIdx w.Cached
 
         match cached with
         | Some c -> Ok(c, false)
-        | None -> DataFrame.evalExprInRow env cols w.Cells expr |> Result.map (fun c -> c, true)
+        | None -> DataFrame.evalResolved w.Cells expr |> Result.map (fun c -> c, true)
 
     /// Merge two already-ordered token sequences into one, under the reference comparator, breaking
     /// a tie by ARRIVAL position. That tiebreak is what makes the merge equal to `List.sortWith` over
@@ -951,11 +955,16 @@ module Incremental =
             // The reference's own comparator, over the reference's own cells. A second comparator
             // here would agree on every corpus anyone thought to write and disagree on the first
             // null, the first tie and the first misspelled key.
+            //
+            // The keys are resolved once for the step (Phase 263) and compared through
+            // `DataFrame.compareResolved`, the array twin of `DataFrame.rowCompareBy`.
+            let keys = DataFrame.resolveSortKeys cols by
+
             let cmp (a: string) (b: string) =
                 match byToken.TryGetValue a with
                 | true, wa ->
                     match byToken.TryGetValue b with
-                    | true, wb -> DataFrame.rowCompareBy cols by wa.Cells wb.Cells
+                    | true, wb -> DataFrame.compareResolved keys wa.Cells wb.Cells
                     | _ -> 0
                 | _ -> 0
 
@@ -1028,7 +1037,7 @@ module Incremental =
             let aliveWorks = works |> List.filter (fun w -> w.Alive)
             let deadWorks = works |> List.filter (fun w -> not w.Alive)
 
-            DataFrame.windowStep cols (aliveWorks |> List.map (fun w -> w.Cells)) spec
+            DataFrame.windowStepRows cols (aliveWorks |> List.map (fun w -> w.Cells)) spec
             |> Result.bind (fun (cols2, rows2) ->
                 // Phase 208 — `Stable` is cleared for EVERY row here, and the dead ones too. The
                 // appended column is a function of the whole frame, so a row the delta never named
@@ -1095,7 +1104,7 @@ module Incremental =
                 DataFrame.joinKeyIndices cols rightTable.Schema on
                 |> Result.bind (fun (li, ri) ->
                     let rightKeys =
-                        rowsOf rightTable |> List.map (fun r -> ri |> List.map (fun j -> List.item j r))
+                        rowsOf rightTable |> List.map (fun r -> ri |> List.map (fun j -> r[j]))
 
                     let relationMoved = Map.tryFind joinIdx prior.JoinKeys <> Some rightKeys
 
@@ -1109,7 +1118,7 @@ module Incremental =
                         match cached with
                         | Some c -> c
                         | None ->
-                            let leftKeys = li |> List.map (fun i -> List.item i w.Cells)
+                            let leftKeys = li |> List.map (fun i -> w.Cells[i])
                             let matched = rightKeys |> List.exists (DataFrame.joinKeysMatch leftKeys)
                             Bool(matched = keepMatched)
 
@@ -1137,6 +1146,8 @@ module Incremental =
                             JoinKeys = Map.add joinIdx rightKeys caches.JoinKeys }
                         rest))
         | WFilter pred :: rest ->
+            let resolved = DataFrame.resolveExpr env cols pred
+
             let rec go acc n =
                 function
                 | [] -> Ok(List.rev acc, n)
@@ -1144,7 +1155,7 @@ module Incremental =
                     if not w.Alive then
                         go (w :: acc) n tail
                     else
-                        match cellAt env cols evalIdx pred w with
+                        match cellAt evalIdx resolved w with
                         | Error e -> Error e
                         | Ok(c, didWork) ->
                             let w' =
@@ -1165,18 +1176,21 @@ module Incremental =
             traverse resolveOne pairs
             |> Result.bind (fun resolved ->
                 let cols2 = resolved |> List.map (fun (o, ty, _) -> o, ty)
+                let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
 
                 let ws =
                     works
                     |> List.map (fun w ->
                         if w.Alive then
                             { w with
-                                Cells = resolved |> List.map (fun (_, _, i) -> List.item i w.Cells) }
+                                Cells = idx |> Array.map (fun i -> w.Cells[i]) }
                         else
                             w)
 
                 walk resolve env prior cols2 ws evalIdx evaluated caches rest)
         | WDerive(name, expr) :: rest ->
+            let resolved = DataFrame.resolveExpr env cols expr
+
             let rec go acc n =
                 function
                 | [] -> Ok(List.rev acc, n)
@@ -1184,7 +1198,7 @@ module Incremental =
                     if not w.Alive then
                         go (w :: acc) n tail
                     else
-                        match cellAt env cols evalIdx expr w with
+                        match cellAt evalIdx resolved w with
                         | Error e -> Error e
                         | Ok(c, didWork) ->
                             go ({ w with Fresh = c :: w.Fresh } :: acc) (if didWork then n + 1 else n) tail
@@ -1209,10 +1223,11 @@ module Incremental =
                         (ws
                          |> List.map (fun w ->
                              if w.Alive then
-                                 let c = List.head w.Fresh
-
-                                 { w with
-                                     Cells = w.Cells |> List.mapi (fun j cell -> if j = i then c else cell) }
+                                 // A copy with the cell replaced — never a write into the
+                                 // array this row arrived with, which the prior frame may hold.
+                                 let cells = Array.copy w.Cells
+                                 cells[i] <- List.head w.Fresh
+                                 { w with Cells = cells }
                              else
                                  w))
                     | None ->
@@ -1221,7 +1236,7 @@ module Incremental =
                          |> List.map (fun w ->
                              if w.Alive then
                                  { w with
-                                     Cells = w.Cells @ [ List.head w.Fresh ] }
+                                     Cells = Array.append w.Cells [| List.head w.Fresh |] }
                              else
                                  w))
 
@@ -1235,7 +1250,7 @@ module Incremental =
     type private GroupOutcome =
         {
             Cols: Schema
-            Rows: Cell list list
+            Rows: Cell[] list
             /// Phase 202 — the group tokens in the same order as `Rows`, which is what lets the tail
             /// walk pair each group row with the identity its cache is keyed by. Carried rather than
             /// recomputed: re-deriving it would mean re-tokenising the key cells, and a second
@@ -1338,13 +1353,12 @@ module Incremental =
                 // lazily: a carried token that finds its group already open reads no cell at all.
                 let rowGroups: string[] = Array.zeroCreate rowCount
 
-                let keyCellsOf (row: Cell list) =
-                    idxs |> List.map (fun i -> List.item i row)
+                let keyCellsOf (row: Cell[]) = idxs |> List.map (fun i -> row[i])
 
                 let slotOf = System.Collections.Generic.Dictionary<string, int>()
                 let order = ResizeArray<string>()
                 let groupKeys = ResizeArray<Cell list>()
-                let groupRows = ResizeArray<ResizeArray<Cell list>>()
+                let groupRows = ResizeArray<ResizeArray<Cell[]>>()
                 let groupToks = ResizeArray<ResizeArray<string>>()
                 let groupStable = ResizeArray<bool>()
 
@@ -1383,7 +1397,7 @@ module Incremental =
                 let recomputed = ref 0
                 let recomputedGroups = ref Set.empty
 
-                let cellsFor (gt: string) (grp: Cell list list) (toks: string list) (allStable: bool) =
+                let cellsFor (gt: string) (grp: Cell[] list) (toks: string list) (allStable: bool) =
                     let reusable =
                         allStable
                         && Map.tryFind gt priorMembers = Some toks
@@ -1397,7 +1411,7 @@ module Incremental =
 
                         resolvedAggs
                         |> traverse (fun (a, ty, ci) ->
-                            DataFrame.aggregateCells a.Fn ty (grp |> List.map (List.item ci)))
+                            DataFrame.aggregateCells a.Fn ty (grp |> List.map (fun r -> r[ci])))
 
                 List.init order.Count id
                 |> traverse (fun gi ->
@@ -1407,7 +1421,7 @@ module Incremental =
                     let toks = List.ofSeq groupToks[gi]
 
                     cellsFor gt grp toks groupStable[gi]
-                    |> Result.map (fun aggVals -> gt, k @ aggVals, aggVals, toks))
+                    |> Result.map (fun aggVals -> gt, List.toArray (k @ aggVals), aggVals, toks))
                 |> Result.map (fun built ->
                     { Cols = keyCols @ aggCols
                       Rows = built |> List.map (fun (_, row, _, _) -> row)

@@ -573,4 +573,86 @@ let scalingTests =
               Expect.isLessThan
                   costlyRefresh
                   costlyFull
-                  "a Having over one edited row of twenty thousand must cost less than recomputing it" ]
+                  "a Having over one edited row of twenty thousand must cost less than recomputing it"
+
+          // ================= Phase 263 — resolved column indices =================
+
+          testCase "a step's cost does not depend on WHICH column it names"
+          <| fun _ ->
+              // The evaluator used to look a `Col` up by NAME on every row it evaluated, then walk
+              // the row list to that index — and the sort comparator did both for every key on
+              // every comparison. Each is linear in the column's POSITION, so on a wide table the
+              // same pipeline cost more the further right the column it named sat. Phase 263
+              // resolves each step's names to indices once and holds rows as arrays, so the
+              // position is a single load. This case states that as a ratio between the SAME
+              // pipeline over the first column and over the last one of a wide table: every other
+              // cost (the transposes, the filter's arithmetic, the sort's comparisons) is identical
+              // between the two, so the ratio isolates what the name lookup costs.
+              //
+              // Measured on this table in a Release build, the pre-263 evaluator against this one:
+              // before, first 67.5 ms and last 264.0 ms, ratio 3.9 (red); after, first 40.6 ms and
+              // last 34.5 ms, ratio 0.85. The bound of 2 sits about twice below the first figure and
+              // twice above the second.
+              let width = 200
+              let rows = 2_000
+              let names = [ for c in 0 .. width - 1 -> "c" + string c ]
+
+              let wide: Table =
+                  { Schema = names |> List.map (fun n -> n, IntType)
+                    Columns =
+                      names
+                      |> List.map (fun n ->
+                          Column.create n IntType [ for i in 0 .. rows - 1 -> Int((i * 7919) % rows) ]) }
+
+              // A row expression that names the column 129 times (the costly cases' chain, sixty-four
+              // levels deep and rebuilt over `name`) and a sort keyed on it: the two places the lookup
+              // was paid per row and per comparison. Each level adds one, so every row passes. The
+              // depth is what makes the lookup, rather than the transposes, the measured term.
+              let over (name: string) : Transform list =
+                  let rec nest n e =
+                      if n = 0 then
+                          e
+                      else
+                          nest
+                              (n - 1)
+                              (Binary(
+                                  Sub,
+                                  Binary(Add, e, Binary(Add, Col name, Lit(Int 2))),
+                                  Binary(Add, Col name, Lit(Int 1))
+                              ))
+
+                  [ Filter(Binary(Ge, nest 64 (Col name), Lit(Int -1)))
+                    Transform.sortBy [ name, Asc ] ]
+
+              let first = List.head names
+              let last = List.last names
+
+              // Same answer shape either way — the case is about cost, but a pipeline that errored
+              // out early would flatter whichever side it hit.
+              for name in [ first; last ] do
+                  Expect.equal
+                      (Table.rowCount (ok (DataFrame.evalPipeline (over name) wide)))
+                      rows
+                      "the pipeline keeps every row"
+
+              let firstMs =
+                  bestMs 5 (fun () -> DataFrame.evalPipeline (over first) wide |> ok |> ignore)
+
+              let lastMs =
+                  bestMs 5 (fun () -> DataFrame.evalPipeline (over last) wide |> ok |> ignore)
+
+              let r = if firstMs <= 0.0 then infinity else lastMs / firstMs
+
+              printfn
+                  "  [scaling] %-28s first %7.2f ms vs last %7.2f ms @ %d x %d   ratio %6.2f"
+                  "column position"
+                  firstMs
+                  lastMs
+                  rows
+                  width
+                  r
+
+              Expect.isLessThan
+                  r
+                  2.0
+                  "naming the last of two hundred columns must not cost several times naming the first" ]
