@@ -49,6 +49,15 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+# The clock leg (Phase 282): the cases whose claim is about TIME, alone in their own process after
+# the main suite (which no longer contains them), each red only if red on three attempts. The leg
+# fails if it ran fewer cases than its inventory, so a filter cannot pass it vacuously.
+dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build -- --clock-leg
+if ($LASTEXITCODE -ne 0) {
+    Write-Host '==== verify: the clock leg FAILED (a timing case red on all three attempts, or cases missing)' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
 # The C# facade's conformance report over the dataframe half (`ColExpr`, `Transform`): a C#
 # consumer constructs and reads both through Fuaran.Core.DataFrame.CSharp alone, the
 # read-then-rebuild round trip is the identity over a generated sample, that sample reaches every
