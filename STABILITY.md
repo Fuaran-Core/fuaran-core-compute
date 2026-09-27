@@ -46,7 +46,18 @@ CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
 It rewrites EVERY drifted baseline, not only the one you were looking at: stage the baselines you
 meant to move by name.
 
-## 0.34.0 — DRAFT
+## 0.34.0 — released 2026-09-27 as `v0.34.0`
+
+**Release record.** The cut-time Fable gate ran green against the candidate on 2026-09-27: the three F#
+packages at `0.34.0` compiled under Fable 5 over the substrate at `0.32.0` (a scratch project referencing
+`Fuaran.Core.DataFrame`, `Fuaran.Core.Column.Ops` and `Fuaran.Core.DataFrame.Conformance` from the candidate
+feed, every transitive `Fuaran.Core.*` package from the released `0.32.0`; `fable_modules` carried all three at
+`0.34.0`; the emitted program ran under node and its prepared-source and incremental answers were byte-equal to
+the full evaluation's). The C# facade package is excused from Fable as its parent is. The full gate
+(`verify.ps1`) ran green on the release commit through the dispatch queue, and the proof leg verified
+`ColumnOps` and `Pipeline` on the Phase 267 tree. The law corpus copy was re-emitted at this version with every
+vector unchanged.
+
 
 Opened by Phase 267, which makes the evaluator's working frame column-major and typed, and adds the
 one public surface that earns its place over it. The four packages ship at this version together;
