@@ -357,6 +357,11 @@ type IncrementalEval =
             Scheme: string
             /// The source it was last evaluated against.
             Source: Table
+            /// Phase 267 — the prepared form of `Source`, where the state was primed over one
+            /// (`primePrepared`): the frame the reference path evaluates over, held so a refresh
+            /// whose source IS that table again (the same object) pays the boundary no second time.
+            /// `None` on a state primed over a bare table.
+            Prepared: Prepared option
             /// The pipeline's result over that source.
             Output: Table
             /// Phase 208 — every source row's identity token, in the SOURCE's own row order. It is
@@ -1616,6 +1621,7 @@ module Incremental =
         (prefix: PrefixStep list)
         (final: (string list * Agg list * PrefixStep list) option)
         (source: Table)
+        (prepared: Prepared option)
         (tokens: string[])
         (prior: IncrementalEval option)
         (named: Set<string> option)
@@ -1734,6 +1740,7 @@ module Incremental =
                       Env = env
                       Scheme = scheme
                       Source = source
+                      Prepared = prepared
                       Output = tableOf cols (aliveWorks |> List.map (fun w -> w.Cells))
                       Tokens = tokens
                       RowCells = rowCells
@@ -1765,6 +1772,7 @@ module Incremental =
                           Env = env
                           Scheme = scheme
                           Source = source
+                          Prepared = prepared
                           Output = tableOf outCols outRows
                           Tokens = tokens
                           RowCells = rowCells
@@ -1851,15 +1859,20 @@ module Incremental =
         (pipeline: Transform list)
         (p: IncrementalPlan)
         (source: Table)
+        (prepared: Prepared option)
         (recompute: int -> Recompute)
         : Result<IncrementalEval, EvalError> =
-        DataFrame.evalPipelineWithInEnvCounted resolve env pipeline source
+        // Over the prepared frame where there is one (Phase 267), the `Table` boundary otherwise.
+        (match prepared with
+         | Some p -> DataFrame.evalPreparedCounted resolve env pipeline p
+         | None -> DataFrame.evalPipelineWithInEnvCounted resolve env pipeline source)
         |> Result.map (fun (output, evaluated) ->
             { Plan = p
               Pipeline = pipeline
               Env = env
               Scheme = scheme
               Source = source
+              Prepared = prepared
               Output = output
               Tokens = [||]
               RowCells = [||]
@@ -1890,6 +1903,7 @@ module Incremental =
         (idw: RowIdentity<'Id>)
         (pipeline: Transform list)
         (source: Table)
+        (prepared: Prepared option)
         (prior: IncrementalEval option)
         (named: Set<string> option)
         (recomputeOf: int -> int -> Recompute)
@@ -1898,11 +1912,11 @@ module Incremental =
         let p = plan pipeline
 
         match p.Strategy, split pipeline with
-        | ReferenceOnly r, _ -> runReference resolve env idw.Scheme pipeline p source (onDeclined r)
+        | ReferenceOnly r, _ -> runReference resolve env idw.Scheme pipeline p source prepared (onDeclined r)
         | _, None ->
             // Unreachable while `plan` and `split` agree; the reference path is the safe reading of
             // a disagreement, so it is taken rather than asserted away.
-            runReference resolve env idw.Scheme pipeline p source (fun n -> FullRecompute(n, PipelineChanged))
+            runReference resolve env idw.Scheme pipeline p source prepared (fun n -> FullRecompute(n, PipelineChanged))
         | _, Some(prefix, final) ->
             // Phase 208 — the prior evaluation's token array is handed to the minting so an unmoved
             // row's token comes back as the prior STRING INSTANCE; `runIncremental`'s positional
@@ -1912,10 +1926,23 @@ module Incremental =
 
             match tokensOf idw priorTokens source with
             | Error defect ->
-                runReference resolve env idw.Scheme pipeline p source (fun n ->
+                runReference resolve env idw.Scheme pipeline p source prepared (fun n ->
                     FullRecompute(n, RowIdentityUnusable defect))
             | Ok tokens ->
-                runIncremental resolve env idw.Scheme pipeline p prefix final source tokens prior named recomputeOf
+                runIncremental
+                    resolve
+                    env
+                    idw.Scheme
+                    pipeline
+                    p
+                    prefix
+                    final
+                    source
+                    prepared
+                    tokens
+                    prior
+                    named
+                    recomputeOf
 
     /// Evaluate `pipeline` over `source` from scratch, building the state a later `refresh`
     /// restricts. Equal to `DataFrame.evalPipelineWithInEnv resolve env pipeline source` — priming
@@ -1937,7 +1964,30 @@ module Incremental =
         (pipeline: Transform list)
         (source: Table)
         : Result<IncrementalEval, EvalError> =
-        run resolve env idw pipeline source None None (fun evaluated _ -> Primed evaluated) (fun _ n -> Primed n)
+        run resolve env idw pipeline source None None None (fun evaluated _ -> Primed evaluated) (fun _ n -> Primed n)
+
+    /// `prime` over a source prepared once (`DataFrame.prepare`; Phase 267): the state `prime`
+    /// builds over the prepared table — equal to it in every field a consumer can read — with the
+    /// reference path evaluating over the prepared frame rather than paying the `Table` boundary
+    /// again, and the prepared form held in the state.
+    let primePrepared
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (idw: RowIdentity<'Id>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<IncrementalEval, EvalError> =
+        run
+            resolve
+            env
+            idw
+            pipeline
+            prepared.Source
+            (Some prepared)
+            None
+            None
+            (fun evaluated _ -> Primed evaluated)
+            (fun _ n -> Primed n)
 
     /// Advance a state against a delta describing the change from the state's source to `source`.
     /// The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every
@@ -1975,6 +2025,13 @@ module Incremental =
                     else
                         None
 
+        // Phase 267 — the state's prepared form is reused only where this refresh's source IS the
+        // table it was prepared from: the same object, so the same cells.
+        let reusable =
+            match state.Prepared with
+            | Some p when obj.ReferenceEquals(p.Source, source) -> Some p
+            | _ -> None
+
         match stale with
         | Some r ->
             // The answer is a full evaluation either way; taking it through the incremental path
@@ -1986,6 +2043,7 @@ module Incremental =
                 idw
                 pipeline
                 source
+                reusable
                 None
                 None
                 (fun evaluated _ -> FullRecompute(evaluated, r))
@@ -2036,6 +2094,7 @@ module Incremental =
                     idw
                     pipeline
                     source
+                    reusable
                     (Some state)
                     named
                     (fun evaluated groups ->
@@ -2051,6 +2110,14 @@ module Incremental =
         (source: Table)
         : Result<IncrementalEval, EvalError> =
         prime DataFrame.noResolve Map.empty idw pipeline source
+
+    /// `primePrepared` over embedded sources with no params.
+    let primeOnPrepared
+        (idw: RowIdentity<'Id>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<IncrementalEval, EvalError> =
+        primePrepared DataFrame.noResolve Map.empty idw pipeline prepared
 
     /// `refresh` over embedded sources with no params — the everyday call.
     let refreshOn

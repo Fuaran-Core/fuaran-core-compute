@@ -724,27 +724,31 @@ module internal RowAccess =
         cols
         |> List.mapi (fun ci (name, ty) -> Column.create name ty (rows |> List.map (fun r -> r[ci])))
 
+/// A source prepared once for many evaluations (Phase 267): the table it was made from, held by
+/// reference, beside the evaluator's dense columnar form of it — one typed unpack per column, paid
+/// here rather than by every pipeline that reads the source. Opaque: nothing is readable from one
+/// but through `DataFrame.evalPrepared` and `Incremental.primePrepared`, so the working form stays
+/// free to move behind it, as the incremental state did behind its own type in `0.27.0`.
+type Prepared =
+    internal
+        {
+            /// The table this was prepared from — the consumer's own object, never copied.
+            Source: Table
+            /// Its columnar form.
+            Frame: Frame
+        }
+
 /// The pure reference evaluator + the algebra's pinned semantics. Every host evaluator is
 /// certified byte-identical to this through `Conformance.transformLaws`.
 module DataFrame =
 
-    // ---- internal row-oriented frame (the evaluator's working form) ----
-
-    // Rows are arrays (Phase 263): every verb reads a cell by a column index it resolved once for
-    // the step, which on a list was a walk from the row's head per read.
-    type private Frame = { Cols: Schema; Rows: Cell[] list }
-
-    // One transpose each way (Phase 206). These were the evaluator's per-index readers — a
-    // `Column.cell i c` per row per column going in, a `List.item ci row` per column per row coming
-    // back — and between them they made every pipeline quadratic in the row count. The results are
-    // unchanged; only the number of list traversals is.
-    let private toFrame (t: Table) : Frame =
-        { Cols = t.Schema
-          Rows = RowAccess.rows t }
-
-    let private ofFrame (f: Frame) : Table =
-        { Schema = f.Cols
-          Columns = RowAccess.toColumns f.Cols f.Rows }
+    // ---- the evaluator's working form ----
+    //
+    // The frame is column-major and typed (Phase 267; `Frame.fs`): one vector per column beside a
+    // validity mask, a selection vector for the rows a step kept and their order, and the `Table`
+    // boundary paid once each way (`Frame.ofTable` / `Frame.toTable`). Rows were arrays (Phase 263)
+    // and lists before that; the cells a pipeline produces are the same under every representation,
+    // and the transform law vectors hold them so.
 
     let private colIndex (cols: Schema) (name: string) : int option =
         cols |> List.tryFindIndex (fun (n, _) -> n = name)
@@ -1786,9 +1790,9 @@ module DataFrame =
         | InParam(subject, _) -> Typing.inList (go subject)
 
     /// The static type of an expression's present values over a schema, or `None` where the schema
-    /// does not decide it. Internal in this phase: its public exposure moves the package surface and
-    /// rides Phase 267's version cut.
-    let internal typeOf (cols: Schema) (e: ColExpr) : ColumnType option = Typing.toOption (typing cols e)
+    /// does not decide it — the typer a static reader (`SchemaWalk`, a planner) asks (Phase 266;
+    /// public on the `0.34.0` draft).
+    let typeOf (cols: Schema) (e: ColExpr) : ColumnType option = Typing.toOption (typing cols e)
 
     /// The column type a `Derive` of `e` produces, where the expression alone decides it.
     ///
@@ -1843,14 +1847,34 @@ module DataFrame =
         /// The reference arm, for operands the typer could not decide.
         | Boxed
 
-    /// The one error slot a compiled tree reports through.
-    type internal ErrorSlot = { mutable Error: EvalError option }
+    /// The one slot a compiled tree reports through: the first error a row met, and — for the
+    /// typed nodes (Phase 267) — whether the node just evaluated answered null. A typed node
+    /// returns its carrier value and writes `Null` on EVERY call, so its parent reads the flag
+    /// fresh after each child; a boxed node answers `Null` as the cell and leaves the flag alone.
+    type internal ErrorSlot =
+        { mutable Error: EvalError option
+          mutable Null: bool }
 
-    /// A step's compiled expression: one closure tree over the array row, and the slot it reports
-    /// through. `Kernels` lists the kernel of every binary node in the tree, in compile order, so a
-    /// sample can be checked for reaching each of them.
+    /// A compiled node (Phase 267): a function of the PHYSICAL row index over the frame's vectors,
+    /// typed where the node's type is decided — its present values read and produced unboxed, the
+    /// typed path — and boxed where it is not (the reference arm, reading cells through the
+    /// vectors' accessor). `NNull` is a node that never produces a present value — the null
+    /// literal, an empty coalesce — which every typed parent absorbs in its own carrier; `NStr`
+    /// names the string family its values belong to.
+    type internal Node =
+        | NInt of (int -> int)
+        | NFloat of (int -> float)
+        | NBool of (int -> bool)
+        | NStr of ColumnType * (int -> string)
+        | NNull
+        | NCell of (int -> Cell)
+
+    /// A step's compiled expression: the node tree over the frame it was compiled against, the
+    /// same tree boxed at the root (`Run`), the slot it reports through, and `Kernels` — the kernel
+    /// of every binary node in compile order, so a sample can be checked for reaching each.
     type internal CompiledExpr =
-        { Run: Cell[] -> Cell
+        { Node: Node
+          Run: int -> Cell
           Slot: ErrorSlot
           Kernels: Kernel list }
 
@@ -1935,23 +1959,14 @@ module DataFrame =
         | EndsWith -> Some(fun s t -> s.EndsWith(t, System.StringComparison.Ordinal))
         | _ -> None
 
-    /// The float-carrier arithmetic an operator performs; `None` off the float family (`Mod` is
-    /// integer-only in the reference, so it is not here).
-    let private floatArith (op: BinOp) : (float -> float -> Cell) option =
-        match op with
-        | Add -> Some(fun x y -> Float(x + y))
-        | Sub -> Some(fun x y -> Float(x - y))
-        | Mul -> Some(fun x y -> Float(x * y))
-        | Div -> Some(fun x y -> if y = 0.0 then Null else Float(x / y))
-        | _ -> None
-
-    /// Compile a resolved expression over a step's schema into a closure tree — once per step,
-    /// before the row loop. `cols` is the schema the expression was resolved against, so a column
-    /// index in it names a column the typer can read the declared type of.
-    let internal compileExpr (cols: Schema) (e: ResolvedExpr) : CompiledExpr =
-        let slot: ErrorSlot = { Error = None }
+    /// Compile a resolved expression over the frame it will run against into a node tree — once
+    /// per step, before the row loop. The vectors decide the leaves' types exactly (a typed vector
+    /// IS its declared type), so the typed kernels read and produce carrier values unboxed; where a
+    /// leaf is boxed or the typer cannot decide, the reference arm answers.
+    let internal compileExpr (f: Frame) (e: ResolvedExpr) : CompiledExpr =
+        let slot: ErrorSlot = { Error = None; Null = false }
         let kernels = ResizeArray<Kernel>()
-        let types = cols |> List.map snd |> List.toArray
+        let types = f.Cols |> List.map snd |> List.toArray
 
         // Record an error — the first one in the row wins — and answer a cell the caller will
         // discard: every ancestor checks the slot before it reads a child's answer.
@@ -1968,65 +1983,299 @@ module DataFrame =
             | Ok c -> c
             | Error err -> fail err
 
-        /// The integer kernel's operation, with the reference's overflow rule and message.
-        let intArith (op: BinOp) : (int64 -> int64 -> Cell) option =
-            let ranged (ctx: string) (r: int64) : Cell =
-                if inInt32Range r then
-                    Int(int r)
-                else
-                    fail (overflowed ctx r)
+        // ---- the typed path (Phase 267): readers, adapters and kernels over unboxed values ----
 
+        /// A node as a cell reader — the boxed view a reference-arm parent reads its children by.
+        /// A typed node boxes its present value; the flag says whether there is one.
+        let cellOf (n: Node) : int -> Cell =
+            match n with
+            | NCell r -> r
+            | NNull -> fun _ -> Null
+            | NInt r ->
+                fun p ->
+                    let v = r p
+                    if slot.Null then Null else Int v
+            | NFloat r ->
+                fun p ->
+                    let v = r p
+                    if slot.Null then Null else Float v
+            | NBool r ->
+                fun p ->
+                    let v = r p
+                    if slot.Null then Null else Bool v
+            | NStr(ty, r) ->
+                let mk = Vec.strCell ty
+
+                fun p ->
+                    let v = r p
+                    if slot.Null then Null else mk v
+
+        /// A node that never produces a present value, read in a typed parent's carrier.
+        let absent (dflt: 'a) : int -> 'a =
+            fun _ ->
+                slot.Null <- true
+                dflt
+
+        let asInt (n: Node) : (int -> int) option =
+            match n with
+            | NInt r -> Some r
+            | NNull -> Some(absent 0)
+            | NFloat _
+            | NBool _
+            | NStr _
+            | NCell _ -> None
+
+        /// An int node reads as a float node in the float carrier, as the reference widens it.
+        let asFloat (n: Node) : (int -> float) option =
+            match n with
+            | NFloat r -> Some r
+            | NInt r -> Some(fun p -> float (r p))
+            | NNull -> Some(absent 0.0)
+            | NBool _
+            | NStr _
+            | NCell _ -> None
+
+        let asBool (n: Node) : (int -> bool) option =
+            match n with
+            | NBool r -> Some r
+            | NNull -> Some(absent false)
+            | NInt _
+            | NFloat _
+            | NStr _
+            | NCell _ -> None
+
+        let asStr (n: Node) : (int -> string) option =
+            match n with
+            | NStr(_, r) -> Some r
+            | NNull -> Some(absent "")
+            | NInt _
+            | NFloat _
+            | NBool _
+            | NCell _ -> None
+
+        /// Does the node answer null at this row? The typed readers are run for their flag (and
+        /// their errors); a boxed reader for its cell.
+        let presence (n: Node) : int -> bool =
+            match n with
+            | NInt r ->
+                fun p ->
+                    r p |> ignore
+                    slot.Null
+            | NFloat r ->
+                fun p ->
+                    r p |> ignore
+                    slot.Null
+            | NBool r ->
+                fun p ->
+                    r p |> ignore
+                    slot.Null
+            | NStr(_, r) ->
+                fun p ->
+                    r p |> ignore
+                    slot.Null
+            | NNull -> fun _ -> true
+            | NCell r ->
+                fun p ->
+                    match r p with
+                    | Null -> true
+                    | _ -> false
+
+        /// A typed binary node: the left operand, then the right, then `combine` over two present
+        /// values — stopping at the first recorded error exactly where `evalResolved`'s
+        /// `Result.bind` chain stops, and null where either operand is (`combine` may still answer
+        /// null itself, as a division by zero does).
+        let lift2 (ra: int -> 'a) (rb: int -> 'b) (dflt: 'r) (combine: 'a -> 'b -> 'r) : int -> 'r =
+            fun p ->
+                let x = ra p
+
+                if erred () then
+                    dflt
+                else
+                    let xn = slot.Null
+                    let y = rb p
+
+                    if erred () then
+                        dflt
+                    else
+                        let yn = slot.Null
+
+                        if xn || yn then
+                            slot.Null <- true
+                            dflt
+                        else
+                            slot.Null <- false
+                            combine x y
+
+        /// The integer kernel's result in the int32 band, or the reference's overflow, recorded.
+        let ranged (ctx: string) (r: int64) : int =
+            if inInt32Range r then
+                int r
+            else
+                fail (overflowed ctx r) |> ignore
+                0
+
+        /// The integer kernel's operation over two present ints, with the reference's overflow
+        /// rule and message; `Mod` by zero answers null. int64 remainder avoids the .NET
+        /// `Int32.MinValue % -1` OverflowException (Phase 39).
+        let intOp (op: BinOp) : (int -> int -> int) option =
             match op with
-            | Add -> Some(fun x y -> ranged "add" (x + y))
-            | Sub -> Some(fun x y -> ranged "sub" (x - y))
-            | Mul -> Some(fun x y -> ranged "mul" (x * y))
-            // int64 remainder avoids the .NET `Int32.MinValue % -1` OverflowException (Phase 39).
-            | Mod -> Some(fun x y -> if y = 0L then Null else ranged "mod" (x % y))
+            | Add -> Some(fun x y -> ranged "add" (int64 x + int64 y))
+            | Sub -> Some(fun x y -> ranged "sub" (int64 x - int64 y))
+            | Mul -> Some(fun x y -> ranged "mul" (int64 x * int64 y))
+            | Mod ->
+                Some(fun x y ->
+                    if y = 0 then
+                        slot.Null <- true
+                        0
+                    else
+                        ranged "mod" (int64 x % int64 y))
             | _ -> None
 
-        /// A binary node: evaluate the left operand, then the right, then combine — stopping at the
-        /// first recorded error exactly where `evalResolved`'s `Result.bind` chain stops.
-        let binaryNode (op: BinOp) (kernel: Kernel) (ra: Cell[] -> Cell) (rb: Cell[] -> Cell) : Cell[] -> Cell =
+        /// The float-carrier arithmetic an operator performs; `Div` by zero answers null, and `Mod`
+        /// is integer-only in the reference, so it is not here.
+        let floatOp (op: BinOp) : (float -> float -> float) option =
+            match op with
+            | Add -> Some(fun x y -> x + y)
+            | Sub -> Some(fun x y -> x - y)
+            | Mul -> Some(fun x y -> x * y)
+            | Div ->
+                Some(fun x y ->
+                    if y = 0.0 then
+                        slot.Null <- true
+                        0.0
+                    else
+                        x / y)
+            | _ -> None
+
+        /// Kleene `And` (`isAnd`) / `Or` over two boolean readers: a decided operand decides —
+        /// `false` under `And`, `true` under `Or` — then a null operand makes the answer null, then
+        /// both are present. Both operands are read, as the reference reads them, for their errors.
+        let kleene (isAnd: bool) (ra: int -> bool) (rb: int -> bool) : int -> bool =
+            fun p ->
+                let x = ra p
+
+                if erred () then
+                    false
+                else
+                    let xn = slot.Null
+                    let y = rb p
+
+                    if erred () then
+                        false
+                    else
+                        let yn = slot.Null
+
+                        if (not xn && x = not isAnd) || (not yn && y = not isAnd) then
+                            slot.Null <- false
+                            not isAnd
+                        elif xn || yn then
+                            slot.Null <- true
+                            false
+                        else
+                            slot.Null <- false
+                            isAnd
+
+        /// The vector path of a binary node: the kernel over two typed children, unboxed — or
+        /// `None`, where a child is boxed and the kernel's cell path (with its per-row tag check)
+        /// answers instead.
+        let typedBinary (op: BinOp) (kernel: Kernel) (na: Node) (nb: Node) : Node option =
+            match kernel with
+            | IntArith ->
+                match asInt na, asInt nb, intOp op with
+                | Some ra, Some rb, Some k -> Some(NInt(lift2 ra rb 0 k))
+                | _ -> None
+            | FloatArith ->
+                match asFloat na, asFloat nb, floatOp op with
+                | Some ra, Some rb, Some k -> Some(NFloat(lift2 ra rb 0.0 k))
+                | _ -> None
+            | NumCompare ->
+                match comparisonTest op with
+                | None -> None
+                | Some test ->
+                    match na, nb with
+                    | (NInt _ | NNull), (NInt _ | NNull) ->
+                        match asInt na, asInt nb with
+                        | Some ra, Some rb -> Some(NBool(lift2 ra rb false (fun x y -> test (compare x y))))
+                        | _ -> None
+                    | _ ->
+                        match asFloat na, asFloat nb with
+                        | Some ra, Some rb -> Some(NBool(lift2 ra rb false (fun x y -> test (compareNum x y))))
+                        | _ -> None
+            | OrdinalCompare ->
+                match comparisonTest op, asStr na, asStr nb with
+                | Some test, Some ra, Some rb ->
+                    Some(NBool(lift2 ra rb false (fun x y -> test (System.String.CompareOrdinal(x, y)))))
+                | _ -> None
+            | StrPredicate ->
+                match stringTest op, asStr na, asStr nb with
+                | Some test, Some ra, Some rb -> Some(NBool(lift2 ra rb false test))
+                | _ -> None
+            | Logical ->
+                match asBool na, asBool nb with
+                | Some ra, Some rb ->
+                    match op with
+                    | And -> Some(NBool(kleene true ra rb))
+                    | Or -> Some(NBool(kleene false ra rb))
+                    | _ -> None
+                | _ -> None
+            | Boxed -> None
+
+        // ---- the cell path (Phase 266): the reference arm over boxed readers ----
+
+        /// A binary node over boxed readers: evaluate the left operand, then the right, then
+        /// combine — stopping at the first recorded error exactly where `evalResolved`'s
+        /// `Result.bind` chain stops. A typed kernel here checks the tags per row: a pair it
+        /// handles is answered in the carrier through the SAME operation the vector path runs, and
+        /// every other pair — a cell disagreeing with its column's declared type included — by
+        /// the reference's `binaryOp`.
+        let binaryNode (op: BinOp) (kernel: Kernel) (ra: int -> Cell) (rb: int -> Cell) : int -> Cell =
             let boxed (x: Cell) (y: Cell) : Cell = unwrap (binaryOp op x y)
 
-            let both (combine: Cell -> Cell -> Cell) : Cell[] -> Cell =
-                fun row ->
-                    let x = ra row
+            let both (combine: Cell -> Cell -> Cell) : int -> Cell =
+                fun p ->
+                    let x = ra p
 
                     if erred () then
                         Null
                     else
-                        let y = rb row
+                        let y = rb p
                         if erred () then Null else combine x y
+
+            /// A carrier operation over two present values, boxed — null where the operation
+            /// answered null.
+            let inCarrier (k: 'a -> 'b -> 'r) (box: 'r -> Cell) (x: 'a) (y: 'b) : Cell =
+                slot.Null <- false
+                let r = k x y
+                if slot.Null then Null else box r
 
             match kernel with
             | Boxed -> both boxed
             | IntArith ->
-                match intArith op with
+                match intOp op with
                 | Some k ->
                     both (fun x y ->
                         match x, y with
-                        | Int i, Int j -> k (int64 i) (int64 j)
+                        | Int i, Int j -> inCarrier k Int i j
                         | Null, _
                         | _, Null -> Null
                         | _ -> boxed x y)
                 | None -> both boxed
             | FloatArith ->
-                match floatArith op with
+                match floatOp op with
                 | Some k ->
                     // Two `Int`s under `Add`/`Sub`/`Mul` are INTEGER arithmetic in the reference
                     // (a typed kernel was chosen because a `Float` was declared, so the pair is a
                     // cell disagreeing with its column); only `Div` divides them as floats.
                     let ints: int -> int -> Cell =
                         match op with
-                        | Div -> fun i j -> k (float i) (float j)
+                        | Div -> fun i j -> inCarrier k Float (float i) (float j)
                         | _ -> fun i j -> boxed (Int i) (Int j)
 
                     both (fun x y ->
                         match x, y with
-                        | Float p, Float q -> k p q
-                        | Int i, Float q -> k (float i) q
-                        | Float p, Int j -> k p (float j)
+                        | Float p, Float q -> inCarrier k Float p q
+                        | Int i, Float q -> inCarrier k Float (float i) q
+                        | Float p, Int j -> inCarrier k Float p (float j)
                         | Int i, Int j -> ints i j
                         | Null, _
                         | _, Null -> Null
@@ -2091,36 +2340,69 @@ module DataFrame =
                         | _ -> boxed x y)
                 | _ -> both boxed
 
-        let rec go (e: ResolvedExpr) : Typing * (Cell[] -> Cell) =
-            match e with
-            | RCol i -> Of types[i], (fun row -> row[i])
-            | RConst c -> Typing.ofCell c, (fun _ -> c)
-            | RFail err -> Absent, (fun _ -> fail err)
-            | RBinary(op, a, b) ->
-                let ta, ra = go a
-                let tb, rb = go b
-                let kernel = kernelOf op ta tb
-                kernels.Add kernel
-                Typing.binary op ta tb, binaryNode op kernel ra rb
-            | RNot inner ->
-                let t, r = go inner
+        // ---- the multi-way nodes: typed where every value child shares one carrier ----
 
-                Typing.not' t,
-                fun row ->
-                    let v = r row
-                    if erred () then Null else unwrap (notCell v)
-            | RCoalesce exprs ->
-                let ts, rs = exprs |> List.map go |> List.unzip
-                let rs = List.toArray rs
+        /// The carrier a set of value nodes shares, where every node is that carrier or `NNull`:
+        /// 1 int, 2 float, 3 bool, 4 string, 0 every one null; -1 where they mix or one is boxed.
+        let carrierOf (ns: Node list) : int =
+            let kind (n: Node) : int =
+                match n with
+                | NInt _ -> 1
+                | NFloat _ -> 2
+                | NBool _ -> 3
+                | NStr _ -> 4
+                | NNull -> 0
+                | NCell _ -> -1
 
-                Typing.joinAll ts,
-                fun row ->
+            (0, ns)
+            ||> List.fold (fun acc n ->
+                let k = kind n
+
+                if acc = -1 || k = -1 then -1
+                elif acc = 0 then k
+                elif k = 0 || k = acc then acc
+                else -1)
+
+        /// The first present child's value, or null when none is — children left to right, stopping
+        /// at the first error, as `evalResolved` visits them.
+        let firstPresent (rs: (int -> 'a)[]) (dflt: 'a) : int -> 'a =
+            fun p ->
+                let mutable result = dflt
+                let mutable i = 0
+                let mutable searching = true
+
+                while searching && i < rs.Length do
+                    let v = rs[i]p
+
+                    if erred () then
+                        searching <- false
+                    elif slot.Null then
+                        i <- i + 1
+                    else
+                        result <- v
+                        searching <- false
+
+                if searching then
+                    slot.Null <- true
+
+                result
+
+        /// A `Coalesce`: typed where every child shares a carrier (`t` names the string family),
+        /// the reference arm otherwise.
+        let coalesceNode (t: Typing) (ns: Node list) : Node =
+            let typed (adapt: Node -> (int -> 'a) option) (dflt: 'a) : int -> 'a =
+                firstPresent (ns |> List.map (adapt >> Option.get) |> List.toArray) dflt
+
+            let boxed () : Node =
+                let rs = ns |> List.map cellOf |> List.toArray
+
+                NCell(fun p ->
                     let mutable result = Null
                     let mutable i = 0
                     let mutable searching = true
 
                     while searching && i < rs.Length do
-                        let v = rs[i]row
+                        let v = rs[i]p
 
                         if erred () then
                             searching <- false
@@ -2131,52 +2413,178 @@ module DataFrame =
                                 result <- present
                                 searching <- false
 
-                    result
+                    result)
+
+            match carrierOf ns, t with
+            | 0, _ -> NNull
+            | 1, _ -> NInt(typed asInt 0)
+            | 2, _ -> NFloat(typed asFloat 0.0)
+            | 3, _ -> NBool(typed asBool false)
+            | 4, Of ty -> NStr(ty, typed asStr "")
+            | _ -> boxed ()
+
+        /// A `Case`: the first arm whose `when` is `Bool true` answers, else the `else`. Every
+        /// `when` is read for its errors whatever its carrier; the arms are typed where they share
+        /// one (`t` names the string family), the reference arm otherwise.
+        let caseNode (t: Typing) (whens: Node list) (thens: Node list) (els: Node) : Node =
+            let whenTrue (n: Node) : int -> bool =
+                match n with
+                | NBool r ->
+                    fun p ->
+                        let b = r p
+                        (not slot.Null) && b
+                | NNull -> fun _ -> false
+                | NCell _
+                | NInt _
+                | NFloat _
+                | NStr _ ->
+                    let r = cellOf n
+
+                    fun p ->
+                        match r p with
+                        | Bool true -> true
+                        | _ -> false
+
+            let ws = whens |> List.map whenTrue |> List.toArray
+
+            let select (rs: (int -> 'a)[]) (rElse: int -> 'a) (dflt: 'a) : int -> 'a =
+                fun p ->
+                    let mutable result = dflt
+                    let mutable i = 0
+                    let mutable searching = true
+
+                    while searching && i < ws.Length do
+                        let w = ws[i]p
+
+                        if erred () then
+                            searching <- false
+                        elif w then
+                            result <- rs[i]p
+                            searching <- false
+                        else
+                            i <- i + 1
+
+                    if searching then rElse p else result
+
+            let typed (adapt: Node -> (int -> 'a) option) (dflt: 'a) : int -> 'a =
+                select (thens |> List.map (adapt >> Option.get) |> List.toArray) (adapt els |> Option.get) dflt
+
+            match carrierOf (els :: thens), t with
+            // Every arm null: the whens are still read, for their errors.
+            | 0, _
+            | 1, _ -> NInt(typed asInt 0)
+            | 2, _ -> NFloat(typed asFloat 0.0)
+            | 3, _ -> NBool(typed asBool false)
+            | 4, Of ty -> NStr(ty, typed asStr "")
+            | _ -> NCell(select (thens |> List.map cellOf |> List.toArray) (cellOf els) Null)
+
+        let rec go (e: ResolvedExpr) : Typing * Node =
+            match e with
+            | RCol i ->
+                match f.Vecs[i] with
+                | Ints(vals, mask) ->
+                    Of IntType,
+                    NInt(fun p ->
+                        slot.Null <- not mask[p]
+                        vals[p])
+                | Floats(vals, mask) ->
+                    Of FloatType,
+                    NFloat(fun p ->
+                        slot.Null <- not mask[p]
+                        vals[p])
+                | Bools(vals, mask) ->
+                    Of BoolType,
+                    NBool(fun p ->
+                        slot.Null <- not mask[p]
+                        vals[p])
+                | Strs(ty, vals, mask) ->
+                    Of ty,
+                    NStr(
+                        ty,
+                        fun p ->
+                            slot.Null <- not mask[p]
+                            vals[p]
+                    )
+                // A column whose cells disagree with its declared type is typed as declared, as the
+                // schema-only typer types it, and read boxed: every kernel over it checks the tag per
+                // row and hands a disagreeing cell to the reference arm.
+                | Cells cells -> Of types[i], NCell(fun p -> cells[p])
+            | RConst c ->
+                let present (v: 'a) : int -> 'a =
+                    fun _ ->
+                        slot.Null <- false
+                        v
+
+                Typing.ofCell c,
+                (match c with
+                 | Int v -> NInt(present v)
+                 | Float v -> NFloat(present v)
+                 | Bool v -> NBool(present v)
+                 | Str s -> NStr(StringType, present s)
+                 | Date s -> NStr(DateType, present s)
+                 | Timestamp s -> NStr(TimestampType, present s)
+                 | Null -> NNull)
+            | RFail err -> Absent, NCell(fun _ -> fail err)
+            | RBinary(op, a, b) ->
+                let ta, na = go a
+                let tb, nb = go b
+                let kernel = kernelOf op ta tb
+                kernels.Add kernel
+
+                let node =
+                    match typedBinary op kernel na nb with
+                    | Some n -> n
+                    | None -> NCell(binaryNode op kernel (cellOf na) (cellOf nb))
+
+                Typing.binary op ta tb, node
+            | RNot inner ->
+                let t, n = go inner
+
+                Typing.not' t,
+                (match n with
+                 // The flag is the child's: a null stays null.
+                 | NBool r -> NBool(fun p -> not (r p))
+                 | NNull -> NNull
+                 | NInt _
+                 | NFloat _
+                 | NStr _
+                 | NCell _ ->
+                     let r = cellOf n
+
+                     NCell(fun p ->
+                         let v = r p
+                         if erred () then Null else unwrap (notCell v)))
+            | RCoalesce exprs ->
+                let ts, ns = exprs |> List.map go |> List.unzip
+                let t = Typing.joinAll ts
+                t, coalesceNode t ns
             | RCase(cases, elseExpr) ->
                 let arms =
                     cases
                     |> List.map (fun (w, t) ->
-                        let _, rw = go w
-                        let tt, rt = go t
-                        tt, rw, rt)
+                        let _, nw = go w
+                        let tt, nt = go t
+                        tt, nw, nt)
 
-                let tElse, rElse = go elseExpr
-                let whens = arms |> List.map (fun (_, rw, _) -> rw) |> List.toArray
-                let thens = arms |> List.map (fun (_, _, rt) -> rt) |> List.toArray
-
-                Typing.case (arms |> List.map (fun (tt, _, _) -> tt)) tElse,
-                fun row ->
-                    let mutable result = Null
-                    let mutable i = 0
-                    let mutable searching = true
-
-                    while searching && i < whens.Length do
-                        let w = whens[i]row
-
-                        if erred () then
-                            searching <- false
-                        else
-                            match w with
-                            | Bool true ->
-                                result <- thens[i]row
-                                searching <- false
-                            | _ -> i <- i + 1
-
-                    if searching then rElse row else result
+                let tElse, nElse = go elseExpr
+                let t = Typing.case (arms |> List.map (fun (tt, _, _) -> tt)) tElse
+                t, caseNode t (arms |> List.map (fun (_, nw, _) -> nw)) (arms |> List.map (fun (_, _, nt) -> nt)) nElse
             | RCast(ty, inner) ->
-                let t, r = go inner
+                let t, n = go inner
+                let r = cellOf n
 
                 Typing.cast ty t,
-                fun row ->
-                    let v = r row
-                    if erred () then Null else unwrap (castCell ty v)
+                NCell(fun p ->
+                    let v = r p
+                    if erred () then Null else unwrap (castCell ty v))
             | RInList(subject, items) ->
-                let ts, rs = go subject
-                let ri = items |> List.map (go >> snd) |> List.toArray
+                let ts, ns = go subject
+                let rs = cellOf ns
+                let ri = items |> List.map (go >> snd >> cellOf) |> List.toArray
 
                 Typing.inList ts,
-                fun row ->
-                    let sv = rs row
+                NCell(fun p ->
+                    let sv = rs p
 
                     if erred () then
                         Null
@@ -2192,7 +2600,7 @@ module DataFrame =
                             let mutable i = 0
 
                             while not decided && i < ri.Length do
-                                let iv = ri[i]row
+                                let iv = ri[i]p
 
                                 if erred () then
                                     decided <- true
@@ -2213,50 +2621,48 @@ module DataFrame =
 
                             if decided then result
                             elif sawNull then Null
-                            else Bool false
+                            else Bool false)
             | RIsNull inner ->
-                let _, r = go inner
+                let _, n = go inner
+                let isNullAt = presence n
 
                 Typing.isNull,
-                fun row ->
-                    let v = r row
-
-                    if erred () then
-                        Null
-                    else
-                        match v with
-                        | Null -> Bool true
-                        | _ -> Bool false
+                NBool(fun p ->
+                    let absent = isNullAt p
+                    slot.Null <- false
+                    absent)
             | RApplyFn(fn, args) ->
-                let ts, rs = args |> List.map go |> List.unzip
-                let rs = List.toArray rs
+                let ts, ns = args |> List.map go |> List.unzip
+                let rs = ns |> List.map cellOf |> List.toArray
 
                 Typing.applyFn fn ts,
-                fun row ->
+                NCell(fun p ->
                     // Arguments left to right, stopping at the first error, as `evalArgs` does.
                     let vals: Cell[] = Array.zeroCreate rs.Length
                     let mutable i = 0
 
                     while not (erred ()) && i < rs.Length do
-                        vals[i] <- rs[i]row
+                        vals[i] <- rs[i]p
                         i <- i + 1
 
                     if erred () then
                         Null
                     else
-                        unwrap (applyScalar fn (List.ofArray vals))
+                        unwrap (applyScalar fn (List.ofArray vals)))
 
-        let _, run = go e
+        let _, node = go e
 
-        { Run = run
+        { Node = node
+          Run = cellOf node
           Slot = slot
           Kernels = List.ofSeq kernels }
 
-    /// Evaluate a compiled expression against one row, in the reference's envelope: the slot is
-    /// reset, the tree runs, and the first error it recorded — or the cell — is the answer.
-    let internal runCompiled (c: CompiledExpr) (row: Cell[]) : Result<Cell, EvalError> =
+    /// Evaluate a compiled expression at one PHYSICAL row of the frame it was compiled against, in
+    /// the reference's envelope: the slot is reset, the tree runs, and the first error it recorded
+    /// — or the cell — is the answer.
+    let internal runCompiled (c: CompiledExpr) (p: int) : Result<Cell, EvalError> =
         c.Slot.Error <- None
-        let v = c.Run row
+        let v = c.Run p
 
         match c.Slot.Error with
         | Some err -> Error err
@@ -2332,38 +2738,67 @@ module DataFrame =
 
     // ---- per-verb evaluation ----
 
-    let private evalFilter
-        (env: Map<string, Cell>)
-        (cols: Schema)
-        (rows: Cell[] list)
-        (pred: ColExpr)
-        : Result<Cell[] list, EvalError> =
-        // Compiled once for the step (Phase 266), run once per row; the row loop is a loop, not a
-        // recursion through a continuation, so a JavaScript host spends no stack per row.
-        let compiled = compileExpr cols (resolveExpr env cols pred)
-        let slot = compiled.Slot
-        let run = compiled.Run
-        let mutable acc = []
-        let mutable rest = rows
-        let mutable failed = None
+    // Every verb below is a function of the columnar frame (Phase 267; `Frame.fs`). Four families:
+    //
+    //   * the ROW-SET verbs — `Filter`, `Limit`, `Sort`, `Project` — change which rows the frame
+    //     holds, in what order, or which columns: a new selection or a new column index over the
+    //     same vectors, and no cell copied;
+    //   * `Derive` adds one vector, filled through the compiled expression at the selected rows,
+    //     and shares every other vector by reference;
+    //   * the GATHERING verbs — `GroupBy`, `Join`, `Window`, `Pivot`, `Unpivot`, `Union` — read
+    //     rows through the selection and emit fresh vectors (`Window` emits one and shares the
+    //     rest; `Union` appends vector to vector);
+    //   * `Distinct`, the filtering joins and the set operations keep a subset of the rows in
+    //     their order — a selection again.
+    //
+    // The cells every verb produces are the cells the row form produced; the transform law
+    // vectors hold them so.
 
-        while Option.isNone failed && not (List.isEmpty rest) do
-            let row = List.head rest
+    let private evalFilter (env: Map<string, Cell>) (f: Frame) (pred: ColExpr) : Result<Frame, EvalError> =
+        // Compiled once for the step (Phase 266), run once per logical row in logical order; a
+        // typed boolean root is read unboxed. The rows kept become the frame's selection.
+        let compiled = compileExpr f (resolveExpr env f.Cols pred)
+        let slot = compiled.Slot
+
+        let keep: int -> bool =
+            match compiled.Node with
+            | NBool r ->
+                fun p ->
+                    let b = r p
+                    (not slot.Null) && b
+            | NNull -> fun _ -> false
+            | NInt _
+            | NFloat _
+            | NStr _
+            | NCell _ ->
+                let r = compiled.Run
+
+                fun p ->
+                    match r p with
+                    | Bool true -> true
+                    | _ -> false
+
+        let phys = Frame.physical f
+        let kept = ResizeArray<int>()
+        let mutable failed = None
+        let mutable i = 0
+
+        while Option.isNone failed && i < phys.Length do
             slot.Error <- None
-            let v = run row
+            let p = phys[i]
+            let k = keep p
 
             match slot.Error with
             | Some e -> failed <- Some e
             | None ->
-                match v with
-                | Bool true -> acc <- row :: acc
-                | _ -> ()
+                if k then
+                    kept.Add p
 
-                rest <- List.tail rest
+                i <- i + 1
 
         match failed with
         | Some e -> Error e
-        | None -> Ok(List.rev acc)
+        | None -> Ok(Frame.select f (kept.ToArray()))
 
     let private evalProject (f: Frame) (pairs: (string * string) list) : Result<Frame, EvalError> =
         let resolve (src, out) =
@@ -2379,16 +2814,7 @@ module DataFrame =
         go [] pairs
         |> Result.map (fun resolved ->
             let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
-
-            { Cols = resolved |> List.map (fun (o, ty, _) -> o, ty)
-              Rows = f.Rows |> List.map (fun row -> idx |> Array.map (fun i -> row[i])) })
-
-    /// A row with the cell at `i` replaced — a copy, never a write into the row it was handed, which
-    /// other frames may still hold.
-    let private withCellAt (i: int) (c: Cell) (row: Cell[]) : Cell[] =
-        let copy = Array.copy row
-        copy[i] <- c
-        copy
+            Frame.project f idx (resolved |> List.map (fun (o, ty, _) -> o, ty)))
 
     let private evalDerive
         (env: Map<string, Cell>)
@@ -2396,47 +2822,86 @@ module DataFrame =
         (name: string)
         (expr: ColExpr)
         : Result<Frame, EvalError> =
-        // Compiled once for the step (Phase 266), run once per row, in row order, stopping at the
-        // first row that records an error — the same cell and the same error `evalResolved` gave
-        // per row, without the continuation per row that overflowed the JavaScript stack.
-        let compiled = compileExpr f.Cols (resolveExpr env f.Cols expr)
+        // Compiled once for the step (Phase 266), run once per logical row, in logical order,
+        // stopping at the first row that records an error. A typed root is written straight into
+        // its carrier at the row's physical position; the boxed root's cells are packed under the
+        // type they infer. The new vector is the frame's physical length, present exactly at the
+        // rows the frame holds, and every other vector is shared.
+        let compiled = compileExpr f (resolveExpr env f.Cols expr)
         let slot = compiled.Slot
-        let run = compiled.Run
-        let mutable acc = []
-        let mutable rest = f.Rows
-        let mutable failed = None
+        let phys = Frame.physical f
+        let n = phys.Length
+        let count = f.Count
+        let failed: EvalError option ref = ref None
 
-        while Option.isNone failed && not (List.isEmpty rest) do
-            slot.Error <- None
-            let c = run (List.head rest)
+        let fill (r: int -> 'a) (vals: 'a[]) (mask: bool[]) : unit =
+            let mutable i = 0
 
-            match slot.Error with
-            | Some e -> failed <- Some e
-            | None ->
-                acc <- c :: acc
-                rest <- List.tail rest
+            while Option.isNone failed.Value && i < n do
+                slot.Error <- None
+                let p = phys[i]
+                let v = r p
 
-        (match failed with
-         | Some e -> Error e
-         | None -> Ok(List.rev acc))
-        |> Result.map (fun newCells ->
-            let ty = inferType newCells
+                match slot.Error with
+                | Some e -> failed.Value <- Some e
+                | None ->
+                    if not slot.Null then
+                        vals[p] <- v
+                        mask[p] <- true
 
-            match colIndex f.Cols name with
-            | Some i ->
-                { Cols = f.Cols |> List.mapi (fun j (n, t) -> if j = i then n, ty else n, t)
-                  Rows = List.map2 (fun row c -> withCellAt i c row) f.Rows newCells }
-            | None ->
-                { Cols = f.Cols @ [ name, ty ]
-                  Rows = List.map2 (fun row c -> Array.append row [| c |]) f.Rows newCells })
+                    i <- i + 1
 
-    /// One column of a group's member rows, in member order, as the cell list an aggregate reads —
-    /// built from the back, so it is one pass and one cons per member.
-    let private columnOf (members: ResizeArray<Cell[]>) (ci: int) : Cell list =
+        // The derived column's type is the type of its first present cell, `StringType` when there
+        // is none (`inferCellType`): an all-null typed vector types as the reference types it.
+        let typed (r: int -> 'a) (mk: 'a[] -> bool[] -> Vec) (ty: ColumnType) : ColumnType * Vec =
+            let vals: 'a[] = Array.zeroCreate count
+            let mask: bool[] = Array.zeroCreate count
+            fill r vals mask
+
+            if Vec.anyPresent mask phys then
+                ty, mk vals mask
+            else
+                StringType, Strs(StringType, Array.zeroCreate count, mask)
+
+        let ty, vec =
+            match compiled.Node with
+            | NInt r -> typed r (fun v m -> Ints(v, m)) IntType
+            | NFloat r -> typed r (fun v m -> Floats(v, m)) FloatType
+            | NBool r -> typed r (fun v m -> Bools(v, m)) BoolType
+            | NStr(sty, r) -> typed r (fun v m -> Strs(sty, v, m)) sty
+            | NNull -> StringType, Strs(StringType, Array.zeroCreate count, Array.zeroCreate count)
+            | NCell r ->
+                let cells: Cell[] = Array.zeroCreate n
+                let mutable i = 0
+
+                while Option.isNone failed.Value && i < n do
+                    slot.Error <- None
+                    let c = r phys[i]
+
+                    match slot.Error with
+                    | Some e -> failed.Value <- Some e
+                    | None ->
+                        cells[i] <- c
+                        i <- i + 1
+
+                match failed.Value with
+                | Some _ -> StringType, Cells [||]
+                | None ->
+                    let ty = cells |> Array.tryPick Cell.typeOf |> Option.defaultValue StringType
+                    ty, Vec.packAt ty count (fun i -> phys[i]) cells
+
+        match failed.Value with
+        | Some e -> Error e
+        | None -> Ok(Frame.withColumn f name ty vec)
+
+    /// One column of a group's members — physical rows, in member order — as the cell list an
+    /// aggregate reads: built from the back, so it is one pass and one cons per member, and read
+    /// straight from the column's vector (Phase 267), so only the aggregated column is boxed.
+    let private columnOf (v: Vec) (members: ResizeArray<int>) : Cell list =
         let mutable acc = []
 
         for j in members.Count - 1 .. -1 .. 0 do
-            acc <- members[j][ci] :: acc
+            acc <- Vec.cellAt v members[j] :: acc
 
         acc
 
@@ -2457,21 +2922,27 @@ module DataFrame =
             // so every row minted two strings per key cell and every insertion copied a tree path
             // compared by walking string lists. Slots open in first-appearance order and members are
             // appended in frame order, so the groups and their order are the ones the map produced.
+            //
+            // Phase 267 — a group's members are PHYSICAL ROWS of the frame, read through the
+            // selection in logical order, and only the key cells are boxed here: the aggregates
+            // below read their one column each from its vector, so a row's other columns are
+            // never gathered.
             let slots = CellKey.slots ()
             let probe: Cell[] = Array.zeroCreate idxs.Length
+            let keyVecs = idxs |> Array.map (fun ci -> f.Vecs[ci])
             let groupKeys = ResizeArray<Cell[]>()
-            let groupRows = ResizeArray<ResizeArray<Cell[]>>()
+            let groupRows = ResizeArray<ResizeArray<int>>()
 
-            for row in f.Rows do
+            for p in Frame.physical f do
                 for j in 0 .. idxs.Length - 1 do
-                    probe[j] <- row[idxs[j]]
+                    probe[j] <- Vec.cellAt keyVecs[j] p
 
                 match CellKey.slotOf slots probe groupKeys.Count with
-                | g, false -> groupRows[g].Add row
+                | g, false -> groupRows[g].Add p
                 | _, true ->
                     groupKeys.Add(Array.copy probe)
-                    let members = ResizeArray<Cell[]>()
-                    members.Add row
+                    let members = ResizeArray<int>()
+                    members.Add p
                     groupRows.Add members
 
             // resolve each agg's source column + type
@@ -2508,7 +2979,7 @@ module DataFrame =
                     while Option.isNone failed && j < aggArr.Length do
                         let a, ty, ci = aggArr[j]
 
-                        match aggCells a.Fn ty (columnOf groupRows[g] ci) with
+                        match aggCells a.Fn ty (columnOf f.Vecs[ci] groupRows[g]) with
                         | Ok c -> out[nk + j] <- c
                         | Error e -> failed <- Some e
 
@@ -2519,30 +2990,99 @@ module DataFrame =
 
                 match failed with
                 | Some e -> Error e
-                | None ->
-                    Ok
-                        { Cols = keyCols @ aggCols
-                          Rows = List.ofSeq rows })
+                | None -> Ok(Frame.ofRows (keyCols @ aggCols) (rows.ToArray())))
+
+    /// One sort key's ordering over two PHYSICAL rows of its vector — the pinned ordering
+    /// (`compareResolved`) read from the carrier: nulls last regardless of direction, the numeric
+    /// family in the float carrier, strings, dates and timestamps ordinal, and a boxed vector
+    /// through `compareCells` with an incomparable pair ordered equal.
+    let private keyComparer (v: Vec) (dir: SortDir) : int -> int -> int =
+        let signed (c: int) : int = if dir = Asc then c else -c
+
+        let withNulls (mask: bool[]) (cmp: int -> int -> int) : int -> int -> int =
+            fun p q ->
+                match mask[p], mask[q] with
+                | true, true -> signed (cmp p q)
+                | true, false -> -1 // null sorts last
+                | false, true -> 1
+                | false, false -> 0
+
+        match v with
+        | Ints(a, m) -> withNulls m (fun p q -> compare a[p] a[q])
+        | Floats(a, m) -> withNulls m (fun p q -> compareNum a[p] a[q])
+        | Bools(a, m) -> withNulls m (fun p q -> compare a[p] a[q])
+        | Strs(_, a, m) -> withNulls m (fun p q -> System.String.CompareOrdinal(a[p], a[q]))
+        | Cells cells ->
+            fun p q ->
+                let a = cells[p]
+                let b = cells[q]
+
+                match Cell.isNull a, Cell.isNull b with
+                | true, true -> 0
+                | true, false -> 1
+                | false, true -> -1
+                | false, false ->
+                    match compareCells a b with
+                    | Some c -> signed c
+                    | None -> 0
 
     let private evalSort (f: Frame) (by: (string * SortDir) list) : Frame =
-        { f with
-            Rows = f.Rows |> List.sortWith (compareResolved (resolveSortKeys f.Cols by)) }
+        // A permutation of the selection (Phase 267): the logical positions sorted under the keys,
+        // ties broken by position — which is exactly the stable sort over the frame order the
+        // reference's `List.sortWith` is, stated as a total order so the algorithm cannot matter.
+        let phys = Frame.physical f
+
+        let cmps =
+            resolveSortKeys f.Cols by
+            |> List.map (fun (ci, dir) -> keyComparer f.Vecs[ci] dir)
+            |> List.toArray
+
+        // A plain list of positions rather than an `int[]`: under Fable an `int[]` is a typed array,
+        // and a typed array's sort with a comparator is the slow path in the JavaScript engines.
+        let order = ResizeArray<int>(phys.Length)
+
+        for i in 0 .. phys.Length - 1 do
+            order.Add i
+
+        order.Sort(
+            System.Comparison(fun a b ->
+                let pa = phys[a]
+                let pb = phys[b]
+                let mutable c = 0
+                let mutable k = 0
+
+                while c = 0 && k < cmps.Length do
+                    let cmp = cmps[k]
+                    c <- cmp pa pb
+                    k <- k + 1
+
+                if c <> 0 then c else compare a b)
+        )
+
+        Frame.select f (Array.init order.Count (fun i -> phys[order[i]]))
 
     let private evalDistinct (f: Frame) : Frame =
         // Dedup by TOKEN equality over the whole row (`CellKey`; Phase 41's canonical token, so
         // float-bearing rows dedup host-identically), keeping each row's first appearance. Phase 265: a
         // hash set local to the step, keyed on the row array itself, replaces a persistent set of token
-        // lists — no string is minted and no row is copied.
+        // lists — no string is minted. The rows kept become the selection.
         let seen = System.Collections.Generic.HashSet<Cell[]>(CellKey.row)
+        let phys = Frame.physical f
+        let rows = Frame.rowsOf f
+        let kept = ResizeArray<int>()
 
-        { f with
-            Rows = f.Rows |> List.filter (fun row -> seen.Add row) }
+        for i in 0 .. rows.Length - 1 do
+            if seen.Add rows[i] then
+                kept.Add phys[i]
+
+        Frame.select f (kept.ToArray())
 
     let private evalLimit (f: Frame) (n: int) (offset: int) : Frame =
-        let skipped = f.Rows |> List.skip (min (max 0 offset) (List.length f.Rows))
-
-        { f with
-            Rows = skipped |> List.truncate (max 0 n) }
+        let phys = Frame.physical f
+        let len = phys.Length
+        let skipped = min (max 0 offset) len
+        let taken = min (max 0 n) (len - skipped)
+        Frame.select f (Array.sub phys skipped taken)
 
     /// The join's key-column resolution: the left and right indices `on` names, or the FIRST
     /// unresolvable name in the order this evaluator reports it (left names, then right names).
@@ -2590,11 +3130,12 @@ module DataFrame =
 
     let private evalJoin
         (f: Frame)
-        (right: Frame)
+        (rightCols: Schema)
+        (rightRows: Cell[][])
         (on: (string * string) list)
         (how: JoinKind)
         : Result<Frame, EvalError> =
-        match joinKeyIdx f.Cols right.Cols on with
+        match joinKeyIdx f.Cols rightCols on with
         | Error e -> Error e
         | Ok(li, ri) ->
             let keyOf (idx: int list) (row: Cell[]) =
@@ -2606,7 +3147,6 @@ module DataFrame =
             // emitting that row's matches in right arrival order is exactly the order the nested
             // loop produced, which filtered the whole right frame per left row: O(n × m) key
             // comparisons, each allocating two key lists.
-            let rightRows = List.toArray right.Rows
             let index = System.Collections.Generic.Dictionary<string, ResizeArray<int>>()
 
             rightRows
@@ -2623,59 +3163,66 @@ module DataFrame =
                     | _ -> None
                 | None -> None
 
+            let leftRows = Frame.rowsOf f
+
             // The combining joins (Inner / Left / Right / Outer) — left cols ++ right cols.
             let combiningJoin () =
                 // output schema: left cols ++ right cols (collisions suffixed _right)
                 let leftNames = available f.Cols |> Set.ofList
 
-                let rightCols =
-                    right.Cols
+                let outRight =
+                    rightCols
                     |> List.map (fun (n, ty) -> (if Set.contains n leftNames then n + "_right" else n), ty)
 
-                let outCols = f.Cols @ rightCols
+                let outCols = f.Cols @ outRight
                 let leftNulls = Array.create (List.length f.Cols) Null
-                let rightNulls = Array.create (List.length right.Cols) Null
+                let rightNulls = Array.create (List.length rightCols) Null
 
                 let combine (lr: Cell[]) (rr: Cell[]) = Array.append lr rr
 
                 // A right row is matched when some left row's probe emitted it — `keyMatch` is
                 // symmetric, so that is exactly the reverse scan's "some left row matches it".
                 let matched = Array.create rightRows.Length false
+                let out = ResizeArray<Cell[]>()
 
-                let leftSide =
-                    f.Rows
-                    |> List.collect (fun lr ->
-                        match matchesOf lr, how with
-                        | None, (Left | Outer) -> [ combine lr rightNulls ]
-                        | None, (Inner | Right) -> []
-                        | Some js, _ ->
-                            List.init js.Count (fun n ->
-                                let j = js[n]
-                                matched[j] <- true
-                                combine lr rightRows[j]))
+                for lr in leftRows do
+                    match matchesOf lr, how with
+                    | None, (Left | Outer) -> out.Add(combine lr rightNulls)
+                    // The filtering joins never reach here; the match is total so the compiler
+                    // can say so.
+                    | None, (Inner | Right | Semi | Anti) -> ()
+                    | Some js, _ ->
+                        for n in 0 .. js.Count - 1 do
+                            let j = js[n]
+                            matched[j] <- true
+                            out.Add(combine lr rightRows[j])
 
                 // right-only unmatched rows (for Right / Outer), after every left-side row, in right
                 // order — read from the matched flags rather than a second pass the other way.
-                let rightOnly =
-                    match how with
-                    | Right
-                    | Outer ->
-                        [ for j in 0 .. rightRows.Length - 1 do
-                              if not matched[j] then
-                                  combine leftNulls rightRows[j] ]
-                    | _ -> []
+                match how with
+                | Right
+                | Outer ->
+                    for j in 0 .. rightRows.Length - 1 do
+                        if not matched[j] then
+                            out.Add(combine leftNulls rightRows[j])
+                | _ -> ()
 
-                { Cols = outCols
-                  Rows = leftSide @ rightOnly }
+                Frame.ofRows outCols (out.ToArray())
 
             match how with
             // Phase 101 — the filtering joins: the LEFT schema only, each qualifying left row once,
-            // input order and multiplicity preserved (no fan-out, no right columns to project away).
+            // input order and multiplicity preserved (no fan-out, no right columns to project away)
+            // — a selection over the left frame.
             | Semi
             | Anti ->
-                Ok
-                    { Cols = f.Cols
-                      Rows = f.Rows |> List.filter (fun lr -> (matchesOf lr).IsSome = (how = Semi)) }
+                let phys = Frame.physical f
+                let kept = ResizeArray<int>()
+
+                for i in 0 .. leftRows.Length - 1 do
+                    if (matchesOf leftRows[i]).IsSome = (how = Semi) then
+                        kept.Add phys[i]
+
+                Ok(Frame.select f (kept.ToArray()))
             | Inner
             | Left
             | Right
@@ -2685,25 +3232,37 @@ module DataFrame =
         if available f.Cols <> available other.Cols then
             Error(JoinError "union requires matching column names")
         else
-            Ok { f with Rows = f.Rows @ other.Rows }
+            Ok(Frame.concat f other)
 
     /// `Intersect` / `Except` (Phase 101) — the multiset set-ops, keyed on the SAME canonical row
     /// token `Distinct` dedups on (Phase 41), so membership is host-identical and `Null` is a value
     /// that matches itself. `keepPresent` selects intersect (`true`) from except (`false`). The
     /// left's order and duplicate multiplicity survive, so `· Distinct` recovers the SQL set forms.
-    let private evalSetOp (verb: string) (keepPresent: bool) (f: Frame) (other: Frame) : Result<Frame, EvalError> =
-        if available f.Cols <> available other.Cols then
+    let private evalSetOp
+        (verb: string)
+        (keepPresent: bool)
+        (f: Frame)
+        (otherCols: Schema)
+        (otherRows: Cell[][])
+        : Result<Frame, EvalError> =
+        if available f.Cols <> available otherCols then
             Error(JoinError(verb + " requires matching column names"))
         else
             // TOKEN equality over whole rows (`CellKey`), in a hash set local to the step (Phase 265).
             let rightRows = System.Collections.Generic.HashSet<Cell[]>(CellKey.row)
 
-            for row in other.Rows do
+            for row in otherRows do
                 rightRows.Add row |> ignore
 
-            Ok
-                { f with
-                    Rows = f.Rows |> List.filter (fun row -> rightRows.Contains row = keepPresent) }
+            let phys = Frame.physical f
+            let rows = Frame.rowsOf f
+            let kept = ResizeArray<int>()
+
+            for i in 0 .. rows.Length - 1 do
+                if rightRows.Contains rows[i] = keepPresent then
+                    kept.Add phys[i]
+
+            Ok(Frame.select f (kept.ToArray()))
 
     /// Does the window function read the `Of` column at all? The positional/ranking family
     /// (`RowNumber` / the three ranks / `NTile`) is computed entirely from the ORDER key, so its
@@ -2724,15 +3283,22 @@ module DataFrame =
         | RollingMean
         | RollingSum -> true
 
-    let private evalWindow (f: Frame) (spec: WindowSpec) : Result<Frame, EvalError> =
-        match spec.Fn, colIndex f.Cols spec.Of with
+    /// The `Window` step's appended column over full-width rows under `cols`: its type, and one
+    /// cell per row in the rows' own order. The frame form appends it as a vector and shares the
+    /// rest; the row-form twins (`windowStep`, `windowStepRows`) append it to each row.
+    let private windowColumn
+        (cols: Schema)
+        (rows: Cell[][])
+        (spec: WindowSpec)
+        : Result<ColumnType * Cell[], EvalError> =
+        match spec.Fn, colIndex cols spec.Of with
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
-        | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available f.Cols))
+        | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
         | _ ->
-            let partIdx = spec.PartitionBy |> List.choose (colIndex f.Cols) |> List.toArray
+            let partIdx = spec.PartitionBy |> List.choose (colIndex cols) |> List.toArray
 
             // The ORDER keys resolved once for the step (Phase 263), not once per comparison.
-            let orderKeys = resolveSortKeys f.Cols spec.OrderBy
+            let orderKeys = resolveSortKeys cols spec.OrderBy
 
             // Partition by TOKEN equality over the partition cells (`CellKey`; Phase 41's canonical
             // token, so float partition keys group host-identically), each row tagged with its
@@ -2745,8 +3311,8 @@ module DataFrame =
             let probe: Cell[] = Array.zeroCreate partIdx.Length
             let partitionRows = ResizeArray<ResizeArray<int * Cell[]>>()
 
-            f.Rows
-            |> List.iteri (fun i row ->
+            rows
+            |> Array.iteri (fun i row ->
                 for j in 0 .. partIdx.Length - 1 do
                     probe[j] <- row[partIdx[j]]
 
@@ -2759,7 +3325,7 @@ module DataFrame =
 
             let partitions = partitionRows |> Seq.map List.ofSeq |> List.ofSeq
 
-            let ofIdx = colIndex f.Cols spec.Of
+            let ofIdx = colIndex cols spec.Of
 
             let valueAt (row: Cell[]) =
                 match ofIdx with
@@ -2886,7 +3452,7 @@ module DataFrame =
             // Restore input order by scattering each output to its row's tag (Phase 264) — every tag
             // in 0 .. n-1 occurs exactly once, so this is the `List.sortBy fst` it replaces, in one
             // pass.
-            let restored = Array.create (List.length f.Rows) Null
+            let restored = Array.create rows.Length Null
 
             for i, out in computed do
                 restored[i] <- out
@@ -2905,11 +3471,19 @@ module DataFrame =
                 | Lead
                 // The running extremes keep the source type, exactly as `AggFn.Min`/`Max` do.
                 | CumulMax
-                | CumulMin -> colType f.Cols spec.Of |> Option.defaultValue StringType
+                | CumulMin -> colType cols spec.Of |> Option.defaultValue StringType
 
-            Ok
-                { Cols = f.Cols @ [ spec.As, ty ]
-                  Rows = f.Rows |> List.mapi (fun i row -> Array.append row [| restored[i] |]) }
+            Ok(ty, restored)
+
+    let private evalWindow (f: Frame) (spec: WindowSpec) : Result<Frame, EvalError> =
+        // The rows gathered through the selection; the one new column packed back at their
+        // physical positions and APPENDED (a `Window` always appends, where a `Derive` upserts);
+        // every other vector shared.
+        let phys = Frame.physical f
+
+        windowColumn f.Cols (Frame.rowsOf f) spec
+        |> Result.map (fun (ty, cells) ->
+            Frame.appendColumn f spec.As ty (Vec.packAt ty f.Count (fun i -> phys[i]) cells))
 
     let private evalPivot (f: Frame) (spec: PivotSpec) : Result<Frame, EvalError> =
         let need name =
@@ -2931,12 +3505,14 @@ module DataFrame =
                     let valType = snd (List.item valIdx f.Cols)
 
                     let idxArr = List.toArray idxIdx
+                    let rows = Frame.rowsOf f
 
                     // distinct on-values (sorted by canonical string for a deterministic column order)
                     let onValues =
-                        f.Rows
-                        |> List.map (fun row -> row[onIdx])
-                        |> List.filter (fun c -> not (Cell.isNull c))
+                        rows
+                        |> Array.map (fun row -> row[onIdx])
+                        |> Array.filter (fun c -> not (Cell.isNull c))
+                        |> List.ofArray
                         |> List.distinct
                         |> List.sortBy cellString
 
@@ -2967,7 +3543,7 @@ module DataFrame =
                     let probe: Cell[] = Array.zeroCreate idxArr.Length
                     let groups = ResizeArray<Cell list * ResizeArray<Cell>[]>()
 
-                    for row in f.Rows do
+                    for row in rows do
                         for j in 0 .. idxArr.Length - 1 do
                             probe[j] <- row[idxArr[j]]
 
@@ -3001,9 +3577,7 @@ module DataFrame =
                         List.init onCount id
                         |> traverseResult (fun c -> cells[c] |> List.ofSeq |> aggCells spec.Agg valType)
                         |> Result.map (fun vals -> List.toArray (k @ vals)))
-                    |> Result.map (fun rows ->
-                        { Cols = idxCols @ pivotCols
-                          Rows = rows }))))
+                    |> Result.map (fun outRows -> Frame.ofRows (idxCols @ pivotCols) (List.toArray outRows)))))
 
     let private evalUnpivot (f: Frame) (idVars: string list) (valueVars: string list) : Result<Frame, EvalError> =
         let need name =
@@ -3026,15 +3600,14 @@ module DataFrame =
                     valueVars |> List.tryPick (colType f.Cols) |> Option.defaultValue StringType
 
                 let cols = idCols @ [ "variable", StringType; "value", valType ]
+                let out = ResizeArray<Cell[]>()
 
-                let rows =
-                    f.Rows
-                    |> List.collect (fun row ->
-                        let idCells = idIdx |> List.map (fun i -> row[i]) |> List.toArray
+                for row in Frame.rowsOf f do
+                    let idCells = idIdx |> List.map (fun i -> row[i]) |> List.toArray
 
-                        List.map2 (fun name vi -> Array.append idCells [| Str name; row[vi] |]) valueVars valIdx)
+                    List.iter2 (fun name vi -> out.Add(Array.append idCells [| Str name; row[vi] |])) valueVars valIdx
 
-                { Cols = cols; Rows = rows }))
+                Frame.ofRows cols (out.ToArray())))
 
     // ---- pipeline driver ----
 
@@ -3104,16 +3677,20 @@ module DataFrame =
             | Ok vs, Ok v -> Ok(v :: vs))
         |> Result.map List.rev
 
-    let private evalStep
+    /// A table's rows for the right-hand side of a two-table verb — the same transpose the left
+    /// side paid at the boundary, without unpacking a frame it would only gather again.
+    let private rowsOfTable (t: Table) : Cell[][] = RowAccess.rows t |> List.toArray
+
+    /// One step over the frame. Internal so the suite can hold the frame's well-formedness after
+    /// every step of a generated pipeline; every entry point folds through it.
+    let internal evalStep
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (f: Frame)
         (t: Transform)
         : Result<Frame, EvalError> =
         match t with
-        | Filter pred ->
-            evalFilter env f.Cols f.Rows pred
-            |> Result.map (fun rows -> { f with Rows = rows })
+        | Filter pred -> evalFilter env f pred
         | Project pairs -> evalProject f pairs
         | Derive(name, expr) -> evalDerive env f name expr
         | GroupBy(keys, aggs) -> evalGroupBy f keys aggs
@@ -3137,21 +3714,64 @@ module DataFrame =
         | Unpivot(idVars, valueVars) -> evalUnpivot f idVars valueVars
         | Join(right, on, how) ->
             evalSource resolve right
-            |> Result.map toFrame
-            |> Result.bind (fun rf -> evalJoin f rf on how)
-        | Union other -> evalSource resolve other |> Result.map toFrame |> Result.bind (evalUnion f)
+            |> Result.bind (fun t -> evalJoin f t.Schema (rowsOfTable t) on how)
+        | Union other ->
+            evalSource resolve other
+            |> Result.map Frame.ofTable
+            |> Result.bind (evalUnion f)
         | Intersect other ->
             evalSource resolve other
-            |> Result.map toFrame
-            |> Result.bind (evalSetOp "intersect" true f)
+            |> Result.bind (fun t -> evalSetOp "intersect" true f t.Schema (rowsOfTable t))
         | Except other ->
             evalSource resolve other
-            |> Result.map toFrame
-            |> Result.bind (evalSetOp "except" false f)
+            |> Result.bind (fun t -> evalSetOp "except" false f t.Schema (rowsOfTable t))
 
     /// A `Ref`-rejecting resolver — the default for embedded-only pipelines (and the conformance kit).
     let noResolve: string -> Result<Table, EvalError> =
         fun r -> Error(UnresolvedSource r)
+
+    /// The reference evaluator over a prepared source, reporting alongside its answer how many row
+    /// evaluations at steps it cost (Phase 267) — the one driver every entry point folds through;
+    /// see `evalPipelineWithInEnvCounted` for what the count means.
+    let internal evalPreparedCounted
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<Table * int, EvalError> =
+        let costOf (f: Frame) (step: Transform) =
+            match step with
+            | Filter _
+            | Derive _ -> Frame.rows f
+            | _ -> 0
+
+        let rec go f evaluated =
+            function
+            | [] -> Ok(Frame.toTable f, evaluated)
+            | step :: rest ->
+                let cost = costOf f step
+
+                evalStep resolve env f step
+                |> Result.bind (fun f' -> go f' (evaluated + cost) rest)
+
+        go prepared.Frame 0 pipeline
+
+    /// Prepare a table once for many evaluations (Phase 267): the `Table` boundary — one typed
+    /// unpack per column — paid here rather than by every pipeline that reads the source. The table
+    /// is held by reference beside its prepared form and never copied; a consumer that evaluates
+    /// many pipelines over one source (a sheet, a dashboard) prepares it once and hands the result
+    /// to `evalPrepared` per pipeline, or to `Incremental.primePrepared`.
+    let prepare (t: Table) : Prepared = { Source = t; Frame = Frame.ofTable t }
+
+    /// The reference evaluator over a prepared source (Phase 267): `evalPipelineWithInEnv` with the
+    /// boundary already paid — the same resolver, env and pipeline, the same cells, the same errors.
+    let evalPrepared
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<Table, EvalError> =
+        evalPreparedCounted resolve env pipeline prepared |> Result.map fst
 
     /// The reference evaluator, parameterised (Phase 77), reporting alongside its answer how many
     /// ROW EVALUATIONS AT STEPS producing that answer cost (Phase 117).
@@ -3174,22 +3794,7 @@ module DataFrame =
         (pipeline: Transform list)
         (input: Table)
         : Result<Table * int, EvalError> =
-        let costOf (f: Frame) (step: Transform) =
-            match step with
-            | Filter _
-            | Derive _ -> List.length f.Rows
-            | _ -> 0
-
-        let rec go f evaluated =
-            function
-            | [] -> Ok(ofFrame f, evaluated)
-            | step :: rest ->
-                let cost = costOf f step
-
-                evalStep resolve env f step
-                |> Result.bind (fun f' -> go f' (evaluated + cost) rest)
-
-        go (toFrame input) 0 pipeline
+        evalPreparedCounted resolve env pipeline (prepare input)
 
     /// The reference evaluator, parameterised (Phase 77): fold the pipeline over the input table
     /// threading a `Frame`, resolving `ColExpr.Param`s from `env` and any `Ref` source through
@@ -3352,11 +3957,14 @@ module DataFrame =
         (rows: Cell list list)
         (spec: WindowSpec)
         : Result<Schema * Cell list list, EvalError> =
-        evalWindow
-            { Cols = cols
-              Rows = rows |> List.map List.toArray }
-            spec
-        |> Result.map (fun f -> f.Cols, f.Rows |> List.map List.ofArray)
+        let arr = rows |> List.map List.toArray |> List.toArray
+
+        windowColumn cols arr spec
+        |> Result.map (fun (ty, col) ->
+            cols @ [ spec.As, ty ],
+            arr
+            |> Array.mapi (fun i r -> List.ofArray (Array.append r [| col[i] |]))
+            |> List.ofArray)
 
     /// `windowStep` over array rows (Phase 263) — the twin the incremental seam calls, whose
     /// working rows are arrays already, so it pays no conversion either way.
@@ -3365,8 +3973,11 @@ module DataFrame =
         (rows: Cell[] list)
         (spec: WindowSpec)
         : Result<Schema * Cell[] list, EvalError> =
-        evalWindow { Cols = cols; Rows = rows } spec
-        |> Result.map (fun f -> f.Cols, f.Rows)
+        let arr = List.toArray rows
+
+        windowColumn cols arr spec
+        |> Result.map (fun (ty, col) ->
+            cols @ [ spec.As, ty ], arr |> Array.mapi (fun i r -> Array.append r [| col[i] |]) |> List.ofArray)
 
     /// The reference `Join`'s key-column resolution (Phase 120): the left and right column indices
     /// its `on` pairs name, or the FIRST unresolvable name in the order the reference reports it —

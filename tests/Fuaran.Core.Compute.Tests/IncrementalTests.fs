@@ -1240,3 +1240,117 @@ let tests =
               match (Incremental.footprint next).Recompute with
               | GroupsRecomputed(_, g) -> Expect.equal g 2 "the zero group and the NaN group; the 1.0 group is reused"
               | other -> failtestf "expected a maintained-group refresh, got %A" other ]
+
+// ---------------------------------------------------------------------------
+//  Phase 267 — priming over a prepared source. `primePrepared` / `primeOnPrepared`
+//  take a `DataFrame.Prepared` where `prime` / `primeOn` take a `Table`, and the
+//  state they build is the state the table form builds: the same result, the
+//  same footprint, the same plan, the same source (the prepared table itself,
+//  by reference), and the same refreshes from it — over pipelines the seam
+//  restricts and pipelines it evaluates through the reference.
+// ---------------------------------------------------------------------------
+
+let private preparedPipelines: (string * Transform list) list =
+    [ "row-local",
+      [ Filter(Binary(Gt, Col "a", Lit(Int 1)))
+        Derive("c", Binary(Add, Col "a", Col "b")) ]
+      "grouping",
+      [ Filter(Binary(Gt, Col "a", Lit(Int 1)))
+        GroupBy([ "b" ], [ agg "s" Sum "a" ]) ]
+      "top-N",
+      [ Filter(Binary(Gt, Col "a", Lit(Int 1)))
+        Sort([ Slot.Lit "a", Desc ])
+        Limit(Slot.Lit 3, Slot.Lit 0) ]
+      "window",
+      [ Window
+            { PartitionBy = [ "b" ]
+              OrderBy = [ "a", Asc ]
+              Fn = RowNumber
+              Of = "a"
+              As = "n" } ]
+      "distinct", [ Project [ "b", "b" ]; Distinct ] ]
+
+[<Tests>]
+let preparedTests =
+    testList
+        "Incremental over a prepared source"
+        [ testCase "primeOnPrepared builds the state primeOn builds, and refreshes from it the same way"
+          <| fun _ ->
+              let after =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r2" then i, Int 30, b else i, a, b)
+                  )
+
+              for label, p in preparedPipelines do
+                  let prepared = DataFrame.prepare baseTable
+                  let plain = ok (Incremental.primeOn idw p baseTable)
+                  let over = ok (Incremental.primeOnPrepared idw p prepared)
+                  Expect.equal (Incremental.result over) (Incremental.result plain) (label + ": the same result")
+
+                  Expect.equal
+                      (Incremental.footprint over)
+                      (Incremental.footprint plain)
+                      (label + ": the same footprint")
+
+                  Expect.equal (Incremental.plan' over) (Incremental.plan' plain) (label + ": the same plan")
+
+                  Expect.isTrue
+                      (obj.ReferenceEquals(Incremental.source over, baseTable))
+                      (label + ": the state's source is the prepared table itself")
+
+                  expectMatchesReference p baseTable over
+
+                  // A refresh against a changed source, and one against the prepared table itself
+                  // under a full-refresh delta (the reference path over the prepared form): each
+                  // equals the refresh the plain state makes, and the reference.
+                  let delta = ok (Delta.diff idw baseTable after)
+
+                  for source, d, what in
+                      [ after, delta, "a changed source"
+                        baseTable, FullRefresh, "the prepared table again" ] do
+                      let fromPlain = ok (Incremental.refreshOn idw p plain d source)
+                      let fromOver = ok (Incremental.refreshOn idw p over d source)
+
+                      Expect.equal
+                          (Incremental.result fromOver)
+                          (Incremental.result fromPlain)
+                          (label + ": refresh over " + what)
+
+                      Expect.equal
+                          (Incremental.footprint fromOver)
+                          (Incremental.footprint fromPlain)
+                          (label + ": refresh footprint over " + what)
+
+                      expectMatchesReference p source fromOver
+
+          testCase "primePrepared takes the resolver and env prime takes"
+          <| fun _ ->
+              let lookup: Table =
+                  { Schema = [ "k", IntType ]
+                    Columns = [ Column.create "k" IntType [ Int 0; Int 2 ] ] }
+
+              let resolve name =
+                  if name = "lookup" then
+                      Ok lookup
+                  else
+                      Error(UnresolvedSource name)
+
+              let env = Map.ofList [ "floor", Int 1 ]
+
+              let p =
+                  [ Filter(Binary(Gt, Col "a", Param "floor"))
+                    Join(Ref "lookup", [ "b", "k" ], Semi) ]
+
+              let plain = ok (Incremental.prime resolve env idw p baseTable)
+
+              let over =
+                  ok (Incremental.primePrepared resolve env idw p (DataFrame.prepare baseTable))
+
+              Expect.equal (Incremental.result over) (Incremental.result plain) "the same result"
+              Expect.equal (Incremental.footprint over) (Incremental.footprint plain) "the same footprint"
+
+              Expect.equal
+                  (Ok(Incremental.result over))
+                  (DataFrame.evalPipelineWithInEnv resolve env p baseTable)
+                  "and it is the reference's" ]

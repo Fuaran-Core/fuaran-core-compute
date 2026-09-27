@@ -3020,12 +3020,17 @@ let private oneRowTable (row: Cell[]) : Table =
     { Schema = typedSchema
       Columns = typedSchema |> List.mapi (fun i (name, ty) -> col name ty [ row[i] ]) }
 
-/// The compiled evaluation of one (expression, row), through the internal entry the steps use.
+/// The compiled evaluation of one (expression, row), through the internal entry the steps use:
+/// the row as a one-row frame (Phase 267 — a conforming column unpacks typed and reaches the
+/// vector path; a column holding a disagreeing cell stays boxed and reaches the cell path), the
+/// expression compiled over it, and the tree run at its one physical row.
 let private compiledOutcome (e: ColExpr) (row: Cell[]) : Result<Cell, EvalError> * DataFrame.Kernel list =
-    let compiled =
-        DataFrame.compileExpr typedSchema (DataFrame.resolveExpr typedEnv typedSchema e)
+    let frame = Frame.ofTable (oneRowTable row)
 
-    DataFrame.runCompiled compiled row, compiled.Kernels
+    let compiled =
+        DataFrame.compileExpr frame (DataFrame.resolveExpr typedEnv typedSchema e)
+
+    DataFrame.runCompiled compiled 0, compiled.Kernels
 
 let private referenceOutcome (e: ColExpr) (row: Cell[]) : Result<Cell, EvalError> =
     DataFrame.evalExprInRow typedEnv typedSchema (List.ofArray row) e
@@ -3207,17 +3212,25 @@ let compiledExprLaws =
           testCase "a compiled tree is reusable across rows: an error on one row leaves the next row's answer intact"
           <| fun _ ->
               let e = Binary(Add, Col "i", Lit(Int 1))
-
-              let compiled =
-                  DataFrame.compileExpr typedSchema (DataFrame.resolveExpr typedEnv typedSchema e)
-
               let bad = typedRow (System.Random 1)
               bad[0] <- Str "x"
               let good = typedRow (System.Random 2)
               good[0] <- Int 41
-              Expect.isError (DataFrame.runCompiled compiled bad) "the bad row errors"
-              Expect.equal (DataFrame.runCompiled compiled good) (Ok(Int 42)) "the good row answers"
-              Expect.isError (DataFrame.runCompiled compiled bad) "and errors again"
+
+              // One frame holding both rows (Phase 267): the mistyped cell keeps column `i` boxed,
+              // so the tree takes the cell path at both physical rows and the slot must reset
+              // between them.
+              let frame =
+                  Frame.ofTable
+                      { Schema = typedSchema
+                        Columns = typedSchema |> List.mapi (fun i (name, ty) -> col name ty [ bad[i]; good[i] ]) }
+
+              let compiled =
+                  DataFrame.compileExpr frame (DataFrame.resolveExpr typedEnv typedSchema e)
+
+              Expect.isError (DataFrame.runCompiled compiled 0) "the bad row errors"
+              Expect.equal (DataFrame.runCompiled compiled 1) (Ok(Int 42)) "the good row answers"
+              Expect.isError (DataFrame.runCompiled compiled 0) "and errors again"
 
           testCase "a 129-node integer expression compiles to a chain of integer kernels and equals the reference"
           <| fun _ ->
@@ -3376,3 +3389,236 @@ let exprTypingTests =
                   let evaluated = run pipeline |> okTable
                   let actual = evaluated.Schema |> List.find (fun (n, _) -> n = "tag") |> snd
                   Expect.equal (SchemaWalk.typeOf "tag" (walk pipeline)) (Some actual) "walk and evaluator agree" ]
+
+// ---------------------------------------------------------------------------
+//  Phase 267 — the dense columnar frame and the prepared source.
+//
+//  The cells every verb produces are held to the row form's by the transform
+//  law vectors (byte-identical across the phase) and by every family above;
+//  what is held HERE is what the representation adds: the well-formedness
+//  invariant after every step of every generated pipeline, the `Table`
+//  boundary's padding rule, and the one new public surface — a source prepared
+//  once answers every pipeline as the reference does, and is not consumed by
+//  answering.
+// ---------------------------------------------------------------------------
+
+/// A table's answer as tokens, for equality: `Float nan` is not structurally equal to itself, and
+/// is one token (`sameOutcome` above makes the same choice for one cell).
+let private tokenised (r: Result<Table, EvalError>) : Result<(string * string * string list) list, EvalError> =
+    r
+    |> Result.map (fun t ->
+        t.Columns
+        |> List.map (fun c -> c.Name, ColumnType.tag c.Type, c.Cells |> List.map DataFrame.cellToken))
+
+/// A table of `n` rows over `typedSchema`, drawn from `typedRow`; with `mistype` set, one integer
+/// cell is a string, so the column unpacks BOXED and the pipeline exercises the cell path.
+let private frameTable (rng: System.Random) (n: int) (mistype: bool) : Table =
+    let rows = Array.init n (fun _ -> typedRow rng)
+
+    if mistype && n > 0 then
+        rows[rng.Next n][0] <- Str "mistyped"
+
+    { Schema = typedSchema
+      Columns =
+        typedSchema
+        |> List.mapi (fun ci (name, ty) -> col name ty [ for r in rows -> r[ci] ]) }
+
+/// A right-hand table for the two-table verbs: the same schema, its own rows.
+let private frameOther (rng: System.Random) : Table = frameTable rng (rng.Next 5) false
+
+/// One drawn step, reaching every verb of the algebra.
+let private genStep (rng: System.Random) : Transform =
+    let name () = pick rng (typedSchema |> List.map fst)
+    let intCol () = pick rng (colsOfType IntType)
+
+    match rng.Next 16 with
+    | 0 -> Filter(genExpr rng 2)
+    | 1 ->
+        Derive(
+            (if rng.Next 2 = 0 then
+                 name ()
+             else
+                 "d" + string (rng.Next 3)),
+            genExpr rng 2
+        )
+    | 2 -> Project([ for _ in 0 .. rng.Next 4 -> let n = name () in n, (if rng.Next 3 = 0 then n + "_p" else n) ])
+    | 3 ->
+        GroupBy(
+            [ name () ],
+            [ { Name = "agg"
+                Fn = pick rng [ Sum; Count; Min; Max; Mean; First; CountDistinct ]
+                Of = name () } ]
+        )
+    | 4 -> Sort([ for _ in 0 .. rng.Next 2 -> Slot.Lit(name ()), pick rng [ Asc; Desc ] ])
+    | 5 -> Distinct
+    | 6 -> Limit(Slot.Lit(rng.Next 6), Slot.Lit(rng.Next 3))
+    | 7 ->
+        Window
+            { Fn =
+                pick
+                    rng
+                    [ RowNumber
+                      Rank
+                      DenseRank
+                      CompetitionRank
+                      NTile 2
+                      Lag
+                      Lead
+                      CumulSum
+                      CumulMax
+                      CumulMin
+                      RollingMean
+                      RollingSum ]
+              Of = name ()
+              PartitionBy = [ for _ in 0 .. rng.Next 2 -> name () ]
+              OrderBy = [ name (), Asc ]
+              As = (if rng.Next 3 = 0 then name () else "w") }
+    | 8 ->
+        Pivot
+            { Index = [ name () ]
+              On = name ()
+              Values = intCol ()
+              Agg = pick rng [ Sum; Count; Max ] }
+    | 9 -> Unpivot([ name () ], [ for _ in 0 .. rng.Next 2 -> name () ])
+    | 10 -> Join(Embedded(frameOther rng), [ name (), name () ], pick rng [ Inner; Left; Right; Outer; Semi; Anti ])
+    | 11 -> Union(Embedded(frameOther rng))
+    | 12 -> Intersect(Embedded(frameOther rng))
+    | 13 -> Except(Embedded(frameOther rng))
+    | _ -> Filter(Binary(Gt, Col(intCol ()), Lit(Int(rng.Next 10 - 5))))
+
+let private genPipeline (rng: System.Random) : Transform list =
+    [ for _ in 0 .. rng.Next 4 -> genStep rng ]
+
+/// The generated sample: (table, pipeline) pairs, a third of the tables carrying a mistyped cell.
+let private frameSample (seed: int) (count: int) : (Table * Transform list) list =
+    let rng = System.Random seed
+    [ for i in 1..count -> frameTable rng (rng.Next 7) (i % 3 = 0), genPipeline rng ]
+
+[<Tests>]
+let frameTests =
+    testList
+        "Frame"
+        [ testCase "every step of every generated pipeline leaves the frame well-formed, and the fold is the reference"
+          <| fun _ ->
+              // Every vector the frame's row count, every selection entry inside it — after each
+              // step, whichever family the step belongs to, over frames a `Filter` emptied, a
+              // `Sort` permuted and a `Derive` widened as much as over fresh ones.
+              let mutable steps = 0
+              let mutable emptied = 0
+
+              for table, pipeline in frameSample 267 400 do
+                  let mutable frame = Frame.ofTable table
+                  Expect.isTrue (Frame.wellFormed frame) "the unpacked table is well-formed"
+                  let mutable failed = false
+
+                  for step in pipeline do
+                      if not failed then
+                          match DataFrame.evalStep DataFrame.noResolve Map.empty frame step with
+                          | Ok next ->
+                              steps <- steps + 1
+
+                              if Frame.rows next = 0 then
+                                  emptied <- emptied + 1
+
+                              Expect.isTrue (Frame.wellFormed next) (sprintf "well-formed after %A" step)
+                              frame <- next
+                          | Error _ -> failed <- true
+
+                  if not failed then
+                      Expect.equal
+                          (tokenised (Ok(Frame.toTable frame)))
+                          (tokenised (DataFrame.evalPipeline pipeline table))
+                          "the stepwise fold, packed back, is the reference answer"
+
+              // Adequacy: the sample reached the invariant often, and on emptied frames.
+              Expect.isGreaterThan steps 200 "the sample took steps"
+              Expect.isGreaterThan emptied 10 "the sample reached emptied frames"
+
+          testCase
+              "a source prepared once answers every pipeline as the reference does, and answering does not consume it"
+          <| fun _ ->
+              // The one new public surface: `prepare` pays the boundary, `evalPrepared` evaluates
+              // over it. Three pipelines in turn over ONE prepared source, the first of them
+              // twice, so a verb that wrote into a shared vector — a `Derive` upserting in place, a
+              // `Sort` permuting — would be caught by the second answer disagreeing with the first.
+              let rng = System.Random 2670
+
+              for _ in 1..120 do
+                  let table = frameTable rng (rng.Next 7) (rng.Next 3 = 0)
+                  let prepared = DataFrame.prepare table
+                  let pipelines = [ genPipeline rng; genPipeline rng; genPipeline rng ]
+
+                  let answers =
+                      [ for p in pipelines @ [ List.head pipelines ] ->
+                            p, DataFrame.evalPrepared DataFrame.noResolve Map.empty p prepared ]
+
+                  for p, answer in answers do
+                      Expect.equal
+                          (tokenised answer)
+                          (tokenised (DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p table))
+                          "evalPrepared = the reference"
+
+                  Expect.equal
+                      (tokenised (snd (List.last answers)))
+                      (tokenised (snd (List.head answers)))
+                      "the first pipeline answers the same twice"
+
+          testCase
+              "the boundary pads a short column and an absent one with Null and cuts a long one, as the row form did"
+          <| fun _ ->
+              // `Column.cell` was total and answered `Null` past the end; the frame's unpack is the
+              // same rule paid once per column.
+              let t: Table =
+                  { Schema = [ "a", IntType; "b", IntType; "c", StringType ]
+                    Columns =
+                      [ col "a" IntType [ Int 1; Int 2; Int 3 ]
+                        col "b" IntType [ Int 9 ]
+                        col "zzz" IntType [ Int 4; Int 5; Int 6; Int 7 ] ] }
+
+              let expected: Table =
+                  { Schema = t.Schema
+                    Columns =
+                      [ col "a" IntType [ Int 1; Int 2; Int 3 ]
+                        col "b" IntType [ Int 9; Null; Null ]
+                        col "c" StringType [ Null; Null; Null ] ] }
+
+              Expect.equal (Frame.toTable (Frame.ofTable t)) expected "padded, cut and absent-as-null"
+              Expect.equal (DataFrame.evalPipeline [] t) (Ok expected) "and the empty pipeline says the same"
+
+          testCase
+              "the typed path types a derived column from its cells: all null is String, an upsert replaces in place, a window appends"
+          <| fun _ ->
+              let t: Table =
+                  { Schema = [ "i", IntType; "j", IntType ]
+                    Columns = [ col "i" IntType [ Int 1; Int 2 ]; col "j" IntType [ Null; Null ] ] }
+
+              let schemaOf (pipeline: Transform list) =
+                  match DataFrame.evalPipeline pipeline t with
+                  | Ok out -> out.Schema
+                  | Error e -> failtestf "unexpected error %A" e
+
+              Expect.equal
+                  (schemaOf [ Derive("d", Binary(Add, Col "i", Col "j")) ])
+                  [ "i", IntType; "j", IntType; "d", StringType ]
+                  "an integer kernel that answers null on every row types as String, as `inferCellType` does"
+
+              Expect.equal
+                  (schemaOf [ Derive("d", Binary(Add, Col "i", Lit(Int 1))) ])
+                  [ "i", IntType; "j", IntType; "d", IntType ]
+                  "one present cell and it is Int"
+
+              Expect.equal
+                  (schemaOf [ Derive("i", Cast(FloatType, Col "i")) ])
+                  [ "i", FloatType; "j", IntType ]
+                  "a Derive over an existing name replaces it in place"
+
+              Expect.equal
+                  (schemaOf
+                      [ Window
+                            { Fn = RowNumber
+                              Of = "i"
+                              PartitionBy = []
+                              OrderBy = [ "i", Asc ]
+                              As = "i" } ])
+                  [ "i", IntType; "j", IntType; "i", IntType ]
+                  "a Window appends its column even where the name exists" ]

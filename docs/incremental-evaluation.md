@@ -33,6 +33,12 @@ Where the pipeline resolves `Ref` sources or reads `Param`s, use `Incremental.pr
 `Incremental.refresh`, which take a resolver and an env exactly as
 `DataFrame.evalPipelineWithInEnv` does.
 
+Where the source was prepared once for many pipelines (`DataFrame.prepare`; `0.34.0`), prime over
+it with `Incremental.primeOnPrepared idw pipeline prepared` (or `Incremental.primePrepared` with a
+resolver and an env): the state it builds is the state `primeOn` builds over the same table, with
+the reference path evaluating over the prepared form instead of unpacking the table again, and the
+prepared form held in the state. A refresh takes the new source as a `Table`, exactly as before.
+
 ## Ask before you adopt
 
 `Incremental.plan pipeline` classifies every step **before any evaluation happens**, so a consumer

@@ -67,6 +67,19 @@ internal path ran — that equality is the contract; the saving is the implement
 `Incremental.plan pipeline` says, before anything runs, whether a refresh will be restricted.
 [`docs/incremental-evaluation.md`](docs/incremental-evaluation.md) is the full on-ramp.
 
+A consumer that evaluates many pipelines over one source — a sheet, a dashboard — prepares the
+source once and pays the `Table` boundary once (`0.34.0`):
+
+```fsharp
+let prepared = DataFrame.prepare table                                          // one typed unpack per column
+let a = DataFrame.evalPrepared DataFrame.noResolve Map.empty pipelineA prepared // = DataFrame.evalPipeline pipelineA table
+let b = DataFrame.evalPrepared DataFrame.noResolve Map.empty pipelineB prepared
+let state = Incremental.primeOnPrepared idw pipelineA prepared                  // = Incremental.primeOn idw pipelineA table
+```
+
+`Prepared` is opaque; `evalPrepared` takes the resolver, env and pipeline exactly as
+`DataFrame.evalPipelineWithInEnv` does, and answers the same cells and the same errors.
+
 ## What incremental evaluation costs — measured, and where full evaluation wins
 
 The incremental evaluator is **certified**: its agreement with the reference evaluator is a

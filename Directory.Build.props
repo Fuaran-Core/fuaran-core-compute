@@ -3,13 +3,14 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <WarnOn>3390;$(WarnOn)</WarnOn>
-    <!-- The version every package in this repository ships at. 0.33.0 is the first version this
-         repository emits: the four ids shipped from the Fuaran.Core repository through 0.32.0, and
-         D6 of the split takes the next minor above the last emission there, so a consumer raising
+    <!-- The version every package in this repository ships at. 0.33.0 was the first version this
+         repository emitted: the four ids shipped from the Fuaran.Core repository through 0.32.0, and
+         D6 of the split took the next minor above the last emission there, so a consumer raising
          its pin can never meet one version number with two contracts behind it (DECISIONS.md D1).
-         It is a DRAFT slot until it is tagged: STABILITY.md heads it "0.33.0 — DRAFT", and an
-         additive change rides it while a breaking one advances it. -->
-    <Version>0.33.0</Version>
+         0.33.0 is tagged, so Phase 267's additive surface (a prepared source, the public typer)
+         advanced the slot to 0.34.0. It is a DRAFT slot until it is tagged: STABILITY.md heads it
+         "0.34.0 — DRAFT", and an additive change rides it while a breaking one advances it. -->
+    <Version>0.34.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
