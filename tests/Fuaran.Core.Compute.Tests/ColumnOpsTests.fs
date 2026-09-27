@@ -276,3 +276,178 @@ let tests =
                   failtestf "columnarOpLaws failed:\n%s" (String.concat "\n" fails)
 
               Expect.equal (Conformance.columnarOpLaws 4242 200) results "same seed ⇒ identical report" ]
+
+
+// ---------------------------------------------------------------------------
+//  Phase 268 — the ops over a prepared VERSION agree with the ops over a table.
+//
+//  `applyPrepared` / `canApplyPrepared` / `invertPrepared` / `deltaOfPrepared`
+//  are held to `apply` / `canApply` / `invert` / `deltaOf` op by op — verdict
+//  and value — over a small table and over one wide enough to span several
+//  chunks, so the chunk arithmetic (a cell in the third chunk, an append that
+//  crosses a chunk boundary, a column edit that moves cells in two chunks) is
+//  exercised. That agreement is what ties the prepared forms to the proved
+//  model: the oracle certifies `apply` clause for clause, and these hold the
+//  prepared forms to `apply`.
+// ---------------------------------------------------------------------------
+
+let private wide (n: int) : Table =
+    { Schema = [ "id", IntType; "s", StringType; "f", FloatType; "b", BoolType ]
+      Columns =
+        [ Column.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+          Column.create
+              "s"
+              StringType
+              [ for i in 0 .. n - 1 -> (if i % 11 = 0 then Null else Str("v" + string (i % 13))) ]
+          Column.create "f" FloatType [ for i in 0 .. n - 1 -> Float(float i * 0.5) ]
+          Column.create "b" BoolType [ for i in 0 .. n - 1 -> Bool(i % 2 = 0) ] ] }
+
+/// Ops over `t`, accepted and refused alike — one per clause and one per rejection.
+let private opsOver (t: Table) : ColumnOp list =
+    let n = Table.rowCount t
+    let mid = n / 2
+    let cells (f: int -> Cell) = [ for i in 0 .. n - 1 -> f i ]
+
+    [ SetCell("id", mid, Int -1)
+      SetCell("s", mid, Null)
+      SetCell("s", 0, Str "edited")
+      SetCell("f", n - 1, Float 1.25)
+      SetCell("id", mid, Str "wrong")
+      SetCell("id", n, Int 0)
+      SetCell("id", -1, Int 0)
+      SetCell("nope", 0, Int 0)
+      SetColumn(
+          Column.create
+              "f"
+              FloatType
+              (cells (fun i ->
+                  if i = 3 || i = mid then
+                      Float -1.0
+                  else
+                      Float(float i * 0.5)))
+      )
+      SetColumn(Column.create "f" IntType (cells (fun i -> Int i)))
+      SetColumn(Column.create "f" FloatType (cells (fun i -> if i = 1 then Str "x" else Float 0.0)))
+      SetColumn(Column.create "f" FloatType [ Float 1.0 ])
+      SetColumn(Column.create "nope" FloatType (cells (fun _ -> Float 0.0)))
+      InsertColumn(1, Column.create "g" IntType (cells (fun i -> Int(i * 2))))
+      InsertColumn(99, Column.create "g" IntType (cells (fun i -> Int(i * 2))))
+      InsertColumn(-5, Column.create "g" IntType (cells (fun i -> Int(i * 2))))
+      InsertColumn(0, Column.create "id" IntType (cells (fun i -> Int i)))
+      InsertColumn(0, Column.create "g" IntType [ Int 1 ])
+      InsertColumn(0, Column.create "g" IntType (cells (fun _ -> Str "no")))
+      RemoveColumn "s"
+      RemoveColumn "id"
+      RemoveColumn "nope"
+      AppendRows
+          [ [ "id", Int n; "s", Str "new" ]
+            [ "id", Int(n + 1); "f", Float 2.0; "b", Bool false ] ]
+      AppendRows [ for i in 0..1030 -> [ "id", Int(n + i); "f", Float(float i) ] ]
+      AppendRows [ [ "id", Int n; "nope", Int 1 ] ]
+      AppendRows [ [ "id", Str "wrong" ] ]
+      AppendRows []
+      ApplyTransform [ Filter(Binary(Ge, Col "id", Lit(Int 3))) ]
+      ApplyTransform [ Derive("h", Binary(Mul, Col "f", Lit(Float 2.0))) ]
+      ApplyTransform [ Filter(Col "nope") ] ]
+
+let private idw = RowIdentity.byColumn "id"
+
+[<Tests>]
+let preparedTests =
+    testList
+        "ColumnOps.prepared"
+        [ testCase "toTable (prepare t) is t itself"
+          <| fun _ ->
+              let t = wide 10
+
+              Expect.isTrue
+                  (obj.ReferenceEquals(DataFrame.toTable (DataFrame.prepare t), t))
+                  "the consumer's own object"
+
+          testCase
+              "applyPrepared agrees with apply on every op, accepted or refused, over a small and a many-chunk table"
+          <| fun _ ->
+              for t in [ baseTable; wide 7; wide 2_600 ] do
+                  let p = DataFrame.prepare t
+
+                  for op in opsOver t do
+                      Expect.equal
+                          (ColumnOps.applyPrepared op p |> Result.map DataFrame.toTable)
+                          (ColumnOps.apply op t)
+                          (sprintf "applyPrepared = apply for %A over %d rows" op (Table.rowCount t))
+
+                      Expect.equal
+                          (ColumnOps.canApplyPrepared op p)
+                          (ColumnOps.canApply op t)
+                          (sprintf "canApplyPrepared = canApply for %A" op)
+
+          testCase "invertPrepared agrees with invert, and the inverse undoes the edit on the version"
+          <| fun _ ->
+              for t in [ baseTable; wide 2_600 ] do
+                  let p = DataFrame.prepare t
+
+                  for op in opsOver t do
+                      Expect.equal
+                          (ColumnOps.invertPrepared op p)
+                          (ColumnOps.invert op t)
+                          (sprintf "invertPrepared = invert for %A" op)
+
+                      match ColumnOps.invertPrepared op p, ColumnOps.applyPrepared op p with
+                      | Ok inv, Ok p' ->
+                          Expect.equal
+                              (ColumnOps.applyPrepared inv p' |> Result.map DataFrame.toTable)
+                              (Ok t)
+                              (sprintf "the inverse of %A restores the table" op)
+                      | _ -> ()
+
+          testCase "deltaOfPrepared agrees with deltaOf on every op"
+          <| fun _ ->
+              for t in [ wide 7; wide 2_600 ] do
+                  let p = DataFrame.prepare t
+
+                  for op in opsOver t do
+                      Expect.equal
+                          (ColumnOps.deltaOfPrepared idw p op)
+                          (ColumnOps.deltaOf idw t op)
+                          (sprintf "deltaOfPrepared = deltaOf for %A" op)
+
+              // A cell edit that moves the KEY reads as a removal and an addition, on one row.
+              let t = wide 2_600
+              let p = DataFrame.prepare t
+              let op = SetCell("id", 2_000, Int 9_999)
+              Expect.equal (ColumnOps.deltaOfPrepared idw p op) (ColumnOps.deltaOf idw t op) "a key edit"
+
+              Expect.equal
+                  (Delta.rowsWith RowRemoved (ColumnOps.deltaOfPrepared idw p op))
+                  [ ByKey(DataFrame.cellToken (Int 2_000)) ]
+                  "the old key removed"
+
+          testCase "every prior version stays reachable, and a chain of edits reads as applyAll"
+          <| fun _ ->
+              let t = wide 2_600
+              let p0 = DataFrame.prepare t
+
+              let ops =
+                  [ SetCell("f", 1_500, Float 0.0)
+                    AppendRows [ [ "id", Int 2_600; "s", Str "z" ] ]
+                    SetColumn(Column.create "b" BoolType [ for i in 0..2_600 -> Bool(i % 3 = 0) ])
+                    InsertColumn(2, Column.create "g" IntType [ for i in 0..2_600 -> Int i ])
+                    SetCell("g", 2_600, Int -7)
+                    RemoveColumn "s" ]
+
+              let versions = ops |> List.scan (fun p op -> ok (ColumnOps.applyPrepared op p)) p0
+
+              Expect.equal
+                  (Ok(DataFrame.toTable (List.last versions)))
+                  (ColumnOps.applyAll ops t)
+                  "the last version is applyAll's table"
+
+              Expect.isTrue (obj.ReferenceEquals(DataFrame.toTable p0, t)) "the first version is untouched"
+
+              versions
+              |> List.pairwise
+              |> List.iteri (fun i (before, after) ->
+                  Expect.equal
+                      (Ok(DataFrame.toTable after))
+                      (ColumnOps.apply (List.item i ops) (DataFrame.toTable before))
+                      (sprintf "version %d is apply over version %d" (i + 1) i)) ]

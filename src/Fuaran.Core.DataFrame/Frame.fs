@@ -221,6 +221,179 @@ module internal Vec =
             let nb = length b
             Cells(Array.init (na + nb) (fun i -> if i < na then cellAt a i else cellAt b (i - na)))
 
+    // ---- Phase 268 — what a chunk needs of a vector ----
+
+    /// The dense slice `[start, start + len)` of a vector, as a fresh vector of the same kind.
+    let slice (v: Vec) (start: int) (len: int) : Vec =
+        match v with
+        | Ints(a, m) -> Ints(Array.sub a start len, Array.sub m start len)
+        | Floats(a, m) -> Floats(Array.sub a start len, Array.sub m start len)
+        | Bools(a, m) -> Bools(Array.sub a start len, Array.sub m start len)
+        | Strs(ty, a, m) -> Strs(ty, Array.sub a start len, Array.sub m start len)
+        | Cells a -> Cells(Array.sub a start len)
+
+    /// Dense vectors end to end, `ty` deciding the empty case: one vector of the shared kind where
+    /// every piece is typed alike, boxed otherwise. A single piece is handed back as it is.
+    let concat (ty: ColumnType) (vs: Vec[]) : Vec =
+        let boxed () =
+            Cells(vs |> Array.collect (fun v -> Array.init (length v) (cellAt v)))
+
+        match vs with
+        | [||] -> pack ty [||]
+        | [| v |] -> v
+        | _ ->
+            match vs[0] with
+            | Ints _ ->
+                let parts =
+                    vs
+                    |> Array.choose (function
+                        | Ints(a, m) -> Some(a, m)
+                        | _ -> None)
+
+                if parts.Length = vs.Length then
+                    Ints(Array.concat (Array.map fst parts), Array.concat (Array.map snd parts))
+                else
+                    boxed ()
+            | Floats _ ->
+                let parts =
+                    vs
+                    |> Array.choose (function
+                        | Floats(a, m) -> Some(a, m)
+                        | _ -> None)
+
+                if parts.Length = vs.Length then
+                    Floats(Array.concat (Array.map fst parts), Array.concat (Array.map snd parts))
+                else
+                    boxed ()
+            | Bools _ ->
+                let parts =
+                    vs
+                    |> Array.choose (function
+                        | Bools(a, m) -> Some(a, m)
+                        | _ -> None)
+
+                if parts.Length = vs.Length then
+                    Bools(Array.concat (Array.map fst parts), Array.concat (Array.map snd parts))
+                else
+                    boxed ()
+            | Strs(t0, _, _) ->
+                let parts =
+                    vs
+                    |> Array.choose (function
+                        | Strs(t, a, m) when t = t0 -> Some(a, m)
+                        | _ -> None)
+
+                if parts.Length = vs.Length then
+                    Strs(t0, Array.concat (Array.map fst parts), Array.concat (Array.map snd parts))
+                else
+                    boxed ()
+            | Cells _ -> boxed ()
+
+    /// The carrier string a string-family column of type `ty` holds for `c`, or `None` where `c`
+    /// is not that family's cell.
+    let private carrierOf (ty: ColumnType) (c: Cell) : string option =
+        match c, ty with
+        | Str s, StringType
+        | Date s, DateType
+        | Timestamp s, TimestampType -> Some s
+        | _ -> None
+
+    /// A copy of the dense vector with the cell at `i` replaced — never a write into `v`, whose
+    /// arrays another version may hold. A typed vector stays typed for a cell of its type or
+    /// `Null` (the value array is shared where only the mask moves), and is boxed for any other.
+    let setAt (v: Vec) (i: int) (c: Cell) : Vec =
+        let boxed () =
+            let out = Array.init (length v) (cellAt v)
+            out[i] <- c
+            Cells out
+
+        let masked (m: bool[]) =
+            let m' = Array.copy m
+            m'[i] <- false
+            m'
+
+        match v, c with
+        | Ints(a, m), Int x ->
+            let a' = Array.copy a
+            let m' = Array.copy m
+            a'[i] <- x
+            m'[i] <- true
+            Ints(a', m')
+        | Ints(a, m), Null -> Ints(a, masked m)
+        | Floats(a, m), Float x ->
+            let a' = Array.copy a
+            let m' = Array.copy m
+            a'[i] <- x
+            m'[i] <- true
+            Floats(a', m')
+        | Floats(a, m), Null -> Floats(a, masked m)
+        | Bools(a, m), Bool x ->
+            let a' = Array.copy a
+            let m' = Array.copy m
+            a'[i] <- x
+            m'[i] <- true
+            Bools(a', m')
+        | Bools(a, m), Null -> Bools(a, masked m)
+        | Strs(ty, a, m), Null -> Strs(ty, a, masked m)
+        | Strs(ty, a, m), _ ->
+            match carrierOf ty c with
+            | Some s ->
+                let a' = Array.copy a
+                let m' = Array.copy m
+                a'[i] <- s
+                m'[i] <- true
+                Strs(ty, a', m')
+            | None -> boxed ()
+        | Cells a, _ ->
+            let out = Array.copy a
+            out[i] <- c
+            Cells out
+        | _ -> boxed ()
+
+    /// Does the dense vector hold exactly `cells[offset ..]`, cell for cell, over its whole length?
+    /// Allocation-free on the typed path — the comparison a `SetColumn` makes per chunk to keep the
+    /// chunks it did not change. A float is compared as `=` compares it, so a `NaN` never agrees
+    /// with itself, which is what `Cell` equality says too.
+    let sameCells (v: Vec) (cells: Cell[]) (offset: int) : bool =
+        let n = length v
+
+        if offset + n > cells.Length then
+            false
+        else
+            let mutable ok = true
+            let mutable j = 0
+
+            while ok && j < n do
+                ok <-
+                    match v with
+                    | Ints(a, m) ->
+                        match cells[offset + j] with
+                        | Int x -> m[j] && a[j] = x
+                        | Null -> not m[j]
+                        | _ -> false
+                    | Floats(a, m) ->
+                        match cells[offset + j] with
+                        | Float x -> m[j] && a[j] = x
+                        | Null -> not m[j]
+                        | _ -> false
+                    | Bools(a, m) ->
+                        match cells[offset + j] with
+                        | Bool x -> m[j] && a[j] = x
+                        | Null -> not m[j]
+                        | _ -> false
+                    | Strs(ty, a, m) ->
+                        match cells[offset + j] with
+                        | Null -> not m[j]
+                        | c ->
+                            match carrierOf ty c with
+                            | Some s -> m[j] && a[j] = s
+                            | None -> false
+                    | Cells a -> a[j] = cells[offset + j]
+
+                j <- j + 1
+
+            ok
+
 module internal Frame =
 
     /// The logical row count — the rows a `Table` of this frame would have.
@@ -382,3 +555,243 @@ module internal Frame =
           Origins = Array.create f.Vecs.Length None
           Sel = None
           Count = pa.Length + pb.Length }
+
+// ============================================================================
+//  Phase 268 — persistent chunked columns.
+//
+//  A column as a rope of dense chunks, each a `Vec` of at most `Chunked.rows`
+//  rows, every chunk but the last exactly that long. Nothing writes into a
+//  chunk: an edit copies the one chunk it lands in and shares every other by
+//  reference, so successive versions of a source share structure, every prior
+//  version stays reachable, and "what moved" between two versions is one
+//  pointer comparison per chunk. The Phase 267 vectors are a VIEW over the
+//  rope — `Chunked.toVec` concatenates it — taken lazily, so an edit costs a
+//  chunk and a full evaluation pays the concatenation once per version.
+// ============================================================================
+
+/// One column as a persistent rope of dense chunks under its declared type. `Chunks[k]` holds
+/// physical rows `[k * Size, (k + 1) * Size)`; `Length` is the row count; every chunk but the
+/// last is `Size` long and none is empty.
+type internal Chunked =
+    {
+        Type: ColumnType
+        Size: int
+        Length: int
+        Chunks: Vec[]
+        /// The rope's cells as a list, once something has asked for them — one list per rope, so
+        /// every version that shares the rope shares the list, and the table a version stands for
+        /// costs the columns an edit moved rather than every column. Seeded with the consumer's own
+        /// list where the rope was cut from one. A memo, never read for anything but the list.
+        Cells: Cell list option ref
+    }
+
+module internal Chunked =
+
+    /// Rows per chunk: the smallest of the range the design names (1,024 to 4,096), so an edit
+    /// copies and a refresh re-evaluates the least it can, and a full pass over 100,000 rows still
+    /// walks under a hundred chunks.
+    [<Literal>]
+    let rows = 1024
+
+    /// How many chunks `n` rows take at `size` rows a chunk.
+    let count (size: int) (n: int) : int = (n + size - 1) / size
+
+    /// The length of chunk `k` of `n` rows at `size` a chunk.
+    let lengthOf (size: int) (n: int) (k: int) : int = min size (n - k * size)
+
+    /// A dense vector cut into chunks of `size` rows under `ty`.
+    let ofVec (ty: ColumnType) (size: int) (v: Vec) : Chunked =
+        let n = Vec.length v
+
+        { Type = ty
+          Size = size
+          Length = n
+          Chunks = Array.init (count size n) (fun k -> Vec.slice v (k * size) (lengthOf size n k))
+          Cells = ref None }
+
+    /// Cells cut into chunks of `size` rows, each packed under `ty`.
+    let ofCells (ty: ColumnType) (size: int) (cells: Cell[]) : Chunked =
+        let n = cells.Length
+
+        { Type = ty
+          Size = size
+          Length = n
+          Chunks = Array.init (count size n) (fun k -> Vec.pack ty (Array.sub cells (k * size) (lengthOf size n k)))
+          Cells = ref None }
+
+    /// The rope as one dense vector — the Phase 267 view. One chunk is handed back as it is.
+    let toVec (c: Chunked) : Vec = Vec.concat c.Type c.Chunks
+
+    /// The cell at physical row `i`.
+    let cellAt (c: Chunked) (i: int) : Cell =
+        Vec.cellAt c.Chunks[i / c.Size] (i % c.Size)
+
+    /// The rope with the cell at `i` replaced: one chunk copied, every other shared.
+    let setCell (c: Chunked) (i: int) (cell: Cell) : Chunked =
+        let k = i / c.Size
+        let chunks = Array.copy c.Chunks
+        chunks[k] <- Vec.setAt c.Chunks[k] (i % c.Size) cell
+
+        { c with
+            Chunks = chunks
+            Cells = ref None }
+
+    /// `cells` as a rope of `prior`'s shape, KEEPING every chunk of `prior` whose cells it holds
+    /// unchanged — a `SetColumn` that moved a few cells shares every chunk it did not move, so a
+    /// refresh recognises them. Cells are compared, never allocated, on the typed path; a chunk is
+    /// shared only under the same declared type. A different length is packed afresh.
+    let ofCellsSharing (prior: Chunked) (ty: ColumnType) (cells: Cell[]) : Chunked =
+        let n = cells.Length
+
+        if n <> prior.Length then
+            ofCells ty prior.Size cells
+        else
+            { Type = ty
+              Size = prior.Size
+              Length = n
+              Cells = ref None
+              Chunks =
+                Array.init (count prior.Size n) (fun k ->
+                    let off = k * prior.Size
+
+                    if ty = prior.Type && Vec.sameCells prior.Chunks[k] cells off then
+                        prior.Chunks[k]
+                    else
+                        Vec.pack ty (Array.sub cells off (lengthOf prior.Size n k))) }
+
+    /// The rope with `cells` appended: every full chunk shared, the partial last chunk copied and
+    /// extended, the rest packed fresh — O(chunk + appended), never a pass over the rope.
+    let append (c: Chunked) (cells: Cell[]) : Chunked =
+        if cells.Length = 0 then
+            c
+        else
+            let size = c.Size
+            let total = c.Length + cells.Length
+            let full = c.Length / size
+            let partial = c.Length - full * size
+
+            { c with
+                Length = total
+                Cells = ref None
+                Chunks =
+                    Array.init (count size total) (fun k ->
+                        if k < full then
+                            c.Chunks[k]
+                        elif k = full && partial > 0 then
+                            let take = min (size - partial) cells.Length
+                            Vec.append c.Chunks[k] (Vec.pack c.Type (Array.sub cells 0 take))
+                        else
+                            let off = k * size - c.Length
+                            Vec.pack c.Type (Array.sub cells off (min size (total - k * size)))) }
+
+    /// The rope's cells as a list, in row order — the memo where the rope has one, else built
+    /// from the back and kept.
+    let toCells (c: Chunked) : Cell list =
+        match c.Cells.Value with
+        | Some cells -> cells
+        | None ->
+            let mutable acc = []
+
+            for k in c.Chunks.Length - 1 .. -1 .. 0 do
+                let v = c.Chunks[k]
+
+                for i in Vec.length v - 1 .. -1 .. 0 do
+                    acc <- Vec.cellAt v i :: acc
+
+            c.Cells.Value <- Some acc
+            acc
+
+    /// The rope with its list memo seeded from `cells` — the list an op carried or a consumer
+    /// handed in, which IS the rope's cells; a caller's assertion, checked by length only.
+    let withCells (cells: Cell list) (c: Chunked) : Chunked =
+        if List.length cells = c.Length then
+            { c with Cells = ref (Some cells) }
+        else
+            c
+
+/// A source prepared once for many evaluations (Phase 267), and since Phase 268 a persistent
+/// VERSION of a table: its schema and row count, and one chunked column per schema column (the
+/// rope every edit shares), with the table it stands for and the evaluator's dense frame of it
+/// each derived on demand and kept. Prepared from a table, the table and the frame are what it was
+/// made from and the rope is cut from the frame the first time an edit or a chunk-aware refresh
+/// asks; produced by an edit (`ColumnOps.applyPrepared`) or a chunked refresh, the rope is primary
+/// and the other two are concatenated from it the first time something reads them. Opaque: nothing
+/// is readable from one but through `DataFrame.toTable`, `DataFrame.evalPrepared`, the `ColumnOps`
+/// forms over it and `Incremental.primePrepared` / `refreshPrepared`, so the working form stays
+/// free to move behind it.
+type Prepared =
+    internal
+        {
+            /// The table this version stands for — the consumer's own object where it was prepared
+            /// from one, else built from the rope on first read.
+            Source: Lazy<Table>
+            /// The evaluator's dense frame of it (Phase 267) — the vectors, as a view over the rope.
+            Frame: Lazy<Frame>
+            /// Its schema; the column order every array below follows.
+            Cols: Schema
+            /// Its row count.
+            Count: int
+            /// One rope per schema column.
+            Columns: Lazy<Chunked[]>
+        }
+
+module internal Prepared =
+
+    /// A lazy already holding `x`, so `IsValueCreated` reads true from the start.
+    let ready (x: 'a) : Lazy<'a> =
+        let l = lazy x
+        l.Force() |> ignore
+        l
+
+    /// A table prepared: its frame unpacked now (one typed unpack per column, as Phase 267 paid
+    /// it), its rope cut from the frame on first demand.
+    let ofTable (t: Table) : Prepared =
+        let f = Frame.ofTable t
+        let types = t.Schema |> List.map snd |> List.toArray
+
+        { Source = ready t
+          Frame = ready f
+          Cols = t.Schema
+          Count = f.Count
+          Columns =
+            lazy
+                (Array.mapi
+                    (fun ci v ->
+                        let rope = Chunked.ofVec types[ci] Chunked.rows v
+
+                        match f.Origins[ci] with
+                        | Some cells -> Chunked.withCells cells rope
+                        | None -> rope)
+                    f.Vecs) }
+
+    /// A version from its rope: the frame and the table each concatenated from it on first read.
+    let ofChunks (cols: Schema) (count: int) (columns: Chunked[]) : Prepared =
+        let frame =
+            lazy
+                { Cols = cols
+                  Vecs = columns |> Array.map Chunked.toVec
+                  Origins = Array.create columns.Length None
+                  Sel = None
+                  Count = count }
+
+        let table () : Table =
+            { Schema = cols
+              Columns =
+                cols
+                |> List.mapi (fun ci (name, ty) -> Column.create name ty (Chunked.toCells columns[ci])) }
+
+        { Source = lazy (table ())
+          Frame = frame
+          Cols = cols
+          Count = count
+          Columns = ready columns }
+
+    /// The rope, cut if it has not been yet.
+    let columns (p: Prepared) : Chunked[] = p.Columns.Value
+
+    /// The table this version stands for, built if it has not been yet.
+    let table (p: Prepared) : Table = p.Source.Value
+
+    /// Is `t` the very object this version was prepared from? Never forces a table that was not.
+    let isFrom (p: Prepared) (t: Table) : bool =
+        p.Source.IsValueCreated && obj.ReferenceEquals(p.Source.Value, t)

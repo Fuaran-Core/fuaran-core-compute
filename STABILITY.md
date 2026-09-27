@@ -46,6 +46,37 @@ CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
 It rewrites EVERY drifted baseline, not only the one you were looking at: stage the baselines you
 meant to move by name.
 
+## 0.35.0 — DRAFT
+
+Opened by Phase 268, which makes a prepared source a persistent VERSION — chunked columns that
+successive edits share — and adds the op algebra and the refresh over it. The four packages ship at
+this version together; `0.34.0` is tagged, so the additions advance the slot rather than ride it.
+
+- **Additive — `Fuaran.Core.Column.Ops`: `ColumnOps.applyPrepared`, `canApplyPrepared`,
+  `invertPrepared`, `deltaOfPrepared`.** `apply` / `canApply` / `invert` / `deltaOf` over a
+  `Prepared`, with the same verdicts: `applyPrepared op p` answers a new version at the cost of what
+  the op touches — a `SetCell` copies one chunk of one column, an `AppendRows` the partial last chunk
+  of each, a `SetColumn` keeps every chunk whose cells it did not move — and leaves `p` untouched,
+  which is what `invertPrepared` reads. On a coherent table, `apply op t` is
+  `applyPrepared op (prepare t)` read back through `toTable`, and the suite holds it so op by op;
+  the `Table` forms are unchanged and stay what the proved model and its oracle certify.
+- **Additive — `Fuaran.Core.DataFrame`: `DataFrame.toTable : Prepared -> Table`.** The table a
+  prepared source stands for: the very table it was prepared from, or — for a version an edit or a
+  chunked refresh produced — built from its chunks on first read and kept, with every column an
+  edit did not move handed back as the list it already was.
+- **Additive — `Fuaran.Core.DataFrame`: `Incremental.refreshPrepared`, `refreshOnPrepared`,
+  `resultPrepared`, `chunksTouched`.** `refresh` against a prepared version. Over a pipeline made
+  only of `Derive`s it is the chunked path: a chunk the version shares with the one the state was
+  last evaluated over — the same object, in every column — is recognised by identity and its output
+  chunks reused, only the chunks the version moved are evaluated, and the output shares every chunk
+  it did not; `primePrepared` builds the same shape. `chunksTouched` counts the chunks a state's
+  evaluation touched (`None` off that path); `resultPrepared` hands the result on as a version, so
+  a node feeding a node pays no boundary. Any other pipeline takes the row-local walk over the
+  version's table, as `refresh` does. Every result still equals the reference's.
+- **No surface change — the state's table and result are built on first read.** A state's
+  `source` and `result` are the same tables they were; a chunked refresh no longer builds them to
+  hand the state back, and `result` builds the output the first time a consumer asks.
+
 ## 0.34.0 — released 2026-09-27 as `v0.34.0`
 
 **Release record.** The cut-time Fable gate ran green against the candidate on 2026-09-27: the three F#

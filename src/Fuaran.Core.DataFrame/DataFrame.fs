@@ -724,20 +724,6 @@ module internal RowAccess =
         cols
         |> List.mapi (fun ci (name, ty) -> Column.create name ty (rows |> List.map (fun r -> r[ci])))
 
-/// A source prepared once for many evaluations (Phase 267): the table it was made from, held by
-/// reference, beside the evaluator's dense columnar form of it — one typed unpack per column, paid
-/// here rather than by every pipeline that reads the source. Opaque: nothing is readable from one
-/// but through `DataFrame.evalPrepared` and `Incremental.primePrepared`, so the working form stays
-/// free to move behind it, as the incremental state did behind its own type in `0.27.0`.
-type Prepared =
-    internal
-        {
-            /// The table this was prepared from — the consumer's own object, never copied.
-            Source: Table
-            /// Its columnar form.
-            Frame: Frame
-        }
-
 /// The pure reference evaluator + the algebra's pinned semantics. Every host evaluator is
 /// certified byte-identical to this through `Conformance.transformLaws`.
 module DataFrame =
@@ -3754,14 +3740,21 @@ module DataFrame =
                 evalStep resolve env f step
                 |> Result.bind (fun f' -> go f' (evaluated + cost) rest)
 
-        go prepared.Frame 0 pipeline
+        go prepared.Frame.Value 0 pipeline
 
     /// Prepare a table once for many evaluations (Phase 267): the `Table` boundary — one typed
     /// unpack per column — paid here rather than by every pipeline that reads the source. The table
     /// is held by reference beside its prepared form and never copied; a consumer that evaluates
     /// many pipelines over one source (a sheet, a dashboard) prepares it once and hands the result
-    /// to `evalPrepared` per pipeline, or to `Incremental.primePrepared`.
-    let prepare (t: Table) : Prepared = { Source = t; Frame = Frame.ofTable t }
+    /// to `evalPrepared` per pipeline, or to `Incremental.primePrepared`. Since Phase 268 a prepared
+    /// source is also a persistent VERSION: `ColumnOps.applyPrepared` edits it at the cost of a
+    /// chunk, sharing everything an edit did not touch, and `toTable` reads any version back.
+    let prepare (t: Table) : Prepared = Prepared.ofTable t
+
+    /// The table a prepared source stands for (Phase 268): the very table it was prepared from,
+    /// or — for a version an edit or a chunked refresh produced — the table built from its chunks
+    /// the first time it is asked for, and kept. `toTable (prepare t)` is `t` itself.
+    let toTable (prepared: Prepared) : Table = Prepared.table prepared
 
     /// The reference evaluator over a prepared source (Phase 267): `evalPipelineWithInEnv` with the
     /// boundary already paid — the same resolver, env and pipeline, the same cells, the same errors.

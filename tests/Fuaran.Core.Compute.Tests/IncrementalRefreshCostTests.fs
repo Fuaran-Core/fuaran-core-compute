@@ -515,3 +515,379 @@ let refreshCostTests =
 
               Expect.equal (Incremental.source refreshed) after "source: the table the next delta must describe FROM"
               Expect.equal (Incremental.pipelineOf refreshed) pipeline "pipelineOf: the pipeline it was built for" ]
+
+
+// ---------------------------------------------------------------------------
+//  Phase 268 — the chunked path: what a refresh over a prepared VERSION pays,
+//  counted in chunks rather than rows.
+//
+//  The floor the file above records — one pass over the new source, because
+//  the refresh is handed a whole table and has to read it to know what moved —
+//  is what this family shows the chunked path getting under. A version made by
+//  `ColumnOps.applyPrepared` shares every chunk the edit did not touch with the
+//  version before it, by reference; `Incremental.refreshPrepared` compares the
+//  chunks, evaluates the ones that moved, and hands back an output that shares
+//  the rest. So a one-cell edit costs ONE chunk at 2,048 rows and one chunk at
+//  20,000, and the count is the same number — which is the claim, stated as a
+//  count for the reason the file above states its claim as one.
+//
+//  The falsifier is in the instrument: `chunksTouched` is `Some n` only on the
+//  chunked path, a fresh `prepare` shares nothing and so touches every chunk,
+//  and a state built by the row-local walk has no chunks to share and touches
+//  every chunk once. Each of those is asserted below, so "one chunk" is a
+//  measurement against shapes that do NOT read one.
+// ---------------------------------------------------------------------------
+
+/// The spreadsheet-shaped consumer's `lines` node (Phase 250): `amount = qty * price`, then `big = amount >= threshold`
+/// with the threshold a `Param` — a `Derive`-only pipeline that keeps every row.
+let private linesPipeline: Transform list =
+    [ Derive("amount", Binary(Mul, Col "qty", Col "price"))
+      Derive("big", Binary(Ge, Col "amount", Param "threshold")) ]
+
+let private linesEnv: Map<string, Cell> = Map.ofList [ "threshold", Float 500.0 ]
+
+let private orders (n: int) : Table =
+    { Schema = [ "id", IntType; "region", StringType; "qty", IntType; "price", FloatType ]
+      Columns =
+        [ Column.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+          Column.create "region" StringType [ for i in 0 .. n - 1 -> Str(if i % 2 = 0 then "north" else "south") ]
+          Column.create "qty" IntType [ for i in 0 .. n - 1 -> Int(1 + i % 7) ]
+          Column.create "price" FloatType [ for i in 0 .. n - 1 -> Float(0.25 * float (1 + i % 50)) ] ] }
+
+let private orderId = RowIdentity.byColumn "id"
+
+let private chunkRows = Chunked.rows
+
+/// The refresh over a version, with the result held to the reference evaluator over the
+/// version's table — asserted on every path below, so no count is read off a wrong answer.
+let private refreshChecked (state: IncrementalEval) (delta: TableDelta) (version: Prepared) : IncrementalEval =
+    let refreshed =
+        ok (Incremental.refreshPrepared DataFrame.noResolve linesEnv orderId linesPipeline state delta version)
+
+    Expect.equal
+        (Ok(Incremental.result refreshed))
+        (DataFrame.evalPipelineInEnv linesEnv linesPipeline (DataFrame.toTable version))
+        "the chunked refresh answers what the reference answers"
+
+    refreshed
+
+let private rowsEvaluated (s: IncrementalEval) : int =
+    Incremental.rowsEvaluated (Incremental.footprint s)
+
+[<Tests>]
+let chunkedRefreshTests =
+    testList
+        "Incremental.chunked"
+        [ testCase "a one-cell edit refreshes ONE chunk, and the same one chunk at ten times the rows"
+          <| fun _ ->
+              let costAt (n: int) =
+                  let v0 = DataFrame.prepare (orders n)
+
+                  let s0 =
+                      ok (Incremental.primePrepared DataFrame.noResolve linesEnv orderId linesPipeline v0)
+
+                  Expect.equal
+                      (Incremental.chunksTouched s0)
+                      (Some(Chunked.count chunkRows n))
+                      "the prime over a prepared Derive-only pipeline is the chunked path, every chunk evaluated"
+
+                  Expect.equal
+                      (rowsEvaluated s0)
+                      (2 * n)
+                      "the prime's footprint is the reference's: two Derives over n rows"
+
+                  let op = SetCell("qty", n / 2, Int 100)
+                  let v1 = ok (ColumnOps.applyPrepared op v0)
+                  let delta = ColumnOps.deltaOfPrepared orderId v0 op
+                  Expect.isTrue (Delta.isQuiet delta |> not) "the delta names the edited row"
+                  let s1 = refreshChecked s0 delta v1
+
+                  Expect.equal (Incremental.chunksTouched s1) (Some 1) "one chunk moved, one chunk evaluated"
+
+                  Expect.equal
+                      (Incremental.footprint s1).Recompute
+                      (RowsRecomputed(2 * chunkRows))
+                      "the rows evaluated are the chunk's rows, twice (two Derives)"
+
+                  // The OUTPUT shares every chunk the edit did not touch, in every column, by
+                  // reference — which is what makes the next node downstream cheap too. In the
+                  // edited chunk, the columns that pass through untouched (`id`, `region`,
+                  // `price`) are still the source's own chunk, so they are shared as well; only
+                  // the edited column and the two derived from it hold a new chunk there.
+                  let out0 = Prepared.columns (Incremental.resultPrepared s0)
+                  let out1 = Prepared.columns (Incremental.resultPrepared s1)
+                  let edited = (n / 2) / chunkRows
+                  let moved = set [ 2; 4; 5 ] // qty, amount, big
+
+                  for ci in 0 .. out1.Length - 1 do
+                      for k in 0 .. out1[ci].Chunks.Length - 1 do
+                          Expect.equal
+                              (obj.ReferenceEquals(out0[ci].Chunks[k], out1[ci].Chunks[k]))
+                              (k <> edited || not (Set.contains ci moved))
+                              (sprintf "output column %d chunk %d is shared exactly when the edit did not move it" ci k)
+
+                  rowsEvaluated s1
+
+              let atSmall = costAt (2 * chunkRows)
+              let atLarge = costAt (20_000)
+
+              printfn
+                  "  [cost] chunked one-cell refresh: %d rows evaluated at %d rows, %d at 20000"
+                  atSmall
+                  (2 * chunkRows)
+                  atLarge
+
+              Expect.equal atSmall atLarge "the cost of a one-cell edit does not grow with the table"
+
+          testCase "the version itself shares every chunk the edit did not touch, and the prior version is intact"
+          <| fun _ ->
+              let n = 5_000
+              let t = orders n
+              let v0 = DataFrame.prepare t
+              let op = SetCell("price", 3_000, Float 9.75)
+              let v1 = ok (ColumnOps.applyPrepared op v0)
+              let c0 = Prepared.columns v0
+              let c1 = Prepared.columns v1
+
+              for ci in 0 .. c0.Length - 1 do
+                  if ci <> 3 then
+                      Expect.isTrue (obj.ReferenceEquals(c0[ci], c1[ci])) "an untouched column is the same rope"
+                  else
+                      for k in 0 .. c0[ci].Chunks.Length - 1 do
+                          Expect.equal
+                              (obj.ReferenceEquals(c0[ci].Chunks[k], c1[ci].Chunks[k]))
+                              (k <> 3_000 / chunkRows)
+                              "the edited column shares every chunk but the one the edit landed in"
+
+              Expect.isTrue
+                  (obj.ReferenceEquals(DataFrame.toTable v0, t))
+                  "the prior version still stands for the table it was prepared from"
+
+              Expect.equal
+                  (Ok(DataFrame.toTable v1))
+                  (ColumnOps.apply op t)
+                  "the new version stands for the table the Table form produces"
+
+              Expect.equal
+                  (ColumnOps.invertPrepared op v0)
+                  (Ok(SetCell("price", 3_000, Float(0.25 * float (1 + 3_000 % 50)))))
+                  "the inverse reads the prior version's cell"
+
+          testCase "a version with the same chunks is recognised as unchanged: zero chunks, the prior reused"
+          <| fun _ ->
+              let v0 = DataFrame.prepare (orders 3_000)
+
+              let s0 =
+                  ok (Incremental.primePrepared DataFrame.noResolve linesEnv orderId linesPipeline v0)
+
+              let s1 = refreshChecked s0 (Delta.empty orderId.Scheme) v0
+              Expect.equal (Incremental.chunksTouched s1) (Some 0) "nothing moved, nothing evaluated"
+              Expect.equal (Incremental.footprint s1).Recompute ReusedPrior "and the footprint says so"
+
+          testCase
+              "what moved is read off the chunks, never off the delta: a FullRefresh over a one-chunk edit costs one chunk"
+          <| fun _ ->
+              let v0 = DataFrame.prepare (orders 3_000)
+
+              let s0 =
+                  ok (Incremental.primePrepared DataFrame.noResolve linesEnv orderId linesPipeline v0)
+
+              let v1 = ok (ColumnOps.applyPrepared (SetCell("qty", 10, Int 3)) v0)
+              let s1 = refreshChecked s0 FullRefresh v1
+              Expect.equal (Incremental.chunksTouched s1) (Some 1) "one chunk"
+
+          testCase "a version prepared afresh shares nothing, so every chunk is evaluated — the falsifier"
+          <| fun _ ->
+              let n = 3_000
+              let t = orders n
+              let v0 = DataFrame.prepare t
+
+              let s0 =
+                  ok (Incremental.primePrepared DataFrame.noResolve linesEnv orderId linesPipeline v0)
+
+              let op = SetCell("qty", 10, Int 3)
+              let fresh = DataFrame.prepare (ok (ColumnOps.apply op t))
+              let s1 = refreshChecked s0 (ColumnOps.deltaOf orderId t op) fresh
+
+              Expect.equal
+                  (Incremental.chunksTouched s1)
+                  (Some(Chunked.count chunkRows n))
+                  "no shared chunk, every chunk evaluated"
+
+          testCase
+              "a state the row-local walk built has no chunks to share: the first chunked refresh evaluates every chunk, the next one"
+          <| fun _ ->
+              let n = 3_000
+              let t = orders n
+              let s0 = ok (Incremental.prime DataFrame.noResolve linesEnv orderId linesPipeline t)
+              Expect.equal (Incremental.chunksTouched s0) None "a prime over a table is the walk"
+              let v0 = DataFrame.prepare t
+              let s1 = refreshChecked s0 (Delta.empty orderId.Scheme) v0
+              Expect.equal (Incremental.chunksTouched s1) (Some(Chunked.count chunkRows n)) "every chunk, once"
+              let op = SetCell("qty", 2_500, Int 3)
+              let v1 = ok (ColumnOps.applyPrepared op v0)
+              let s2 = refreshChecked s1 (ColumnOps.deltaOfPrepared orderId v0 op) v1
+              Expect.equal (Incremental.chunksTouched s2) (Some 1) "then one"
+
+              // And back: a refresh over a bare table after a chunked state walks every row once
+              // (the chunks are not row caches), answers the reference, and carries no chunks.
+              let t2 = ok (ColumnOps.apply (SetCell("qty", 7, Int 5)) (DataFrame.toTable v1))
+
+              let delta =
+                  ColumnOps.deltaOf orderId (DataFrame.toTable v1) (SetCell("qty", 7, Int 5))
+
+              let s3 =
+                  ok (Incremental.refresh DataFrame.noResolve linesEnv orderId linesPipeline s2 delta t2)
+
+              Expect.equal
+                  (Ok(Incremental.result s3))
+                  (DataFrame.evalPipelineInEnv linesEnv linesPipeline t2)
+                  "the walk answers the reference"
+
+              Expect.equal (Incremental.chunksTouched s3) None "and carries no chunks"
+
+          testCase "an append costs the last chunk and the chunks it adds"
+          <| fun _ ->
+              let n = 3_000 // 2 full chunks and a partial third
+              let v0 = DataFrame.prepare (orders n)
+
+              let s0 =
+                  ok (Incremental.primePrepared DataFrame.noResolve linesEnv orderId linesPipeline v0)
+
+              let rows =
+                  [ for i in 0..2 -> [ "id", Int(n + i); "region", Str "east"; "qty", Int 2; "price", Float 1.5 ] ]
+
+              let op = AppendRows rows
+              let v1 = ok (ColumnOps.applyPrepared op v0)
+              let s1 = refreshChecked s0 (ColumnOps.deltaOfPrepared orderId v0 op) v1
+              Expect.equal (Incremental.chunksTouched s1) (Some 1) "the partial last chunk, copied and extended"
+
+              // Past the chunk boundary: the last chunk plus the new one.
+              let many =
+                  [ for i in 0..chunkRows ->
+                        [ "id", Int(n + 3 + i); "region", Str "west"; "qty", Int 1; "price", Float 2.0 ] ]
+
+              let v2 = ok (ColumnOps.applyPrepared (AppendRows many) v1)
+
+              let s2 =
+                  refreshChecked s1 (ColumnOps.deltaOfPrepared orderId v1 (AppendRows many)) v2
+
+              Expect.equal (Incremental.chunksTouched s2) (Some 2) "the last chunk and the one the append opened"
+
+          testCase "a SetColumn that moves two cells shares every chunk it did not move"
+          <| fun _ ->
+              let n = 5_000
+              let t = orders n
+              let v0 = DataFrame.prepare t
+
+              let s0 =
+                  ok (Incremental.primePrepared DataFrame.noResolve linesEnv orderId linesPipeline v0)
+
+              let cells =
+                  [ for i in 0 .. n - 1 -> if i = 100 || i = 4_000 then Int 50 else Int(1 + i % 7) ]
+
+              let op = SetColumn(Column.create "qty" IntType cells)
+              let v1 = ok (ColumnOps.applyPrepared op v0)
+              let s1 = refreshChecked s0 (ColumnOps.deltaOfPrepared orderId v0 op) v1
+              Expect.equal (Incremental.chunksTouched s1) (Some 2) "two chunks moved"
+
+          testCase "a derived column's type is the reference's over the whole rope, not a chunk's"
+          <| fun _ ->
+              // `m` is absent through the first chunk, so `c = a + m` has no present cell there:
+              // evaluated alone, that chunk would type `c` as a string column. The reference types
+              // the column from its first present cell, and so must the rope.
+              let n = 3_000
+
+              let t =
+                  { Schema = [ "id", IntType; "a", IntType; "m", IntType ]
+                    Columns =
+                      [ Column.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+                        Column.create "a" IntType [ for i in 0 .. n - 1 -> Int i ]
+                        Column.create "m" IntType [ for i in 0 .. n - 1 -> (if i < chunkRows then Null else Int 1) ] ] }
+
+              let p =
+                  [ Derive("c", Binary(Add, Col "a", Col "m"))
+                    Derive("d", Binary(Ge, Col "c", Lit(Int 2_000))) ]
+
+              let v0 = DataFrame.prepare t
+              let s0 = ok (Incremental.primeOnPrepared orderId p v0)
+              Expect.equal (Ok(Incremental.result s0)) (DataFrame.evalPipeline p t) "the prime, schema and cells"
+
+              let op = SetCell("a", 5, Int 7)
+              let v1 = ok (ColumnOps.applyPrepared op v0)
+
+              let s1 =
+                  ok (Incremental.refreshOnPrepared orderId p s0 (ColumnOps.deltaOfPrepared orderId v0 op) v1)
+
+              Expect.equal
+                  (Ok(Incremental.result s1))
+                  (DataFrame.evalPipeline p (DataFrame.toTable v1))
+                  "the refresh, schema and cells"
+
+              Expect.equal (Incremental.chunksTouched s1) (Some 1) "one chunk"
+
+              // All absent everywhere: a string column, as the reference types it.
+              let allNull =
+                  { t with
+                      Columns =
+                          t.Columns
+                          |> List.map (fun c ->
+                              if c.Name = "m" then
+                                  { c with Cells = List.replicate n Null }
+                              else
+                                  c) }
+
+              let sN = ok (Incremental.primeOnPrepared orderId p (DataFrame.prepare allNull))
+
+              Expect.equal
+                  (Ok(Incremental.result sN))
+                  (DataFrame.evalPipeline p allNull)
+                  "all-null: the reference's answer"
+
+          testCase
+              "a pipeline the chunked path does not admit takes the walk over the version's table, and answers the reference"
+          <| fun _ ->
+              let n = 3_000
+              let t = orders n
+
+              let p =
+                  [ Derive("amount", Binary(Mul, Col "qty", Col "price"))
+                    Filter(Binary(Ge, Col "amount", Lit(Float 2.0))) ]
+
+              let v0 = DataFrame.prepare t
+              let s0 = ok (Incremental.primeOnPrepared orderId p v0)
+              Expect.equal (Incremental.chunksTouched s0) None "a Filter is not chunked"
+              let op = SetCell("qty", 42, Int 6)
+              let v1 = ok (ColumnOps.applyPrepared op v0)
+
+              let s1 =
+                  ok (Incremental.refreshOnPrepared orderId p s0 (ColumnOps.deltaOfPrepared orderId v0 op) v1)
+
+              Expect.equal
+                  (Ok(Incremental.result s1))
+                  (DataFrame.evalPipeline p (DataFrame.toTable v1))
+                  "the walk over the version's table"
+
+              match (Incremental.footprint s1).Recompute with
+              | RowsRecomputed n ->
+                  Expect.isTrue (n <= 2) "restricted to the one named row, at its two evaluating steps"
+              | other -> failtestf "expected a restricted refresh, got %A" other
+
+          testCase "an empty source and an empty pipeline are both chunked without a chunk"
+          <| fun _ ->
+              let empty = orders 0
+              let v0 = DataFrame.prepare empty
+
+              let s0 =
+                  ok (Incremental.primePrepared DataFrame.noResolve linesEnv orderId linesPipeline v0)
+
+              Expect.equal
+                  (Ok(Incremental.result s0))
+                  (DataFrame.evalPipelineInEnv linesEnv linesPipeline empty)
+                  "no rows"
+
+              Expect.equal (Incremental.chunksTouched s0) (Some 0) "no chunk to evaluate"
+              let t = orders 10
+              let s1 = ok (Incremental.primeOnPrepared orderId [] (DataFrame.prepare t))
+              Expect.equal (Incremental.result s1) t "the identity pipeline hands the table back"
+              Expect.equal (Incremental.chunksTouched s1) (Some 1) "one chunk, shared through" ]

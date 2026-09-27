@@ -355,15 +355,17 @@ type IncrementalEval =
             Env: Map<string, Cell>
             /// The identity scheme its row tokens were minted under.
             Scheme: string
-            /// The source it was last evaluated against.
-            Source: Table
+            /// The source it was last evaluated against. Lazy since Phase 268: a chunked refresh
+            /// hands back a version whose table is built from its chunks the first time a reader
+            /// asks, and a refresh that only compares chunks never asks.
+            Source: Lazy<Table>
             /// Phase 267 — the prepared form of `Source`, where the state was primed over one
             /// (`primePrepared`): the frame the reference path evaluates over, held so a refresh
             /// whose source IS that table again (the same object) pays the boundary no second time.
             /// `None` on a state primed over a bare table.
             Prepared: Prepared option
-            /// The pipeline's result over that source.
-            Output: Table
+            /// The pipeline's result over that source — lazy for the same reason `Source` is.
+            Output: Lazy<Table>
             /// Phase 208 — every source row's identity token, in the SOURCE's own row order. It is
             /// what makes the three arrays below positional: a row still sitting at the index it
             /// sat at last time is recognised by one pointer comparison, and only a row that moved
@@ -425,6 +427,16 @@ type IncrementalEval =
             /// row the tail last read, so every tail step's output for it is too. Empty when the
             /// pipeline has no group-by or nothing after it.
             GroupCells: Map<string, Cell list>
+            /// Phase 268 — the result as a chunked version, where the state was produced by the
+            /// chunked path (`primePrepared` / `refreshPrepared` over a pipeline of `Derive`s): its
+            /// output columns share every chunk the source did not move, and the next chunked
+            /// refresh reuses them by identity. `None` on a state the row-local walk or the
+            /// reference path built.
+            ChunkedOutput: Prepared option
+            /// Phase 268 — how many chunks the chunked path evaluated to produce this state, or
+            /// `None` where it was not the path taken. The instrument `IncrementalRefreshCostTests`
+            /// reads: a one-cell edit is one chunk, whatever the row count.
+            ChunksTouched: int option
         }
 
 /// The incremental evaluation seam: classify a pipeline, prime a state over a source, then refresh
@@ -1739,9 +1751,9 @@ module Incremental =
                       Pipeline = pipeline
                       Env = env
                       Scheme = scheme
-                      Source = source
+                      Source = Prepared.ready source
                       Prepared = prepared
-                      Output = tableOf cols (aliveWorks |> List.map (fun w -> w.Cells))
+                      Output = Prepared.ready (tableOf cols (aliveWorks |> List.map (fun w -> w.Cells)))
                       Tokens = tokens
                       RowCells = rowCells
                       RowGroups = [||]
@@ -1753,7 +1765,9 @@ module Incremental =
                         { SourceRows = rowCount
                           ResultRows = List.length aliveWorks
                           Recompute = recomputeOf evaluated 0 }
-                      GroupCells = Map.empty }
+                      GroupCells = Map.empty
+                      ChunkedOutput = None
+                      ChunksTouched = None }
             | Some(keys, aggs, tail) ->
                 let priorMembers =
                     prior |> Option.map (fun s -> s.GroupMembers) |> Option.defaultValue Map.empty
@@ -1771,9 +1785,9 @@ module Incremental =
                           Pipeline = pipeline
                           Env = env
                           Scheme = scheme
-                          Source = source
+                          Source = Prepared.ready source
                           Prepared = prepared
-                          Output = tableOf outCols outRows
+                          Output = Prepared.ready (tableOf outCols outRows)
                           Tokens = tokens
                           RowCells = rowCells
                           RowGroups = g.RowGroups
@@ -1785,7 +1799,9 @@ module Incremental =
                             { SourceRows = rowCount
                               ResultRows = List.length outRows
                               Recompute = recomputeOf evaluated' g.Recomputed }
-                          GroupCells = groupCells }
+                          GroupCells = groupCells
+                          ChunkedOutput = None
+                          ChunksTouched = None }
 
                     if List.isEmpty tail then
                         // The pipeline every pre-202 state was built for. Taken as its own branch
@@ -1871,9 +1887,9 @@ module Incremental =
               Pipeline = pipeline
               Env = env
               Scheme = scheme
-              Source = source
+              Source = Prepared.ready source
               Prepared = prepared
-              Output = output
+              Output = Prepared.ready output
               Tokens = [||]
               RowCells = [||]
               RowGroups = [||]
@@ -1885,7 +1901,9 @@ module Incremental =
                 { SourceRows = Table.rowCount source
                   ResultRows = Table.rowCount output
                   Recompute = recompute evaluated }
-              GroupCells = Map.empty })
+              GroupCells = Map.empty
+              ChunkedOutput = None
+              ChunksTouched = None })
 
     /// The shared entry: run the incremental path when the shape and the witness allow it, and the
     /// reference path otherwise. `named` is `None` for "every row".
@@ -1966,10 +1984,242 @@ module Incremental =
         : Result<IncrementalEval, EvalError> =
         run resolve env idw pipeline source None None None (fun evaluated _ -> Primed evaluated) (fun _ n -> Primed n)
 
+    // ---- Phase 268 — the chunked path ----
+    //
+    // A pipeline made only of `Derive`s keeps every row where it is, so its output is the source's
+    // columns plus one column per step, and the value of a row depends on that row alone. Over a
+    // prepared source that is a rope of chunks, such a pipeline is evaluated CHUNK BY CHUNK — the
+    // steps folded over a frame of one chunk through the reference's own `evalStep`, so the cells
+    // are the reference's cells — and a chunk the source shares with the version the state was
+    // last evaluated over (the same object, in every column) is not evaluated at all: its output
+    // chunks are the prior output's, by reference. A one-cell edit through
+    // `ColumnOps.applyPrepared` moves one chunk of one column, so the refresh evaluates one chunk
+    // and shares every other, and the output shares every unchanged chunk too — the floor the
+    // row-local walk could not get under, because it is handed a whole table and has to read it.
+    //
+    // The delta is still required to be a true description of the change, and it still decides
+    // staleness; but WHAT MOVED is read off the chunks, never off the delta, so a delta that names
+    // more rows than moved costs nothing and one that names fewer cannot make the answer wrong.
+    //
+    // What the path must get right that a chunk cannot see on its own: a derived column's TYPE.
+    // The reference types it from the column's first present cell in row order — `StringType`
+    // when there is none — so an all-null chunk of a float column types itself `StringType`
+    // alone. The type is therefore fixed here over the whole rope, after the chunks are in hand,
+    // by the same rule; and a chunk holding no present cell is repacked under the column's kind,
+    // so the rope's view is one typed vector rather than a boxed one.
+
+    /// The `Derive` steps of a pipeline made only of them, in order; `None` for any other pipeline.
+    let private deriveSteps (pipeline: Transform list) : (string * ColExpr) list option =
+        pipeline
+        |> mapM (function
+            | Derive(name, expr) -> Some(name, expr)
+            | _ -> None)
+
+    /// The type of the first present cell over the chunks in row order, or `None` where every cell
+    /// is absent — the reference's typing rule for a derived column, read off a rope. Stops at the
+    /// first present cell, so it is O(1) on any column that has one near its head.
+    let private firstPresentType (chunks: Vec[]) : ColumnType option =
+        chunks
+        |> Array.tryPick (fun v ->
+            match v with
+            | Ints(_, m) -> if Array.exists id m then Some IntType else None
+            | Floats(_, m) -> if Array.exists id m then Some FloatType else None
+            | Bools(_, m) -> if Array.exists id m then Some BoolType else None
+            | Strs(ty, _, m) -> if Array.exists id m then Some ty else None
+            | Cells a -> a |> Array.tryPick Cell.typeOf)
+
+    /// Does the vector hold no present cell at all?
+    let private nonePresent (v: Vec) : bool =
+        match v with
+        | Ints(_, m)
+        | Floats(_, m)
+        | Bools(_, m)
+        | Strs(_, _, m) -> not (Array.exists id m)
+        | Cells a -> a |> Array.forall (fun c -> c = Null)
+
+    /// Evaluate the `Derive` steps over a prepared source chunk by chunk, reusing the prior
+    /// output's chunks wherever the source's chunk is the prior source's own object in every
+    /// column. Answers the output as a prepared version, the row evaluations it cost (one per row
+    /// per step, the reference's own unit) and the chunks it evaluated. An error from any chunk is
+    /// answered as the error — the caller re-runs the reference path, whose error is the one to
+    /// report.
+    let private evalChunked
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (steps: (string * ColExpr) list)
+        (prepared: Prepared)
+        (prior: (Prepared * Prepared) option)
+        : Result<Prepared * int * int, EvalError> =
+        let columns = Prepared.columns prepared
+        let w = columns.Length
+        let count = prepared.Count
+        let size = Chunked.rows
+        let chunkCount = Chunked.count size count
+        let transforms = steps |> List.map Derive
+
+        let priorColumns =
+            prior |> Option.map (fun (ps, po) -> Prepared.columns ps, Prepared.columns po)
+
+        // Chunk `k` of every source column is the prior source's own object.
+        let unchanged (k: int) : bool =
+            match priorColumns with
+            | Some(ps, po) when ps.Length = w && po.Length > 0 ->
+                Array.forall2
+                    (fun (c: Chunked) (pc: Chunked) ->
+                        pc.Size = size
+                        && k < pc.Chunks.Length
+                        && obj.ReferenceEquals(c.Chunks[k], pc.Chunks[k]))
+                    columns
+                    ps
+            | _ -> false
+
+        let evalOver (f0: Frame) : Result<Frame, EvalError> =
+            transforms
+            |> List.fold (fun acc step -> acc |> Result.bind (fun f -> DataFrame.evalStep resolve env f step)) (Ok f0)
+
+        let evalChunk (k: int) : Result<Frame, EvalError> =
+            evalOver
+                { Cols = prepared.Cols
+                  Vecs = columns |> Array.map (fun c -> c.Chunks[k])
+                  Origins = Array.create w None
+                  Sel = None
+                  Count = Chunked.lengthOf size count k }
+
+        let fresh: Frame option[] = Array.create chunkCount None
+        let mutable failed = None
+        let mutable touched = 0
+        let mutable evaluated = 0
+        let mutable k = 0
+
+        while Option.isNone failed && k < chunkCount do
+            if not (unchanged k) then
+                match evalChunk k with
+                | Error e -> failed <- Some e
+                | Ok f ->
+                    fresh[k] <- Some f
+                    touched <- touched + 1
+                    evaluated <- evaluated + Chunked.lengthOf size count k * List.length steps
+
+            k <- k + 1
+
+        match failed, prior with
+        | Some e, _ -> Error e
+        | None, Some(_, po) when touched = 0 && chunkCount > 0 -> Ok(po, 0, 0)
+        | None, _ ->
+            // The output's names and order — the same for every chunk, so read off any evaluated
+            // one; off the prior output where none was; off an evaluation over no rows where the
+            // source has none.
+            let names =
+                match fresh |> Array.tryPick id with
+                | Some f -> Ok f.Cols
+                | None ->
+                    match prior with
+                    | Some(_, po) when chunkCount > 0 -> Ok po.Cols
+                    | _ ->
+                        evalOver
+                            { Cols = prepared.Cols
+                              Vecs = columns |> Array.map (fun c -> Vec.pack c.Type [||])
+                              Origins = Array.create w None
+                              Sel = None
+                              Count = 0 }
+                        |> Result.map (fun f -> f.Cols)
+
+            names
+            |> Result.map (fun cols ->
+                let derived = steps |> List.map fst |> Set.ofList
+                let priorOut = priorColumns |> Option.map snd
+
+                let outColumns =
+                    cols
+                    |> List.mapi (fun oi (name, tyLocal) ->
+                        let chunks =
+                            Array.init chunkCount (fun k ->
+                                match fresh[k], priorOut with
+                                | Some f, _ -> f.Vecs[oi]
+                                | None, Some po -> po[oi].Chunks[k]
+                                | None, None -> Vec.pack tyLocal [||]) // unreachable: an unshared chunk was evaluated
+
+                        let ty =
+                            if Set.contains name derived then
+                                firstPresentType chunks |> Option.defaultValue StringType
+                            else
+                                tyLocal
+
+                        let chunks =
+                            chunks
+                            |> Array.map (fun v ->
+                                if Vec.declaredType v <> Some ty && nonePresent v then
+                                    Vec.pack ty (Array.create (Vec.length v) Null)
+                                else
+                                    v)
+
+                        // A column the pipeline passes through untouched IS the source's rope —
+                        // the same object, its list memo included — so the output's table hands
+                        // the consumer's own list back for it, as the frame boundary does.
+                        let passThrough =
+                            not (Set.contains name derived)
+                            && oi < w
+                            && fst (List.item oi prepared.Cols) = name
+                            && columns[oi].Chunks.Length = chunkCount
+
+                        (name, ty),
+                        (if passThrough then
+                             columns[oi]
+                         else
+                             { Type = ty
+                               Size = size
+                               Length = count
+                               Chunks = chunks
+                               Cells = ref None }))
+
+                let out =
+                    Prepared.ofChunks (outColumns |> List.map fst) count (outColumns |> List.map snd |> List.toArray)
+
+                out, evaluated, touched)
+
+    /// The state the chunked path hands back: the prepared source and its chunked output, no
+    /// row caches (the chunks ARE the cache), and the count of chunks it evaluated.
+    let private chunkedState
+        (pipeline: Transform list)
+        (env: Map<string, Cell>)
+        (scheme: string)
+        (prepared: Prepared)
+        (out: Prepared)
+        (touched: int)
+        (recompute: Recompute)
+        : IncrementalEval =
+        { Plan = plan pipeline
+          Pipeline = pipeline
+          Env = env
+          Scheme = scheme
+          Source = prepared.Source
+          Prepared = Some prepared
+          Output = out.Source
+          Tokens = [||]
+          RowCells = [||]
+          RowGroups = [||]
+          GroupMembers = Map.empty
+          GroupAggs = Map.empty
+          SortOrders = Map.empty
+          JoinKeys = Map.empty
+          Footprint =
+            { SourceRows = prepared.Count
+              ResultRows = out.Count
+              Recompute = recompute }
+          GroupCells = Map.empty
+          ChunkedOutput = Some out
+          ChunksTouched = Some touched }
+
     /// `prime` over a source prepared once (`DataFrame.prepare`; Phase 267): the state `prime`
     /// builds over the prepared table — equal to it in every field a consumer can read — with the
     /// reference path evaluating over the prepared frame rather than paying the `Table` boundary
     /// again, and the prepared form held in the state.
+    ///
+    /// Phase 268 — over a pipeline made only of `Derive`s the state is built by the chunked path
+    /// instead: the same result and the same footprint, with the output held as a chunked version
+    /// beside the source so that `refreshPrepared` can recognise, chunk by chunk, what the next
+    /// version did not move. Such a state carries no row caches; a `refresh` over a bare table
+    /// after it walks every row once and rebuilds them.
     let primePrepared
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
@@ -1977,26 +2227,38 @@ module Incremental =
         (pipeline: Transform list)
         (prepared: Prepared)
         : Result<IncrementalEval, EvalError> =
-        run
-            resolve
-            env
-            idw
-            pipeline
-            prepared.Source
-            (Some prepared)
-            None
-            None
-            (fun evaluated _ -> Primed evaluated)
-            (fun _ n -> Primed n)
+        let rowPath () =
+            run
+                resolve
+                env
+                idw
+                pipeline
+                (Prepared.table prepared)
+                (Some prepared)
+                None
+                None
+                (fun evaluated _ -> Primed evaluated)
+                (fun _ n -> Primed n)
 
-    /// Advance a state against a delta describing the change from the state's source to `source`.
-    /// The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every
-    /// delta, whichever path was taken.
-    ///
-    /// The delta must truthfully describe the change (`Delta.diff` produces exactly that). Anything
-    /// the incremental path cannot honour degrades to a full evaluation with the reason recorded in
-    /// the returned footprint.
-    let refresh
+        match deriveSteps pipeline with
+        | None -> rowPath ()
+        | Some steps ->
+            match evalChunked resolve env steps prepared None with
+            | Ok(out, evaluated, touched) ->
+                Ok(chunkedState pipeline env idw.Scheme prepared out touched (Primed evaluated))
+            | Error _ -> rowPath ()
+
+    /// The schema the state's source carries — read off the prepared form where there is one, so
+    /// a version built from chunks is never forced into a table just to compare its schema.
+    let private sourceSchema (state: IncrementalEval) : Schema =
+        match state.Prepared with
+        | Some p -> p.Cols
+        | None -> state.Source.Value.Schema
+
+    /// The refresh over a table, with the source's prepared form where the caller holds one
+    /// (`refreshPrepared` over a pipeline the chunked path does not admit) — the shared body of
+    /// `refresh` and `refreshPrepared`.
+    let private refreshWith
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (idw: RowIdentity<'Id>)
@@ -2004,6 +2266,7 @@ module Incremental =
         (state: IncrementalEval)
         (delta: TableDelta)
         (source: Table)
+        (given: Prepared option)
         : Result<IncrementalEval, EvalError> =
         let stale =
             if pipeline <> state.Pipeline then
@@ -2012,7 +2275,7 @@ module Incremental =
                 Some EnvChanged
             elif idw.Scheme <> state.Scheme then
                 Some(RowIdentityUnusable(SchemeMismatch(state.Scheme, idw.Scheme)))
-            elif source.Schema <> state.Source.Schema then
+            elif source.Schema <> sourceSchema state then
                 Some SourceSchemaMoved
             else
                 match delta with
@@ -2028,8 +2291,9 @@ module Incremental =
         // Phase 267 — the state's prepared form is reused only where this refresh's source IS the
         // table it was prepared from: the same object, so the same cells.
         let reusable =
-            match state.Prepared with
-            | Some p when obj.ReferenceEquals(p.Source, source) -> Some p
+            match given, state.Prepared with
+            | Some p, _ -> Some p
+            | None, Some p when Prepared.isFrom p source -> Some p
             | _ -> None
 
         match stale with
@@ -2067,14 +2331,14 @@ module Incremental =
             // expression.
             if
                 Delta.isQuiet delta
-                && source = state.Source
+                && source = state.Source.Value
                 && not (readsExternalSource pipeline)
             then
                 Ok
                     { state with
                         Footprint =
                             { SourceRows = Table.rowCount source
-                              ResultRows = Table.rowCount state.Output
+                              ResultRows = Table.rowCount state.Output.Value
                               Recompute = ReusedPrior } }
             else
                 let named =
@@ -2103,6 +2367,87 @@ module Incremental =
                         | _ -> RowsRecomputed evaluated)
                     (fun declined n -> FullRecompute(n, declined))
 
+    /// Advance a state against a delta describing the change from the state's source to `source`.
+    /// The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every
+    /// delta, whichever path was taken.
+    ///
+    /// The delta must truthfully describe the change (`Delta.diff` produces exactly that). Anything
+    /// the incremental path cannot honour degrades to a full evaluation with the reason recorded in
+    /// the returned footprint.
+    let refresh
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (idw: RowIdentity<'Id>)
+        (pipeline: Transform list)
+        (state: IncrementalEval)
+        (delta: TableDelta)
+        (source: Table)
+        : Result<IncrementalEval, EvalError> =
+        refreshWith resolve env idw pipeline state delta source None
+
+    /// `refresh` against a prepared version of the source (Phase 268) — the shape a consumer that
+    /// edits through `ColumnOps.applyPrepared` holds. The result equals `refresh` over
+    /// `DataFrame.toTable prepared`, for every delta.
+    ///
+    /// Over a pipeline made only of `Derive`s this is the chunked path: a chunk the version shares
+    /// with the one the state was last evaluated over — the same object, in every column — is
+    /// recognised by identity and its output chunks reused; only the chunks the version moved are
+    /// evaluated, and the output shares every chunk it did not. The footprint counts the rows those
+    /// chunks hold, `chunksTouched` the chunks. A state another path built (a `prime` over a table,
+    /// a `refresh` over one) has no chunked output to share, so the first chunked refresh over it
+    /// evaluates every chunk and the next reuses them. A pipeline the chunked path does not admit
+    /// takes the row-local walk over the version's table, exactly as `refresh` would, with the
+    /// prepared form handed through so the reference path pays no boundary.
+    let refreshPrepared
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (idw: RowIdentity<'Id>)
+        (pipeline: Transform list)
+        (state: IncrementalEval)
+        (delta: TableDelta)
+        (prepared: Prepared)
+        : Result<IncrementalEval, EvalError> =
+        let rowPath () =
+            refreshWith resolve env idw pipeline state delta (Prepared.table prepared) (Some prepared)
+
+        match deriveSteps pipeline with
+        | None -> rowPath ()
+        | Some steps ->
+            // The four conditions that make the prior output unusable, in `refresh`'s order and
+            // reported as it reports them. A delta that is a full refresh, or that addresses rows
+            // the state cannot key, is NOT one of them here: what moved is read off the chunks,
+            // and a delta saying "everything may have" costs only what actually did.
+            let stale =
+                if pipeline <> state.Pipeline then
+                    Some PipelineChanged
+                elif env <> state.Env then
+                    Some EnvChanged
+                elif idw.Scheme <> state.Scheme then
+                    Some(RowIdentityUnusable(SchemeMismatch(state.Scheme, idw.Scheme)))
+                elif prepared.Cols <> sourceSchema state then
+                    Some SourceSchemaMoved
+                else
+                    None
+
+            let prior =
+                match stale, state.Prepared, state.ChunkedOutput with
+                | None, Some ps, Some po -> Some(ps, po)
+                | _ -> None
+
+            match evalChunked resolve env steps prepared prior with
+            | Ok(out, evaluated, touched) ->
+                let recompute =
+                    match stale with
+                    | Some r -> FullRecompute(evaluated, r)
+                    | None ->
+                        if touched = 0 then
+                            ReusedPrior
+                        else
+                            RowsRecomputed evaluated
+
+                Ok(chunkedState pipeline env idw.Scheme prepared out touched recompute)
+            | Error _ -> rowPath ()
+
     /// `prime` over embedded sources with no params — the everyday call.
     let primeOn
         (idw: RowIdentity<'Id>)
@@ -2129,6 +2474,16 @@ module Incremental =
         : Result<IncrementalEval, EvalError> =
         refresh DataFrame.noResolve Map.empty idw pipeline state delta source
 
+    /// `refreshPrepared` over embedded sources with no params.
+    let refreshOnPrepared
+        (idw: RowIdentity<'Id>)
+        (pipeline: Transform list)
+        (state: IncrementalEval)
+        (delta: TableDelta)
+        (prepared: Prepared)
+        : Result<IncrementalEval, EvalError> =
+        refreshPrepared DataFrame.noResolve Map.empty idw pipeline state delta prepared
+
     // ---- reading a state (Phase 208) ----
     //
     // The state's representation is private, so these are the whole of what a consumer can read from
@@ -2139,8 +2494,23 @@ module Incremental =
     // to find out, and `source` because the state pins the table the next delta must be measured
     // against.
 
-    /// The result the state currently holds.
-    let result (s: IncrementalEval) : Table = s.Output
+    /// The result the state currently holds — built from its chunks on the first read where the
+    /// chunked path produced it (Phase 268), and kept.
+    let result (s: IncrementalEval) : Table = s.Output.Value
+
+    /// Phase 268 — the result as a prepared source: the chunked version the chunked path produced,
+    /// sharing every chunk the source did not move, or the result prepared afresh where another
+    /// path built the state. What a node feeding another node hands on, so the boundary is never
+    /// paid between them.
+    let resultPrepared (s: IncrementalEval) : Prepared =
+        match s.ChunkedOutput with
+        | Some p -> p
+        | None -> DataFrame.prepare s.Output.Value
+
+    /// Phase 268 — how many chunks the chunked path evaluated to produce this state; `None` where
+    /// the state was built by the row-local walk or the reference path. The count the cost tests
+    /// hold a one-cell edit to: one chunk, at any row count.
+    let chunksTouched (s: IncrementalEval) : int option = s.ChunksTouched
 
     /// What producing that result cost.
     let footprint (s: IncrementalEval) : RecomputeFootprint = s.Footprint
@@ -2159,7 +2529,7 @@ module Incremental =
 
     /// The source the state was last evaluated against — the `before` table a delta handed to the
     /// next `refresh` must describe the change FROM.
-    let source (s: IncrementalEval) : Table = s.Source
+    let source (s: IncrementalEval) : Table = s.Source.Value
 
     /// The pipeline the state was built for. A refresh with any other pipeline evaluates in full
     /// (`PipelineChanged`), so this is what a consumer holding a state compares against.

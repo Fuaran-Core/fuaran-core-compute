@@ -25,6 +25,10 @@
          typer and the kernel census are internal (this repository's working forms, not a contract),
          so the test assembly is the one assembly that may see them. No public surface moves. -->
     <InternalsVisibleTo Include="Fuaran.Core.Compute.Tests" />
+    <!-- Phase 268 - the columnar op algebra edits a prepared source chunk by chunk, through the
+         rope behind the opaque Prepared; that rope is a working form, not a contract, so the one
+         sibling package that edits it is the second assembly that may see it. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Column.Ops" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Fuaran.Core.Column" />

@@ -310,12 +310,16 @@ board actually has, and the `Scaling` family asserts it on all three pipelines �
 phases each printed and deliberately did not assert. A costlier row expression widens the margin
 further; it is no longer what decides the question.
 
-What has NOT changed is the floor, and it is worth stating because it bounds what a later phase can
-buy. The refresh is handed the whole new source and must read every row of it to know what moved, so
-one pass over the frame is proportional to the table and nothing reachable from this entry point
-removes it. What is proportional to the delta is everything else: the keyed lookups, the identity
-derivations and the cache writes. `IncrementalRefreshCostTests` counts exactly that, clock-free, and
-holds the shape it replaced to the opposite result.
+What has NOT changed is the floor OF THIS ENTRY POINT, and it is worth stating because it says
+where the next saving had to come from. `refresh` is handed the whole new source as a `Table` and
+must read every row of it to know what moved, so one pass over the frame is proportional to the
+table and nothing reachable from a table removes it. What is proportional to the delta is
+everything else: the keyed lookups, the identity derivations and the cache writes.
+`IncrementalRefreshCostTests` counts exactly that, clock-free, and holds the shape it replaced to
+the opposite result. Phase 268 added the entry point that gets under the floor — `refreshPrepared`,
+handed a VERSION whose chunks it can compare with the last one's rather than a table it must read —
+and it is measured in [its own section below](#the-chunked-path--a-version-not-a-table-phase-268):
+a one-cell edit refreshes one chunk, at 100,000 rows as at 2,048.
 
 The profile after the change says where the remaining time is, for whoever comes next: the row-local
 walk, which is now 40-60% of a refresh (and 86% of the top-N one, where it is the merge). Per row it
@@ -388,8 +392,8 @@ the row expression is expensive. The 16-level expression in the `Scaling` family
 where the seam wins by an order of magnitude. The `Scaling` family asserts the shrinking shapes and
 not this one, because one consumer's sheet is evidence for a qualification, not a rule. The same
 consumer measured a `SetColumn` at 100,000 rows at 210 ms to apply and chain, and an `AppendRows` at
-38 ms. That op-side cost comes before any evaluation, and it is the input a later phase on the
-refresh's O(n) floor should start from.
+38 ms. That op-side cost comes before any evaluation, and it was the input Phase 268 started from:
+the next section re-measures this node's cell edit through a version rather than a table.
 
 **Two changes since this measurement, neither re-measured here.** A cell edit reached this sheet as
 one row only because the consumer built the delta by hand. `ColumnOps.deltaOf` now builds it: one
@@ -403,6 +407,99 @@ One practical consequence remains. `Incremental.plan` tells you whether a refres
 it does not tell you whether it will be faster than a full evaluation for YOUR pipeline, and on a
 table small enough that a full evaluation is already a millisecond the question does not arise.
 Measure your own pipeline rather than reading any row above as a rule.
+
+### The chunked path — a version, not a table (Phase 268)
+
+The floor above is a property of the ENTRY POINT: `refresh` is handed a `Table`, and a table shares
+nothing with the table it replaced, so the only way to learn what moved is to read it. Phase 268
+adds the entry point that does not have that floor. A source prepared once (`DataFrame.prepare`,
+Phase 267) is now a persistent VERSION: each column a rope of chunks of 1,024 rows, and an edit
+through `ColumnOps.applyPrepared` copies the one chunk it lands in and shares every other chunk
+with the version before it, by reference. `Incremental.refreshPrepared` is handed the new version,
+compares its chunks with the version the state was last evaluated over — one pointer comparison
+per chunk per column — evaluates the chunks that moved, and hands back an output that shares every
+chunk that did not.
+
+```fsharp
+let v0 = DataFrame.prepare source
+let state = Incremental.primePrepared resolve env idw pipeline v0 |> ok
+
+// On each edit: the op costs a chunk, the delta costs one row, the refresh costs the chunks that moved.
+let v1 = ColumnOps.applyPrepared op v0 |> ok
+let delta = ColumnOps.deltaOfPrepared idw v0 op
+let next = Incremental.refreshPrepared resolve env idw pipeline state delta v1 |> ok
+
+Incremental.chunksTouched next   // Some 1 for a one-cell edit, at any row count
+Incremental.resultPrepared next  // the result as a version, to feed the next node without a boundary
+Incremental.result next          // the result as a table, built on first read
+```
+
+**What it admits.** A pipeline made only of `Derive`s — every row kept where it is, each row's value
+a function of that row — is evaluated chunk by chunk through the reference's own `evalStep`, so the
+cells are the reference's cells and the transform law vectors hold them so. Anything else
+(`Filter`, `GroupBy`, `Sort`, a join) takes the row-local walk over the version's table from the same
+call, exactly as `refresh` would: the entry point is total and its answer always equals the
+reference's; only the cost changes with the shape. The delta still decides staleness (a changed
+pipeline or env, a moved schema) but never what moved — that is read off the chunks, so a delta
+that names more rows than moved costs nothing extra, and `FullRefresh` over a one-chunk edit costs
+one chunk. A derived column's TYPE is fixed over the whole rope by the reference's rule (the first
+present cell, `StringType` when there is none), because a chunk with no present cell would type
+itself differently on its own.
+
+**Measured, on the `lines` node above — `amount = qty * price`, then `big = amount >= threshold` — at
+one edited cell.** Release build, .NET 10, one Windows 11 Arm64 machine with other sessions on it;
+each figure the median of 21 to 41 timed repetitions after a warm-up, the chunked answer checked
+equal to the full evaluation outside every timed region:
+
+| rows | full evaluation | `refresh` (walk, `Table` form) | `refreshPrepared` | edit + delta + `refreshPrepared` | `refreshPrepared` + `result` as a table | chunks touched |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 0.50 ms | 1.52 ms | 0.19 ms | 0.21 ms | 0.31 ms | 1 |
+| 10,000 | 4.9 ms | 22.0 ms | 0.10 ms | 0.09 ms | 0.48 ms | 1 |
+| 100,000 | 17.8 ms | 367 ms | **0.094 ms** | 0.099 ms | 17.1 ms | 1 |
+
+And the op on its own, at 100,000 rows:
+
+| op | `apply`, `Table` form | `applyPrepared` |
+|---|---:|---:|
+| `SetCell` | 1.34 ms | 0.009 ms |
+| `AppendRows` (10 rows) | 22.7 ms | 0.054 ms |
+| `SetColumn` (one cell differs) | 1.79 ms | 3.25 ms |
+
+**Read it in three parts.** The refresh itself is under a tenth of a millisecond at 100,000 rows
+and does not grow with the table — it is 1,024 rows evaluated twice, whatever the row count, which
+`IncrementalRefreshCostTests` asserts as a count at 2,048 and at 20,000 rows. The edit and the delta
+cost what they touch: a `SetCell` copies one chunk (a hundred and fifty times cheaper than rebuilding
+the column list), an `AppendRows` copies the partial last chunk of each column (four hundred times
+cheaper than appending to every list), and a `SetColumn` compares its cells chunk by chunk to keep
+the chunks it did not move, which is a pass over the column either way and here a slower one — the
+op carries every cell, so its cost is the column's, and what the comparison buys is the refresh
+after it touching two chunks rather than a hundred. And the table boundary is where the remaining
+time is: reading `result` back as a `Table` at 100,000 rows costs as much as a full evaluation,
+because it builds the three columns the edit moved (the edited one and the two derived) as `Cell`
+lists — 300,000 cells — while the full evaluation, whose evaluator is now a fraction of its own
+cost, hands the consumer's four untouched lists back and builds two. The columns an edit did not
+move ARE handed back as the lists they were (a rope remembers its list once it has built one), so
+the boundary costs the moved columns and no others; a node that feeds another node reads
+`resultPrepared` and pays no boundary at all. Under one millisecond, then, is the refresh and the
+edit; a consumer that reads every cell back as a table each tick has bought the difference between
+367 ms and 17 ms, not between 17 and 0.1.
+
+**The walk's figure is worth a sentence of its own.** At 100,000 rows the row-local `refresh` over
+this pipeline now costs twenty times the full evaluation it replaces, not the 0.88× the consumer
+measured on `0.30.0`: Phases 263 to 267 made the reference evaluator six times faster and left the
+walk — one `Work` record, one cached-cell lookup and one fresh row per source row, then a table
+assembled from rows — where it was. A row-preserving pipeline over a bare table should use the
+full evaluation; the walk earns its keep on the shrinking shapes the `Scaling` family asserts, and
+the chunked path is now the answer for the shape the walk lost on.
+
+**The falsifiers, each asserted.** `chunksTouched` is `Some n` only on the chunked path; a version
+prepared afresh from a table (`DataFrame.prepare` of the edited table rather than `applyPrepared`
+of the edit) shares no chunk and touches every one; a state the walk built has no chunks to share,
+so the first chunked refresh over it touches every chunk and the next touches one; and a version
+whose chunks are all the prior's touches none and reports `ReusedPrior`. The model behind
+`ColumnOps` (`proofs/ColumnOps.fst`) proves the representation: the edit through the rope is the
+flat edit `apply` performs, and every chunk before and after the one holding the row is the chunk
+it was.
 
 ## What it does not do
 

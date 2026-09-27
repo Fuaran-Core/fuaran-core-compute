@@ -555,6 +555,239 @@ module ColumnOps =
                 | RemoveColumn _
                 | ApplyTransform _ -> FullRefresh
 
+    // ---- Phase 268 — the ops over a prepared version ----
+    //
+    // `apply` over a `Table` rebuilds a whole column list to set one cell, because a list shares
+    // nothing but its tail. Over a `Prepared` — since Phase 268 a persistent version whose columns
+    // are ropes of chunks — the same op costs what it touches: `SetCell` copies one chunk of one
+    // column and shares every other, `AppendRows` copies the partial last chunk of each column and
+    // packs the rest, `SetColumn` compares the new cells chunk by chunk and keeps every chunk it
+    // did not move, `InsertColumn` packs the one column it adds and `RemoveColumn` copies only the
+    // array of column ropes. The prior version is untouched, so `invertPrepared` reads it, and a
+    // refresh over the new version recognises by identity what did not move.
+    //
+    // The verdicts are `apply`'s, clause for clause, over the schema rather than the column list —
+    // the same thing on a coherent table (one whose columns are its schema, which every version an
+    // op produces is) — and `toTable (applyPrepared op (prepare t))` is `apply op t` on every such
+    // table: the equality the suite holds, and what ties these forms to the proved model.
+
+    let private columnAt (p: Prepared) (columns: Chunked[]) (ci: int) : Column =
+        let name, ty = List.item ci p.Cols
+        Column.create name ty (Chunked.toCells columns[ci])
+
+    let private indexIn (p: Prepared) (name: string) : int option =
+        p.Cols |> List.tryFindIndex (fun (n, _) -> n = name)
+
+    let private insertAt (i: int) (x: 'a) (xs: 'a list) : 'a list =
+        let before = xs |> List.truncate i
+        let after = xs |> List.skip (min i (List.length xs))
+        before @ [ x ] @ after
+
+    /// `apply` over a prepared version — total, with `apply`'s verdicts — at the cost of what the
+    /// op touches rather than of the table. The `Table` form stays as it is; on a coherent table
+    /// the two agree cell for cell, so `apply op t` reads as `applyPrepared op (prepare t)` handed
+    /// back through `DataFrame.toTable`.
+    let applyPrepared (op: ColumnOp) (p: Prepared) : Result<Prepared, ColumnRejection> =
+        let names = p.Cols |> List.map fst
+
+        match op with
+        | SetCell(name, row, value) ->
+            match indexIn p name with
+            | None -> Error(NoSuchColumn(name, names))
+            | Some ci ->
+                let rc = p.Count
+
+                if row < 0 || row >= rc then
+                    Error(RowOutOfRange(row, rc))
+                else
+                    cellFits name (snd (List.item ci p.Cols)) value
+                    |> Result.map (fun () ->
+                        let columns = Array.copy (Prepared.columns p)
+                        columns[ci] <- Chunked.setCell columns[ci] row value
+                        Prepared.ofChunks p.Cols rc columns)
+        | SetColumn newCol ->
+            match indexIn p newCol.Name with
+            | None -> Error(NoSuchColumn(newCol.Name, names))
+            | Some ci ->
+                let rc = p.Count
+                let n = List.length newCol.Cells
+
+                if n <> rc then
+                    Error(ColumnLengthMismatch(newCol.Name, rc, n))
+                else
+                    cellsFit newCol
+                    |> Result.map (fun () ->
+                        let columns = Array.copy (Prepared.columns p)
+
+                        columns[ci] <-
+                            Chunked.ofCellsSharing columns[ci] newCol.Type (List.toArray newCol.Cells)
+                            |> Chunked.withCells newCol.Cells
+
+                        let cols =
+                            p.Cols
+                            |> List.mapi (fun i (nm, ty) -> if i = ci then nm, newCol.Type else nm, ty)
+
+                        Prepared.ofChunks cols rc columns)
+        | InsertColumn(index, col) ->
+            if p.Cols |> List.exists (fun (n, _) -> n = col.Name) then
+                Error(DuplicateColumn col.Name)
+            else
+                let rc = p.Count
+                let hasCols = not (List.isEmpty p.Cols)
+                let n = List.length col.Cells
+
+                if hasCols && n <> rc then
+                    Error(ColumnLengthMismatch(col.Name, rc, n))
+                else
+                    cellsFit col
+                    |> Result.map (fun () ->
+                        let i = max 0 (min index (List.length p.Cols))
+                        let columns = Prepared.columns p
+
+                        let rope =
+                            Chunked.ofCells col.Type Chunked.rows (List.toArray col.Cells)
+                            |> Chunked.withCells col.Cells
+
+                        let columns' =
+                            Array.concat
+                                [ Array.sub columns 0 i; [| rope |]; Array.sub columns i (columns.Length - i) ]
+
+                        Prepared.ofChunks (insertAt i (col.Name, col.Type) p.Cols) (if hasCols then rc else n) columns')
+        | RemoveColumn name ->
+            match indexIn p name with
+            | None -> Error(NoSuchColumn(name, names))
+            | Some ci ->
+                let columns = Prepared.columns p
+
+                let columns' =
+                    Array.append (Array.sub columns 0 ci) (Array.sub columns (ci + 1) (columns.Length - ci - 1))
+
+                let cols = p.Cols |> List.filter (fun (n, _) -> n <> name)
+                Ok(Prepared.ofChunks cols (if List.isEmpty cols then 0 else p.Count) columns')
+        | AppendRows rows ->
+            let nameSet = Set.ofList names
+
+            let rowFault (row: (string * Cell) list) =
+                row
+                |> List.tryPick (fun (n, v) ->
+                    if not (Set.contains n nameSet) then
+                        Some(RowShapeUnknownColumn(n, names))
+                    else
+                        match indexIn p n with
+                        | Some ci ->
+                            match cellFits n (snd (List.item ci p.Cols)) v with
+                            | Error e -> Some e
+                            | Ok() -> None
+                        | None -> Some(RowShapeUnknownColumn(n, names)))
+
+            match rows |> List.tryPick rowFault with
+            | Some e -> Error e
+            | None ->
+                let rowsA = List.toArray rows
+                let columns = Prepared.columns p
+
+                let columns' =
+                    columns
+                    |> Array.mapi (fun ci c ->
+                        let name = fst (List.item ci p.Cols)
+
+                        let appended =
+                            rowsA
+                            |> Array.map (fun row ->
+                                row
+                                |> List.tryFind (fun (n, _) -> n = name)
+                                |> Option.map snd
+                                |> Option.defaultValue Null)
+
+                        Chunked.append c appended)
+
+                let count = if columns.Length = 0 then 0 else p.Count + rowsA.Length
+                Ok(Prepared.ofChunks p.Cols count columns')
+        | ApplyTransform pipeline ->
+            // A transform replaces the table, as the `Table` form says; the result is prepared
+            // afresh, and evaluated over the version's frame rather than through its table.
+            match DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline p with
+            | Ok t' -> Ok(DataFrame.prepare t')
+            | Error e -> Error(TransformRejected(DataFrame.errorString e))
+
+    /// `canApply` over a prepared version — `applyPrepared` with the result discarded, so the two
+    /// can never disagree; at the cost of what the op touches.
+    let canApplyPrepared (op: ColumnOp) (p: Prepared) : Result<unit, ColumnRejection> =
+        applyPrepared op p |> Result.map ignore
+
+    /// `invert` over a prepared version: the inverse op that undoes `op` applied to the PRE-state
+    /// `p`, read from `p` — which the edit left untouched, every chunk of it still reachable — under
+    /// the same guard `invert` applies (an op the version would refuse has no inverse). A `SetCell`'s
+    /// inverse reads one cell of one chunk; a `SetColumn`'s or `RemoveColumn`'s reads the column it
+    /// must restore, which the op carries whole either way.
+    let invertPrepared (op: ColumnOp) (p: Prepared) : Result<ColumnOp, ColumnRejection> =
+        match op with
+        | AppendRows _ -> Error(NotInvertible "AppendRows")
+        | ApplyTransform _ -> Error(NotInvertible "ApplyTransform")
+        | _ ->
+            match canApplyPrepared op p with
+            | Error e -> Error e
+            | Ok() ->
+                let names = p.Cols |> List.map fst
+                let columns = Prepared.columns p
+
+                match op with
+                | SetCell(name, row, _) ->
+                    match indexIn p name with
+                    | None -> Error(NoSuchColumn(name, names))
+                    | Some ci ->
+                        if row < 0 || row >= p.Count then
+                            Error(RowOutOfRange(row, p.Count))
+                        else
+                            Ok(SetCell(name, row, Chunked.cellAt columns[ci] row))
+                | SetColumn newCol ->
+                    match indexIn p newCol.Name with
+                    | None -> Error(NoSuchColumn(newCol.Name, names))
+                    | Some ci -> Ok(SetColumn(columnAt p columns ci))
+                | InsertColumn(_, col) -> Ok(RemoveColumn col.Name)
+                | RemoveColumn name ->
+                    match indexIn p name with
+                    | None -> Error(NoSuchColumn(name, names))
+                    | Some ci -> Ok(InsertColumn(ci, columnAt p columns ci))
+                | AppendRows _ -> Error(NotInvertible "AppendRows") // unreachable — answered above
+                | ApplyTransform _ -> Error(NotInvertible "ApplyTransform") // unreachable — answered above
+
+    /// `deltaOf` over a prepared version: the same delta, with a `SetCell`'s read off the one row
+    /// it names — its key before and after the edit, from one chunk — rather than off the table,
+    /// so the cell edit that reaches `Incremental.refreshPrepared` as one row costs one row to
+    /// describe. Every other op reads the version's table, which the op's own cost already covers.
+    let deltaOfPrepared (rid: RowIdentity<'Id>) (p: Prepared) (op: ColumnOp) : TableDelta =
+        match op with
+        | SetCell(col, row, value) ->
+            match canApplyPrepared op p, indexIn p col with
+            | Ok(), Some ci ->
+                let columns = Prepared.columns p
+                let unchanged = Chunked.cellAt columns[ci] row = value
+
+                let rowTable (edited: bool) : Table =
+                    { Schema = p.Cols
+                      Columns =
+                        p.Cols
+                        |> List.mapi (fun i (n, ty) ->
+                            Column.create
+                                n
+                                ty
+                                [ (if edited && i = ci then
+                                       value
+                                   else
+                                       Chunked.cellAt columns[i] row) ]) }
+
+                let keyOf (t: Table) =
+                    rid.KeyOf t 0 |> Option.map rid.KeyString
+
+                match keyOf (rowTable false), keyOf (rowTable true) with
+                | Some _, Some _ when unchanged -> Delta.empty rid.Scheme
+                | Some k0, Some k1 when k0 = k1 -> Delta.ofRows rid.Scheme [ ByKey k0, RowChanged ]
+                | Some k0, Some k1 -> Delta.ofRows rid.Scheme [ ByKey k0, RowRemoved; ByKey k1, RowAdded ]
+                | _ -> FullRefresh
+            | _ -> FullRefresh
+        | _ -> deltaOf rid (DataFrame.toTable p) op
+
     /// The `Fuaran.Core.OpStream` `StreamWitness` for the columnar op-algebra — `apply` + the wire
     /// `encode`/`decode`. With it, `OpStream.append` / `verifyChain` / `replay` / `toJsonl` chain,
     /// verify, replay, and persist a table-edit stream with NO core change (the witness pattern, GP2;

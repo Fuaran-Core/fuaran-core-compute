@@ -186,6 +186,7 @@ method Fuaran.Core.DataFrame.prepare(Fuaran.Core.Table) : Fuaran.Core.Prepared
 method Fuaran.Core.DataFrame.rowCompareBy(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.SortDir>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.Int32
 method Fuaran.Core.DataFrame.rowToken(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Core.DataFrame.rowTokenString(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.String
+method Fuaran.Core.DataFrame.toTable(Fuaran.Core.Prepared) : Fuaran.Core.Table
 method Fuaran.Core.DataFrame.typeOf(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Fuaran.Core.ColExpr) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
 method Fuaran.Core.DataFrame.windowFrameBounded(Fuaran.Core.WindowFn) : System.Boolean
 method Fuaran.Core.DataFrame.windowStep(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Fuaran.Core.WindowSpec) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>>, Fuaran.Core.EvalError>
@@ -221,6 +222,7 @@ method Fuaran.Core.DeltaCodec.decode(System.String) : Microsoft.FSharp.Core.FSha
 method Fuaran.Core.DeltaCodec.decodeJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.TableDelta, Fuaran.Core.ColumnError>
 method Fuaran.Core.DeltaCodec.encode(Fuaran.Core.TableDelta) : System.String
 method Fuaran.Core.DeltaCodec.encodeJson(Fuaran.Core.TableDelta) : Fuaran.Core.JVal
+method Fuaran.Core.Incremental.chunksTouched(Fuaran.Core.IncrementalEval) : Microsoft.FSharp.Core.FSharpOption`1<System.Int32>
 method Fuaran.Core.Incremental.footprint(Fuaran.Core.IncrementalEval) : Fuaran.Core.RecomputeFootprint
 method Fuaran.Core.Incremental.footprintString(Fuaran.Core.RecomputeFootprint) : System.String
 method Fuaran.Core.Incremental.isIncremental(Fuaran.Core.IncrementalPlan) : System.Boolean
@@ -233,9 +235,12 @@ method Fuaran.Core.Incremental.primeOn`1(Fuaran.Core.RowIdentity`1<!!0>, Microso
 method Fuaran.Core.Incremental.primePrepared`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.prime`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.reasonString(Fuaran.Core.FallBackReason) : System.String
+method Fuaran.Core.Incremental.refreshOnPrepared`1(Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.IncrementalEval, Fuaran.Core.TableDelta, Fuaran.Core.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.refreshOn`1(Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.IncrementalEval, Fuaran.Core.TableDelta, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
+method Fuaran.Core.Incremental.refreshPrepared`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.IncrementalEval, Fuaran.Core.TableDelta, Fuaran.Core.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.refresh`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.IncrementalEval, Fuaran.Core.TableDelta, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.result(Fuaran.Core.IncrementalEval) : Fuaran.Core.Table
+method Fuaran.Core.Incremental.resultPrepared(Fuaran.Core.IncrementalEval) : Fuaran.Core.Prepared
 method Fuaran.Core.Incremental.rowsEvaluated(Fuaran.Core.RecomputeFootprint) : System.Int32
 method Fuaran.Core.Incremental.source(Fuaran.Core.IncrementalEval) : Fuaran.Core.Table
 method Fuaran.Core.Incremental.strategy(Fuaran.Core.IncrementalEval) : Fuaran.Core.IncrementalStrategy

@@ -8,9 +8,11 @@
          D6 of the split took the next minor above the last emission there, so a consumer raising
          its pin can never meet one version number with two contracts behind it (DECISIONS.md D1).
          0.33.0 is tagged, so Phase 267's additive surface (a prepared source, the public typer)
-         advanced the slot to 0.34.0. It is a DRAFT slot until it is tagged: STABILITY.md heads it
-         "0.34.0 — DRAFT", and an additive change rides it while a breaking one advances it. -->
-    <Version>0.34.0</Version>
+         advanced the slot to 0.34.0; 0.34.0 is tagged, so Phase 268's additive surface (the ops
+         and the refresh over a prepared version) advanced it to 0.35.0. It is a DRAFT slot until
+         it is tagged: STABILITY.md heads it "0.35.0 — DRAFT", and an additive change rides it
+         while a breaking one advances it. -->
+    <Version>0.35.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

@@ -123,6 +123,17 @@
       }
     },
     {
+      "id": "column-chunk-sharing",
+      "level": "proved",
+      "claim": "A column held as a rope of chunks is a representation of the algebra's column, not a second algebra: editing one cell through the rope (`set_chunked`, the model of `Chunked.setCell` behind `ColumnOps.applyPrepared`) flattens to exactly the `set_at` that `apply`'s `SetCell` clause performs (`set_chunked_flatten`, and `apply_set_cell_chunked` ties it to `apply` on a table whose column is the flattened rope), and every chunk before the one holding the row and every chunk after it is the chunk it was (`set_chunked_prefix`, `set_chunked_suffix`) — which is the sharing: a version and its predecessor differ in one chunk of one column. The rope definitions are `noextract`, so the oracle host runs nothing of this; `applyPrepared` is held to `apply` cell for cell by the suite's own differential, which composes with the oracle's certification of `apply`.",
+      "phase": "fuaran-core#268",
+      "evidence": {
+        "theorem": "set_chunked_flatten",
+        "model": "proofs/ColumnOps.fst",
+        "prover": "proofs/fstar-pin.json"
+      }
+    },
+    {
       "id": "columnar-differential",
       "level": "tested",
       "claim": "The extracted columnar model agrees with the shipped `ColumnOps.apply`, `canApply`, `invert`, `applyAll` and `toOps` over generated tables and op scripts — tables drawn with the well-formedness invariant deliberately broken one draw in ten (a repeated name, a column a row long or short, a schema that is not the columns' projection, a cell of the wrong type), because `apply` is total over all of them and the model must agree there too. Compared per probe: the verdict, an accepted result through the bridge, a rejection by class AND payload, the dry run against the mutating call on each side, the derived inverse as an operation, the round trip asserted exactly where the pre-state is well-formed and only counted where it is not, the invariant on production's result judged by the model's own `wf`, and every script whole. Over pairs: the emitted diff script, and the reconstruction asserted on both sides where both tables are well-formed, both branches counted. The go-red hands the differential a BLIND cell bridge — every present cell read as a string — and requires it to lose on the type check. A fourth case pins Phase 176's finding and its closure together on the shipped engine: `ColumnOps.invert` refuses a duplicate insert with the rejection `apply` gave, the model's guarded `invert` refuses it too, and the model's `invert_pre181` still derives the live remove — so a reverted guard and a lost finding each go red. Agreement is over the pools drawn, never over all inputs.",

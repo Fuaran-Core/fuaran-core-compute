@@ -1753,3 +1753,102 @@ let diff_applicable (ev:evaluator) (before after:table)
           | Error _ -> ())
        | Error _ -> ())
     end
+
+
+(* ======================================================================================
+   Phase 268 — chunk sharing.
+
+   Production holds a prepared column as a ROPE of chunks, and `Chunked.setCell` (the
+   `SetCell` clause of `ColumnOps.applyPrepared`) copies the one chunk the row lands in
+   and shares every other chunk by reference. Two facts make that a representation of the
+   algebra above rather than a second algebra, and both are proved here over the model's
+   own `set_at` — the edit `apply`'s `SetCell` clause performs on a column's cells:
+
+     * `set_chunked_flatten` — the edit through the rope IS the flat edit: flattening the
+       edited rope gives `set_at row value` of the flattened rope. So `apply`'s verdicts and
+       values are untouched by the representation, and every theorem above about `SetCell`
+       carries over to a column held as chunks.
+     * `set_chunked_prefix` / `set_chunked_suffix` — every chunk before the one holding the
+       row, and every chunk after it, is the chunk it was. That is the sharing: an edit over a
+       shared prefix leaves the prefix unchanged, and the same for the suffix, so a version and
+       its predecessor differ in one chunk of one column and nothing else.
+
+   `noextract` on the three definitions: the rope is a representation of the same column, not
+   a clause of the algebra, so the oracle host runs nothing here — the differential family in
+   the suite holds `applyPrepared` to `apply` cell for cell instead, which composes with the
+   oracle's certification of `apply` against this model. Type parameters are `Type0`, as the
+   leg's own `Pipeline` model spells them.
+   ====================================================================================== *)
+
+(* The rope's cells in row order. *)
+noextract
+let rec flatten (#a:Type0) (cs:list (list a)) : Tot (list a) =
+  match cs with
+  | [] -> []
+  | c :: rest -> app c (flatten rest)
+
+(* F#: `Chunked.setCell` — copy the chunk the row lands in, keep every other. A row past the
+   end of the rope edits nothing, as `set_at` past the end of a list edits nothing. *)
+noextract
+let rec set_chunked (#a:Type0) (i:nat) (v:a) (cs:list (list a)) : Tot (list (list a)) =
+  match cs with
+  | [] -> []
+  | c :: rest -> if i < len c then set_at i v c :: rest else c :: set_chunked (i - len c) v rest
+
+(* The index of the chunk holding row `i` — `len cs` when no chunk does. *)
+noextract
+let rec chunk_index (#a:Type0) (i:nat) (cs:list (list a)) : Tot nat =
+  match cs with
+  | [] -> 0
+  | c :: rest -> if i < len c then 0 else 1 + chunk_index (i - len c) rest
+
+let rec set_at_app_left (#a:Type0) (i:nat) (v:a) (xs ys:list a)
+  : Lemma (requires i < len xs)
+          (ensures set_at i v (app xs ys) == app (set_at i v xs) ys)
+  = match xs with
+    | [] -> ()
+    | _ :: xt -> if i = 0 then () else set_at_app_left (i - 1) v xt ys
+
+let rec set_at_app_right (#a:Type0) (i:nat) (v:a) (xs ys:list a)
+  : Lemma (requires i >= len xs)
+          (ensures set_at i v (app xs ys) == app xs (set_at (i - len xs) v ys))
+  = match xs with
+    | [] -> ()
+    | _ :: xt -> set_at_app_right (i - 1) v xt ys
+
+(* The edit through the rope is the flat edit. *)
+let rec set_chunked_flatten (#a:Type0) (i:nat) (v:a) (cs:list (list a))
+  : Lemma (ensures flatten (set_chunked i v cs) == set_at i v (flatten cs))
+  = match cs with
+    | [] -> ()
+    | c :: rest ->
+      if i < len c then set_at_app_left i v c (flatten rest)
+      else begin
+        set_at_app_right i v c (flatten rest);
+        set_chunked_flatten (i - len c) v rest
+      end
+
+(* Every chunk before the one holding the row is the chunk it was. *)
+let rec set_chunked_prefix (#a:Type0) (i:nat) (v:a) (cs:list (list a))
+  : Lemma (ensures take (chunk_index i cs) (set_chunked i v cs) == take (chunk_index i cs) cs)
+  = match cs with
+    | [] -> ()
+    | c :: rest -> if i < len c then () else set_chunked_prefix (i - len c) v rest
+
+(* And every chunk after it. *)
+let rec set_chunked_suffix (#a:Type0) (i:nat) (v:a) (cs:list (list a))
+  : Lemma (ensures drop (chunk_index i cs + 1) (set_chunked i v cs) == drop (chunk_index i cs + 1) cs)
+  = match cs with
+    | [] -> ()
+    | c :: rest -> if i < len c then () else set_chunked_suffix (i - len c) v rest
+
+(* The tie to the algebra: on a table whose column `n` is the flattened rope, an accepted
+   `SetCell n row value` produces the column that is the flattened EDITED rope — so the
+   chunked edit production performs is, cell for cell, the one `apply` specifies. *)
+let apply_set_cell_chunked (ev:evaluator) (n:string) (row:nat) (value:cell) (t:table)
+                           (col:column) (cs:list (list cell))
+  : Lemma (requires find_col n t.columns == Some col /\ col.cells == flatten cs /\
+                    row < row_count t /\ Ok? (cell_fits n col.ty value))
+          (ensures apply ev (SetCell n row value) t ==
+                   Ok (replace_column n { col with cells = flatten (set_chunked row value cs) } t))
+  = set_chunked_flatten row value cs
