@@ -77,6 +77,31 @@ this version together; `0.34.0` is tagged, so the additions advance the slot rat
   `source` and `result` are the same tables they were; a chunked refresh no longer builds them to
   hand the state back, and `result` builds the output the first time a consumer asks.
 
+- **Additive — `Fuaran.Core.DataFrame`: the planner (Phase 269).** `Plan.rewrite : Schema ->
+  Transform list -> Transform list` (total, idempotent), `Plan.isTotal : Schema -> Transform -> bool`
+  (the totality verdict over Phase 266's typer) and `Plan.explain : Schema -> Transform list ->
+  PlanReport`, with the report vocabulary `RewriteClass` (`TopN` / `PruneColumns` /
+  `FilterBeforeSort` / `FilterBeforeDerive`), `PlanRewrite`, `PlanDeclined` and `PlanReport`. Every
+  evaluator entry point plans the pipeline before it folds it and runs `Sort` > `Limit` as one stable
+  top-n; the answer is the reference's, errors included. `DataFrame.evalPipelineAsWritten` and
+  `evalPipelineWithInEnvAsWritten` fold the pipeline exactly as given — the semantics the planner is
+  held to (`Conformance.plannerLaws`) and what a host with a planner of its own certifies against.
+  `Incremental.planOver : Schema -> Transform list -> IncrementalPlan * PlanReport` classifies the
+  planned form, which is what the seam runs since this phase, and `Incremental.plannedOf` reports
+  the form a state ran; `Incremental.plan` and `pipelineOf` are unchanged and read the pipeline as
+  written. A `Filter` is moved ahead of a `Derive` only where the derive is total, unread by the
+  filter, closed over the schema, AND the derived column's type is one the typer decides (an
+  expression whose present values are all strings, or none): the evaluator infers a derived column's
+  type from its cells, so any other reorder could change the output schema — a premise the phase
+  corrected rather than implemented. Adjacent `Filter`s are not fused: the three-valued `And` reads
+  both operands on every row, so a fused predicate would do more work than the two passes.
+- **Additive — `Fuaran.Core.DataFrame.Conformance`: `DataFrameConformance.plannerLaws` (and its
+  `Conformance.plannerLaws` forward).** The planned evaluation equals the reference as written over
+  generated (schema, pipeline, table) triples, byte-for-byte on `Ok` and the same `EvalError` on
+  `Error`; `Plan.rewrite` is idempotent; a step `isTotal` admits never errors over the drawn table.
+  `Guarded` over the rewrite classes: fusion, pruning and a reorder must each be reached, a reorder
+  declined, and the refused arm drawn.
+
 ## 0.34.0 — released 2026-09-27 as `v0.34.0`
 
 **Release record.** The cut-time Fable gate ran green against the candidate on 2026-09-27: the three F#

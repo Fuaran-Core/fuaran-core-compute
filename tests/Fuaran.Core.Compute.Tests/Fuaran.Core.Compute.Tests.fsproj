@@ -22,6 +22,8 @@
     <Compile Include="IncrementalCorpusTests.fs" />
     <Compile Include="ScalingTests.fs" />
     <Compile Include="IncrementalTopNTests.fs" />
+    <!-- Phase 269 — the planner, pinned case by case. -->
+    <Compile Include="PlanTests.fs" />
     <Compile Include="IncrementalGroupByTests.fs" />
     <Compile Include="IncrementalRefreshCostTests.fs" />
     <!-- Phase 250's composition, carried from the substrate's suite by Phase 261: deltaOf,

@@ -114,6 +114,17 @@ let private ratioBound = 5.0 * sizeRatio
 /// by about two times, and the bound refuses the same regressions here as above.
 let private cheapRefreshLossBound = 3.0
 
+/// Phase 269 — the same bound for the one-comparison TOP-N case, which that phase moved out from
+/// under `cheapRefreshLossBound`. The planner runs `Sort` > `Limit` as one stable top-n, so a full
+/// `Filter > Sort > Limit 10` no longer sorts twenty thousand rows: Debug figures on this family
+/// before the phase were about 43 ms full against a 41 to 56 ms refresh, and after it 15 to 17 ms
+/// full against the same refresh — the refresh, whose merge into a held order was the saving, now
+/// LOSES to the fused full evaluation by about three times, and at three the bound was a coin toss
+/// on a loaded machine (56.0 against 52.3 on one run, 41.1 against 44.3 on the next). Five is above
+/// the loss measured and below the ten times the pre-208 seam lost by. Whether the seam should win
+/// this case again is a question for its per-row bookkeeping, which is where the 41 ms goes.
+let private topNRefreshLossBound = 5.0
+
 /// A table of `n` rows over four columns — a string identity, a grouping key of bounded cardinality,
 /// and two integer measures. The identity is what `RowIdentity.byColumn` keys on; the grouping key
 /// is bounded so the `GroupBy` produces a small result whatever the source size, which keeps the
@@ -548,10 +559,11 @@ let scalingTests =
               // its own while the refresh paid for the table. Phase 267 made the full evaluation
               // faster rather than the refresh slower (57.1 ms vs 91.1 ms before it, 43.3 ms vs
               // 21.7 ms after), and the case is now a bounded LOSS: see `cheapRefreshLossBound`.
+              // Phase 269 — the full evaluation is the fused top-n now: see `topNRefreshLossBound`.
               Expect.isLessThan
                   trivialRefresh
-                  (cheapRefreshLossBound * trivialFull)
-                  "ONE COMPARISON per row: a top-10 refresh must stay within the bounded loss to re-sorting twenty thousand rows — the pre-208 seam would lose by about ten times"
+                  (topNRefreshLossBound * trivialFull)
+                  "ONE COMPARISON per row: a top-10 refresh must stay within the bounded loss to the fused top-n over twenty thousand rows — the pre-208 seam would lose by about ten times"
 
               Expect.isLessThan
                   costlyRefresh

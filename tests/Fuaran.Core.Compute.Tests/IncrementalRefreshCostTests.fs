@@ -508,10 +508,24 @@ let refreshCostTests =
               Expect.equal (Incremental.footprint refreshed).SourceRows 50 "footprint: what producing it cost"
               Expect.equal (Incremental.strategy refreshed) RowLocalThenGroups "strategy: how the next refresh answers"
 
+              // Phase 269 — the seam classifies the PLANNED form (here the planner prunes the two
+              // columns the group-by never reads, a row-local `Project` ahead of the filter), so
+              // the classification `plan` computes from the written pipeline alone is one step
+              // short of it; `planOver` computes what the seam classified.
               Expect.equal
                   (Incremental.plan' refreshed)
+                  (fst (Incremental.planOver before.Schema pipeline))
+                  "plan': the classification `planOver` computes from the schema and the pipeline"
+
+              Expect.notEqual
+                  (Incremental.plan' refreshed)
                   (Incremental.plan pipeline)
-                  "plan': the same classification `plan` computes from the pipeline alone"
+                  "and it is not the written form's: the planner rewrote this pipeline"
+
+              Expect.equal
+                  (Incremental.plannedOf refreshed)
+                  (Plan.rewrite before.Schema pipeline)
+                  "plannedOf: the form the seam ran"
 
               Expect.equal (Incremental.source refreshed) after "source: the table the next delta must describe FROM"
               Expect.equal (Incremental.pipelineOf refreshed) pipeline "pipelineOf: the pipeline it was built for" ]

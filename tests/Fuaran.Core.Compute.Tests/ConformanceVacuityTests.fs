@@ -66,6 +66,8 @@ let private runs =
            run "Conformance.schemaWalkLaws" 300 (Conformance.schemaWalkLaws 1121 300)
            run "Conformance.nowLaws" 150 (Conformance.nowLaws 1250 150)
            run "Conformance.slotParamLaws" 120 (Conformance.slotParamLaws 12500 120)
+           // Phase 269 — the planner held to the reference as written.
+           run "Conformance.plannerLaws" 200 (Conformance.plannerLaws 2690 200)
            run "IncrementalDelta.laws" 60 (IncrementalDelta.laws 7 60)
            // The SHIPPED row bound (9) and the sample size its own suite sweeps at. A narrower
            // bound is the family's documented go-red, not a census run.

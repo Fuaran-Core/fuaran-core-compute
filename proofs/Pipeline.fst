@@ -1183,3 +1183,1124 @@ let uncounted_ok_iff (pr:prims) (other:other_fn) (env:param_env) (p:list transfo
                     | Error err, Error err' -> err == err'
                     | _ -> False)) =
   go_ok_iff (eval_step pr other env) input 0 p
+
+(* ======================================================================================
+   11. The planner's reorder (Phase 269) — a total step's removal from a filtered row's path
+       preserves the driver's result.
+
+   `Plan.rewrite` moves a `Filter` ahead of the `Derive` it follows. On a row the filter drops,
+   the derive is then never evaluated: the step is REMOVED from that row's path. The theorem
+   `derive_then_filter` says when that changes nothing: the derive answers `Ok` on every row of
+   the frame (the totality the verdict of section 12 decides), the filter reads no column the
+   derive writes and every column it reads exists before the derive (so its answer on a row is
+   the same with or without the derived cell, and so is its refusal), and the derived cells are
+   strings or nulls (so the column's inferred type — read off the cells, `infer_type` — is the
+   same over the kept rows as over all of them). Under those three the two orders fold to the
+   same frame and the same first error, and `reorder_in_context` carries the equality to any
+   pipeline the pair sits in, through `go_app`.
+
+   Every definition here is `noextract`: the planner is not modelled as a clause of the oracle
+   (its F# is held to the reference by `Conformance.plannerLaws`), and the extraction the leg
+   diffs must stay what Phase 234 committed.
+   ====================================================================================== *)
+
+noextract
+let rec mem (n:string) (l:list string) : Tot bool =
+  match l with
+  | [] -> false
+  | h :: t -> h = n || mem n t
+
+(* F#: `Planner.exprCols` — every column an expression reads, in occurrence order. *)
+noextract
+let rec reads (x:col_expr) : Tot (list string) (decreases x) =
+  match x with
+  | Col n -> [n]
+  | Lit _ | Param _ | Now _ -> []
+  | Binary _ a b -> app (reads a) (reads b)
+  | Not a | Cast _ a | IsNull a | InParam a _ -> reads a
+  | Coalesce xs | ApplyFn _ xs -> reads_list xs
+  | Case cases els -> app (reads_cases cases) (reads els)
+  | InList a items -> app (reads a) (reads_list items)
+and reads_list (xs:list col_expr) : Tot (list string) (decreases xs) =
+  match xs with
+  | [] -> []
+  | x :: rest -> app (reads x) (reads_list rest)
+and reads_cases (cs:list (col_expr & col_expr)) : Tot (list string) (decreases cs) =
+  match cs with
+  | [] -> []
+  | (w, t) :: rest -> app (reads w) (app (reads t) (reads_cases rest))
+
+(* `List.tryItem` — `nth` without the range obligation, for lemmas whose statement would
+   otherwise have to establish a length before it could be read. *)
+noextract
+let rec nth_opt (#a:Type0) (l:list a) (j:nat) : Tot (option a) (decreases l) =
+  match l with
+  | [] -> None
+  | x :: t -> if j = 0 then Some x else nth_opt t (j - 1)
+
+let rec nth_opt_nth (#a:Type0) (l:list a) (j:nat{j < len l})
+  : Lemma (ensures nth_opt l j == Some (nth l j)) (decreases l) =
+  match l with
+  | x :: t -> if j = 0 then () else nth_opt_nth t (j - 1)
+
+let rec nth_opt_set_at (#a:Type0) (i:nat) (v:a) (l:list a) (j:nat)
+  : Lemma (requires j <> i) (ensures nth_opt (set_at i v l) j == nth_opt l j) (decreases l) =
+  match l with
+  | [] -> ()
+  | x :: t -> if i = 0 then () else if j = 0 then () else nth_opt_set_at (i - 1) v t (j - 1)
+
+let rec nth_opt_app_left (#a:Type0) (l m:list a) (j:nat)
+  : Lemma (requires j < len l) (ensures nth_opt (app l m) j == nth_opt l j) (decreases l) =
+  match l with
+  | x :: t -> if j = 0 then () else nth_opt_app_left t m (j - 1)
+
+(* A retype changes no name, so no index. *)
+let rec index_of_retype_at (n:string) (i:nat) (ty:column_type) (cols:schema)
+  : Lemma (ensures index_of n (retype_at i ty cols) == index_of n cols) (decreases cols) =
+  match cols with
+  | [] -> ()
+  | _ :: rest -> if i = 0 then () else index_of_retype_at n (i - 1) ty rest
+
+(* A name found before an append is found at the same index after it. *)
+let rec index_of_app_found (#b:Type0) (n:string) (l m:list (string & b))
+  : Lemma (requires Some? (index_of n l)) (ensures index_of n (app l m) == index_of n l) (decreases l) =
+  match l with
+  | (h, _) :: t -> if h = n then () else index_of_app_found n t m
+
+(* Two names at one index are one name. *)
+let rec index_of_distinct (#b:Type0) (n m:string) (l:list (string & b)) (j:nat)
+  : Lemma (requires index_of n l == Some j /\ index_of m l == Some j) (ensures n == m) (decreases l) =
+  match l with
+  | (h, _) :: t ->
+    if h = n then ()
+    else if h = m then ()
+    else index_of_distinct n m t (j - 1)
+
+(* Two rows over two schemas answer the same cell for every name in `ns`, each name found in
+   both — what a predicate that reads only `ns` needs to answer the same on both. *)
+noextract
+let rec agrees (cols:schema) (row:list cell) (cols':schema) (row':list cell) (ns:list string) : Tot bool =
+  match ns with
+  | [] -> true
+  | n :: rest ->
+    (match index_of n cols, index_of n cols' with
+     | Some j, Some j' -> nth_opt row j = nth_opt row' j' && agrees cols row cols' row' rest
+     | _ -> false)
+
+let rec agrees_app (cols:schema) (row:list cell) (cols':schema) (row':list cell) (l m:list string)
+  : Lemma (requires agrees cols row cols' row' (app l m))
+          (ensures agrees cols row cols' row' l /\ agrees cols row cols' row' m) (decreases l) =
+  match l with
+  | [] -> ()
+  | _ :: rest -> agrees_app cols row cols' row' rest m
+
+(* Every name in `ns` is not `name` and is a column of `cols`: the filter's reads, as the
+   planner's rule requires them (`declineReorder`'s second and third clauses). *)
+noextract
+let rec closed_not (cols:schema) (name:string) (ns:list string) : Tot bool =
+  match ns with
+  | [] -> true
+  | n :: rest -> n <> name && Some? (index_of n cols) && closed_not cols name rest
+
+(* THE EXPRESSION LEMMA. An expression answers the same on two rows that agree on every column
+   it reads — value for value, error for error, through every short circuit. *)
+let rec eval_extends (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols))
+  (cols':schema) (row':row_of (len cols')) (x:col_expr)
+  : Lemma (requires agrees cols row cols' row' (reads x))
+          (ensures eval_expr pr env cols row x == eval_expr pr env cols' row' x)
+          (decreases x) =
+  match x with
+  | Col n ->
+    (match index_of n cols, index_of n cols' with
+     | Some j, Some j' -> nth_opt_nth row j; nth_opt_nth row' j'
+     | _ -> ())
+  | Lit _ | Param _ | Now _ | InParam _ _ -> ()
+  | Binary _ a b ->
+    agrees_app cols row cols' row' (reads a) (reads b);
+    eval_extends pr env cols row cols' row' a;
+    (match eval_expr pr env cols row a with
+     | Error _ -> ()
+     | Ok _ -> eval_extends pr env cols row cols' row' b)
+  | Not a | Cast _ a | IsNull a -> eval_extends pr env cols row cols' row' a
+  | Coalesce xs -> extends_coalesce pr env cols row cols' row' xs
+  | Case cases els ->
+    agrees_app cols row cols' row' (reads_cases cases) (reads els);
+    extends_case pr env cols row cols' row' cases;
+    (match eval_case pr env cols row cases with
+     | Some _ -> ()
+     | None -> eval_extends pr env cols row cols' row' els)
+  | InList a items ->
+    agrees_app cols row cols' row' (reads a) (reads_list items);
+    eval_extends pr env cols row cols' row' a;
+    (match eval_expr pr env cols row a with
+     | Error _ -> ()
+     | Ok Null -> ()
+     | Ok sv -> extends_in pr env cols row cols' row' sv false items)
+  | ApplyFn _ args -> extends_args pr env cols row cols' row' args
+and extends_coalesce (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols))
+  (cols':schema) (row':row_of (len cols')) (xs:list col_expr)
+  : Lemma (requires agrees cols row cols' row' (reads_list xs))
+          (ensures eval_coalesce pr env cols row xs == eval_coalesce pr env cols' row' xs)
+          (decreases xs) =
+  match xs with
+  | [] -> ()
+  | x :: rest ->
+    agrees_app cols row cols' row' (reads x) (reads_list rest);
+    eval_extends pr env cols row cols' row' x;
+    (match eval_expr pr env cols row x with
+     | Error _ -> ()
+     | Ok Null -> extends_coalesce pr env cols row cols' row' rest
+     | Ok _ -> ())
+and extends_case (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols))
+  (cols':schema) (row':row_of (len cols')) (cases:list (col_expr & col_expr))
+  : Lemma (requires agrees cols row cols' row' (reads_cases cases))
+          (ensures eval_case pr env cols row cases == eval_case pr env cols' row' cases)
+          (decreases cases) =
+  match cases with
+  | [] -> ()
+  | (w, t) :: rest ->
+    agrees_app cols row cols' row' (reads w) (app (reads t) (reads_cases rest));
+    agrees_app cols row cols' row' (reads t) (reads_cases rest);
+    eval_extends pr env cols row cols' row' w;
+    (match eval_expr pr env cols row w with
+     | Error _ -> ()
+     | Ok (Bool true) -> eval_extends pr env cols row cols' row' t
+     | Ok _ -> extends_case pr env cols row cols' row' rest)
+and extends_in (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols))
+  (cols':schema) (row':row_of (len cols')) (sv:cell) (saw_null:bool) (items:list col_expr)
+  : Lemma (requires agrees cols row cols' row' (reads_list items))
+          (ensures eval_in pr env cols row sv saw_null items == eval_in pr env cols' row' sv saw_null items)
+          (decreases items) =
+  match items with
+  | [] -> ()
+  | it :: rest ->
+    agrees_app cols row cols' row' (reads it) (reads_list rest);
+    eval_extends pr env cols row cols' row' it;
+    (match eval_expr pr env cols row it with
+     | Error _ -> ()
+     | Ok Null -> extends_in pr env cols row cols' row' sv true rest
+     | Ok iv ->
+       (match pr.compare sv iv with
+        | Some 0 -> ()
+        | Some _ -> extends_in pr env cols row cols' row' sv saw_null rest
+        | None -> ()))
+and extends_args (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols))
+  (cols':schema) (row':row_of (len cols')) (args:list col_expr)
+  : Lemma (requires agrees cols row cols' row' (reads_list args))
+          (ensures eval_args pr env cols row args == eval_args pr env cols' row' args)
+          (decreases args) =
+  match args with
+  | [] -> ()
+  | a :: rest ->
+    agrees_app cols row cols' row' (reads a) (reads_list rest);
+    eval_extends pr env cols row cols' row' a;
+    (match eval_expr pr env cols row a with
+     | Error _ -> ()
+     | Ok _ -> extends_args pr env cols row cols' row' rest)
+
+(* The two ways `eval_derive` extends a row — a cell replaced in place, a cell appended — each
+   agree with the row on every column the filter reads. *)
+let rec agrees_replace (cols:schema) (row:list cell) (i:nat) (name:string) (ty:column_type) (v:cell) (ns:list string)
+  : Lemma (requires index_of name cols == Some i /\ closed_not cols name ns)
+          (ensures agrees cols row (retype_at i ty cols) (set_at i v row) ns) (decreases ns) =
+  match ns with
+  | [] -> ()
+  | n :: rest ->
+    index_of_retype_at n i ty cols;
+    (match index_of n cols with
+     | Some j ->
+       if j = i then index_of_distinct n name cols j
+       else (nth_opt_set_at i v row j; agrees_replace cols row i name ty v rest)
+     | None -> ())
+
+let rec agrees_append (cols:schema) (row:list cell{len row = len cols}) (name:string) (ty:column_type) (v:cell) (ns:list string)
+  : Lemma (requires closed_not cols name ns)
+          (ensures agrees cols row (app cols [(name, ty)]) (app row [v]) ns) (decreases ns) =
+  match ns with
+  | [] -> ()
+  | n :: rest ->
+    (match index_of n cols with
+     | Some j ->
+       index_of_app_found n cols [(name, ty)];
+       nth_opt_app_left row [v] j;
+       agrees_append cols row name ty v rest
+     | None -> ())
+
+(* The two ways `eval_derive` extends a row — a cell replaced in place at the column's index, a
+   cell appended — as one shape, so the row lemma is stated once. *)
+noextract
+type ext_kind =
+  | ExtReplace : nat -> ext_kind
+  | ExtAppend  : ext_kind
+
+noextract
+let ext_row (k:ext_kind) (r:list cell) (v:cell) : Tot (list cell) =
+  match k with
+  | ExtReplace i -> set_at i v r
+  | ExtAppend -> app r [v]
+
+noextract
+let ext_cols (k:ext_kind) (name:string) (ty:column_type) (cols:schema) : Tot schema =
+  match k with
+  | ExtReplace i -> retype_at i ty cols
+  | ExtAppend -> app cols [(name, ty)]
+
+(* The shape `eval_derive` takes for `name` over `cols`. *)
+noextract
+let ext_of (k:ext_kind) (name:string) (cols:schema) : Tot bool =
+  match k with
+  | ExtReplace i -> index_of name cols = Some i
+  | ExtAppend -> None? (index_of name cols)
+
+noextract
+let rec zip_ext (k:ext_kind) (rows:list (list cell)) (cells:list cell{len cells = len rows})
+  : Tot (list (list cell)) (decreases rows) =
+  match rows, cells with
+  | [], [] -> []
+  | r :: rt, v :: vt -> ext_row k r v :: zip_ext k rt vt
+
+let rec zip_replace_is_ext (i:nat) (rows:list (list cell)) (cells:list cell{len cells = len rows})
+  : Lemma (ensures zip_replace i rows cells == zip_ext (ExtReplace i) rows cells) (decreases rows) =
+  match rows, cells with
+  | [], [] -> ()
+  | _ :: rt, _ :: vt -> zip_replace_is_ext i rt vt
+
+let rec zip_append_is_ext (rows:list (list cell)) (cells:list cell{len cells = len rows})
+  : Lemma (ensures zip_append rows cells == zip_ext ExtAppend rows cells) (decreases rows) =
+  match rows, cells with
+  | [], [] -> ()
+  | _ :: rt, _ :: vt -> zip_append_is_ext rt vt
+
+let len_ext_row (k:ext_kind) (name:string) (ty:column_type) (cols:schema) (r:list cell{len r = len cols}) (v:cell)
+  : Lemma (ensures len (ext_row k r v) = len (ext_cols k name ty cols)) =
+  match k with
+  | ExtReplace i -> len_set_at i v r; len_retype_at i ty cols
+  | ExtAppend -> len_app r [v]; len_app cols [(name, ty)]
+
+let agrees_ext (k:ext_kind) (cols:schema) (row:list cell{len row = len cols}) (name:string) (ty:column_type) (v:cell) (ns:list string)
+  : Lemma (requires closed_not cols name ns /\ ext_of k name cols)
+          (ensures agrees cols row (ext_cols k name ty cols) (ext_row k row v) ns) =
+  match k with
+  | ExtReplace i -> agrees_replace cols row i name ty v ns
+  | ExtAppend -> agrees_append cols row name ty v ns
+
+(* Every derived cell a string or a null: the one shape whose inferred column type is the same
+   over any subset of the rows (`derivedColumnType` decides it statically, and nothing else). *)
+noextract
+let rec all_str_or_null (cells:list cell) : Tot bool =
+  match cells with
+  | [] -> true
+  | Str _ :: t | Null :: t -> all_str_or_null t
+  | _ -> false
+
+let rec infer_str_or_null (cells:list cell)
+  : Lemma (requires all_str_or_null cells) (ensures infer_type cells == StringType) =
+  match cells with
+  | [] -> ()
+  | _ :: t -> infer_str_or_null t
+
+(* THE ROW LEMMA. Filtering the derived rows answers what filtering the rows answers — the same
+   first error, or the kept rows, each extended by the cell the derive gives it; and the derive
+   over the kept rows alone answers `Ok`, with cells drawn from the cells over all of them. *)
+let rec filter_ext (pr:prims) (env:param_env) (cols:schema) (k:ext_kind) (name:string) (ty:column_type)
+  (p x:col_expr) (rows:list (list cell){all_width (len cols) rows}) (vs:list cell{len vs = len rows})
+  : Lemma (requires closed_not cols name (reads p) /\ ext_of k name cols
+                    /\ derive_cells pr env cols rows x == Ok vs
+                    /\ all_width (len (ext_cols k name ty cols)) (zip_ext k rows vs))
+          (ensures (match filter_rows pr env (ext_cols k name ty cols) (zip_ext k rows vs) p,
+                          filter_rows pr env cols rows p with
+                    | Error e, Error e' -> e == e'
+                    | Ok rs', Ok rs ->
+                      (match derive_cells pr env cols rs x with
+                       | Ok vs' -> rs' == zip_ext k rs vs' /\ (all_str_or_null vs ==> all_str_or_null vs')
+                       | Error _ -> False)
+                    | _ -> False))
+          (decreases rows) =
+  match rows, vs with
+  | [], [] -> ()
+  | r :: rt, v :: vt ->
+    (match eval_expr pr env cols r x with
+     | Ok _ ->
+       len_ext_row k name ty cols r v;
+       agrees_ext k cols r name ty v (reads p);
+       eval_extends pr env cols r (ext_cols k name ty cols) (ext_row k r v) p;
+       (match eval_expr pr env cols r p with
+        | Error _ -> ()
+        | Ok _ -> filter_ext pr env cols k name ty p x rt vt)
+     | Error _ -> ())
+
+#push-options "--fuel 4 --ifuel 2 --z3rlimit 120"
+(* The theorem, one extension shape at a time: the derived column replaced in place ... *)
+let derive_then_filter_replace (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr) (i:nat)
+  : Lemma (requires (match derive_cells pr env f.cols f.rows x with
+                     | Ok vs -> all_str_or_null vs
+                     | Error _ -> False)
+                    /\ closed_not f.cols name (reads p)
+                    /\ index_of name f.cols == Some i)
+          (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
+                   eval_uncounted pr other env [Filter p; Derive name x] f) =
+  match derive_cells pr env f.cols f.rows x with
+  | Ok vs ->
+    infer_str_or_null vs;
+    len_retype_at i StringType f.cols;
+    width_replace (len f.cols) i f.rows vs;
+    zip_replace_is_ext i f.rows vs;
+    let f1 : wframe = { cols = retype_at i StringType f.cols; rows = zip_replace i f.rows vs } in
+    assert (eval_derive pr env f name x == Ok f1);
+    assert (ext_cols (ExtReplace i) name StringType f.cols == f1.cols);
+    assert (zip_ext (ExtReplace i) f.rows vs == f1.rows);
+    filter_ext pr env f.cols (ExtReplace i) name StringType p x f.rows vs;
+    (match filter_rows pr env f.cols f.rows p with
+     | Error e -> assert (filter_rows pr env f1.cols f1.rows p == Error e)
+     | Ok rs ->
+       let f2 : wframe = { cols = f.cols; rows = rs } in
+       assert (eval_step pr other env f (Filter p) == Ok f2);
+       (match derive_cells pr env f.cols rs x with
+        | Ok vs' ->
+          infer_str_or_null vs';
+          zip_replace_is_ext i rs vs';
+          len_retype_at i StringType f.cols;
+          width_replace (len f.cols) i rs vs';
+          let f3 : wframe = { cols = retype_at i StringType f.cols; rows = zip_replace i rs vs' } in
+          assert (eval_derive pr env f2 name x == Ok f3);
+          assert (filter_rows pr env f1.cols f1.rows p == Ok f3.rows);
+          assert (eval_step pr other env f1 (Filter p) == Ok f3)
+        | Error _ -> ()))
+  | Error _ -> ()
+
+(* ... and appended. *)
+let derive_then_filter_append (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr)
+  : Lemma (requires (match derive_cells pr env f.cols f.rows x with
+                     | Ok vs -> all_str_or_null vs
+                     | Error _ -> False)
+                    /\ closed_not f.cols name (reads p)
+                    /\ None? (index_of name f.cols))
+          (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
+                   eval_uncounted pr other env [Filter p; Derive name x] f) =
+  match derive_cells pr env f.cols f.rows x with
+  | Ok vs ->
+    infer_str_or_null vs;
+    len_app f.cols [(name, StringType)];
+    width_append (len f.cols) f.rows vs;
+    zip_append_is_ext f.rows vs;
+    let f1 : wframe = { cols = app f.cols [(name, StringType)]; rows = zip_append f.rows vs } in
+    assert (eval_derive pr env f name x == Ok f1);
+    assert (ext_cols ExtAppend name StringType f.cols == f1.cols);
+    assert (zip_ext ExtAppend f.rows vs == f1.rows);
+    filter_ext pr env f.cols ExtAppend name StringType p x f.rows vs;
+    (match filter_rows pr env f.cols f.rows p with
+     | Error e -> assert (filter_rows pr env f1.cols f1.rows p == Error e)
+     | Ok rs ->
+       let f2 : wframe = { cols = f.cols; rows = rs } in
+       assert (eval_step pr other env f (Filter p) == Ok f2);
+       (match derive_cells pr env f.cols rs x with
+        | Ok vs' ->
+          infer_str_or_null vs';
+          zip_append_is_ext rs vs';
+          width_append (len f.cols) rs vs';
+          let f3 : wframe = { cols = app f.cols [(name, StringType)]; rows = zip_append rs vs' } in
+          assert (eval_derive pr env f2 name x == Ok f3);
+          assert (filter_rows pr env f1.cols f1.rows p == Ok f3.rows);
+          assert (eval_step pr other env f1 (Filter p) == Ok f3)
+        | Error _ -> ()))
+  | Error _ -> ()
+#pop-options
+
+(* THE THEOREM. Over a frame on which the derive answers `Ok` with string-or-null cells, and a
+   filter that reads neither the derived column nor any the frame lacks, the derive then the
+   filter and the filter then the derive fold to the same frame, or the same first error: the
+   derive is removed from every dropped row's path and nothing is lost. *)
+let derive_then_filter (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr)
+  : Lemma (requires (match derive_cells pr env f.cols f.rows x with
+                     | Ok vs -> all_str_or_null vs
+                     | Error _ -> False)
+                    /\ closed_not f.cols name (reads p))
+          (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
+                   eval_uncounted pr other env [Filter p; Derive name x] f) =
+  match index_of name f.cols with
+  | Some i -> derive_then_filter_replace pr other env f name x p i
+  | None -> derive_then_filter_append pr other env f name x p
+
+(* The frame a walk reaches does not depend on the count it was handed: the count is threaded
+   beside the frame and read by nothing. *)
+let rec go_frame_independent (#e:Type0) (step:step_fn e) (f:wframe) (n m:nat) (p:list transform)
+  : Lemma (ensures result_map fst (go step f n p) == result_map fst (go step f m p)) (decreases p) =
+  match p with
+  | [] -> ()
+  | s :: rest ->
+    (match step f s with
+     | Ok f' -> go_frame_independent step f' (n + cost_of f s) (m + cost_of f s) rest
+     | Error _ -> ())
+
+(* THE COROLLARY IN CONTEXT. Wherever the pair sits in a pipeline, with the theorem's premises
+   holding on the frame the prefix reaches, the whole pipeline folds to the same answer. *)
+let reorder_in_context (pr:prims) (other:other_fn) (env:param_env) (pre post:list transform) (input:wframe)
+  (name:string) (x p:col_expr)
+  : Lemma (requires (match eval_uncounted pr other env pre input with
+                     | Ok f ->
+                       (match derive_cells pr env f.cols f.rows x with
+                        | Ok vs -> all_str_or_null vs
+                        | Error _ -> False)
+                       /\ closed_not f.cols name (reads p)
+                     | Error _ -> True))
+          (ensures eval_uncounted pr other env (app pre (app [Derive name x; Filter p] post)) input ==
+                   eval_uncounted pr other env (app pre (app [Filter p; Derive name x] post)) input) =
+  let step = eval_step pr other env in
+  go_app step input 0 pre (app [Derive name x; Filter p] post);
+  go_app step input 0 pre (app [Filter p; Derive name x] post);
+  match go step input 0 pre with
+  | Error _ -> ()
+  | Ok (f, n) ->
+    go_app step f n [Derive name x; Filter p] post;
+    go_app step f n [Filter p; Derive name x] post;
+    derive_then_filter pr other env f name x p;
+    go_frame_independent step f n 0 [Derive name x; Filter p];
+    go_frame_independent step f n 0 [Filter p; Derive name x];
+    (match go step f n [Derive name x; Filter p], go step f n [Filter p; Derive name x] with
+     | Ok (g, a), Ok (g', b) -> go_frame_independent step g a b post
+     | _ -> ())
+
+(* ======================================================================================
+   12. The totality verdict (Phase 269) — `Plan.isTotal`'s expression half, modelled clause for
+       clause over the typer (Phase 266), and proved SOUND over the modelled evaluator.
+
+   `verdict_sound`: an expression the verdict admits over a schema answers `Ok` on every row
+   that fits the schema, with a cell that fits the type the typer gave it. The proof is the
+   mutual induction the evaluator's four loops make necessary, and it discharges every error
+   the evaluator's OWN arms can raise — an unknown column, an unbound param, an unpinned clock,
+   a `Not` of a non-bool, an incomparable membership — from the verdict's clauses. What it
+   assumes is stated in ONE place, `admits`, and it is the fourth parameter of this module: the
+   four cell primitives answer `Ok`, with a cell of the typer's type, on exactly the operand
+   shapes the verdict admits (an integer `Add` is not one of them; a `Float` one is). That
+   record is the reading of `arith`, `castCell`, `applyScalar` and `compareCells` the F#
+   verdict's every `true` is backed by, and `Conformance.plannerLaws` holds production to it
+   over drawn tables; no theorem here reads a primitive's cell. Every theorem in this section
+   is conditional on it, and on nothing else.
+
+   The corollary `planner_reorder_sound` ties the two sections: the verdict's `true` on the
+   derive, the typer's `Absent` or `Of StringType` on its expression (the F# `derivedColumnType
+   = Some StringType`), and a filter closed over the schema less the derived name — the three
+   clauses of `Planner.declineReorder`'s admission — are exactly the premises under which the
+   reorder preserves the driver's result.
+   ====================================================================================== *)
+
+(* F#: `Typing` — what the typer knows of an expression's present values. *)
+noextract
+type typing =
+  | Absent  : typing
+  | Of      : column_type -> typing
+  | Unknown : typing
+
+noextract
+let join (a b:typing) : Tot typing =
+  match a, b with
+  | Absent, t -> t
+  | t, Absent -> t
+  | Of x, Of y -> if x = y then Of x else Unknown
+  | _ -> Unknown
+
+(* F#: `List.fold join Absent ts` — the left fold, as written. *)
+noextract
+let rec fold_join (acc:typing) (ts:list typing) : Tot typing (decreases ts) =
+  match ts with
+  | [] -> acc
+  | t :: rest -> fold_join (join acc t) rest
+
+noextract
+let join_all (ts:list typing) : Tot typing = fold_join Absent ts
+
+noextract
+let of_cell (c:cell) : Tot typing =
+  match type_of c with
+  | Some ty -> Of ty
+  | None -> Absent
+
+noextract
+let numeric_t (t:typing) : Tot bool =
+  match t with
+  | Of IntType | Of FloatType -> true
+  | _ -> false
+
+noextract
+let bool_like (t:typing) : Tot bool =
+  match t with
+  | Absent | Of BoolType -> true
+  | _ -> false
+
+noextract
+let is_str (t:typing) : Tot bool =
+  match t with
+  | Absent | Of StringType -> true
+  | _ -> false
+
+noextract
+let same_scalar (a b:typing) : Tot bool =
+  match a, b with
+  | Of x, Of y -> x = y
+  | _ -> false
+
+(* F#: `Typing.binary`. *)
+noextract
+let typing_binary (op:bin_op) (a b:typing) : Tot typing =
+  let null_prop (decide:unit -> typing) : typing =
+    match a, b with
+    | Absent, _ | _, Absent -> Absent
+    | _ -> decide () in
+  match op with
+  | Add | Sub | Mul ->
+    null_prop (fun () ->
+      if a = Of IntType && b = Of IntType then Of IntType
+      else if numeric_t a && numeric_t b then Of FloatType
+      else Unknown)
+  | Div -> null_prop (fun () -> if numeric_t a && numeric_t b then Of FloatType else Unknown)
+  | Mod -> null_prop (fun () -> if a = Of IntType && b = Of IntType then Of IntType else Unknown)
+  | Eq | Ne | Lt | Le | Gt | Ge ->
+    null_prop (fun () -> if (numeric_t a && numeric_t b) || same_scalar a b then Of BoolType else Unknown)
+  | And | Or -> if bool_like a && bool_like b then join a b else Unknown
+  | Contains | StartsWith | EndsWith ->
+    null_prop (fun () -> if a = Of StringType && b = Of StringType then Of BoolType else Unknown)
+
+(* F#: `Typing.not'`. *)
+noextract
+let typing_not (a:typing) : Tot typing =
+  match a with
+  | Absent -> Absent
+  | Of BoolType -> Of BoolType
+  | _ -> Unknown
+
+(* F#: `Typing.cast`. *)
+noextract
+let typing_cast (ty:column_type) (a:typing) : Tot typing =
+  match a with
+  | Absent -> Absent
+  | _ -> Of ty
+
+(* F#: `Typing.inList`. *)
+noextract
+let typing_in_list (subject:typing) : Tot typing =
+  match subject with
+  | Absent -> Absent
+  | _ -> Of BoolType
+
+noextract
+let rec any_absent (ts:list typing) : Tot bool =
+  match ts with
+  | [] -> false
+  | Absent :: _ -> true
+  | _ :: rest -> any_absent rest
+
+(* F#: `Typing.applyFn`, function by function. *)
+noextract
+let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
+  let unary (decide:typing -> typing) : typing =
+    match ts with
+    | [Absent] -> Absent
+    | [t] -> decide t
+    | _ -> Absent in
+  match fn with
+  | Abs ->
+    unary (fun t ->
+      match t with
+      | Of IntType -> Of IntType
+      | Of FloatType -> Of FloatType
+      | _ -> Unknown)
+  | Round | Floor | Ceil | Sqrt -> unary (fun _ -> Of FloatType)
+  | Length -> unary (fun _ -> Of IntType)
+  | Lower | Upper | Trim -> unary (fun _ -> Of StringType)
+  | Substr ->
+    (match ts with
+     | [Absent; _; _] -> Absent
+     | [_; _; _] -> Of StringType
+     | _ -> Absent)
+  | DatePart ->
+    (match ts with
+     | [_; Absent] -> Absent
+     | [_; _] -> Of IntType
+     | _ -> Absent)
+  | Concat -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else Of StringType)
+  | Replace -> (match ts with [_; _; _] -> if any_absent ts then Absent else Of StringType | _ -> Absent)
+  | DateDiffDays -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
+  | Least | Greatest -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else join_all ts)
+  | IndexOf -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
+
+(* F#: `typing cols e` — the static typing over a schema, arm for arm. `colType` is the first
+   column of that name, as `assoc` is. *)
+noextract
+let rec typing_of (cols:schema) (x:col_expr) : Tot typing (decreases x) =
+  match x with
+  | Col n -> (match assoc n cols with Some ty -> Of ty | None -> Unknown)
+  | Lit c -> of_cell c
+  | Param _ | Now _ -> Unknown
+  | Binary op a b -> typing_binary op (typing_of cols a) (typing_of cols b)
+  | Not a -> typing_not (typing_of cols a)
+  | Coalesce xs -> join_all (typings_of cols xs)
+  | Case cases els -> join_all (typing_of cols els :: typings_thens cols cases)
+  | Cast ty a -> typing_cast ty (typing_of cols a)
+  | ApplyFn fn args -> typing_apply_fn fn (typings_of cols args)
+  | InList a _ -> typing_in_list (typing_of cols a)
+  | IsNull _ -> Of BoolType
+  | InParam a _ -> typing_in_list (typing_of cols a)
+and typings_of (cols:schema) (xs:list col_expr) : Tot (list typing) (decreases xs) =
+  match xs with
+  | [] -> []
+  | x :: rest -> typing_of cols x :: typings_of cols rest
+and typings_thens (cols:schema) (cases:list (col_expr & col_expr)) : Tot (list typing) (decreases cases) =
+  match cases with
+  | [] -> []
+  | (_, t) :: rest -> typing_of cols t :: typings_thens cols rest
+
+(* A cell fits a typing: `Absent` is the null, `Of ty` the null or a present cell of that type,
+   `Unknown` anything. *)
+noextract
+let fits (t:typing) (c:cell) : Tot bool =
+  match t with
+  | Absent -> Null? c
+  | Of ty -> Null? c || type_of c = Some ty
+  | Unknown -> true
+
+noextract
+let rec cells_fit (ts:list typing) (cs:list cell) : Tot bool =
+  match ts, cs with
+  | [], [] -> true
+  | t :: tr, c :: cr -> fits t c && cells_fit tr cr
+  | _ -> false
+
+(* A row fits its schema: cell by cell, the null or the column's type. *)
+noextract
+let rec row_typed (cols:schema) (row:list cell) : Tot bool =
+  match cols, row with
+  | [], [] -> true
+  | (_, ty) :: ct, c :: rt -> fits (Of ty) c && row_typed ct rt
+  | _ -> false
+
+noextract
+let rec rows_typed (cols:schema) (rows:list (list cell)) : Tot bool =
+  match rows with
+  | [] -> true
+  | r :: rest -> row_typed cols r && rows_typed cols rest
+
+(* ---- the verdict, clause for clause (F#: `Planner.exprTotal`) ---- *)
+
+(* F#: `comparable`. *)
+noextract
+let comparable (a b:typing) : Tot bool =
+  match a, b with
+  | Absent, _ | _, Absent -> true
+  | _ -> (numeric_t a && numeric_t b) || same_scalar a b
+
+noextract
+let rec all_comparable (t:typing) (ts:list typing) : Tot bool =
+  match ts with
+  | [] -> true
+  | u :: rest -> comparable t u && all_comparable t rest
+
+noextract
+let rec present (ts:list typing) : Tot (list typing) =
+  match ts with
+  | [] -> []
+  | Absent :: rest -> present rest
+  | t :: rest -> t :: present rest
+
+(* The `Binary` clause's admission, by operator. *)
+noextract
+let admit_binary (op:bin_op) (a b:typing) : Tot bool =
+  match op with
+  | Add | Sub | Mul ->
+    (match a, b with
+     | Absent, _ | _, Absent -> true
+     | Of IntType, Of IntType -> false
+     | _ -> numeric_t a && numeric_t b)
+  | Div ->
+    (match a, b with
+     | Absent, _ | _, Absent -> true
+     | _ -> numeric_t a && numeric_t b)
+  | Mod ->
+    (match a, b with
+     | Absent, _ | _, Absent -> true
+     | _ -> false)
+  | Eq | Ne | Lt | Le | Gt | Ge -> comparable a b
+  | And | Or -> bool_like a && bool_like b
+  | Contains | StartsWith | EndsWith ->
+    (match a, b with
+     | Absent, _ | _, Absent -> true
+     | _ -> is_str a && is_str b)
+
+(* The `Cast` clause's admission. *)
+noextract
+let admit_cast (target:column_type) (t:typing) : Tot bool =
+  match target, t with
+  | _, Absent -> true
+  | StringType, _ -> true
+  | FloatType, Of IntType | FloatType, Of FloatType -> true
+  | IntType, Of IntType | IntType, Of BoolType -> true
+  | BoolType, Of BoolType | BoolType, Of IntType -> true
+  | DateType, Of DateType | DateType, Of StringType -> true
+  | TimestampType, Of TimestampType | TimestampType, Of StringType -> true
+  | _ -> false
+
+(* The `ApplyFn` clause's admission over the argument typings. `Substr`'s start and length
+   must also be non-null, which is a fact about the ARGUMENT EXPRESSIONS (`never_null`) rather
+   than their typings, and is checked in `expr_total` beside this. *)
+noextract
+let admit_fn (fn:scalar_fn) (ts:list typing) : Tot bool =
+  match fn with
+  | Abs -> (match ts with [Absent] | [Of FloatType] -> true | _ -> false)
+  | Round | Floor | Ceil | Sqrt -> (match ts with [Absent] -> true | [t] -> numeric_t t | _ -> false)
+  | Length | Lower | Upper | Trim -> (match ts with [t] -> is_str t | _ -> false)
+  | Substr -> (match ts with [t0; Of IntType; Of IntType] -> is_str t0 | _ -> false)
+  | DatePart | DateDiffDays -> false
+  | Concat -> Cons? ts
+  | Replace -> (match ts with [a; b; c] -> is_str a && is_str b && is_str c | _ -> false)
+  | Least | Greatest ->
+    (match ts with
+     | [] -> false
+     | _ -> (match present ts with [] -> true | first :: _ -> all_comparable first (present ts)))
+  | IndexOf -> (match ts with [a; b] -> is_str a && is_str b | _ -> false)
+
+(* F#: `neverNull` — a present literal, or the presence test. *)
+noextract
+let never_null (x:col_expr) : Tot bool =
+  match x with
+  | Lit c -> not (Null? c)
+  | IsNull _ -> true
+  | _ -> false
+
+noextract
+let substr_args_never_null (fn:scalar_fn) (args:list col_expr) : Tot bool =
+  match fn, args with
+  | Substr, [_; a1; a2] -> never_null a1 && never_null a2
+  | Substr, _ -> false
+  | _ -> true
+
+(* THE VERDICT, F#: `Planner.exprTotal`. *)
+noextract
+let rec expr_total (cols:schema) (x:col_expr) : Tot bool (decreases x) =
+  match x with
+  | Col n -> Some? (assoc n cols)
+  | Lit _ -> true
+  | Param _ | Now _ | InParam _ _ -> false
+  | Binary op a b ->
+    expr_total cols a && expr_total cols b && admit_binary op (typing_of cols a) (typing_of cols b)
+  | Not a -> expr_total cols a && bool_like (typing_of cols a)
+  | IsNull a -> expr_total cols a
+  | Coalesce xs -> all_total cols xs
+  | Case cases els -> all_total_cases cols cases && expr_total cols els
+  | Cast ty a -> expr_total cols a && admit_cast ty (typing_of cols a)
+  | InList a items ->
+    expr_total cols a && all_total cols items && all_comparable (typing_of cols a) (typings_of cols items)
+  | ApplyFn fn args ->
+    all_total cols args && admit_fn fn (typings_of cols args) && substr_args_never_null fn args
+and all_total (cols:schema) (xs:list col_expr) : Tot bool (decreases xs) =
+  match xs with
+  | [] -> true
+  | x :: rest -> expr_total cols x && all_total cols rest
+and all_total_cases (cols:schema) (cases:list (col_expr & col_expr)) : Tot bool (decreases cases) =
+  match cases with
+  | [] -> true
+  | (w, t) :: rest -> expr_total cols w && expr_total cols t && all_total_cases cols rest
+
+(* ---- the assumption, in one place ---- *)
+
+(* `Substr`'s start and length present, where the function is `Substr`. *)
+noextract
+let substr_args_present (fn:scalar_fn) (cs:list cell) : Tot bool =
+  match fn, cs with
+  | Substr, [_; a1; a2] -> not (Null? a1) && not (Null? a2)
+  | Substr, _ -> false
+  | _ -> true
+
+(* THE ASSUMPTION. On the operand shapes the verdict admits, each primitive answers `Ok`, with
+   a cell that fits the typing the typer assigns the node; and the pinned ordering compares any
+   two present cells of comparable typings. It is what `arith`, `castCell`, `applyScalar` and
+   `compareCells` do on those shapes — each `true` of the F# verdict cites the arm — and it is
+   held to production by `Conformance.plannerLaws`; here it is the one hypothesis every theorem
+   of this section is conditional on. *)
+noextract
+noeq type admits (pr:prims) = {
+  binary_ok  : (op:bin_op) -> (ta:typing) -> (tb:typing) -> (a:cell) -> (b:cell) ->
+               Lemma (requires admit_binary op ta tb /\ fits ta a /\ fits tb b)
+                     (ensures (match pr.binary op a b with
+                               | Ok c -> fits (typing_binary op ta tb) c
+                               | Error _ -> False));
+  cast_ok    : (ty:column_type) -> (t:typing) -> (c:cell) ->
+               Lemma (requires admit_cast ty t /\ fits t c)
+                     (ensures (match pr.cast_cell ty c with
+                               | Ok r -> fits (typing_cast ty t) r
+                               | Error _ -> False));
+  apply_ok   : (fn:scalar_fn) -> (ts:list typing) -> (cs:list cell) ->
+               Lemma (requires admit_fn fn ts /\ cells_fit ts cs /\ substr_args_present fn cs)
+                     (ensures (match pr.apply_fn fn cs with
+                               | Ok r -> fits (typing_apply_fn fn ts) r
+                               | Error _ -> False));
+  compare_ok : (ta:typing) -> (tb:typing) -> (a:cell) -> (b:cell) ->
+               Lemma (requires comparable ta tb /\ fits ta a /\ fits tb b /\ not (Null? a) /\ not (Null? b))
+                     (ensures Some? (pr.compare a b))
+}
+
+(* ---- the join's algebra, as far as the proof needs it ---- *)
+
+let fits_join_l (t u:typing) (c:cell) : Lemma (requires fits t c) (ensures fits (join t u) c) = ()
+
+let fits_join_r (t u:typing) (c:cell) : Lemma (requires fits u c) (ensures fits (join t u) c) = ()
+
+let join_assoc (a b c:typing) : Lemma (ensures join (join a b) c == join a (join b c)) = ()
+
+(* The left fold is the join of the accumulator with the fold from `Absent`. *)
+let rec fold_join_acc (acc:typing) (ts:list typing)
+  : Lemma (ensures fold_join acc ts == join acc (fold_join Absent ts)) (decreases ts) =
+  match ts with
+  | [] -> ()
+  | t :: rest ->
+    fold_join_acc (join acc t) rest;
+    fold_join_acc t rest;
+    join_assoc acc t (fold_join Absent rest)
+
+let join_all_cons (t:typing) (ts:list typing)
+  : Lemma (ensures join_all (t :: ts) == join t (join_all ts)) =
+  fold_join_acc t ts
+
+let fits_of_cell (c:cell) : Lemma (ensures fits (of_cell c) c) = ()
+
+(* A typed row answers a typed cell at every column it has. *)
+let rec typed_at (cols:schema) (row:list cell) (n:string)
+  : Lemma (requires row_typed cols row)
+          (ensures (match assoc n cols, index_of n cols with
+                    | Some ty, Some i ->
+                      (match nth_opt row i with
+                       | Some c -> fits (Of ty) c
+                       | None -> False)
+                    | None, None -> True
+                    | _ -> False))
+          (decreases cols) =
+  match cols, row with
+  | [], [] -> ()
+  | (m, _) :: ct, _ :: rt -> if m = n then () else typed_at ct rt n
+
+(* A never-null argument evaluates, when it evaluates, to a present cell. *)
+let never_null_sound (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols)) (x:col_expr)
+  : Lemma (requires never_null x)
+          (ensures (match eval_expr pr env cols row x with
+                    | Ok c -> not (Null? c)
+                    | Error _ -> True)) =
+  match x with
+  | Lit _ -> ()
+  | IsNull a -> ()
+
+(* `eval_args` over three arguments answers the three cells, one per argument. *)
+#push-options "--fuel 4"
+let eval_args_3 (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols)) (a0 a1 a2:col_expr)
+  : Lemma (ensures (match eval_args pr env cols row [a0; a1; a2] with
+                    | Ok [c0; c1; c2] ->
+                      eval_expr pr env cols row a1 == Ok c1 /\ eval_expr pr env cols row a2 == Ok c2
+                    | Ok _ -> False
+                    | Error _ -> True)) = ()
+#pop-options
+
+(* THE THEOREM. *)
+let rec verdict_sound (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (row:row_of (len cols)) (x:col_expr)
+  : Lemma (requires expr_total cols x /\ row_typed cols row)
+          (ensures (match eval_expr pr env cols row x with
+                    | Ok c -> fits (typing_of cols x) c
+                    | Error _ -> False))
+          (decreases x) =
+  match x with
+  | Col n ->
+    typed_at cols row n;
+    (match index_of n cols with
+     | Some i -> nth_opt_nth row i
+     | None -> ())
+  | Lit c -> fits_of_cell c
+  | Param _ | Now _ | InParam _ _ -> ()
+  | Binary op a b ->
+    verdict_sound pr h env cols row a;
+    verdict_sound pr h env cols row b;
+    (match eval_expr pr env cols row a, eval_expr pr env cols row b with
+     | Ok av, Ok bv -> h.binary_ok op (typing_of cols a) (typing_of cols b) av bv
+     | _ -> ())
+  | Not a -> verdict_sound pr h env cols row a
+  | IsNull a -> verdict_sound pr h env cols row a
+  | Coalesce xs -> sound_coalesce pr h env cols row xs
+  | Case cases els ->
+    sound_case pr h env cols row cases;
+    verdict_sound pr h env cols row els;
+    join_all_cons (typing_of cols els) (typings_thens cols cases);
+    (match eval_case pr env cols row cases with
+     | Some (Ok c) -> fits_join_r (typing_of cols els) (join_all (typings_thens cols cases)) c
+     | Some (Error _) -> ()
+     | None ->
+       (match eval_expr pr env cols row els with
+        | Ok c -> fits_join_l (typing_of cols els) (join_all (typings_thens cols cases)) c
+        | Error _ -> ()))
+  | Cast ty a ->
+    verdict_sound pr h env cols row a;
+    (match eval_expr pr env cols row a with
+     | Ok c -> h.cast_ok ty (typing_of cols a) c
+     | Error _ -> ())
+  | InList a items ->
+    verdict_sound pr h env cols row a;
+    (match eval_expr pr env cols row a with
+     | Ok Null -> ()
+     | Ok sv -> sound_in pr h env cols row (typing_of cols a) sv false items
+     | Error _ -> ())
+  | ApplyFn fn args ->
+    sound_args pr h env cols row args;
+    (match eval_args pr env cols row args with
+     | Ok cs ->
+       (match fn, args with
+        | Substr, [a0; a1; a2] ->
+          eval_args_3 pr env cols row a0 a1 a2;
+          never_null_sound pr env cols row a1;
+          never_null_sound pr env cols row a2
+        | _ -> ());
+       h.apply_ok fn (typings_of cols args) cs
+     | Error _ -> ())
+and sound_coalesce (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (row:row_of (len cols)) (xs:list col_expr)
+  : Lemma (requires all_total cols xs /\ row_typed cols row)
+          (ensures (match eval_coalesce pr env cols row xs with
+                    | Ok c -> fits (join_all (typings_of cols xs)) c
+                    | Error _ -> False))
+          (decreases xs) =
+  match xs with
+  | [] -> ()
+  | x :: rest ->
+    verdict_sound pr h env cols row x;
+    join_all_cons (typing_of cols x) (typings_of cols rest);
+    (match eval_expr pr env cols row x with
+     | Ok Null ->
+       sound_coalesce pr h env cols row rest;
+       (match eval_coalesce pr env cols row rest with
+        | Ok c -> fits_join_r (typing_of cols x) (join_all (typings_of cols rest)) c
+        | Error _ -> ())
+     | Ok c -> fits_join_l (typing_of cols x) (join_all (typings_of cols rest)) c
+     | Error _ -> ())
+and sound_case (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (row:row_of (len cols)) (cases:list (col_expr & col_expr))
+  : Lemma (requires all_total_cases cols cases /\ row_typed cols row)
+          (ensures (match eval_case pr env cols row cases with
+                    | None -> True
+                    | Some (Ok c) -> fits (join_all (typings_thens cols cases)) c
+                    | Some (Error _) -> False))
+          (decreases cases) =
+  match cases with
+  | [] -> ()
+  | (w, t) :: rest ->
+    verdict_sound pr h env cols row w;
+    join_all_cons (typing_of cols t) (typings_thens cols rest);
+    (match eval_expr pr env cols row w with
+     | Error _ -> ()
+     | Ok (Bool true) ->
+       verdict_sound pr h env cols row t;
+       (match eval_expr pr env cols row t with
+        | Ok c -> fits_join_l (typing_of cols t) (join_all (typings_thens cols rest)) c
+        | Error _ -> ())
+     | Ok _ ->
+       sound_case pr h env cols row rest;
+       (match eval_case pr env cols row rest with
+        | Some (Ok c) -> fits_join_r (typing_of cols t) (join_all (typings_thens cols rest)) c
+        | _ -> ()))
+and sound_in (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (row:row_of (len cols))
+  (ta:typing) (sv:cell) (saw_null:bool) (items:list col_expr)
+  : Lemma (requires all_total cols items /\ all_comparable ta (typings_of cols items)
+                    /\ fits ta sv /\ not (Null? sv) /\ row_typed cols row)
+          (ensures (match eval_in pr env cols row sv saw_null items with
+                    | Ok c -> fits (Of BoolType) c
+                    | Error _ -> False))
+          (decreases items) =
+  match items with
+  | [] -> ()
+  | it :: rest ->
+    verdict_sound pr h env cols row it;
+    (match eval_expr pr env cols row it with
+     | Error _ -> ()
+     | Ok Null -> sound_in pr h env cols row ta sv true rest
+     | Ok iv ->
+       h.compare_ok ta (typing_of cols it) sv iv;
+       (match pr.compare sv iv with
+        | Some 0 -> ()
+        | Some _ -> sound_in pr h env cols row ta sv saw_null rest
+        | None -> ()))
+and sound_args (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (row:row_of (len cols)) (args:list col_expr)
+  : Lemma (requires all_total cols args /\ row_typed cols row)
+          (ensures (match eval_args pr env cols row args with
+                    | Ok cs -> cells_fit (typings_of cols args) cs
+                    | Error _ -> False))
+          (decreases args) =
+  match args with
+  | [] -> ()
+  | a :: rest ->
+    verdict_sound pr h env cols row a;
+    (match eval_expr pr env cols row a with
+     | Error _ -> ()
+     | Ok _ -> sound_args pr h env cols row rest)
+
+(* ---- the verdict lifted to the two steps that evaluate an expression ---- *)
+
+(* A derive the verdict admits answers `Ok` over every typed frame. *)
+let rec derive_total (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (x:col_expr)
+  (rows:list (list cell){all_width (len cols) rows})
+  : Lemma (requires expr_total cols x /\ rows_typed cols rows)
+          (ensures Ok? (derive_cells pr env cols rows x)) (decreases rows) =
+  match rows with
+  | [] -> ()
+  | r :: rest ->
+    verdict_sound pr h env cols r x;
+    (match eval_expr pr env cols r x with
+     | Ok _ -> derive_total pr h env cols x rest
+     | Error _ -> ())
+
+(* A filter the verdict admits answers `Ok` over every typed frame. *)
+let rec filter_total (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (p:col_expr)
+  (rows:list (list cell){all_width (len cols) rows})
+  : Lemma (requires expr_total cols p /\ rows_typed cols rows)
+          (ensures Ok? (filter_rows pr env cols rows p)) (decreases rows) =
+  match rows with
+  | [] -> ()
+  | r :: rest ->
+    verdict_sound pr h env cols r p;
+    (match eval_expr pr env cols r p with
+     | Ok (Bool true) -> filter_total pr h env cols p rest
+     | Ok _ -> filter_total pr h env cols p rest
+     | Error _ -> ())
+
+(* F#: `Plan.isTotal` on the two expression-evaluating verbs: the step answers `Ok` on every
+   typed frame of the schema. *)
+let step_total (pr:prims) (h:admits pr) (other:other_fn) (env:param_env) (f:wframe) (t:transform)
+  : Lemma (requires rows_typed f.cols f.rows
+                    /\ (match t with
+                        | Filter p -> expr_total f.cols p
+                        | Derive _ x -> expr_total f.cols x
+                        | _ -> False))
+          (ensures Ok? (eval_step pr other env f t)) =
+  match t with
+  | Filter p -> filter_total pr h env f.cols p f.rows
+  | Derive _ x -> derive_total pr h env f.cols x f.rows
+
+(* A derive whose expression the typer calls `Absent` or `Of StringType` — the F#
+   `derivedColumnType = Some StringType` — produces strings and nulls, over every typed frame. *)
+let rec derive_str_or_null (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (x:col_expr)
+  (rows:list (list cell){all_width (len cols) rows})
+  : Lemma (requires expr_total cols x /\ rows_typed cols rows
+                    /\ (typing_of cols x == Absent \/ typing_of cols x == Of StringType))
+          (ensures (match derive_cells pr env cols rows x with
+                    | Ok vs -> all_str_or_null vs
+                    | Error _ -> False)) (decreases rows) =
+  match rows with
+  | [] -> ()
+  | r :: rest ->
+    verdict_sound pr h env cols r x;
+    (match eval_expr pr env cols r x with
+     | Ok _ -> derive_str_or_null pr h env cols x rest
+     | Error _ -> ())
+
+(* THE COROLLARY. The planner's admission of `Filter p` ahead of `Derive name x` — the derive
+   total by the verdict, its column string-typed by the typer, the filter closed over the schema
+   less the derived name — preserves the driver's result over every typed frame. *)
+let planner_reorder_sound (pr:prims) (h:admits pr) (other:other_fn) (env:param_env) (f:wframe)
+  (name:string) (x p:col_expr)
+  : Lemma (requires expr_total f.cols x
+                    /\ (typing_of f.cols x == Absent \/ typing_of f.cols x == Of StringType)
+                    /\ rows_typed f.cols f.rows
+                    /\ closed_not f.cols name (reads p))
+          (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
+                   eval_uncounted pr other env [Filter p; Derive name x] f) =
+  derive_str_or_null pr h env f.cols x f.rows;
+  derive_then_filter pr other env f name x p

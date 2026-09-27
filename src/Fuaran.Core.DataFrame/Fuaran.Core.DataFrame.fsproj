@@ -11,6 +11,9 @@
          works over. First, because DataFrame.fs evaluates over it. -->
     <Compile Include="Frame.fs" />
     <Compile Include="DataFrame.fs" />
+    <!-- Phase 269 — the planner's public face over the engine in DataFrame.fs. After DataFrame.fs
+         (it forwards to `DataFrame.Planner`), before Incremental.fs (the seam plans through it). -->
+    <Compile Include="Plan.fs" />
     <!-- Phase 98 — the typed delta representation. After DataFrame.fs: it reads the pinned
          canonical row token and the Phase 34 `Change` it projects to/from. -->
     <Compile Include="Delta.fs" />

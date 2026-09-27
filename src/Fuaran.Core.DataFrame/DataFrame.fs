@@ -349,6 +349,54 @@ type Transform =
     /// in B" that had no spelling while `Union` shipped alone.
     | Except of DataSource
 
+// ---------------------------------------------------------------------------
+//  Phase 269 — the planner's report vocabulary. The planner itself is `Plan` (Plan.fs), over the
+//  engine `DataFrame.Planner` below; the types live here because the driver reads them.
+// ---------------------------------------------------------------------------
+
+/// One class of rewrite the planner performs (Phase 269). Three classes, and the rule that admits
+/// each: FUSION changes which rows each step evaluates not at all and is always admissible;
+/// PRUNING drops a column at the earliest step after its last read, never across a step that
+/// reads the whole row, and changes no evaluation; REORDERING moves a `Filter` ahead of a step and
+/// is admitted only where every evaluation the filter now removes from a row's path is provably
+/// total — a `Filter` moved ahead of a `Derive` that could error on the dropped row would remove
+/// an error the reference reports.
+[<RequireQualifiedAccess>]
+type RewriteClass =
+    /// `Sort` then `Limit` run as one stable top-n over the pinned comparator with the arrival
+    /// index as the tie-break — exactly `List.sortWith` then `List.truncate`, without sorting the
+    /// rows the limit discards. The pipeline keeps both steps; the driver runs the pair as the
+    /// kernel.
+    | TopN
+    /// A `Project` inserted where a column's last read is behind it, keeping the live columns in
+    /// their order, so no step after it carries the dead column.
+    | PruneColumns
+    /// A `Filter` moved ahead of the `Sort` it followed.
+    | FilterBeforeSort
+    /// A `Filter` moved ahead of the `Derive` it followed.
+    | FilterBeforeDerive
+
+/// A rewrite the planner applied, at the 0-based index of the written pipeline's step it read.
+type PlanRewrite =
+    { Class: RewriteClass
+      At: int
+      Detail: string }
+
+/// A rewrite the planner considered and declined, with the rule that declined it — for a host that
+/// wants to know why its pipeline runs as written.
+type PlanDeclined =
+    { Class: RewriteClass
+      At: int
+      Reason: string }
+
+/// What the planner did to a pipeline: the pipeline it read, the one it emits, and every rewrite
+/// it applied or declined (Phase 269).
+type PlanReport =
+    { Written: Transform list
+      Planned: Transform list
+      Applied: PlanRewrite list
+      Declined: PlanDeclined list }
+
 /// Pure, total derivations over the `ColExpr` algebra (Phase 77) — the param surface a host reads to
 /// derive dependency edges, reactivity subscriptions, and its unbound-param pruning policy. No
 /// evaluation, no env: the edge is *computed from the expression*, never separately declared.
@@ -1795,6 +1843,623 @@ module DataFrame =
         | Of _
         | Unknown -> None
 
+    // ---- the planner (Phase 269) ----
+    //
+    // Pipelines are data, so they can be rewritten before execution. The reference semantics are
+    // strict and first-error — a step evaluates its expression over every row alive at it before
+    // the next step runs, and the pipeline reports the first step's first `EvalError` — so a
+    // rewrite is admissible only where it changes NEITHER the rows and cells each step sees NOR
+    // the first error the walk meets. The engine here is what `Plan.rewrite` runs and what every
+    // evaluator entry point runs before it folds (`evalPreparedCounted`); `Plan.fs` is its public
+    // face and the doc of record for the three classes. It sits inside this module, before the
+    // driver, because F# resolves forwards and the driver needs it — `SchemaWalk` is declared
+    // after the driver, so the planner tracks the schema itself over the six row-set verbs it
+    // rewrites across, and stops knowing at any other.
+    //
+    // The verdict `exprTotal` is the load-bearing judgement: it says an expression can raise NO
+    // `EvalError` over ANY table of the schema, reading the typer's decision for each node and the
+    // evaluator's own arms for what each can raise. It is conservative by construction — a `Param`,
+    // a `Now`, a column the schema does not type, an integer `Add`/`Sub`/`Mul` (overflow), a `Mod`
+    // (a non-integer operand), a `Cast` that parses, a comparison the typer cannot match, a scalar
+    // function over an argument it would refuse — each is "may error", and the rewrite that needed
+    // the verdict is declined. `proofs/Pipeline.fst` proves the verdict sound over the modelled
+    // evaluator under the one assumption it names (the cell primitives answer where the verdict
+    // admits them), and `Conformance.plannerLaws` holds the planned evaluation to the reference,
+    // errors included, over generated triples.
+    module internal Planner =
+
+        /// Every column an expression reads, in occurrence order, with duplicates.
+        let rec exprCols (e: ColExpr) : string list =
+            match e with
+            | Col n -> [ n ]
+            | Lit _
+            | Param _
+            | Now _ -> []
+            | Binary(_, a, b) -> exprCols a @ exprCols b
+            | Not x
+            | Cast(_, x)
+            | IsNull x -> exprCols x
+            | Coalesce xs
+            | ApplyFn(_, xs) -> xs |> List.collect exprCols
+            | Case(cases, els) -> (cases |> List.collect (fun (w, t) -> exprCols w @ exprCols t)) @ exprCols els
+            | InList(x, items) -> exprCols x @ (items |> List.collect exprCols)
+            | InParam(x, _) -> exprCols x
+
+        /// A typing whose present values the pinned cell ordering compares with `other`'s: an
+        /// absent value propagates before any comparison, numbers compare across `Int`/`Float`,
+        /// and every other type compares only with itself. `compareCells` answers `None` — a
+        /// `TypeError` in every arm that reads it — exactly where this says `false`.
+        let private comparable (a: Typing) (b: Typing) : bool =
+            match a, b with
+            | Absent, _
+            | _, Absent -> true
+            | (Of IntType | Of FloatType), (Of IntType | Of FloatType) -> true
+            | Of StringType, Of StringType
+            | Of DateType, Of DateType
+            | Of TimestampType, Of TimestampType
+            | Of BoolType, Of BoolType -> true
+            | _ -> false
+
+        let private numeric (t: Typing) : bool =
+            match t with
+            | Of IntType
+            | Of FloatType -> true
+            | _ -> false
+
+        let private isStr (t: Typing) : bool =
+            match t with
+            | Absent
+            | Of StringType -> true
+            | _ -> false
+
+        let private boolLike (t: Typing) : bool =
+            match t with
+            | Absent
+            | Of BoolType -> true
+            | _ -> false
+
+        /// A syntactically NON-NULL expression: a present literal, or the presence test, which is
+        /// total and always boolean. The typer types a column's present values and says nothing
+        /// about its nulls, so an argument the evaluator refuses when null (`Substr`'s start and
+        /// length) is admitted only in this shape.
+        let private neverNull (e: ColExpr) : bool =
+            match e with
+            | Lit c -> not (Cell.isNull c)
+            | IsNull _ -> true
+            | _ -> false
+
+        /// THE TOTALITY VERDICT over an expression: `true` only where evaluating `e` against ANY row
+        /// of a table of schema `cols` (any cells, nulls included, that fit the schema) returns
+        /// `Ok`. Every `false` names an arm of the evaluator that can answer `Error` there; every
+        /// `true` is backed by the arm's own code — `arith` on a null answers `Null` before it
+        /// reads a type, `Float` arithmetic never overflows into an error, `Div` by zero is
+        /// `Null`, `comparison` over a matching pair never fails, `castCell` to `String` accepts
+        /// every cell, and so on. The soundness of this verdict over the modelled evaluator is the
+        /// theorem `verdict_sound` in `proofs/Pipeline.fst`; the assumption it rests on is stated
+        /// there (`prims_admit`), and it is exactly the per-arm reading this function encodes.
+        let rec exprTotal (cols: Schema) (e: ColExpr) : bool =
+            let ty = typing cols
+
+            match e with
+            | Col name -> Option.isSome (colType cols name)
+            | Lit _ -> true
+            // An env binds a param and a witness pins a clock; over the schema alone each is an
+            // error, and the verdict answers over the schema alone.
+            | Param _
+            | Now _
+            | InParam _ -> false
+            | Binary(op, a, b) ->
+                exprTotal cols a
+                && exprTotal cols b
+                && (let ta = ty a
+                    let tb = ty b
+
+                    match op with
+                    | Add
+                    | Sub
+                    | Mul ->
+                        (match ta, tb with
+                         | Absent, _
+                         | _, Absent -> true
+                         // Two integers: `checkedInt` can name an overflow.
+                         | Of IntType, Of IntType -> false
+                         | _ -> numeric ta && numeric tb)
+                    | Div ->
+                        (match ta, tb with
+                         | Absent, _
+                         | _, Absent -> true
+                         | _ -> numeric ta && numeric tb)
+                    // `Mod` of two integers can overflow only at `MinValue % -1`, which the int64
+                    // remainder absorbs, but the typer cannot see a null start from a column and
+                    // the arm refuses a non-integer operand: declined whole, per the phase's rule.
+                    | Mod ->
+                        (match ta, tb with
+                         | Absent, _
+                         | _, Absent -> true
+                         | _ -> false)
+                    | Eq
+                    | Ne
+                    | Lt
+                    | Le
+                    | Gt
+                    | Ge -> comparable ta tb
+                    | And
+                    | Or -> boolLike ta && boolLike tb
+                    | Contains
+                    | StartsWith
+                    | EndsWith ->
+                        (match ta, tb with
+                         | Absent, _
+                         | _, Absent -> true
+                         | _ -> isStr ta && isStr tb))
+            | Not x -> exprTotal cols x && boolLike (ty x)
+            | IsNull x -> exprTotal cols x
+            | Coalesce xs -> xs |> List.forall (exprTotal cols)
+            // A `when` that is not `Bool true` falls through, whatever it is; only an error stops.
+            | Case(cases, els) ->
+                cases |> List.forall (fun (w, t) -> exprTotal cols w && exprTotal cols t)
+                && exprTotal cols els
+            | Cast(target, x) ->
+                exprTotal cols x
+                && (match target, ty x with
+                    | _, Absent -> true
+                    | StringType, _ -> true
+                    | FloatType, (Of IntType | Of FloatType) -> true
+                    | IntType, (Of IntType | Of BoolType) -> true
+                    | BoolType, (Of BoolType | Of IntType) -> true
+                    | DateType, (Of DateType | Of StringType) -> true
+                    | TimestampType, (Of TimestampType | Of StringType) -> true
+                    | _ -> false)
+            | InList(subject, items) ->
+                exprTotal cols subject
+                && items |> List.forall (exprTotal cols)
+                && (let ts = ty subject
+                    items |> List.forall (fun it -> comparable ts (ty it)))
+            | ApplyFn(fn, args) ->
+                args |> List.forall (exprTotal cols)
+                && (let ts = args |> List.map ty
+                    let arity n = List.length args = n
+
+                    match fn with
+                    // `abs Int32.MinValue` throws; only a float's absolute value is total.
+                    | Abs ->
+                        arity 1
+                        && (match List.head ts with
+                            | Absent
+                            | Of FloatType -> true
+                            | _ -> false)
+                    | Round
+                    | Floor
+                    | Ceil
+                    | Sqrt ->
+                        arity 1
+                        && (match List.head ts with
+                            | Absent -> true
+                            | t -> numeric t)
+                    | Length
+                    | Lower
+                    | Upper
+                    | Trim -> arity 1 && isStr (List.head ts)
+                    | Substr ->
+                        arity 3
+                        && isStr (List.head ts)
+                        && (let a1 = List.item 1 args
+                            let a2 = List.item 2 args
+                            neverNull a1 && neverNull a2 && ty a1 = Of IntType && ty a2 = Of IntType)
+                    // Both parse the date they are handed.
+                    | DatePart
+                    | DateDiffDays -> false
+                    // Variadic over any cells: a null propagates, everything else stringifies.
+                    | Concat -> not (List.isEmpty args)
+                    | Replace -> arity 3 && ts |> List.forall isStr
+                    | Least
+                    | Greatest ->
+                        not (List.isEmpty args)
+                        && (let present = ts |> List.filter (fun t -> t <> Absent)
+
+                            match present with
+                            | [] -> true
+                            | first :: _ -> present |> List.forall (comparable first))
+                    | IndexOf -> arity 2 && ts |> List.forall isStr)
+
+        /// THE TOTALITY VERDICT over a step: `true` only where evaluating the step over ANY table
+        /// of schema `cols` returns `Ok`. `Sort` drops a key the schema does not carry rather than
+        /// refusing it, so a literal-keyed sort is total; a `Limit` clamps; `Distinct` compares
+        /// tokens; a `Project` fails only on a source the schema lacks. A slot still holding a
+        /// param is resolved against an env the verdict does not have. Every other verb reaches
+        /// a resolver, an aggregate or a comparison the schema alone cannot vouch for.
+        let isTotal (cols: Schema) (t: Transform) : bool =
+            match t with
+            | Filter p -> exprTotal cols p
+            | Derive(_, e) -> exprTotal cols e
+            | Sort by -> by |> List.forall (fun (c, _) -> not (Slot.isParam c))
+            | Limit(n, offset) -> not (Slot.isParam n) && not (Slot.isParam offset)
+            | Project pairs -> pairs |> List.forall (fun (src, _) -> Option.isSome (colType cols src))
+            | Distinct -> true
+            | GroupBy _
+            | Join _
+            | Window _
+            | Pivot _
+            | Unpivot _
+            | Union _
+            | Intersect _
+            | Except _ -> false
+
+        /// The columns a step reads by name, for the pruning walk. A step that reads the whole
+        /// row, or whose reads the schema alone cannot name, answers `None`.
+        let private reads (t: Transform) : string list option =
+            match t with
+            | Filter p -> Some(exprCols p)
+            | Derive(_, e) -> Some(exprCols e)
+            | Project pairs -> Some(pairs |> List.map fst)
+            | Sort by ->
+                let names = by |> List.map (fun (c, _) -> Slot.tryLit c)
+
+                if names |> List.forall Option.isSome then
+                    Some(names |> List.choose id)
+                else
+                    None
+            | Limit _
+            | Distinct -> Some []
+            | GroupBy(keys, aggs) -> Some(keys @ (aggs |> List.map (fun a -> a.Of)))
+            | Pivot spec -> Some(spec.Index @ [ spec.On; spec.Values ])
+            | Join _
+            | Window _
+            | Unpivot _
+            | Union _
+            | Intersect _
+            | Except _ -> None
+
+        /// The planner's own schema knowledge: every column by name, its type where the typer
+        /// decides it — a `Derive`'s column is present with a type only the data decides, unless
+        /// its expression's present values are all strings (`derivedColumnType`).
+        type private Known = (string * ColumnType option) list
+
+        let private typed (k: Known) : Schema =
+            k |> List.choose (fun (n, t) -> t |> Option.map (fun t -> n, t))
+
+        let private has (k: Known) (name: string) : bool =
+            k |> List.exists (fun (n, _) -> n = name)
+
+        /// The schema after a step, over the verbs the planner rewrites across; `None` where the
+        /// planner stops knowing — a step outside the six, or one whose reads the schema lacks
+        /// (it errors, naming the schema, and no rewrite may change what it names).
+        let private after (k: Known) (t: Transform) : Known option =
+            let resolved =
+                match reads t with
+                | Some rs -> rs |> List.forall (has k)
+                | None -> false
+
+            if not resolved then
+                None
+            else
+                match t with
+                | Filter _
+                | Sort _
+                | Limit _
+                | Distinct -> Some k
+                | Project pairs ->
+                    Some(
+                        pairs
+                        |> List.map (fun (src, out) ->
+                            out, (k |> List.tryFind (fun (n, _) -> n = src) |> Option.bind snd))
+                    )
+                | Derive(name, e) ->
+                    let ty = derivedColumnType (typed k) e
+
+                    if has k name then
+                        Some(k |> List.map (fun (n, t) -> if n = name then n, ty else n, t))
+                    else
+                        Some(k @ [ name, ty ])
+                | _ -> None
+
+        /// The schema BEFORE each step of the pipeline, where the planner knows it.
+        let private schemasBefore (cols: Schema) (pipeline: Transform list) : Known option[] =
+            let start: Known = cols |> List.map (fun (n, t) -> n, Some t)
+
+            let rec go (k: Known option) acc =
+                function
+                | [] -> List.rev acc
+                | t :: rest ->
+                    let next = k |> Option.bind (fun k -> after k t)
+                    go next (k :: acc) rest
+
+            go (Some start) [] pipeline |> List.toArray
+
+        let private verbName (t: Transform) : string =
+            match t with
+            | Filter _ -> "filter"
+            | Project _ -> "project"
+            | Derive _ -> "derive"
+            | GroupBy _ -> "groupBy"
+            | Join _ -> "join"
+            | Window _ -> "window"
+            | Pivot _ -> "pivot"
+            | Unpivot _ -> "unpivot"
+            | Sort _ -> "sort"
+            | Distinct -> "distinct"
+            | Limit _ -> "limit"
+            | Union _ -> "union"
+            | Intersect _ -> "intersect"
+            | Except _ -> "except"
+
+        // ---- reordering: a Filter bubbles ahead of the Sort / Derive it follows ----
+
+        /// Why a `Filter` may not move ahead of `prev`, over the schema before `prev`; `None`
+        /// admits the move. The schema before the pair is the same after the swap, and so is the
+        /// schema after it, which is what lets the schemas be computed once.
+        let private declineReorder (k: Known option) (prev: Transform) (pred: ColExpr) : string option =
+            match k with
+            | None -> Some "the schema before the step is not known to the planner"
+            | Some k ->
+                let cols = typed k
+
+                match prev with
+                | Sort _ ->
+                    // Ahead of a sort the filter evaluates the same rows in ANOTHER order, so its
+                    // first error could be another row's: it must have none. The sort must have
+                    // none either, or the filter would remove nothing from its path but its
+                    // failure.
+                    if not (isTotal cols prev) then
+                        Some "the sort's key is a param the schema cannot resolve"
+                    elif not (exprTotal cols pred) then
+                        Some
+                            "the filter's predicate may error, and ahead of the sort its first error could be another row's"
+                    else
+                        None
+                | Derive(name, e) ->
+                    // Ahead of a derive the filter drops rows the derive no longer evaluates: the
+                    // derive must have no error to lose on them. It must not read the derived
+                    // column, and every column it reads must exist without it, or its own
+                    // refusal would name a different schema. And the derived column's TYPE is
+                    // inferred from the cells the derive produced (`inferType`): over fewer rows
+                    // it can differ, unless the typer already decides it — an expression whose
+                    // present values are all strings, or none — which is the one static answer
+                    // `derivedColumnType` gives.
+                    if not (exprTotal cols e) then
+                        Some "the derive's expression may error on a row the filter would drop"
+                    elif exprCols pred |> List.contains name then
+                        Some "the filter reads the derived column"
+                    elif not (exprCols pred |> List.forall (has k)) then
+                        Some "the filter reads a column the schema before the derive does not carry"
+                    elif derivedColumnType cols e <> Some StringType then
+                        Some
+                            "the derived column's type is inferred from its cells, which a filter ahead of it would change"
+                    else
+                        None
+                | _ -> Some "the step ahead is not a sort or a derive"
+
+        let private classOf (prev: Transform) : RewriteClass option =
+            match prev with
+            | Sort _ -> Some RewriteClass.FilterBeforeSort
+            | Derive _ -> Some RewriteClass.FilterBeforeDerive
+            | _ -> None
+
+        /// A step in the reordered prefix: the step, the WRITTEN index whose schema-before is the
+        /// schema before it now (a swap leaves both members over the schema the pair began on),
+        /// and the written index it is reported by.
+        type private Placed =
+            { Step: Transform
+              SchemaAt: int
+              WrittenAt: int }
+
+        /// One pass, left to right: each `Filter` moves ahead of every `Sort` / `Derive` it
+        /// follows while the rule admits it, and the first refusal is reported against the
+        /// written index of the filter.
+        let private reorder
+            (before: Known option[])
+            (pipeline: Transform list)
+            : Transform list * PlanRewrite list * PlanDeclined list =
+            let rec bubble (out: Placed list) (step: Placed) applied declined =
+                match out, step.Step with
+                | prev :: rest, Filter pred ->
+                    match classOf prev.Step with
+                    | None -> step :: out, applied, declined
+                    | Some cls ->
+                        match declineReorder before[prev.SchemaAt] prev.Step pred with
+                        | None ->
+                            let r =
+                                { Class = cls
+                                  At = step.WrittenAt
+                                  Detail =
+                                    "filter moved ahead of the "
+                                    + verbName prev.Step
+                                    + " at "
+                                    + string prev.WrittenAt }
+
+                            let out', a, d =
+                                bubble rest { step with SchemaAt = prev.SchemaAt } (r :: applied) declined
+
+                            prev :: out', a, d
+                        | Some reason ->
+                            let d =
+                                { Class = cls
+                                  At = step.WrittenAt
+                                  Reason = reason }
+
+                            step :: out, applied, d :: declined
+                | _ -> step :: out, applied, declined
+
+            let placed =
+                pipeline
+                |> List.mapi (fun i t ->
+                    { Step = t
+                      SchemaAt = i
+                      WrittenAt = i })
+
+            let out, applied, declined =
+                (([], [], []), placed)
+                ||> List.fold (fun (out, applied, declined) step -> bubble out step applied declined)
+
+            out |> List.rev |> List.map _.Step, List.rev applied, List.rev declined
+
+        // ---- projection pruning ----
+
+        /// A step after which the columns it did not read or emit are gone whatever stood before.
+        let private drops (t: Transform) : bool =
+            match t with
+            | Project _
+            | GroupBy _
+            | Pivot _ -> true
+            | _ -> false
+
+        /// The columns needed BEFORE a step, given the ones needed after it — `None` for "every
+        /// column". The walk is over one region: from a barrier (or the start) to a dropping step.
+        let private needsBefore (t: Transform) (after: Set<string> option) : Set<string> option =
+            match t with
+            | Project pairs -> Some(pairs |> List.map fst |> Set.ofList)
+            | GroupBy(keys, aggs) -> Some(Set.ofList (keys @ (aggs |> List.map (fun a -> a.Of))))
+            | Pivot spec -> Some(Set.ofList (spec.Index @ [ spec.On; spec.Values ]))
+            | Filter p -> after |> Option.map (Set.union (Set.ofList (exprCols p)))
+            | Derive(name, e) ->
+                after
+                |> Option.map (fun a -> Set.union (Set.remove name a) (Set.ofList (exprCols e)))
+            | Sort _ ->
+                (match reads t with
+                 | Some keys -> after |> Option.map (Set.union (Set.ofList keys))
+                 | None -> None)
+            | Limit _ -> after
+            // `Distinct` dedups on the whole row: every column is live ahead of it.
+            | Distinct -> None
+            | _ -> None
+
+        /// Prune one region: `steps` from a known start schema up to and including a dropping
+        /// step, every read resolved. Inserts a `Project` wherever the live set shrinks below the
+        /// schema the region has reached, keeping the live columns in schema order.
+        let private pruneRegion (start: Known) (steps: (Transform * int) list) : Transform list * PlanRewrite list =
+            let rec backward (acc: Set<string> option list) (after: Set<string> option) =
+                function
+                | [] -> acc
+                | (t, _) :: rest ->
+                    let b = needsBefore t after
+                    backward (b :: acc) b rest
+
+            let needsAt = backward [] None (List.rev steps) |> List.toArray
+
+            let rec forward (i: int) (cur: Known) acc applied =
+                function
+                | [] -> List.rev acc, List.rev applied
+                | (t, wi) :: rest ->
+                    // A `Limit` behind a `Sort` is the fused pair: nothing is inserted between
+                    // them, and what dies at the limit dies at the step after it. Nothing is
+                    // inserted ahead of a dropping step either — it drops the column itself, so
+                    // a `Project` there would save no step any work and would not be a fixpoint.
+                    let skip =
+                        drops t
+                        || (match t, acc with
+                            | Limit _, Sort _ :: _ -> true
+                            | _ -> false)
+
+                    let inserted =
+                        match needsAt[i] with
+                        | Some live when not skip && cur |> List.exists (fun (n, _) -> not (Set.contains n live)) ->
+                            let kept = cur |> List.filter (fun (n, _) -> Set.contains n live)
+
+                            let dropped =
+                                cur |> List.filter (fun (n, _) -> not (Set.contains n live)) |> List.map fst
+
+                            Some(
+                                kept,
+                                { Class = RewriteClass.PruneColumns
+                                  At = wi
+                                  Detail = "dropped " + String.concat ", " dropped + " ahead of the " + verbName t }
+                            )
+                        | _ -> None
+
+                    let cur', acc', applied' =
+                        match inserted with
+                        | Some(kept, r) -> kept, Project(kept |> List.map (fun (n, _) -> n, n)) :: acc, r :: applied
+                        | None -> cur, acc, applied
+
+                    // A dropping step ends the region, and the schema after it is not needed.
+                    let next = after cur' t |> Option.defaultValue cur'
+                    forward (i + 1) next (t :: acc') applied' rest
+
+            forward 0 start [] [] steps
+
+        /// The pruning pass over the whole (reordered) pipeline: regions delimited by the steps the
+        /// planner does not see across, each pruned only when it ends in a dropping step. The
+        /// schema before each step is recomputed over the reordered pipeline.
+        let private prune (cols: Schema) (pipeline: Transform list) : Transform list * PlanRewrite list =
+            let before = schemasBefore cols pipeline
+            let indexed = pipeline |> List.mapi (fun i t -> t, i)
+
+            let resolved (t: Transform) (i: int) : bool =
+                match before[i], reads t with
+                | Some k, Some rs -> rs |> List.forall (has k)
+                | _ -> false
+
+            // Regions: a run of resolved steps ending at a dropping step is prunable; a run cut
+            // short by an unresolved step, or by the end, is emitted as written.
+            let rec regions (cur: (Transform * int) list) acc =
+                function
+                | [] ->
+                    List.rev (
+                        if List.isEmpty cur then
+                            acc
+                        else
+                            (List.rev cur, false) :: acc
+                    )
+                | (t, i) :: rest ->
+                    if not (resolved t i) then
+                        let acc' =
+                            if List.isEmpty cur then
+                                acc
+                            else
+                                (List.rev cur, false) :: acc
+
+                        regions [] (([ t, i ], false) :: acc') rest
+                    elif drops t then
+                        regions [] ((List.rev ((t, i) :: cur), true) :: acc) rest
+                    else
+                        regions ((t, i) :: cur) acc rest
+
+            let pruned =
+                regions [] [] indexed
+                |> List.map (fun (steps, prunable) ->
+                    match steps, prunable with
+                    | (_, first) :: _, true ->
+                        (match before[first] with
+                         | Some start -> pruneRegion start steps
+                         | None -> steps |> List.map fst, [])
+                    | _ -> steps |> List.map fst, [])
+
+            pruned |> List.collect fst, pruned |> List.collect snd
+        // ---- fusion: the Sort > Limit pair the driver runs as a stable top-n ----
+
+        let private topN (pipeline: Transform list) : PlanRewrite list =
+            pipeline
+            |> List.pairwise
+            |> List.mapi (fun i pair -> i, pair)
+            |> List.choose (fun (i, pair) ->
+                match pair with
+                | Sort _, Limit _ ->
+                    Some
+                        { Class = RewriteClass.TopN
+                          At = i
+                          Detail = "sort then limit run as one stable top-n" }
+                | _ -> None)
+
+        /// Is the pair at the head of a pipeline the fused kernel's shape?
+        let isTopN (pipeline: Transform list) : bool =
+            match pipeline with
+            | Sort _ :: Limit _ :: _ -> true
+            | _ -> false
+
+        /// The planner: reorder, then prune, then name the fusions the driver will take. Total —
+        /// a pipeline it cannot read is emitted as written.
+        let explain (cols: Schema) (pipeline: Transform list) : PlanReport =
+            let before = schemasBefore cols pipeline
+            let reordered, moved, declined = reorder before pipeline
+            let planned, pruned = prune cols reordered
+
+            { Written = pipeline
+              Planned = planned
+              Applied = moved @ pruned @ topN planned
+              Declined = declined }
+
+        let rewrite (cols: Schema) (pipeline: Transform list) : Transform list = (explain cols pipeline).Planned
+
     // ---- compilation to a closure tree (Phase 266) ----
     //
     // `evalResolved` walks the expression tree per row and threads a `Result` through every node —
@@ -3070,6 +3735,99 @@ module DataFrame =
         let taken = min (max 0 n) (len - skipped)
         Frame.select f (Array.sub phys skipped taken)
 
+    /// The stable top-n (Phase 269) — `evalLimit (evalSort f by) n offset` without sorting the
+    /// rows the limit discards. The order is the same TOTAL order `evalSort` sorts under (the keys,
+    /// then the logical position as the tie-break), so the `offset + n` least positions under it,
+    /// sorted, are exactly the first `offset + n` of the full sort, whatever algorithm finds them:
+    /// a bounded heap of that size takes one pass over the rows and a sort of the heap. A window
+    /// that reaches the end of the frame is the full sort, which is then the cheaper of the two.
+    let private evalTopN (f: Frame) (by: (string * SortDir) list) (n: int) (offset: int) : Frame =
+        let phys = Frame.physical f
+        let len = phys.Length
+        let skipped = min (max 0 offset) len
+        let taken = min (max 0 n) (len - skipped)
+        let window = skipped + taken
+
+        if window = 0 then
+            Frame.select f [||]
+        elif window >= len then
+            evalLimit (evalSort f by) n offset
+        else
+            let cmps =
+                resolveSortKeys f.Cols by
+                |> List.map (fun (ci, dir) -> keyComparer f.Vecs[ci] dir)
+                |> List.toArray
+
+            // The total order over LOGICAL positions `evalSort` sorts under.
+            let cmp (a: int) (b: int) : int =
+                let pa = phys[a]
+                let pb = phys[b]
+                let mutable c = 0
+                let mutable k = 0
+
+                while c = 0 && k < cmps.Length do
+                    let cmp = cmps[k]
+                    c <- cmp pa pb
+                    k <- k + 1
+
+                if c <> 0 then c else compare a b
+
+            // A max-heap of the `window` least positions seen so far: its root is the greatest of
+            // them, and a position that sorts before the root replaces it.
+            let heap: int[] = Array.zeroCreate window
+
+            let siftDown (start: int) =
+                let mutable i = start
+                let mutable go = true
+
+                while go do
+                    let l = 2 * i + 1
+                    let r = l + 1
+                    let mutable largest = i
+
+                    if l < window && cmp heap[l] heap[largest] > 0 then
+                        largest <- l
+
+                    if r < window && cmp heap[r] heap[largest] > 0 then
+                        largest <- r
+
+                    if largest = i then
+                        go <- false
+                    else
+                        let t = heap[i]
+                        heap[i] <- heap[largest]
+                        heap[largest] <- t
+                        i <- largest
+
+            let siftUp (start: int) =
+                let mutable i = start
+
+                while i > 0 && cmp heap[i] heap[(i - 1) / 2] > 0 do
+                    let p = (i - 1) / 2
+                    let t = heap[i]
+                    heap[i] <- heap[p]
+                    heap[p] <- t
+                    i <- p
+
+            for i in 0 .. window - 1 do
+                heap[i] <- i
+                siftUp i
+
+            for i in window .. len - 1 do
+                if cmp i heap[0] < 0 then
+                    heap[0] <- i
+                    siftDown 0
+
+            // A plain list for the final sort, as `evalSort` uses: a typed array's comparator sort
+            // is the slow path under Fable.
+            let order = ResizeArray<int>(window)
+
+            for i in 0 .. window - 1 do
+                order.Add heap[i]
+
+            order.Sort(System.Comparison cmp)
+            Frame.select f (Array.init taken (fun j -> phys[order[skipped + j]]))
+
     /// The join's key-column resolution: the left and right indices `on` names, or the FIRST
     /// unresolvable name in the order this evaluator reports it (left names, then right names).
     /// Exposed downstream as `joinKeyIndices` (Phase 120) — one implementation, two callers.
@@ -3719,7 +4477,8 @@ module DataFrame =
     /// The reference evaluator over a prepared source, reporting alongside its answer how many row
     /// evaluations at steps it cost (Phase 267) — the one driver every entry point folds through;
     /// see `evalPipelineWithInEnvCounted` for what the count means.
-    let internal evalPreparedCounted
+    let private evalPreparedCountedWith
+        (fused: bool)
         (resolve: string -> Result<Table, EvalError>)
         (env: Map<string, Cell>)
         (pipeline: Transform list)
@@ -3734,6 +4493,19 @@ module DataFrame =
         let rec go f evaluated =
             function
             | [] -> Ok(Frame.toTable f, evaluated)
+            // Phase 269 — the fusion the planner names as `TopN`: a `Sort` followed by a `Limit`
+            // runs as the stable top-n kernel. The slots resolve through the same resolvers, in the
+            // order the two steps would have resolved them, so the first error is the same one.
+            // Neither step is charged an evaluation, as neither was.
+            | Sort by :: Limit(n, offset) :: rest when fused ->
+                by
+                |> List.map (fun (c, d) -> resolveStrSlot env "sort key column" c |> Result.map (fun c -> c, d))
+                |> sequenceR
+                |> Result.bind (fun keys ->
+                    resolveIntSlot env "limit n" n
+                    |> Result.bind (fun n ->
+                        resolveIntSlot env "limit offset" offset
+                        |> Result.bind (fun offset -> go (evalTopN f keys n offset) evaluated rest)))
             | step :: rest ->
                 let cost = costOf f step
 
@@ -3741,6 +4513,34 @@ module DataFrame =
                 |> Result.bind (fun f' -> go f' (evaluated + cost) rest)
 
         go prepared.Frame.Value 0 pipeline
+
+    /// The reference evaluator over a prepared source, reporting alongside its answer how many
+    /// row evaluations at steps it cost (Phase 267) — the one driver every entry point folds
+    /// through; see `evalPipelineWithInEnvCounted` for what the count means. Since Phase 269 the
+    /// pipeline is PLANNED before it is folded (`Planner.rewrite` over the source's schema) and the
+    /// `Sort` > `Limit` pair is run as one kernel: the answer is the reference's, errors included
+    /// (`Conformance.plannerLaws`), and the count is the planned walk's, which is the honest one.
+    let internal evalPreparedCounted
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<Table * int, EvalError> =
+        let frame = prepared.Frame.Value
+        evalPreparedCountedWith true resolve env (Planner.rewrite frame.Cols pipeline) prepared
+
+    /// The reference evaluator over the pipeline EXACTLY AS WRITTEN (Phase 269): no rewrite, no
+    /// fused kernel — every step folded in the order and the form the caller gave, which is the
+    /// semantics the planner is held to. The planned entry points answer the same; this one exists
+    /// so that the claim is checkable (`Conformance.plannerLaws`) and so that a host certifying a
+    /// planner of its own has the reference to certify against.
+    let internal evalPreparedCountedAsWritten
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<Table * int, EvalError> =
+        evalPreparedCountedWith false resolve env pipeline prepared
 
     /// Prepare a table once for many evaluations (Phase 267): the `Table` boundary — one typed
     /// unpack per column — paid here rather than by every pipeline that reads the source. The table
@@ -3822,6 +4622,30 @@ module DataFrame =
     /// The reference evaluator over embedded sources only (`Ref` ⇒ `UnresolvedSource`).
     let evalPipeline (pipeline: Transform list) (input: Table) : Result<Table, EvalError> =
         evalPipelineWithInEnv noResolve Map.empty pipeline input
+
+    // ---- the pipeline as written (Phase 269) ----
+    // Every entry point above plans the pipeline before folding it (`Plan.rewrite` over the input's
+    // schema, and the `Sort` > `Limit` pair as one kernel). These two fold the pipeline EXACTLY AS
+    // WRITTEN — the strict, first-error semantics the planner is held to — so that "the planned
+    // evaluation equals the reference, errors included" is a claim `Conformance.plannerLaws` can
+    // check rather than assert, and so that a host with a planner of its own has the reference
+    // to certify against.
+
+    /// The reference evaluator over the pipeline as written, with a param env and a `Ref`
+    /// resolver: `evalPipelineWithInEnv` with no rewrite and no fused kernel.
+    let evalPipelineWithInEnvAsWritten
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (input: Table)
+        : Result<Table, EvalError> =
+        evalPreparedCountedAsWritten resolve env pipeline (prepare input)
+        |> Result.map fst
+
+    /// The reference evaluator over the pipeline as written, over embedded sources and no params:
+    /// `evalPipeline` with no rewrite and no fused kernel.
+    let evalPipelineAsWritten (pipeline: Transform list) (input: Table) : Result<Table, EvalError> =
+        evalPipelineWithInEnvAsWritten noResolve Map.empty pipeline input
 
     // ---- clock-pinning entry points (Phase 125) ----
     // Each is `substituteNow` followed by the corresponding param-resolving entry point, in that

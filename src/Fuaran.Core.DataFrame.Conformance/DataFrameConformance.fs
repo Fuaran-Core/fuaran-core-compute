@@ -1366,3 +1366,228 @@ module DataFrameConformance =
           { Law = "a literal slot encodes as the bare value it did before slots existed"
             Passed = literalOnly.IsNone
             Counterexample = literalOnly } ]
+
+    // ---- planner parity (Phase 269) ----
+    // The teeth on `Plan.rewrite` and the fused `Sort` > `Limit` kernel: the planned evaluation —
+    // the path every evaluator entry point takes — answers what the pipeline AS WRITTEN answers,
+    // byte-for-byte on `Ok` and the SAME `EvalError` on `Error`. Errors are compared as values,
+    // not as "both refused": a rewrite that removes an error, or reports another row's, is
+    // exactly the defect the totality verdict exists to prevent, and a both-refused arm would
+    // certify it green.
+
+    /// The planner-parity laws (Phase 269). Self-contained — over a seed-replayable sample of
+    /// (schema, pipeline, table) triples it certifies:
+    ///
+    ///  - **planned ≡ as written** — `DataFrame.evalPipeline` (planned: rewritten, `Sort` >
+    ///    `Limit` fused) equals `DataFrame.evalPipelineAsWritten` on every triple: the same wire
+    ///    string on `Ok`, the same `EvalError` on `Error`;
+    ///  - **the planner is a projection** — `Plan.rewrite` over its own answer changes nothing;
+    ///  - **the verdict admits only what the reference vouches for** — a step `Plan.isTotal` calls
+    ///    total never answers `Error` over the drawn table;
+    ///  - **totality** — neither evaluator nor the planner throws.
+    ///
+    /// **Vacuity.** `Guarded` over the rewrite classes: the sample must REACH the fusion, the
+    /// pruning and the reorder rewrites, and must DECLINE at least one reorder — a sample the
+    /// planner leaves as written certifies the parity of nothing. The tables carry nulls and
+    /// strings that do not parse, so the refused arm is drawn, not built.
+    let plannerLaws (seed: int) (iterations: int) : LawResult list =
+        let mutable rng = ConfRng.ofSeed seed
+        let mutable parity = None
+        let mutable projection = None
+        let mutable verdict = None
+        let mutable totality = None
+        let mutable fusion = 0
+        let mutable pruning = 0
+        let mutable reorder = 0
+        let mutable declined = 0
+        let mutable refused = 0
+
+        let schema: Schema =
+            [ "i", IntType; "f", FloatType; "s", StringType; "b", BoolType ]
+
+        let mkTable (rows: int) (draw: unit -> int) : Table =
+            let cellI () =
+                let v = draw ()
+                if v % 7 = 0 then Null else Int(v - 40)
+
+            let cellF () =
+                let v = draw ()
+                if v % 9 = 0 then Null else Float(float v / 4.0)
+
+            let cellS () =
+                match draw () % 5 with
+                | 0 -> Null
+                | 1 -> Str "x"
+                | 2 -> Str "12"
+                | 3 -> Str "Abc"
+                | _ -> Str(string (draw ()))
+
+            let cellB () =
+                match draw () % 3 with
+                | 0 -> Null
+                | 1 -> Bool true
+                | _ -> Bool false
+
+            let col name ty (cell: unit -> Cell) =
+                Column.create name ty [ for _ in 1..rows -> cell () ]
+
+            { Schema = schema
+              Columns =
+                [ col "i" IntType cellI
+                  col "f" FloatType cellF
+                  col "s" StringType cellS
+                  col "b" BoolType cellB ] }
+
+        let sortI = Transform.sortBy [ "i", Asc ]
+        let sortF = Transform.sortBy [ "f", Desc ]
+        // Total over the schema: an integer comparison, a string predicate, a presence test.
+        let totalPred = Filter(Binary(Gt, Col "i", Lit(Int 0)))
+
+        let totalPred2 =
+            Filter(Binary(Or, Binary(Contains, Col "s", Lit(Str "1")), IsNull(Col "b")))
+        // NOT total: a string cast to an integer parses, and the table carries "x" and "Abc".
+        let partialPred = Filter(Binary(Gt, Cast(IntType, Col "s"), Lit(Int 5)))
+        // A string derive the typer decides — the one shape a filter may move ahead of.
+        let strDerive = Derive("u", ApplyFn(Upper, [ Col "s" ]))
+        // An integer derive that can overflow: total by data, declined by verdict.
+        let intDerive = Derive("d", Binary(Add, Col "i", Col "i"))
+
+        let pipelineOf (k: int) (n: int) : Transform list =
+            match k with
+            // fusion: the top-n, on its own and behind a filter, with an offset
+            | 0 -> [ sortI; Transform.limit n 0 ]
+            | 1 -> [ totalPred; sortF; Transform.limit n 1 ]
+            // pruning: columns dead ahead of a project / a groupBy
+            | 2 -> [ strDerive; totalPred; Project [ "i", "i"; "u", "u" ] ]
+            | 3 -> [ totalPred2; GroupBy([ "b" ], [ { Name = "n"; Fn = Count; Of = "i" } ]) ]
+            // reorder ahead of a sort, admitted and declined
+            | 4 -> [ sortI; totalPred; Transform.limit n 0 ]
+            | 5 -> [ sortF; partialPred ]
+            // reorder ahead of a derive, admitted and declined
+            | 6 -> [ strDerive; totalPred ]
+            | 7 -> [ intDerive; totalPred ]
+            | 8 -> [ strDerive; Filter(Binary(Eq, Col "u", Lit(Str "X"))) ]
+            // a mix: everything at once, over a barrier
+            | 9 -> [ sortI; totalPred; strDerive; totalPred2; Distinct; Project [ "s", "s" ] ]
+            | _ ->
+                [ intDerive
+                  partialPred
+                  sortI
+                  Transform.limit n 0
+                  Project [ "i", "i"; "d", "d" ] ]
+
+        for i in 0 .. iterations - 1 do
+            let nRows, r1 = ConfRng.intBelow 7 rng
+            let mutable r = r1
+
+            let draw () =
+                let v, r' = ConfRng.intBelow 100 r
+                r <- r'
+                v
+
+            let table = mkTable nRows draw
+            let pk, r2 = ConfRng.intBelow 11 r
+            let n, r3 = ConfRng.intBelow 4 r2
+            r <- r3
+            let pipeline = pipelineOf pk n
+            rng <- r
+
+            let attempt (f: unit -> 'a) : Result<'a, string> =
+                try
+                    Ok(f ())
+                with ex ->
+                    Error ex.Message
+
+            match attempt (fun () -> Plan.explain schema pipeline) with
+            | Error m ->
+                if totality.IsNone then
+                    totality <- Some(sprintf "seed=%d iter=%d: the planner threw: %s" seed i m)
+            | Ok report ->
+                for a in report.Applied do
+                    match a.Class with
+                    | RewriteClass.TopN -> fusion <- fusion + 1
+                    | RewriteClass.PruneColumns -> pruning <- pruning + 1
+                    | RewriteClass.FilterBeforeSort
+                    | RewriteClass.FilterBeforeDerive -> reorder <- reorder + 1
+
+                declined <- declined + List.length report.Declined
+
+                if projection.IsNone && Plan.rewrite schema report.Planned <> report.Planned then
+                    projection <-
+                        Some(sprintf "seed=%d iter=%d: rewrite is not idempotent (pipeline=%A)" seed i pipeline)
+
+                match
+                    attempt (fun () -> DataFrame.evalPipeline pipeline table),
+                    attempt (fun () -> DataFrame.evalPipelineAsWritten pipeline table)
+                with
+                | Error m, _
+                | _, Error m ->
+                    if totality.IsNone then
+                        totality <- Some(sprintf "seed=%d iter=%d: an evaluator threw: %s" seed i m)
+                | Ok planned, Ok written ->
+                    (match written with
+                     | Error _ -> refused <- refused + 1
+                     | Ok _ -> ())
+
+                    let agree =
+                        match planned, written with
+                        | Ok a, Ok b -> ColumnCodec.encode (Embedded a) = ColumnCodec.encode (Embedded b)
+                        | Error a, Error b -> a = b
+                        | _ -> false
+
+                    if not agree && parity.IsNone then
+                        parity <-
+                            Some(
+                                sprintf
+                                    "seed=%d iter=%d: planned ≠ as written (pipeline=%A planned=%A)"
+                                    seed
+                                    i
+                                    pipeline
+                                    report.Planned
+                            )
+
+                    // The verdict against the drawn table: a step called total, evaluated on its
+                    // own over the table where it stands, must answer Ok.
+                    let rec walk (prefix: Transform list) =
+                        function
+                        | [] -> ()
+                        | step :: rest ->
+                            (match DataFrame.evalPipelineAsWritten prefix table with
+                             | Ok at ->
+                                 if Plan.isTotal at.Schema step then
+                                     match DataFrame.evalPipelineAsWritten [ step ] at with
+                                     | Ok _ -> ()
+                                     | Error e ->
+                                         if verdict.IsNone then
+                                             verdict <-
+                                                 Some(
+                                                     sprintf
+                                                         "seed=%d iter=%d: isTotal admits a step that errors: %A (%A)"
+                                                         seed
+                                                         i
+                                                         step
+                                                         e
+                                                 )
+                             | Error _ -> ())
+
+                            walk (prefix @ [ step ]) rest
+
+                    walk [] pipeline
+
+        [ { Law = "the planned evaluation equals the reference as written, errors included"
+            Passed = parity.IsNone
+            Counterexample = parity }
+          { Law = "Plan.rewrite is idempotent"
+            Passed = projection.IsNone
+            Counterexample = projection }
+          { Law = "a step Plan.isTotal admits never answers Error over the drawn table"
+            Passed = verdict.IsNone
+            Counterexample = verdict }
+          { Law = "the planner and both evaluators are total (never throw)"
+            Passed = totality.IsNone
+            Counterexample = totality }
+          SampleAdequacy.reached "Conformance.plannerLaws" "fusion" seed [ "fusion", fusion ]
+          SampleAdequacy.reached "Conformance.plannerLaws" "pruning" seed [ "pruning", pruning ]
+          SampleAdequacy.reached "Conformance.plannerLaws" "reorder" seed [ "reorder", reorder ]
+          SampleAdequacy.reached "Conformance.plannerLaws" "declined reorder" seed [ "declined", declined ]
+          SampleAdequacy.reached "Conformance.plannerLaws" "refused pipeline" seed [ "refused", refused ] ]

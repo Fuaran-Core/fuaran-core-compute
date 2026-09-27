@@ -350,6 +350,9 @@ type IncrementalEval =
             Plan: IncrementalPlan
             /// The pipeline it was built for — a refresh with a different pipeline evaluates in full.
             Pipeline: Transform list
+            /// Phase 269 — the PLANNED form of `Pipeline` (`Plan.rewrite` over the source's schema):
+            /// the pipeline the state's steps were classified over and its evaluation ran.
+            Planned: Transform list
             /// The evaluation env it was built under — a refresh with a different env evaluates in
             /// full.
             Env: Map<string, Cell>
@@ -587,6 +590,11 @@ module Incremental =
     /// Classify a whole pipeline. An empty pipeline is `RowLocal` (the identity is trivially
     /// row-local). The FIRST fall-back reason in step order is the pipeline's reason — reporting
     /// the first is what keeps the answer stable as earlier steps are fixed.
+    ///
+    /// Classifies the pipeline AS GIVEN. Since Phase 269 the seam evaluates the PLANNED form
+    /// (`Plan.rewrite` over the source's schema) and classifies that, so a state's `plan'` is the
+    /// classification of `plannedOf`, not of the pipeline as written; `planOver` answers the
+    /// seam's question from a schema and a pipeline, and says which form it classified.
     let plan (pipeline: Transform list) : IncrementalPlan =
         // Phase 202 — the flag each step is classified under is "is this the FIRST aggregating
         // step", carried by a fold rather than computed from the index: only a `GroupBy` consumes
@@ -626,6 +634,14 @@ module Incremental =
                     RowLocal
 
         { Steps = steps; Strategy = strategy }
+
+    /// Phase 269 — the classification the seam will run under, and the pipeline it will run: the
+    /// PLANNED form of `pipeline` over a source of schema `cols`, classified by `plan`. The report
+    /// says what was rewritten and what was declined, so a consumer can see why the seam's
+    /// classification differs from `plan` over the written form, when it does.
+    let planOver (cols: Schema) (pipeline: Transform list) : IncrementalPlan * PlanReport =
+        let report = Plan.explain cols pipeline
+        plan report.Planned, report
 
     /// Is this pipeline incrementalisable at all?
     let isIncremental (p: IncrementalPlan) : bool =
@@ -1749,6 +1765,7 @@ module Incremental =
                 Ok
                     { Plan = p
                       Pipeline = pipeline
+                      Planned = pipeline
                       Env = env
                       Scheme = scheme
                       Source = Prepared.ready source
@@ -1783,6 +1800,7 @@ module Incremental =
                     let finish outCols outRows groupCells evaluated' (caches': WalkCaches) =
                         { Plan = p
                           Pipeline = pipeline
+                          Planned = pipeline
                           Env = env
                           Scheme = scheme
                           Source = Prepared.ready source
@@ -1885,6 +1903,7 @@ module Incremental =
         |> Result.map (fun (output, evaluated) ->
             { Plan = p
               Pipeline = pipeline
+              Planned = pipeline
               Env = env
               Scheme = scheme
               Source = Prepared.ready source
@@ -1927,40 +1946,50 @@ module Incremental =
         (recomputeOf: int -> int -> Recompute)
         (onDeclined: FallBackReason -> int -> Recompute)
         : Result<IncrementalEval, EvalError> =
+        // Phase 269 — the seam runs the PLANNED pipeline: classified, split and evaluated in the
+        // form `Plan.rewrite` gives it over the source's schema. The state records both forms —
+        // the written one is what a refresh compares against (`pipelineOf`), the planned one is
+        // what ran (`plannedOf`).
+        let written = pipeline
+        let pipeline = Plan.rewrite source.Schema pipeline
         let p = plan pipeline
 
-        match p.Strategy, split pipeline with
-        | ReferenceOnly r, _ -> runReference resolve env idw.Scheme pipeline p source prepared (onDeclined r)
-        | _, None ->
-            // Unreachable while `plan` and `split` agree; the reference path is the safe reading of
-            // a disagreement, so it is taken rather than asserted away.
-            runReference resolve env idw.Scheme pipeline p source prepared (fun n -> FullRecompute(n, PipelineChanged))
-        | _, Some(prefix, final) ->
-            // Phase 208 — the prior evaluation's token array is handed to the minting so an unmoved
-            // row's token comes back as the prior STRING INSTANCE; `runIncremental`'s positional
-            // cache lookup is a pointer comparison off the back of that.
-            let priorTokens =
-                prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
+        (match p.Strategy, split pipeline with
+         | ReferenceOnly r, _ -> runReference resolve env idw.Scheme pipeline p source prepared (onDeclined r)
+         | _, None ->
+             // Unreachable while `plan` and `split` agree; the reference path is the safe reading of
+             // a disagreement, so it is taken rather than asserted away.
+             runReference resolve env idw.Scheme pipeline p source prepared (fun n -> FullRecompute(n, PipelineChanged))
+         | _, Some(prefix, final) ->
+             // Phase 208 — the prior evaluation's token array is handed to the minting so an unmoved
+             // row's token comes back as the prior STRING INSTANCE; `runIncremental`'s positional
+             // cache lookup is a pointer comparison off the back of that.
+             let priorTokens =
+                 prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
 
-            match tokensOf idw priorTokens source with
-            | Error defect ->
-                runReference resolve env idw.Scheme pipeline p source prepared (fun n ->
-                    FullRecompute(n, RowIdentityUnusable defect))
-            | Ok tokens ->
-                runIncremental
-                    resolve
-                    env
-                    idw.Scheme
-                    pipeline
-                    p
-                    prefix
-                    final
-                    source
-                    prepared
-                    tokens
-                    prior
-                    named
-                    recomputeOf
+             match tokensOf idw priorTokens source with
+             | Error defect ->
+                 runReference resolve env idw.Scheme pipeline p source prepared (fun n ->
+                     FullRecompute(n, RowIdentityUnusable defect))
+             | Ok tokens ->
+                 runIncremental
+                     resolve
+                     env
+                     idw.Scheme
+                     pipeline
+                     p
+                     prefix
+                     final
+                     source
+                     prepared
+                     tokens
+                     prior
+                     named
+                     recomputeOf)
+        |> Result.map (fun s ->
+            { s with
+                Pipeline = written
+                Planned = pipeline })
 
     /// Evaluate `pipeline` over `source` from scratch, building the state a later `refresh`
     /// restricts. Equal to `DataFrame.evalPipelineWithInEnv resolve env pipeline source` — priming
@@ -2190,6 +2219,7 @@ module Incremental =
         : IncrementalEval =
         { Plan = plan pipeline
           Pipeline = pipeline
+          Planned = pipeline
           Env = env
           Scheme = scheme
           Source = prepared.Source
@@ -2522,6 +2552,11 @@ module Incremental =
     /// the same answer read two ways: a consumer that has a state reads it here, and one that has
     /// only a pipeline computes it there.
     let plan' (s: IncrementalEval) : IncrementalPlan = s.Plan
+
+    /// Phase 269 — the PLANNED pipeline the state ran: `Plan.rewrite` over the source's schema of
+    /// the pipeline `pipelineOf` reports. It is the form `plan'` classified; `planOver` computes
+    /// the same pair from a schema and a pipeline with no state in hand.
+    let plannedOf (s: IncrementalEval) : Transform list = s.Planned
 
     /// How the state's next refresh will be answered: row-local propagation, a maintained grouping,
     /// or the reference evaluator.

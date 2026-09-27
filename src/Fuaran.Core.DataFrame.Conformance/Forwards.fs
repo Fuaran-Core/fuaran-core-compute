@@ -79,3 +79,7 @@ module Conformance =
     /// Forward of `DataFrameConformance.slotParamLaws` (removal: Phase 258).
     let slotParamLaws (seed: int) (iterations: int) : LawResult list =
         DataFrameConformance.slotParamLaws seed iterations
+
+    /// Forward of `DataFrameConformance.plannerLaws` (removal: Phase 258).
+    let plannerLaws (seed: int) (iterations: int) : LawResult list =
+        DataFrameConformance.plannerLaws seed iterations

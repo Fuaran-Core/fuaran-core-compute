@@ -50,6 +50,8 @@ module DataFrameFamilies =
           c "schemaWalkLaws" none (Some SeamNotEveryDomainHas) []
           c "nowLaws" none (Some SeamNotEveryDomainHas) []
           c "slotParamLaws" none (Some SeamNotEveryDomainHas) []
+          // Phase 269 — the planner held to the reference as written.
+          c "plannerLaws" none (Some SeamNotEveryDomainHas) []
 
           f "IncrementalDelta" "laws" none (Some SeamNotEveryDomainHas) []
           f "IncrementalDelta" "lawsWith" none (Some SeamNotEveryDomainHas) [] ]
@@ -84,6 +86,10 @@ module DataFrameFamilies =
           r "Conformance.schemaWalkLaws" NoRefusal "an evaluator rejection is skipped"
           r "Conformance.nowLaws" Built "the unpinned clock must refuse UnpinnedClock, built each iteration"
           r "Conformance.slotParamLaws" Built "the unbound and mistyped slots are built each iteration"
+          r
+              "Conformance.plannerLaws"
+              Drawn
+              "the Error/Error parity arm is reached when a drawn pipeline refuses over a drawn table (a cast that parses over strings that do not); guarded on the refused population"
           r "IncrementalDelta.laws" Drawn "delegates to lawsWith"
           r
               "IncrementalDelta.lawsWith"
@@ -117,6 +123,10 @@ module DataFrameFamilies =
           // The Error/Error arm of the parity law is reached only when the caller's generator yields
           // a pipeline the reference refuses.
           "Conformance.transformLaws", Guarded [ "accepted"; "refused" ]
+          // Phase 269 — a sample the planner leaves as written certifies the parity of nothing:
+          // each rewrite class must be reached, a reorder must be declined, and the Error/Error
+          // arm must be drawn.
+          "Conformance.plannerLaws", Guarded [ "fusion"; "pruning"; "reorder"; "declined reorder"; "refused pipeline" ]
 
           // ---- unconditional: every iteration builds the evidence for every branch ----
           "Conformance.aggregateParityLaws",

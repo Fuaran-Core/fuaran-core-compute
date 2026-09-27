@@ -275,6 +275,49 @@
       }
     },
     {
+      "id": "pipeline-reorder-preserves-result",
+      "level": "proved",
+      "claim": "THE PLANNER'S REORDER. A `Filter` moved ahead of the `Derive` it followed — the step removed from every dropped row's path — preserves the driver's result, frame and first error, when the derive answers `Ok` on every row of the frame, the filter reads neither the derived column nor any column the frame lacks, and the derived cells are strings or nulls (`derive_then_filter`); and it does so wherever the pair sits in a pipeline (`reorder_in_context`, through `go_app`). The three premises are exactly `Planner.declineReorder`'s admission, and each is load-bearing in a way the phase found before it proved: a filter reading an absent column refuses with the SCHEMA in its payload, which the derive changes; and the derived column's TYPE is inferred from the cells the derive produced, so over the rows a filter keeps it can differ — the shard's 'admitted when the derive is total' was necessary and not sufficient. The lemma is unconditional on the cell primitives: `eval_extends` shows an expression answers the same on two rows that agree on every column it reads, value for value and error for error, through every short circuit, and the rest is the fold. `Conformance.plannerLaws` holds the F# to it over drawn tables.",
+      "phase": "fuaran-core#269",
+      "evidence": {
+        "theorem": "derive_then_filter",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "reorder_in_context",
+          "eval_extends",
+          "filter_ext"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-verdict-sound",
+      "level": "proved",
+      "claim": "THE TOTALITY VERDICT IS SOUND. `Plan.isTotal`'s expression half (`expr_total`, modelled clause for clause over the modelled typer `typing_of`, which is Phase 266's `typing` arm for arm) admits an expression only where evaluating it against ANY row that fits the schema answers `Ok`, with a cell that fits the type the typer gave it (`verdict_sound`, a mutual induction over the evaluator and its four loops). Every error the evaluator's OWN arms raise — an unknown column, an unbound param, an unpinned clock, a `Not` of a non-bool, an incomparable membership — is discharged from the verdict's clauses; lifted to the two steps, a filter or a derive the verdict admits answers `Ok` over every typed frame (`step_total`), and a derive whose expression the typer calls `Absent` or `Of StringType` — the F# `derivedColumnType = Some StringType` — produces only strings and nulls (`derive_str_or_null`). `planner_reorder_sound` ties the two phases' rows together: the verdict's `true` on the derive, that typing, and a filter closed over the schema less the derived name are premises under which `pipeline-reorder-preserves-result` holds. Conditional on `pipeline-verdict-primitives-admit` and on nothing else.",
+      "phase": "fuaran-core#269",
+      "evidence": {
+        "theorem": "verdict_sound",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "step_total",
+          "derive_str_or_null",
+          "planner_reorder_sound"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-verdict-primitives-admit",
+      "level": "assumed",
+      "claim": "THE VERDICT'S PRIMITIVES PREMISE. `verdict_sound` and everything lifted from it are conditional on `admits`, a record of four lemma-typed fields over the `prims` parameter: on exactly the operand shapes the verdict admits (`admit_binary`, `admit_cast`, `admit_fn`, `comparable`), each primitive answers `Ok` with a cell that fits the typing the typer assigns the node, and the pinned ordering compares any two present cells of comparable typings. It is the reading of `arith`, `castCell`, `applyScalar` and `compareCells` that every `true` of the F# verdict cites — `arith` on a null answers `Null` before it reads a type, two floats never overflow into an error, `Div` by zero is `Null`, `castCell` to `String` accepts every cell, a comparison over a matching pair never fails — and it is held to production by `Conformance.plannerLaws`, whose third law evaluates every step the verdict admits over the drawn table and requires `Ok`. It is narrower than `pipeline-cell-primitives-abstract` (which assumes only the primitives' TYPE) and sits beside it rather than replacing it: the earlier rows stay unconditional on cells. `unscheduled`: the integer, boolean and string arms are modellable clause for clause on the Phase 149 precedent, and a modelled arm would discharge its field of the record.",
+      "phase": "fuaran-core#269",
+      "class": "model-bridge",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "on the operand shapes the verdict admits, the four cell primitives answer Ok with a cell of the typer's type, and the pinned ordering compares any two present cells of comparable typings (`admits`, proofs/Pipeline.fst); held to production by Conformance.plannerLaws, not proved"
+      }
+    },
+    {
       "id": "pipeline-differential",
       "level": "tested",
       "claim": "The extracted driver agrees with the shipped `DataFrame.evalPipelineWithInEnvCounted` on the TABLE (byte for byte through `ColumnCodec.encode`) and the COUNT, or on the named `EvalError`, with the cell primitives instantiated at production's own (each read through the public `evalExprInRow` on a one-node expression) and the twelve verbs at production's own one verb at a time through `evalPipelineWithInEnv resolve env [ step ]` — so every `Filter` and `Derive` is evaluated by the MODEL's evaluator, loop and short circuits, and compared to production's table — over the sixteen `conformance/laws/transform-laws.json` vectors decoded with the shipped codec (each file verdict cross-checked against the reference's), and four hundred generated pipelines at seed 154: the vectors' own table recipe, widened in the pipeline to one to four steps over all fourteen verbs and expressions over all thirteen kinds, with a `Ref` resolver, a param env, embedded and referenced right-hand sources, and slots that are literals or params. Every pipeline is also crossed to the model and back and must return unchanged. Since Phase 234 the evaluator is also compared ON ITS OWN: the model's `eval_expr` against `evalExprInRow`, cell for cell and error for error, over 2,095 expression-row pairs at seed 234 (six hundred depth-three expressions, each on every row of a drawn table) reaching all thirteen kinds, with `expr_visits` held to `expr_nodes` on every pair and the sample required to reach both a short circuit and a full walk; and `work_bounded`'s inequality is read numerically over the four hundred pipelines, with the visits required to exceed the count on some. Three go-reds: a lock-step step evaluator that runs production's own Derive while the bridge crosses it as a Distinct — a model whose count skips one step kind — must lose on the count and on nothing else; a bridge that negates every Filter under the faithful evaluator must lose on the table; and a node counter that forgets a `Case`'s arms — a model that under-counts a nested expression — must be exceeded by the visit count. Agreement is over the pools drawn, never over all inputs, and the twelve verbs' SEMANTICS and the cell primitives are shared with production by construction rather than compared.",

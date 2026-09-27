@@ -8,6 +8,9 @@ ctor Fuaran.Core.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
 ctor Fuaran.Core.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>)
 ctor Fuaran.Core.IncrementalPlan..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.StepIncrementality>, Fuaran.Core.IncrementalStrategy)
 ctor Fuaran.Core.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, System.String, System.String, Fuaran.Core.AggFn)
+ctor Fuaran.Core.PlanDeclined..ctor(Fuaran.Core.RewriteClass, System.Int32, System.String)
+ctor Fuaran.Core.PlanReport..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.PlanRewrite>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.PlanDeclined>)
+ctor Fuaran.Core.PlanRewrite..ctor(Fuaran.Core.RewriteClass, System.Int32, System.String)
 ctor Fuaran.Core.RecomputeFootprint..ctor(System.Int32, System.Int32, Fuaran.Core.Recompute)
 ctor Fuaran.Core.RowIdentity`1..ctor(System.String, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpFunc`2<System.Int32, Microsoft.FSharp.Core.FSharpOption`1<!0>>>, Microsoft.FSharp.Core.FSharpFunc`2<!0, System.String>)
 ctor Fuaran.Core.RowSetDelta..ctor(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<Fuaran.Core.RowRef, Fuaran.Core.RowChange>>, Microsoft.FSharp.Collections.FSharpList`1<System.String>)
@@ -92,6 +95,10 @@ field Fuaran.Core.Recompute+Tags.GroupsRecomputed : System.Int32 (literal)
 field Fuaran.Core.Recompute+Tags.Primed : System.Int32 (literal)
 field Fuaran.Core.Recompute+Tags.ReusedPrior : System.Int32 (literal)
 field Fuaran.Core.Recompute+Tags.RowsRecomputed : System.Int32 (literal)
+field Fuaran.Core.RewriteClass+Tags.FilterBeforeDerive : System.Int32 (literal)
+field Fuaran.Core.RewriteClass+Tags.FilterBeforeSort : System.Int32 (literal)
+field Fuaran.Core.RewriteClass+Tags.PruneColumns : System.Int32 (literal)
+field Fuaran.Core.RewriteClass+Tags.TopN : System.Int32 (literal)
 field Fuaran.Core.RowChange+Tags.RowAdded : System.Int32 (literal)
 field Fuaran.Core.RowChange+Tags.RowChanged : System.Int32 (literal)
 field Fuaran.Core.RowChange+Tags.RowRemoved : System.Int32 (literal)
@@ -169,11 +176,13 @@ method Fuaran.Core.DataFrame.errorString(Fuaran.Core.EvalError) : System.String
 method Fuaran.Core.DataFrame.evalExprInRow(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>, Fuaran.Core.ColExpr) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Cell, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalFrom(Fuaran.Core.Table, Fuaran.Core.Change, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPipeline(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
+method Fuaran.Core.DataFrame.evalPipelineAsWritten(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPipelineAt(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.NowGrain, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPipelineInEnv(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPipelineInEnvAt(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.NowGrain, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPipelineWith(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPipelineWithInEnv(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
+method Fuaran.Core.DataFrame.evalPipelineWithInEnvAsWritten(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPipelineWithInEnvAt(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.NowGrain, Fuaran.Core.Cell>, Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPipelineWithInEnvCounted(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`2<Fuaran.Core.Table, System.Int32>, Fuaran.Core.EvalError>
 method Fuaran.Core.DataFrame.evalPrepared(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>
@@ -230,6 +239,8 @@ method Fuaran.Core.Incremental.joinKindName(Fuaran.Core.JoinKind) : System.Strin
 method Fuaran.Core.Incremental.pipelineOf(Fuaran.Core.IncrementalEval) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
 method Fuaran.Core.Incremental.plan'(Fuaran.Core.IncrementalEval) : Fuaran.Core.IncrementalPlan
 method Fuaran.Core.Incremental.plan(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>) : Fuaran.Core.IncrementalPlan
+method Fuaran.Core.Incremental.planOver(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>) : System.Tuple`2<Fuaran.Core.IncrementalPlan, Fuaran.Core.PlanReport>
+method Fuaran.Core.Incremental.plannedOf(Fuaran.Core.IncrementalEval) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
 method Fuaran.Core.Incremental.primeOnPrepared`1(Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.primeOn`1(Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
 method Fuaran.Core.Incremental.primePrepared`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Core.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Core.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>, Fuaran.Core.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.IncrementalEval, Fuaran.Core.EvalError>
@@ -247,6 +258,9 @@ method Fuaran.Core.Incremental.strategy(Fuaran.Core.IncrementalEval) : Fuaran.Co
 method Fuaran.Core.Incremental.windowFnName(Fuaran.Core.WindowFn) : System.String
 method Fuaran.Core.NowGrainModule.ofTag(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.NowGrain>
 method Fuaran.Core.NowGrainModule.tag(Fuaran.Core.NowGrain) : System.String
+method Fuaran.Core.Plan.explain(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>) : Fuaran.Core.PlanReport
+method Fuaran.Core.Plan.isTotal(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Fuaran.Core.Transform) : System.Boolean
+method Fuaran.Core.Plan.rewrite(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
 method Fuaran.Core.RowIdentity.byColumn(System.String) : Fuaran.Core.RowIdentity`1<Fuaran.Core.Cell>
 method Fuaran.Core.RowIdentity.byColumns(Microsoft.FSharp.Collections.FSharpList`1<System.String>) : Fuaran.Core.RowIdentity`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
 method Fuaran.Core.SchemaWalk.columns(Fuaran.Core.SchemaKnowledge) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.ColumnKnowledge>
@@ -287,6 +301,16 @@ record-field Fuaran.Core.PivotSpec.Agg #3 : Fuaran.Core.AggFn
 record-field Fuaran.Core.PivotSpec.Index #0 : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 record-field Fuaran.Core.PivotSpec.On #1 : System.String
 record-field Fuaran.Core.PivotSpec.Values #2 : System.String
+record-field Fuaran.Core.PlanDeclined.At #1 : System.Int32
+record-field Fuaran.Core.PlanDeclined.Class #0 : Fuaran.Core.RewriteClass
+record-field Fuaran.Core.PlanDeclined.Reason #2 : System.String
+record-field Fuaran.Core.PlanReport.Applied #2 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.PlanRewrite>
+record-field Fuaran.Core.PlanReport.Declined #3 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.PlanDeclined>
+record-field Fuaran.Core.PlanReport.Planned #1 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
+record-field Fuaran.Core.PlanReport.Written #0 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
+record-field Fuaran.Core.PlanRewrite.At #1 : System.Int32
+record-field Fuaran.Core.PlanRewrite.Class #0 : Fuaran.Core.RewriteClass
+record-field Fuaran.Core.PlanRewrite.Detail #2 : System.String
 record-field Fuaran.Core.RecomputeFootprint.Recompute #2 : Fuaran.Core.Recompute
 record-field Fuaran.Core.RecomputeFootprint.ResultRows #1 : System.Int32
 record-field Fuaran.Core.RecomputeFootprint.SourceRows #0 : System.Int32
@@ -370,6 +394,10 @@ type Fuaran.Core.NowGrain (union)
 type Fuaran.Core.NowGrain+Tags (type)
 type Fuaran.Core.NowGrainModule (module)
 type Fuaran.Core.PivotSpec (record)
+type Fuaran.Core.Plan (module)
+type Fuaran.Core.PlanDeclined (record)
+type Fuaran.Core.PlanReport (record)
+type Fuaran.Core.PlanRewrite (record)
 type Fuaran.Core.Prepared (record)
 type Fuaran.Core.Recompute (union)
 type Fuaran.Core.Recompute+FullRecompute (type)
@@ -378,6 +406,8 @@ type Fuaran.Core.Recompute+Primed (type)
 type Fuaran.Core.Recompute+RowsRecomputed (type)
 type Fuaran.Core.Recompute+Tags (type)
 type Fuaran.Core.RecomputeFootprint (record)
+type Fuaran.Core.RewriteClass (union)
+type Fuaran.Core.RewriteClass+Tags (type)
 type Fuaran.Core.RowChange (union)
 type Fuaran.Core.RowChange+Tags (type)
 type Fuaran.Core.RowIdentity (module)
@@ -512,6 +542,10 @@ union-case Fuaran.Core.Recompute.NewGroupsRecomputed #3(rowsEvaluated: System.In
 union-case Fuaran.Core.Recompute.NewPrimed #0(rowsEvaluated: System.Int32)
 union-case Fuaran.Core.Recompute.NewRowsRecomputed #2(rowsEvaluated: System.Int32)
 union-case Fuaran.Core.Recompute.ReusedPrior #1()
+union-case Fuaran.Core.RewriteClass.FilterBeforeDerive #3()
+union-case Fuaran.Core.RewriteClass.FilterBeforeSort #2()
+union-case Fuaran.Core.RewriteClass.PruneColumns #1()
+union-case Fuaran.Core.RewriteClass.TopN #0()
 union-case Fuaran.Core.RowChange.RowAdded #0()
 union-case Fuaran.Core.RowChange.RowChanged #1()
 union-case Fuaran.Core.RowChange.RowRemoved #2()
