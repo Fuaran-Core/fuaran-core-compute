@@ -922,10 +922,20 @@ let scalingTests =
 
               // The LARGE size first, for the reason `scalingAt` gives: its runs promote the code to
               // the optimised tier before the small leg is timed.
+              //
+              // Phase 273 — every sample diffs FRESH table objects. `Delta.diff` remembers the keys it
+              // minted for a table and reads them back when it meets that very object again, so
+              // re-diffing the same two tables would time a diff that mints nothing and hold it
+              // against a floor it no longer pays. A fresh record over the same columns is what a
+              // caller that has never keyed either table hands in.
+              let fresh (t: Table) : Table = { t with Columns = t.Columns }
+
               for n in [ large; small ] do
                   let before = build n
                   let after = editOne before
-                  let diffMs = bestMs 5 (fun () -> Delta.diff idw before after |> ok |> ignore)
+
+                  let diffMs =
+                      bestMs 5 (fun () -> Delta.diff idw (fresh before) (fresh after) |> ok |> ignore)
 
                   let floorMs =
                       bestMs 5 (fun () ->
@@ -972,10 +982,15 @@ let scalingTests =
                   let state = ok (Incremental.primeOn idw p before)
                   let delta = ok (Delta.diff idw before after)
 
+                  // Phase 273 — the tick a caller pays: the prior source is the one the state last
+                  // evaluated (its keys were minted when it was, and are read back), the new one is
+                  // a table nothing has keyed yet — a fresh object per sample, so no sample reads the
+                  // previous sample's keys for it.
                   let tickMs =
                       bestMs 5 (fun () ->
-                          let d = ok (Delta.diff idw before after)
-                          Incremental.refreshOn idw p state d after |> ok |> ignore)
+                          let a = { after with Columns = after.Columns }
+                          let d = ok (Delta.diff idw before a)
+                          Incremental.refreshOn idw p state d a |> ok |> ignore)
 
                   let fullMs = bestMs 5 (fun () -> DataFrame.evalPipeline p after |> ok |> ignore)
 

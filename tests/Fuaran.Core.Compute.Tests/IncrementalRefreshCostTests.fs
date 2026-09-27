@@ -1156,6 +1156,28 @@ let denseDiffTests =
                           before
                           after
 
+                  // Phase 273 — the same pair diffed again, now that the diff has remembered each
+                  // table's keys: once with BOTH sides known (the same two objects), once with only
+                  // `before` known (a fresh `after` record over the same columns). Reading keys
+                  // back must answer exactly what minting them answered.
+                  let freshAfter = { after with Columns = after.Columns }
+
+                  for label, warm in
+                      [ "both sides known", Delta.diff byId before after
+                        "before known", Delta.diff byId before freshAfter ] do
+                      if warm <> expected then
+                          failtestf
+                              "iter %d (%s): warm %A
+  row-token %A
+  before %A
+  after %A"
+                              iter
+                              label
+                              warm
+                              expected
+                              before
+                              after
+
                   let actual2 = Delta.diff byPair before after
                   let expected2 = rowTokenDiff byPair before after
 
@@ -1208,3 +1230,180 @@ let denseDiffTests =
                   let got = Delta.diff idw before after
                   Expect.isError got (sprintf "%A -> %A refuses" before after)
                   Expect.equal got (rowTokenDiff idw before after) (sprintf "%A -> %A" before after) ]
+
+// ---------------------------------------------------------------------------
+//  Phase 273 — a tick mints each row's key once.
+//
+//  A table-fed caller's tick is `Delta.diff prior next` and then the refresh over
+//  `next`. Until this phase that tick asked the witness for a key THREE times per
+//  row: the diff keyed both tables, and the refresh keyed `next` again — although
+//  the state had keyed `prior` at the previous tick. Now `Delta.diff` remembers
+//  the keys it mints (and the seam the keys it mints), reads a table's keys back
+//  when it meets that very object again, and hands the keys of `next` to the
+//  refresh inside the delta it returns.
+//
+//  COUNTED, not timed: the witness below counts its `KeyString` calls, so the
+//  claim is exact and holds on a loaded machine. On the pre-phase tree the
+//  one-tick count is 3n (the diff 2n, the refresh n), and this family is red.
+// ---------------------------------------------------------------------------
+
+/// `byColumn "id"` under its own scheme, counting every key it mints.
+let private countingId (minted: int ref) : RowIdentity<Cell> =
+    let b = RowIdentity.byColumn "id"
+
+    { b with
+        KeyString =
+            fun c ->
+                minted.Value <- minted.Value + 1
+                b.KeyString c }
+
+/// Pipelines covering the seam's incremental strategies: row-local, maintained groups, and a sort.
+let private tickPipelines: (string * Transform list) list =
+    [ "row-local derive", [ Derive("b", Binary(Mul, Col "a", Lit(Int 2))) ]
+      "filter > groupBy", pipeline
+      "filter > sort > limit",
+      [ Filter(Binary(Ge, Col "a", Lit(Int -10)))
+        Transform.sortBy [ "a", Desc ]
+        Transform.limit 10 0 ] ]
+
+[<Tests>]
+let keyOnceTests =
+    testList
+        "a tick mints each row's key once"
+        [ testCase "the diff-then-refresh tick mints each row's key exactly once, tick after tick"
+          <| fun _ ->
+              for label, p in tickPipelines do
+                  let minted = ref 0
+                  let idw = countingId minted
+                  let n = small
+                  let t0 = build n
+                  let mutable state = ok (Incremental.primeOn idw p t0)
+                  Expect.equal minted.Value n (sprintf "%s: the prime keys the source once" label)
+                  let mutable prior = t0
+
+                  // Three ticks, each a caller's: a fresh table, diffed against the prior source,
+                  // then the refresh over it.
+                  for tick in 1..3 do
+                      let next = editSome (tick * 3) prior
+                      minted.Value <- 0
+                      let delta = ok (Delta.diff idw prior next)
+                      let afterDiff = minted.Value
+                      state <- ok (Incremental.refreshOn idw p state delta next)
+
+                      Expect.equal
+                          (Ok(Incremental.result state))
+                          (DataFrame.evalPipeline p next)
+                          (sprintf "%s tick %d: refresh = reference" label tick)
+
+                      Expect.equal
+                          afterDiff
+                          n
+                          (sprintf
+                              "%s tick %d: the diff mints the NEW table's keys only — the prior's were minted when it was last seen"
+                              label
+                              tick)
+
+                      Expect.equal
+                          minted.Value
+                          n
+                          (sprintf
+                              "%s tick %d: one key per row per tick (the pre-phase tick minted %d)"
+                              label
+                              tick
+                              (3 * n))
+
+                      prior <- next
+
+          testCase "a delta the diff did not build carries no keys, and the refresh mints as it did before"
+          <| fun _ ->
+              for label, p in tickPipelines do
+                  let minted = ref 0
+                  let idw = countingId minted
+                  let n = small
+                  let t0 = build n
+                  let state = ok (Incremental.primeOn idw p t0)
+                  let t1 = editSome 5 t0
+                  let delta = ok (Delta.diff idw t0 t1)
+                  let reference = ok (Incremental.refreshOn idw p state delta t1)
+
+                  let others =
+                      [ "normalised", Delta.normalise delta
+                        "composed with the quiet delta", Delta.compose (Delta.empty idw.Scheme) delta
+                        "decoded from its wire", ok (DeltaCodec.decode (DeltaCodec.encode delta))
+                        "hand-built from its rows",
+                        Delta.ofRows idw.Scheme (Delta.tryRowSet delta |> Option.map _.Rows |> Option.defaultValue []) ]
+
+                  for how, other in others do
+                      // The keys ride beside the delta, never in it: equality and the wire are the
+                      // diff's own, byte for byte.
+                      Expect.equal other delta (sprintf "%s / %s: equal to the diff's delta" label how)
+
+                      Expect.equal
+                          (DeltaCodec.encode other)
+                          (DeltaCodec.encode delta)
+                          (sprintf "%s / %s: the same wire" label how)
+
+                      minted.Value <- 0
+                      let s = ok (Incremental.refreshOn idw p state other t1)
+
+                      Expect.equal
+                          minted.Value
+                          n
+                          (sprintf "%s / %s: no carried keys, so the refresh keys the source itself" label how)
+
+                      Expect.equal
+                          (Incremental.result s)
+                          (Incremental.result reference)
+                          (sprintf "%s / %s: the same answer" label how)
+
+                      Expect.equal
+                          (Incremental.footprint s)
+                          (Incremental.footprint reference)
+                          (sprintf "%s / %s: the same footprint" label how)
+
+                  // The diff's own delta, but handed a DIFFERENT table object of the same content:
+                  // its keys describe the table it was diffed into, so they are not reused here.
+                  minted.Value <- 0
+                  let copy = { t1 with Columns = t1.Columns }
+                  let s = ok (Incremental.refreshOn idw p state delta copy)
+                  Expect.equal minted.Value n (sprintf "%s: keys carried for another table object are not reused" label)
+
+                  Expect.equal
+                      (Incremental.result s)
+                      (Incremental.result reference)
+                      (sprintf "%s: the same answer" label)
+
+          testCase "an ordinal diff carries no keys, and a scheme the table was not keyed under reads none back"
+          <| fun _ ->
+              let minted = ref 0
+              let idw = countingId minted
+              let t0 = build small
+              let t1 = editSome 5 t0
+              let state = ok (Incremental.primeOn idw pipeline t0)
+
+              // Ordinal: the refresh declines ordinal addressing and re-keys the source in full.
+              minted.Value <- 0
+              let s = ok (Incremental.refreshOn idw pipeline state (Delta.diffByOrdinal t0 t1) t1)
+              Expect.equal minted.Value small "an ordinal delta carries no keys"
+              Expect.equal (Ok(Incremental.result s)) (DataFrame.evalPipeline pipeline t1) "refresh = reference"
+
+              // A second scheme over the same tables: nothing remembered under `column:id` is read
+              // back for work keyed under `columns:id,grp`, although the table objects are the same.
+              let otherMinted = ref 0
+
+              let byPair =
+                  let b = RowIdentity.byColumns [ "id"; "grp" ]
+
+                  { b with
+                      KeyString =
+                          fun c ->
+                              otherMinted.Value <- otherMinted.Value + 1
+                              b.KeyString c }
+
+              let d = ok (Delta.diff byPair t0 t1)
+              Expect.equal otherMinted.Value (2 * small) "another scheme mints both tables afresh"
+
+              Expect.equal
+                  (Ok d)
+                  (Delta.diff (RowIdentity.byColumns [ "id"; "grp" ]) (build small) (editSome 5 (build small)))
+                  "and answers as a cold diff does" ]

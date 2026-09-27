@@ -1567,12 +1567,18 @@ module Incremental =
     /// a row's token is a function of its identity cell, and the only way to know a row's identity is
     /// to read it. That is 207's finding, and it is the floor this phase works down to rather than
     /// through.
+    ///
+    /// Phase 273 — the keys minted here are REMEMBERED for `t` (see `KeyedIndexes`), so the next
+    /// tick's `Delta.diff`, whose `before` is this source, reads them rather than minting them again.
+    /// Where the delta carries the new source's keys already, `tokensOfKnown` below replaces this
+    /// function altogether.
     let private tokensOf (idw: RowIdentity<'Id>) (priorTokens: string[]) (t: Table) : Result<string[], DeltaDefect> =
         let n = Table.rowCount t
         // Hoisted for the reason `Delta.keyIndex` hoists it (Phase 206): the witness's per-table
         // work belongs in the first application, not in every iteration of this loop.
         let keyAt = idw.KeyOf t
         let tokens: string[] = Array.zeroCreate n
+        let keys: string[] = Array.zeroCreate n
         let seen = System.Collections.Generic.HashSet<string>(n)
         let mutable defect = None
         let mutable i = 0
@@ -1582,6 +1588,7 @@ module Incremental =
             | None -> defect <- Some(MissingIdentity(idw.Scheme, i))
             | Some id ->
                 let k = idw.KeyString id
+                keys[i] <- k
                 let minted = Delta.refToken (ByKey k)
 
                 let token =
@@ -1599,7 +1606,38 @@ module Incremental =
 
         match defect with
         | Some d -> Error d
-        | None -> Ok tokens
+        | None ->
+            KeyedIndexes.remember t (KeyedIndex(idw.Scheme, keys, null))
+            Ok tokens
+
+    /// Phase 273 — the source's tokens from keys `Delta.diff` already minted for this very table and
+    /// proved unique (the delta carried them), so no key is minted and no uniqueness is re-checked.
+    /// The answer is `tokensOf`'s: the same strings, and the PRIOR instance wherever the row sits
+    /// where it sat — recognised by comparing the prior token's key part in place, so an unmoved
+    /// row allocates nothing either.
+    let private tokensOfKnown (known: KeyedIndex) (priorTokens: string[]) : string[] =
+        let keys = known.Keys
+        let tokens: string[] = Array.zeroCreate keys.Length
+
+        for i in 0 .. keys.Length - 1 do
+            let k = keys[i]
+
+            tokens[i] <-
+                if i < priorTokens.Length then
+                    let p = priorTokens[i]
+
+                    if
+                        p.Length = k.Length + 2
+                        && p.StartsWith("k:", System.StringComparison.Ordinal)
+                        && System.String.CompareOrdinal(p, 2, k, 0, k.Length) = 0
+                    then
+                        p
+                    else
+                        Delta.refToken (ByKey k)
+                else
+                    Delta.refToken (ByKey k)
+
+        tokens
 
     /// The tokens a delta names as present-and-changed (`RowAdded` / `RowChanged`) — the rows an
     /// incremental evaluation must re-evaluate.
@@ -1943,6 +1981,7 @@ module Incremental =
         (prepared: Prepared option)
         (prior: IncrementalEval option)
         (named: Set<string> option)
+        (known: KeyedIndex option)
         (recomputeOf: int -> int -> Recompute)
         (onDeclined: FallBackReason -> int -> Recompute)
         : Result<IncrementalEval, EvalError> =
@@ -1967,7 +2006,13 @@ module Incremental =
              let priorTokens =
                  prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
 
-             match tokensOf idw priorTokens source with
+             // Phase 273 — keys the delta carried for this very source are reused, not re-minted.
+             let tokens =
+                 match known with
+                 | Some k -> Ok(tokensOfKnown k priorTokens)
+                 | None -> tokensOf idw priorTokens source
+
+             match tokens with
              | Error defect ->
                  runReference resolve env idw.Scheme pipeline p source prepared (fun n ->
                      FullRecompute(n, RowIdentityUnusable defect))
@@ -2011,7 +2056,8 @@ module Incremental =
         (pipeline: Transform list)
         (source: Table)
         : Result<IncrementalEval, EvalError> =
-        run resolve env idw pipeline source None None None (fun evaluated _ -> Primed evaluated) (fun _ n -> Primed n)
+        run resolve env idw pipeline source None None None None (fun evaluated _ -> Primed evaluated) (fun _ n ->
+            Primed n)
 
     // ---- Phase 268 — the chunked path ----
     //
@@ -2267,6 +2313,7 @@ module Incremental =
                 (Some prepared)
                 None
                 None
+                None
                 (fun evaluated _ -> Primed evaluated)
                 (fun _ n -> Primed n)
 
@@ -2326,6 +2373,11 @@ module Incremental =
             | None, Some p when Prepared.isFrom p source -> Some p
             | _ -> None
 
+        // Phase 273 — the new source's keys, when the delta is the one `Delta.diff` built into this
+        // very source under this scheme. Anything else (hand-built, composed, decoded, ordinal, a
+        // full refresh, or a diff into some other table) carries none and the refresh mints.
+        let known = KeyedIndexes.carried idw.Scheme delta source
+
         match stale with
         | Some r ->
             // The answer is a full evaluation either way; taking it through the incremental path
@@ -2340,6 +2392,7 @@ module Incremental =
                 reusable
                 None
                 None
+                known
                 (fun evaluated _ -> FullRecompute(evaluated, r))
                 (fun declined n -> FullRecompute(n, declined))
         | None ->
@@ -2391,6 +2444,7 @@ module Incremental =
                     reusable
                     (Some state)
                     named
+                    known
                     (fun evaluated groups ->
                         match state.Plan.Strategy with
                         | RowLocalThenGroups -> GroupsRecomputed(evaluated, groups)

@@ -666,6 +666,184 @@ green at 1.7 to 2.0 times after. Beside it, "the table-fed tick" prints (diff + 
 the three `Scaling` pipelines on every gate run, unasserted, so the counter-example to the 1.5×
 claim travels with the claim the family does make.
 
+### A tick mints each row's key once (Phase 273)
+
+Phase 272 found that a diff by identity cannot avoid asking the witness for every row's key, and
+measured that minting as a floor of about one full evaluation per table on the cheap nodes. It did not
+ask how many times one tick paid that floor. The answer was **three**. `Delta.diff prior next` keyed
+both tables, then the refresh keyed `next` again. The state had already keyed `prior` when it last
+evaluated it, and `Delta.diff` had just keyed `next`.
+
+**The baseline, counted rather than timed.** The instrument is a witness that counts its `KeyString`
+calls, so its figures are exact and identical on every host and under any load. The probe primes
+over a table, then runs two ticks on each corpus node: a one-row edit, `Delta.diff` against the prior
+source, and the refresh over the new one. On the pre-phase tree it gave the same count at 1,000 and at
+100,000 rows, on .NET and on node:
+
+| node | prime | tick: diff | tick: refresh | keys per row per tick |
+|---|---:|---:|---:|---:|
+| lines, byRegion, filter > groupBy, filter > sort > limit, filter > groupBy > filter, group-by high-card, window CumulSum, sort two keys | n | 2n | n | **3** |
+| inner join, pivot (the plan declines both, so the refresh evaluates in full and keys nothing) | 0 | 2n | 0 | **2** |
+
+**What changed.** `Delta.diff` now remembers the keys it mints. Each table's keys are held in an
+internal `KeyedIndex`: the keys in row order, already proved unique, and a key-to-row index that is
+built the first time something looks a key up. The index is stored against the table object, and
+the `TableDelta` the diff returns carries it for the table it diffed into. The incremental seam does
+the same for every source it keys, so a state still knows the keys of the source it last evaluated.
+A tick then works like this:
+
+- the diff reads `prior`'s keys back instead of minting them, because `prior` is the source the
+  state last keyed or the previous tick's `next`;
+- the diff mints `next`'s keys once;
+- the refresh takes `next`'s keys from the delta. It does not mint them, and it does not check
+  their uniqueness again. A row that has not moved gets the prior evaluation's token instance back
+  by comparing the token's key part in place, so it allocates nothing.
+
+After the phase the tick mints **1** key per row on every node on both hosts, from the first tick
+onwards. One exception: when the plan declines a pipeline (join, pivot), the prime keys nothing, so
+that state's FIRST tick still keys `prior` in the diff (2 per row). Every tick after it keys 1 per
+row, because the diff remembered the table that becomes the next `prior`.
+
+**What the index is not.** It is internal and opaque. It is not a field of any public type. It is held
+in two `ConditionalWeakTable`s, one keyed by the table object and one by the delta's `RowSetDelta`
+record. On .NET these tables are ephemerons; Fable compiles them to a JavaScript `WeakMap`. An entry
+lasts exactly as long as the table or delta it describes, and it is keyed by object identity, never
+by value. So:
+
+- a delta's equality and its wire form are unchanged, byte for byte. `IncrementalDelta` and the
+  `DataFrame.Conformance` law family see the same deltas they always did, and their control vector
+  does not move;
+- only the record that `Delta.diff` returned carries keys. A delta that was hand-built, composed,
+  normalised, decoded from its wire or produced by the ordinal diff carries none. The same goes for
+  `FullRefresh`, and for the diff's delta when it is handed a table object other than the one it
+  was diffed into. In all these cases the refresh mints exactly as it did before, and it returns the
+  same answer and the same footprint;
+- reuse is licensed by `RowIdentity.Scheme`. Keys remembered under one scheme are never read back
+  under another. Two witnesses that share a scheme must key every table identically, which is what
+  a scheme naming the keying rule already meant (`Delta.compose` combines deltas' keys on the same
+  promise). The `RowIdentity` doc comment now says so.
+
+The suite holds all of this:
+
+- "a tick mints each row's key once" counts one key per row on each of three ticks, for a row-local,
+  a maintained-group and a top-N pipeline. It is red on the pre-phase tree: the tick-1 diff alone
+  minted 2n. The same family checks every carrier-less delta shape listed above, a table object
+  that differs from the one diffed into, the ordinal diff and a second scheme over the same tables.
+  Each one mints as before and answers as before.
+- The 4,000-pair dense-diff equivalence now diffs each pair twice more with the keys remembered:
+  once with both sides known and once with only `before` known. It holds both answers equal to the
+  row-token model.
+
+**The Phase 272 family, re-read.** Before this phase, the "Delta.diff costs what keying the two
+tables costs" case in `ScalingTests` diffed the same two table objects on every sample. After it,
+every sample after the first would have read both tables' keys back. The case would then have
+timed a diff that mints nothing and held it against a floor it no longer pays: green, and vacuous
+(x0.62 in the first run after the change). Its samples now diff fresh table objects over the same
+columns, which is the cold diff the floor describes. It stays green at 1.7 to 1.9 times its floor,
+the figure it held after Phase 272. The unasserted "table-fed tick" case now times the caller's
+tick: the state's own prior source against a fresh `next` per sample. Neither threshold moved.
+
+**The tick on the clock, after.** The probe is Phase 272's (Release; best of five batched samples of
+at least 40 ms; a one-row edit on every Phase 262 corpus node). It now reports two ticks in the same
+run:
+
+- **three mints** reproduces the pre-phase tick's work: a cold diff of two fresh tables, then the
+  refresh handed the normalised delta, which carries no keys;
+- **one mint** is the caller's tick after this phase: the prior source the state last saw, against
+  a fresh `next`.
+
+"Pre-phase tick" is the same probe run on the pre-phase tree earlier in the session, so compare it
+to the other two columns loosely. Ratios are only compared within one run. The machine was heavily
+shared during every run: the full evaluation of `lines` at 20,000 rows read anywhere from 4 to 16 ms
+across runs. A second complete .NET run agreed in direction but not in detail. Treat single cells as
+noisy and the columns as the result.
+
+.NET 10:
+
+| node | rows | full (ms) | pre-phase tick ÷ full | three mints ÷ full | one mint ÷ full |
+|---|---:|---:|---:|---:|---:|
+| lines | 1,000 | 0.175 | 6.10× | 7.31× | 4.92× |
+| lines | 20,000 | 6.025 | 14.07× | 14.82× | 12.40× |
+| lines | 100,000 | 35.172 | 12.64× | 15.55× | 15.60× |
+| byRegion | 1,000 | 0.391 | 3.06× | 2.12× | 1.54× |
+| byRegion | 20,000 | 4.989 | 6.96× | 11.10× | 6.39× |
+| byRegion | 100,000 | 36.938 | 13.68× | 11.34× | 9.29× |
+| filter-groupby | 1,000 | 0.232 | 2.95× | 3.41× | 2.50× |
+| filter-groupby | 20,000 | 6.389 | 5.74× | 7.00× | 4.26× |
+| filter-groupby | 100,000 | 31.301 | 9.96× | 13.19× | 7.58× |
+| filter-sort-limit | 1,000 | 0.190 | 5.16× | 5.97× | 5.50× |
+| filter-sort-limit | 20,000 | 5.652 | 14.39× | 11.81× | 9.14× |
+| filter-sort-limit | 100,000 | 25.852 | 14.58× | 17.25× | 15.41× |
+| filter-groupby-filter | 1,000 | 0.438 | 3.00× | 1.85× | 1.45× |
+| filter-groupby-filter | 20,000 | 7.174 | 4.60× | 8.06× | 5.22× |
+| filter-groupby-filter | 100,000 | 39.180 | 12.54× | 11.77× | 6.11× |
+| inner join | 1,000 | 1.426 | 1.11× | 0.99× | 1.01× |
+| inner join | 20,000 | 67.211 | 1.11× | 1.38× | 0.97× |
+| inner join | 100,000 | 324.094 | 1.34× | 1.16× | 0.91× |
+| group-by high-card | 1,000 | 0.553 | 3.00× | 3.49× | 2.70× |
+| group-by high-card | 20,000 | 24.281 | 2.89× | 5.76× | 2.77× |
+| group-by high-card | 100,000 | 171.469 | 3.48× | 2.73× | 2.25× |
+| pivot | 1,000 | 0.792 | 1.31× | 1.10× | 1.61× |
+| pivot | 20,000 | 21.285 | 1.83× | 1.84× | 1.30× |
+| pivot | 100,000 | 115.977 | 1.73× | 4.14× | 1.19× |
+| window CumulSum | 1,000 | 0.645 | 2.06× | 1.77× | 2.29× |
+| window CumulSum | 20,000 | 37.008 | 1.98× | 2.34× | 2.27× |
+| window CumulSum | 100,000 | 214.289 | 2.25× | 2.16× | 1.61× |
+| sort two keys | 1,000 | 0.394 | 1.98× | 2.20× | 1.66× |
+| sort two keys | 20,000 | 12.488 | 3.35× | 4.40× | 2.34× |
+| sort two keys | 100,000 | 98.820 | 3.25× | 3.06× | 2.59× |
+
+Node 24 via Fable 5:
+
+| node | rows | full (ms) | pre-phase tick ÷ full | three mints ÷ full | one mint ÷ full |
+|---|---:|---:|---:|---:|---:|
+| lines | 1,000 | 1.438 | 1.73× | 1.74× | 1.56× |
+| lines | 20,000 | 28.500 | 2.50× | 2.81× | 2.53× |
+| lines | 100,000 | 135.000 | 3.91× | 4.53× | 4.13× |
+| byRegion | 1,000 | 2.812 | 1.07× | 1.16× | 1.22× |
+| byRegion | 20,000 | 60.008 | 1.75× | 1.75× | 1.33× |
+| byRegion | 100,000 | 274.992 | 1.82× | 1.72× | 1.24× |
+| filter-groupby | 1,000 | 1.875 | 1.08× | 1.08× | 0.92× |
+| filter-groupby | 20,000 | 41.000 | 1.31× | 1.39× | 1.12× |
+| filter-groupby | 100,000 | 175.000 | 1.76× | 1.74× | 1.44× |
+| filter-sort-limit | 1,000 | 3.125 | 0.85× | 0.90× | 0.78× |
+| filter-sort-limit | 20,000 | 60.992 | 1.55× | 1.30× | 1.28× |
+| filter-sort-limit | 100,000 | 302.000 | 1.61× | 1.49× | 1.43× |
+| filter-groupby-filter | 1,000 | 1.938 | 0.97× | 1.06× | 0.92× |
+| filter-groupby-filter | 20,000 | 39.984 | 1.43× | 1.30× | 1.00× |
+| filter-groupby-filter | 100,000 | 182.000 | 1.61× | 1.96× | 1.91× |
+| inner join | 1,000 | 8.000 | 1.10× | 0.95× | 0.84× |
+| inner join | 20,000 | 214.000 | 1.18× | 0.93× | 0.84× |
+| inner join | 100,000 | 834.000 | 1.36× | 1.11× | 1.64× |
+| group-by high-card | 1,000 | 4.000 | 1.13× | 1.13× | 1.13× |
+| group-by high-card | 20,000 | 115.992 | 1.51× | 1.56× | 1.07× |
+| group-by high-card | 100,000 | 456.000 | 1.95× | 1.57× | 1.54× |
+| pivot | 1,000 | 4.498 | 1.03× | 1.11× | 1.00× |
+| pivot | 20,000 | 88.016 | 1.22× | 1.66× | 1.27× |
+| pivot | 100,000 | 395.000 | 0.86× | 1.05× | 0.97× |
+| window CumulSum | 1,000 | 2.875 | 1.57× | 1.22× | 0.96× |
+| window CumulSum | 20,000 | 51.008 | 1.29× | 1.29× | 1.06× |
+| window CumulSum | 100,000 | 395.992 | 1.42× | 2.28× | 1.74× |
+| sort two keys | 1,000 | 4.248 | 0.69× | 2.77× | 0.62× |
+| sort two keys | 20,000 | 137.000 | 0.64× | 0.74× | 0.92× |
+| sort two keys | 100,000 | 994.992 | 1.42× | 1.23× | 0.82× |
+
+**Reading it.** The removed work is two mintings of a table's keys per tick, plus one uniqueness
+pass. Phase 272 measured that at about 5 ms at 20,000 rows and 40 ms at 100,000 on .NET, about one
+full evaluation of the cheap nodes. The tables show that much. On .NET the one-mint tick sits
+below the three-mint tick on most cheap-node cells: at 20,000 rows `byRegion` 6.4× against 11.1×,
+filter > groupBy 4.3× against 7.0×, the top-10 board 9.1× against 11.8×. Where the remaining cost
+is the refresh walk, which is large, the drop reads as small: `lines` and the top-10 board at
+100,000 rows. Isolated in the same probe, `Delta.diff` against a known prior costs between a quarter and
+two thirds of the cold diff on every node at 20,000 and 100,000 rows, typically about half.
+
+This phase does not reach the 1.5× bound. On .NET, what is left of the tick is the one minting that
+cannot be removed and the row walk. Phase 274 carries that bar.
+
+**What the tick still costs.** One `KeyString` per row of the new table per tick. That is the floor
+for this signature: a caller that hands in a whole new table has not said which rows it touched, and
+only the witness can say what a key is.
+
 ## What it does not do
 
 - **It does not maintain a delta on the OUTPUT.** A refresh returns the new table, not a description

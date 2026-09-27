@@ -125,6 +125,11 @@ type DeltaDefect =
 /// (`None` = this source has no identity for that row); `KeyString` renders it to the canonical
 /// string form the delta and its wire carry, playing the role `IdWitness.ToString` plays in the tree
 /// strand without dragging the tree witness into the witness-free columnar strand.
+///
+/// Since Phase 273 the scheme is also what licenses reusing keys: `Delta.diff` and the incremental
+/// seam remember the keys they mint for a table object under a scheme, and read them back when they
+/// meet that same object under that same scheme — so two witnesses sharing a `Scheme` must key every
+/// table identically, which is what naming the keying rule already meant.
 type RowIdentity<'Id> =
     { Scheme: string
       KeyOf: Table -> int -> 'Id option
@@ -198,6 +203,79 @@ module RowIdentity =
                     else
                         Some cells
           KeyString = DataFrame.rowTokenString }
+
+/// Phase 273 — one table's row keys, minted ONCE under one identity scheme and already proved
+/// unique: `Keys[i]` is row `i`'s `KeyString`, and `Index` maps a key back to its row. Internal and
+/// opaque — no public type names it, and nothing about a delta's equality or its wire moves.
+///
+/// Only two things build one: `Delta.diff`, for a table it keyed, and the incremental seam, for a
+/// source it keyed. Both have already checked that every row has a key and that no key repeats, so
+/// a holder may skip both checks. The index is built on first use: a diff whose rows all sat still
+/// never looks a key up, so it never pays for the hash table.
+[<Sealed; AllowNullLiteral>]
+type internal KeyedIndex(scheme: string, keys: string[], built: System.Collections.Generic.Dictionary<string, int>) =
+    let mutable index = built
+
+    member _.Scheme = scheme
+    member _.Keys = keys
+
+    member _.Index =
+        if isNull index then
+            let d = System.Collections.Generic.Dictionary<string, int>(keys.Length)
+
+            for i in 0 .. keys.Length - 1 do
+                d[keys[i]] <- i
+
+            // A benign race: two readers may both build it, and both builds are equal.
+            index <- d
+
+        index
+
+/// Phase 273 — where a table's keys and a diff's keys are remembered, so a tick mints each row's key
+/// once rather than three times (the diff keyed both tables, then the refresh keyed the new one
+/// again, although the state had already keyed the old one at the previous tick).
+///
+/// Two weak maps, keyed by OBJECT identity and never by value, so an entry lives exactly as long as
+/// the table or the delta it describes and a structurally equal copy never inherits it:
+///
+///  * a TABLE's keys under a scheme — what `Delta.diff` reads for a side it has keyed before (the
+///    `before` of a tick is the previous tick's `after`, or the source the state last evaluated);
+///  * a DELTA's keys for the table it was diffed INTO — what the refresh reads. Only the record
+///    `Delta.diff` returned carries them: a hand-built delta, a composed one, a normalised or
+///    decoded copy, an ordinal diff and `FullRefresh` carry nothing and take the minting path.
+///
+/// The reuse trusts `RowIdentity.Scheme` to name the keying rule, which is what the scheme already
+/// claims — it is the same promise `Delta.compose` relies on to combine two deltas' keys.
+[<RequireQualifiedAccess>]
+module internal KeyedIndexes =
+
+    let private byTable =
+        System.Runtime.CompilerServices.ConditionalWeakTable<Table, KeyedIndex>()
+
+    let private byDelta =
+        System.Runtime.CompilerServices.ConditionalWeakTable<RowSetDelta, Table * KeyedIndex>()
+
+    /// Remember `t`'s keys (replacing whatever was remembered for it, under any scheme).
+    let remember (t: Table) (k: KeyedIndex) : unit = byTable.AddOrUpdate(t, k)
+
+    /// `t`'s keys, when they were remembered under `scheme`.
+    let tryOf (scheme: string) (t: Table) : KeyedIndex option =
+        match byTable.TryGetValue t with
+        | true, k when k.Scheme = scheme -> Some k
+        | _ -> None
+
+    /// Attach to the delta `Delta.diff` is about to return the keys of the table it diffed into.
+    let attach (d: RowSetDelta) (into: Table) (k: KeyedIndex) : unit = byDelta.AddOrUpdate(d, (into, k))
+
+    /// The keys a delta carries for `source` under `scheme` — only when this very delta was built by
+    /// `Delta.diff` into this very table.
+    let carried (scheme: string) (d: TableDelta) (source: Table) : KeyedIndex option =
+        match d with
+        | FullRefresh -> None
+        | RowSet r ->
+            match byDelta.TryGetValue r with
+            | true, (into, k) when obj.ReferenceEquals(into, source) && k.Scheme = scheme -> Some k
+            | _ -> None
 
 /// The delta algebra: construction, validation, composition, and the projections a consumer reads.
 [<RequireQualifiedAccess>]
@@ -544,25 +622,41 @@ module Delta =
             let na = Table.rowCount after
 
             // ---- the before side: minted once, indexed once (the index IS the uniqueness check) ----
-            let bKeys: string[] = Array.zeroCreate nb
-            let bIndex = System.Collections.Generic.Dictionary<string, int>(nb)
+            //
+            // Phase 273 — or not minted at all: a table keyed before under this scheme (the previous
+            // tick's `after`, or the source the incremental state last evaluated) hands back its
+            // keys, already proved unique, and its index is built only if something below looks a
+            // key up.
+            let knownB = KeyedIndexes.tryOf idw.Scheme before
+            let knownA = KeyedIndexes.tryOf idw.Scheme after
             let mutable defect = None
-            let keyB = idw.KeyOf before
-            let mutable i = 0
 
-            while defect.IsNone && i < nb do
-                match keyB i with
-                | None -> defect <- Some(MissingIdentity(idw.Scheme, i))
-                | Some id ->
-                    let k = idw.KeyString id
+            let (bKeys: string[]), (bKnown: KeyedIndex) =
+                match knownB with
+                | Some k -> k.Keys, k
+                | None ->
+                    let keys: string[] = Array.zeroCreate nb
+                    let index = System.Collections.Generic.Dictionary<string, int>(nb)
+                    let keyB = idw.KeyOf before
+                    let mutable i = 0
 
-                    if bIndex.ContainsKey k then
-                        defect <- Some(DuplicateIdentity(idw.Scheme, k))
-                    else
-                        bIndex[k] <- i
-                        bKeys[i] <- k
+                    while defect.IsNone && i < nb do
+                        match keyB i with
+                        | None -> defect <- Some(MissingIdentity(idw.Scheme, i))
+                        | Some id ->
+                            let k = idw.KeyString id
 
-                i <- i + 1
+                            if index.ContainsKey k then
+                                defect <- Some(DuplicateIdentity(idw.Scheme, k))
+                            else
+                                index[k] <- i
+                                keys[i] <- k
+
+                        i <- i + 1
+
+                    keys, KeyedIndex(idw.Scheme, keys, index)
+
+            let bIndex () = bKnown.Index
 
             // ---- the after side: a key at the same index as before needs no lookup ----
             //
@@ -572,23 +666,43 @@ module Delta =
             // A key `k` at row `i` repeats an EARLIER after row exactly when it is already in
             // `moved`, or when it is before row `j`'s key for some `j < i` that after row `j` holds
             // in place — the two ways an earlier row can hold it.
-            let aKeys: string[] = Array.zeroCreate na
+            let aKeys: string[] =
+                match knownA with
+                | Some k -> k.Keys
+                | None -> Array.zeroCreate na
+
             let inPlace: bool[] = Array.zeroCreate na
             let moved = System.Collections.Generic.HashSet<string>()
             // `moved` is consulted only once something has moved, so an edit in place never hashes an
             // after key at all. A flag rather than `moved.Count`, which the Fable runtime computes by
             // walking its buckets (see `CellKey.slotOf`).
             let mutable anyMoved = false
-            let keyA = if defect.IsNone then idw.KeyOf after else (fun _ -> None)
-            i <- 0
+            // A known `after` is keyed already and proved unique: its keys are read, not minted, and
+            // the walk below only classifies them.
+            let keyA =
+                if defect.IsNone && knownA.IsNone then
+                    idw.KeyOf after
+                else
+                    (fun _ -> None)
+
+            let mutable i = 0
 
             while defect.IsNone && i < na do
-                match keyA i with
-                | None -> defect <- Some(MissingIdentity(idw.Scheme, i))
-                | Some id ->
-                    let k = idw.KeyString id
-                    aKeys[i] <- k
+                let mutable have = true
+                let mutable k = ""
 
+                if knownA.IsSome then
+                    k <- aKeys[i]
+                else
+                    match keyA i with
+                    | None ->
+                        defect <- Some(MissingIdentity(idw.Scheme, i))
+                        have <- false
+                    | Some id ->
+                        k <- idw.KeyString id
+                        aKeys[i] <- k
+
+                if have then
                     if i < nb && System.String.Equals(k, bKeys[i]) then
                         if anyMoved && moved.Contains k then
                             defect <- Some(DuplicateIdentity(idw.Scheme, k))
@@ -596,7 +710,7 @@ module Delta =
                             inPlace[i] <- true
                     else
                         let heldEarlierInPlace =
-                            match bIndex.TryGetValue k with
+                            match bIndex().TryGetValue k with
                             | true, j -> j < i && j < na && inPlace[j]
                             | _ -> false
 
@@ -685,7 +799,7 @@ module Delta =
                         if changed[r] then
                             rows.Add((ByKey aKeys[r], RowChanged))
                     else
-                        match bIndex.TryGetValue aKeys[r] with
+                        match bIndex().TryGetValue aKeys[r] with
                         | true, bi ->
                             // present at both ends; byte-identical content is not a change
                             if rowDiffers bi r then
@@ -700,12 +814,27 @@ module Delta =
                     if not ((r < na && inPlace[r]) || (anyMoved && moved.Contains k)) then
                         rows.Add((ByKey k, RowRemoved))
 
-                Ok(
-                    RowSet
-                        { Scheme = idw.Scheme
-                          Rows = sortRows (List.ofSeq rows)
-                          InvalidatedColumns = [] }
-                )
+                // Phase 273 — both tables are now keyed and proved unique under this scheme. Remember
+                // them, so the next tick's diff (whose `before` is this `after`) mints nothing for
+                // that side, and let the delta carry `after`'s keys to the refresh.
+                if knownB.IsNone then
+                    KeyedIndexes.remember before bKnown
+
+                let aKnown =
+                    match knownA with
+                    | Some k -> k
+                    | None ->
+                        let k = KeyedIndex(idw.Scheme, aKeys, null)
+                        KeyedIndexes.remember after k
+                        k
+
+                let delta =
+                    { Scheme = idw.Scheme
+                      Rows = sortRows (List.ofSeq rows)
+                      InvalidatedColumns = [] }
+
+                KeyedIndexes.attach delta after aKnown
+                Ok(RowSet delta)
 
     /// The delta from `before` to `after` for a source with NO identity — rows compared by position,
     /// under the reserved `ordinal` scheme. This is the deliberate fallback, not a default: a

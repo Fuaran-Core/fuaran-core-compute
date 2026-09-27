@@ -101,6 +101,13 @@ this version together; `0.34.0` is tagged, so the additions advance the slot rat
   `Error`; `Plan.rewrite` is idempotent; a step `isTotal` admits never errors over the drawn table.
   `Guarded` over the rewrite classes: fusion, pruning and a reorder must each be reached, a reorder
   declined, and the refused arm drawn.
+- **No surface change — a tick mints each row's key once (Phase 273).** `Delta.diff` remembers the
+  keys it mints for a table object, reads them back when it meets that object again under the same
+  `RowIdentity.Scheme`, and the delta it returns carries the new table's keys to `Incremental.refresh`,
+  which keys the source itself only when the delta carries none (hand-built, composed, decoded,
+  ordinal, or diffed into another table object). Every answer, footprint, delta and wire byte is
+  unchanged. The one sharpened reading: two witnesses sharing a `Scheme` must key every table
+  identically, which is what a scheme naming its keying rule already meant.
 
 ## 0.34.0 — released 2026-09-27 as `v0.34.0`
 
