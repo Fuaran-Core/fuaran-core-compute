@@ -501,6 +501,171 @@ whose chunks are all the prior's touches none and reports `ReusedPrior`. The mod
 flat edit `apply` performs, and every chunk before and after the one holding the row is the chunk
 it was.
 
+### A table-fed tick — the diff and the refresh against the evaluation they replace (Phase 272)
+
+Everything above prices the REFRESH. A caller that is handed a fresh `Table` each tick — a
+server-driven transform over a binding's resolved source, a renderer's binding resolver, the Fable
+smoke host — pays more than that: it runs `Delta.diff` against the prior source to learn what moved,
+then `Incremental.refreshOn`. Its alternative is not a refresh, it is one full evaluation of the new
+source. So the figure that decides whether the seam is worth adopting from a table is **(diff +
+refresh) ÷ full evaluation**, and until Phase 272 nothing measured it.
+
+**How it was measured.** Every node of the Phase 262 benchmark corpus, driven through the seam: the
+sheet's `lines` and `byRegion` over `orders`, the three `Scaling` pipelines over their table, and the
+five shapes (an inner join on a permuted key, a group-by over n/2 distinct keys, a pivot over 50
+on-values, a one-partition `CumulSum` window, a two-key sort) over generated tables of the same
+build at the same sizes, with an integer `rid` identity column added where the shape's own table
+has no unique column. One cell of the middle row is edited (a measure, never the key); the state is
+primed on the unedited table; each figure is the best of five batched samples of at least 40 ms,
+after two warm-up calls, taken by one program compiled for .NET 10 (Release) and by Fable 5 for node
+24, on one Windows 11 Arm64 machine shared with other sessions. The full evaluation is the PLANNED
+one (`DataFrame.evalPipelineInEnv`, which plans since Phase 269), because that is what the caller
+would otherwise run. Every refresh was checked equal to the full evaluation before it was timed.
+
+**The baseline, and the dense diff.** "Tick" is (diff + refresh) ÷ full. The refresh column is the
+row-local walk, unchanged by this phase; the "before" diff is the row-token diff this phase replaced,
+the "after" one the dense form it shipped. .NET, Release:
+
+| node | rows | full | refresh | diff, before | tick, before | diff, after | tick, after |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `lines` | 1,000 | 0.15 ms | 0.65 ms | 2.96 ms | 24.0× | 0.33 ms | 7.5× |
+| `lines` | 20,000 | 3.25 ms | 38.6 ms | 109 ms | 45.5× | 10.4 ms | 13.4× |
+| `lines` | 100,000 | 27.8 ms | 436 ms | 634 ms | 38.5× | 62.4 ms | 19.7× |
+| `byRegion` | 1,000 | 0.30 ms | 0.51 ms | 3.06 ms | 11.7× | 0.15 ms | 3.1× |
+| `byRegion` | 20,000 | 4.40 ms | 23.5 ms | 127 ms | 34.1× | 10.0 ms | 9.0× |
+| `byRegion` | 100,000 | 28.8 ms | 271 ms | 685 ms | 33.2× | 63.0 ms | 12.8× |
+| filter > groupBy | 1,000 | 0.18 ms | 0.36 ms | 2.58 ms | 16.4× | 0.16 ms | 2.9× |
+| filter > groupBy | 20,000 | 5.18 ms | 19.3 ms | 115 ms | 25.9× | 9.53 ms | 5.0× |
+| filter > groupBy | 100,000 | 26.2 ms | 163 ms | 679 ms | 32.1× | 62.2 ms | 9.5× |
+| filter > sort > limit 10 | 1,000 | 0.16 ms | 0.66 ms | 2.61 ms | 21.1× | 0.16 ms | 2.4× |
+| filter > sort > limit 10 | 20,000 | 3.61 ms | 25.4 ms | 115 ms | 38.8× | 8.99 ms | 11.5× |
+| filter > sort > limit 10 | 100,000 | 18.6 ms | 209 ms | 663 ms | 47.0× | 61.8 ms | 16.3× |
+| filter > groupBy > filter | 1,000 | 0.18 ms | 0.40 ms | 2.38 ms | 15.4× | 0.15 ms | 3.1× |
+| filter > groupBy > filter | 20,000 | 4.67 ms | 17.1 ms | 118 ms | 28.9× | 6.81 ms | 3.7× |
+| filter > groupBy > filter | 100,000 | 22.1 ms | 160 ms | 702 ms | 39.1× | 64.1 ms | 9.2× |
+| inner join (declined) | 1,000 | 0.81 ms | 0.83 ms | 2.19 ms | 3.7× | 0.16 ms | 1.3× |
+| inner join (declined) | 20,000 | 42.4 ms | 45.7 ms | 113 ms | 3.8× | 15.9 ms | 1.3× |
+| inner join (declined) | 100,000 | 187 ms | 211 ms | 1,048 ms | 6.7× | 67.9 ms | 1.3× |
+| group-by, n/2 keys | 1,000 | 0.39 ms | 0.97 ms | 2.56 ms | 9.1× | 0.18 ms | 3.1× |
+| group-by, n/2 keys | 20,000 | 13.9 ms | 42.4 ms | 106 ms | 10.7× | 12.3 ms | 3.4× |
+| group-by, n/2 keys | 100,000 | 85.5 ms | 255 ms | 594 ms | 9.9× | 98.3 ms | 3.8× |
+| pivot, 50 on-values (declined) | 1,000 | 0.50 ms | 0.50 ms | 2.68 ms | 6.3× | 0.19 ms | 1.3× |
+| pivot, 50 on-values (declined) | 20,000 | 16.9 ms | 17.6 ms | 115 ms | 7.8× | 10.9 ms | 1.6× |
+| pivot, 50 on-values (declined) | 100,000 | 73.3 ms | 76.2 ms | 639 ms | 9.8× | 72.3 ms | 1.7× |
+| window `CumulSum` | 1,000 | 0.47 ms | 0.76 ms | 2.20 ms | 6.3× | 0.16 ms | 1.8× |
+| window `CumulSum` | 20,000 | 27.3 ms | 45.8 ms | 98.6 ms | 5.3× | 11.4 ms | 1.9× |
+| window `CumulSum` | 100,000 | 170 ms | 280 ms | 650 ms | 5.5× | 67.8 ms | 2.1× |
+| sort on two keys | 1,000 | 0.33 ms | 0.51 ms | 2.15 ms | 8.2× | 0.17 ms | 1.4× |
+| sort on two keys | 20,000 | 11.3 ms | 31.6 ms | 113 ms | 12.8× | 10.8 ms | 4.1× |
+| sort on two keys | 100,000 | 76.6 ms | 199 ms | 927 ms | 14.7× | 62.3 ms | 2.6× |
+
+The "after" ticks are each run's own ratio; the machine was loaded and the second run's full
+evaluations came in up to 1.5 times slower than the first's, so read the "after" tick as the
+post-phase figure rather than dividing the first columns afresh. node 24, the same program through
+Fable:
+
+| node | rows | full | refresh | diff, before | tick, before | diff, after | tick, after |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `lines` | 1,000 | 1.38 ms | 1.84 ms | 10.0 ms | 8.6× | 0.45 ms | 1.7× |
+| `lines` | 20,000 | 31.0 ms | 77.0 ms | 249 ms | 10.5× | 15.3 ms | 2.7× |
+| `lines` | 100,000 | 119 ms | 399 ms | 1,285 ms | 14.2× | 52.0 ms | 3.6× |
+| `byRegion` | 1,000 | 1.94 ms | 1.69 ms | 8.88 ms | 5.5× | 0.47 ms | 1.2× |
+| `byRegion` | 20,000 | 44.0 ms | 42.0 ms | 253 ms | 6.7× | 19.5 ms | 1.4× |
+| `byRegion` | 100,000 | 184 ms | 301 ms | 1,304 ms | 8.7× | 70.0 ms | 1.9× |
+| filter > groupBy | 1,000 | 2.16 ms | 1.47 ms | 8.37 ms | 4.6× | 0.46 ms | 1.1× |
+| filter > groupBy | 20,000 | 35.5 ms | 34.5 ms | 207 ms | 6.8× | 14.5 ms | 1.4× |
+| filter > groupBy | 100,000 | 171 ms | 253 ms | 1,138 ms | 8.1× | 49.0 ms | 1.7× |
+| filter > sort > limit 10 | 1,000 | 3.13 ms | 2.31 ms | 8.37 ms | 3.4× | 0.44 ms | **0.86×** |
+| filter > sort > limit 10 | 20,000 | 70.0 ms | 82.0 ms | 224 ms | 4.4× | 11.5 ms | 1.4× |
+| filter > sort > limit 10 | 100,000 | 286 ms | 403 ms | 1,145 ms | 5.4× | 51.0 ms | 1.5× |
+| filter > groupBy > filter | 1,000 | 1.84 ms | 1.50 ms | 7.88 ms | 5.1× | 0.45 ms | **0.97×** |
+| filter > groupBy > filter | 20,000 | 42.0 ms | 41.0 ms | 242 ms | 6.7× | 21.5 ms | 1.6× |
+| filter > groupBy > filter | 100,000 | 175 ms | 217 ms | 1,150 ms | 7.8× | 60.0 ms | 1.7× |
+| inner join (declined) | 1,000 | 4.88 ms | 4.88 ms | 6.38 ms | 2.3× | 0.45 ms | 1.1× |
+| inner join (declined) | 20,000 | 125 ms | 144 ms | 222 ms | 2.9× | 16.5 ms | 1.2× |
+| inner join (declined) | 100,000 | 697 ms | 864 ms | 1,511 ms | 3.4× | 76.0 ms | 1.2× |
+| group-by, n/2 keys | 1,000 | 3.06 ms | 3.25 ms | 8.12 ms | 3.7× | 0.48 ms | 1.2× |
+| group-by, n/2 keys | 20,000 | 69.0 ms | 87.0 ms | 234 ms | 4.7× | 18.0 ms | 1.6× |
+| group-by, n/2 keys | 100,000 | 322 ms | 492 ms | 1,254 ms | 5.4× | 62.0 ms | 1.8× |
+| pivot, 50 on-values (declined) | 1,000 | 3.44 ms | 3.50 ms | 9.25 ms | 3.7× | 0.48 ms | 1.1× |
+| pivot, 50 on-values (declined) | 20,000 | 68.0 ms | 68.0 ms | 250 ms | 4.7× | 14.5 ms | 1.2× |
+| pivot, 50 on-values (declined) | 100,000 | 335 ms | 339 ms | 1,447 ms | 5.3× | 65.0 ms | 1.2× |
+| window `CumulSum` | 1,000 | 2.19 ms | 2.00 ms | 7.25 ms | 4.2× | 0.45 ms | 1.1× |
+| window `CumulSum` | 20,000 | 45.0 ms | 48.0 ms | 198 ms | 5.5× | 11.0 ms | 1.3× |
+| window `CumulSum` | 100,000 | 240 ms | 296 ms | 1,082 ms | 5.7× | 58.0 ms | 1.5× |
+| sort on two keys | 1,000 | 2.63 ms | 1.56 ms | 6.38 ms | 3.0× | 0.46 ms | **0.73×** |
+| sort on two keys | 20,000 | 89.0 ms | 43.0 ms | 201 ms | 2.7× | 16.8 ms | **0.71×** |
+| sort on two keys | 100,000 | 553 ms | 317 ms | 1,233 ms | 2.8× | 57.0 ms | **0.64×** |
+
+**Read the baseline first.** Before this phase no node, at any size, on either host, had a tick
+below the full evaluation, and on .NET the median node paid about twenty-five full evaluations per tick
+at 100,000 rows. The diff was most of it — four to thirty-six times the evaluation on .NET, one to
+eleven on node — and the refresh the rest. On .NET the walk lost to the evaluation on every node at
+every size, down to 8 rows (a separate run at 8, 32, 128 and 512 rows found no size where it won);
+on node it won on six of the ten nodes at 1,000 rows and on the two-key sort at every size, because
+the JavaScript evaluator's sort and hash grouping cost more relative to the walk's bookkeeping than
+.NET's do.
+
+**The outcome is A — by the phase's own definition, and only on node.** After the dense diff the
+table-fed tick is CHEAPER than the evaluation on node for the two-key sort at every size (0.64× to
+0.73×) and for the top-10 board and the group tail at 1,000 rows. On .NET it is cheaper nowhere.
+So the entry point stays, and no deprecation is proposed.
+
+**The 1.5× bound the phase set out to enforce cannot be met from this entry point on .NET, and that
+is a finding about the signature, not about the implementation.** A diff by identity must ask the
+witness for every row's key in BOTH tables — `RowIdentity.KeyString` is opaque, and it is the only
+thing that can say what a key is — and must prove each table's keys unique, which is a hash pass.
+Measured on its own, in Release, over `orders` (an integer key, so the cheapest `cellToken` there
+is): minting one table's keys cost 2.7 ms at 20,000 rows and 20.7 ms at 100,000, and minting and
+indexing it 5.4 ms and 21.9 ms, against a full evaluation of `lines` of 3.4 ms and 25 to 37 ms. The
+diff's floor — both tables keyed, one indexed — is therefore 1.2 to 2.4 full evaluations of the
+cheap nodes before the refresh has done anything, and the dense diff sits at about twice its
+keying, which is where the new family holds it. The refresh adds its own floor on top: `tokensOf`
+mints one identity token per source row (`"k:" + KeyString`), 5.5 ms at 20,000 rows and 27 ms at
+100,000, already about one full evaluation, and the walk then builds one `Work` record per row. No
+rearrangement inside `Delta.fs` and `Incremental.fs` reaches 1.5× for `lines` at 100,000 rows on
+.NET while the caller computes the diff itself and hands the refresh a table.
+
+**What this phase therefore did, and did not do.**
+
+- **Route (a), on the diff: done.** `Delta.diff` is dense (see its doc comment): each table keyed
+  once into an array, a row that sits where it sat paired by one string comparison, "changed"
+  decided cell by cell under token equality, a column whose cell list is shared between the two
+  tables not read for those rows. Ten times cheaper at 100,000 rows on .NET (634 ms to 62 ms) and
+  twenty-five times on node (1,285 ms to 52 ms); the per-tick cost of every table-fed caller falls
+  by that much with no change on its side. The answer is the old one: the suite holds the dense diff
+  equal to the row-token diff it replaced, refusals and their order included, over 4,000 drawn pairs
+  that reach moved rows, in-place edits, shared column lists, ragged columns, `-0.0` and `NaN` cells
+  and both refusals, under a single-column and a composite witness.
+- **Route (a), on the walk: not attempted.** Its floor (`tokensOf`, above) is already about one
+  evaluation on .NET, so making the rest of the walk dense would move `lines` at 100,000 rows from
+  about seventeen evaluations to something above two, and could not reach the bound. It is worth
+  doing for its own sake, and it is a rewrite of the walk's row-at-a-time `Work` frame into
+  columns, which is a phase of its own.
+- **Route (b), degrading by plan: not taken, and left for a decision.** Three findings stand against
+  it. Degrading every table-fed refresh changes what `refresh` REPORTS as well as what it costs:
+  every restricted footprint becomes `FullRecompute`, which moves the incremental-recompute corpus's
+  control vector (whose footprints must reproduce exactly), breaks the conformance family's law that
+  an incrementalisable pipeline under a well-formed identity delta is not answered by a full
+  evaluation, and empties the refresh classes its sample-adequacy demands require. It would make
+  node callers SLOWER on the shapes where the walk wins there, since no static rule is
+  host-specific. And it still would not meet the bound on .NET, because the diff's floor alone
+  exceeds it. A degrade that fires only above a row count would sidestep the first finding without
+  resting on any measurement (the walk loses on .NET at 8 rows too), so it was not written either.
+  No degrade reason was added, so the decline list is unchanged.
+- **The loss bounds** `cheapRefreshLossBound` and `topNRefreshLossBound` in `ScalingTests.fs` stand
+  as they were: they bound the refresh, and nothing here moved the refresh.
+
+**The invariant the new family enforces.** `Scaling`'s "Delta.diff costs what keying the two tables
+costs" holds the diff to at most **three times its floor** — the minting of both tables' keys
+through the same witness — at 1,000 and 20,000 rows, best of five, no absolute time. Held against
+the floor rather than the evaluator, it cannot need loosening when the evaluator gets faster, which
+is the failure this phase was cut to stop. It was red on the pre-phase tree by a factor of eighteen
+(the row-token diff at 53 times its floor: 154.2 ms against 2.89 ms at 20,000 rows, Debug) and is
+green at 1.7 to 2.0 times after. Beside it, "the table-fed tick" prints (diff + refresh) ÷ full for
+the three `Scaling` pipelines on every gate run, unasserted, so the counter-example to the 1.5×
+claim travels with the claim the family does make.
+
 ## What it does not do
 
 - **It does not maintain a delta on the OUTPUT.** A refresh returns the new table, not a description

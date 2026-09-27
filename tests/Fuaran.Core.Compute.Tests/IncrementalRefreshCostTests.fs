@@ -905,3 +905,306 @@ let chunkedRefreshTests =
               let s1 = ok (Incremental.primeOnPrepared orderId [] (DataFrame.prepare t))
               Expect.equal (Incremental.result s1) t "the identity pipeline hands the table back"
               Expect.equal (Incremental.chunksTouched s1) (Some 1) "one chunk, shared through" ]
+
+// ---------------------------------------------------------------------------
+//  Phase 272 — the dense `Delta.diff` held equal to the row-token diff it
+//  replaced.
+//
+//  The diff is the other half of what a table-fed caller pays per tick (it runs
+//  `Delta.diff` against the prior source, then `Incremental.refreshOn`), and until
+//  this phase it cost up to thirty-six times the evaluation it fed: a persistent
+//  `Set` and two `Map`s over the key strings, and a length-prefixed token STRING
+//  minted for every row of both tables to decide "changed". The dense form keys
+//  each table once into an array, pairs a row that sits where it sat by one
+//  string comparison, and compares cells under `CellKey.equals`. It is a new
+//  implementation of an old answer, so the old implementation is kept below as
+//  its MODEL and the two are held equal — table for table, refusal for refusal —
+//  over drawn pairs that reach every path the dense form added.
+// ---------------------------------------------------------------------------
+
+/// The pre-272 `Delta.diff`, in substance: the model the dense form must agree with.
+let private rowTokenDiff (idw: RowIdentity<'Id>) (before: Table) (after: Table) : Result<TableDelta, DeltaDefect> =
+    if before.Schema <> after.Schema then
+        Ok FullRefresh
+    else
+        let keyIndex (t: Table) =
+            let n = Table.rowCount t
+            let keyAt = idw.KeyOf t
+
+            let rec go i acc (seen: Set<string>) =
+                if i >= n then
+                    Ok(List.rev acc)
+                else
+                    match keyAt i with
+                    | None -> Error(MissingIdentity(idw.Scheme, i))
+                    | Some id ->
+                        let k = idw.KeyString id
+
+                        if Set.contains k seen then
+                            Error(DuplicateIdentity(idw.Scheme, k))
+                        else
+                            go (i + 1) ((k, i) :: acc) (Set.add k seen)
+
+            go 0 [] Set.empty
+
+        let tokens (t: Table) =
+            RowAccess.rows t |> List.map DataFrame.rowTokenStringOfArray |> List.toArray
+
+        keyIndex before
+        |> Result.bind (fun bk ->
+            keyIndex after
+            |> Result.map (fun ak ->
+                let bm = Map.ofList bk
+                let am = Map.ofList ak
+                let bt = tokens before
+                let at = tokens after
+
+                let fromAfter =
+                    ak
+                    |> List.choose (fun (k, ai) ->
+                        match Map.tryFind k bm with
+                        | None -> Some(ByKey k, RowAdded)
+                        | Some bi -> if bt[bi] = at[ai] then None else Some(ByKey k, RowChanged))
+
+                let removed =
+                    bk
+                    |> List.filter (fun (k, _) -> not (Map.containsKey k am))
+                    |> List.map (fun (k, _) -> ByKey k, RowRemoved)
+
+                Delta.normalise (
+                    RowSet
+                        { Scheme = idw.Scheme
+                          Rows = fromAfter @ removed
+                          InvalidatedColumns = [] }
+                )))
+
+let private diffSchema: Schema = [ "id", StringType; "v", IntType; "w", FloatType ]
+
+/// The cells a drawn row takes: a small key pool so inserts collide with live keys, and the floats
+/// token equality treats specially (`-0.0` equal to `0.0`, every `NaN` one value) beside `Null`.
+let private diffKeys = [| for i in 0..11 -> Str("k" + string i) |]
+let private diffInts = [| Int 1; Int 2; Int -3; Null |]
+let private diffFloats = [| Float 0.0; Float -0.0; Float nan; Float 1.5; Null |]
+
+let private tableOfRows (rows: Cell[] list) : Table =
+    { Schema = diffSchema
+      Columns =
+        diffSchema
+        |> List.mapi (fun ci (name, ty) -> Column.create name ty (rows |> List.map (fun r -> r[ci]))) }
+
+/// What a drawn pair exercised, so the family can demand it reached every path rather than assume it.
+type private DiffCase =
+    { Answered: bool
+      Moved: bool
+      InPlaceChange: bool
+      SharedColumn: bool
+      Ragged: bool }
+
+/// Replace a row's key cell.
+let private withKey (k: Cell) (r: Cell[]) : Cell[] = Array.append [| k |] r[1..]
+
+/// One drawn (before, after) pair and what it reaches.
+let private drawDiffPair (rng: System.Random) : Table * Table * DiffCase =
+    let n = rng.Next(0, 9)
+    let order = [| 0..11 |] |> Array.sortBy (fun _ -> rng.Next())
+
+    let row (k: Cell) =
+        [| k
+           diffInts[rng.Next diffInts.Length]
+           diffFloats[rng.Next diffFloats.Length] |]
+
+    let mutable before = [ for i in 0 .. n - 1 -> row diffKeys[order[i]] ]
+
+    // An occasional defect in the BEFORE table: a repeated key, or a row with no key.
+    if n > 1 && rng.Next 12 = 0 then
+        let first = before.Head[0]
+        before <- before |> List.mapi (fun i r -> if i = n - 1 then withKey first r else r)
+
+    if n > 0 && rng.Next 14 = 0 then
+        let at = rng.Next n
+        before <- before |> List.mapi (fun i r -> if i = at then withKey Null r else r)
+
+    let mutable after = before |> List.map Array.copy
+    let mutable moved = false
+
+    for _ in 1 .. rng.Next(0, 4) do
+        let len = List.length after
+
+        match rng.Next 6 with
+        | 0 when len > 0 ->
+            // edit one non-key cell in place
+            let at = rng.Next len
+            let ci = 1 + rng.Next 2
+
+            let cell =
+                if ci = 1 then
+                    diffInts[rng.Next diffInts.Length]
+                else
+                    diffFloats[rng.Next diffFloats.Length]
+
+            after <-
+                after
+                |> List.mapi (fun i r ->
+                    if i <> at then
+                        r
+                    else
+                        let r' = Array.copy r
+                        r'[ci] <- cell
+                        r')
+        | 1 when len > 0 ->
+            // delete a row: every row after it moves up one
+            let at = rng.Next len
+            after <- after |> List.indexed |> List.filter (fun (i, _) -> i <> at) |> List.map snd
+            moved <- true
+        | 2 ->
+            // insert a row with a key from the pool, which may already be live (a duplicate)
+            let at = rng.Next(len + 1)
+            let r = row diffKeys[rng.Next diffKeys.Length]
+            after <- List.take at after @ [ r ] @ List.skip at after
+            moved <- true
+        | 3 when len > 1 ->
+            // swap two rows
+            let a = rng.Next len
+            let b = rng.Next len
+            let arr = List.toArray after
+            let t = arr[a]
+            arr[a] <- arr[b]
+            arr[b] <- t
+            after <- List.ofArray arr
+            moved <- moved || a <> b
+        | 4 when len > 0 && rng.Next 4 = 0 ->
+            // take a row's key away in the AFTER table
+            let at = rng.Next len
+            after <- after |> List.mapi (fun i r -> if i = at then withKey Null r else r)
+        | _ -> ()
+
+    let bt = tableOfRows before
+    let at0 = tableOfRows after
+
+    // Share every column whose cells did not move as the SAME list, as an edit through `ColumnOps`
+    // does — the path on which the dense diff does not read that column for the rows in place.
+    let mutable shared = false
+
+    let at1 =
+        { at0 with
+            Columns =
+                List.map2
+                    (fun (b: Column) (a: Column) ->
+                        if b.Cells = a.Cells && rng.Next 2 = 0 then
+                            shared <- true
+                            b
+                        else
+                            a)
+                    bt.Columns
+                    at0.Columns }
+
+    // An occasional RAGGED column (shorter than the table), which both forms read as `Null` past its
+    // end.
+    let ragged = rng.Next 10 = 0 && Table.rowCount at1 > 0
+
+    let at =
+        if ragged then
+            { at1 with
+                Columns =
+                    at1.Columns
+                    |> List.map (fun c ->
+                        if c.Name = "w" then
+                            { c with
+                                Cells = List.truncate (List.length c.Cells - 1) c.Cells }
+                        else
+                            c) }
+        else
+            at1
+
+    let inPlaceChange =
+        List.length before = List.length after
+        && List.exists2 (fun (b: Cell[]) (a: Cell[]) -> b[0] = a[0] && b <> a) before after
+
+    bt,
+    at,
+    { Answered = false
+      Moved = moved
+      InPlaceChange = inPlaceChange
+      SharedColumn = shared
+      Ragged = ragged }
+
+[<Tests>]
+let denseDiffTests =
+    testList
+        "Delta.diff (dense)"
+        [ testCase "the dense diff answers exactly what the row-token diff answered, refusals included"
+          <| fun _ ->
+              let rng = System.Random 272
+              let byId = RowIdentity.byColumn "id"
+              // A composite key whose value MOVES when an in-place edit touches `v`, so the in-place
+              // pairing has to fall back to a lookup.
+              let byPair = RowIdentity.byColumns [ "id"; "v" ]
+              let mutable reached = []
+
+              for iter in 1..4000 do
+                  let before, after, case = drawDiffPair rng
+
+                  let actual = Delta.diff byId before after
+                  let expected = rowTokenDiff byId before after
+
+                  if actual <> expected then
+                      failtestf
+                          "iter %d (byColumn): dense %A\n  row-token %A\n  before %A\n  after %A"
+                          iter
+                          actual
+                          expected
+                          before
+                          after
+
+                  let actual2 = Delta.diff byPair before after
+                  let expected2 = rowTokenDiff byPair before after
+
+                  if actual2 <> expected2 then
+                      failtestf
+                          "iter %d (byColumns): dense %A\n  row-token %A\n  before %A\n  after %A"
+                          iter
+                          actual2
+                          expected2
+                          before
+                          after
+
+                  reached <-
+                      { case with
+                          Answered = Result.isOk actual }
+                      :: reached
+
+              // The vacuity guard: the equality above is only worth what the draws reached.
+              let count p = reached |> List.filter p |> List.length
+
+              let demands =
+                  [ "an answered pair", (fun c -> c.Answered)
+                    "a refused pair", (fun c -> not c.Answered)
+                    "an answered pair where a row moved", (fun c -> c.Answered && c.Moved)
+                    "an answered in-place change", (fun c -> c.Answered && c.InPlaceChange)
+                    "an answered pair sharing a column list", (fun c -> c.Answered && c.SharedColumn)
+                    "an answered pair with a ragged column", (fun c -> c.Answered && c.Ragged) ]
+
+              for label, p in demands do
+                  printfn "  [dense diff] %-40s %5d" label (count p)
+                  Expect.isGreaterThan (count p) 20 (sprintf "the draws must reach %s" label)
+
+          testCase "a refusal in BEFORE is reported ahead of one in AFTER, and each names the first offending row"
+          <| fun _ ->
+              let idw = RowIdentity.byColumn "id"
+
+              let t keys =
+                  tableOfRows [ for k in keys -> [| k; Int 1; Float 0.0 |] ]
+
+              let a = Str "a"
+              let b = Str "b"
+
+              for before, after in
+                  [ t [ a; a ], t [ Null ]
+                    t [ a; b ], t [ b; b ]
+                    t [ a; b ], t [ a; Null; a ]
+                    t [ a; b ], t [ b; a; a ]
+                    t [ a; b ], t [ a; b; a ]
+                    t [ a; b ], t [ a; a ] ] do
+                  let got = Delta.diff idw before after
+                  Expect.isError got (sprintf "%A -> %A refuses" before after)
+                  Expect.equal got (rowTokenDiff idw before after) (sprintf "%A -> %A" before after) ]

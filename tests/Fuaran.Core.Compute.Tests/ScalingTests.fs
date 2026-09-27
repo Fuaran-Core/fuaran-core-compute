@@ -42,6 +42,12 @@ module Fuaran.Core.Tests.ScalingTests
 //  fast, and two of those one-comparison cases (the plain grouping and the group
 //  tail) became a bounded LOSS rather than a win: see `cheapRefreshLossBound`.
 //  The costly-expression cases and the top-N case still assert the win.
+//
+//  Phase 272 added the table-fed caller's other half: `Delta.diff`, which such
+//  a caller runs before every refresh and which cost up to thirty-six times the
+//  evaluation it fed. It is held against its own floor (the keying of both
+//  tables), and the whole tick is measured and printed beside it, unasserted,
+//  with the reason in that case's comment.
 // ---------------------------------------------------------------------------
 
 open System.Diagnostics
@@ -133,6 +139,24 @@ let private cheapRefreshLossBound = 4.0
 /// the loss measured and below the ten times the pre-208 seam lost by. Whether the seam should win
 /// this case again is a question for its per-row bookkeeping, which is where the 41 ms goes.
 let private topNRefreshLossBound = 5.0
+
+// Phase 272 was asked to retire the bound above and `cheapRefreshLossBound` into one family holding
+// `Delta.diff` + refresh to 1.5 times the full evaluation, and measured why that family cannot be
+// green from the table-fed entry point: see the "table-fed tick" case below and "What it costs on
+// the clock" in docs/incremental-evaluation.md. Both bounds therefore stand as they were; neither
+// was loosened.
+
+/// Phase 272 — how much `Delta.diff` may cost beyond minting both tables' keys through the witness,
+/// which is the floor of any diff by identity (`KeyString` is the only thing that can say what a key
+/// is, and a diff must know every row's key in both tables).
+///
+/// Measured on this family's Debug build, 20,000 rows, the same machine and the same hour: the
+/// row-token diff this phase replaced cost 154.2 ms against a keying floor of 2.89 ms — 53 times its
+/// floor, and fourteen times the full evaluation of `pipeline` (10.9 ms) — so this bound is red on
+/// the pre-phase tree by a factor of eighteen. The dense diff costs 5.6 ms against 3.0 to 3.3 ms, 1.7
+/// to 2.0 times, at both sizes. Three leaves half as much again for a loaded machine; it is not a
+/// number to raise when the evaluator moves, because the evaluator is not in it.
+let private diffFloorBound = 3.0
 
 /// A table of `n` rows over four columns — a string identity, a grouping key of bounded cardinality,
 /// and two integer measures. The identity is what `RowIdentity.byColumn` keys on; the grouping key
@@ -867,4 +891,103 @@ let scalingTests =
 
               let r = scalingAt "DataFrame distinct" small large (fun n -> distinctOf n >> ignore)
 
-              Expect.isLessThan r ratioBound "a distinct must stay linear or n-log-n in its row count" ]
+              Expect.isLessThan r ratioBound "a distinct must stay linear or n-log-n in its row count"
+
+          // ================= Phase 272 — the table-fed caller's other half =================
+
+          testCase "Delta.diff costs what keying the two tables costs, at either size"
+          <| fun _ ->
+              // A table-fed caller (the everyday one: a fresh `Table` per tick) pays `Delta.diff`
+              // against the prior source and THEN the refresh, so the diff is half of what the seam
+              // costs it. Until Phase 272 that half was the larger one by far: see `diffFloorBound`.
+              //
+              // The instrument is the diff's own FLOOR rather than the evaluator, on purpose. A diff
+              // by identity must ask the witness for every row's key in both tables — `KeyString` is
+              // the only thing that can say what a key is — so minting those strings is work no
+              // implementation of this signature avoids. Held against that, the bound says "the diff
+              // costs the keying plus a constant", which is a statement about the diff alone: it does
+              // not move when the evaluator gets faster, so it is not a threshold a later phase has
+              // to loosen for someone else's improvement.
+              let keying (t: Table) =
+                  let keyAt = idw.KeyOf t
+                  let n = Table.rowCount t
+                  let keys: string[] = Array.zeroCreate n
+
+                  for i in 0 .. n - 1 do
+                      match keyAt i with
+                      | Some k -> keys[i] <- idw.KeyString k
+                      | None -> ()
+
+                  keys
+
+              // The LARGE size first, for the reason `scalingAt` gives: its runs promote the code to
+              // the optimised tier before the small leg is timed.
+              for n in [ large; small ] do
+                  let before = build n
+                  let after = editOne before
+                  let diffMs = bestMs 5 (fun () -> Delta.diff idw before after |> ok |> ignore)
+
+                  let floorMs =
+                      bestMs 5 (fun () ->
+                          keying before |> ignore
+                          keying after |> ignore)
+
+                  let fullMs =
+                      bestMs 5 (fun () -> DataFrame.evalPipeline pipeline after |> ok |> ignore)
+
+                  printfn
+                      "  [scaling] %-28s diff %7.2f ms vs keying %7.2f ms (x%.2f) vs full %7.2f ms @ %d"
+                      "Delta.diff against its floor"
+                      diffMs
+                      floorMs
+                      (diffMs / floorMs)
+                      fullMs
+                      n
+
+                  Expect.isLessThan
+                      diffMs
+                      (diffFloorBound * floorMs)
+                      "the diff must cost the keying of both tables and a constant factor more, not a token string per cell"
+
+          testCase "the table-fed tick, measured against the full evaluation it would replace"
+          <| fun _ ->
+              // What a table-fed caller pays per tick — `Delta.diff` plus the refresh — against the
+              // full evaluation of the new source, printed for the three pipelines above and NOT
+              // asserted. Phase 272 set out to assert this at 1.5 times and measured why it cannot be
+              // from this entry point. In a Release build the diff's floor alone — the keying above,
+              // plus the one hash pass that proves the keys unique — is one and a half to two and a
+              // half full evaluations of a one-comparison pipeline at 20,000 and 100,000 rows, before
+              // the refresh has done anything; and the refresh itself walks one `Work` record per
+              // source row, which the vectorised evaluator does not. (This Debug build flatters the
+              // diff, whose cost is allocation, against an evaluator whose loops are unoptimised, so
+              // read the Release tables in the doc rather than these lines for the verdict.) The
+              // figures are printed so the gate log carries the counter-example beside the claim the
+              // family does make; see "What it costs on the clock" in docs/incremental-evaluation.md.
+              for label, p in
+                  [ "tick: filter > groupBy", pipeline
+                    "tick: filter > sort > limit", topNPipeline
+                    "tick: group tail", groupTailPipeline ] do
+                  let before = build large
+                  let after = editOne before
+                  let state = ok (Incremental.primeOn idw p before)
+                  let delta = ok (Delta.diff idw before after)
+
+                  let tickMs =
+                      bestMs 5 (fun () ->
+                          let d = ok (Delta.diff idw before after)
+                          Incremental.refreshOn idw p state d after |> ok |> ignore)
+
+                  let fullMs = bestMs 5 (fun () -> DataFrame.evalPipeline p after |> ok |> ignore)
+
+                  Expect.equal
+                      (Incremental.refreshOn idw p state delta after |> Result.map Incremental.result)
+                      (DataFrame.evalPipeline p after)
+                      "the tick answers what the reference answers"
+
+                  printfn
+                      "  [scaling] %-28s diff+refresh %7.2f ms vs full %7.2f ms (x%.2f) @ %d"
+                      label
+                      tickMs
+                      fullMs
+                      (tickMs / fullMs)
+                      large ]

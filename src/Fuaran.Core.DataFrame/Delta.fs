@@ -512,39 +512,200 @@ module Delta =
     /// presence, and a key present in both is `RowChanged` iff its cells differ under the pinned
     /// canonical token (the same rule `Distinct` / `Intersect` compare rows by, so a float that
     /// groups equal also diffs equal, on every host).
+    ///
+    /// **Dense since Phase 272.** The answer is the one the row-token form gave, and the suite holds
+    /// the two equal over drawn tables; what moved is what it costs. That form keyed both tables
+    /// through a persistent `Set` and two `Map`s over the key strings, and decided "changed" by
+    /// building a length-prefixed token STRING for every row of both tables — every cell of both
+    /// tables minted into a string, for a comparison whose answer was almost always "equal". At
+    /// 100,000 rows it cost up to 36 times the full evaluation of the pipeline it fed (see
+    /// docs/incremental-evaluation.md, "What it costs on the clock"). Now:
+    ///
+    ///  * each table's key strings are minted ONCE into an array (the witness's `KeyString` is the
+    ///    only thing that can say what a key is, so this is the floor), and the `before` keys are
+    ///    indexed in one hash table, which is also the uniqueness check;
+    ///  * a row whose key sits at the SAME index in both tables — the overwhelmingly common case, an
+    ///    edit in place — is paired by one string comparison, never a lookup; only a row that moved
+    ///    is looked up;
+    ///  * "changed" is decided cell by cell under `CellKey.equals`, which is `cellToken` equality
+    ///    without the token (a law in the suite pins the two equal), column by column over the
+    ///    in-place pairs, and a column whose cell list is the SAME object in both tables — a column
+    ///    the edit did not touch — is not read at all for them, because equal positions of one list
+    ///    hold one cell.
+    ///
+    /// The refusals are the old ones in the old order: every `before` defect before any `after`
+    /// defect, and within a table the first row, in row order, that has no key or repeats an
+    /// earlier row's key.
     let diff (idw: RowIdentity<'Id>) (before: Table) (after: Table) : Result<TableDelta, DeltaDefect> =
         if before.Schema <> after.Schema then
             Ok FullRefresh
         else
-            keyIndex idw before
-            |> Result.bind (fun beforeKeys ->
-                keyIndex idw after
-                |> Result.map (fun afterKeys ->
-                    let beforeMap = Map.ofList beforeKeys
-                    let afterMap = Map.ofList afterKeys
-                    let beforeTokens = rowTokens before
-                    let afterTokens = rowTokens after
+            let nb = Table.rowCount before
+            let na = Table.rowCount after
 
-                    let fromAfter =
-                        afterKeys
-                        |> List.choose (fun (k, ai) ->
-                            match Map.tryFind k beforeMap with
-                            | None -> Some(ByKey k, RowAdded)
-                            | Some bi ->
-                                if beforeTokens[bi] = afterTokens[ai] then
-                                    None // present at both ends, byte-identical content — not a change
-                                else
-                                    Some(ByKey k, RowChanged))
+            // ---- the before side: minted once, indexed once (the index IS the uniqueness check) ----
+            let bKeys: string[] = Array.zeroCreate nb
+            let bIndex = System.Collections.Generic.Dictionary<string, int>(nb)
+            let mutable defect = None
+            let keyB = idw.KeyOf before
+            let mutable i = 0
 
-                    let removed =
-                        beforeKeys
-                        |> List.filter (fun (k, _) -> not (Map.containsKey k afterMap))
-                        |> List.map (fun (k, _) -> ByKey k, RowRemoved)
+            while defect.IsNone && i < nb do
+                match keyB i with
+                | None -> defect <- Some(MissingIdentity(idw.Scheme, i))
+                | Some id ->
+                    let k = idw.KeyString id
 
+                    if bIndex.ContainsKey k then
+                        defect <- Some(DuplicateIdentity(idw.Scheme, k))
+                    else
+                        bIndex[k] <- i
+                        bKeys[i] <- k
+
+                i <- i + 1
+
+            // ---- the after side: a key at the same index as before needs no lookup ----
+            //
+            // `inPlace[i]` says after row `i` carries before row `i`'s key. Such keys are unique among
+            // themselves (they are distinct positions of the unique `bKeys`), so the only duplicates
+            // an after key can form involve a key that MOVED; those, and only those, go in `moved`.
+            // A key `k` at row `i` repeats an EARLIER after row exactly when it is already in
+            // `moved`, or when it is before row `j`'s key for some `j < i` that after row `j` holds
+            // in place — the two ways an earlier row can hold it.
+            let aKeys: string[] = Array.zeroCreate na
+            let inPlace: bool[] = Array.zeroCreate na
+            let moved = System.Collections.Generic.HashSet<string>()
+            // `moved` is consulted only once something has moved, so an edit in place never hashes an
+            // after key at all. A flag rather than `moved.Count`, which the Fable runtime computes by
+            // walking its buckets (see `CellKey.slotOf`).
+            let mutable anyMoved = false
+            let keyA = if defect.IsNone then idw.KeyOf after else (fun _ -> None)
+            i <- 0
+
+            while defect.IsNone && i < na do
+                match keyA i with
+                | None -> defect <- Some(MissingIdentity(idw.Scheme, i))
+                | Some id ->
+                    let k = idw.KeyString id
+                    aKeys[i] <- k
+
+                    if i < nb && System.String.Equals(k, bKeys[i]) then
+                        if anyMoved && moved.Contains k then
+                            defect <- Some(DuplicateIdentity(idw.Scheme, k))
+                        else
+                            inPlace[i] <- true
+                    else
+                        let heldEarlierInPlace =
+                            match bIndex.TryGetValue k with
+                            | true, j -> j < i && j < na && inPlace[j]
+                            | _ -> false
+
+                        if heldEarlierInPlace || not (moved.Add k) then
+                            defect <- Some(DuplicateIdentity(idw.Scheme, k))
+
+                        anyMoved <- true
+
+                i <- i + 1
+
+            match defect with
+            | Some d -> Error d
+            | None ->
+                // ---- content: cell by cell under token equality, one column at a time ----
+                //
+                // Each schema column's cells as an array of exactly the table's row count, padded
+                // with `Null` — `RowAccess.columns`' reading, one column at a time and only for the
+                // columns something needs.
+                let columnOf (t: Table) (n: int) (name: string) : Cell[] =
+                    match Table.tryColumn name t with
+                    | Some c ->
+                        let a = List.toArray c.Cells
+
+                        if a.Length = n then
+                            a
+                        else
+                            Array.init n (fun r -> if r < a.Length then a[r] else Null)
+                    | None -> Array.create n Null
+
+                let names = before.Schema |> List.map fst |> List.toArray
+                let bCols: Cell[] option[] = Array.create names.Length None
+                let aCols: Cell[] option[] = Array.create names.Length None
+
+                let bCol ci =
+                    match bCols[ci] with
+                    | Some a -> a
+                    | None ->
+                        let a = columnOf before nb names[ci]
+                        bCols[ci] <- Some a
+                        a
+
+                let aCol ci =
+                    match aCols[ci] with
+                    | Some a -> a
+                    | None ->
+                        let a = columnOf after na names[ci]
+                        aCols[ci] <- Some a
+                        a
+
+                let sameList ci =
+                    match Table.tryColumn names[ci] before, Table.tryColumn names[ci] after with
+                    | Some b, Some a -> System.Object.ReferenceEquals(b.Cells, a.Cells)
+                    | None, None -> true
+                    | _ -> false
+
+                let changed: bool[] = Array.zeroCreate na
+                let shared = min na nb
+
+                for ci in 0 .. names.Length - 1 do
+                    if not (sameList ci) then
+                        let b = bCol ci
+                        let a = aCol ci
+
+                        for r in 0 .. shared - 1 do
+                            if inPlace[r] && not changed[r] && not (DataFrame.CellKey.equals b[r] a[r]) then
+                                changed[r] <- true
+
+                // A row that moved is compared whole, across every column: its two positions differ,
+                // so a shared list says nothing about it.
+                let rowDiffers (bi: int) (ai: int) =
+                    let mutable differs = false
+                    let mutable ci = 0
+
+                    while not differs && ci < names.Length do
+                        let b = bCol ci
+                        let a = aCol ci
+                        differs <- not (DataFrame.CellKey.equals b[bi] a[ai])
+                        ci <- ci + 1
+
+                    differs
+
+                let rows = System.Collections.Generic.List<RowRef * RowChange>()
+
+                for r in 0 .. na - 1 do
+                    if inPlace[r] then
+                        if changed[r] then
+                            rows.Add((ByKey aKeys[r], RowChanged))
+                    else
+                        match bIndex.TryGetValue aKeys[r] with
+                        | true, bi ->
+                            // present at both ends; byte-identical content is not a change
+                            if rowDiffers bi r then
+                                rows.Add((ByKey aKeys[r], RowChanged))
+                        | _ -> rows.Add((ByKey aKeys[r], RowAdded))
+
+                // A before key is still present exactly when after holds it in place or holds it
+                // having moved.
+                for r in 0 .. nb - 1 do
+                    let k = bKeys[r]
+
+                    if not ((r < na && inPlace[r]) || (anyMoved && moved.Contains k)) then
+                        rows.Add((ByKey k, RowRemoved))
+
+                Ok(
                     RowSet
                         { Scheme = idw.Scheme
-                          Rows = sortRows (fromAfter @ removed)
-                          InvalidatedColumns = [] }))
+                          Rows = sortRows (List.ofSeq rows)
+                          InvalidatedColumns = [] }
+                )
 
     /// The delta from `before` to `after` for a source with NO identity — rows compared by position,
     /// under the reserved `ordinal` scheme. This is the deliberate fallback, not a default: a
