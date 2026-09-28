@@ -1712,6 +1712,11 @@ module Incremental =
         let keyAt = idw.KeyOf t
         let tokens: string[] = Array.zeroCreate n
         let keys: string[] = Array.zeroCreate n
+        // Phase 283 — for a witness that declares a key equality, the typed ids ride beside the keys,
+        // so the next tick's `Delta.diff` pairs this source's rows by id without asking the witness
+        // for them again.
+        let typed = (KeyEqualities.tryOf idw).IsSome
+        let ids: 'Id[] = Array.zeroCreate (if typed then n else 0)
         let seen = System.Collections.Generic.HashSet<string>(n)
         let mutable defect = None
         let mutable i = 0
@@ -1722,6 +1727,10 @@ module Incremental =
             | Some id ->
                 let k = idw.KeyString id
                 keys[i] <- k
+
+                if typed then
+                    ids[i] <- id
+
                 let minted = Delta.refToken (ByKey k)
 
                 let token =
@@ -1740,7 +1749,12 @@ module Incremental =
         match defect with
         | Some d -> Error d
         | None ->
-            KeyedIndexes.remember t (KeyedIndex(idw.Scheme, keys, null))
+            let known = KeyedIndex(idw.Scheme, keys, null)
+
+            if typed then
+                known.SetIds(box idw, box ids)
+
+            KeyedIndexes.remember t known
             Ok tokens
 
     /// Phase 273 — the source's tokens from keys `Delta.diff` already minted for this very table and

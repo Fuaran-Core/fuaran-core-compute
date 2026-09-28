@@ -1139,6 +1139,36 @@ let denseDiffTests =
               // A composite key whose value MOVES when an in-place edit touches `v`, so the in-place
               // pairing has to fall back to a lookup.
               let byPair = RowIdentity.byColumns [ "id"; "v" ]
+
+              // Phase 283 — both reference witnesses DECLARE a key equality, so `Delta.diff` pairs
+              // their rows by the typed id and renders a key string only for the rows the delta
+              // carries. A copy with its own `KeyString` declares nothing and takes the string path,
+              // so each pair below is diffed both ways and held to the reference and to each other.
+              Expect.isSome (KeyEqualities.tryOf byId) "byColumn declares its key equality"
+              Expect.isSome (KeyEqualities.tryOf byPair) "byColumns declares its key equality"
+
+              let byIdStr =
+                  { byId with
+                      KeyString = fun c -> byId.KeyString c }
+
+              let byPairStr =
+                  { byPair with
+                      KeyString = fun c -> byPair.KeyString c }
+
+              Expect.isNone (KeyEqualities.tryOf byIdStr) "a copy with its own KeyString takes the string path"
+              Expect.isNone (KeyEqualities.tryOf byPairStr) "a copy with its own KeyString takes the string path"
+
+              // Typed and string answers: equal, and the same bytes on the wire (a refusal is compared
+              // whole, payload included).
+              let sameBothWays (label: string) (iter: int) (typed: Result<TableDelta, DeltaDefect>) stringPath =
+                  if typed <> stringPath then
+                      failtestf "iter %d (%s): typed %A\n  string %A" iter label typed stringPath
+
+                  match typed, stringPath with
+                  | Ok a, Ok b when DeltaCodec.encode a <> DeltaCodec.encode b ->
+                      failtestf "iter %d (%s): the typed delta's wire differs from the string path's" iter label
+                  | _ -> ()
+
               let mutable reached = []
 
               for iter in 1..4000 do
@@ -1189,6 +1219,27 @@ let denseDiffTests =
                           expected2
                           before
                           after
+
+                  // Phase 283 — the string path over FRESH table objects (so nothing the typed diffs
+                  // above remembered is read back), cold and then warm, against the typed answers.
+                  let sb = { before with Columns = before.Columns }
+                  let sa = { after with Columns = after.Columns }
+                  sameBothWays "byColumn, cold" iter actual (Delta.diff byIdStr sb sa)
+                  sameBothWays "byColumns, cold" iter actual2 (Delta.diff byPairStr sb sa)
+
+                  let sa2 = { after with Columns = after.Columns }
+                  sameBothWays "byColumn, before known" iter actual (Delta.diff byIdStr sb sa2)
+
+                  // And the typed path with its before side remembered by a string-path caller (the
+                  // seam keyed it by string, say): the ids are asked of the witness, once.
+                  let tb = { before with Columns = before.Columns }
+                  Delta.diff byIdStr tb { after with Columns = after.Columns } |> ignore
+
+                  sameBothWays
+                      "byColumn, before keyed by string"
+                      iter
+                      (Delta.diff byId tb { after with Columns = after.Columns })
+                      actual
 
                   reached <-
                       { case with
@@ -1256,6 +1307,46 @@ let private countingId (minted: int ref) : RowIdentity<Cell> =
             fun c ->
                 minted.Value <- minted.Value + 1
                 b.KeyString c }
+
+/// Phase 283 — `byColumn "id"` counting every key it RENDERS, with the reference witness's declared
+/// key equality declared for it too (the counting wrapper renders exactly what `cellToken` renders, so
+/// the declaration's obligation holds). The diff pairs its rows by the typed id.
+let private countingTypedId (rendered: int ref) : RowIdentity<Cell> =
+    let b = RowIdentity.byColumn "id"
+
+    { b with
+        KeyString =
+            fun c ->
+                rendered.Value <- rendered.Value + 1
+                b.KeyString c }
+    |> KeyEqualities.declare KeyEqualities.cell
+
+/// Delete row `del` and insert a row with a new identity at `ins`, every column rebuilt: a tick in
+/// which rows MOVE, so the diff pairs by lookup as well as in place, and the delta carries an
+/// added and a removed row.
+let private reshape (tag: string) (del: int) (ins: int) (t: Table) : Table =
+    let n = Table.rowCount t
+
+    let cellsOf (name: string) =
+        (Table.tryColumn name t |> Option.get).Cells |> List.toArray
+
+    let ids = cellsOf "id"
+    let grps = cellsOf "grp"
+    let aa = cellsOf "a"
+
+    let kept =
+        [ for i in 0 .. n - 1 do
+              if i <> del then
+                  yield ids[i], grps[i], aa[i] ]
+
+    let rows =
+        List.take ins kept @ [ Str("new-" + tag), Str "g0", Int 5 ] @ List.skip ins kept
+
+    { t with
+        Columns =
+            [ Column.create "id" StringType [ for (k, _, _) in rows -> k ]
+              Column.create "grp" StringType [ for (_, g, _) in rows -> g ]
+              Column.create "a" IntType [ for (_, _, a) in rows -> a ] ] }
 
 /// Pipelines covering the seam's incremental strategies: row-local, maintained groups, and a sort.
 let private tickPipelines: (string * Transform list) list =
@@ -1406,7 +1497,80 @@ let keyOnceTests =
               Expect.equal
                   (Ok d)
                   (Delta.diff (RowIdentity.byColumns [ "id"; "grp" ]) (build small) (editSome 5 (build small)))
-                  "and answers as a cold diff does" ]
+                  "and answers as a cold diff does"
+
+          testCase "a typed-key tick renders a key string at most once per row the delta carries"
+          <| fun _ ->
+              // Phase 283 — COUNTED. The witness declares its key equality, so the diff pairs the
+              // rows by the typed id and renders `KeyString` only for a row the delta carries (an
+              // added row; a changed, moved or removed row reuses the key string the prior source
+              // already holds), and the refresh reads the keys the delta carries. On the pre-phase
+              // tree a tick rendered one key per row of the new source (n), which this case holds
+              // red: an in-place tick of 1,000 rows must render none.
+              for label, p in tickPipelines do
+                  let rendered = ref 0
+                  let typedId = countingTypedId rendered
+                  let stringId = countingId (ref 0)
+                  let n = small
+                  let t0 = build n
+                  let mutable state = ok (Incremental.primeOn typedId p t0)
+                  Expect.equal rendered.Value n (sprintf "%s: the prime keys the source once" label)
+                  let mutable prior = t0
+
+                  let ticks =
+                      [ "in place", (fun (t: Table) -> editSome 3 t)
+                        "in place again", (fun (t: Table) -> editSome 7 t)
+                        "rows moved", (fun (t: Table) -> reshape "x" 10 500 t)
+                        "rows moved again", (fun (t: Table) -> reshape "y" 3 0 (editSome 5 t)) ]
+
+                  for how, step in ticks do
+                      let next = step prior
+                      rendered.Value <- 0
+                      let delta = ok (Delta.diff typedId prior next)
+                      state <- ok (Incremental.refreshOn typedId p state delta next)
+
+                      let carried =
+                          Delta.tryRowSet delta
+                          |> Option.map (fun r -> List.length r.Rows)
+                          |> Option.defaultValue n
+
+                      let added = Delta.rowsWith RowAdded delta |> List.length
+
+                      printfn
+                          "  [typed key] %-24s %-18s rendered %d for %d carried rows (%d added) of %d"
+                          label
+                          how
+                          rendered.Value
+                          carried
+                          added
+                          n
+
+                      Expect.isLessThanOrEqual
+                          rendered.Value
+                          carried
+                          (sprintf "%s / %s: at most one key rendered per row the delta carries" label how)
+
+                      Expect.equal
+                          rendered.Value
+                          added
+                          (sprintf "%s / %s: exactly the added rows' keys are rendered" label how)
+
+                      // The typed path answers what the string path answers, delta and result alike.
+                      let fresh (t: Table) = { t with Columns = t.Columns }
+                      let stringDelta = ok (Delta.diff stringId (fresh prior) (fresh next))
+                      Expect.equal delta stringDelta (sprintf "%s / %s: the string path's delta" label how)
+
+                      Expect.equal
+                          (DeltaCodec.encode delta)
+                          (DeltaCodec.encode stringDelta)
+                          (sprintf "%s / %s: the string path's wire" label how)
+
+                      Expect.equal
+                          (Ok(Incremental.result state))
+                          (DataFrame.evalPipeline p next)
+                          (sprintf "%s / %s: refresh = reference" label how)
+
+                      prior <- next ]
 
 // ---------------------------------------------------------------------------
 //  Phase 274 — the refresh's bookkeeping, held over columns.

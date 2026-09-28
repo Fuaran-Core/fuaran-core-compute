@@ -135,6 +135,74 @@ type RowIdentity<'Id> =
       KeyOf: Table -> int -> 'Id option
       KeyString: 'Id -> string }
 
+/// Phase 283 — the typed equality a witness's `KeyString` DECLARES it agrees with, so a diff can
+/// pair rows by `'Id` and render a key string only for the rows its delta carries.
+///
+/// A declaration is a claim about ONE `KeyString` function: `Equals a b` holds exactly when
+/// `KeyString a = KeyString b`, and equal ids hash alike. That is the only thing that makes the typed
+/// pairing answer what the string pairing answers — the same deltas, the same refusals in the same
+/// order, the same `DuplicateIdentity` payload — so it is declared, never inferred. F# structural
+/// equality on `'Id` is NOT such a claim: a witness may render two structurally distinct ids to one
+/// string (a case-folding key, a rounding one), and pairing those by structural equality would miss a
+/// `DuplicateIdentity` the string path reports.
+///
+/// Keyed by the WITNESS record object (weakly, by reference): the claim is about that record's
+/// `KeyString`, and a record's fields cannot change. Any copy (`{ w with … }` — a counting wrapper,
+/// a renamed scheme) is a new object with no declaration, and takes the string path, which is always
+/// correct. The key is the record and not the function object on purpose: the compiler may re-create
+/// a function value it can see the definition of (it did, in a Release build), so a function's
+/// identity is not something a declaration can rely on; a record allocation is never duplicated. A
+/// witness nothing declared for takes the string path, exactly as before this phase.
+[<RequireQualifiedAccess>]
+module internal KeyEqualities =
+
+    let private byWitness =
+        System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
+
+    /// Declare that `equality` agrees with `idw.KeyString` (see the module comment for the obligation),
+    /// and return the witness.
+    let declare
+        (equality: System.Collections.Generic.IEqualityComparer<'Id>)
+        (idw: RowIdentity<'Id>)
+        : RowIdentity<'Id> =
+        byWitness.AddOrUpdate(box idw, box equality)
+        idw
+
+    /// The equality declared for this very witness record, if any.
+    let tryOf (idw: RowIdentity<'Id>) : System.Collections.Generic.IEqualityComparer<'Id> option =
+        match byWitness.TryGetValue(box idw) with
+        | true, e -> Some(unbox<System.Collections.Generic.IEqualityComparer<'Id>> e)
+        | _ -> None
+
+    /// Token equality over one cell — `cellToken a = cellToken b`, computed without the tokens
+    /// (`DataFrame.CellKey`, whose agreement with `cellToken` is a law in the suite).
+    let cell: System.Collections.Generic.IEqualityComparer<Cell> =
+        { new System.Collections.Generic.IEqualityComparer<Cell> with
+            member _.Equals(a, b) = DataFrame.CellKey.equals a b
+            member _.GetHashCode c = DataFrame.CellKey.hashCell c }
+
+    /// Token equality over a list of cells — `rowTokenString a = rowTokenString b`: that string is
+    /// length-prefixed per cell and so injective, so it is equal exactly when the lists are equal
+    /// cell by cell under `cell`.
+    let cells: System.Collections.Generic.IEqualityComparer<Cell list> =
+        { new System.Collections.Generic.IEqualityComparer<Cell list> with
+            member _.Equals(a, b) =
+                let rec go (xs: Cell list) (ys: Cell list) =
+                    match xs, ys with
+                    | [], [] -> true
+                    | x :: xt, y :: yt -> DataFrame.CellKey.equals x y && go xt yt
+                    | _ -> false
+
+                go a b
+
+            member _.GetHashCode cs =
+                let mutable h = 0
+
+                for c in cs do
+                    h <- ((h <<< 5) ^^^ (h >>> 27)) ^^^ DataFrame.CellKey.hashCell c
+
+                h }
+
 /// Reference identity witnesses — enough to exercise the whole delta surface with no domain
 /// dependency of any kind.
 [<RequireQualifiedAccess>]
@@ -153,56 +221,66 @@ module RowIdentity =
     /// The key string is the pinned `DataFrame.cellToken`, so a float key groups exactly as
     /// `GroupBy` / `Distinct` group it and two hosts mint the same key for the same cell.
     let byColumn (column: string) : RowIdentity<Cell> =
-        { Scheme = "column:" + column
-          KeyOf =
-            // The currying is load-bearing (Phase 206): the per-TABLE work sits in the FIRST
-            // application, so a consumer that keys every row binds `idw.KeyOf t` once and then pays
-            // O(1) per row. Reading the cell out of the `Cell list` by index instead is O(i) each,
-            // and keying an n-row table that way is quadratic — which is what made `Delta.diff` a
-            // hundred times dearer for ten times the rows. The answers are identical either way.
-            //
-            // A caller that writes `idw.KeyOf t i` inside its own loop re-does the first
-            // application on every iteration and gets the old cost back; the two callers in this
-            // package (`keyIndex` here, `tokensOf` in the incremental seam) hoist it deliberately.
-            fun t ->
-                let cells =
-                    match Table.tryColumn column t with
-                    | Some c -> List.toArray c.Cells
-                    | None -> [||]
+        // Phase 283 — this witness's key string is `cellToken`, and `CellKey` is token equality
+        // without the token, so the diff may pair its rows by the cell itself.
+        let idw: RowIdentity<Cell> =
+            { Scheme = "column:" + column
+              KeyOf =
+                // The currying is load-bearing (Phase 206): the per-TABLE work sits in the FIRST
+                // application, so a consumer that keys every row binds `idw.KeyOf t` once and then pays
+                // O(1) per row. Reading the cell out of the `Cell list` by index instead is O(i) each,
+                // and keying an n-row table that way is quadratic — which is what made `Delta.diff` a
+                // hundred times dearer for ten times the rows. The answers are identical either way.
+                //
+                // A caller that writes `idw.KeyOf t i` inside its own loop re-does the first
+                // application on every iteration and gets the old cost back; the two callers in this
+                // package (`keyIndex` here, `tokensOf` in the incremental seam) hoist it deliberately.
+                fun t ->
+                    let cells =
+                        match Table.tryColumn column t with
+                        | Some c -> List.toArray c.Cells
+                        | None -> [||]
 
-                fun i ->
-                    if i >= 0 && i < cells.Length then
-                        match cells[i] with
-                        | Null -> None
-                        | cell -> Some cell
-                    else
-                        None
-          KeyString = DataFrame.cellToken }
+                    fun i ->
+                        if i >= 0 && i < cells.Length then
+                            match cells[i] with
+                            | Null -> None
+                            | cell -> Some cell
+                        else
+                            None
+              KeyString = DataFrame.cellToken }
+
+        KeyEqualities.declare KeyEqualities.cell idw
 
     /// Identity is the tuple of several named columns — the composite-key case. Any `Null` component
     /// makes the row identity-free, for the same reason as `byColumn`.
     let byColumns (columns: string list) : RowIdentity<Cell list> =
-        { Scheme = "columns:" + String.concat "," columns
-          KeyOf =
-            // Staged exactly as `byColumn` above, and for the same reason: one pass per key column
-            // on the first application, O(1) per row thereafter.
-            fun t ->
-                let arrays =
-                    columns
-                    |> List.map (fun n ->
-                        match Table.tryColumn n t with
-                        | Some c -> List.toArray c.Cells
-                        | None -> [||])
+        // Phase 283 — as `byColumn`: `rowTokenString` is injective per cell, so list equality under
+        // `CellKey` is exactly equality of the rendered keys.
+        let idw: RowIdentity<Cell list> =
+            { Scheme = "columns:" + String.concat "," columns
+              KeyOf =
+                // Staged exactly as `byColumn` above, and for the same reason: one pass per key column
+                // on the first application, O(1) per row thereafter.
+                fun t ->
+                    let arrays =
+                        columns
+                        |> List.map (fun n ->
+                            match Table.tryColumn n t with
+                            | Some c -> List.toArray c.Cells
+                            | None -> [||])
 
-                fun i ->
-                    let cells =
-                        arrays |> List.map (fun a -> if i >= 0 && i < a.Length then a[i] else Null)
+                    fun i ->
+                        let cells =
+                            arrays |> List.map (fun a -> if i >= 0 && i < a.Length then a[i] else Null)
 
-                    if List.isEmpty cells || cells |> List.exists Cell.isNull then
-                        None
-                    else
-                        Some cells
-          KeyString = DataFrame.rowTokenString }
+                        if List.isEmpty cells || cells |> List.exists Cell.isNull then
+                            None
+                        else
+                            Some cells
+              KeyString = DataFrame.rowTokenString }
+
+        KeyEqualities.declare KeyEqualities.cells idw
 
 /// Phase 273 — one table's row keys, minted ONCE under one identity scheme and already proved
 /// unique: `Keys[i]` is row `i`'s `KeyString`, and `Index` maps a key back to its row. Internal and
@@ -212,12 +290,29 @@ module RowIdentity =
 /// source it keyed. Both have already checked that every row has a key and that no key repeats, so
 /// a holder may skip both checks. The index is built on first use: a diff whose rows all sat still
 /// never looks a key up, so it never pays for the hash table.
+///
+/// Phase 283 — it may also hold the rows' TYPED ids (`'Id[]`, boxed: the index is not generic) and
+/// the witness record that minted them. `Delta.diff` reads them back only for that very witness,
+/// which is what makes the unboxing safe: one record has one `'Id`. Absent where nothing has keyed
+/// the table by id yet; the diff then asks the witness for them.
 [<Sealed; AllowNullLiteral>]
 type internal KeyedIndex(scheme: string, keys: string[], built: System.Collections.Generic.Dictionary<string, int>) =
     let mutable index = built
+    // One reference, written in one assignment, so a reader never pairs one writer's ids with
+    // another writer's witness.
+    let mutable typedIds: (obj * obj) option = None
 
     member _.Scheme = scheme
     member _.Keys = keys
+
+    /// The typed ids, when they were recorded by the witness object `by`; `null` otherwise.
+    member _.IdsFor(by: obj) : obj =
+        match typedIds with
+        | Some(owner, ids) when obj.ReferenceEquals(owner, by) -> ids
+        | _ -> null
+
+    /// Record the typed ids (aligned with `Keys`) and the witness object that minted them.
+    member _.SetIds(by: obj, ids: obj) = typedIds <- Some(by, ids)
 
     member _.Index =
         if isNull index then
@@ -629,14 +724,22 @@ module Delta =
             // key up.
             let knownB = KeyedIndexes.tryOf idw.Scheme before
             let knownA = KeyedIndexes.tryOf idw.Scheme after
+
+            // Phase 283 — the typed pairing: taken when the witness DECLARES an equality its key
+            // string agrees with (`KeyEqualities`), for an after side this diff must key. Every
+            // other case is the string path, unchanged.
+            let equality = if knownA.IsNone then KeyEqualities.tryOf idw else None
+
+            let owner = box idw
             let mutable defect = None
 
-            let (bKeys: string[]), (bKnown: KeyedIndex) =
+            let (bKeys: string[]), (bKnown: KeyedIndex), (bIdsMinted: 'Id[] option) =
                 match knownB with
-                | Some k -> k.Keys, k
+                | Some k -> k.Keys, k, None
                 | None ->
                     let keys: string[] = Array.zeroCreate nb
                     let index = System.Collections.Generic.Dictionary<string, int>(nb)
+                    let ids: 'Id[] = Array.zeroCreate (if equality.IsSome then nb else 0)
                     let keyB = idw.KeyOf before
                     let mutable i = 0
 
@@ -652,11 +755,53 @@ module Delta =
                                 index[k] <- i
                                 keys[i] <- k
 
+                                if equality.IsSome then
+                                    ids[i] <- id
+
                         i <- i + 1
 
-                    keys, KeyedIndex(idw.Scheme, keys, index)
+                    let known = KeyedIndex(idw.Scheme, keys, index)
+
+                    if equality.IsSome && defect.IsNone then
+                        known.SetIds(owner, box ids)
+                        keys, known, Some ids
+                    else
+                        keys, known, None
 
             let bIndex () = bKnown.Index
+
+            // Phase 283 — the before side's typed ids: the ones just minted, the ones remembered
+            // for this table by this very witness, or asked of the witness once and then
+            // remembered (a table the seam keyed by string). A known table was keyed whole, so the
+            // witness has an id for every row of it; if it now says otherwise the scheme's promise
+            // is broken, and the string path, which reads only the remembered keys, answers.
+            let bIds: 'Id[] option =
+                match equality with
+                | Some _ when defect.IsNone ->
+                    match bIdsMinted with
+                    | Some ids -> Some ids
+                    | None ->
+                        match bKnown.IdsFor owner with
+                        | null ->
+                            let keyB = idw.KeyOf before
+                            let ids: 'Id[] = Array.zeroCreate nb
+                            let mutable complete = true
+                            let mutable i = 0
+
+                            while complete && i < nb do
+                                match keyB i with
+                                | Some id -> ids[i] <- id
+                                | None -> complete <- false
+
+                                i <- i + 1
+
+                            if complete then
+                                bKnown.SetIds(owner, box ids)
+                                Some ids
+                            else
+                                None
+                        | remembered -> Some(unbox<'Id[]> remembered)
+                | _ -> None
 
             // ---- the after side: a key at the same index as before needs no lookup ----
             //
@@ -666,60 +811,144 @@ module Delta =
             // A key `k` at row `i` repeats an EARLIER after row exactly when it is already in
             // `moved`, or when it is before row `j`'s key for some `j < i` that after row `j` holds
             // in place — the two ways an earlier row can hold it.
+            //
+            // Both paths answer what the content pass below reads: `aKeys` (every after row's key
+            // string), `inPlace`, for a row NOT in place the before row holding its key (`-1` for
+            // none: an added row), and whether a before row's key is still present.
             let aKeys: string[] =
                 match knownA with
                 | Some k -> k.Keys
                 | None -> Array.zeroCreate na
 
             let inPlace: bool[] = Array.zeroCreate na
-            let moved = System.Collections.Generic.HashSet<string>()
-            // `moved` is consulted only once something has moved, so an edit in place never hashes an
-            // after key at all. A flag rather than `moved.Count`, which the Fable runtime computes by
-            // walking its buckets (see `CellKey.slotOf`).
-            let mutable anyMoved = false
-            // A known `after` is keyed already and proved unique: its keys are read, not minted, and
-            // the walk below only classifies them.
-            let keyA =
-                if defect.IsNone && knownA.IsNone then
-                    idw.KeyOf after
-                else
-                    (fun _ -> None)
 
-            let mutable i = 0
+            let (matchOf: int -> int), (beforeStays: int -> bool), (aIds: 'Id[] option) =
+                match equality, bIds with
+                | Some eq, Some bIds ->
+                    // Phase 283 — the typed pairing. Pairing, the uniqueness check and the lookups
+                    // run on the ids under the declared equality, which agrees with the key strings
+                    // exactly, so every decision below is the string path's decision. A row's key
+                    // STRING is the before row's own instance wherever the row was paired (in place
+                    // or moved), and is rendered only for an added row — a row the delta carries —
+                    // or for the payload of a refusal.
+                    let aIds: 'Id[] = Array.zeroCreate na
+                    let aMatch: int[] = Array.create na -1
+                    let moved = System.Collections.Generic.HashSet<'Id>(eq)
+                    let mutable anyMoved = false
 
-            while defect.IsNone && i < na do
-                let mutable have = true
-                let mutable k = ""
+                    let bTyped: System.Collections.Generic.Dictionary<'Id, int> option[] = [| None |]
 
-                if knownA.IsSome then
-                    k <- aKeys[i]
-                else
-                    match keyA i with
-                    | None ->
-                        defect <- Some(MissingIdentity(idw.Scheme, i))
-                        have <- false
-                    | Some id ->
-                        k <- idw.KeyString id
-                        aKeys[i] <- k
+                    // Built only once something has moved: an edit in place never hashes an id.
+                    let bLookup (id: 'Id) =
+                        let d =
+                            match bTyped[0] with
+                            | Some d -> d
+                            | None ->
+                                let d = System.Collections.Generic.Dictionary<'Id, int>(nb, eq)
 
-                if have then
-                    if i < nb && System.String.Equals(k, bKeys[i]) then
-                        if anyMoved && moved.Contains k then
-                            defect <- Some(DuplicateIdentity(idw.Scheme, k))
+                                for j in 0 .. nb - 1 do
+                                    d[bIds[j]] <- j
+
+                                bTyped[0] <- Some d
+                                d
+
+                        match d.TryGetValue id with
+                        | true, j -> j
+                        | _ -> -1
+
+                    let keyA = idw.KeyOf after
+                    let mutable i = 0
+
+                    while defect.IsNone && i < na do
+                        match keyA i with
+                        | None -> defect <- Some(MissingIdentity(idw.Scheme, i))
+                        | Some id ->
+                            aIds[i] <- id
+
+                            if i < nb && eq.Equals(id, bIds[i]) then
+                                if anyMoved && moved.Contains id then
+                                    defect <- Some(DuplicateIdentity(idw.Scheme, bKeys[i]))
+                                else
+                                    inPlace[i] <- true
+                                    aKeys[i] <- bKeys[i]
+                            else
+                                let j = bLookup id
+                                let heldEarlierInPlace = j >= 0 && j < i && j < na && inPlace[j]
+
+                                if heldEarlierInPlace || not (moved.Add id) then
+                                    let k = if j >= 0 then bKeys[j] else idw.KeyString id
+                                    defect <- Some(DuplicateIdentity(idw.Scheme, k))
+                                else
+                                    aMatch[i] <- j
+                                    aKeys[i] <- (if j >= 0 then bKeys[j] else idw.KeyString id)
+
+                                anyMoved <- true
+
+                        i <- i + 1
+
+                    let anyMoved = anyMoved
+
+                    (fun r -> aMatch[r]),
+                    (fun r -> (r < na && inPlace[r]) || (anyMoved && moved.Contains bIds[r])),
+                    Some aIds
+                | _ ->
+                    let moved = System.Collections.Generic.HashSet<string>()
+                    // `moved` is consulted only once something has moved, so an edit in place never
+                    // hashes an after key at all. A flag rather than `moved.Count`, which the Fable
+                    // runtime computes by walking its buckets (see `CellKey.slotOf`).
+                    let mutable anyMoved = false
+                    // A known `after` is keyed already and proved unique: its keys are read, not
+                    // minted, and the walk below only classifies them.
+                    let keyA =
+                        if defect.IsNone && knownA.IsNone then
+                            idw.KeyOf after
                         else
-                            inPlace[i] <- true
-                    else
-                        let heldEarlierInPlace =
-                            match bIndex().TryGetValue k with
-                            | true, j -> j < i && j < na && inPlace[j]
-                            | _ -> false
+                            (fun _ -> None)
 
-                        if heldEarlierInPlace || not (moved.Add k) then
-                            defect <- Some(DuplicateIdentity(idw.Scheme, k))
+                    let mutable i = 0
 
-                        anyMoved <- true
+                    while defect.IsNone && i < na do
+                        let mutable have = true
+                        let mutable k = ""
 
-                i <- i + 1
+                        if knownA.IsSome then
+                            k <- aKeys[i]
+                        else
+                            match keyA i with
+                            | None ->
+                                defect <- Some(MissingIdentity(idw.Scheme, i))
+                                have <- false
+                            | Some id ->
+                                k <- idw.KeyString id
+                                aKeys[i] <- k
+
+                        if have then
+                            if i < nb && System.String.Equals(k, bKeys[i]) then
+                                if anyMoved && moved.Contains k then
+                                    defect <- Some(DuplicateIdentity(idw.Scheme, k))
+                                else
+                                    inPlace[i] <- true
+                            else
+                                let heldEarlierInPlace =
+                                    match bIndex().TryGetValue k with
+                                    | true, j -> j < i && j < na && inPlace[j]
+                                    | _ -> false
+
+                                if heldEarlierInPlace || not (moved.Add k) then
+                                    defect <- Some(DuplicateIdentity(idw.Scheme, k))
+
+                                anyMoved <- true
+
+                        i <- i + 1
+
+                    let anyMoved = anyMoved
+
+                    let matchOf r =
+                        match bIndex().TryGetValue aKeys[r] with
+                        | true, bi -> bi
+                        | _ -> -1
+
+                    matchOf, (fun r -> (r < na && inPlace[r]) || (anyMoved && moved.Contains bKeys[r])), None
 
             match defect with
             | Some d -> Error d
@@ -799,24 +1028,24 @@ module Delta =
                         if changed[r] then
                             rows.Add((ByKey aKeys[r], RowChanged))
                     else
-                        match bIndex().TryGetValue aKeys[r] with
-                        | true, bi ->
+                        match matchOf r with
+                        | -1 -> rows.Add((ByKey aKeys[r], RowAdded))
+                        | bi ->
                             // present at both ends; byte-identical content is not a change
                             if rowDiffers bi r then
                                 rows.Add((ByKey aKeys[r], RowChanged))
-                        | _ -> rows.Add((ByKey aKeys[r], RowAdded))
 
                 // A before key is still present exactly when after holds it in place or holds it
                 // having moved.
                 for r in 0 .. nb - 1 do
-                    let k = bKeys[r]
-
-                    if not ((r < na && inPlace[r]) || (anyMoved && moved.Contains k)) then
-                        rows.Add((ByKey k, RowRemoved))
+                    if not (beforeStays r) then
+                        rows.Add((ByKey bKeys[r], RowRemoved))
 
                 // Phase 273 — both tables are now keyed and proved unique under this scheme. Remember
                 // them, so the next tick's diff (whose `before` is this `after`) mints nothing for
-                // that side, and let the delta carry `after`'s keys to the refresh.
+                // that side, and let the delta carry `after`'s keys to the refresh. Phase 283 — with
+                // the typed ids beside the keys, so the next tick pairs by id without asking the
+                // witness for this side again.
                 if knownB.IsNone then
                     KeyedIndexes.remember before bKnown
 
@@ -825,6 +1054,11 @@ module Delta =
                     | Some k -> k
                     | None ->
                         let k = KeyedIndex(idw.Scheme, aKeys, null)
+
+                        match aIds with
+                        | Some ids -> k.SetIds(owner, box ids)
+                        | None -> ()
+
                         KeyedIndexes.remember after k
                         k
 
