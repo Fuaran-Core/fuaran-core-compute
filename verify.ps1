@@ -52,7 +52,11 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # The clock leg (Phase 282): the cases whose claim is about TIME, alone in their own process after
 # the main suite (which no longer contains them), each red only if red on three attempts. The leg
 # fails if it ran fewer cases than its inventory, so a filter cannot pass it vacuously.
-dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build -- --clock-leg
+# It runs a RELEASE build (operator decision 2026-09-28): a bound on the clock is a claim about the
+# code consumers run, and a Debug build's timings are not that code's.
+dotnet build tests/Fuaran.Core.Compute.Tests -c Release --nologo
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+dotnet run --project tests/Fuaran.Core.Compute.Tests -c Release --no-build -- --clock-leg
 if ($LASTEXITCODE -ne 0) {
     Write-Host '==== verify: the clock leg FAILED (a timing case red on all three attempts, or cases missing)' -ForegroundColor Red
     exit $LASTEXITCODE
