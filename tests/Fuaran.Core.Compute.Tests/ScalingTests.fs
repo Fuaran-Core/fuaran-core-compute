@@ -120,7 +120,15 @@ let private ratioBound = 5.0 * sizeRatio
 ///
 /// Phase 283 keyed the diff by the typed id, and the bound is now met on every corpus node in both
 /// builds; the clock leg holds all ten at it ("the table-fed tick on every corpus node").
-let private tickBound = 1.5
+///
+/// Operator ruling 2026-09-28: the clock leg runs a RELEASE build, and there the bound is 1.6, not
+/// 1.5. Release readings on a machine another gate was loading reached 1.53 (`filter > sort > limit`
+/// at 1,000 rows, driver run) and 1.55 / 1.56 (`lines` at 20,000, `window CumulSum` at 1,000, Phase
+/// 284's first gate), red on all three attempts in the second case; quiet Release runs read at or
+/// under 1.3. The seam's target is still 1.5. What absorbs machine load belongs to the clock leg, not
+/// to this number: that is the successor phase filed with this ruling. Any further move of this
+/// bound is the operator's act.
+let private tickBound = 1.6
 
 /// Phase 272 — how much `Delta.diff` may cost beyond minting both tables' keys through the witness,
 /// which is the floor of any diff by identity (`KeyString` is the only thing that can say what a key
@@ -1126,7 +1134,7 @@ let clockTests =
 
           // ================= Phase 274 — the table-fed tick, held (272.t3) =================
 
-          clockCase "the table-fed tick costs at most 1.5 times the full evaluation it replaces"
+          clockCase "the table-fed tick costs at most 1.6 times the full evaluation it replaces"
           <| fun _ ->
               // What a table-fed caller pays per tick — `Delta.diff` plus the refresh — against the
               // full evaluation of the new source, for a ONE-ROW edit, on the three one-comparison
@@ -1185,7 +1193,7 @@ let clockTests =
 
           // ================= Phase 283 — the tick on every corpus node =================
 
-          clockCase "the table-fed tick on every corpus node costs at most 1.5 times the full evaluation"
+          clockCase "the table-fed tick on every corpus node costs at most 1.6 times the full evaluation"
           <| fun _ ->
               // The case above holds the three `Scaling` pipelines; this one holds EVERY Phase 262
               // corpus node (the shapes the doc's tables measure) at 1,000, 20,000 and 100,000 rows,
@@ -1246,7 +1254,7 @@ let clockTests =
 
               Expect.isEmpty
                   failures
-                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.5 times the full evaluation it replaces" ]
+                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces" ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
 let private countingId (minted: int ref) : RowIdentity<Cell> =
