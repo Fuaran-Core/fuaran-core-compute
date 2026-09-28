@@ -153,6 +153,10 @@ type RowIdentity<'Id> =
 /// a function value it can see the definition of (it did, in a Release build), so a function's
 /// identity is not something a declaration can rely on; a record allocation is never duplicated. A
 /// witness nothing declared for takes the string path, exactly as before this phase.
+///
+/// Phase 284 — the public route in is `RowIdentity.withKeyEquality`, which declares on a FRESH copy
+/// of the witness it is given; the reference witnesses are declared through it too, so there is one
+/// route in, not two.
 [<RequireQualifiedAccess>]
 module internal KeyEqualities =
 
@@ -203,6 +207,24 @@ module internal KeyEqualities =
 
                 h }
 
+/// Phase 284 — how a key equality declared through `RowIdentity.withKeyEquality` disagreed with its
+/// witness's `KeyString` over a table, as `RowIdentity.checkKeyEquality` found it. Row numbers are the
+/// table's row indices, the earlier row first; a key is the witness's rendered `KeyString`.
+type KeyEqualityDisagreement =
+    /// The witness declares no key equality: `Delta.diff` takes the string path for it, which is
+    /// always correct, and there is nothing to check. Usually the witness `withKeyEquality` RETURNED
+    /// was dropped and the undeclared one it was given kept.
+    | NotDeclared of scheme: string
+    /// The declared equality holds for two rows whose key strings differ: the typed diff would pair
+    /// them as one identity where the string diff sees two.
+    | EqualIdsDistinctKeys of row: int * other: int * key: string * otherKey: string
+    /// Two rows render the same key string and the declared equality does not hold for them: the
+    /// typed diff would miss the `DuplicateIdentity` the string diff reports.
+    | DistinctIdsEqualKey of row: int * other: int * key: string
+    /// The declared equality holds for two rows whose ids it hashes differently — an equality that
+    /// breaks its own hashing contract, so a lookup under it can miss a row.
+    | UnequalHashes of row: int * other: int * key: string
+
 /// Reference identity witnesses — enough to exercise the whole delta surface with no domain
 /// dependency of any kind.
 [<RequireQualifiedAccess>]
@@ -212,6 +234,120 @@ module RowIdentity =
     /// It is a reserved WORD, not a witness: a source with real identity must never claim it, and a
     /// delta under it must use `ByOrdinal` refs exclusively (`validate` enforces both directions).
     let ordinalScheme = "ordinal"
+
+    /// Phase 284 — a copy of `idw` that DECLARES `equality` as the equality its `KeyString` agrees
+    /// with, so `Delta.diff` pairs its rows by the typed `'Id` and renders a key string only for the
+    /// rows a delta carries (Phase 283's typed path). `idw` itself is left as it was: the declaration
+    /// belongs to the returned record, and so does the typed path — keep and pass the RETURNED witness.
+    /// A later copy of it (`{ w with … }`) is a new witness with no declaration, and takes the string
+    /// path. The reference witnesses `byColumn` and `byColumns` are declared through this very route.
+    ///
+    /// **The contract — the caller's, and used as given.** For every two ids the witness can produce,
+    /// `equality.Equals(a, b)` holds EXACTLY when `KeyString a = KeyString b`, and ids it calls equal
+    /// it hashes alike. The library cannot prove that, and does not check it on any path it runs: a
+    /// check would cost the key strings the typed path exists to avoid. F# structural equality is NOT
+    /// automatically such an equality — a `KeyString` that case-folds, rounds or truncates renders two
+    /// structurally distinct ids to one string.
+    ///
+    /// **When it is broken, the diff is wrong, silently.** An equality coarser than the strings pairs
+    /// two distinct identities as one row (mis-paired rows: a wrong `RowChanged`, a missing
+    /// `RowAdded` / `RowRemoved`); one finer than the strings misses the `DuplicateIdentity` refusal
+    /// the string path reports and answers a delta over keys that are not identities. Neither is
+    /// detected at diff time. `checkKeyEquality` is the check, for a consumer's own test suite.
+    let withKeyEquality
+        (equality: System.Collections.Generic.IEqualityComparer<'Id>)
+        (idw: RowIdentity<'Id>)
+        : RowIdentity<'Id> =
+        // A fresh record, so the declaration is this record's for life and never rewrites `idw`'s
+        // (the registry is keyed by the record object — see `KeyEqualities`).
+        KeyEqualities.declare equality { idw with Scheme = idw.Scheme }
+
+    /// How many keyed rows `checkKeyEquality` compares PAIRWISE (every pair among the first this
+    /// many), beside its linear pass over every row.
+    let private pairwiseSample = 256
+
+    /// Phase 284 — CHECKS the key equality `idw` declares (`withKeyEquality`) against its `KeyString`
+    /// over one table, and answers the first disagreement found: rows whose ids the equality calls
+    /// equal and whose key strings differ, rows sharing a key string that the equality calls
+    /// distinct, or equal ids hashed differently. A witness that declares nothing is `NotDeclared`.
+    /// Rows the witness gives no identity are skipped.
+    ///
+    /// Every row is checked in one linear pass by key string and by id; the first 256 keyed rows are
+    /// also compared pairwise, which is what catches an equality whose hash disagrees for ids it
+    /// calls equal (a lookup under such an equality can miss the pair). `Ok ()` is evidence over
+    /// THIS table — a sample — not a proof: feed it tables that reach the ids the witness renders
+    /// alike or apart (case variants, rounding boundaries, composite components that swap).
+    ///
+    /// A test helper: nothing in the library calls it, and no diff pays for it.
+    let checkKeyEquality (idw: RowIdentity<'Id>) (table: Table) : Result<unit, KeyEqualityDisagreement> =
+        match KeyEqualities.tryOf idw with
+        | None -> Error(NotDeclared idw.Scheme)
+        | Some eq ->
+            let keyOf = idw.KeyOf table
+            let rows = ResizeArray<int>()
+            let ids = ResizeArray<'Id>()
+            let keys = ResizeArray<string>()
+
+            for i in 0 .. Table.rowCount table - 1 do
+                match keyOf i with
+                | Some id ->
+                    rows.Add i
+                    ids.Add id
+                    keys.Add(idw.KeyString id)
+                | None -> ()
+
+            let mutable found = None
+
+            // The linear pass: the first row per key string, and the first row per id under `eq`.
+            let byKey = System.Collections.Generic.Dictionary<string, int>()
+            let byId = System.Collections.Generic.Dictionary<'Id, int>(eq)
+            let mutable j = 0
+
+            while found.IsNone && j < rows.Count do
+                let id = ids[j]
+                let k = keys[j]
+
+                match byKey.TryGetValue k with
+                | true, p ->
+                    if not (eq.Equals(ids[p], id)) then
+                        found <- Some(DistinctIdsEqualKey(rows[p], rows[j], k))
+                    elif eq.GetHashCode(ids[p]) <> eq.GetHashCode(id) then
+                        found <- Some(UnequalHashes(rows[p], rows[j], k))
+                | _ ->
+                    byKey[k] <- j
+
+                    if not (isNull (box id)) then
+                        match byId.TryGetValue id with
+                        | true, p -> found <- Some(EqualIdsDistinctKeys(rows[p], rows[j], keys[p], k))
+                        | _ -> byId[id] <- j
+
+                j <- j + 1
+
+            // The pairwise sample: needs no hash, so an equality whose hash disagrees with it is seen.
+            let m = min rows.Count pairwiseSample
+            let mutable a = 0
+
+            while found.IsNone && a < m do
+                let mutable b = a + 1
+
+                while found.IsNone && b < m do
+                    let equal = eq.Equals(ids[a], ids[b])
+                    let sameKey = keys[a] = keys[b]
+
+                    if equal && not sameKey then
+                        found <- Some(EqualIdsDistinctKeys(rows[a], rows[b], keys[a], keys[b]))
+                    elif sameKey && not equal then
+                        found <- Some(DistinctIdsEqualKey(rows[a], rows[b], keys[a]))
+                    elif equal && eq.GetHashCode(ids[a]) <> eq.GetHashCode(ids[b]) then
+                        found <- Some(UnequalHashes(rows[a], rows[b], keys[a]))
+
+                    b <- b + 1
+
+                a <- a + 1
+
+            match found with
+            | Some d -> Error d
+            | None -> Ok()
 
     /// Identity is the value of one named column — the everyday case (a primary key column). A row
     /// whose key cell is `Null`, or whose key column is absent, has NO identity (`Null` is the
@@ -250,7 +386,7 @@ module RowIdentity =
                             None
               KeyString = DataFrame.cellToken }
 
-        KeyEqualities.declare KeyEqualities.cell idw
+        withKeyEquality KeyEqualities.cell idw
 
     /// Identity is the tuple of several named columns — the composite-key case. Any `Null` component
     /// makes the row identity-free, for the same reason as `byColumn`.
@@ -280,7 +416,7 @@ module RowIdentity =
                             Some cells
               KeyString = DataFrame.rowTokenString }
 
-        KeyEqualities.declare KeyEqualities.cells idw
+        withKeyEquality KeyEqualities.cells idw
 
 /// Phase 273 — one table's row keys, minted ONCE under one identity scheme and already proved
 /// unique: `Keys[i]` is row `i`'s `KeyString`, and `Index` maps a key back to its row. Internal and

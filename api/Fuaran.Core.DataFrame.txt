@@ -88,6 +88,10 @@ field Fuaran.Core.JoinKind+Tags.Left : System.Int32 (literal)
 field Fuaran.Core.JoinKind+Tags.Outer : System.Int32 (literal)
 field Fuaran.Core.JoinKind+Tags.Right : System.Int32 (literal)
 field Fuaran.Core.JoinKind+Tags.Semi : System.Int32 (literal)
+field Fuaran.Core.KeyEqualityDisagreement+Tags.DistinctIdsEqualKey : System.Int32 (literal)
+field Fuaran.Core.KeyEqualityDisagreement+Tags.EqualIdsDistinctKeys : System.Int32 (literal)
+field Fuaran.Core.KeyEqualityDisagreement+Tags.NotDeclared : System.Int32 (literal)
+field Fuaran.Core.KeyEqualityDisagreement+Tags.UnequalHashes : System.Int32 (literal)
 field Fuaran.Core.NowGrain+Tags.Date : System.Int32 (literal)
 field Fuaran.Core.NowGrain+Tags.Timestamp : System.Int32 (literal)
 field Fuaran.Core.Recompute+Tags.FullRecompute : System.Int32 (literal)
@@ -263,6 +267,8 @@ method Fuaran.Core.Plan.isTotal(Microsoft.FSharp.Collections.FSharpList`1<System
 method Fuaran.Core.Plan.rewrite(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Transform>
 method Fuaran.Core.RowIdentity.byColumn(System.String) : Fuaran.Core.RowIdentity`1<Fuaran.Core.Cell>
 method Fuaran.Core.RowIdentity.byColumns(Microsoft.FSharp.Collections.FSharpList`1<System.String>) : Fuaran.Core.RowIdentity`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
+method Fuaran.Core.RowIdentity.checkKeyEquality`1(Fuaran.Core.RowIdentity`1<!!0>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Core.KeyEqualityDisagreement>
+method Fuaran.Core.RowIdentity.withKeyEquality`1(System.Collections.Generic.IEqualityComparer`1<!!0>, Fuaran.Core.RowIdentity`1<!!0>) : Fuaran.Core.RowIdentity`1<!!0>
 method Fuaran.Core.SchemaWalk.columns(Fuaran.Core.SchemaKnowledge) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.ColumnKnowledge>
 method Fuaran.Core.SchemaWalk.has(System.String, Fuaran.Core.SchemaKnowledge) : System.Boolean
 method Fuaran.Core.SchemaWalk.isClosed(Fuaran.Core.SchemaKnowledge) : System.Boolean
@@ -390,6 +396,12 @@ type Fuaran.Core.IncrementalStrategy+ReferenceOnly (type)
 type Fuaran.Core.IncrementalStrategy+Tags (type)
 type Fuaran.Core.JoinKind (union)
 type Fuaran.Core.JoinKind+Tags (type)
+type Fuaran.Core.KeyEqualityDisagreement (union)
+type Fuaran.Core.KeyEqualityDisagreement+DistinctIdsEqualKey (type)
+type Fuaran.Core.KeyEqualityDisagreement+EqualIdsDistinctKeys (type)
+type Fuaran.Core.KeyEqualityDisagreement+NotDeclared (type)
+type Fuaran.Core.KeyEqualityDisagreement+Tags (type)
+type Fuaran.Core.KeyEqualityDisagreement+UnequalHashes (type)
 type Fuaran.Core.NowGrain (union)
 type Fuaran.Core.NowGrain+Tags (type)
 type Fuaran.Core.NowGrainModule (module)
@@ -535,6 +547,10 @@ union-case Fuaran.Core.JoinKind.Left #1()
 union-case Fuaran.Core.JoinKind.Outer #3()
 union-case Fuaran.Core.JoinKind.Right #2()
 union-case Fuaran.Core.JoinKind.Semi #4()
+union-case Fuaran.Core.KeyEqualityDisagreement.NewDistinctIdsEqualKey #2(row: System.Int32, other: System.Int32, key: System.String)
+union-case Fuaran.Core.KeyEqualityDisagreement.NewEqualIdsDistinctKeys #1(row: System.Int32, other: System.Int32, key: System.String, otherKey: System.String)
+union-case Fuaran.Core.KeyEqualityDisagreement.NewNotDeclared #0(scheme: System.String)
+union-case Fuaran.Core.KeyEqualityDisagreement.NewUnequalHashes #3(row: System.Int32, other: System.Int32, key: System.String)
 union-case Fuaran.Core.NowGrain.Date #0()
 union-case Fuaran.Core.NowGrain.Timestamp #1()
 union-case Fuaran.Core.Recompute.NewFullRecompute #4(rowsEvaluated: System.Int32, reason: Fuaran.Core.FallBackReason)

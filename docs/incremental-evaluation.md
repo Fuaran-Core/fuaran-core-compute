@@ -1309,6 +1309,71 @@ most), because JavaScript mints a short string about as cheaply as it hashes a c
 typed path's answers were checked against the string path's on every node under Fable in the same
 run.
 
+### A consumer's own witness takes the typed path: `RowIdentity.withKeyEquality` (Phase 284)
+
+Phase 283's typed pairing was reachable only by the two reference witnesses, because the declaration
+was internal. A consumer whose identity is its own type — a composite of typed fields, a domain id —
+paid the string path on every tick. Phase 284 makes the declaration public, and it is the only route
+in: `byColumn` and `byColumns` are now declared through it too.
+
+**How a consumer opts in.** Build the witness as before, then declare the equality its `KeyString`
+agrees with, and keep the witness the call RETURNS:
+
+```fsharp
+let orderLine : RowIdentity<string * int> =
+    { Scheme = "order-line"
+      KeyOf = fun t -> (* staged per table, as byColumn is *) …
+      KeyString = fun (order, line) -> string order.Length + ":" + order + "|" + string line }
+    |> RowIdentity.withKeyEquality HashIdentity.Structural
+```
+
+`withKeyEquality equality w` returns a fresh COPY of `w` carrying the declaration. `w` itself is left
+undeclared, so declaring never changes a witness someone else holds, and a later copy
+(`{ w with … }`) is, as in Phase 283, a new witness that takes the string path. The record shape of
+`RowIdentity` did not change. The registry is still keyed by the record object, not by the
+`KeyString` function (the Release compiler re-creates function values it can see the definition of).
+The counted case below was run in a Release build for this phase, as well as in the gate's Debug
+suite.
+
+**What the consumer promises, and what breaks if the promise is false.** For every two ids the witness
+produces, `equality.Equals(a, b)` holds exactly when `KeyString a = KeyString b`, and ids it calls
+equal it hashes alike. The library uses the equality as given. It cannot prove agreement, and it does
+not check it on any path it runs: a check would render the key strings the typed path exists to
+avoid. Structural equality is not automatically such an equality. A `KeyString` that case-folds,
+rounds or truncates renders distinct ids to one string, and a key string that is not injective (two
+fields joined with no length prefix) does the same. A broken declaration is wrong silently:
+
+- an equality **finer** than the strings misses the `DuplicateIdentity` refusal the string path
+  reports, and the diff answers a delta over keys that are not identities;
+- an equality **coarser** than the strings pairs two identities as one row, so one is reported as
+  changed where the string path reports one removed and one added;
+- the keys a wrong diff rendered are remembered for the tables it keyed (Phase 273), so a later diff of
+  those same table objects under that scheme reads the wrong answer back, even on the string path.
+
+**The checking mode: `RowIdentity.checkKeyEquality w table`.** It is a helper for the consumer's own
+test suite, and nothing in the library calls it. It answers `Ok ()` or the first
+`KeyEqualityDisagreement` it finds on that table: `EqualIdsDistinctKeys`, `DistinctIdsEqualKey`,
+`UnequalHashes`, or `NotDeclared` for a witness that carries no declaration (usually the undeclared
+original was kept instead of the returned copy). Every keyed row is checked in one linear pass, by key
+string and by id. The first 256 keyed rows are also compared pairwise, which needs no hash and so
+catches an equality whose hash disagrees with it for ids it calls equal. `Ok ()` is evidence over the
+table it was given, not a proof. Feed it tables that reach the ids the witness renders alike or apart:
+case variants, rounding boundaries, composite components that swap.
+
+**How it is held.** The Phase 272/283 equivalence test (4,000 drawn pairs) adds a consumer-style
+composite witness over `(id, v)` as a `string * int`, with an injective key string and structural
+equality, declared through `withKeyEquality`. Each pair is diffed typed against the row-token
+reference, and against the witness's own undeclared copy over fresh tables, with wire bytes compared.
+`checkKeyEquality` passes on both tables of every pair. The draws reach more than 20 answered and more
+than 20 refused pairs for that witness. A second case declares three wrong equalities (finer, coarser,
+and one with a hash that is not its own) and shows `checkKeyEquality` naming each. It also shows the
+damage: the finer declaration answers `Ok` where the string path refuses with `DuplicateIdentity`, and
+the coarser one answers one `RowChanged` where the string path answers a `RowAdded` and a `RowRemoved`.
+The Phase 283 counted case now runs for a composite `(id, grp)` witness declared through
+`withKeyEquality` as well as for `byColumn`. Across four ticks of three pipelines it renders exactly the
+added rows' keys (0 per in-place tick of 1,000 rows, 1 per reshaping tick) in both the Debug and the
+Release build. An undeclared witness would render 1,000.
+
 ## What it does not do
 
 - **It does not maintain a delta on the OUTPUT.** A refresh returns the new table, not a description

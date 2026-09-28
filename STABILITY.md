@@ -108,6 +108,16 @@ this version together; `0.34.0` is tagged, so the additions advance the slot rat
   ordinal, or diffed into another table object). Every answer, footprint, delta and wire byte is
   unchanged. The one sharpened reading: two witnesses sharing a `Scheme` must key every table
   identically, which is what a scheme naming its keying rule already meant.
+- **Additive — `Fuaran.Core.DataFrame`: `RowIdentity.withKeyEquality`, `RowIdentity.checkKeyEquality`,
+  `KeyEqualityDisagreement` (Phase 284).** `withKeyEquality equality w` returns a copy of `w` that
+  declares the equality its `KeyString` agrees with, so `Delta.diff` pairs that witness's rows by the
+  typed id (Phase 283's path, until now reachable only by `byColumn` / `byColumns`, which are declared
+  through it too). `w` is left undeclared. The declaration is the caller's promise and is used as given:
+  `Equals a b` exactly when `KeyString a = KeyString b`, equal ids hashed alike. A false one silently
+  misses a `DuplicateIdentity` or mis-pairs rows. `checkKeyEquality w table` checks the promise over a
+  table for a consumer's test suite and names the first disagreement (or `NotDeclared`); nothing in
+  the library calls it. `RowIdentity`'s record shape, every delta, refusal and wire byte of an existing
+  witness are unchanged. Additive over the untagged draft, so it rides `0.35.0`.
 
 ## 0.34.0 — released 2026-09-27 as `v0.34.0`
 

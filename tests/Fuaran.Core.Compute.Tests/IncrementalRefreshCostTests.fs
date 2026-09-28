@@ -1128,6 +1128,71 @@ let private drawDiffPair (rng: System.Random) : Table * Table * DiffCase =
       SharedColumn = shared
       Ragged = ragged }
 
+/// Phase 284 — a consumer's OWN composite witness over the drawn tables, declared through the public
+/// `RowIdentity.withKeyEquality`: identity is the `(id, v)` pair as typed values (a string and an
+/// int, not cells), the key string is length-prefixed and so injective, and structural tuple
+/// equality agrees with it. A row whose `id` or `v` is not a present value has no identity. `v` is
+/// what an in-place edit touches, so an edit MOVES the key and the pairing has to fall back to a
+/// lookup, as `byColumns [ "id"; "v" ]` does. `render` renders the key; the three declarations below
+/// vary only the equality.
+let private pairKeyOf (t: Table) : int -> (string * int) option =
+    let cellsOf (name: string) =
+        match Table.tryColumn name t with
+        | Some c -> List.toArray c.Cells
+        | None -> [||]
+
+    let ids = cellsOf "id"
+    let vs = cellsOf "v"
+
+    fun i ->
+        if i >= 0 && i < ids.Length && i < vs.Length then
+            match ids[i], vs[i] with
+            | Str s, Int v -> Some(s, v)
+            | _ -> None
+        else
+            None
+
+let private customPair (scheme: string) (render: string * int -> string) : RowIdentity<string * int> =
+    { Scheme = scheme
+      KeyOf = pairKeyOf
+      KeyString = render }
+
+let private injectivePairKey (s: string, v: int) =
+    string s.Length + ":" + s + "|" + string v
+
+/// The correct declaration: structural equality over an injective key string.
+let private customPairKey =
+    customPair "custom:id+v" injectivePairKey
+    |> RowIdentity.withKeyEquality HashIdentity.Structural
+
+/// Phase 284 — three deliberately WRONG declarations, one per way an equality can disagree with its
+/// key strings: FINER than the strings (the key renders only the id, the equality compares the pair —
+/// a missed `DuplicateIdentity`), COARSER than the strings (the equality compares only the id — two
+/// identities paired as one), and an equality whose hash is not its own (equal ids hashed apart). Each
+/// keys under its OWN scheme: witnesses sharing a scheme must key every table identically (Phase 273),
+/// and these render differently.
+let private finerPairKey =
+    customPair "custom:id+v/finer" (fun (s, _) -> s)
+    |> RowIdentity.withKeyEquality HashIdentity.Structural
+
+let private coarserPairKey =
+    customPair "custom:id+v/coarser" injectivePairKey
+    |> RowIdentity.withKeyEquality (
+        HashIdentity.FromFunctions (fun (s: string, _: int) -> hash s) (fun (a, _) (b, _) -> a = b)
+    )
+
+let private unhashedPairKey =
+    let next = ref 0
+
+    customPair "custom:id+v/unhashed" injectivePairKey
+    |> RowIdentity.withKeyEquality (
+        HashIdentity.FromFunctions
+            (fun (_: string * int) ->
+                next.Value <- next.Value + 1
+                next.Value)
+            (fun a b -> a = b)
+    )
+
 [<Tests>]
 let denseDiffTests =
     testList
@@ -1157,6 +1222,18 @@ let denseDiffTests =
 
               Expect.isNone (KeyEqualities.tryOf byIdStr) "a copy with its own KeyString takes the string path"
               Expect.isNone (KeyEqualities.tryOf byPairStr) "a copy with its own KeyString takes the string path"
+
+              // Phase 284 — a consumer's own composite witness, declared through the public route, is
+              // held to the same reference and to its own undeclared twin.
+              Expect.isSome (KeyEqualities.tryOf customPairKey) "withKeyEquality declares the witness it returns"
+
+              let customPairStr =
+                  { customPairKey with
+                      KeyString = fun id -> customPairKey.KeyString id }
+
+              Expect.isNone (KeyEqualities.tryOf customPairStr) "a copy of a declared witness takes the string path"
+              let mutable customAnswered = 0
+              let mutable customRefused = 0
 
               // Typed and string answers: equal, and the same bytes on the wire (a refusal is compared
               // whole, payload included).
@@ -1227,6 +1304,33 @@ let denseDiffTests =
                   sameBothWays "byColumn, cold" iter actual (Delta.diff byIdStr sb sa)
                   sameBothWays "byColumns, cold" iter actual2 (Delta.diff byPairStr sb sa)
 
+                  // Phase 284 — the custom witness: typed against the row-token reference, then against
+                  // its string twin over the same fresh tables (cold under this scheme), wire included.
+                  let actual3 = Delta.diff customPairKey before after
+                  let expected3 = rowTokenDiff customPairKey before after
+
+                  if actual3 <> expected3 then
+                      failtestf
+                          "iter %d (custom): typed %A\n  row-token %A\n  before %A\n  after %A"
+                          iter
+                          actual3
+                          expected3
+                          before
+                          after
+
+                  sameBothWays "custom, cold" iter actual3 (Delta.diff customPairStr sb sa)
+
+                  // The declaration is correct, so the checking mode finds nothing on either table.
+                  for t in [ before; after ] do
+                      match RowIdentity.checkKeyEquality customPairKey t with
+                      | Ok() -> ()
+                      | Error d -> failtestf "iter %d: a correct declaration was flagged: %A" iter d
+
+                  if Result.isOk actual3 then
+                      customAnswered <- customAnswered + 1
+                  else
+                      customRefused <- customRefused + 1
+
                   let sa2 = { after with Columns = after.Columns }
                   sameBothWays "byColumn, before known" iter actual (Delta.diff byIdStr sb sa2)
 
@@ -1260,6 +1364,105 @@ let denseDiffTests =
               for label, p in demands do
                   printfn "  [dense diff] %-40s %5d" label (count p)
                   Expect.isGreaterThan (count p) 20 (sprintf "the draws must reach %s" label)
+
+              printfn "  [dense diff] %-40s %5d" "custom witness: answered" customAnswered
+              printfn "  [dense diff] %-40s %5d" "custom witness: refused" customRefused
+              Expect.isGreaterThan customAnswered 20 "the custom witness must reach an answered pair"
+              Expect.isGreaterThan customRefused 20 "the custom witness must reach a refused pair"
+
+          testCase "a wrong key-equality declaration is caught by checkKeyEquality, and is what the diff trusts"
+          <| fun _ ->
+              // Phase 284 — the declared equality is used AS GIVEN: the library cannot prove it agrees
+              // with `KeyString`, and the diff does not check. These three are wrong on purpose, one per
+              // way an equality can disagree, and `checkKeyEquality` names each.
+              let t (rows: (string * int) list) =
+                  tableOfRows [ for s, v in rows -> [| Str s; Int v; Float 0.0 |] ]
+
+              let clash = t [ "k0", 1; "k1", 1; "k0", 2 ]
+              let twice = t [ "k0", 1; "k1", 1; "k0", 1 ]
+
+              Expect.equal (RowIdentity.checkKeyEquality customPairKey clash) (Ok()) "the correct one agrees"
+
+              Expect.equal
+                  (RowIdentity.checkKeyEquality finerPairKey clash)
+                  (Error(DistinctIdsEqualKey(0, 2, "k0")))
+                  "finer than the strings: rows 0 and 2 share a key the equality calls distinct"
+
+              Expect.equal
+                  (RowIdentity.checkKeyEquality coarserPairKey clash)
+                  (Error(EqualIdsDistinctKeys(0, 2, "2:k0|1", "2:k0|2")))
+                  "coarser than the strings: rows 0 and 2 are equal ids with distinct keys"
+
+              Expect.equal
+                  (RowIdentity.checkKeyEquality unhashedPairKey twice)
+                  (Error(UnequalHashes(0, 2, "2:k0|1")))
+                  "an equality whose hash is not its own"
+
+              // Seen by the pairwise sample alone: equal ids, DISTINCT keys, hashed apart — so no
+              // lookup finds the pair, and only comparing them does.
+              let coarseUnhashed =
+                  customPair "custom:id+v/coarse-unhashed" injectivePairKey
+                  |> RowIdentity.withKeyEquality (
+                      HashIdentity.FromFunctions (fun (s: string, v: int) -> hash (s, v)) (fun (a, _) (b, _) -> a = b)
+                  )
+
+              Expect.equal
+                  (RowIdentity.checkKeyEquality coarseUnhashed clash)
+                  (Error(EqualIdsDistinctKeys(0, 2, "2:k0|1", "2:k0|2")))
+                  "the pairwise sample finds equal ids a hash lookup would miss"
+
+              Expect.equal
+                  (RowIdentity.checkKeyEquality (customPair "custom:id+v" injectivePairKey) clash)
+                  (Error(NotDeclared "custom:id+v"))
+                  "an undeclared witness has nothing to check"
+
+              // What a wrong declaration costs, and why the check exists: the string path refuses the
+              // repeated key, and the finer declaration answers a delta over keys that are not
+              // identities; the coarser one pairs two identities as one row.
+              let before = t [ "k0", 1; "k1", 1 ]
+
+              let finerStr =
+                  { finerPairKey with
+                      KeyString = fun id -> finerPairKey.KeyString id }
+
+              Expect.equal
+                  (Delta.diff finerStr before clash)
+                  (Error(DuplicateIdentity("custom:id+v/finer", "k0")))
+                  "the string path refuses the repeated key"
+
+              Expect.isOk (Delta.diff finerPairKey before clash) "the wrong declaration misses the refusal"
+
+              let coarserStr =
+                  { coarserPairKey with
+                      KeyString = fun id -> coarserPairKey.KeyString id }
+
+              // Fresh tables for the string path: a diff remembers the keys it rendered for the tables
+              // it keyed, so a wrong declaration's answer would be read back by anything diffing those
+              // very objects under that scheme afterwards — the damage is not confined to one call.
+              let edited = t [ "k0", 2; "k1", 1 ]
+              let fresh (x: Table) = { x with Columns = x.Columns }
+
+              Expect.equal
+                  (Delta.diff coarserStr (fresh before) (fresh edited))
+                  (Ok(
+                      RowSet
+                          { Scheme = "custom:id+v/coarser"
+                            Rows = [ ByKey "2:k0|2", RowAdded; ByKey "2:k0|1", RowRemoved ]
+                            InvalidatedColumns = [] }
+                      |> Delta.normalise
+                  ))
+                  "the string path: one identity removed, another added"
+
+              Expect.equal
+                  (Delta.diff coarserPairKey before edited)
+                  (Ok(
+                      RowSet
+                          { Scheme = "custom:id+v/coarser"
+                            Rows = [ ByKey "2:k0|1", RowChanged ]
+                            InvalidatedColumns = [] }
+                      |> Delta.normalise
+                  ))
+                  "the coarser declaration pairs the two identities as one changed row"
 
           testCase "a refusal in BEFORE is reported ahead of one in AFTER, and each names the first offending row"
           <| fun _ ->
@@ -1310,7 +1513,8 @@ let private countingId (minted: int ref) : RowIdentity<Cell> =
 
 /// Phase 283 — `byColumn "id"` counting every key it RENDERS, with the reference witness's declared
 /// key equality declared for it too (the counting wrapper renders exactly what `cellToken` renders, so
-/// the declaration's obligation holds). The diff pairs its rows by the typed id.
+/// the declaration's obligation holds). The diff pairs its rows by the typed id. Declared through the
+/// public `RowIdentity.withKeyEquality` since Phase 284.
 let private countingTypedId (rendered: int ref) : RowIdentity<Cell> =
     let b = RowIdentity.byColumn "id"
 
@@ -1319,7 +1523,7 @@ let private countingTypedId (rendered: int ref) : RowIdentity<Cell> =
             fun c ->
                 rendered.Value <- rendered.Value + 1
                 b.KeyString c }
-    |> KeyEqualities.declare KeyEqualities.cell
+    |> RowIdentity.withKeyEquality KeyEqualities.cell
 
 /// Delete row `del` and insert a row with a new identity at `ins`, every column rebuilt: a tick in
 /// which rows MOVE, so the diff pairs by lookup as well as in place, and the delta carries an
@@ -1356,6 +1560,108 @@ let private tickPipelines: (string * Transform list) list =
       [ Filter(Binary(Ge, Col "a", Lit(Int -10)))
         Transform.sortBy [ "a", Desc ]
         Transform.limit 10 0 ] ]
+
+/// Phase 284 — a consumer's OWN composite witness over the tick tables: identity is the `(id, grp)`
+/// pair of strings (not cells), the key string is length-prefixed and so injective, and structural
+/// tuple equality agrees with it — declared through the public `RowIdentity.withKeyEquality`. Counts
+/// every key it renders.
+let private customTickKey (rendered: int ref) : RowIdentity<string * string> =
+    { Scheme = "custom:id+grp"
+      KeyOf =
+        fun t ->
+            let cellsOf (name: string) =
+                match Table.tryColumn name t with
+                | Some c -> List.toArray c.Cells
+                | None -> [||]
+
+            let ids = cellsOf "id"
+            let grps = cellsOf "grp"
+
+            fun i ->
+                if i >= 0 && i < ids.Length && i < grps.Length then
+                    match ids[i], grps[i] with
+                    | Str a, Str b -> Some(a, b)
+                    | _ -> None
+                else
+                    None
+      KeyString =
+        fun (a, b) ->
+            rendered.Value <- rendered.Value + 1
+            string a.Length + ":" + a + "|" + b }
+    |> RowIdentity.withKeyEquality HashIdentity.Structural
+
+/// The Phase 283 counted tick, for one declared witness (`typedOf`) and its undeclared string-path
+/// twin (`stringOf`, same scheme and key strings): every tick renders exactly the added rows' keys,
+/// and the typed delta, its wire and the refreshed result are the string path's.
+let private typedTickRenders
+    (wlabel: string)
+    (typedOf: int ref -> RowIdentity<'Id>)
+    (stringOf: unit -> RowIdentity<'Id>)
+    : unit =
+    for plabel, p in tickPipelines do
+        let label = wlabel + " / " + plabel
+        let rendered = ref 0
+        let typedId = typedOf rendered
+        let stringId = stringOf ()
+        Expect.isSome (KeyEqualities.tryOf typedId) (sprintf "%s: the witness declares its key equality" label)
+        Expect.isNone (KeyEqualities.tryOf stringId) (sprintf "%s: the string twin declares nothing" label)
+        let n = small
+        let t0 = build n
+        let mutable state = ok (Incremental.primeOn typedId p t0)
+        Expect.equal rendered.Value n (sprintf "%s: the prime keys the source once" label)
+        let mutable prior = t0
+
+        let ticks =
+            [ "in place", (fun (t: Table) -> editSome 3 t)
+              "in place again", (fun (t: Table) -> editSome 7 t)
+              "rows moved", (fun (t: Table) -> reshape "x" 10 500 t)
+              "rows moved again", (fun (t: Table) -> reshape "y" 3 0 (editSome 5 t)) ]
+
+        for how, step in ticks do
+            let next = step prior
+            rendered.Value <- 0
+            let delta = ok (Delta.diff typedId prior next)
+            state <- ok (Incremental.refreshOn typedId p state delta next)
+
+            let carried =
+                Delta.tryRowSet delta
+                |> Option.map (fun r -> List.length r.Rows)
+                |> Option.defaultValue n
+
+            let added = Delta.rowsWith RowAdded delta |> List.length
+
+            printfn
+                "  [typed key] %-40s %-18s rendered %d for %d carried rows (%d added) of %d"
+                label
+                how
+                rendered.Value
+                carried
+                added
+                n
+
+            Expect.isLessThanOrEqual
+                rendered.Value
+                carried
+                (sprintf "%s / %s: at most one key rendered per row the delta carries" label how)
+
+            Expect.equal rendered.Value added (sprintf "%s / %s: exactly the added rows' keys are rendered" label how)
+
+            // The typed path answers what the string path answers, delta and result alike.
+            let fresh (t: Table) = { t with Columns = t.Columns }
+            let stringDelta = ok (Delta.diff stringId (fresh prior) (fresh next))
+            Expect.equal delta stringDelta (sprintf "%s / %s: the string path's delta" label how)
+
+            Expect.equal
+                (DeltaCodec.encode delta)
+                (DeltaCodec.encode stringDelta)
+                (sprintf "%s / %s: the string path's wire" label how)
+
+            Expect.equal
+                (Ok(Incremental.result state))
+                (DataFrame.evalPipeline p next)
+                (sprintf "%s / %s: refresh = reference" label how)
+
+            prior <- next
 
 [<Tests>]
 let keyOnceTests =
@@ -1507,70 +1813,18 @@ let keyOnceTests =
               // already holds), and the refresh reads the keys the delta carries. On the pre-phase
               // tree a tick rendered one key per row of the new source (n), which this case holds
               // red: an in-place tick of 1,000 rows must render none.
-              for label, p in tickPipelines do
-                  let rendered = ref 0
-                  let typedId = countingTypedId rendered
-                  let stringId = countingId (ref 0)
-                  let n = small
-                  let t0 = build n
-                  let mutable state = ok (Incremental.primeOn typedId p t0)
-                  Expect.equal rendered.Value n (sprintf "%s: the prime keys the source once" label)
-                  let mutable prior = t0
+              //
+              // Phase 284 — and the same count for a consumer's OWN witness, a composite `(id, grp)`
+              // key declared through `RowIdentity.withKeyEquality`: the public route takes the typed
+              // path exactly as the reference witness does. Its string reference is an undeclared
+              // copy of itself (the same scheme and key strings, the string path).
+              typedTickRenders "byColumn" countingTypedId (fun () -> countingId (ref 0))
 
-                  let ticks =
-                      [ "in place", (fun (t: Table) -> editSome 3 t)
-                        "in place again", (fun (t: Table) -> editSome 7 t)
-                        "rows moved", (fun (t: Table) -> reshape "x" 10 500 t)
-                        "rows moved again", (fun (t: Table) -> reshape "y" 3 0 (editSome 5 t)) ]
+              typedTickRenders "custom (id, grp)" customTickKey (fun () ->
+                  let w = customTickKey (ref 0)
 
-                  for how, step in ticks do
-                      let next = step prior
-                      rendered.Value <- 0
-                      let delta = ok (Delta.diff typedId prior next)
-                      state <- ok (Incremental.refreshOn typedId p state delta next)
-
-                      let carried =
-                          Delta.tryRowSet delta
-                          |> Option.map (fun r -> List.length r.Rows)
-                          |> Option.defaultValue n
-
-                      let added = Delta.rowsWith RowAdded delta |> List.length
-
-                      printfn
-                          "  [typed key] %-24s %-18s rendered %d for %d carried rows (%d added) of %d"
-                          label
-                          how
-                          rendered.Value
-                          carried
-                          added
-                          n
-
-                      Expect.isLessThanOrEqual
-                          rendered.Value
-                          carried
-                          (sprintf "%s / %s: at most one key rendered per row the delta carries" label how)
-
-                      Expect.equal
-                          rendered.Value
-                          added
-                          (sprintf "%s / %s: exactly the added rows' keys are rendered" label how)
-
-                      // The typed path answers what the string path answers, delta and result alike.
-                      let fresh (t: Table) = { t with Columns = t.Columns }
-                      let stringDelta = ok (Delta.diff stringId (fresh prior) (fresh next))
-                      Expect.equal delta stringDelta (sprintf "%s / %s: the string path's delta" label how)
-
-                      Expect.equal
-                          (DeltaCodec.encode delta)
-                          (DeltaCodec.encode stringDelta)
-                          (sprintf "%s / %s: the string path's wire" label how)
-
-                      Expect.equal
-                          (Ok(Incremental.result state))
-                          (DataFrame.evalPipeline p next)
-                          (sprintf "%s / %s: refresh = reference" label how)
-
-                      prior <- next ]
+                  { w with
+                      KeyString = fun id -> w.KeyString id }) ]
 
 // ---------------------------------------------------------------------------
 //  Phase 274 — the refresh's bookkeeping, held over columns.
