@@ -894,7 +894,7 @@ time. It printed figures and moved to the leg only so that the main suite ran no
 | a step's cost does not depend on which column | time ratio, guards a per-row name lookup | CLOCK — no counter sees the lookup | leg |
 | a join / a pivot / a group-by over n keys / a distinct is linear | complexity; guard quadratic scans | CLOCK — same | leg |
 | the table-fed tick at most 1.5× the full evaluation (Phase 274; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running | CLOCK; its countable part is the Phase 274 row below | leg |
-| the table-fed tick on every Phase 262 corpus node within the 2026-09-28 ruling's bound (Phase 283; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
+| the table-fed tick on every Phase 262 corpus node at most 1.5× the full evaluation (Phase 283; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
 | `Delta.diff` costs what keying costs (1,000 and 20,000 rows) | work: the keying and a constant | COUNTABLE — keys minted, bytes allocated | main suite |
 | `Filter > Sort > Limit 10`: the fused pair against the full sort (`PlanTests`) | work: the top-n does less than the sort | COUNTABLE — bytes allocated | main suite |
 | the top-N step is a single pass (Phase 207) | work | already counted (visits) | main suite |
@@ -1103,6 +1103,211 @@ accept a stated per-shape bound, or deprecate the table-fed path on .NET. For th
 that edits through `ColumnOps.applyPrepared` and refreshes with `refreshPrepared` already pays neither
 the diff nor the keying for a `Derive`-only pipeline (Phase 268). Until that decision, the gate holds
 1.5× on the three `Scaling` pipelines in its own build, and nothing was loosened.
+
+**Resolved.** The operator ruled on 2026-09-28 for a stated per-shape bound on .NET (2.5× for the
+three shapes, 1.5× for everything else) until the diff keyed by the typed id. Phase 283 enforced
+that ruling across every corpus node, keyed the diff by the typed id, and retired the per-shape bound.
+Every node is now held to 1.5×: see "The diff pairs rows by the typed id" below.
+
+### The diff pairs rows by the typed id (Phase 283)
+
+**The verdict first.** On .NET the table-fed tick of every Phase 262 corpus node now costs at most
+1.5 times the full evaluation it replaces, and the per-shape bound the operator set on 2026-09-28
+is retired. `Delta.diff` pairs the new table's rows with the prior's by the witness's typed id
+instead of by key string. It renders a key string only for a row the delta carries, where it used to
+render one for every row. In the gate's Debug build the three shapes the ruling singled out (`lines`,
+`filter > groupBy`, `filter > sort > limit`) read 0.53 to 1.25. In Release the median of three runs
+is 0.75 to 1.30. A table-fed caller sees no change on its side: the witness, the delta, its wire and
+every refusal are the same.
+
+**The ruling, enforced first.** "The table-fed tick on every corpus node costs at most 1.5 times the
+full evaluation" (`ScalingTests`, clock leg) holds all ten corpus nodes at 1,000, 20,000 and 100,000
+rows. The input, pipeline, identity column and one-row edit are the probe's own (`Corpus.fs`, copied
+into the test). It uses a batched best of five, so a 1,000-row node is timed over a window the clock
+can resolve. It landed in this phase's first commit with the ruling's bounds: 2.5 for the three
+shapes, 1.5 for every other node. It was green on the pre-phase tree (worst cell `lines` at 100,000
+rows, 1.60 in the Debug build). With six extra key renders injected per row into the diff it was red
+on all three attempts: `lines` read 2.49 to 2.70 and `byRegion` and `filter > groupBy > filter`
+1.61 to 1.90. Once the change below landed, the case was tightened to 1.5 for every node.
+
+**Measured before building: where the diff's time went.** This is the warm diff a tick pays. Its
+prior source was keyed by the state and its new table was a fresh object. .NET 10, Release, best of
+five batched samples. "Rendering ÷ diff" is (`KeyOf` + `KeyString` − `KeyOf`) over the diff's own
+time. The two hash columns are what a cold diff's uniqueness check costs over string keys and over
+typed ids.
+
+| node | rows | full (ms) | diff, warm (ms) | `KeyOf` | `KeyOf` + `KeyString` | rendering ÷ diff | string hash + uniqueness | typed pairing (`KeyOf` ×2 + equality) | typed hash + uniqueness |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| lines | 20,000 | 3.505 | 3.340 | 0.525 | 3.418 | 0.87 | 0.379 | 0.824 | 0.235 |
+| lines | 100,000 | 28.730 | 20.172 | 1.745 | 17.379 | 0.78 | 2.310 | 3.391 | 1.318 |
+| byRegion | 20,000 | 4.298 | 4.588 | 0.324 | 3.513 | 0.70 | 0.373 | 1.116 | 0.234 |
+| byRegion | 100,000 | 23.426 | 19.668 | 1.872 | 17.605 | 0.80 | 2.788 | 4.293 | 1.736 |
+| filter-groupby | 20,000 | 4.838 | 3.899 | 0.539 | 2.617 | 0.53 | 0.418 | 1.079 | 0.639 |
+| filter-groupby | 100,000 | 26.156 | 22.547 | 3.230 | 12.023 | 0.39 | 2.958 | 5.734 | 4.247 |
+| filter-sort-limit | 20,000 | 3.546 | 4.594 | 0.550 | 2.409 | 0.40 | 0.428 | 1.118 | 0.576 |
+| filter-sort-limit | 100,000 | 18.189 | 19.609 | 2.869 | 10.039 | 0.37 | 3.060 | 5.699 | 4.227 |
+| filter-groupby-filter | 20,000 | 5.261 | 3.930 | 0.531 | 3.361 | 0.72 | 0.416 | 1.044 | 0.597 |
+| filter-groupby-filter | 100,000 | 22.227 | 27.480 | 3.422 | 15.371 | 0.43 | 3.059 | 7.220 | 5.138 |
+| inner join | 20,000 | 39.656 | 5.326 | 0.506 | 4.109 | 0.68 | 0.524 | 1.031 | 0.242 |
+| inner join | 100,000 | 185.984 | 21.414 | 1.738 | 16.672 | 0.70 | 2.909 | 4.784 | 1.869 |
+| group-by high-card | 20,000 | 17.238 | 4.992 | 0.571 | 3.516 | 0.59 | 0.400 | 1.250 | 0.238 |
+| group-by high-card | 100,000 | 86.391 | 15.922 | 1.631 | 15.910 | 0.90 | 2.559 | 3.927 | 1.279 |
+| pivot | 20,000 | 15.711 | 4.048 | 0.564 | 3.987 | 0.85 | 0.422 | 1.153 | 0.270 |
+| pivot | 100,000 | 85.773 | 26.750 | 2.016 | 21.793 | 0.74 | 2.693 | 4.127 | 1.413 |
+| window CumulSum | 20,000 | 31.230 | 3.561 | 0.394 | 4.282 | 1.09 | 0.477 | 1.016 | 0.254 |
+| window CumulSum | 100,000 | 165.367 | 26.535 | 2.567 | 21.984 | 0.73 | 3.078 | 4.733 | 1.471 |
+| sort two keys | 20,000 | 12.242 | 4.023 | 0.357 | 4.474 | 1.02 | 0.510 | 0.724 | 0.261 |
+| sort two keys | 100,000 | 86.477 | 27.328 | 1.649 | 18.340 | 0.61 | 3.407 | 5.332 | 1.612 |
+
+Rendering was the largest single term on every node. On the integer-keyed nodes it was 0.59 to
+1.09 of the diff (the batched estimates overlap). On the string-keyed `Scaling` nodes it was 0.37 to
+0.72, where the rest is mostly the content pass: unpacking the edited column in both tables and
+comparing it cell by cell. Pairing by id is `KeyOf` over both tables plus one equality test per
+row. It costs 0.18 to 0.42 of rendering on the integer keys, and 0.37 to 0.79 on the string keys,
+whose `KeyOf` is dearer. The prior side's ids are recorded, so a tick pays `KeyOf` on its new table
+only. So the phase went ahead. A diff over typed ids keeps `KeyOf` and the content pass and drops
+the rendering.
+
+**What changed.**
+
+- **A witness DECLARES its key equality.** Pairing by id answers what pairing by key string answers
+  only if the equality agrees exactly with `KeyString`: `Equals a b` holds exactly when
+  `KeyString a = KeyString b`. F# structural equality on `'Id` does not promise that. A witness may
+  render two structurally distinct ids to one string (a case-folding key, a rounding one), and pairing
+  those structurally would miss a `DuplicateIdentity` the string path reports. So the equality is
+  declared, never inferred. The declaration is internal (`KeyEqualities`) and is keyed by the witness
+  RECORD object. `RowIdentity.byColumn` and `byColumns` declare `CellKey` token equality, which a law
+  in the suite already holds equal to `cellToken` equality (for `byColumns`, cell by cell, because
+  `rowTokenString` is length-prefixed and so injective). Any copy of a witness (`{ w with … }`,
+  a counting wrapper, a renamed scheme) is a new record with no declaration. It takes the string
+  path, which is unchanged and always correct. The key is the record and not the `KeyString` function
+  because the Release compiler re-created a function value it could see the definition of. A
+  declaration keyed on the function silently never matched, and the allocation counter was what
+  showed it: typed and string diffs allocated the same bytes.
+- **The diff pairs by id for a declared witness.** A row whose id equals the prior row's at the same
+  index is paired in place by one equality test. A row that moved is looked up in a typed index, built
+  only once something has moved. Uniqueness runs on a typed set. A paired row's key string is the
+  prior source's own instance. A key string is rendered only for an added row, or for a refusal's
+  payload, which is rendered exactly as the string path renders it. Every decision is the string
+  path's decision, because the equality agrees with the strings: the same deltas, the same refusals
+  in the same order (every `before` defect before any `after` defect, the first offending row in row
+  order), the same `DuplicateIdentity` key string.
+- **The keyed index carries the typed ids** (Phase 273's `KeyedIndex`, still internal). The diff
+  records them for both tables, and the seam's `tokensOf` records them when it keys a source. So a
+  tick's prior side, which the state or the previous tick keyed, is read back and the witness is not
+  asked for it again. They are read back only for the witness record that recorded them. That is what
+  makes unboxing the non-generic index safe, because one record has one `'Id`. A prior side keyed by
+  a string-path caller has no ids; the diff asks the witness for them once and records them.
+- **Rendering is O(changes) on the tick path.** A counted main-suite case ("a typed-key tick renders a
+  key string at most once per row the delta carries", `IncrementalRefreshCostTests`) counts the
+  witness's renders across four ticks of three pipelines: two edits in place, and two in which rows
+  move, one is deleted and one is inserted. It renders exactly the added rows' keys, 0 or 1 per tick
+  against 1,000 rows, and at most one per carried row. It was red with the typed path switched off, at
+  1,000 renders per in-place tick. Each tick's delta and wire bytes equal the string path's, and the
+  refresh equals the reference.
+
+**What did not change.** The public surface (the API baseline is byte-identical), `RowIdentity`'s
+shape, every delta and its equality and wire bytes, the order and payloads of refusals, and the
+incremental law family and its vectors. The Phase 272 equivalence test (4,000 drawn pairs) now diffs
+every pair on both paths: typed and string, cold, with the prior side known, and typed over a prior
+keyed by the string path. It holds all of them equal to the row-token reference and to each other,
+wire bytes included. It was red (iteration 296) with the typed path's moved-key duplicate check
+removed. A witness nothing declares for, and every diff whose new table is already keyed, takes the
+string path exactly as before. The cold diff (neither table keyed) still renders every prior row's
+key: its prior side has no strings to reuse, and the next tick reads them. It records the typed ids
+beside them, so it allocates 1.57 times the keying floor where it allocated 1.50, inside
+`diffFloorAllocBound`.
+
+**The result, .NET 10 (Release).** Every Phase 262 corpus node, a one-row edit, and the same probe
+and columns as Phase 274's table. Three runs on a machine other sessions were loading (about a third
+of its cores busy). Cells move by up to 0.5 between runs, so the last column gives all three ratios
+and their median. Cells above 1.5× are in bold. Measured on the same tree, the typed warm diff costs
+0.32 to 0.65 of the string path's at 20,000 and 100,000 rows.
+
+| node | rows | full (ms) | diff ÷ full | refresh ÷ full | tick ÷ full | tick ÷ full, three runs (median) |
+|---|---:|---:|---:|---:|---:|---:|
+| lines | 1,000 | 0.173 | 0.32× | 0.69× | 0.75× | 0.94 / 1.03 / 0.75 (0.94×) |
+| lines | 20,000 | 3.109 | 0.48× | 0.96× | 1.25× | 0.75 / 1.80 / 1.25 (1.25×) |
+| lines | 100,000 | 21.652 | 0.33× | 0.79× | 1.09× | 1.19 / 0.91 / 1.09 (1.09×) |
+| byRegion | 1,000 | 0.158 | 0.38× | 0.60× | 1.03× | 0.94 / 0.52 / 1.03 (0.94×) |
+| byRegion | 20,000 | 4.716 | 0.48× | 0.55× | 1.08× | 1.08 / 1.06 / 1.08 (1.08×) |
+| byRegion | 100,000 | 22.309 | 0.34× | 0.59× | 0.88× | 1.01 / 0.83 / 0.88 (0.88×) |
+| filter-groupby | 1,000 | 0.164 | 0.41× | 0.61× | 1.05× | 1.03 / 1.02 / 1.05 (1.03×) |
+| filter-groupby | 20,000 | 4.388 | 0.50× | 0.57× | 1.13× | 1.13 / 0.94 / 1.13 (1.13×) |
+| filter-groupby | 100,000 | 21.547 | 0.45× | 0.58× | 1.04× | 0.97 / 1.00 / 1.04 (1.00×) |
+| filter-sort-limit | 1,000 | 0.146 | 0.45× | 0.68× | 1.14× | 1.16 / 1.17 / 1.14 (1.16×) |
+| filter-sort-limit | 20,000 | 3.198 | 0.56× | 0.95× | **1.67×** | 1.30 / 1.20 / 1.67 (1.30×) |
+| filter-sort-limit | 100,000 | 17.807 | 0.54× | 0.79× | 1.30× | 1.26 / 1.31 / 1.30 (1.30×) |
+| filter-groupby-filter | 1,000 | 0.164 | 0.40× | 0.64× | 1.09× | 0.97 / 1.00 / 1.09 (1.00×) |
+| filter-groupby-filter | 20,000 | 6.244 | 0.44× | 0.78× | 1.25× | 0.61 / 1.24 / 1.25 (1.24×) |
+| filter-groupby-filter | 100,000 | 22.336 | 0.45× | 0.57× | 1.03× | 1.02 / 1.02 / 1.03 (1.02×) |
+| inner join | 1,000 | 1.187 | 0.05× | 0.75× | 0.84× | 1.11 / 1.12 / 0.84 (1.11×) |
+| inner join | 20,000 | 51.430 | 0.04× | 0.93× | 0.70× | 1.17 / 0.98 / 0.70 (0.98×) |
+| inner join | 100,000 | 209.000 | 0.04× | 1.06× | 1.05× | 1.15 / 1.02 / 1.05 (1.05×) |
+| group-by high-card | 1,000 | 0.408 | 0.17× | 0.48× | 0.70× | 1.01 / 0.74 / 0.70 (0.74×) |
+| group-by high-card | 20,000 | 21.043 | 0.09× | 0.56× | 0.58× | 0.43 / 0.55 / 0.58 (0.55×) |
+| group-by high-card | 100,000 | 100.602 | 0.08× | 0.90× | 0.78× | 0.59 / 0.67 / 0.78 (0.67×) |
+| pivot | 1,000 | 0.605 | 0.12× | 0.90× | 1.14× | 0.80 / 1.18 / 1.14 (1.14×) |
+| pivot | 20,000 | 24.250 | 0.09× | 0.79× | 1.01× | 1.10 / 1.08 / 1.01 (1.08×) |
+| pivot | 100,000 | 101.109 | 0.10× | 0.94× | 1.05× | 0.97 / 1.26 / 1.05 (1.05×) |
+| window CumulSum | 1,000 | 0.528 | 0.13× | 1.32× | 1.49× | 1.45 / 1.52 / 1.49 (1.49×) |
+| window CumulSum | 20,000 | 31.328 | 0.07× | 1.14× | 0.99× | 1.06 / 1.33 / 0.99 (1.06×) |
+| window CumulSum | 100,000 | 180.250 | 0.05× | 1.16× | 1.12× | 1.08 / 1.22 / 1.12 (1.12×) |
+| sort two keys | 1,000 | 0.352 | 0.20× | 0.24× | 0.47× | 0.44 / 0.44 / 0.47 (0.44×) |
+| sort two keys | 20,000 | 13.041 | 0.17× | 0.20× | 0.40× | 0.33 / 0.58 / 0.40 (0.40×) |
+| sort two keys | 100,000 | 107.891 | 0.10× | 0.21× | 0.21× | 0.23 / 0.30 / 0.21 (0.23×) |
+
+Two single cells went above 1.5 (`lines` at 20,000 rows, 1.80 in one run, and `filter > sort >
+limit` at 20,000 rows, 1.67 in one run). The other two runs of each read 0.75 and 1.25, and 1.30
+and 1.20. The diff is now 0.3 to 0.56 of the full evaluation on the three shapes, where it was 0.9 to
+1.3. What is left of their tick is the refresh.
+
+The `CumulSum` window at 1,000 rows reads 1.45 to 1.52 in Release. It is not one of the ruled shapes,
+and it is not the diff's (0.13 of the full evaluation): its refresh alone is 1.3 of the full
+evaluation at that size. Phase 274 recorded 1.52 for the same cell. In the gate's Debug build the
+clock leg reads it at 1.03 to 1.08. That is a refresh cost this phase did not touch, and it is
+recorded here rather than absorbed.
+
+node 24 via Fable 5 (one run, the typed and string paths on the same tree):
+
+| node | rows | full (ms) | diff, typed (ms) | diff, string path (ms) | tick ÷ full, typed | tick ÷ full, string path |
+|---|---:|---:|---:|---:|---:|---:|
+| lines | 1,000 | 1.219 | 0.262 | 0.277 | 0.70× | 0.73× |
+| lines | 20,000 | 25.004 | 6.000 | 6.749 | 0.86× | 0.84× |
+| lines | 100,000 | 122.992 | 26.000 | 28.000 | 0.71× | 0.75× |
+| byRegion | 1,000 | 1.781 | 0.250 | 0.273 | 0.68× | 0.68× |
+| byRegion | 20,000 | 36.008 | 5.875 | 7.000 | 0.78× | 0.82× |
+| byRegion | 100,000 | 185.000 | 28.000 | 31.004 | 0.67× | 0.68× |
+| filter-groupby | 1,000 | 1.875 | 0.242 | 0.234 | 0.72× | 0.72× |
+| filter-groupby | 20,000 | 34.504 | 6.500 | 5.749 | 0.78× | 0.80× |
+| filter-groupby | 100,000 | 153.992 | 24.000 | 24.000 | 0.82× | 0.85× |
+| filter-sort-limit | 1,000 | 2.750 | 0.238 | 0.258 | 0.52× | 0.50× |
+| filter-sort-limit | 20,000 | 62.000 | 6.624 | 6.875 | 0.52× | 0.51× |
+| filter-sort-limit | 100,000 | 291.992 | 37.504 | 36.992 | 0.57× | 0.60× |
+| filter-groupby-filter | 1,000 | 1.750 | 0.266 | 0.266 | 0.84× | 0.82× |
+| filter-groupby-filter | 20,000 | 35.004 | 6.501 | 6.750 | 0.86× | 0.81× |
+| filter-groupby-filter | 100,000 | 175.000 | 29.996 | 29.984 | 0.81× | 0.91× |
+| inner join | 1,000 | 10.000 | 0.469 | 0.609 | 0.90× | 0.80× |
+| inner join | 20,000 | 145.000 | 7.750 | 8.124 | 1.00× | 1.01× |
+| inner join | 100,000 | 771.008 | 39.000 | 43.000 | 1.01× | 1.08× |
+| group-by high-card | 1,000 | 3.248 | 0.305 | 0.328 | 0.55× | 0.53× |
+| group-by high-card | 20,000 | 65.016 | 8.376 | 9.376 | 0.63× | 0.58× |
+| group-by high-card | 100,000 | 396.000 | 32.000 | 32.000 | 0.47× | 0.50× |
+| pivot | 1,000 | 3.562 | 0.320 | 0.313 | 1.11× | 1.12× |
+| pivot | 20,000 | 75.008 | 15.750 | 12.000 | 1.07× | 1.23× |
+| pivot | 100,000 | 349.992 | 48.992 | 50.992 | 1.08× | 1.17× |
+| window CumulSum | 1,000 | 2.375 | 0.320 | 0.344 | 1.13× | 1.11× |
+| window CumulSum | 20,000 | 48.000 | 7.249 | 7.748 | 1.13× | 1.50× |
+| window CumulSum | 100,000 | 280.000 | 34.992 | 34.504 | 1.10× | 1.19× |
+| sort two keys | 1,000 | 3.125 | 0.305 | 0.340 | 0.44× | 0.46× |
+| sort two keys | 20,000 | 105.000 | 7.127 | 8.000 | 0.26× | 0.27× |
+| sort two keys | 100,000 | 635.992 | 30.500 | 32.992 | 0.21× | 0.21× |
+
+On node every tick stays within 1.13× on the typed path (1.50× at most on the string path). The
+typed diff there costs about what the string path's does (0.77 to 1.31 across cells, 0.9 to 1.0 on
+most), because JavaScript mints a short string about as cheaply as it hashes a cell. The
+typed path's answers were checked against the string path's on every node under Fable in the same
+run.
 
 ## What it does not do
 

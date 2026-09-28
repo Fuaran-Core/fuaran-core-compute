@@ -117,6 +117,9 @@ let private ratioBound = 5.0 * sizeRatio
 /// bookkeeping"); they say where the bound is NOT met in a Release build on .NET, and why that is the
 /// diff's keying floor rather than the refresh. That finding is the operator's to decide, not this
 /// number's to absorb: do not raise it.
+///
+/// Phase 283 keyed the diff by the typed id, and the bound is now met on every corpus node in both
+/// builds; the clock leg holds all ten at it ("the table-fed tick on every corpus node").
 let private tickBound = 1.5
 
 /// Phase 272 — how much `Delta.diff` may cost beyond minting both tables' keys through the witness,
@@ -585,25 +588,6 @@ let private setCell (colName: string) (row: int) (v: Cell) (t: Table) : Table =
                 else
                     { c with
                         Cells = c.Cells |> List.mapi (fun i x -> if i = row then v else x) }) }
-
-/// **Operator ruling 2026-09-28** (fuaran-core `tidy-up/`, "a per-shape .NET tick bound … until the
-/// diff keys by the typed id"): on .NET, these three diff-dominated shapes may tick at up to
-/// `rulingTickBound`; every other corpus node is held to `tickBound`. The target stays `tickBound`;
-/// the ruling is the operator's, and only the operator moves it. Phase 283 retires this set when the
-/// diff, keyed by the typed id, brings every node to `tickBound`.
-let private rulingShapes =
-    set [ "lines"; "filter > groupBy"; "filter > sort > limit" ]
-
-/// The per-shape .NET bound the ruling states. Do not raise it: a reading above it is an operator
-/// decision, reported with the figures, never a threshold a worker moves.
-let private rulingTickBound = 2.5
-
-/// The bound a corpus node's tick is held to under the ruling.
-let private corpusTickBound (name: string) : float =
-    if rulingShapes.Contains name then
-        rulingTickBound
-    else
-        tickBound
 
 /// Best of `runs` BATCHED samples, in ms per call: each sample repeats `f` until it spans at least
 /// 20 ms, so a 1,000-row node whose one call takes a tenth of a millisecond is timed over a window
@@ -1199,16 +1183,25 @@ let clockTests =
                               n
                               tickBound)
 
-          // ================= Phase 283 — the tick on every corpus node, under the ruling =================
+          // ================= Phase 283 — the tick on every corpus node =================
 
-          clockCase "the table-fed tick on every corpus node holds the ruling's bound at every size"
+          clockCase "the table-fed tick on every corpus node costs at most 1.5 times the full evaluation"
           <| fun _ ->
               // The case above holds the three `Scaling` pipelines; this one holds EVERY Phase 262
-              // corpus node (the shapes the doc's tables measure) at 1,000, 20,000 and 100,000 rows:
-              // `tickBound` everywhere, except the three shapes the operator's 2026-09-28 ruling holds
-              // at `rulingTickBound` on .NET. The tick is the one a caller pays: the prior source is
-              // the one the state last evaluated, the new one a fresh table object nothing has keyed.
-              // Batched best of five, both figures from one run, the ratio within it.
+              // corpus node (the shapes the doc's tables measure) at 1,000, 20,000 and 100,000 rows,
+              // at `tickBound`. The tick is the one a caller pays: the prior source is the one the
+              // state last evaluated, the new one a fresh table object nothing has keyed. Batched best
+              // of five, both figures from one run, the ratio within it.
+              //
+              // Phase 283 landed this case under the operator's 2026-09-28 ruling: `lines`,
+              // `filter > groupBy` and `filter > sort > limit` held at 2.5 on .NET, every other node
+              // at 1.5. Green that way on the pre-phase tree (worst cell
+              // `lines` at 100,000 rows, 1.60 in this Debug build) and red on all three attempts with
+              // six extra key renders injected per row into the diff. The diff then paired rows by
+              // the typed id and stopped rendering a key string per row, the three shapes came to at
+              // most 1.25 here (1.3 in Release, see the doc), and the per-shape bound was retired:
+              // every node is held to `tickBound`. Do not reinstate or raise a bound to pass this case;
+              // a reading above it is an operator decision, reported with the figures.
               //
               // Every cell is measured and printed before any is asserted, so a red attempt still
               // leaves the whole table in the log.
@@ -1236,7 +1229,7 @@ let clockTests =
                           batchedMs 5 (fun () -> DataFrame.evalPipelineInEnv nd.Env p after |> ok |> ignore)
 
                       let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
-                      let bound = corpusTickBound nd.Name
+                      let bound = tickBound
                       let ratio = tickMs / fullMs
 
                       printfn
@@ -1253,7 +1246,7 @@ let clockTests =
 
               Expect.isEmpty
                   failures
-                  "every corpus node's one-row tick (diff + refresh) must stay within its bound under the 2026-09-28 ruling" ]
+                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.5 times the full evaluation it replaces" ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
 let private countingId (minted: int ref) : RowIdentity<Cell> =

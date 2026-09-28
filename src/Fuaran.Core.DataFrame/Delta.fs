@@ -706,6 +706,15 @@ module Delta =
     ///    the edit did not touch — is not read at all for them, because equal positions of one list
     ///    hold one cell.
     ///
+    /// **Paired by the typed id since Phase 283**, for a witness that declares a key equality
+    /// (`KeyEqualities`; the reference witnesses do). The new table's rows are paired with the prior's
+    /// by `'Id` under that equality, and the key string is rendered only for a row the delta carries
+    /// (an added row) or for a refusal's payload: a paired row reuses the prior source's own string.
+    /// So the floor above, one key string per row of each table, is now one per row of a table
+    /// nothing has keyed and one per added row after that. The declared equality agrees with the key
+    /// strings exactly, so the answer, the refusals and their payloads are the string path's; a
+    /// witness with no declaration takes the string path unchanged.
+    ///
     /// The refusals are the old ones in the old order: every `before` defect before any `after`
     /// defect, and within a table the first row, in row order, that has no key or repeats an
     /// earlier row's key.
