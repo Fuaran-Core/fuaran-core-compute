@@ -397,6 +397,246 @@ let private joinSmall = 250
 let private joinLarge = 5_000
 
 // ---------------------------------------------------------------------------
+//  Phase 283 — the Phase 262 corpus, for the tick family.
+//
+//  The ten nodes of `benchmarks/Fuaran.Core.Compute.Benchmarks/Corpus.fs` as the
+//  Phase 272 / 274 probe measured them: an input, the pipeline, the identity
+//  column and a one-row edit. Copied rather than referenced, because the test
+//  project does not (and should not) depend on the benchmark project; the doc's
+//  tables (docs/incremental-evaluation.md) are over exactly these shapes.
+// ---------------------------------------------------------------------------
+
+/// One corpus node: the source at `n` rows, its identity column, the parameter environment, the
+/// pipeline, and the one-row edit a tick answers.
+type private CorpusNode =
+    { Name: string
+      IdCol: string
+      Env: Map<string, Cell>
+      Mk: int -> Table
+      EditCol: string
+      EditTo: Cell
+      Pipe: int -> Transform list }
+
+let private corpusRegions = [| "north"; "south"; "east"; "west"; "central" |]
+
+let private corpusOrders n : Table =
+    { Schema = [ "id", IntType; "region", StringType; "qty", IntType; "price", FloatType ]
+      Columns =
+        [ Column.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+          Column.create "region" StringType [ for i in 0 .. n - 1 -> Str corpusRegions[(i * 3 + i / 7) % 5] ]
+          Column.create "qty" IntType [ for i in 0 .. n - 1 -> Int(1 + (i * 7 + i / 3) % 20) ]
+          Column.create "price" FloatType [ for i in 0 .. n - 1 -> Float(float (4 + (i * 13) % 397) * 0.25) ] ] }
+
+let private corpusAmount = Derive("amount", Binary(Mul, Col "qty", Col "price"))
+
+let private corpusTwoAggs =
+    GroupBy([ "grp" ], [ { Name = "n"; Fn = Count; Of = "a" }; { Name = "s"; Fn = Sum; Of = "b" } ])
+
+let private corpusEveryRow = Filter(Binary(Ge, Col "a", Lit(Int -10)))
+
+let private corpusSheetEnv = Map.ofList [ "threshold", Float 500.0 ]
+
+let private corpusNodes: CorpusNode list =
+    let joinLeft n : Table =
+        { Schema = [ "k", IntType; "a", IntType ]
+          Columns =
+            [ Column.create "k" IntType [ for i in 0 .. n - 1 -> Int((i * 7919) % n) ]
+              Column.create "a" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+
+    let joinRight n : Table =
+        { Schema = [ "rk", IntType; "b", IntType ]
+          Columns =
+            [ Column.create "rk" IntType [ for i in 0 .. n - 1 -> Int((i * 104729) % n) ]
+              Column.create "b" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+
+    let groupTable n : Table =
+        let keys = max 1 (n / 2)
+
+        { Schema = [ "rid", IntType; "key", StringType; "v", IntType ]
+          Columns =
+            [ Column.create "rid" IntType [ for i in 0 .. n - 1 -> Int i ]
+              Column.create "key" StringType [ for i in 0 .. n - 1 -> Str("k" + string (i % keys)) ]
+              Column.create "v" IntType [ for i in 0 .. n - 1 -> Int(i % 100) ] ] }
+
+    let pivotTable n : Table =
+        { Schema = [ "rid", IntType; "idx", StringType; "on", StringType; "v", FloatType ]
+          Columns =
+            [ Column.create "rid" IntType [ for i in 0 .. n - 1 -> Int i ]
+              Column.create "idx" StringType [ for i in 0 .. n - 1 -> Str("i" + string (i % 100)) ]
+              Column.create "on" StringType [ for i in 0 .. n - 1 -> Str("o" + string ((i / 100) % 50)) ]
+              Column.create "v" FloatType [ for i in 0 .. n - 1 -> Float(float (i % 13) * 0.5) ] ] }
+
+    let windowTable n : Table =
+        { Schema = [ "seq", IntType; "v", IntType ]
+          Columns =
+            [ Column.create "seq" IntType [ for i in 0 .. n - 1 -> Int i ]
+              Column.create "v" IntType [ for i in 0 .. n - 1 -> Int(i % 10) ] ] }
+
+    let sortTable n : Table =
+        { Schema = [ "k1", StringType; "k2", IntType ]
+          Columns =
+            [ Column.create "k1" StringType [ for i in 0 .. n - 1 -> Str("c" + string (i % 100)) ]
+              Column.create "k2" IntType [ for i in 0 .. n - 1 -> Int((i * 7919) % n) ] ] }
+
+    [ { Name = "lines"
+        IdCol = "id"
+        Env = corpusSheetEnv
+        Mk = corpusOrders
+        EditCol = "qty"
+        EditTo = Int 99
+        Pipe = fun _ -> [ corpusAmount; Derive("big", Binary(Ge, Col "amount", Param "threshold")) ] }
+      { Name = "byRegion"
+        IdCol = "id"
+        Env = corpusSheetEnv
+        Mk = corpusOrders
+        EditCol = "qty"
+        EditTo = Int 99
+        Pipe =
+          fun _ ->
+              [ corpusAmount
+                GroupBy(
+                    [ "region" ],
+                    [ { Name = "total"
+                        Fn = Sum
+                        Of = "amount" }
+                      { Name = "n"
+                        Fn = Count
+                        Of = "amount" } ]
+                ) ] }
+      { Name = "filter > groupBy"
+        IdCol = "id"
+        Env = Map.empty
+        Mk = build
+        EditCol = "a"
+        EditTo = Int -1
+        Pipe = fun _ -> [ corpusEveryRow; corpusTwoAggs ] }
+      { Name = "filter > sort > limit"
+        IdCol = "id"
+        Env = Map.empty
+        Mk = build
+        EditCol = "a"
+        EditTo = Int -1
+        Pipe = fun _ -> [ corpusEveryRow; Transform.sortBy [ "a", Desc ]; Transform.limit 10 0 ] }
+      { Name = "filter > groupBy > filter"
+        IdCol = "id"
+        Env = Map.empty
+        Mk = build
+        EditCol = "a"
+        EditTo = Int -1
+        Pipe = fun _ -> [ corpusEveryRow; corpusTwoAggs; Filter(Binary(Gt, Col "n", Lit(Int 0))) ] }
+      { Name = "inner join"
+        IdCol = "k"
+        Env = Map.empty
+        Mk = joinLeft
+        EditCol = "a"
+        EditTo = Int -1
+        Pipe = fun n -> [ Join(Embedded(joinRight n), [ "k", "rk" ], Inner) ] }
+      { Name = "group-by high-card"
+        IdCol = "rid"
+        Env = Map.empty
+        Mk = groupTable
+        EditCol = "v"
+        EditTo = Int 777
+        Pipe =
+          fun _ -> [ GroupBy([ "key" ], [ { Name = "s"; Fn = Sum; Of = "v" }; { Name = "n"; Fn = Count; Of = "v" } ]) ] }
+      { Name = "pivot"
+        IdCol = "rid"
+        Env = Map.empty
+        Mk = pivotTable
+        EditCol = "v"
+        EditTo = Float 99.5
+        Pipe =
+          fun _ ->
+              [ Pivot
+                    { Index = [ "idx" ]
+                      On = "on"
+                      Values = "v"
+                      Agg = Sum } ] }
+      { Name = "window CumulSum"
+        IdCol = "seq"
+        Env = Map.empty
+        Mk = windowTable
+        EditCol = "v"
+        EditTo = Int 55
+        Pipe =
+          fun _ ->
+              [ Window
+                    { PartitionBy = []
+                      OrderBy = [ "seq", Asc ]
+                      Fn = CumulSum
+                      Of = "v"
+                      As = "cs" } ] }
+      { Name = "sort two keys"
+        IdCol = "k2"
+        Env = Map.empty
+        Mk = sortTable
+        EditCol = "k1"
+        EditTo = Str "c7"
+        Pipe = fun _ -> [ Transform.sortBy [ "k1", Asc; "k2", Desc ] ] } ]
+
+/// Set one cell — the corpus's one-row edit, as the probe made it.
+let private setCell (colName: string) (row: int) (v: Cell) (t: Table) : Table =
+    { t with
+        Columns =
+            t.Columns
+            |> List.map (fun c ->
+                if c.Name <> colName then
+                    c
+                else
+                    { c with
+                        Cells = c.Cells |> List.mapi (fun i x -> if i = row then v else x) }) }
+
+/// **Operator ruling 2026-09-28** (fuaran-core `tidy-up/`, "a per-shape .NET tick bound … until the
+/// diff keys by the typed id"): on .NET, these three diff-dominated shapes may tick at up to
+/// `rulingTickBound`; every other corpus node is held to `tickBound`. The target stays `tickBound`;
+/// the ruling is the operator's, and only the operator moves it. Phase 283 retires this set when the
+/// diff, keyed by the typed id, brings every node to `tickBound`.
+let private rulingShapes =
+    set [ "lines"; "filter > groupBy"; "filter > sort > limit" ]
+
+/// The per-shape .NET bound the ruling states. Do not raise it: a reading above it is an operator
+/// decision, reported with the figures, never a threshold a worker moves.
+let private rulingTickBound = 2.5
+
+/// The bound a corpus node's tick is held to under the ruling.
+let private corpusTickBound (name: string) : float =
+    if rulingShapes.Contains name then
+        rulingTickBound
+    else
+        tickBound
+
+/// Best of `runs` BATCHED samples, in ms per call: each sample repeats `f` until it spans at least
+/// 20 ms, so a 1,000-row node whose one call takes a tenth of a millisecond is timed over a window
+/// the clock can resolve rather than over one call's jitter. The ratio is taken within one run, as
+/// every clock figure here is.
+let private batchedMs (runs: int) (f: unit -> unit) : float =
+    f ()
+    f ()
+
+    let sample (calls: int) =
+        let sw = Stopwatch.StartNew()
+
+        for _ in 1..calls do
+            f ()
+
+        sw.Stop()
+        sw.Elapsed.TotalMilliseconds
+
+    let rec calibrate (calls: int) =
+        if calls >= 100_000 || sample calls >= 20.0 then
+            calls
+        else
+            calibrate (calls * 2)
+
+    let calls = calibrate 1
+
+    [ for _ in 1..runs ->
+          System.GC.Collect()
+          System.GC.WaitForPendingFinalizers()
+          sample calls / float calls ]
+    |> List.min
+
+// ---------------------------------------------------------------------------
 //  Phase 282 — the clock leg.
 //
 //  Every case below `clockTests` asserts TIME, and none of them runs in the
@@ -423,7 +663,7 @@ let private joinLarge = 5_000
 /// ("The gate measures work, not the machine"). A literal, deliberately, and pinned against the list
 /// by a main-suite case: the leg's run count is checked against THIS number, so a case dropped from
 /// the list without the inventory moving is red in both places.
-let clockInventory = 14
+let clockInventory = 15
 
 let mutable private clockRuns = 0
 
@@ -957,7 +1197,63 @@ let clockTests =
                               "%s @ %d: a one-row tick (diff + refresh) must cost at most %.1f times the full evaluation it replaces"
                               label
                               n
-                              tickBound) ]
+                              tickBound)
+
+          // ================= Phase 283 — the tick on every corpus node, under the ruling =================
+
+          clockCase "the table-fed tick on every corpus node holds the ruling's bound at every size"
+          <| fun _ ->
+              // The case above holds the three `Scaling` pipelines; this one holds EVERY Phase 262
+              // corpus node (the shapes the doc's tables measure) at 1,000, 20,000 and 100,000 rows:
+              // `tickBound` everywhere, except the three shapes the operator's 2026-09-28 ruling holds
+              // at `rulingTickBound` on .NET. The tick is the one a caller pays: the prior source is
+              // the one the state last evaluated, the new one a fresh table object nothing has keyed.
+              // Batched best of five, both figures from one run, the ratio within it.
+              //
+              // Every cell is measured and printed before any is asserted, so a red attempt still
+              // leaves the whole table in the log.
+              let failures = System.Collections.Generic.List<string>()
+
+              for nd in corpusNodes do
+                  for n in [ small; large; 100_000 ] do
+                      let w = RowIdentity.byColumn nd.IdCol
+                      let before = nd.Mk n
+                      let after = setCell nd.EditCol (n / 2) nd.EditTo before
+                      let p = nd.Pipe n
+                      let state = ok (Incremental.prime DataFrame.noResolve nd.Env w p before)
+
+                      let tick () =
+                          let a = { after with Columns = after.Columns }
+                          let d = ok (Delta.diff w before a)
+                          ok (Incremental.refresh DataFrame.noResolve nd.Env w p state d a)
+
+                      Expect.equal
+                          (Ok(Incremental.result (tick ())))
+                          (DataFrame.evalPipelineInEnv nd.Env p after)
+                          (sprintf "%s @ %d: the tick answers what the reference answers" nd.Name n)
+
+                      let fullMs =
+                          batchedMs 5 (fun () -> DataFrame.evalPipelineInEnv nd.Env p after |> ok |> ignore)
+
+                      let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
+                      let bound = corpusTickBound nd.Name
+                      let ratio = tickMs / fullMs
+
+                      printfn
+                          "  [corpus tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f, bound x%.1f)"
+                          nd.Name
+                          n
+                          tickMs
+                          fullMs
+                          ratio
+                          bound
+
+                      if ratio >= bound then
+                          failures.Add(sprintf "%s @ %d: x%.2f against x%.1f" nd.Name n ratio bound)
+
+              Expect.isEmpty
+                  failures
+                  "every corpus node's one-row tick (diff + refresh) must stay within its bound under the 2026-09-28 ruling" ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
 let private countingId (minted: int ref) : RowIdentity<Cell> =

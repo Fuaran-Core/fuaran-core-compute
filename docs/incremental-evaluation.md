@@ -894,12 +894,13 @@ time. It printed figures and moved to the leg only so that the main suite ran no
 | a step's cost does not depend on which column | time ratio, guards a per-row name lookup | CLOCK — no counter sees the lookup | leg |
 | a join / a pivot / a group-by over n keys / a distinct is linear | complexity; guard quadratic scans | CLOCK — same | leg |
 | the table-fed tick at most 1.5× the full evaluation (Phase 274; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running | CLOCK; its countable part is the Phase 274 row below | leg |
+| the table-fed tick on every Phase 262 corpus node within the 2026-09-28 ruling's bound (Phase 283; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
 | `Delta.diff` costs what keying costs (1,000 and 20,000 rows) | work: the keying and a constant | COUNTABLE — keys minted, bytes allocated | main suite |
 | `Filter > Sort > Limit 10`: the fused pair against the full sort (`PlanTests`) | work: the top-n does less than the sort | COUNTABLE — bytes allocated | main suite |
 | the top-N step is a single pass (Phase 207) | work | already counted (visits) | main suite |
 | a one-row refresh allocates a bounded few words per source row (Phase 274) | work: the bookkeeping per row | COUNTABLE — bytes allocated | main suite |
 
-Fourteen cases in the leg. The rest of the premise needed correcting too. The seam's counters see
+Fourteen cases in the leg (fifteen since Phase 283 added the corpus tick case). The rest of the premise needed correcting too. The seam's counters see
 the work a refresh does: rows evaluated, chunks touched (Phase 268's regression, an untouched chunk
 evaluated again, is already a count in `IncrementalRefreshCostTests`), and keys minted. None of them
 sees a walk inside the evaluator or the diff, and allocation does not either, because walking a list
