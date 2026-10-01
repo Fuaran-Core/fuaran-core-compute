@@ -13,7 +13,8 @@ namespace Fuaran.Core
 //     restriction of `DataFrame.evalPipeline`, never a second semantics: a
 //     re-evaluated cell goes through `DataFrame.evalExprInRow`'s array twin
 //     (`resolveExpr` once per step, `evalResolved` per row), a recomputed
-//     aggregate through `DataFrame.aggregateCells`, a derived column's type
+//     aggregate through the evaluator's own streams (`DataFrame.GroupAgg`,
+//     Phase 323) or `DataFrame.aggregateCells`, a derived column's type
 //     through `DataFrame.inferCellType`. One implementation, called on fewer
 //     rows. The conformance family certifies the two results identical for
 //     every (base, delta) pair, so a divergence is a failing law rather than a
@@ -1644,31 +1645,81 @@ module Incremental =
                 // the prior list itself) when every member is stable, the members are the prior
                 // members in the prior order, and the prior aggregates are cached; recomputed
                 // otherwise.
-                while failed.IsNone && gi < groupCount do
-                    let pg = if groupStable[gi] then priorOf gi else -1
+                //
+                // Phase 323 — which groups are reused is decided first (it reads nothing an
+                // aggregate computes), and the recomputed groups' aggregates are then STREAMED: one
+                // `DataFrame.GroupAgg` accumulator per aggregate, fed each recomputed group's
+                // members in member order — the evaluator's own streams, so a recomputed group's
+                // cells are the cells the full evaluation computes, to the bit. A group-aggregate
+                // the stream defers is computed by `DataFrame.aggregateCells` over its members, as
+                // every recomputed group's was before.
+                let reusedFrom: int[] = Array.create groupCount -1
+
+                for g in 0 .. groupCount - 1 do
+                    let pg = if groupStable[g] then priorOf g else -1
 
                     if
                         pg >= 0
                         && pg < prior.Members.Length
                         && pg < prior.Aggs.Length
-                        && sameMembers prior.Members[pg] groupSlots[gi]
+                        && sameMembers prior.Members[pg] groupSlots[g]
                     then
+                        reusedFrom[g] <- pg
+
+                let aggArr = List.toArray resolvedAggs
+
+                let streams =
+                    if reusedFrom |> Array.forall (fun pg -> pg >= 0) then
+                        [||]
+                    else
+                        aggArr
+                        |> Array.map (fun (a, ty, ci) ->
+                            let s =
+                                DataFrame.GroupAgg.Stream(
+                                    a.Fn,
+                                    ty,
+                                    Cells(column f ci),
+                                    groupCount,
+                                    DataFrame.GroupAgg.Exact
+                                )
+
+                            for g in 0 .. groupCount - 1 do
+                                if reusedFrom[g] < 0 then
+                                    for slot in groupSlots[g] do
+                                        s.Feed(g, slot)
+
+                            s)
+
+                while failed.IsNone && gi < groupCount do
+                    let pg = reusedFrom[gi]
+
+                    if pg >= 0 then
                         members[gi] <- prior.Members[pg]
                         aggCells[gi] <- prior.Aggs[pg]
                     else
                         recomputed <- recomputed + 1
                         recomputedAt[gi] <- true
 
-                        match
-                            resolvedAggs
-                            |> traverse (fun (a, ty, ci) ->
-                                DataFrame.aggregateCells a.Fn ty (columnOf groupSlots[gi] ci))
-                        with
-                        | Ok vals ->
-                            aggCells[gi] <- vals
+                        // In aggregate order, stopping at the first error — the traverse this replaced.
+                        let vals: Cell[] = Array.zeroCreate aggArr.Length
+                        let mutable j = 0
+
+                        while failed.IsNone && j < aggArr.Length do
+                            match streams[j].TryCell gi with
+                            | ValueSome c -> vals[j] <- c
+                            | ValueNone ->
+                                let a, ty, ci = aggArr[j]
+
+                                match DataFrame.aggregateCells a.Fn ty (columnOf groupSlots[gi] ci) with
+                                | Ok c -> vals[j] <- c
+                                | Error e -> failed <- Some e
+
+                            j <- j + 1
+
+                        if failed.IsNone then
+                            aggCells[gi] <- List.ofArray vals
                             let slots = groupSlots[gi]
                             members[gi] <- List.init slots.Count (fun j -> r.Tokens[slots[j]])
-                        | Error e -> failed <- Some e
 
                     gi <- gi + 1
 

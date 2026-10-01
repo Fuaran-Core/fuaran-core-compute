@@ -1827,6 +1827,391 @@ let tests =
               Expect.equal (cellsOf "a" viaIncr) (cellsOf "a" viaFull) "incremental agrees with full"
               Expect.notEqual (cellsOf "a" viaIncr) (cellsOf "a" prior) "the prior result was NOT reused" ]
 
+// ---- Phase 323 — the streamed GroupBy aggregates, held to `Column.aggregate` ----
+
+/// Two cells equal to the bit: a float by its IEEE bits (so `-0.0` is not `0.0`, and a sum that
+/// differs in its last bit is a different answer), every other cell structurally.
+let private sameCell (a: Cell) (b: Cell) : bool =
+    match a, b with
+    | Float x, Float y -> System.BitConverter.DoubleToInt64Bits x = System.BitConverter.DoubleToInt64Bits y
+    | _ -> a = b
+
+/// One drawn case of the differential law: a column type, its cells, and a group per row.
+type private AggCase =
+    { Ty: ColumnType
+      Cells: Cell[]
+      Groups: int
+      GroupOf: int[] }
+
+let private allAggFns =
+    [ Count; Sum; Mean; Min; Max; First; Last; Median; StdDev; CountDistinct ]
+
+/// The cell pool of one column type, at one of three edges: ordinary values, values at the edge
+/// of the range (int32's ends, floats near the top of the double range, a decimal past it), and
+/// cells OUTSIDE the column's type (which `Column.aggregate` refuses by name).
+let private drawCell (rng: System.Random) (ty: ColumnType) (edge: int) : Cell =
+    let pick (xs: Cell[]) = xs[rng.Next xs.Length]
+
+    match ty with
+    | IntType ->
+        match edge with
+        | 1 ->
+            pick
+                [| Null
+                   Int System.Int32.MaxValue
+                   Int(System.Int32.MaxValue - 1)
+                   Int System.Int32.MinValue
+                   Int 1 |]
+        | 2 -> pick [| Null; Int 3; Int -2; Float 1.5 |]
+        | _ -> pick [| Null; Int 0; Int 1; Int -1; Int 7; Int 7; Int 42 |]
+    | FloatType ->
+        match edge with
+        | 1 ->
+            pick
+                [| Null
+                   Float 1.6e308
+                   Float 1.7e308
+                   Float -1.5e308
+                   Float 1.0e308
+                   Float 3.0 |]
+        | 2 -> pick [| Null; Float nan; Float infinity; Float -infinity; Float 2.5; Int 2 |]
+        | _ ->
+            pick
+                [| Null
+                   Float 0.0
+                   Float -0.0
+                   Float 0.1
+                   Float 0.2
+                   Float 0.3
+                   Float 1.0
+                   Int 1
+                   Float nan
+                   Float -3.75
+                   Float 1e-300 |]
+    | DecimalType ->
+        match edge with
+        | 1 -> pick [| Null; Decimal("1" + System.String('0', 400)); Decimal "2.5"; Int 3 |]
+        | 2 -> pick [| Null; Decimal "1.5"; Decimal "not a number"; Float 1.0 |]
+        | _ ->
+            pick
+                [| Null
+                   Decimal "1.50"
+                   Decimal "1.5"
+                   Decimal "-2"
+                   Decimal "0.1"
+                   Int 4
+                   Decimal "0.10" |]
+    | BoolType ->
+        if edge = 2 then
+            pick [| Null; Bool true; Int 1 |]
+        else
+            pick [| Null; Bool true; Bool false |]
+    | DateType -> pick [| Null; Date "2026-01-02"; Date "2025-12-31"; Date "2026-01-02" |]
+    | TimestampType -> pick [| Null; Timestamp "2026-01-02T03:04:05Z"; Timestamp "2026-01-02T03:04:04Z" |]
+    | StringType ->
+        if edge = 2 then
+            pick [| Null; Str "b"; Int 3 |]
+        else
+            pick [| Null; Str "b"; Str "a"; Str ""; Str "B"; Str "a" |]
+
+let private lawTypes =
+    [| IntType
+       FloatType
+       DecimalType
+       StringType
+       BoolType
+       DateType
+       TimestampType |]
+
+/// Case `seed`: a column of 0 to 23 cells over 1 to 4 groups, some of which may receive no row.
+let private drawCase (seed: int) : AggCase =
+    let rng = System.Random(seed)
+    let ty = lawTypes[rng.Next lawTypes.Length]
+
+    let edge =
+        if rng.Next 4 = 0 then 1
+        elif rng.Next 6 = 0 then 2
+        else 0
+
+    let n = if rng.Next 8 = 0 then rng.Next 2 else rng.Next 24
+    let groups = 1 + rng.Next 4
+
+    { Ty = ty
+      Cells = Array.init n (fun _ -> drawCell rng ty edge)
+      Groups = groups
+      GroupOf = Array.init n (fun _ -> rng.Next groups) }
+
+/// The case's members of group `g`, in row order — what `Column.aggregate` is handed.
+let private membersOf (c: AggCase) (g: int) : Cell list =
+    [ for i in 0 .. c.Cells.Length - 1 do
+          if c.GroupOf[i] = g then
+              yield c.Cells[i] ]
+
+/// What one run of the law over `seeds` saw: the counterexamples, how many group-aggregates the
+/// stream ANSWERED (as opposed to deferring), how many it deferred where `Column.aggregate` refused,
+/// and how many it deferred where `Column.aggregate` answered.
+type private LawRun =
+    { Failures: string list
+      Answered: int
+      DeferredRefusals: int
+      DeferredAnswers: int }
+
+/// The differential law: every group-aggregate the stream answers is `Column.aggregate` over the
+/// same members in the same order, to the bit; every case `Column.aggregate` refuses, the stream
+/// defers. Each case is fed twice — over the typed carrier `Vec.pack` chooses, and over the boxed
+/// carrier — so the typed loops and the cell-by-cell route are both held.
+let private streamLaw (perturbation: DataFrame.GroupAgg.Perturbation) (seeds: int seq) : LawRun =
+    let failures = ResizeArray<string>()
+    let mutable answered = 0
+    let mutable deferredRefusals = 0
+    let mutable deferredAnswers = 0
+
+    for seed in seeds do
+        let c = drawCase seed
+        let phys = Array.init c.Cells.Length id
+
+        for v in [ Vec.pack c.Ty c.Cells; Cells(Array.copy c.Cells) ] do
+            for fn in allAggFns do
+                let s = DataFrame.GroupAgg.Stream(fn, c.Ty, v, c.Groups, perturbation)
+                s.FeedAll(c.GroupOf, phys)
+
+                for g in 0 .. c.Groups - 1 do
+                    let expected = Column.aggregate fn (Column.create "" c.Ty (membersOf c g))
+
+                    match s.TryCell g, expected with
+                    | ValueSome got, Ok want ->
+                        answered <- answered + 1
+
+                        if not (sameCell got want) then
+                            failures.Add(
+                                sprintf
+                                    "seed %d %A over %A, group %d: streamed %A, Column.aggregate %A"
+                                    seed
+                                    fn
+                                    c.Ty
+                                    g
+                                    got
+                                    want
+                            )
+                    | ValueSome got, Error e ->
+                        failures.Add(
+                            sprintf
+                                "seed %d %A over %A, group %d: streamed %A where Column.aggregate refused %A"
+                                seed
+                                fn
+                                c.Ty
+                                g
+                                got
+                                e
+                        )
+                    | ValueNone, Error _ -> deferredRefusals <- deferredRefusals + 1
+                    | ValueNone, Ok _ -> deferredAnswers <- deferredAnswers + 1
+
+    { Failures = List.ofSeq failures
+      Answered = answered
+      DeferredRefusals = deferredRefusals
+      DeferredAnswers = deferredAnswers }
+
+/// The GroupBy the evaluator computes, against the one the law's oracle computes: groups by token
+/// in first-appearance order, then each aggregate as `Column.aggregate` over the group's members
+/// (through `DataFrame.aggregateCells`, the evaluator's own envelope), the first error in group
+/// order then aggregate order. Over the WHOLE step — the key probe, the streams, the deferrals and
+/// the typed output columns — not just the accumulators.
+let private groupByOracle (t: Table) (keys: string list) (aggs: Agg list) : Result<(string * Cell list) list, string> =
+    let colCells name =
+        (Table.tryColumn name t |> Option.get).Cells |> List.toArray
+
+    let tyOf name =
+        t.Schema |> List.find (fun (n, _) -> n = name) |> snd
+
+    let keyCols = keys |> List.map colCells
+    let n = Table.rowCount t
+    let order = ResizeArray<string list>()
+    let firstRow = System.Collections.Generic.Dictionary<string list, int>()
+    let members = System.Collections.Generic.Dictionary<string list, ResizeArray<int>>()
+
+    for i in 0 .. n - 1 do
+        let k = keyCols |> List.map (fun cs -> Cell.token cs[i])
+
+        if not (members.ContainsKey k) then
+            order.Add k
+            firstRow[k] <- i
+            members[k] <- ResizeArray()
+
+        members[k].Add i
+
+    let results =
+        [ for k in order ->
+              aggs
+              |> List.map (fun a ->
+                  let src = colCells a.Of
+                  DataFrame.aggregateCells a.Fn (tyOf a.Of) [ for i in members[k] -> src[i] ]) ]
+
+    let firstError =
+        results
+        |> List.tryPick (
+            List.tryPick (fun r ->
+                match r with
+                | Error e -> Some e
+                | Ok _ -> None)
+        )
+
+    match firstError with
+    | Some e -> Error(DataFrame.errorString e)
+    | None ->
+        Ok(
+            [ for kn, cs in List.zip keys keyCols -> kn, [ for k in order -> cs[firstRow[k]] ] ]
+            @ [ for j, a in List.indexed aggs ->
+                    a.Name,
+                    [ for r in results ->
+                          match r[j] with
+                          | Ok c -> c
+                          | Error _ -> Null ] ]
+        )
+
+[<Tests>]
+let streamedAggregateLaws =
+    testList
+        "DataFrame — streamed GroupBy aggregates equal Column.aggregate (Phase 323)"
+        [ testCase "every streamed group-aggregate is Column.aggregate over the same members, to the bit"
+          <| fun _ ->
+              let run = streamLaw DataFrame.GroupAgg.Exact (seq { 0..2999 })
+              Expect.isEmpty run.Failures "the stream answers what Column.aggregate answers, or defers"
+              // Not vacuous: the stream answers most of what it is asked, and the pool reaches the
+              // refusals and the recomputations it must defer (an int Sum past int32, a float Sum
+              // past the range over finite input, a cell outside the column's type, Phase 306's
+              // finite Mean of an overflowed sum).
+              Expect.isGreaterThan run.Answered 50_000 "the stream answers, rather than deferring everything"
+              Expect.isGreaterThan run.DeferredRefusals 500 "the pool reaches the refusals"
+              Expect.isGreaterThan run.DeferredAnswers 1_000 "the pool reaches the deferred answers"
+
+          testCase "the law is red against each perturbed accumulator"
+          <| fun _ ->
+              for p in
+                  [ DataFrame.GroupAgg.MaxKeepsFirstTie
+                    DataFrame.GroupAgg.NaNFirst
+                    DataFrame.GroupAgg.SumIgnoresOverflow
+                    DataFrame.GroupAgg.CountCountsNulls ] do
+                  let run = streamLaw p (seq { 0..2999 })
+                  Expect.isNonEmpty run.Failures (sprintf "the law finds the perturbation %A" p)
+
+          testCase "a float Sum the stream answers is the left fold from 0.0, and an overflow over finite input defers"
+          <| fun _ ->
+              let xs = [| Float 0.1; Float 0.2; Float 0.3; Float -0.0 |]
+
+              let s =
+                  DataFrame.GroupAgg.Stream(Sum, FloatType, Vec.pack FloatType xs, 1, DataFrame.GroupAgg.Exact)
+
+              s.FeedAll([| 0; 0; 0; 0 |], [| 0; 1; 2; 3 |])
+
+              match s.TryCell 0 with
+              | ValueSome(Float f) ->
+                  Expect.equal
+                      (System.BitConverter.DoubleToInt64Bits f)
+                      (System.BitConverter.DoubleToInt64Bits(((0.0 + 0.1) + 0.2) + 0.3 + -0.0))
+                      "the left fold, to the bit"
+              | other -> failtestf "a float sum expected, got %A" other
+
+              let big = [| Float 1.7e308; Float 1.7e308 |]
+
+              let o =
+                  DataFrame.GroupAgg.Stream(Sum, FloatType, Vec.pack FloatType big, 1, DataFrame.GroupAgg.Exact)
+
+              o.FeedAll([| 0; 0 |], [| 0; 1 |])
+              Expect.equal (o.TryCell 0) ValueNone "an overflow over finite input is Column.aggregate's to refuse"
+
+              match
+                  DataFrame.evalPipeline
+                      [ GroupBy([ "k" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ]
+                      (tbl
+                          [ "k", StringType; "v", FloatType ]
+                          [ col "k" StringType [ Str "a"; Str "a" ]
+                            col "v" FloatType [ Float 1.7e308; Float 1.7e308 ] ])
+              with
+              | Error(OverflowError _) -> ()
+              | other -> failtestf "the GroupBy refuses the overflowed sum by name, got %A" other
+
+          testCase "the whole GroupBy step equals the oracle over drawn tables, keys and aggregates"
+          <| fun _ ->
+              let failures = ResizeArray<string>()
+              let mutable errors = 0
+
+              for seed in 0..1499 do
+                  let c = drawCase seed
+                  let rng = System.Random(seed + 7_000_000)
+                  let n = c.Cells.Length
+                  // Keys over three carriers — a string key and an int key (the unboxed probes) and a
+                  // float key with a string (the cell-key probe), each with nulls.
+                  let sk =
+                      [ for i in 0 .. n - 1 ->
+                            if rng.Next 7 = 0 then
+                                Null
+                            else
+                                Str(string ("xyz"[c.GroupOf[i] % 3])) ]
+
+                  let ik =
+                      [ for i in 0 .. n - 1 -> if rng.Next 7 = 0 then Null else Int(c.GroupOf[i]) ]
+
+                  let fk =
+                      [ for i in 0 .. n - 1 ->
+                            match rng.Next 5 with
+                            | 0 -> Null
+                            | 1 -> Float -0.0
+                            | 2 -> Float 0.0
+                            | 3 -> Float nan
+                            | _ -> Float(float c.GroupOf[i]) ]
+
+                  let t =
+                      tbl
+                          [ "sk", StringType; "ik", IntType; "fk", FloatType; "v", c.Ty ]
+                          [ col "sk" StringType sk
+                            col "ik" IntType ik
+                            col "fk" FloatType fk
+                            col "v" c.Ty (List.ofArray c.Cells) ]
+
+                  let aggs =
+                      allAggFns
+                      |> List.filter (fun _ -> rng.Next 3 > 0)
+                      |> List.mapi (fun j fn ->
+                          { Name = sprintf "a%d" j
+                            Fn = fn
+                            Of = "v" })
+
+                  for keys in [ [ "sk" ]; [ "ik" ]; [ "fk"; "sk" ] ] do
+                      let expected = groupByOracle t keys aggs
+
+                      let actual =
+                          DataFrame.evalPipeline [ GroupBy(keys, aggs) ] t
+                          |> Result.mapError DataFrame.errorString
+                          |> Result.map (fun r -> r.Columns |> List.map (fun cl -> cl.Name, cl.Cells))
+
+                      match expected, actual with
+                      | Ok e, Ok a ->
+                          let same =
+                              List.length e = List.length a
+                              && List.forall2
+                                  (fun (n1, c1) (n2, c2) ->
+                                      n1 = n2 && List.length c1 = List.length c2 && List.forall2 sameCell c1 c2)
+                                  e
+                                  a
+
+                          if not same then
+                              failures.Add(sprintf "seed %d keys %A: expected %A, got %A" seed keys e a)
+                      | Error e, Error a ->
+                          errors <- errors + 1
+
+                          if e <> a then
+                              failures.Add(sprintf "seed %d keys %A: expected error %s, got %s" seed keys e a)
+                      | _ -> failures.Add(sprintf "seed %d keys %A: expected %A, got %A" seed keys expected actual)
+
+              Expect.isEmpty
+                  (List.ofSeq failures |> List.truncate 3)
+                  (sprintf
+                      "the GroupBy step is the oracle's, cell for cell: %s"
+                      (String.concat " | " (Seq.truncate 3 failures)))
+
+              Expect.isGreaterThan errors 100 "the drawn tables reach the refusals, and the first one is the oracle's" ]
+
 [<Tests>]
 let nowTests =
     testList

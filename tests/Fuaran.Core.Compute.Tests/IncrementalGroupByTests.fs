@@ -531,3 +531,137 @@ let groupByTailTests =
                       | _ -> false)
 
               Expect.equal (List.length restricted) 3 "every tail-bearing pipeline refreshed under restriction" ]
+// ---------------------------------------------------------------------------
+// Phase 323 — the seam's dirty-group recompute STREAMS the evaluator's accumulators
+// (`DataFrame.GroupAgg`) over a recomputed group's members, deferring to
+// `DataFrame.aggregateCells` exactly where the evaluator does. The law below holds the refresh equal
+// to the full evaluation for every aggregate, over int, float, decimal and string columns, on every
+// kind of keyed edit — a value edited in place, a row moved to another group, a row deleted, a row
+// inserted — cell by cell under `Cell.token`, which tells every two floats apart by their bits but
+// for the two zeros and the NaNs. So a float `Sum` rescanned in another order, or a `Max` that kept
+// the other of `Int 1` and `Float 1.0`, is red here even where `=` would call the cells equal.
+//
+// Why the token and not the raw bits: `Delta.diff` is keyed on the same token, so an edit of `0.0`
+// to `-0.0` is NO edit to the seam — the row is stable, its group reused, and the refresh answers
+// the prior `0.0` where a full evaluation of the new source answers `-0.0`. That is the diff's
+// definition of a change, it predates this phase, and the first draw of this law found it (seed 5,
+// `Min` and `First` over a float column); it is reported, not absorbed here.
+// ---------------------------------------------------------------------------
+
+/// Two tables equal cell by cell under `Cell.token` (see above), with equal schemas.
+let private sameBits (a: Table) (b: Table) : bool =
+    let cellEq (x: Cell) (y: Cell) = Cell.token x = Cell.token y
+
+    a.Schema = b.Schema
+    && List.length a.Columns = List.length b.Columns
+    && List.forall2
+        (fun (c: Column) (d: Column) ->
+            c.Name = d.Name
+            && List.length c.Cells = List.length d.Cells
+            && List.forall2 cellEq c.Cells d.Cells)
+        a.Columns
+        b.Columns
+
+/// The value pool of one column type: order-sensitive floats (0.1 + 0.2 is not 0.2 + 0.1 to the
+/// bit), a NaN, both zeros, mixed int and float, exact decimals and their non-canonical spellings.
+let private seamPool (ty: ColumnType) : Cell[] =
+    match ty with
+    | IntType -> [| Null; Int 1; Int -3; Int 7; Int 0; Int 1000 |]
+    | FloatType ->
+        [| Null
+           Float 0.1
+           Float 0.2
+           Float 0.3
+           Float -0.0
+           Float 0.0
+           Float nan
+           Int 2
+           Float 1e16 |]
+    | DecimalType -> [| Null; Decimal "1.50"; Decimal "1.5"; Decimal "-0.25"; Int 2; Decimal "100" |]
+    | _ -> [| Null; Str "b"; Str "a"; Str "c"; Str "" |]
+
+let private seamTable (ty: ColumnType) (rows: (string * Cell * Cell) list) : Table =
+    { Schema = [ "id", StringType; "k", StringType; "v", ty ]
+      Columns =
+        [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+          Column.create "k" StringType (rows |> List.map (fun (_, k, _) -> k))
+          Column.create "v" ty (rows |> List.map (fun (_, _, v) -> v)) ] }
+
+[<Tests>]
+let streamedRecomputeTests =
+    testList
+        "Incremental — the dirty-group recompute streams the evaluator's accumulators (Phase 323)"
+        [ testCase "refresh equals the full evaluation under the token, for every aggregate and every keyed edit"
+          <| fun _ ->
+              let everyFn =
+                  [ Count; Sum; Mean; Min; Max; First; Last; Median; StdDev; CountDistinct ]
+
+              let failures = ResizeArray<string>()
+              let mutable recomputed = 0
+              let mutable compared = 0
+
+              for seed in 0..399 do
+                  let rng = System.Random(seed)
+                  let ty = [| IntType; FloatType; DecimalType; StringType |][rng.Next 4]
+                  let pool = seamPool ty
+                  let n = 2 + rng.Next 14
+                  let key () = Str(string ("pqr"[rng.Next 3]))
+
+                  let rows =
+                      [ for i in 0 .. n - 1 -> sprintf "r%d" i, key (), pool[rng.Next pool.Length] ]
+
+                  let target = rng.Next n
+
+                  let edited =
+                      match rng.Next 4 with
+                      | 0 ->
+                          rows
+                          |> List.mapi (fun i (id, k, v) ->
+                              if i = target then
+                                  id, k, pool[rng.Next pool.Length]
+                              else
+                                  id, k, v)
+                      | 1 ->
+                          rows
+                          |> List.mapi (fun i (id, k, v) -> if i = target then id, key (), v else id, k, v)
+                      | 2 -> rows |> List.filter (fun (id, _, _) -> id <> sprintf "r%d" target)
+                      | _ -> rows @ [ "new", key (), pool[rng.Next pool.Length] ]
+
+                  let before = seamTable ty rows
+                  let after = seamTable ty edited
+
+                  for fn in everyFn do
+                      let pipeline = [ GroupBy([ "k" ], [ agg "v" fn "v"; agg "n" Count "v" ]) ]
+
+                      match Incremental.primeOn idw pipeline before, DataFrame.evalPipeline pipeline after with
+                      | Ok state, full ->
+                          let delta = ok (Delta.diff idw before after)
+
+                          match Incremental.refreshOn idw pipeline state delta after, full with
+                          | Ok s, Ok f ->
+                              compared <- compared + 1
+
+                              match (Incremental.footprint s).Recompute with
+                              | GroupsRecomputed(_, g) when g > 0 -> recomputed <- recomputed + 1
+                              | _ -> ()
+
+                              if not (sameBits (Incremental.result s) f) then
+                                  failures.Add(
+                                      sprintf
+                                          "seed %d %A over %A: refresh %A, full %A"
+                                          seed
+                                          fn
+                                          ty
+                                          (Incremental.result s)
+                                          f
+                                  )
+                          | Error _, Error _ -> ()
+                          | r, f -> failures.Add(sprintf "seed %d %A over %A: refresh %A, full %A" seed fn ty r f)
+                      | Error _, _ -> ()
+
+              Expect.isEmpty
+                  (List.ofSeq failures |> List.truncate 3)
+                  (sprintf "refresh = full, to the bit: %s" (String.concat " | " (Seq.truncate 3 failures)))
+
+              Expect.isGreaterThan compared 3_000 "the law compared, rather than skipping"
+              Expect.isGreaterThan recomputed 2_000 "the refreshes recomputed groups through the streamed path" ]

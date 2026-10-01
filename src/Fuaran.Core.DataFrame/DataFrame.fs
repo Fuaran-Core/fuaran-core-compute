@@ -4352,6 +4352,478 @@ module DataFrame =
 
         derived |> Result.map (fun (ty, vec) -> Frame.withColumn f name ty vec)
 
+    /// Phase 323 — the GroupBy aggregates STREAMED: one pass over the rows, one accumulator per group
+    /// slot per aggregate, results written straight into typed output vectors. It replaced, for
+    /// `Count`, `Sum`, `Mean`, `Min`, `Max`, `First` and `Last`, a member list per group, a boxed cell
+    /// list per group per aggregate (`columnOf`), a `Column` per group and a row array per group
+    /// assembled through `Frame.ofRows` — about two thirds of the step on the corpus's `byRegion`.
+    ///
+    /// **There is still ONE aggregate semantics, `Column.aggregate`, and a stream answers only where
+    /// its answer is that one.** Every case the stream does not reproduce outright it DEFERS, and a
+    /// deferred group-aggregate is computed exactly as before, by `Column.aggregate` over the group's
+    /// members in member order: `Median`, `StdDev` and `CountDistinct` always (they need the members),
+    /// a numeric aggregate over a non-numeric column (a refusal), a group holding a cell
+    /// `Column.aggregate` refuses as outside its column's type, an int `Sum` past int32, a float
+    /// `Sum` or `Mean` whose plain form left the float range over finite input (Phase 306's refusal
+    /// and its scaled recomputation), and a decimal past the float range under `Mean`. A deferral is
+    /// never an error of its own, so the first error in group order, then aggregate order, is the
+    /// reference's. A differential law in the suite (`streamedAggregateLaws`) holds every streamed
+    /// answer equal to `Column.aggregate` over the same members in the same order, over every
+    /// aggregate and every cell mix its generators draw, and is red against each perturbed
+    /// accumulator it is handed.
+    ///
+    /// What each stream folds is what `Column.aggregate` folds, in the same order: a float `Sum` is
+    /// the left fold from `0.0` in member order, so it is the same value to the bit; an int `Sum` is
+    /// the int64 fold with the same int32 range check; `Min` keeps the first of equal minima and
+    /// `Max` the last of equal maxima under the column layer's order (NaN one value above every
+    /// other, `-0` equal to `0`); `First` and `Last` keep a group's first and last cell, `Null`
+    /// included; a decimal is read canonicalised, and a decimal `Sum` is exact.
+    module internal GroupAgg =
+
+        /// The column layer's float order — `Cell.compareFloat`, internal to Core and read here as
+        /// a copy the differential law holds equal to it (`Min`/`Max` over floats answer through
+        /// `Cell.compare`): IEEE order on the non-NaN values, `-0 = 0`, NaN one value above every
+        /// other. `nanLast = false` is the law's perturbation (the host order that put NaN first).
+        let orderFloat (nanLast: bool) (a: float) (b: float) : int =
+            match System.Double.IsNaN a, System.Double.IsNaN b with
+            | true, true -> 0
+            | true, false -> if nanLast then 1 else -1
+            | false, true -> if nanLast then -1 else 1
+            | false, false ->
+                if a < b then -1
+                elif a > b then 1
+                else 0
+
+        /// A cell as `Column.aggregate` admits it into a column of type `ty` (Core's `admit`): the
+        /// cell itself, a `Decimal` canonicalised; `ValueNone` where `Column.aggregate` refuses it as
+        /// outside the column's type — which the stream does not reproduce, but defers.
+        let admitted (ty: ColumnType) (c: Cell) : Cell voption =
+            match c with
+            | Null -> ValueSome Null
+            | Decimal s when ty = DecimalType ->
+                match DecimalText.tryCanonical s with
+                | Some canonical -> ValueSome(if canonical = s then c else Decimal canonical)
+                | None -> ValueNone
+            | _ ->
+                match Cell.typeOf c with
+                | Some t when ColumnType.widens t ty -> ValueSome c
+                | Some _ -> ValueNone
+                | None -> ValueSome c
+
+        let private isFinite (f: float) : bool =
+            not (System.Double.IsNaN f || System.Double.IsInfinity f)
+
+        // What a stream folds. `Defer` folds nothing: every group defers.
+        [<Literal>]
+        let private MDefer = 0
+
+        [<Literal>]
+        let private MCount = 1
+
+        [<Literal>]
+        let private MFirst = 2
+
+        [<Literal>]
+        let private MLast = 3
+
+        [<Literal>]
+        let private MMin = 4
+
+        [<Literal>]
+        let private MMax = 5
+
+        [<Literal>]
+        let private MSumInt = 6
+
+        [<Literal>]
+        let private MSumFloat = 7
+
+        [<Literal>]
+        let private MSumDecimal = 8
+
+        [<Literal>]
+        let private MMean = 9
+
+        /// A perturbation of the accumulator, for the differential law's teeth and nothing else; the
+        /// evaluator and the seam construct every stream with `Exact`.
+        type Perturbation =
+            | Exact
+            /// `Max` keeps the FIRST of equal maxima.
+            | MaxKeepsFirstTie
+            /// The float order puts NaN below every other value.
+            | NaNFirst
+            /// A float `Sum` over finite input answers its overflowed total instead of deferring.
+            | SumIgnoresOverflow
+            /// `Count` counts `Null` cells too.
+            | CountCountsNulls
+
+        /// One aggregate streamed over `groups` group slots, reading its source column from the
+        /// vector `v` of declared type `ty`. Feed it rows (`Feed`, or `FeedAll` for a whole frame),
+        /// then read each slot's answer (`TryCell` / `Emit`); `ValueNone` / `false` is a deferral.
+        [<Sealed>]
+        type Stream(fn: AggFn, ty: ColumnType, v: Vec, groups: int, perturbation: Perturbation) =
+            let numeric = ty = IntType || ty = FloatType || ty = DecimalType
+
+            let mode =
+                match fn with
+                | Count -> MCount
+                | First -> MFirst
+                | Last -> MLast
+                | Min -> MMin
+                | Max -> MMax
+                | Sum when ty = IntType -> MSumInt
+                | Sum when ty = FloatType -> MSumFloat
+                | Sum when ty = DecimalType -> MSumDecimal
+                | Mean when numeric -> MMean
+                | _ -> MDefer
+
+            // The typed carriers, where the vector's carrier agrees with the column's type — every
+            // present cell is then admitted as it is, and read without boxing. Anything else (the
+            // boxed vector, or a carrier of another type) is read cell by cell and admitted.
+            let ints, floats, mask, kind =
+                match v with
+                | Ints(a, m) when ty = IntType -> a, [||], m, 1
+                | Floats(a, m) when ty = FloatType -> [||], a, m, 2
+                | Bools(_, m) when ty = BoolType -> [||], [||], m, 3
+                | Strs(t, _, m) when t = ty && (t = StringType || t = DateType || t = TimestampType) -> [||], [||], m, 3
+                | _ -> [||], [||], [||], 0
+
+            let keepsLastTie = perturbation <> MaxKeepsFirstTie
+            let nanLast = perturbation <> NaNFirst
+            let countsNulls = perturbation = CountCountsNulls
+
+            let deferred: bool[] = Array.zeroCreate groups
+            let count: int[] = Array.zeroCreate groups
+            // The row a slot answers from: its first row (`First`), its last (`Last`), its best so
+            // far (`Min`/`Max`); `-1` for none.
+            let row: int[] =
+                if mode = MFirst || mode = MLast || mode = MMin || mode = MMax then
+                    Array.create groups -1
+                else
+                    [||]
+
+            let longs: int64[] = if mode = MSumInt then Array.zeroCreate groups else [||]
+
+            let totals: float[] =
+                if mode = MSumFloat || mode = MMean then
+                    Array.zeroCreate groups
+                else
+                    [||]
+
+            let nonFinite: bool[] =
+                if mode = MSumFloat || mode = MMean then
+                    Array.zeroCreate groups
+                else
+                    [||]
+
+            let decimals: string[] =
+                if mode = MSumDecimal then Array.zeroCreate groups else [||]
+
+            /// The admitted cell at physical row `p` (only ever asked of a row already admitted).
+            let cellOf (p: int) : Cell =
+                match admitted ty (Vec.cellAt v p) with
+                | ValueSome c -> c
+                | ValueNone -> Vec.cellAt v p
+
+            /// Does `candidate` replace `best` under `Min` / `Max`, given `c = compare best candidate`?
+            let replaces (c: int) : bool =
+                if mode = MMin then c > 0
+                elif keepsLastTie then c <= 0
+                else c < 0
+
+            /// One admitted present number into a float fold.
+            let addFloat (g: int) (f: float) =
+                totals[g] <- totals[g] + f
+                count[g] <- count[g] + 1
+
+                if not (isFinite f) then
+                    nonFinite[g] <- true
+
+            /// One row, read as a cell and admitted — the route for every carrier the typed loops
+            /// below do not specialise.
+            let feedCell (g: int) (p: int) =
+                match admitted ty (Vec.cellAt v p) with
+                | ValueNone -> deferred[g] <- true
+                | ValueSome cell ->
+                    match mode with
+                    | MCount ->
+                        match cell with
+                        | Null ->
+                            if countsNulls then
+                                count[g] <- count[g] + 1
+                        | _ -> count[g] <- count[g] + 1
+                    | MFirst ->
+                        if row[g] < 0 then
+                            row[g] <- p
+                    | MLast -> row[g] <- p
+                    | MMin
+                    | MMax ->
+                        match cell with
+                        | Null -> ()
+                        | _ ->
+                            count[g] <- count[g] + 1
+
+                            if row[g] < 0 then
+                                row[g] <- p
+                            else
+                                match Cell.compare (cellOf row[g]) cell with
+                                | Some c when replaces c -> row[g] <- p
+                                | _ -> ()
+                    | MSumInt ->
+                        match cell with
+                        | Int i ->
+                            longs[g] <- longs[g] + int64 i
+                            count[g] <- count[g] + 1
+                        | _ -> ()
+                    | MSumFloat
+                    | MMean ->
+                        match cell with
+                        | Int i -> addFloat g (float i)
+                        | Float f -> addFloat g f
+                        | Decimal s ->
+                            match DecimalText.tryToFloat s with
+                            | Some f -> addFloat g f
+                            | None -> deferred[g] <- true
+                        | _ -> ()
+                    | MSumDecimal ->
+                        let d =
+                            match cell with
+                            | Decimal s -> DecimalText.tryCanonical s
+                            | Int i -> Some(string i)
+                            | _ -> None
+
+                        match d with
+                        | Some d ->
+                            if isNull decimals[g] then
+                                decimals[g] <- d
+                            else
+                                decimals[g] <- DecimalText.add decimals[g] d |> Option.defaultValue decimals[g]
+                        | None -> ()
+                    | _ -> ()
+
+            /// Fold the row at physical row `p` into slot `g`.
+            member _.Feed(g: int, p: int) : unit =
+                if mode <> MDefer && not deferred[g] then
+                    if kind = 0 then
+                        feedCell g p
+                    else
+                        match mode with
+                        | MCount ->
+                            if mask[p] || countsNulls then
+                                count[g] <- count[g] + 1
+                        | MFirst ->
+                            if row[g] < 0 then
+                                row[g] <- p
+                        | MLast -> row[g] <- p
+                        | MSumInt ->
+                            if mask[p] then
+                                longs[g] <- longs[g] + int64 ints[p]
+                                count[g] <- count[g] + 1
+                        | MSumFloat
+                        | MMean ->
+                            if mask[p] then
+                                addFloat g (if kind = 1 then float ints[p] else floats[p])
+                        | MMin
+                        | MMax when kind = 1 ->
+                            if mask[p] then
+                                count[g] <- count[g] + 1
+                                let b = row[g]
+
+                                if b < 0 || replaces (compare ints[b] ints[p]) then
+                                    row[g] <- p
+                        | MMin
+                        | MMax when kind = 2 ->
+                            if mask[p] then
+                                count[g] <- count[g] + 1
+                                let b = row[g]
+
+                                if b < 0 || replaces (orderFloat nanLast floats[b] floats[p]) then
+                                    row[g] <- p
+                        | _ -> feedCell g p
+
+            /// Fold every logical row `i` of a frame — physical row `phys[i]` — into its slot
+            /// `slotOf[i]`, in logical order. The loops a GroupBy spends its time in are written out
+            /// for the typed carriers; every other case is `Feed` row by row.
+            member this.FeedAll(slotOf: int[], phys: int[]) : unit =
+                let n = phys.Length
+
+                if mode = MDefer then
+                    ()
+                elif mode = MCount && kind <> 0 && not countsNulls then
+                    for i in 0 .. n - 1 do
+                        if mask[phys[i]] then
+                            let g = slotOf[i]
+                            count[g] <- count[g] + 1
+                elif mode = MSumInt && kind = 1 then
+                    for i in 0 .. n - 1 do
+                        let p = phys[i]
+
+                        if mask[p] then
+                            let g = slotOf[i]
+                            longs[g] <- longs[g] + int64 ints[p]
+                            count[g] <- count[g] + 1
+                elif (mode = MSumFloat || mode = MMean) && kind = 2 then
+                    for i in 0 .. n - 1 do
+                        let p = phys[i]
+
+                        if mask[p] then
+                            let g = slotOf[i]
+                            let f = floats[p]
+                            totals[g] <- totals[g] + f
+                            count[g] <- count[g] + 1
+
+                            if not (isFinite f) then
+                                nonFinite[g] <- true
+                else
+                    for i in 0 .. n - 1 do
+                        this.Feed(slotOf[i], phys[i])
+
+            /// Slot `g`'s answer, or `ValueNone` where it defers to `Column.aggregate`.
+            member _.TryCell(g: int) : Cell voption =
+                if mode = MDefer || deferred[g] then
+                    ValueNone
+                else
+                    match mode with
+                    | MCount -> ValueSome(Int count[g])
+                    | MFirst
+                    | MLast
+                    | MMin
+                    | MMax -> ValueSome(if row[g] < 0 then Null else cellOf row[g])
+                    | MSumInt ->
+                        if count[g] = 0 then
+                            ValueSome Null
+                        else
+                            let s = longs[g]
+
+                            if s >= int64 System.Int32.MinValue && s <= int64 System.Int32.MaxValue then
+                                ValueSome(Int(int s))
+                            else
+                                ValueNone
+                    | MSumFloat ->
+                        let t = totals[g]
+
+                        if count[g] = 0 then
+                            ValueSome Null
+                        elif nonFinite[g] || isFinite t || perturbation = SumIgnoresOverflow then
+                            ValueSome(Float t)
+                        else
+                            ValueNone
+                    | MMean ->
+                        if count[g] = 0 then
+                            ValueSome Null
+                        else
+                            let m = totals[g] / float count[g]
+
+                            if isFinite m || nonFinite[g] then
+                                ValueSome(Float m)
+                            else
+                                ValueNone
+                    | MSumDecimal -> ValueSome(if isNull decimals[g] then Null else Decimal decimals[g])
+                    | _ -> ValueNone
+
+            /// Write slot `g`'s answer into row `g` of `out`, unboxed where the answer is a number of
+            /// the output's carrier; `false` (nothing written) where it defers.
+            member this.Emit(g: int, out: Output) : bool =
+                if mode = MDefer || deferred[g] then
+                    false
+                else
+                    match mode with
+                    | MCount ->
+                        out.Int(g, count[g])
+                        true
+                    | MSumFloat when count[g] > 0 && isFinite totals[g] ->
+                        out.Float(g, totals[g])
+                        true
+                    | MMean when count[g] > 0 && isFinite (totals[g] / float count[g]) ->
+                        out.Float(g, totals[g] / float count[g])
+                        true
+                    | MSumInt when
+                        count[g] > 0
+                        && longs[g] >= int64 System.Int32.MinValue
+                        && longs[g] <= int64 System.Int32.MaxValue
+                        ->
+                        out.Int(g, int longs[g])
+                        true
+                    | MFirst
+                    | MLast
+                    | MMin
+                    | MMax when kind = 1 || kind = 2 ->
+                        let p = row[g]
+
+                        if p < 0 || not mask[p] then out.Null g
+                        elif kind = 1 then out.Int(g, ints[p])
+                        else out.Float(g, floats[p])
+
+                        true
+                    | _ ->
+                        match this.TryCell g with
+                        | ValueSome c ->
+                            out.Cell(g, c)
+                            true
+                        | ValueNone -> false
+
+        /// One output column of `n` rows under the declared type `ty`, written row by row: an
+        /// `int[]` or `float[]` carrier beside its mask for an int or float column while every cell
+        /// written agrees with it, and the cells otherwise. `ToVec` is exactly `Vec.pack ty` over the
+        /// cells written, so a frame built from these is the frame `Frame.ofRows` built.
+        and [<Sealed>] Output(ty: ColumnType, n: int) =
+            let typedInt = ty = IntType
+            let typedFloat = ty = FloatType
+            let ints: int[] = if typedInt then Array.zeroCreate n else [||]
+            let floats: float[] = if typedFloat then Array.zeroCreate n else [||]
+            let mask: bool[] = if typedInt || typedFloat then Array.zeroCreate n else [||]
+            let mutable typed = typedInt || typedFloat
+            let mutable cells: Cell[] = if typed then [||] else Array.create n Null
+
+            let unpack () =
+                cells <-
+                    Array.init n (fun i ->
+                        if not mask[i] then Null
+                        elif typedInt then Int ints[i]
+                        else Float floats[i])
+
+                typed <- false
+
+            member _.Null(i: int) : unit =
+                if not typed then
+                    cells[i] <- Null
+
+            member _.Int(i: int, x: int) : unit =
+                if typed && typedInt then
+                    ints[i] <- x
+                    mask[i] <- true
+                else
+                    if typed then
+                        unpack ()
+
+                    cells[i] <- Int x
+
+            member _.Float(i: int, x: float) : unit =
+                if typed && typedFloat then
+                    floats[i] <- x
+                    mask[i] <- true
+                else
+                    if typed then
+                        unpack ()
+
+                    cells[i] <- Float x
+
+            member this.Cell(i: int, c: Cell) : unit =
+                match c with
+                | Null -> this.Null i
+                | Int x -> this.Int(i, x)
+                | Float x -> this.Float(i, x)
+                | _ ->
+                    if typed then
+                        unpack ()
+
+                    cells[i] <- c
+
+            member _.ToVec() : Vec =
+                if typed && typedInt then Ints(ints, mask)
+                elif typed then Floats(floats, mask)
+                else Vec.pack ty cells
+
     /// One column of a group's members — physical rows, in member order — as the cell list an
     /// aggregate reads: built from the back, so it is one pass and one cons per member, and read
     /// straight from the column's vector (Phase 267), so only the aggregated column is boxed.
@@ -4385,23 +4857,77 @@ module DataFrame =
             // selection in logical order, and only the key cells are boxed here: the aggregates
             // below read their one column each from its vector, so a row's other columns are
             // never gathered.
+            //
+            // Phase 323 — what the grouping records per row is its SLOT (`slotOf`, by logical row),
+            // not a member list per group: the streamed aggregates below read the rows once, in
+            // logical order, into per-slot accumulators. A group's member list is built only if an
+            // aggregate defers to `Column.aggregate`, and then for every group at once, from
+            // `slotOf`, in the same member order.
             let slots = CellKey.slots ()
             let probe: Cell[] = Array.zeroCreate idxs.Length
             let keyVecs = idxs |> Array.map (fun ci -> f.Vecs[ci])
             let groupKeys = ResizeArray<Cell[]>()
-            let groupRows = ResizeArray<ResizeArray<int>>()
+            let phys = Frame.physical f
+            let slotOf: int[] = Array.zeroCreate phys.Length
 
-            for p in Frame.physical f do
-                for j in 0 .. idxs.Length - 1 do
-                    probe[j] <- Vec.cellAt keyVecs[j] p
+            // One key over a string or int carrier is probed by its carrier value, unboxed: within one
+            // carrier, two present values are token-equal exactly when they are equal (ordinal
+            // strings of one family, or ints), and every `Null` is one group — `CellKey`'s partition
+            // and its first-appearance order, without a boxed cell per row. Any other key set is
+            // probed through `CellKey`.
+            let mutable nullSlot = -1
 
-                match CellKey.slotOf slots probe groupKeys.Count with
-                | g, false -> groupRows[g].Add p
-                | _, true ->
-                    groupKeys.Add(Array.copy probe)
-                    let members = ResizeArray<int>()
-                    members.Add p
-                    groupRows.Add members
+            let openSlot (i: int) (p: int) =
+                let g = groupKeys.Count
+                groupKeys.Add [| Vec.cellAt keyVecs[0] p |]
+                slotOf[i] <- g
+                g
+
+            let nullAt (i: int) =
+                if nullSlot >= 0 then
+                    slotOf[i] <- nullSlot
+                else
+                    nullSlot <- groupKeys.Count
+                    groupKeys.Add [| Null |]
+                    slotOf[i] <- nullSlot
+
+            match keyVecs with
+            | [| Strs(_, a, m) |] ->
+                let index = System.Collections.Generic.Dictionary<string, int>()
+
+                for i in 0 .. phys.Length - 1 do
+                    let p = phys[i]
+
+                    if not m[p] then
+                        nullAt i
+                    else
+                        match index.TryGetValue a[p] with
+                        | true, g -> slotOf[i] <- g
+                        | _ -> index[a[p]] <- openSlot i p
+            | [| Ints(a, m) |] ->
+                let index = System.Collections.Generic.Dictionary<int, int>()
+
+                for i in 0 .. phys.Length - 1 do
+                    let p = phys[i]
+
+                    if not m[p] then
+                        nullAt i
+                    else
+                        match index.TryGetValue a[p] with
+                        | true, g -> slotOf[i] <- g
+                        | _ -> index[a[p]] <- openSlot i p
+            | _ ->
+                for i in 0 .. phys.Length - 1 do
+                    let p = phys[i]
+
+                    for j in 0 .. idxs.Length - 1 do
+                        probe[j] <- Vec.cellAt keyVecs[j] p
+
+                    match CellKey.slotOf slots probe groupKeys.Count with
+                    | g, false -> slotOf[i] <- g
+                    | g, true ->
+                        groupKeys.Add(Array.copy probe)
+                        slotOf[i] <- g
 
             // resolve each agg's source column + type
             let resolveAgg (a: Agg) =
@@ -4419,36 +4945,71 @@ module DataFrame =
                 let keyCols = keys |> List.map (fun k -> k, colType f.Cols k |> Option.get)
                 let aggCols = resolvedAggs |> List.map (fun (a, ty, _) -> a.Name, aggType a.Fn ty)
 
-                // One output row per group, in slot order, written straight into its array: the key
-                // cells, then each aggregate in declaration order. The first error — in group order,
-                // then aggregate order, exactly as a traverse over groups of a traverse over
-                // aggregates reports it — stops the loop.
+                // Phase 323 — every aggregate streamed over the rows once, then one output column per
+                // aggregate filled slot by slot. The first error — in group order, then aggregate
+                // order, exactly as a traverse over groups of a traverse over aggregates reports it —
+                // stops the loop; only a deferred group-aggregate can fail, and it fails exactly as
+                // `Column.aggregate` over its members does.
                 let aggArr = List.toArray resolvedAggs
-                let nk = idxs.Length
-                let rows = ResizeArray<Cell[]>(groupKeys.Count)
+                let groups = groupKeys.Count
+
+                let streams =
+                    aggArr
+                    |> Array.map (fun (a, ty, ci) ->
+                        let s = GroupAgg.Stream(a.Fn, ty, f.Vecs[ci], groups, GroupAgg.Exact)
+                        s.FeedAll(slotOf, phys)
+                        s)
+
+                let outs =
+                    aggArr |> Array.map (fun (a, ty, _) -> GroupAgg.Output(aggType a.Fn ty, groups))
+
+                // The member lists, for a deferred group-aggregate: built once, for every group, on
+                // the first deferral, physical rows in logical order — the lists the step kept for
+                // every group before this phase.
+                let mutable members: ResizeArray<int>[] = null
+
+                let membersOf (g: int) : ResizeArray<int> =
+                    if isNull members then
+                        members <- Array.init groups (fun _ -> ResizeArray<int>())
+
+                        for i in 0 .. phys.Length - 1 do
+                            members[slotOf[i]].Add phys[i]
+
+                    members[g]
+
                 let mutable failed = None
                 let mutable g = 0
 
-                while Option.isNone failed && g < groupKeys.Count do
-                    let out: Cell[] = Array.zeroCreate (nk + aggArr.Length)
-                    Array.blit groupKeys[g] 0 out 0 nk
+                while Option.isNone failed && g < groups do
                     let mutable j = 0
 
                     while Option.isNone failed && j < aggArr.Length do
-                        let a, ty, ci = aggArr[j]
+                        if not (streams[j].Emit(g, outs[j])) then
+                            let a, ty, ci = aggArr[j]
 
-                        match aggCells a.Fn ty (columnOf f.Vecs[ci] groupRows[g]) with
-                        | Ok c -> out[nk + j] <- c
-                        | Error e -> failed <- Some e
+                            match aggCells a.Fn ty (columnOf f.Vecs[ci] (membersOf g)) with
+                            | Ok c -> outs[j].Cell(g, c)
+                            | Error e -> failed <- Some e
 
                         j <- j + 1
 
-                    rows.Add out
                     g <- g + 1
 
                 match failed with
                 | Some e -> Error e
-                | None -> Ok(Frame.ofRows (keyCols @ aggCols) (rows.ToArray())))
+                | None ->
+                    let keyOut =
+                        keyCols
+                        |> List.mapi (fun j (_, ty) -> Vec.pack ty (Array.init groups (fun g -> groupKeys[g][j])))
+
+                    let cols = keyCols @ aggCols
+
+                    Ok
+                        { Cols = cols
+                          Vecs = Array.append (List.toArray keyOut) (outs |> Array.map (fun o -> o.ToVec()))
+                          Origins = Array.create (List.length cols) None
+                          Sel = None
+                          Count = groups })
 
     /// One sort key's ordering over two PHYSICAL rows of its vector — the pinned ordering
     /// (`compareResolved`) read from the carrier: nulls last regardless of direction, the numeric

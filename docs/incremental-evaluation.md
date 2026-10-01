@@ -1470,6 +1470,51 @@ correctly gives it a verdict. Whether 1.6x stands for that node is the operator'
 is unchanged. Outside the windows the first build discarded, the other nodes stayed at or below 1.49 on the
 unpatched tree.
 
+### Streamed GroupBy aggregates, and the tick family they move (Phase 323)
+
+**The verdict first.** The `GroupBy` step now folds its aggregates in one pass, one accumulator per
+group slot, into typed output vectors; `byRegion`'s step at 100,000 rows reads 1.75 ms and 0.81 MB on
+.NET where it read 20.0 ms and 24.9 MB in the same paired run. The incremental seam's dirty-group
+recompute reads the same accumulators, so a recomputed group's cells are the full evaluation's. The
+tick family does **not** hold at 1.6x afterwards: `byRegion`, `filter > groupBy`,
+`filter > groupBy > filter` and the high-cardinality group-by read 1.8x to 2.4x in Release, in
+counted windows. The full evaluation halved and the tick did not move. That is the operator's to
+decide; `tickBound` is unchanged.
+
+**One aggregate semantics, held by a law.** `Column.aggregate` is still the single source. A stream
+answers only where its answer is that one — `Count`, `Sum`, `Mean`, `Min`, `Max`, `First`, `Last`
+over admitted cells — and DEFERS everything else to `Column.aggregate` over the group's members in
+member order: `Median`, `StdDev` and `CountDistinct` always, a cell outside its column's type, an int
+`Sum` past int32, a float `Sum` or `Mean` whose plain form left the float range over finite input
+(Phase 306's refusal and its recomputation). The differential law in the DataFrame family holds
+every streamed answer equal to `Column.aggregate` to the bit, over every aggregate and every cell mix
+its generators draw (`Null`, NaN, both zeros, mixed `Int` and `Float`, decimals, values at the top of
+the double and int32 ranges, cells outside the type, empty groups), and is red against each of four
+perturbed accumulators. A second law holds the whole step — key probe, streams, deferrals, typed
+output — equal to an oracle that calls `Column.aggregate` per group.
+
+**The seam: refresh equals full under the token.** `IncrementalGroupByTests` holds the refresh equal
+to the full evaluation for every aggregate, over int, float, decimal and string columns, on a value
+edited in place, a row moved to another group, a row deleted and a row inserted. The comparison is
+cell by cell under `Cell.token`, which tells every two floats apart by their bits except the two zeros
+and the NaNs. Its first draw found why the token and not the raw bits: an edit of `0.0` to `-0.0` is no
+edit to `Delta.diff`, which keys on the same token, so the row is stable, its group reused, and the
+refresh answers `0.0` where a full evaluation of the new source answers `-0.0`. That predates this
+phase (it reproduces on the pre-phase build) and is reported rather than absorbed.
+
+**Where the tick's time is.** A paired probe, pre-phase and phase trees interleaved, split the
+100,000-row tick: `filter > groupBy` read full 31.3 ms, diff 13.5 to 14.6, refresh 17.2, before;
+full 15.9 to 17.4, diff 13.2 to 13.5, refresh 17.6 to 17.8, after. The refresh did not get cheaper when
+its recompute was streamed, because the dirty group's aggregates were never a material part of it:
+instrumented, a lone `GroupBy`'s refresh spends its time in the passes every refresh makes over every
+row — the row tokens, the prior index, the frame's column unpack, the carried-group loop — each of the
+same order. Count and int `Sum` maintained by add and subtract, which the phase proposed, would remove
+the one part that was already immaterial, and was not built. Bringing these nodes back under 1.6x
+needs the refresh's per-row walk cut by about a third, which is seam work of its own.
+
+The figures, .NET and node, and the clock leg's full table are in
+`benchmarks/results/2026-10-01-snapdragon-x1e80100-phase-323.md`.
+
 ## What it does not do
 
 - **It does not maintain a delta on the OUTPUT.** A refresh returns the new table, not a description
