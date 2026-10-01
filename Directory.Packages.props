@@ -3,6 +3,7 @@
     <!-- ONE property for every Fuaran.Core package this repository pins: they are produced by one
          repository at one version, so one number is the only honest way to name them. Raise it in
          one edit, and only to a version the public registry serves. -->
+    <!-- cohort-lag(0.34.0): a public-restore consumer pins the latest RELEASED Core; 0.34.0 is an untagged draft -->
     <FuaranCoreVersion>0.33.0</FuaranCoreVersion>
   </PropertyGroup>
   <ItemGroup>
