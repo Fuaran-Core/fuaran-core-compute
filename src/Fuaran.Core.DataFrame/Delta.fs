@@ -210,6 +210,26 @@ module internal KeyEqualities =
 /// Phase 284 — how a key equality declared through `RowIdentity.withKeyEquality` disagreed with its
 /// witness's `KeyString` over a table, as `RowIdentity.checkKeyEquality` found it. Row numbers are the
 /// table's row indices, the earlier row first; a key is the witness's rendered `KeyString`.
+/// Phase 323 — the columns a reference witness reads its key from (`RowIdentity.byColumn` /
+/// `byColumns` declare theirs; a consumer's witness declares none). Internal, keyed by the witness
+/// RECORD as `KeyEqualities` is: `Delta.diff` reads it to see, without keying a single row, that a
+/// table whose key columns are the very cell lists of the table it is diffed against holds every
+/// row's key where it was.
+[<RequireQualifiedAccess>]
+module internal KeyColumns =
+
+    let private byWitness =
+        System.Runtime.CompilerServices.ConditionalWeakTable<obj, string list>()
+
+    let declare (columns: string list) (idw: RowIdentity<'Id>) : RowIdentity<'Id> =
+        byWitness.AddOrUpdate(box idw, columns)
+        idw
+
+    let tryOf (idw: RowIdentity<'Id>) : string list option =
+        match byWitness.TryGetValue(box idw) with
+        | true, cs -> Some cs
+        | _ -> None
+
 type KeyEqualityDisagreement =
     /// The witness declares no key equality: `Delta.diff` takes the string path for it, which is
     /// always correct, and there is nothing to check. Usually the witness `withKeyEquality` RETURNED
@@ -386,7 +406,7 @@ module RowIdentity =
                             None
               KeyString = DataFrame.cellToken }
 
-        withKeyEquality KeyEqualities.cell idw
+        withKeyEquality KeyEqualities.cell idw |> KeyColumns.declare [ column ]
 
     /// Identity is the tuple of several named columns — the composite-key case. Any `Null` component
     /// makes the row identity-free, for the same reason as `byColumn`.
@@ -416,7 +436,7 @@ module RowIdentity =
                             Some cells
               KeyString = DataFrame.rowTokenString }
 
-        withKeyEquality KeyEqualities.cells idw
+        withKeyEquality KeyEqualities.cells idw |> KeyColumns.declare columns
 
 /// Phase 273 — one table's row keys, minted ONCE under one identity scheme and already proved
 /// unique: `Keys[i]` is row `i`'s `KeyString`, and `Index` maps a key back to its row. Internal and
@@ -1002,15 +1022,38 @@ module Delta =
             // Both paths answer what the content pass below reads: `aKeys` (every after row's key
             // string), `inPlace`, for a row NOT in place the before row holding its key (`-1` for
             // none: an added row), and whether a before row's key is still present.
+            // Phase 323 — the key columns of a witness that declares them (`KeyColumns`), when every
+            // one of them is the SAME cell list in both tables and the tables have one row count:
+            // then after row `i` reads exactly before row `i`'s key cells, so every row is in place
+            // with before's key — complete and unique because before's were — and nothing is keyed,
+            // paired or looked up. What the walks below would conclude, without the walk.
+            let sameKeyLists =
+                defect.IsNone
+                && na = nb
+                && (match KeyColumns.tryOf idw with
+                    | Some cols ->
+                        not cols.IsEmpty
+                        && cols
+                           |> List.forall (fun c ->
+                               match Table.tryColumn c before, Table.tryColumn c after with
+                               | Some b, Some a -> obj.ReferenceEquals(b.Cells, a.Cells)
+                               | _ -> false)
+                    | None -> false)
+
             let aKeys: string[] =
                 match knownA with
                 | Some k -> k.Keys
-                | None -> Array.zeroCreate na
+                | None -> if sameKeyLists then bKeys else Array.zeroCreate na
 
-            let inPlace: bool[] = Array.zeroCreate na
+            let inPlace: bool[] =
+                if sameKeyLists then
+                    Array.create na true
+                else
+                    Array.zeroCreate na
 
             let (matchOf: int -> int), (beforeStays: int -> bool), (aIds: 'Id[] option) =
                 match equality, bIds with
+                | _ when sameKeyLists -> (fun _ -> -1), (fun r -> r < na), bIds
                 | Some eq, Some bIds ->
                     // Phase 283 — the typed pairing. Pairing, the uniqueness check and the lookups
                     // run on the ids under the declared equality, which agrees with the key strings
@@ -1185,13 +1228,37 @@ module Delta =
                 let changed: bool[] = Array.zeroCreate na
                 let shared = min na nb
 
+                // Phase 323 — the two lists walked in step rather than unpacked into arrays: the in-place
+                // pairs are compared position by position, so no array is needed (a list shorter than
+                // the table reads `Null` past its end, `columnOf`'s padding).
                 for ci in 0 .. names.Length - 1 do
                     if not (sameList ci) then
-                        let b = bCol ci
-                        let a = aCol ci
+                        let mutable b =
+                            match Table.tryColumn names[ci] before with
+                            | Some c -> c.Cells
+                            | None -> []
+
+                        let mutable a =
+                            match Table.tryColumn names[ci] after with
+                            | Some c -> c.Cells
+                            | None -> []
 
                         for r in 0 .. shared - 1 do
-                            if inPlace[r] && not changed[r] && not (sameContent b[r] a[r]) then
+                            let bc =
+                                match b with
+                                | x :: rest ->
+                                    b <- rest
+                                    x
+                                | [] -> Null
+
+                            let ac =
+                                match a with
+                                | x :: rest ->
+                                    a <- rest
+                                    x
+                                | [] -> Null
+
+                            if inPlace[r] && not changed[r] && not (sameContent bc ac) then
                                 changed[r] <- true
 
                 // A row that moved is compared whole, across every column: its two positions differ,

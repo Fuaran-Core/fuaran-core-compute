@@ -586,3 +586,73 @@ let tests =
 
               Expect.equal (Delta.rowsWith RowAdded d) [ ByKey "a"; ByKey "c" ] "rowsWith filters in canonical order"
               Expect.equal (Delta.rowsWith RowRemoved d) [] "and reports nothing for an absent change" ]
+
+/// Phase 323 — a diff whose key columns are the SAME cell lists in both tables pairs every row in
+/// place without keying one (`KeyColumns`). This holds it to the diff of the same pair with the key
+/// lists COPIED (equal cells, distinct lists, so every row is keyed and paired), over drawn tables:
+/// the same delta, the same refusal, for one key column and for two.
+[<Tests>]
+let sharedKeyListTests =
+    testList
+        "Delta.diff — key columns shared by list (Phase 323)"
+        [ testCase "sharing the key lists answers what keying them answers"
+          <| fun _ ->
+              let pool =
+                  [| Null
+                     Int 1
+                     Int 2
+                     Float 0.0
+                     Float -0.0
+                     Float nan
+                     Decimal "1.50"
+                     Decimal "1.5" |]
+
+              let mutable compared = 0
+              let mutable changes = 0
+
+              for seed in 0..1999 do
+                  let rng = System.Random(seed)
+                  let n = rng.Next 12
+                  // Ids drawn from a small pool, so some tables repeat a key or miss one (a refusal).
+                  let ids =
+                      [ for _ in 1..n ->
+                            if rng.Next 15 = 0 then
+                                Null
+                            else
+                                Str(sprintf "k%d" (rng.Next(n + 3))) ]
+
+                  let k2 = [ for i in 0 .. n - 1 -> Int(i % 3) ]
+                  let vs = [ for _ in 1..n -> pool[rng.Next pool.Length] ]
+
+                  let vs' =
+                      vs
+                      |> List.map (fun v -> if rng.Next 4 = 0 then pool[rng.Next pool.Length] else v)
+
+                  let mk (idCells: Cell list) (k2Cells: Cell list) (v: Cell list) : Table =
+                      { Schema = [ "id", StringType; "k2", IntType; "v", FloatType ]
+                        Columns =
+                          [ Column.create "id" StringType idCells
+                            Column.create "k2" IntType k2Cells
+                            Column.create "v" FloatType v ] }
+
+
+                  let check (label: string) (diffOf: Table -> Table -> Result<TableDelta, DeltaDefect>) =
+                      let before = mk ids k2 vs
+                      let shared = mk ids k2 vs'
+                      // The same cells in fresh lists: nothing is shared, so every row is keyed.
+                      let copied = mk (List.map id ids) (List.map id k2) vs'
+                      let a = diffOf before shared
+                      let b = diffOf (mk ids k2 vs) copied
+                      compared <- compared + 1
+
+                      match a with
+                      | Ok(RowSet r) when not r.Rows.IsEmpty -> changes <- changes + 1
+                      | _ -> ()
+
+                      Expect.equal a b (sprintf "%s, seed %d" label seed)
+
+                  check "byColumn" (Delta.diff (RowIdentity.byColumn "id"))
+                  check "byColumns" (Delta.diff (RowIdentity.byColumns [ "id"; "k2" ]))
+
+              Expect.isGreaterThan compared 3_000 "the law compared"
+              Expect.isGreaterThan changes 500 "and the drawn edits reached changed rows" ]
