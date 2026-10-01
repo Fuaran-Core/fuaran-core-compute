@@ -137,6 +137,15 @@ type ScalarFn =
     /// when absent (an empty needle is `0`). 0-based deliberately: `Substr` is 0-based here, so
     /// `Substr(s, IndexOf(s, t), n)` composes — the 1-based SQL `POSITION` convention would not.
     | IndexOf
+    /// Phase 277 — the quotient of two exact decimals at a STATED scale under a STATED rounding rule:
+    /// `Divide(dividend, divisor, scale, rule)`, the scale a non-negative `int` (at most
+    /// `1000`) and the rule one of `half-even`, `half-up`, `half-down`, `up`, `down`, `ceiling`,
+    /// `floor`. A quotient of two decimals is not a finite decimal in general (a third has no
+    /// finite expansion), so `Binary(Div, …)` over a decimal is refused by name and points here. An
+    /// `int` operand promotes to a decimal; a `float` operand is refused (`Cast` it first). The
+    /// answer is a `Decimal`; a zero divisor answers `Null`, as `Div` does; a null dividend or
+    /// divisor propagates.
+    | Divide
 
 /// A binary operator: arithmetic, comparison, or logical. Null propagates through arithmetic +
 /// comparison (any null operand ⇒ null); the logical pair is three-valued (Kleene).
@@ -772,6 +781,307 @@ module internal RowAccess =
         cols
         |> List.mapi (fun ci (name, ty) -> Column.create name ty (rows |> List.map (fun r -> r[ci])))
 
+/// Exact arithmetic over decimal text (Phase 277) — what the evaluator computes a `Decimal` cell's
+/// `Sub`, `Mul`, `Mod`, negation, `Abs`, `Floor`, `Ceil`, `Round` and `Divide` with. The column layer's
+/// `DecimalText` owns the canonical form, the order and the sum (Core `DECISIONS.md` D72 K7); this
+/// is the rest of the arithmetic, which that record names the evaluator's.
+///
+/// Every value is held as `(negative, magnitude digits, scale)` — the number `±digits × 10^-scale`,
+/// the digits a string with no leading zero (a lone `0` for zero) — and every answer is rendered
+/// back through `DecimalText.tryCanonical`, so the evaluator only ever emits canonical text.
+/// Arbitrary precision: the digits are strings, so nothing overflows; and no host `decimal`, whose
+/// range differs by host. FSharp.Core only, Fable-clean.
+///
+/// `Add`, `Sub`, `Mul`, `Mod`, negation and `Abs` are CLOSED over finite decimals and exact. A
+/// quotient is not (a third has no finite expansion), and neither is a value rounded to fewer
+/// places, so `divide` and `roundTo` take the scale and the rounding rule as arguments, and the
+/// evaluator refuses them without both.
+[<RequireQualifiedAccess>]
+module internal DecimalArith =
+
+    /// The rounding rules a `Round` or a `Divide` over decimals names, by their wire spelling. Seven,
+    /// with the meanings `java.math.RoundingMode` gives the same names: the three half-way rules
+    /// differ only on an exact tie, `up` and `down` round away from and toward zero, `ceiling` and
+    /// `floor` toward positive and negative infinity.
+    let rules: string list =
+        [ "half-even"; "half-up"; "half-down"; "up"; "down"; "ceiling"; "floor" ]
+
+    /// The largest scale a `Round` or a `Divide` may name. A quotient is computed to the scale it
+    /// names, one digit at a time, so the bound is a resource limit rather than a statement about
+    /// decimals — a scale a pipeline cannot have meant would otherwise cost what it names.
+    let maxScale: int = 1000
+
+    let private isZeroDigits (d: string) : bool = d |> Seq.forall (fun c -> c = '0')
+
+    /// Strip leading zeros, keeping a lone `0`.
+    let private trimLeading (d: string) : string =
+        let t = d.TrimStart '0'
+        if t.Length = 0 then "0" else t
+
+    /// `(negative, digits, scale)` of a decimal text, or `None` where it is not decimal text.
+    let parts (s: string) : (bool * string * int) option =
+        DecimalText.tryCanonical s
+        |> Option.map (fun c ->
+            let negative = c.StartsWith "-"
+            let body = if negative then c.Substring 1 else c
+            let dot = body.IndexOf '.'
+
+            if dot < 0 then
+                negative, body, 0
+            else
+                negative, trimLeading (body.Substring(0, dot) + body.Substring(dot + 1)), body.Length - dot - 1)
+
+    /// The canonical text of `±digits × 10^-scale`.
+    let render (negative: bool) (digits: string) (scale: int) : string =
+        let digits = trimLeading digits
+
+        let text =
+            if scale <= 0 then
+                digits + System.String('0', -scale)
+            else
+                let padded = digits.PadLeft(scale + 1, '0')
+
+                padded.Substring(0, padded.Length - scale)
+                + "."
+                + padded.Substring(padded.Length - scale)
+
+        let signed =
+            if negative && not (isZeroDigits digits) then
+                "-" + text
+            else
+                text
+
+        DecimalText.tryCanonical signed |> Option.defaultValue signed
+
+    let private digit (c: char) : int = int c - int '0'
+
+    /// Compare two magnitudes (no leading zeros).
+    let private compareMag (a: string) (b: string) : int =
+        if a.Length <> b.Length then
+            compare a.Length b.Length
+        else
+            sign (System.String.CompareOrdinal(a, b))
+
+    let private addMag (a: string) (b: string) : string =
+        let n = max a.Length b.Length
+        let a = a.PadLeft(n, '0')
+        let b = b.PadLeft(n, '0')
+        let out = Array.zeroCreate<char> (n + 1)
+        let mutable carry = 0
+
+        for i in n - 1 .. -1 .. 0 do
+            let d = digit a[i] + digit b[i] + carry
+            out[i + 1] <- char (int '0' + d % 10)
+            carry <- d / 10
+
+        out[0] <- char (int '0' + carry)
+        trimLeading (System.String out)
+
+    /// `a - b` for magnitudes with `a >= b`.
+    let private subMag (a: string) (b: string) : string =
+        let b = b.PadLeft(a.Length, '0')
+        let out = Array.zeroCreate<char> a.Length
+        let mutable borrow = 0
+
+        for i in a.Length - 1 .. -1 .. 0 do
+            let d = digit a[i] - digit b[i] - borrow
+
+            if d < 0 then
+                out[i] <- char (int '0' + d + 10)
+                borrow <- 1
+            else
+                out[i] <- char (int '0' + d)
+                borrow <- 0
+
+        trimLeading (System.String out)
+
+    let private mulMag (a: string) (b: string) : string =
+        if a = "0" || b = "0" then
+            "0"
+        else
+            let acc = Array.zeroCreate<int> (a.Length + b.Length)
+
+            for i in a.Length - 1 .. -1 .. 0 do
+                for j in b.Length - 1 .. -1 .. 0 do
+                    acc[i + j + 1] <- acc[i + j + 1] + digit a[i] * digit b[j]
+
+            for k in acc.Length - 1 .. -1 .. 1 do
+                acc[k - 1] <- acc[k - 1] + acc[k] / 10
+                acc[k] <- acc[k] % 10
+
+            trimLeading (System.String(acc |> Array.map (fun d -> char (int '0' + d))))
+
+    /// Quotient and remainder of two magnitudes, `b` non-zero — long division, one digit at a time.
+    let private divModMag (a: string) (b: string) : string * string =
+        let q = System.Text.StringBuilder()
+        let mutable r = "0"
+
+        for c in a do
+            r <- trimLeading (r + string c)
+            let mutable d = 0
+
+            while compareMag r b >= 0 do
+                r <- subMag r b
+                d <- d + 1
+
+            q.Append(char (int '0' + d)) |> ignore
+
+        trimLeading (q.ToString()), r
+
+    let private shift (digits: string) (places: int) : string =
+        if digits = "0" then
+            digits
+        else
+            digits + System.String('0', places)
+
+    /// Signed addition of `(negative, magnitude)` pairs.
+    let private addSigned (na: bool, ma: string) (nb: bool, mb: string) : bool * string =
+        if na = nb then
+            na, addMag ma mb
+        else
+            match compareMag ma mb with
+            | 0 -> false, "0"
+            | c when c > 0 -> na, subMag ma mb
+            | _ -> nb, subMag mb ma
+
+    /// Both operands at their common scale.
+    let private aligned (sa: int, da: string) (sb: int, db: string) : int * string * string =
+        let scale = max sa sb
+        scale, shift da (scale - sa), shift db (scale - sb)
+
+    let negate (a: string) : string option =
+        parts a |> Option.map (fun (n, d, s) -> render (not n) d s)
+
+    let abs (a: string) : string option =
+        parts a |> Option.map (fun (_, d, s) -> render false d s)
+
+    let add (a: string) (b: string) : string option =
+        match parts a, parts b with
+        | Some(na, da, sa), Some(nb, db, sb) ->
+            let scale, ma, mb = aligned (sa, da) (sb, db)
+            let n, m = addSigned (na, ma) (nb, mb)
+            Some(render n m scale)
+        | _ -> None
+
+    let sub (a: string) (b: string) : string option = negate b |> Option.bind (add a)
+
+    let mul (a: string) (b: string) : string option =
+        match parts a, parts b with
+        | Some(na, da, sa), Some(nb, db, sb) -> Some(render (na <> nb) (mulMag da db) (sa + sb))
+        | _ -> None
+
+    /// The remainder of a truncating division, with the dividend's sign — the integer `Mod`'s
+    /// convention, and exact: both operands at one scale, the remainder is at that scale. `None`
+    /// for a zero divisor, which the evaluator answers `Null` as it does for an integer `Mod`.
+    let rem (a: string) (b: string) : string option =
+        match parts a, parts b with
+        | Some(na, da, sa), Some(_, db, sb) when not (isZeroDigits db) ->
+            let scale, ma, mb = aligned (sa, da) (sb, db)
+            let _, r = divModMag ma mb
+            Some(render na r scale)
+        | _ -> None
+
+    /// `numerator / denominator` (magnitudes, the denominator non-zero) rounded to an integer under
+    /// `rule`, where `negative` is the sign of the exact quotient. `None` for a rule outside `rules`.
+    let private roundQuotient
+        (negative: bool)
+        (numerator: string)
+        (denominator: string)
+        (rule: string)
+        : string option =
+        let q, r = divModMag numerator denominator
+
+        if r = "0" then
+            if List.contains rule rules then Some q else None
+        else
+            // Twice the remainder against the divisor: below, at, or past the half-way point.
+            let half = compareMag (addMag r r) denominator
+            let bump = addMag q "1"
+            let towardZero = q
+
+            match rule with
+            | "down" -> Some towardZero
+            | "up" -> Some bump
+            | "ceiling" -> Some(if negative then towardZero else bump)
+            | "floor" -> Some(if negative then bump else towardZero)
+            | "half-up" -> Some(if half >= 0 then bump else towardZero)
+            | "half-down" -> Some(if half > 0 then bump else towardZero)
+            | "half-even" ->
+                Some(
+                    if half > 0 then bump
+                    elif half < 0 then towardZero
+                    elif digit q[q.Length - 1] % 2 = 0 then towardZero
+                    else bump
+                )
+            | _ -> None
+
+    /// `a / b` to `scale` places under `rule`. `None` where an operand is not decimal text, the rule
+    /// is not one of `rules`, or the scale is out of `0 .. maxScale`; `Some None` for a zero divisor.
+    let divide (a: string) (b: string) (scale: int) (rule: string) : string option option =
+        match parts a, parts b with
+        | Some(na, da, sa), Some(nb, db, sb) when scale >= 0 && scale <= maxScale && List.contains rule rules ->
+            if isZeroDigits db then
+                Some None
+            else
+                // a / b = (da / db) * 10^(sb - sa); scaled by 10^scale, the integer to round is
+                // da * 10^e / db with e = sb - sa + scale.
+                let e = sb - sa + scale
+                let numerator = if e >= 0 then shift da e else da
+                let denominator = if e >= 0 then db else shift db (-e)
+                let negative = (na <> nb) && not (isZeroDigits da)
+
+                roundQuotient negative numerator denominator rule
+                |> Option.map (fun q -> Some(render negative q scale))
+        | _ -> None
+
+    /// `a` to `scale` places under `rule` — exact where `a` already has no more places than that.
+    let roundTo (a: string) (scale: int) (rule: string) : string option =
+        match parts a with
+        | Some(na, da, sa) when scale >= 0 && scale <= maxScale && List.contains rule rules ->
+            if sa <= scale then
+                Some(render na da sa)
+            else
+                roundQuotient na da (shift "1" (sa - scale)) rule
+                |> Option.map (fun q -> render na q scale)
+        | _ -> None
+
+    /// The decimal text of a FINITE float — its shortest round-trip digits (`FloatLayout.finite`,
+    /// one layout on every host) laid out without an exponent. `None` for NaN and the infinities.
+    /// This is the one place an approximation enters a decimal: the digits are the float's, and
+    /// the float was already the nearest it could hold to whatever it was meant to be.
+    let ofFloat (f: float) : string option =
+        if System.Double.IsNaN f || System.Double.IsInfinity f then
+            None
+        else
+            let text = FloatLayout.finite f
+            let e = text.IndexOfAny [| 'E'; 'e' |]
+
+            if e < 0 then
+                DecimalText.tryCanonical text
+            else
+                let mantissa = text.Substring(0, e)
+                let exponent = int (text.Substring(e + 1))
+
+                parts mantissa
+                |> Option.map (fun (n, d, s) ->
+                    let scale = s - exponent
+
+                    if scale >= 0 then
+                        render n d scale
+                    else
+                        render n (shift d (-scale)) 0)
+
+    /// The integer part of a decimal (truncated toward zero) as an `int64`, or `None` past `int64`.
+    let truncateToInt64 (a: string) : int64 option =
+        match parts a with
+        | Some(n, d, s) ->
+            let ip = if s >= d.Length then "0" else d.Substring(0, d.Length - s)
+
+            match System.Int64.TryParse ip with
+            | true, v -> Some(if n then -v else v)
+            | _ -> None
+        | None -> None
+
 /// The pure reference evaluator + the algebra's pinned semantics. Every host evaluator is
 /// certified byte-identical to this through `Conformance.transformLaws`.
 module DataFrame =
@@ -827,6 +1137,7 @@ module DataFrame =
         | Str s -> s
         | Date s -> s
         | Timestamp s -> s
+        | Decimal s -> DecimalText.tryCanonical s |> Option.defaultValue s
         | Null -> ""
 
     let private asNum (c: Cell) : float option =
@@ -858,6 +1169,10 @@ module DataFrame =
         | Str s -> "s:" + s
         | Date s -> "d:" + s
         | Timestamp s -> "t:" + s
+        // Phase 277: the CANONICAL decimal text under its own tag, so `1.50` and `1.5` are one value
+        // and a decimal never shares a token with an int or a float of the same value — Core's
+        // `Cell.token` spelling, which this function agrees with case for case.
+        | Decimal _ -> Cell.token c
         | Null -> "n:"
 
     /// The canonical, host-deterministic grouping/dedup key for a row's cells — `cellToken` per cell,
@@ -917,6 +1232,7 @@ module DataFrame =
             | Str x, Str y
             | Date x, Date y
             | Timestamp x, Timestamp y -> System.String.Equals(x, y)
+            | Decimal _, Decimal _ -> System.String.Equals(Cell.token a, Cell.token b)
             | Null, Null -> true
             | _ -> false
 
@@ -936,6 +1252,7 @@ module DataFrame =
             | Date s -> mix 5 (hash s)
             | Timestamp s -> mix 6 (hash s)
             | Null -> mix 7 0
+            | Decimal _ -> mix 8 (hash (Cell.token c))
 
         /// Token equality over rows of cells, cell by cell: two rows are equal exactly when their
         /// `rowTokenString`s are (that string is length-prefixed per cell and so injective: equal
@@ -998,6 +1315,10 @@ module DataFrame =
         match c with
         | Null -> None
         | Int i -> Some(cellToken (Float(float i)))
+        // A decimal keys on its canonical token (Phase 277): it matches a decimal of the same value
+        // and nothing else. Not an int of the same value either — an int already matches the float
+        // of its value here, and one hash token cannot match a decimal to an int AND an int to a
+        // float while keeping the decimal off the float, so the decimal stays in its own family.
         | other -> Some(cellToken other)
 
     /// A total comparison between two *present, same-family* cells. `None` ⇒ incomparable (a type
@@ -1018,11 +1339,17 @@ module DataFrame =
         | Str _
         | Date _
         | Timestamp _
+        | Decimal _
         | Null -> nan
 
     let private compareCells (a: Cell) (b: Cell) : int option =
         match a, b with
         | (Int _ | Float _), (Int _ | Float _) -> Some(compareNum (numOf a) (numOf b))
+        // Phase 277: a decimal against a decimal or an int compares EXACTLY (`Cell.compare`, the
+        // column layer's one order, `DecimalText.compare` underneath); against a float it is
+        // incomparable, a type error, as `ColumnType.widens` refuses that retype.
+        | Decimal _, (Decimal _ | Int _)
+        | Int _, Decimal _ -> Cell.compare a b
         | Bool x, Bool y -> Some(compare x y)
         | Str x, Str y -> Some(System.String.CompareOrdinal(x, y))
         | Date x, Date y -> Some(System.String.CompareOrdinal(x, y))
@@ -1033,6 +1360,10 @@ module DataFrame =
         match a, b with
         | Null, _
         | _, Null -> false
+        // A decimal matches only a decimal (see `cellEqToken`, which this relation must agree with).
+        | Decimal _, Decimal _ -> Cell.compare a b = Some 0
+        | Decimal _, _
+        | _, Decimal _ -> false
         | _ ->
             match compareCells a b with
             | Some 0 -> true
@@ -1055,10 +1386,60 @@ module DataFrame =
         else
             Error(overflowed ctx r)
 
+    /// A cell as exact-decimal text — a `Decimal`'s, or an `Int`'s digits (the lossless promotion
+    /// `ColumnType.widens` pins) — or `None` for any other cell.
+    let private decimalText (c: Cell) : string option =
+        match c with
+        | Decimal s -> Some s
+        | Int i -> Some(string i)
+        | _ -> None
+
+    /// The refusal a `Decimal` beside a `Float` meets (Phase 277), naming both types and the `Cast`
+    /// that resolves it: `widens` refuses that retype in either direction, so nothing converts
+    /// between them unless the pipeline says which way.
+    let private decimalFloatMismatch (what: string) : EvalError =
+        TypeError(
+            what
+            + " between a decimal and a float: cast one to the other's type first — Cast(decimal, …) "
+            + "to keep the digits exact, Cast(float, …) to compute approximately"
+        )
+
+    /// A decimal answer, or the refusal for an operand that is not decimal text.
+    let private decimalResult (ctx: string) (r: string option) : Result<Cell, EvalError> =
+        match r with
+        | Some text -> Ok(Decimal text)
+        | None -> Error(TypeError(ctx + ": an operand is not decimal text"))
+
+    /// `Add` / `Sub` / `Mul` / `Mod` over two exact operands, at least one a decimal (Phase 277): exact,
+    /// and a `Decimal`. `Div` is refused by name — a quotient of decimals is not a finite decimal in
+    /// general, so the pipeline names the scale and the rounding rule through `Divide`.
+    let private decimalArith (op: BinOp) (x: string) (y: string) : Result<Cell, EvalError> =
+        match op with
+        | Add -> decimalResult "add" (DecimalArith.add x y)
+        | Sub -> decimalResult "sub" (DecimalArith.sub x y)
+        | Mul -> decimalResult "mul" (DecimalArith.mul x y)
+        | Mod ->
+            match DecimalArith.parts y with
+            | Some(_, "0", _) -> Ok Null
+            | _ -> decimalResult "mod" (DecimalArith.rem x y)
+        | Div ->
+            Error(
+                TypeError
+                    "div over a decimal needs a scale and a rounding rule: write ApplyFn(Divide, [dividend; divisor; scale; rule])"
+            )
+        | _ -> Error(TypeError "not an arithmetic operator")
+
     let private arith (op: BinOp) (a: Cell) (b: Cell) : Result<Cell, EvalError> =
         match a, b with
         | Null, _
         | _, Null -> Ok Null
+        | Decimal _, (Decimal _ | Int _)
+        | Int _, Decimal _ ->
+            match decimalText a, decimalText b with
+            | Some x, Some y -> decimalArith op x y
+            | _ -> Error(TypeError "arithmetic on a non-numeric operand")
+        | Decimal _, Float _
+        | Float _, Decimal _ -> Error(decimalFloatMismatch "arithmetic")
         | _ ->
             match asNum a, asNum b with
             | Some x, Some y ->
@@ -1108,7 +1489,11 @@ module DataFrame =
         | _, Null -> Ok Null
         | _ ->
             match compareCells a b with
-            | None -> Error(TypeError "comparison between incompatible types")
+            | None ->
+                match a, b with
+                | Decimal _, Float _
+                | Float _, Decimal _ -> Error(decimalFloatMismatch "comparison")
+                | _ -> Error(TypeError "comparison between incompatible types")
             | Some c ->
                 let r =
                     match op with
@@ -1209,6 +1594,12 @@ module DataFrame =
                 | Some f -> Ok(Float f)
                 | None ->
                     match c with
+                    // Phase 277: the nearest float to the decimal — the cast says the pipeline asked
+                    // for the approximation. A decimal past the float range is refused, never `∞`.
+                    | Decimal s ->
+                        match DecimalText.tryToFloat s with
+                        | Some f -> Ok(Float f)
+                        | None -> Error(TypeError("cannot cast decimal '" + s + "' to float: outside the float range"))
                     | Str s ->
                         match
                             System.Double.TryParse(
@@ -1232,6 +1623,12 @@ module DataFrame =
                         Error(OverflowError("float→int cast out of int32 range: " + Canon.render (JFloat f)))
                     else
                         Ok(Int(int f))
+                // Phase 277: truncated toward zero, as a float is; outside int32 a named overflow.
+                | Decimal s ->
+                    match DecimalArith.truncateToInt64 s with
+                    | Some v when inInt32Range v -> Ok(Int(int v))
+                    | Some _
+                    | None -> Error(OverflowError("decimal→int cast out of int32 range: " + s))
                 | Bool b -> Ok(Int(if b then 1 else 0))
                 | Str s ->
                     match System.Int32.TryParse s with
@@ -1253,11 +1650,61 @@ module DataFrame =
                 | Timestamp _ -> Ok c
                 | Str s -> Ok(Timestamp s)
                 | _ -> Error(TypeError "cannot cast to timestamp")
+            // Phase 277. An int is exactly a decimal; a string is read by the decimal grammar
+            // (`DecimalText`); a FLOAT is the one place an approximation enters a decimal — its
+            // shortest round-trip digits, which are the float's and not whatever it was meant to be.
+            | DecimalType ->
+                match c with
+                | Decimal s ->
+                    match DecimalText.tryCanonical s with
+                    | Some canonical -> Ok(Decimal canonical)
+                    | None -> Error(TypeError("cannot cast '" + s + "' to decimal"))
+                | Int i -> Ok(Decimal(string i))
+                | Float f ->
+                    match DecimalArith.ofFloat f with
+                    | Some text -> Ok(Decimal text)
+                    | None -> Error(TypeError "cannot cast a non-finite float to decimal")
+                | Str s ->
+                    match DecimalText.tryCanonical s with
+                    | Some canonical -> Ok(Decimal canonical)
+                    | None -> Error(TypeError("cannot cast '" + s + "' to decimal"))
+                | _ -> Error(TypeError "cannot cast to decimal")
 
     /// Round half away from zero — host-independent (not `Math.Round`'s banker's rounding, which
     /// diverges between .NET and JS). Pinned so the three evaluators agree.
     let private roundHalfAway (x: float) : float =
         if x >= 0.0 then floor (x + 0.5) else ceil (x - 0.5)
+
+    /// The scale and the rounding rule a decimal `Round` or a `Divide` names (Phase 277), each refused
+    /// by name where it is absent or out of its range — the refusal says what the step needs.
+    let private scaleAndRule (fn: string) (scale: Cell) (rule: Cell) : Result<int * string, EvalError> =
+        match scale, rule with
+        | Int n, Str r when n >= 0 && n <= DecimalArith.maxScale && List.contains r DecimalArith.rules -> Ok(n, r)
+        | Int n, _ when n >= 0 && n <= DecimalArith.maxScale ->
+            Error(
+                TypeError(
+                    fn
+                    + " needs a rounding rule, one of "
+                    + String.concat ", " DecimalArith.rules
+                    + "; got "
+                    + (match rule with
+                       | Str r -> "'" + r + "'"
+                       | Null -> "null"
+                       | other -> cellString other)
+                )
+            )
+        | _ ->
+            Error(
+                TypeError(
+                    fn
+                    + " needs a scale, an int from 0 to "
+                    + string DecimalArith.maxScale
+                    + "; got "
+                    + (match scale with
+                       | Null -> "null"
+                       | other -> cellString other)
+                )
+            )
 
     let private applyScalar (fn: ScalarFn) (args: Cell list) : Result<Cell, EvalError> =
         let arity n =
@@ -1279,22 +1726,50 @@ module DataFrame =
                 match c with
                 | Int i -> Ok(Int(abs i))
                 | Float f -> Ok(Float(abs f))
+                | Decimal s -> decimalResult "abs" (DecimalArith.abs s)
                 | _ -> Error(TypeError "abs of a non-numeric"))
         | Round ->
-            unary (fun c ->
-                match asNum c with
-                | Some f -> Ok(Float(roundHalfAway f))
-                | None -> Error(TypeError "round of a non-numeric"))
+            match args with
+            // Phase 277: rounding a decimal to fewer places is not exact, so it names its scale and
+            // its rule — `Round(x, scale, rule)` — and the one-argument form refuses a decimal.
+            | [ x; scale; rule ] ->
+                scaleAndRule "round" scale rule
+                |> Result.bind (fun (n, r) ->
+                    match x with
+                    | Null -> Ok Null
+                    | Decimal _
+                    | Int _ ->
+                        decimalResult "round" (decimalText x |> Option.bind (fun t -> DecimalArith.roundTo t n r))
+                    | Float _ -> Error(decimalFloatMismatch "round to a scale")
+                    | _ -> Error(TypeError "round of a non-numeric"))
+            | _ ->
+                unary (fun c ->
+                    match c with
+                    | Decimal _ ->
+                        Error(
+                            TypeError
+                                "round of a decimal needs a scale and a rounding rule: write Round(x, scale, rule)"
+                        )
+                    | _ ->
+                        match asNum c with
+                        | Some f -> Ok(Float(roundHalfAway f))
+                        | None -> Error(TypeError "round of a non-numeric"))
         | Floor ->
             unary (fun c ->
-                match asNum c with
-                | Some f -> Ok(Float(floor f))
-                | None -> Error(TypeError "floor of a non-numeric"))
+                match c with
+                | Decimal s -> decimalResult "floor" (DecimalArith.roundTo s 0 "floor")
+                | _ ->
+                    match asNum c with
+                    | Some f -> Ok(Float(floor f))
+                    | None -> Error(TypeError "floor of a non-numeric"))
         | Ceil ->
             unary (fun c ->
-                match asNum c with
-                | Some f -> Ok(Float(ceil f))
-                | None -> Error(TypeError "ceil of a non-numeric"))
+                match c with
+                | Decimal s -> decimalResult "ceil" (DecimalArith.roundTo s 0 "ceiling")
+                | _ ->
+                    match asNum c with
+                    | Some f -> Ok(Float(ceil f))
+                    | None -> Error(TypeError "ceil of a non-numeric"))
         | Length ->
             unary (fun c ->
                 match c with
@@ -1382,11 +1857,14 @@ module DataFrame =
                     |> Result.bind (fun da -> civilDays b |> Result.map (fun db -> Int(db - da))))
         | Sqrt ->
             unary (fun c ->
-                match asNum c with
-                // A negative root is undefined over the reals; answer `Null`, the same way `Div` by
-                // zero does. A `NaN` would not survive the canonical wire at all.
-                | Some f -> Ok(if f < 0.0 then Null else Float(sqrt f))
-                | None -> Error(TypeError "sqrt of a non-numeric"))
+                match c with
+                | Decimal _ -> Error(TypeError "sqrt of a decimal is not exact: write Sqrt(Cast(float, x))")
+                | _ ->
+                    match asNum c with
+                    // A negative root is undefined over the reals; answer `Null`, the same way `Div` by
+                    // zero does. A `NaN` would not survive the canonical wire at all.
+                    | Some f -> Ok(if f < 0.0 then Null else Float(sqrt f))
+                    | None -> Error(TypeError "sqrt of a non-numeric"))
         | Least
         | Greatest ->
             // Variadic (>= 1). Any null propagates, matching `Concat`; incomparable operands are a
@@ -1415,6 +1893,24 @@ module DataFrame =
                 // (JS `indexOf` is code-unit-wise over the same UTF-16).
                 | Str subj, Str needle -> Ok(Int(subj.IndexOf(needle, System.StringComparison.Ordinal)))
                 | _ -> Error(TypeError "indexOf expects (string, string)"))
+        | Divide ->
+            arity 4
+            |> Result.bind (fun () ->
+                scaleAndRule "divide" args.[2] args.[3]
+                |> Result.bind (fun (n, r) ->
+                    match args.[0], args.[1] with
+                    | Null, _
+                    | _, Null -> Ok Null
+                    | (Decimal _ | Int _ as a), (Decimal _ | Int _ as b) ->
+                        match decimalText a, decimalText b with
+                        | Some x, Some y ->
+                            match DecimalArith.divide x y n r with
+                            | Some(Some q) -> Ok(Decimal q)
+                            | Some None -> Ok Null
+                            | None -> Error(TypeError "divide: an operand is not decimal text")
+                        | _ -> Error(TypeError "divide: an operand is not decimal text")
+                    | (Float _, _ | _, Float _) -> Error(decimalFloatMismatch "divide")
+                    | _ -> Error(TypeError "divide expects (decimal, decimal, int scale, string rule)")))
 
     /// A `ColExpr` with every name it reads already resolved against one step's schema and env
     /// (Phase 263) — the per-step, index-resolved twin the evaluator walks once per row.
@@ -1656,6 +2152,19 @@ module DataFrame =
             | Of _
             | Unknown -> false
 
+        /// The exact family (Phase 277): a decimal, or an int, which promotes to one losslessly.
+        let private exact (t: Typing) : bool =
+            match t with
+            | Of IntType
+            | Of DecimalType -> true
+            | Absent
+            | Of _
+            | Unknown -> false
+
+        /// Two exact operands at least one of which is a decimal — the pair decimal arithmetic takes.
+        let private decimalPair (a: Typing) (b: Typing) : bool =
+            exact a && exact b && (a = Of DecimalType || b = Of DecimalType)
+
         /// A binary node's typing. Null propagates through every operator but the logical pair
         /// BEFORE any type is examined, so an `Absent` operand makes the node `Absent` there; the
         /// logical pair is three-valued, so an `Absent` operand beside a boolean is still boolean.
@@ -1674,13 +2183,14 @@ module DataFrame =
                     match a, b with
                     | Of IntType, Of IntType -> Of IntType
                     | (Of IntType | Of FloatType), (Of IntType | Of FloatType) -> Of FloatType
-                    | _ -> Unknown)
+                    | _ -> if decimalPair a b then Of DecimalType else Unknown)
+            // A decimal `Div` is refused on every row (it names `Divide`), so no present value.
             | Div -> nullPropagating (fun () -> if numeric a && numeric b then Of FloatType else Unknown)
             | Mod ->
                 nullPropagating (fun () ->
                     match a, b with
                     | Of IntType, Of IntType -> Of IntType
-                    | _ -> Unknown)
+                    | _ -> if decimalPair a b then Of DecimalType else Unknown)
             | Eq
             | Ne
             | Lt
@@ -1690,6 +2200,7 @@ module DataFrame =
                 nullPropagating (fun () ->
                     match a, b with
                     | (Of IntType | Of FloatType), (Of IntType | Of FloatType)
+                    | (Of IntType | Of DecimalType), (Of IntType | Of DecimalType)
                     | Of StringType, Of StringType
                     | Of DateType, Of DateType
                     | Of TimestampType, Of TimestampType
@@ -1755,12 +2266,23 @@ module DataFrame =
                     match t with
                     | Of IntType -> Of IntType
                     | Of FloatType -> Of FloatType
+                    | Of DecimalType -> Of DecimalType
                     | Absent
                     | Of _
                     | Unknown -> Unknown)
-            | Round
+            // Phase 277: `Round(x, scale, rule)` answers a decimal; the one-argument form a float
+            // (a decimal there is refused, so it has no present value to type).
+            | Round when arity 3 ->
+                match List.head args with
+                | Absent -> Absent
+                | _ -> Of DecimalType
             | Floor
-            | Ceil
+            | Ceil ->
+                unary (fun t ->
+                    match t with
+                    | Of DecimalType -> Of DecimalType
+                    | _ -> Of FloatType)
+            | Round
             | Sqrt -> unary (fun _ -> Of FloatType)
             | Length -> unary (fun _ -> Of IntType)
             | Lower
@@ -1794,6 +2316,13 @@ module DataFrame =
                 else
                     joinAll args
             | IndexOf -> if not (arity 2) || anyAbsent then Absent else Of IntType
+            // A null dividend or divisor propagates; a null scale or rule is a refusal.
+            | Divide ->
+                match args with
+                | [ Absent; _; _; _ ]
+                | [ _; Absent; _; _ ] -> Absent
+                | [ _; _; _; _ ] -> Of DecimalType
+                | _ -> Absent
 
     /// The static typing of an expression over a schema, with no env — the typer a static reader
     /// (`SchemaWalk`, a planner) asks. Total over the closed `ColExpr` union with no catch-all. A
@@ -1894,6 +2423,8 @@ module DataFrame =
             | Absent, _
             | _, Absent -> true
             | (Of IntType | Of FloatType), (Of IntType | Of FloatType) -> true
+            // Phase 277: a decimal compares exactly with a decimal or an int, and never with a float.
+            | (Of IntType | Of DecimalType), (Of IntType | Of DecimalType) -> true
             | Of StringType, Of StringType
             | Of DateType, Of DateType
             | Of TimestampType, Of TimestampType
@@ -1904,6 +2435,14 @@ module DataFrame =
             match t with
             | Of IntType
             | Of FloatType -> true
+            | _ -> false
+
+        /// Two exact operands at least one of which is a decimal (Phase 277): `decimalArith`'s pair,
+        /// over which `Add`, `Sub`, `Mul` and `Mod` are exact and never refuse.
+        let private decimalPair (a: Typing) (b: Typing) : bool =
+            match a, b with
+            | Of DecimalType, (Of IntType | Of DecimalType)
+            | Of IntType, Of DecimalType -> true
             | _ -> false
 
         let private isStr (t: Typing) : bool =
@@ -1963,7 +2502,7 @@ module DataFrame =
                          | _, Absent -> true
                          // Two integers: `checkedInt` can name an overflow.
                          | Of IntType, Of IntType -> false
-                         | _ -> numeric ta && numeric tb)
+                         | _ -> (numeric ta && numeric tb) || decimalPair ta tb)
                     | Div ->
                         (match ta, tb with
                          | Absent, _
@@ -1972,11 +2511,13 @@ module DataFrame =
                     // `Mod` of two integers can overflow only at `MinValue % -1`, which the int64
                     // remainder absorbs, but the typer cannot see a null start from a column and
                     // the arm refuses a non-integer operand: declined whole, per the phase's rule.
+                    // A decimal `Mod` is exact and a zero divisor is `Null` (Phase 277): total.
+                    // A decimal `Div` refuses on every row (it names `Divide`): never admitted.
                     | Mod ->
                         (match ta, tb with
                          | Absent, _
                          | _, Absent -> true
-                         | _ -> false)
+                         | _ -> decimalPair ta tb)
                     | Eq
                     | Ne
                     | Lt
@@ -2009,6 +2550,9 @@ module DataFrame =
                     | BoolType, (Of BoolType | Of IntType) -> true
                     | DateType, (Of DateType | Of StringType) -> true
                     | TimestampType, (Of TimestampType | Of StringType) -> true
+                    // An int is exactly a decimal; a decimal is itself. From a float (non-finite) or
+                    // a string (parsed) the cast can refuse.
+                    | DecimalType, (Of IntType | Of DecimalType) -> true
                     | _ -> false)
             | InList(subject, items) ->
                 exprTotal cols subject
@@ -2021,12 +2565,13 @@ module DataFrame =
                     let arity n = List.length args = n
 
                     match fn with
-                    // `abs Int32.MinValue` throws; only a float's absolute value is total.
+                    // `abs Int32.MinValue` throws; a float's and a decimal's absolute values are total.
                     | Abs ->
                         arity 1
                         && (match List.head ts with
                             | Absent
-                            | Of FloatType -> true
+                            | Of FloatType
+                            | Of DecimalType -> true
                             | _ -> false)
                     | Round
                     | Floor
@@ -2060,7 +2605,9 @@ module DataFrame =
                             match present with
                             | [] -> true
                             | first :: _ -> present |> List.forall (comparable first))
-                    | IndexOf -> arity 2 && ts |> List.forall isStr)
+                    | IndexOf -> arity 2 && ts |> List.forall isStr
+                    // Its scale and rule are evaluated cells the typer cannot range-check.
+                    | Divide -> false)
 
         /// THE TOTALITY VERDICT over a step: `true` only where evaluating the step over ANY table
         /// of schema `cols` returns `Ok`. `Sort` drops a key the schema does not carry rather than
@@ -3174,6 +3721,8 @@ module DataFrame =
                  | Str s -> NStr(StringType, present s)
                  | Date s -> NStr(DateType, present s)
                  | Timestamp s -> NStr(TimestampType, present s)
+                 // No typed carrier for a decimal (Phase 280's): the constant is read boxed.
+                 | Decimal _ -> NCell(present c)
                  | Null -> NNull)
             | RFail err -> Absent, NCell(fun _ -> fail err)
             | RBinary(op, a, b) ->
@@ -3344,6 +3893,11 @@ module DataFrame =
                 + String.concat "/" expected
                 + ")"
             )
+        // A present cell outside the column's type (Core `0.33.0`, its Phase 299): a cell the
+        // evaluator's column carries but its declared type does not admit, or a decimal whose text
+        // is not decimal text. Named, never truncated or dropped.
+        | CellOutsideType(_, ct, cell) ->
+            AggError("aggregate over a " + ct + " column met a cell outside its type: " + cell)
 
     /// Compute one aggregate over a cell list of the given source type — the evaluator's adapter onto the
     /// public `Column.aggregate` (single source of truth), threading the `EvalError` envelope.
@@ -4161,6 +4715,8 @@ module DataFrame =
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
         | _ ->
+            // A running total over a decimal column stays exact (Phase 277).
+            let sourceIsDecimal = colType cols spec.Of = Some DecimalType
             let partIdx = spec.PartitionBy |> List.choose (colIndex cols) |> List.toArray
 
             // The ORDER keys resolved once for the step (Phase 263), not once per comparison.
@@ -4233,6 +4789,18 @@ module DataFrame =
                             |> List.map Int
                         | Lag -> Null :: (vals |> List.truncate (max 0 (List.length vals - 1)))
                         | Lead -> (vals |> List.skip (min 1 (List.length vals))) @ [ Null ]
+                        // Phase 277: over a decimal column the running total is EXACT and a decimal,
+                        // as `Sum` over one is (Core `DECISIONS.md` D72 K7) — never a float in silence.
+                        | CumulSum when sourceIsDecimal ->
+                            vals
+                            |> List.scan
+                                (fun (acc: string) v ->
+                                    match decimalText v with
+                                    | Some x -> DecimalText.add acc x |> Option.defaultValue acc
+                                    | None -> acc)
+                                DecimalText.zero
+                            |> List.tail
+                            |> List.map Decimal
                         | CumulSum ->
                             vals
                             |> List.scan
@@ -4255,20 +4823,41 @@ module DataFrame =
                             // therefore the wire bytes. Three reads per row is already linear.
                             let arr = List.toArray vals
 
+                            // Phase 277: over a decimal column a window's SUM is exact and a decimal;
+                            // its MEAN is a float, as `Mean` over a decimal column is (D72 K7), each
+                            // value read at its nearest float — the type says so.
+                            let asWindowNum (c: Cell) : float option =
+                                match c with
+                                | Decimal t -> DecimalText.tryToFloat t
+                                | _ -> asNum c
+
                             List.init arr.Length (fun i ->
-                                let mutable sum = 0.0
-                                let mutable count = 0
+                                if sourceIsDecimal && spec.Fn = RollingSum then
+                                    let mutable sum = DecimalText.zero
+                                    let mutable count = 0
 
-                                for j in max 0 (i - 2) .. i do
-                                    match asNum arr[j] with
-                                    | Some x ->
-                                        sum <- sum + x
-                                        count <- count + 1
-                                    | None -> ()
+                                    for j in max 0 (i - 2) .. i do
+                                        match decimalText arr[j] with
+                                        | Some x ->
+                                            sum <- DecimalText.add sum x |> Option.defaultValue sum
+                                            count <- count + 1
+                                        | None -> ()
 
-                                if count = 0 then Null
-                                elif spec.Fn = RollingSum then Float sum
-                                else Float(sum / float count))
+                                    if count = 0 then Null else Decimal sum
+                                else
+                                    let mutable sum = 0.0
+                                    let mutable count = 0
+
+                                    for j in max 0 (i - 2) .. i do
+                                        match asWindowNum arr[j] with
+                                        | Some x ->
+                                            sum <- sum + x
+                                            count <- count + 1
+                                        | None -> ()
+
+                                    if count = 0 then Null
+                                    elif spec.Fn = RollingSum then Float sum
+                                    else Float(sum / float count))
                         // Phase 101 — SQL RANK(): a tied block shares its LOWEST rank and the next
                         // distinct order key skips by the block's size (1, 1, 3 — where the dense
                         // `Rank`/`DenseRank` above give 1, 1, 2).
@@ -4330,6 +4919,8 @@ module DataFrame =
                 | DenseRank
                 | CompetitionRank
                 | NTile _ -> IntType
+                | CumulSum
+                | RollingSum when sourceIsDecimal -> DecimalType
                 | CumulSum
                 | RollingMean
                 | RollingSum -> FloatType
@@ -5271,7 +5862,8 @@ module SchemaWalk =
             | None -> SchemaKnowledge.AtLeast([], "source '" + name + "' is a Ref with no declared schema")
 
     /// The type a window function's output column carries — pinned to the evaluator's own rule, not
-    /// restated loosely: the positional/ranking family is `Int`, the accumulating family is `Float`,
+    /// restated loosely: the positional/ranking family is `Int`, the accumulating family is `Float`
+    /// (a running total over a decimal column a `Decimal`, Phase 277),
     /// and the shifting + running-extreme family keeps the source column's type, which is unknown
     /// exactly when the source column's type is.
     let private windowType (input: SchemaKnowledge) (spec: WindowSpec) : ColumnType option =
@@ -5281,9 +5873,15 @@ module SchemaWalk =
         | DenseRank
         | CompetitionRank
         | NTile _ -> Some IntType
+        | RollingMean -> Some FloatType
+        // Phase 277: a running total over a decimal column is a decimal (exact), over any other a
+        // float — so it is known exactly when the source column's type is.
         | CumulSum
-        | RollingMean
-        | RollingSum -> Some FloatType
+        | RollingSum ->
+            match typeOf spec.Of input with
+            | Some DecimalType -> Some DecimalType
+            | Some _ -> Some FloatType
+            | None -> None
         | Lag
         | Lead
         | CumulMax
@@ -5569,6 +6167,7 @@ module DataFrameCodec =
         | Least -> "least"
         | Greatest -> "greatest"
         | IndexOf -> "indexOf"
+        | Divide -> "divide"
 
     let private scalarOf =
         function
@@ -5589,6 +6188,7 @@ module DataFrameCodec =
         | "least" -> Some Least
         | "greatest" -> Some Greatest
         | "indexOf" -> Some IndexOf
+        | "divide" -> Some Divide
         | _ -> None
 
     let private binTag =
@@ -5641,6 +6241,9 @@ module DataFrameCodec =
         | Str s -> Canon.typed "Str" [ "value", JStr s ]
         | Date s -> Canon.typed "Date" [ "value", JStr s ]
         | Timestamp s -> Canon.typed "Timestamp" [ "value", JStr s ]
+        // Phase 277: the canonical decimal TEXT, a JSON string, as the column codec carries it
+        // (Core `DECISIONS.md` D72 K5) — a number token would have been through a float.
+        | Decimal s -> Canon.typed "Decimal" [ "value", JStr s ]
 
     let private cellOfJson (el: JVal) : Result<Cell, ColumnError> =
         match el with
@@ -5659,6 +6262,13 @@ module DataFrameCodec =
                 | Some(JStr s), "Str" -> Ok(Str s)
                 | Some(JStr s), "Date" -> Ok(Date s)
                 | Some(JStr s), "Timestamp" -> Ok(Timestamp s)
+                // Decimal text, canonicalised on read; an integer token is exact and read too, and
+                // anything else — a fractional number token included — is refused (D72 K5).
+                | Some(JStr s), "Decimal" ->
+                    match DecimalText.tryCanonical s with
+                    | Some canonical -> Ok(Decimal canonical)
+                    | None -> Error(TypeMismatch("lit", t, "value"))
+                | Some(JInt i), "Decimal" -> Ok(Decimal(string i))
                 | _ -> Error(TypeMismatch("lit", t, "value"))
             | _ -> Error(MissingField "lit.$type")
         | _ -> Error(MalformedShape "lit: expected object")

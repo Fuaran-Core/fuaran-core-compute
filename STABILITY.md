@@ -163,6 +163,69 @@ on `LawFamily`, read from the census and audit rows this package already declare
 - **A consumer that never referenced the package** changes nothing beyond taking the substrate at
   `0.33.0` or later.
 
+### Decimal arithmetic in the transform evaluator (Phase 277) — BREAKING, `union-widening`
+
+**What changed.** The substrate at `0.33.0` carries an exact decimal (`ColumnType.DecimalType`,
+`Cell.Decimal` of canonical text; Core `DECISIONS.md` D72), and the evaluator now computes over it.
+Exact where the operation is closed, refused by name where it is not, and never through a float
+unless the pipeline says `Cast`:
+
+- **Exact, and a `Decimal`:** `Add`, `Sub`, `Mul` and `Mod` over two decimals or a decimal and an
+  `int` (an int promotes, losslessly); negation by `Sub`; `Abs`; `Floor` and `Ceil`; `Least` and
+  `Greatest`; the six comparisons, by the column layer's exact order (`Cell.compare`). Nothing
+  overflows — the digits are strings. A decimal `Mod` by zero is `Null`, as an int's is.
+- **A stated scale and a stated rounding rule:** `ApplyFn(Divide, [dividend; divisor; scale; rule])`
+  — new — and `ApplyFn(Round, [x; scale; rule])`. The scale is an `int` from `0` to `1000`; the rule
+  one of `half-even`, `half-up`, `half-down`, `up`, `down`, `ceiling`, `floor` (the meanings
+  `java.math.RoundingMode` gives those names). A zero divisor is `Null`, as `Div`'s is.
+- **Refused by name:** `Binary(Div, …)` over a decimal names `Divide`; a one-argument `Round` of a
+  decimal names the scale and the rule; `Sqrt` of a decimal and any decimal beside a `float` — in
+  arithmetic, a comparison or `Divide` — name the `Cast` that resolves them. `ColumnType.widens`
+  refuses that retype in either direction, so the evaluator does too.
+- **`Cast`:** to `decimal` from an `int` (exact), a string (the decimal grammar) or a `float` — the
+  one place an approximation enters a decimal: the float's shortest round-trip digits, laid out
+  without an exponent. From `decimal` to `float` (the nearest float; past the float range a
+  refusal), to `int` (truncated toward zero; past `int32` an `OverflowError`) and to `string`.
+- **Keys:** `GroupBy`, `Distinct`, `Intersect`, `Except`, `Pivot` and `Window` partitions key a
+  decimal on its canonical token (`Cell.token`'s `m:` spelling, so `1.50` and `1.5` are one value).
+  A `Join` key and a pivot value match a decimal to a decimal of the same value and to nothing
+  else: not to a float, and not to an int either, because an int already matches the float of its
+  value there and one hash token cannot hold both. `InList` / `InParam` compare by the exact order,
+  and a float item beside a decimal subject is a type error. `Sort` is the exact order.
+- **Windows:** `CumulSum` and `RollingSum` over a decimal column are exact and `decimal`;
+  `RollingMean` stays a `float`, as `Mean` over a decimal column is (D72 K7), each value read at
+  its nearest float. `SchemaWalk` types a running total as the evaluator does — `decimal` over a
+  decimal column, `float` over another, and unknown where the source column's type is unknown
+  (it was `float` there; the new answer is the honest one).
+- **The typer and the planner.** The typer gives every decimal operand's result type; the totality
+  verdict admits decimal `Add` / `Sub` / `Mul` / `Mod`, an exact comparison, `Abs`, and a `Cast` to
+  `decimal` from an `int` or a decimal, and declines a decimal `Div`, a decimal beside a float,
+  `Divide` and a three-argument `Round` (their scale and rule are cells the typer cannot
+  range-check). `proofs/Pipeline.fst` carries the decimal in `column_type`, `cell` and
+  `scalar_fn`, and the clauses in its typer and verdict; `verdict_sound` verified unchanged, and the
+  committed extraction `proofs/oracle/Pipeline.fs` is the fresh one.
+- **The dense frame:** a decimal column is packed boxed and every kernel over it reads the
+  reference arm; its typed vector is Phase 280's.
+- **The wire:** a decimal literal is `{"$type":"Decimal","value":"<decimal text>"}` in a pipeline
+  and `{"$type":"Decimal","v":…}` in a columnar op — a JSON string, canonicalised on read, an
+  integer token read as exact, a fractional number token refused (D72 K5). `divide` is the new
+  scalar-function tag.
+- **The law vectors.** `conformance/laws/transform-laws.json` gains 22 decimal vectors after the 16
+  it carried, which are byte-for-byte as they were: a decimal column through every verb, the exact
+  arithmetic, `Divide`, `Round`, the casts, and four refusals. `plannerLaws` draws a decimal column
+  and guards a `decimal sample`; `incrementalLaws` evaluates a decimal derive and a decimal sum
+  through the seam.
+
+**Class: `union-widening` — breaking, and it RIDES this slot.** `ScalarFn` gains `Divide`
+(`api/Fuaran.Core.DataFrame.txt`), so an exhaustive `match` over `ScalarFn` stops compiling; the
+wire baselines of `Fuaran.Core.DataFrame` and `Fuaran.Core.Column.Ops` gain the decimal cell, the
+decimal column type and `divide` (`additive` on the wire). `0.35.0` is an untagged, publicly
+unpinned draft that already carries a breaking move (the entry above), so the number does not move.
+
+**What adopting it costs.** A consumer that matches `ScalarFn` exhaustively adds a `Divide` arm. A
+host evaluator certifying against the law vectors meets the decimal ones: until it computes over
+decimals it refuses where the reference answers, and the parity law names the vector.
+
 ## 0.34.0 — released 2026-09-27 as `v0.34.0`
 
 **Release record.** The cut-time Fable gate ran green against the candidate on 2026-09-27: the three F#

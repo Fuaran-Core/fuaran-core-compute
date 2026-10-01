@@ -144,6 +144,7 @@ type column_type =
 | StringType
 | DateType
 | TimestampType
+| DecimalType
 
 
 let uu___is_IntType : column_type  ->  Prims.bool = (fun ( projectee  :  column_type ) -> (match (projectee) with
@@ -199,6 +200,15 @@ let uu___is_TimestampType : column_type  ->  Prims.bool = (fun ( projectee  :  c
      false
      end))
 
+
+let uu___is_DecimalType : column_type  ->  Prims.bool = (fun ( projectee  :  column_type ) -> (match (projectee) with
+| DecimalType -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
 type cell =
 | Int of Prims.int
 | Float of Prims.string
@@ -207,6 +217,7 @@ type cell =
 | Date of Prims.string
 | Timestamp of Prims.string
 | Null
+| Decimal of Prims.string
 
 
 let uu___is_Int : cell  ->  Prims.bool = (fun ( projectee  :  cell ) -> (match (projectee) with
@@ -305,6 +316,21 @@ let uu___is_Null : cell  ->  Prims.bool = (fun ( projectee  :  cell ) -> (match 
      end
 | uu___ -> begin
      false
+     end))
+
+
+let uu___is_Decimal : cell  ->  Prims.bool = (fun ( projectee  :  cell ) -> (match (projectee) with
+| Decimal (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__Decimal__item___0 : cell  ->  Prims.string = (fun ( projectee  :  cell ) -> (match (projectee) with
+| Decimal (_0) -> begin
+     _0
      end))
 
 type join_kind =
@@ -537,6 +563,7 @@ type scalar_fn =
 | Least
 | Greatest
 | IndexOf
+| Divide
 
 
 let uu___is_Abs : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
@@ -685,6 +712,15 @@ let uu___is_Greatest : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_f
 
 let uu___is_IndexOf : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
 | IndexOf -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_Divide : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
+| Divide -> begin
      true
      end
 | uu___ -> begin
@@ -2148,6 +2184,9 @@ let type_of : cell  ->  FStar_Pervasives_Native.option<column_type> = (fun ( c  
      end
 | Null -> begin
      FStar_Pervasives_Native.None
+     end
+| Decimal (uu___) -> begin
+     FStar_Pervasives_Native.Some (DecimalType)
      end))
 
 

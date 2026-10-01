@@ -224,6 +224,8 @@ type column_type =
   | StringType
   | DateType
   | TimestampType
+  (* Phase 277: the exact decimal (Core `0.33.0`). *)
+  | DecimalType
 
 (* F#: `Cell`. A float crosses as an opaque carrier (its round-trip `R` text), as in `Query.fst`:
    the evaluator's arms read a cell only for `Bool` and `Null` (the two `Not` reads, the `Filter`
@@ -236,6 +238,9 @@ type cell =
   | Date      : string -> cell
   | Timestamp : string -> cell
   | Null      : cell
+  (* Phase 277: canonical decimal text, an opaque carrier like a float's — every read of it is a
+     primitive's. Declared after `Null`, as the F# case is. *)
+  | Decimal   : string -> cell
 
 (* F#: `JoinKind`. *)
 type join_kind =
@@ -285,6 +290,8 @@ type scalar_fn =
   | Least
   | Greatest
   | IndexOf
+  (* Phase 277: `Divide(dividend, divisor, scale, rule)`. *)
+  | Divide
 
 (* F#: `BinOp`. *)
 type bin_op =
@@ -625,6 +632,7 @@ let type_of (c:cell) : Tot (option column_type) =
   | Date _ -> Some DateType
   | Timestamp _ -> Some TimestampType
   | Null -> None
+  | Decimal _ -> Some DecimalType
 
 (* F#: `cells |> List.tryPick Cell.typeOf`. *)
 let rec first_type (cells:list cell) : Tot (option column_type) =
@@ -1721,6 +1729,19 @@ let numeric_t (t:typing) : Tot bool =
   | Of IntType | Of FloatType -> true
   | _ -> false
 
+(* Phase 277 — the exact family: a decimal, or an int, which promotes to one losslessly. *)
+noextract
+let exact_t (t:typing) : Tot bool =
+  match t with
+  | Of IntType | Of DecimalType -> true
+  | _ -> false
+
+(* Two exact operands at least one of which is a decimal: F# `decimalPair`, the typer's and the
+   verdict's. *)
+noextract
+let decimal_pair (a b:typing) : Tot bool =
+  exact_t a && exact_t b && (a = Of DecimalType || b = Of DecimalType)
+
 noextract
 let bool_like (t:typing) : Tot bool =
   match t with
@@ -1751,11 +1772,18 @@ let typing_binary (op:bin_op) (a b:typing) : Tot typing =
     null_prop (fun () ->
       if a = Of IntType && b = Of IntType then Of IntType
       else if numeric_t a && numeric_t b then Of FloatType
+      else if decimal_pair a b then Of DecimalType
       else Unknown)
   | Div -> null_prop (fun () -> if numeric_t a && numeric_t b then Of FloatType else Unknown)
-  | Mod -> null_prop (fun () -> if a = Of IntType && b = Of IntType then Of IntType else Unknown)
+  | Mod ->
+    null_prop (fun () ->
+      if a = Of IntType && b = Of IntType then Of IntType
+      else if decimal_pair a b then Of DecimalType
+      else Unknown)
   | Eq | Ne | Lt | Le | Gt | Ge ->
-    null_prop (fun () -> if (numeric_t a && numeric_t b) || same_scalar a b then Of BoolType else Unknown)
+    null_prop (fun () ->
+      if (numeric_t a && numeric_t b) || (exact_t a && exact_t b) || same_scalar a b then Of BoolType
+      else Unknown)
   | And | Or -> if bool_like a && bool_like b then join a b else Unknown
   | Contains | StartsWith | EndsWith ->
     null_prop (fun () -> if a = Of StringType && b = Of StringType then Of BoolType else Unknown)
@@ -1803,8 +1831,15 @@ let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
       match t with
       | Of IntType -> Of IntType
       | Of FloatType -> Of FloatType
+      | Of DecimalType -> Of DecimalType
       | _ -> Unknown)
-  | Round | Floor | Ceil | Sqrt -> unary (fun _ -> Of FloatType)
+  | Round ->
+    (match ts with
+     | [Absent; _; _] -> Absent
+     | [_; _; _] -> Of DecimalType
+     | _ -> unary (fun _ -> Of FloatType))
+  | Floor | Ceil -> unary (fun t -> match t with Of DecimalType -> Of DecimalType | _ -> Of FloatType)
+  | Sqrt -> unary (fun _ -> Of FloatType)
   | Length -> unary (fun _ -> Of IntType)
   | Lower | Upper | Trim -> unary (fun _ -> Of StringType)
   | Substr ->
@@ -1822,6 +1857,11 @@ let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
   | DateDiffDays -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
   | Least | Greatest -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else join_all ts)
   | IndexOf -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
+  | Divide ->
+    (match ts with
+     | [Absent; _; _; _] | [_; Absent; _; _] -> Absent
+     | [_; _; _; _] -> Of DecimalType
+     | _ -> Absent)
 
 (* F#: `typing cols e` — the static typing over a schema, arm for arm. `colType` is the first
    column of that name, as `assoc` is. *)
@@ -1886,7 +1926,7 @@ noextract
 let comparable (a b:typing) : Tot bool =
   match a, b with
   | Absent, _ | _, Absent -> true
-  | _ -> (numeric_t a && numeric_t b) || same_scalar a b
+  | _ -> (numeric_t a && numeric_t b) || (exact_t a && exact_t b) || same_scalar a b
 
 noextract
 let rec all_comparable (t:typing) (ts:list typing) : Tot bool =
@@ -1909,7 +1949,7 @@ let admit_binary (op:bin_op) (a b:typing) : Tot bool =
     (match a, b with
      | Absent, _ | _, Absent -> true
      | Of IntType, Of IntType -> false
-     | _ -> numeric_t a && numeric_t b)
+     | _ -> (numeric_t a && numeric_t b) || decimal_pair a b)
   | Div ->
     (match a, b with
      | Absent, _ | _, Absent -> true
@@ -1917,7 +1957,7 @@ let admit_binary (op:bin_op) (a b:typing) : Tot bool =
   | Mod ->
     (match a, b with
      | Absent, _ | _, Absent -> true
-     | _ -> false)
+     | _ -> decimal_pair a b)
   | Eq | Ne | Lt | Le | Gt | Ge -> comparable a b
   | And | Or -> bool_like a && bool_like b
   | Contains | StartsWith | EndsWith ->
@@ -1936,6 +1976,7 @@ let admit_cast (target:column_type) (t:typing) : Tot bool =
   | BoolType, Of BoolType | BoolType, Of IntType -> true
   | DateType, Of DateType | DateType, Of StringType -> true
   | TimestampType, Of TimestampType | TimestampType, Of StringType -> true
+  | DecimalType, Of IntType | DecimalType, Of DecimalType -> true
   | _ -> false
 
 (* The `ApplyFn` clause's admission over the argument typings. `Substr`'s start and length
@@ -1944,7 +1985,7 @@ let admit_cast (target:column_type) (t:typing) : Tot bool =
 noextract
 let admit_fn (fn:scalar_fn) (ts:list typing) : Tot bool =
   match fn with
-  | Abs -> (match ts with [Absent] | [Of FloatType] -> true | _ -> false)
+  | Abs -> (match ts with [Absent] | [Of FloatType] | [Of DecimalType] -> true | _ -> false)
   | Round | Floor | Ceil | Sqrt -> (match ts with [Absent] -> true | [t] -> numeric_t t | _ -> false)
   | Length | Lower | Upper | Trim -> (match ts with [t] -> is_str t | _ -> false)
   | Substr -> (match ts with [t0; Of IntType; Of IntType] -> is_str t0 | _ -> false)
@@ -1956,6 +1997,7 @@ let admit_fn (fn:scalar_fn) (ts:list typing) : Tot bool =
      | [] -> false
      | _ -> (match present ts with [] -> true | first :: _ -> all_comparable first (present ts)))
   | IndexOf -> (match ts with [a; b] -> is_str a && is_str b | _ -> false)
+  | Divide -> false
 
 (* F#: `neverNull` — a present literal, or the presence test. *)
 noextract

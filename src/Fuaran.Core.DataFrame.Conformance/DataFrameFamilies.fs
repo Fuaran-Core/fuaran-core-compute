@@ -90,7 +90,15 @@ module DataFrameFamilies =
           // Phase 269 — a sample the planner leaves as written certifies the parity of nothing:
           // each rewrite class must be reached, a reorder must be declined, and the Error/Error
           // arm must be drawn.
-          "Conformance.plannerLaws", Guarded [ "fusion"; "pruning"; "reorder"; "declined reorder"; "refused pipeline" ]
+          // Phase 277 — and a decimal sample: a pipeline over the decimal column with a present decimal.
+          "Conformance.plannerLaws",
+          Guarded
+              [ "fusion"
+                "pruning"
+                "reorder"
+                "declined reorder"
+                "refused pipeline"
+                "decimal sample" ]
 
           // ---- unconditional: every iteration builds the evidence for every branch ----
           "Conformance.aggregateParityLaws",

@@ -86,6 +86,9 @@ let private colTypeToModel (t: ColumnType) : ModelCol.coltype =
     | StringType -> ModelCol.StringType
     | DateType -> ModelCol.DateType
     | TimestampType -> ModelCol.TimestampType
+    // `ColumnOps.fst` carries the six types it was written over and not the decimal (Core `0.33.0`),
+    // so this generator draws no decimal column (`colTypePool`) and a decimal never reaches here.
+    | DecimalType -> failwith "the ColumnOps model has no decimal column type"
 
 let private colTypeOfModel (t: ModelCol.coltype) : ColumnType =
     match t with
@@ -106,6 +109,7 @@ let private cellToModel (c: Cell) : ModelCol.cell =
     | Str s -> ModelCol.Present(ModelCol.StringType, s)
     | Date s -> ModelCol.Present(ModelCol.DateType, s)
     | Timestamp s -> ModelCol.Present(ModelCol.TimestampType, s)
+    | Decimal _ -> failwith "the ColumnOps model has no decimal cell"
 
 /// The BLIND cell bridge — the go-red's instrument: every present cell is read as a string, so
 /// the model's type check sees a `Str` where production sees an `Int`, and the two must part.
@@ -243,6 +247,8 @@ let private genColCell (ty: ColumnType) (r: ConfRng.T) : Cell * ConfRng.T =
         | StringType -> Str(sprintf "s%d" v)
         | DateType -> Date(sprintf "2026-01-%02d" (1 + v % 28))
         | TimestampType -> Timestamp(sprintf "2026-01-01T00:00:%02dZ" (v % 60))
+        // Not in `colTypePool` (the ColumnOps model has no decimal), so never drawn here.
+        | DecimalType -> Decimal(string v)
 
     if roll < 7 then
         ofType ty, r2
@@ -732,6 +738,7 @@ let private pColToModel (t: ColumnType) : ModelPipe.column_type =
     | StringType -> ModelPipe.StringType
     | DateType -> ModelPipe.DateType
     | TimestampType -> ModelPipe.TimestampType
+    | DecimalType -> ModelPipe.DecimalType
 
 let private pColOfModel (t: ModelPipe.column_type) : ColumnType =
     match t with
@@ -741,6 +748,7 @@ let private pColOfModel (t: ModelPipe.column_type) : ColumnType =
     | ModelPipe.StringType -> StringType
     | ModelPipe.DateType -> DateType
     | ModelPipe.TimestampType -> TimestampType
+    | ModelPipe.DecimalType -> DecimalType
 
 let private pCellToModel (c: Cell) : ModelPipe.cell =
     match c with
@@ -751,6 +759,7 @@ let private pCellToModel (c: Cell) : ModelPipe.cell =
     | Cell.Date v -> ModelPipe.Date v
     | Cell.Timestamp v -> ModelPipe.Timestamp v
     | Cell.Null -> ModelPipe.Null
+    | Cell.Decimal v -> ModelPipe.Decimal v
 
 let private pCellOfModel (c: ModelPipe.cell) : Cell =
     match c with
@@ -768,6 +777,7 @@ let private pCellOfModel (c: ModelPipe.cell) : Cell =
     | ModelPipe.Date v -> Cell.Date v
     | ModelPipe.Timestamp v -> Cell.Timestamp v
     | ModelPipe.Null -> Cell.Null
+    | ModelPipe.Decimal v -> Cell.Decimal v
 
 /// A closed enumeration crosses through one table read both ways, so a case the table misses is
 /// a `KeyNotFoundException` on the first draw that reaches it rather than a silent default.
@@ -812,7 +822,8 @@ let private pScalarFns: (ScalarFn * ModelPipe.scalar_fn) list =
       Sqrt, ModelPipe.Sqrt
       Least, ModelPipe.Least
       Greatest, ModelPipe.Greatest
-      IndexOf, ModelPipe.IndexOf ]
+      IndexOf, ModelPipe.IndexOf
+      Divide, ModelPipe.Divide ]
 
 let private pAggFns: (AggFn * ModelPipe.agg_fn) list =
     [ Sum, ModelPipe.Sum
@@ -1302,7 +1313,7 @@ let private pLawVectors () : (string * Transform list * Table * bool) list =
           id, pipeline, table, refuses ]
 
 /// The generated sample — the vectors' own draw recipe for the table (a tie-heavy string key, an
-/// int column carrying nulls, a float column), WIDENED in the pipeline: one to four steps over all
+/// int column carrying nulls, a float column, and since Phase 277 a decimal column), WIDENED in the pipeline: one to four steps over all
 /// fourteen verbs, expressions over all thirteen kinds, a right-hand source that is embedded,
 /// resolved through `resolve` or unresolvable, and slots that are literals or params.
 let private pGenTable (rng: ConfRng.T) : Table * ConfRng.T =
@@ -1321,12 +1332,22 @@ let private pGenTable (rng: ConfRng.T) : Table * ConfRng.T =
 
     let w = [ for i in 0 .. rows - 1 -> Cell.Float(float (i + offset) / 2.0) ]
 
+    // Phase 277 — an exact decimal column, so every verb and kind meets one: `v`'s value plus a
+    // quarter, null where `v` is.
+    let m =
+        v
+        |> List.map (fun c ->
+            match c with
+            | Cell.Int x -> Cell.decimal (string x + ".25") |> Option.defaultValue Cell.Null
+            | _ -> Cell.Null)
+
     let table: Table =
-        { Schema = [ "g", StringType; "v", IntType; "w", FloatType ]
+        { Schema = [ "g", StringType; "v", IntType; "w", FloatType; "m", DecimalType ]
           Columns =
             [ Column.create "g" StringType g
               Column.create "v" IntType v
-              Column.create "w" FloatType w ] }
+              Column.create "w" FloatType w
+              Column.create "m" DecimalType m ] }
 
     table, r2
 
@@ -1345,7 +1366,7 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
     | 13
     | 14
     | 15 ->
-        pPick [ Col "g"; Col "v"; Col "w"; Col "v"; Col "w"; Col "nope" ] r
+        pPick [ Col "g"; Col "v"; Col "w"; Col "v"; Col "w"; Col "nope"; Col "m" ] r
         |> fun (e, r) -> e, r
     | 1
     | 16
@@ -1356,7 +1377,8 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
               Lit(Cell.Float 2.5)
               Lit(Cell.Str "b")
               Lit(Cell.Bool true)
-              Lit Cell.Null ]
+              Lit Cell.Null
+              Lit(Cell.Decimal "1.5") ]
             r
     | 2
     | 18
@@ -1384,7 +1406,20 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
         Cast(ty, x), r2
     | 8 ->
         let fn, r1 =
-            pPick [ Abs; Round; Length; Lower; Upper; Trim; Sqrt; Least; IndexOf; Concat ] r
+            pPick
+                [ Abs
+                  Round
+                  Length
+                  Lower
+                  Upper
+                  Trim
+                  Sqrt
+                  Least
+                  IndexOf
+                  Concat
+                  Divide
+                  Floor ]
+                r
 
         let x, r2 = pGenExpr (depth - 1) r1
         let y, r3 = pGenExpr (depth - 1) r2
@@ -1394,6 +1429,8 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
             | Concat
             | Least
             | IndexOf -> [ x; y ]
+            // Phase 277: a scale and a rule, so the quotient is reached as well as its refusals.
+            | Divide -> [ x; y; Lit(Cell.Int 2); Lit(Cell.Str "half-even") ]
             | _ -> [ x ]
 
         ApplyFn(fn, args), r3
@@ -1816,7 +1853,12 @@ let proofOracleTests =
               let t = pipelineDifferential pPipelineToModel pFaithfulStep 154 400
 
               Expect.isEmpty t.PDiffs (sprintf "disagreements:\n%s" (String.concat "\n" (List.rev t.PDiffs)))
-              Expect.equal t.PCompared (16 + 400) "sixteen vectors and four hundred generated pipelines were compared"
+
+              Expect.equal
+                  t.PCompared
+                  (LawVectorExport.iterations + 400)
+                  "every vector and four hundred generated pipelines were compared"
+
               Expect.isGreaterThan t.POk 120 (sprintf "pipelines evaluated to a table on both sides (ok=%d)" t.POk)
               Expect.isGreaterThan t.PErr 60 (sprintf "pipelines were refused on both sides (err=%d)" t.PErr)
 
@@ -1985,7 +2027,10 @@ let proofOracleTests =
                   assertProjection (pResolveWith right) pEnv p table (sprintf "generated %d" i)
                   rng <- r3
 
-              Expect.equal checked 216 "sixteen vectors and two hundred generated pipelines were checked"
+              Expect.equal
+                  checked
+                  (LawVectorExport.iterations + 200)
+                  "every vector and two hundred generated pipelines were checked"
 
           testCase
               "the finding holds on the shipped evaluator — an expression over `Limits.max_expr_nodes` is evaluated, never refused"
