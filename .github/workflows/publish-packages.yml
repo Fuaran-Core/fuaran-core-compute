@@ -1,7 +1,7 @@
 name: publish-packages
 
-# Released distribution channel for this repository's three packages (Fuaran.Core.DataFrame,
-# Fuaran.Core.Column.Ops, Fuaran.Core.DataFrame.Conformance):
+# Released distribution channel for this repository's four packages (Fuaran.Core.DataFrame,
+# Fuaran.Core.Column.Ops, Fuaran.Core.DataFrame.PipelineQuery, Fuaran.Core.DataFrame.Conformance):
 # nuget.org — the public, no-auth-restore channel. Bump <Version> in Directory.Build.props, commit,
 # then tag vX.Y.Z and push the tag to trigger this workflow. A branch push reaches no job here.
 # Re-runs of the same tag are idempotent (--skip-duplicate).

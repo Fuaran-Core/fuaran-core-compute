@@ -9,6 +9,12 @@
 /// by PACKAGE, never by project. A fifth substrate reference, or a reference to anything that is not a public package, is a design
 /// question for a seam, not a line to add to a project file.
 ///
+/// Phase 281 is the one such question answered so far: the registered pipeline query pairs the
+/// substrate's `Query` declaration with a pipeline, so `Fuaran.Core.DataFrame.PipelineQuery` (and
+/// the families' package, through its law family) takes `Fuaran.Core.Query` and, with it,
+/// `Fuaran.Core.Function`. The widening is held PER PROJECT (`allowedFor`), so the dataframe layer
+/// itself still stands on the four.
+///
 /// Two readings, because each misses what the other sees:
 ///
 ///   * the PROJECT FILES — every project under `src/`: its `PackageReference`s must name only
@@ -27,12 +33,14 @@ open System.Reflection.PortableExecutable
 open System.Xml.Linq
 open Expecto
 
-/// The three assemblies this repository produces.
+/// The assemblies this repository produces: the three above, and (Phase 281) the registered
+/// pipeline query.
 let compute: Set<string> =
     set
         [ "Fuaran.Core.DataFrame"
           "Fuaran.Core.Column.Ops"
-          "Fuaran.Core.DataFrame.Conformance" ]
+          "Fuaran.Core.DataFrame.Conformance"
+          "Fuaran.Core.DataFrame.PipelineQuery" ]
 
 /// The substrate packages the compute strand stands on — and nothing above them.
 let allowedSubstrate: Set<string> =
@@ -42,6 +50,23 @@ let allowedSubstrate: Set<string> =
           "Fuaran.Core.OpStream"
           "Fuaran.Core.Conformance" ]
 
+/// The one designed widening, per project (Phase 281): the registered pipeline query pairs the
+/// substrate's `Query` declaration with a pipeline, so it takes `Fuaran.Core.Query` — and, through
+/// it, `Fuaran.Core.Function`, whose `Deferred` envelope a dispatch answers in. The dataframe
+/// families' package uses both through that package's law family. No other project may: the
+/// dataframe layer itself stays on the four.
+let allowedFor: Map<string, Set<string>> =
+    let query = set [ "Fuaran.Core.Query"; "Fuaran.Core.Function" ]
+
+    Map.ofList
+        [ "Fuaran.Core.DataFrame.PipelineQuery", query
+          "Fuaran.Core.DataFrame.Conformance", query ]
+
+let private allowedSubstrateOf (project: string) : Set<string> =
+    match Map.tryFind project allowedFor with
+    | Some extra -> Set.union allowedSubstrate extra
+    | None -> allowedSubstrate
+
 /// The only non-substrate package a shipped project may take.
 let allowedOther: Set<string> = set [ "FSharp.Core" ]
 
@@ -50,11 +75,11 @@ let allowedOther: Set<string> = set [ "FSharp.Core" ]
 // ---------------------------------------------------------------------------
 
 /// A project's references that break the line: a package outside the allowed set, or a project
-/// outside this repository's three. `(project, offending reference)` pairs.
+/// outside this repository's own. `(project, offending reference)` pairs.
 let violations (projects: Map<string, string list * string list>) : (string * string) list =
     [ for KeyValue(name, (packages, projectRefs)) in projects do
           for p in packages do
-              if not (Set.contains p allowedSubstrate || Set.contains p allowedOther) then
+              if not (Set.contains p (allowedSubstrateOf name) || Set.contains p allowedOther) then
                   yield name, "package " + p
 
           for r in projectRefs do
@@ -62,13 +87,13 @@ let violations (projects: Map<string, string list * string list>) : (string * st
                   yield name, "project " + r ]
 
 /// A built assembly's references into the Fuaran family that break the line: any `Fuaran.*`
-/// assembly that is neither one of the three nor one of the allowed four.
+/// assembly that is neither one of this repository's nor one the assembly is allowed.
 let assemblyViolations (refs: Map<string, string list>) : (string * string) list =
     [ for KeyValue(name, rs) in refs do
           for r in rs do
               if
                   r.StartsWith("Fuaran.", StringComparison.Ordinal)
-                  && not (Set.contains r compute || Set.contains r allowedSubstrate)
+                  && not (Set.contains r compute || Set.contains r (allowedSubstrateOf name))
               then
                   yield name, r ]
 
@@ -176,6 +201,25 @@ let tests =
                   [ "Fuaran.Core.DataFrame", "project Fuaran.Core.Column" ]
                   "the substrate taken by PROJECT is a violation — it is taken by package"
 
+              // Phase 281: the widening is per project. The pipeline query may take Query; the
+              // dataframe layer may not.
+              let pipelineQuery =
+                  clean
+                  |> Map.add
+                      "Fuaran.Core.DataFrame.PipelineQuery"
+                      ([ "Fuaran.Core.Query" ], [ "Fuaran.Core.DataFrame" ])
+
+              Expect.isEmpty (violations pipelineQuery) "the pipeline query takes the substrate's Query"
+
+              let queryInDataFrame =
+                  clean
+                  |> Map.add "Fuaran.Core.DataFrame" ([ "Fuaran.Core.Column"; "Fuaran.Core.Query" ], [])
+
+              Expect.equal
+                  (violations queryInDataFrame)
+                  [ "Fuaran.Core.DataFrame", "package Fuaran.Core.Query" ]
+                  "the dataframe layer taking Query is a violation"
+
           testCase "the assembly rule goes red on a transitive substrate assembly and stays quiet on the rest"
           <| fun _ ->
               let refs =
@@ -199,7 +243,7 @@ let tests =
               Expect.equal
                   (projects |> Map.keys |> Set.ofSeq)
                   compute
-                  "src/ holds exactly this repository's three projects"
+                  "src/ holds exactly this repository's own projects"
 
               let found = violations projects
 
@@ -234,5 +278,6 @@ let tests =
               for name, below in
                   [ "Fuaran.Core.DataFrame", "Fuaran.Core.Column"
                     "Fuaran.Core.Column.Ops", "Fuaran.Core.OpStream"
-                    "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Conformance" ] do
+                    "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Conformance"
+                    "Fuaran.Core.DataFrame.PipelineQuery", "Fuaran.Core.Query" ] do
                   Expect.contains refs[name] below (sprintf "%s references %s" name below) ]

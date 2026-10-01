@@ -4,9 +4,16 @@
   "$comment": "Coverage is TOTAL OR DECLARED: every packable package in this repository is either named by a model in `modules.json` (its `packages`) or has an entry here, and a package in neither fails the `Proofs.Coverage` family. An entry is a RECORDED DECISION, not an excuse: it names the package, the closed reason, and enough prose for a later reader to disagree with it; deleting an entry is how that reader asks for a theorem. The check runs BOTH WAYS: an entry naming a package that is no longer packable, or one that has since gained a model, fails too. The two entries and their reasons are carried unchanged from the Fuaran.Core repository's file, where Phase 257 wrote them (Phase 259); the reason vocabulary below is the subset those entries use.",
   "reasons": {
     "facade": "The package is a surface over packages that ARE modelled and adds no semantics of its own — what a theorem here would state is its callee's theorem, restated in a second syntax. A defect in a facade is a mapping defect, which is what the certification tests it carries are for.",
-    "content-free-seam": "The package is a generic seam whose content is supplied entirely by the domain — Core owns no concrete computation here to state a theorem ABOUT. What it can promise is the shape of the seam, and that is stated where a domain meets it rather than as a theorem over a model of nothing."
+    "content-free-seam": "The package is a generic seam whose content is supplied entirely by the domain — Core owns no concrete computation here to state a theorem ABOUT. What it can promise is the shape of the seam, and that is stated where a domain meets it rather than as a theorem over a model of nothing.",
+    "composition-of-modelled-parts": "The package composes parts that are modelled where they live and adds only a finite decision over their outputs — an equality of two schemas, a census of names — whose every branch a law family BUILDS each iteration. A theorem here would restate its callees' theorems plus a list comparison; what can go wrong is the wiring, which the family's built refusals pin."
   },
   "exclusions": [
+    {
+      "package": "Fuaran.Core.DataFrame.PipelineQuery",
+      "reason": "composition-of-modelled-parts",
+      "phase": "fuaran-core#281",
+      "note": "The registered pipeline query pairs the substrate's Query declaration with a pipeline. Its dispatch IS the substrate's QueryRegistry.dispatch (whose validation and capture keying the substrate's proofs/Query.fst models), its output schema is SchemaWalk's (certified against the evaluator by schemaWalkLaws), and its substitution is Transform.substitute (paramLaws, slotParamLaws). What it adds is the agreement check — a closed walk compared with a declared schema, and a census of parameter reads compared with the declared parameters — and PipelineQueryConformance.laws builds every refusal of that check on every iteration, beside the dispatch outcomes and the codec round-trip."
+    },
     {
       "package": "Fuaran.Core.DataFrame.Conformance",
       "reason": "content-free-seam",

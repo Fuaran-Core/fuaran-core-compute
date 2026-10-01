@@ -276,7 +276,9 @@ let private derived<'T> (package: string) (label: string) (encode: 'T -> string)
 /// roots here; the roster test below refuses a packable package that is neither here nor in
 /// `notWire`, so the choice cannot be skipped.
 let internal roots: WireRoot list =
-    [ derived<Transform list> "Fuaran.Core.DataFrame" "pipeline" DataFrameCodec.encodePipeline
+    [ // Phase 281 — the registered pipeline query: the declaration, the pipeline and the sources.
+      derived<PipelineQuery> "Fuaran.Core.DataFrame.PipelineQuery" "pipelineQuery" PipelineQueryCodec.encode
+      derived<Transform list> "Fuaran.Core.DataFrame" "pipeline" DataFrameCodec.encodePipeline
       derived<TableDelta> "Fuaran.Core.DataFrame" "tableDelta" DeltaCodec.encode
       derived<ColumnOp> "Fuaran.Core.Column.Ops" "columnOp" ColumnOps.encode ]
 

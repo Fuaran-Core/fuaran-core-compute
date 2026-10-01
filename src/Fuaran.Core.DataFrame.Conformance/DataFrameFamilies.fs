@@ -28,7 +28,12 @@ module DataFrameFamilies =
               Population = population
               Why = why }
 
-        [ r
+        [ // Phase 281 — every refusal registration has is built each iteration.
+          r
+              "PipelineQueryConformance.laws"
+              Built
+              "every agreement, parameter, registry and dispatch refusal is built each iteration over the drawn table"
+          r
               "Conformance.transformLaws"
               Drawn
               "the Error/Error parity arm is reached only when the caller's generator yields an evaluation error"
@@ -64,6 +69,12 @@ module DataFrameFamilies =
     /// moved verbatim except `aggregateParityLaws`, which now compares parity alone.
     let census: (string * AdequacyClass) list =
         [
+          // Phase 281 — unconditional: the reference pair and one variant per refusal are built every
+          // iteration; the draw varies the table and the arguments, never which branch is taken.
+          "PipelineQueryConformance.laws",
+          Unconditional
+              "each iteration builds the reference pair, one variant per refusal, and dispatches it settled, pending, refused and failed"
+
           // ---- guarded: a law branches on something the sample can miss ----
           // Phase 212 — the third dimension is the shape that let a wrong answer reach a published
           // release: a ROW-LOCAL step reading a column a cross-row step appended, per producer
@@ -151,7 +162,9 @@ module DataFrameFamilies =
 
         let none: string list = []
 
-        [ c "transformLaws" none (Some SeamNotEveryDomainHas) []
+        [ // Phase 281 — the registered pipeline query, in its own module.
+          f "PipelineQueryConformance" "laws" none (Some SeamNotEveryDomainHas) []
+          c "transformLaws" none (Some SeamNotEveryDomainHas) []
           // Phase 257 — the `GroupBy` half. The `Column.aggregate` null-skip half stays in the kit
           // as `Conformance.aggregateNullSkipLaws`.
           c "aggregateParityLaws" none (Some SeamNotEveryDomainHas) []
