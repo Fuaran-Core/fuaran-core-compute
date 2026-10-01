@@ -52,6 +52,36 @@ Opened by Phase 268, which makes a prepared source a persistent VERSION — chun
 successive edits share — and adds the op algebra and the refresh over it. The four packages ship at
 this version together; `0.34.0` is tagged, so the additions advance the slot rather than ride it.
 
+- **Additive — a new package, `Fuaran.Core.DataFrame.PipelineQuery`: the registered pipeline query
+  (Phase 281).** `PipelineQuery` (`Query`, `Pipeline`, `Sources`) pairs the substrate's `Query`
+  declaration with the `Transform` pipeline that is its body, and declares the schema of every
+  named source the pair reads. `PipelineQueryRegistry` (`empty`, `register`, `tryFind`,
+  `enumerate`, `declarations`, `dispatch`) is opaque, so a pair whose pipeline disagrees with its
+  declaration cannot be in one: `register` refuses a duplicate id with the substrate's own
+  `DuplicateQuery`, then holds the pair to `PipelineQuery.check` — every named source declared
+  (`SourceUndeclared`), the `SchemaWalk` output closed (`ResultSchemaOpen`) and equal to the
+  declared `ResultSchema` in names, order and types (`ResultColumn` with a `ResultDisagreement`:
+  `NotProduced`, `Undeclared`, `Duplicated`, `OutOfOrder`, `TypeDiffers`, `TypeUndecidable`), and
+  the parameter reads (`PipelineQuery.paramReads`, each a `ParamRead.Scalar` or `.List` at the type
+  its position decides) agreeing with the declared parameters both ways (`ParamUndeclared`,
+  `ParamReadAs`, `ParamReadAsScalarAndList`, `ParamUnread`). `dispatch` IS the substrate's
+  `QueryRegistry.dispatch` over the declarations — `NoSuchQuery`, `Query.validateParams`, the
+  `Deferred` envelope's three outcomes and the unreachable `Ok(Failed _)` — and hands the resolver
+  the pair with the arguments substituted (`PipelineQuery.substitute`). `PipelineQueryCodec`
+  (`encode` / `decode`, `encodeJson` / `decodeJson`) is its canonical wire form, in `api/wire/`.
+  **One limit worth knowing before adopting it:** a `Derive` of anything but a string has a type
+  only the data decides (the evaluator types a derived column from its first present cell and falls
+  back to `StringType` over an empty frame), so a pair whose declared result carries such a column
+  is refused as `TypeUndecidable`; declare it through `Project` / `GroupBy` over a typed column.
+  The package takes `Fuaran.Core.Query` by package (and `Fuaran.Core.Function` through it); the
+  compute boundary test admits that widening for this package and the families' package only.
+- **Additive — `Fuaran.Core.DataFrame.Conformance`: `PipelineQueryConformance.laws` (Phase 281).**
+  On the substrate's `queryLaws` pattern: every agreement and parameter refusal built each
+  iteration, the substrate's registry refusals, the three dispatch outcomes, the bound pipeline
+  evaluated against the same pipeline written with the arguments as literals, and the codec
+  round-trip. `Unconditional`, refusals `Built`. The package now also references
+  `Fuaran.Core.DataFrame.PipelineQuery`. Additive over the untagged draft, so both ride `0.35.0`.
+
 - **Additive — `Fuaran.Core.Column.Ops`: `ColumnOps.applyPrepared`, `canApplyPrepared`,
   `invertPrepared`, `deltaOfPrepared`.** `apply` / `canApply` / `invert` / `deltaOf` over a
   `Prepared`, with the same verdicts: `applyPrepared op p` answers a new version at the cost of what

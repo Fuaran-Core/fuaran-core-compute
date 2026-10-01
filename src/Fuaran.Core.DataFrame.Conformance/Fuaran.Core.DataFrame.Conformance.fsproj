@@ -16,6 +16,9 @@
     <!-- The pre-split spellings, forwarding to DataFrameConformance. After it, because each member
          is a call into it. -->
     <Compile Include="Forwards.fs" />
+    <!-- Phase 281 - the registered pipeline query's law family, in its own module. Before the
+         roster, which enumerates it. -->
+    <Compile Include="PipelineQueryLaws.fs" />
     <!-- This package's share of the family roster. LAST, for the reason Families.fs is last in the
          kit: it enumerates the families above as data and depends on none of them. -->
     <Compile Include="DataFrameFamilies.fs" />
@@ -25,6 +28,8 @@
     <PackageReference Include="Fuaran.Core.Column" />
     <ProjectReference Include="..\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
     <ProjectReference Include="..\Fuaran.Core.Column.Ops\Fuaran.Core.Column.Ops.fsproj" />
+    <!-- Phase 281 - the registered pipeline query, whose law family ships here. -->
+    <ProjectReference Include="..\Fuaran.Core.DataFrame.PipelineQuery\Fuaran.Core.DataFrame.PipelineQuery.fsproj" />
     <PackageReference Include="Fuaran.Core.OpStream" />
     <PackageReference Include="Fuaran.Core.Wire" />
   </ItemGroup>
