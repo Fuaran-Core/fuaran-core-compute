@@ -1,7 +1,7 @@
 {
   "kind": "copies",
   "producer": "fuaran-core-compute",
-  "$adoptionNote": "Two kinds of record are declared here and they run in OPPOSITE directions. (1) The transform law vectors: this repository EMITS conformance/laws/transform-laws.json, and the shared wire-format corpus carries the declared copy the other hosts certify against; `check` is `fingerprint` because the two repositories may differ in end-of-line policy and nothing else. (2) Everything this repository COPIED from the Fuaran.Core repository (Phase 259): the proof-leg kit (verbatim), the prover pin, the two hand-written oracle shims, the Limits model and its extraction that Pipeline opens, and the five C# facade-proof legs shared with that repository's facade proof. For those, the canonical file is the CONSUMER path and the copy is the source here, declared in this file rather than in that repository's because an adopter must be able to adopt without editing the repository it adopts from. The registry compares the two files and reports any difference whichever side moved; every such record's `regen` says which side is canonical — re-copy FROM the Fuaran.Core repository, never the other way. `bytes` for the pin (a hash-verified declaration), `fingerprint` for the rest.",
+  "$adoptionNote": "Two kinds of record are declared here and they run in OPPOSITE directions. (1) The transform law vectors: this repository EMITS conformance/laws/transform-laws.json, and the shared wire-format corpus carries the declared copy the other hosts certify against; `check` is `fingerprint` because the two repositories may differ in end-of-line policy and nothing else. (2) Everything this repository COPIED from the Fuaran.Core repository (Phase 259): the proof-leg kit (verbatim), the prover pin, the two hand-written oracle shims, and the Limits model and its extraction that Pipeline opens. For those, the canonical file is the CONSUMER path and the copy is the source here, declared in this file rather than in that repository's because an adopter must be able to adopt without editing the repository it adopts from. The registry compares the two files and reports any difference whichever side moved; every such record's `regen` says which side is canonical — re-copy FROM the Fuaran.Core repository, never the other way. `bytes` for the pin (a hash-verified declaration), `fingerprint` for the rest.",
   "records": [
     {
       "source": "conformance/laws/transform-laws.json",
@@ -170,46 +170,6 @@
       ],
       "check": "fingerprint",
       "regen": "The committed extraction of Limits.fst; the leg holds it to a fresh extraction here too. Copy it FROM the consumer path above (the Fuaran.Core repository) to Fuaran/Fuaran-Core-Compute/proofs/oracle/Limits.fs; never edit this copy."
-    },
-    {
-      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Check.cs",
-      "consumers": [
-        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Check.cs"
-      ],
-      "check": "fingerprint",
-      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Check.cs; never edit this copy."
-    },
-    {
-      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Coverage.cs",
-      "consumers": [
-        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Coverage.cs"
-      ],
-      "check": "fingerprint",
-      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Coverage.cs; never edit this copy."
-    },
-    {
-      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Generators.cs",
-      "consumers": [
-        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Generators.cs"
-      ],
-      "check": "fingerprint",
-      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Generators.cs; never edit this copy."
-    },
-    {
-      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Rebuild.cs",
-      "consumers": [
-        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Rebuild.cs"
-      ],
-      "check": "fingerprint",
-      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Rebuild.cs; never edit this copy."
-    },
-    {
-      "source": "tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Surface.cs",
-      "consumers": [
-        "Fuaran/Fuaran-Core/tests/Fuaran.Core.CSharp.Proof/Surface.cs"
-      ],
-      "check": "fingerprint",
-      "regen": "A leg of the C# facade proof shared by both halves of the facade. Copy it FROM the consumer path above (the Fuaran.Core repository's facade proof) to Fuaran/Fuaran-Core-Compute/tests/Fuaran.Core.DataFrame.CSharp.Proof/Shared/Surface.cs; never edit this copy."
     }
   ]
 }

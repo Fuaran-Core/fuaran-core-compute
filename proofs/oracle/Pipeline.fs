@@ -144,6 +144,7 @@ type column_type =
 | StringType
 | DateType
 | TimestampType
+| DecimalType
 
 
 let uu___is_IntType : column_type  ->  Prims.bool = (fun ( projectee  :  column_type ) -> (match (projectee) with
@@ -199,6 +200,15 @@ let uu___is_TimestampType : column_type  ->  Prims.bool = (fun ( projectee  :  c
      false
      end))
 
+
+let uu___is_DecimalType : column_type  ->  Prims.bool = (fun ( projectee  :  column_type ) -> (match (projectee) with
+| DecimalType -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
 type cell =
 | Int of Prims.int
 | Float of Prims.string
@@ -207,6 +217,7 @@ type cell =
 | Date of Prims.string
 | Timestamp of Prims.string
 | Null
+| Decimal of Prims.string
 
 
 let uu___is_Int : cell  ->  Prims.bool = (fun ( projectee  :  cell ) -> (match (projectee) with
@@ -305,6 +316,21 @@ let uu___is_Null : cell  ->  Prims.bool = (fun ( projectee  :  cell ) -> (match 
      end
 | uu___ -> begin
      false
+     end))
+
+
+let uu___is_Decimal : cell  ->  Prims.bool = (fun ( projectee  :  cell ) -> (match (projectee) with
+| Decimal (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__Decimal__item___0 : cell  ->  Prims.string = (fun ( projectee  :  cell ) -> (match (projectee) with
+| Decimal (_0) -> begin
+     _0
      end))
 
 type join_kind =
@@ -1011,6 +1037,92 @@ let __proj__SlotParam__item___0 = (fun ( projectee  :  slot<'a> ) -> (match (pro
      _0
      end))
 
+type rounding_mode =
+| RoundHalfEven
+| RoundHalfUp
+| RoundHalfDown
+| RoundUp
+| RoundDown
+| RoundCeiling
+| RoundFloor
+
+
+let uu___is_RoundHalfEven : rounding_mode  ->  Prims.bool = (fun ( projectee  :  rounding_mode ) -> (match (projectee) with
+| RoundHalfEven -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_RoundHalfUp : rounding_mode  ->  Prims.bool = (fun ( projectee  :  rounding_mode ) -> (match (projectee) with
+| RoundHalfUp -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_RoundHalfDown : rounding_mode  ->  Prims.bool = (fun ( projectee  :  rounding_mode ) -> (match (projectee) with
+| RoundHalfDown -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_RoundUp : rounding_mode  ->  Prims.bool = (fun ( projectee  :  rounding_mode ) -> (match (projectee) with
+| RoundUp -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_RoundDown : rounding_mode  ->  Prims.bool = (fun ( projectee  :  rounding_mode ) -> (match (projectee) with
+| RoundDown -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_RoundCeiling : rounding_mode  ->  Prims.bool = (fun ( projectee  :  rounding_mode ) -> (match (projectee) with
+| RoundCeiling -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_RoundFloor : rounding_mode  ->  Prims.bool = (fun ( projectee  :  rounding_mode ) -> (match (projectee) with
+| RoundFloor -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+type rounding = {r_scale : slot<Prims.int>; r_mode : rounding_mode}
+
+
+let __proj__Mkrounding__item__r_scale : rounding  ->  slot<Prims.int> = (fun ( projectee  :  rounding ) -> (match (projectee) with
+| {r_scale = r_scale; r_mode = r_mode} -> begin
+     r_scale
+     end))
+
+
+let __proj__Mkrounding__item__r_mode : rounding  ->  rounding_mode = (fun ( projectee  :  rounding ) -> (match (projectee) with
+| {r_scale = r_scale; r_mode = r_mode} -> begin
+     r_mode
+     end))
+
 
 type schema = Prims.list<(Prims.string * column_type)>
 
@@ -1076,6 +1188,8 @@ type col_expr =
 | IsNull of col_expr
 | InParam of col_expr * Prims.string
 | Now of now_grain
+| Quotient of col_expr * col_expr * rounding
+| Rounded of col_expr * rounding
 
 
 let uu___is_Col : col_expr  ->  Prims.bool = (fun ( projectee  :  col_expr ) -> (match (projectee) with
@@ -1312,6 +1426,54 @@ let uu___is_Now : col_expr  ->  Prims.bool = (fun ( projectee  :  col_expr ) -> 
 let __proj__Now__item___0 : col_expr  ->  now_grain = (fun ( projectee  :  col_expr ) -> (match (projectee) with
 | Now (_0) -> begin
      _0
+     end))
+
+
+let uu___is_Quotient : col_expr  ->  Prims.bool = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Quotient (_0, _1, _2) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__Quotient__item___0 : col_expr  ->  col_expr = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Quotient (_0, _1, _2) -> begin
+     _0
+     end))
+
+
+let __proj__Quotient__item___1 : col_expr  ->  col_expr = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Quotient (_0, _1, _2) -> begin
+     _1
+     end))
+
+
+let __proj__Quotient__item___2 : col_expr  ->  rounding = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Quotient (_0, _1, _2) -> begin
+     _2
+     end))
+
+
+let uu___is_Rounded : col_expr  ->  Prims.bool = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Rounded (_0, _1) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__Rounded__item___0 : col_expr  ->  col_expr = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Rounded (_0, _1) -> begin
+     _0
+     end))
+
+
+let __proj__Rounded__item___1 : col_expr  ->  rounding = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Rounded (_0, _1) -> begin
+     _1
      end))
 
 type agg = {a_name : Prims.string; a_fn : agg_fn; a_of : Prims.string}
@@ -1833,30 +1995,60 @@ let cost_of : frame  ->  transform  ->  Prims.nat = (fun ( f  :  frame ) ( step 
      (Prims.parse_int "0")
      end))
 
-type prims = {binary : bin_op  ->  cell  ->  cell  ->  outcome<cell, eval_error>; cast_cell : column_type  ->  cell  ->  outcome<cell, eval_error>; apply_fn : scalar_fn  ->  Prims.list<cell>  ->  outcome<cell, eval_error>; compare : cell  ->  cell  ->  FStar_Pervasives_Native.option<Prims.int>}
+type prims = {binary : bin_op  ->  cell  ->  cell  ->  outcome<cell, eval_error>; cast_cell : column_type  ->  cell  ->  outcome<cell, eval_error>; apply_fn : scalar_fn  ->  Prims.list<cell>  ->  outcome<cell, eval_error>; compare : cell  ->  cell  ->  FStar_Pervasives_Native.option<Prims.int>; quotient : rounding_mode  ->  Prims.int  ->  cell  ->  cell  ->  outcome<cell, eval_error>; rounded : rounding_mode  ->  Prims.int  ->  cell  ->  outcome<cell, eval_error>}
 
 
 let __proj__Mkprims__item__binary : prims  ->  bin_op  ->  cell  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded} -> begin
      binary
      end))
 
 
 let __proj__Mkprims__item__cast_cell : prims  ->  column_type  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded} -> begin
      cast_cell
      end))
 
 
 let __proj__Mkprims__item__apply_fn : prims  ->  scalar_fn  ->  Prims.list<cell>  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded} -> begin
      apply_fn
      end))
 
 
 let __proj__Mkprims__item__compare : prims  ->  cell  ->  cell  ->  FStar_Pervasives_Native.option<Prims.int> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded} -> begin
      compare
+     end))
+
+
+let __proj__Mkprims__item__quotient : prims  ->  rounding_mode  ->  Prims.int  ->  cell  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded} -> begin
+     quotient
+     end))
+
+
+let __proj__Mkprims__item__rounded : prims  ->  rounding_mode  ->  Prims.int  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded} -> begin
+     rounded
+     end))
+
+
+let scale_of : param_env  ->  slot<Prims.int>  ->  outcome<Prims.int, eval_error> = (fun ( env  :  param_env ) ( s  :  slot<Prims.int> ) -> (match (s) with
+| SlotLit (n) -> begin
+     Ok (n)
+     end
+| SlotParam (name) -> begin
+     (match ((assoc name env)) with
+| FStar_Pervasives_Native.Some (Int (v)) -> begin
+     Ok (v)
+     end
+| FStar_Pervasives_Native.Some (uu___) -> begin
+     Error (TypeError ((Prims.strcat "rounding scale: param \'" (Prims.strcat name "\' is not bound to an int"))))
+     end
+| FStar_Pervasives_Native.None -> begin
+     Error (UnboundParam (name, (names env)))
+     end)
      end))
 
 
@@ -1973,6 +2165,42 @@ let rec eval_expr : prims  ->  param_env  ->  schema  ->  row_of  ->  col_expr  
      end
 | Ok (vs) -> begin
      (pr.apply_fn fn vs)
+     end)
+     end
+| Quotient (a, b, r) -> begin
+     (match ((scale_of env r.r_scale)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (n) -> begin
+     (match ((eval_expr pr env cols row a)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (av) -> begin
+     (match ((eval_expr pr env cols row b)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (bv) -> begin
+     (pr.quotient r.r_mode n av bv)
+     end)
+     end)
+     end)
+     end
+| Rounded (a, r) -> begin
+     (match ((scale_of env r.r_scale)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (n) -> begin
+     (match ((eval_expr pr env cols row a)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (av) -> begin
+     (pr.rounded r.r_mode n av)
+     end)
      end)
      end))
 and eval_coalesce : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<col_expr>  ->  outcome<cell, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
@@ -2148,6 +2376,9 @@ let type_of : cell  ->  FStar_Pervasives_Native.option<column_type> = (fun ( c  
      end
 | Null -> begin
      FStar_Pervasives_Native.None
+     end
+| Decimal (uu___) -> begin
+     FStar_Pervasives_Native.Some (DecimalType)
      end))
 
 
@@ -2351,6 +2582,12 @@ let rec expr_nodes : col_expr  ->  Prims.nat = (fun ( e  :  col_expr ) -> (match
      end
 | Case (cases, els) -> begin
      (((Prims.parse_int "1") + (pairs_nodes cases)) + (expr_nodes els))
+     end
+| Quotient (a, b, uu___) -> begin
+     (((Prims.parse_int "1") + (expr_nodes a)) + (expr_nodes b))
+     end
+| Rounded (a, uu___) -> begin
+     ((Prims.parse_int "1") + (expr_nodes a))
      end))
 and exprs_nodes : Prims.list<col_expr>  ->  Prims.nat = (fun ( l  :  Prims.list<col_expr> ) -> (match (l) with
 | [] -> begin
@@ -2458,6 +2695,30 @@ let rec expr_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  col_expr
      end
 | ApplyFn (uu___, args) -> begin
      ((Prims.parse_int "1") + (args_visits pr env cols row args))
+     end
+| Quotient (a, b, r) -> begin
+     ((Prims.parse_int "1") + (match ((scale_of env r.r_scale)) with
+| Error (uu___) -> begin
+     (Prims.parse_int "0")
+     end
+| Ok (uu___) -> begin
+     ((expr_visits pr env cols row a) + (match ((eval_expr pr env cols row a)) with
+| Ok (uu___1) -> begin
+     (expr_visits pr env cols row b)
+     end
+| Error (uu___1) -> begin
+     (Prims.parse_int "0")
+     end))
+     end))
+     end
+| Rounded (a, r) -> begin
+     ((Prims.parse_int "1") + (match ((scale_of env r.r_scale)) with
+| Error (uu___) -> begin
+     (Prims.parse_int "0")
+     end
+| Ok (uu___) -> begin
+     (expr_visits pr env cols row a)
+     end))
      end))
 and coalesce_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<col_expr>  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
 | [] -> begin

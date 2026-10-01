@@ -1,6 +1,6 @@
-# Pack the four packages this repository produces into a local folder feed:
-# Fuaran.Core.DataFrame, Fuaran.Core.Column.Ops, Fuaran.Core.DataFrame.Conformance and
-# Fuaran.Core.DataFrame.CSharp, at the standing <Version> in Directory.Build.props.
+# Pack the three packages this repository produces into a local folder feed:
+# Fuaran.Core.DataFrame, Fuaran.Core.Column.Ops and Fuaran.Core.DataFrame.Conformance, at the
+# standing <Version> in Directory.Build.props.
 #
 #   pwsh ./pack.ps1                 pack into ../../local-nuget-feed (the development loop's feed)
 #   pwsh ./pack.ps1 -Feed <path>    pack elsewhere
@@ -24,7 +24,6 @@ $projects = @(
     'src/Fuaran.Core.DataFrame/Fuaran.Core.DataFrame.fsproj'
     'src/Fuaran.Core.Column.Ops/Fuaran.Core.Column.Ops.fsproj'
     'src/Fuaran.Core.DataFrame.Conformance/Fuaran.Core.DataFrame.Conformance.fsproj'
-    'src/Fuaran.Core.DataFrame.CSharp/Fuaran.Core.DataFrame.CSharp.csproj'
 )
 
 foreach ($project in $projects) {

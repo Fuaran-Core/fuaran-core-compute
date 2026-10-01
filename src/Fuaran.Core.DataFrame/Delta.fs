@@ -1412,6 +1412,6 @@ module DeltaCodec =
 
     /// Decode a delta from a wire string.
     let decode (s: string) : Result<TableDelta, ColumnError> =
-        match Json.parse s with
+        match Json.parseDetailed s with
         | Error m -> Error(NotJson m)
         | Ok el -> decodeJson el

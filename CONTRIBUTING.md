@@ -28,11 +28,11 @@ rather than print, and `FUARAN_CORE_CORPUS_DIR` to name a clone kept elsewhere.
   commit; `./verify.ps1` fails on unformatted code.
 - **Totality — no exceptions in the public surface.** Failures are typed values (`Result`, a
   rejection, or a named error envelope), never a thrown exception.
-- **FSharp.Core only, Fable-clean** for the three F# packages: no `System.Text.Json`, no host or
-  native dependency. `fable-exclusions.json` records the one package deliberately off that surface
-  (the C# facade) and why.
-- **The substrate by package, and only five packages of it.** `Fuaran.Core.Column`, `Wire`,
-  `OpStream`, `Conformance` and `CSharp`, at the one `FuaranCoreVersion` pin. The `Compute boundary`
+- **FSharp.Core only, Fable-clean** for every package: no `System.Text.Json`, no host or native
+  dependency. `fable-exclusions.json` records any package deliberately off that surface, and why;
+  it is empty.
+- **The substrate by package, and only four packages of it.** `Fuaran.Core.Column`, `Wire`,
+  `OpStream` and `Conformance`, at the one `FuaranCoreVersion` pin. The `Compute boundary`
   tests refuse anything more; a change that needs more is a design conversation, not a reference.
 - **Public-surface moves are classified, not argued.** A change to a package's public contract
   regenerates its baseline under `api/` (`CORE_APPROVE_API=1 dotnet run --project

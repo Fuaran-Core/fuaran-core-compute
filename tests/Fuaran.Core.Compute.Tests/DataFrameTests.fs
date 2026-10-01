@@ -2836,7 +2836,10 @@ let private typedSchema: Schema =
       "ts", TimestampType
       "tt", TimestampType
       "b", BoolType
-      "c", BoolType ]
+      "c", BoolType
+      // Phase 277 — the exact decimal, which no typed kernel carries: every node over it is boxed.
+      "m", DecimalType
+      "n", DecimalType ]
 
 let private typedEnv: Map<string, Cell> =
     Map.ofList [ "p", Int 7; "q", Str "ab"; "pf", Float 2.5; "pn", Null ]
@@ -2861,6 +2864,7 @@ let private anyCell (rng: System.Random) : Cell =
     | 8 -> Timestamp [ "2024-01-05T10:00:00Z"; "2024-01-05T09:59:59Z" ].[rng.Next 2]
     | 9 -> Bool(rng.Next 2 = 0)
     | 10 -> Int 0
+    | 11 when rng.Next 2 = 0 -> Decimal [ "0"; "1.5"; "-0.25"; "12"; "0.1" ].[rng.Next 5]
     | _ -> Str "ab"
 
 /// A cell conforming to a column type.
@@ -2883,6 +2887,7 @@ let private conformingCell (rng: System.Random) (ty: ColumnType) : Cell =
     | DateType -> Date [ "2024-01-05"; "2024-02-29"; "1999-12-31" ].[rng.Next 3]
     | TimestampType -> Timestamp [ "2024-01-05T10:00:00Z"; "2024-01-05T09:59:59Z" ].[rng.Next 2]
     | BoolType -> Bool(rng.Next 2 = 0)
+    | DecimalType -> Decimal [ "0"; "1.5"; "-0.25"; "12"; "0.1"; "-3"; "100.005" ].[rng.Next 7]
 
 /// A row over `typedSchema`: mostly conforming cells, some nulls, and now and then a cell that
 /// disagrees with its column — the case a typed kernel must hand to the reference arm.
@@ -2940,7 +2945,13 @@ let private allFns: ScalarFn list =
       IndexOf ]
 
 let private allTypes: ColumnType list =
-    [ IntType; FloatType; StringType; DateType; TimestampType; BoolType ]
+    [ IntType
+      FloatType
+      StringType
+      DateType
+      TimestampType
+      BoolType
+      DecimalType ]
 
 /// A generated expression of bounded depth. Binary nodes draw their operands from one family two
 /// times in three, so the typed kernels are reached often; the rest of the draws mix families and
@@ -2960,7 +2971,7 @@ let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
     else
         let sub () = genExpr rng (depth - 1)
 
-        match rng.Next 14 with
+        match rng.Next 16 with
         | 0
         | 1
         | 2
@@ -2977,7 +2988,7 @@ let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
                     | Sub
                     | Mul
                     | Mod
-                    | Div -> pick rng [ IntType; IntType; FloatType ]
+                    | Div -> pick rng [ IntType; IntType; FloatType; DecimalType ]
                     | Eq
                     | Ne
                     | Lt
@@ -2995,6 +3006,7 @@ let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
                     | 0 -> sub ()
                     | 1 -> Lit(conformingCell rng family)
                     | 2 when family = IntType -> familyCol FloatType
+                    | 3 when family = DecimalType -> familyCol IntType
                     | _ -> familyCol family
 
                 Binary(op, operand (), operand ())
@@ -3006,7 +3018,33 @@ let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
         | 10 -> ApplyFn(pick rng allFns, List.init (rng.Next 4) (fun _ -> sub ()))
         | 11 -> InList(sub (), List.init (rng.Next 4) (fun _ -> sub ()))
         | 12 -> IsNull(sub ())
-        | _ -> InParam(sub (), pick rng [ "p"; "unbound" ])
+        | 13 -> InParam(sub (), pick rng [ "p"; "unbound" ])
+        // Phase 277 — the two rounding nodes, at a literal scale, an out-of-range one, and a
+        // param scale bound to an int and to a string.
+        | _ ->
+            let rounding =
+                { Scale = pick rng [ Slot.Lit 0; Slot.Lit 2; Slot.Lit 1001; Slot.Param "p"; Slot.Param "q" ]
+                  Mode =
+                    pick
+                        rng
+                        [ RoundingMode.HalfEven
+                          RoundingMode.HalfUp
+                          RoundingMode.HalfDown
+                          RoundingMode.Up
+                          RoundingMode.Down
+                          RoundingMode.Ceiling
+                          RoundingMode.Floor ] }
+
+            let operand () =
+                if rng.Next 2 = 0 then
+                    sub ()
+                else
+                    familyCol (pick rng [ DecimalType; IntType; FloatType ])
+
+            if rng.Next 2 = 0 then
+                Quotient(operand (), operand (), rounding)
+            else
+                Rounded(operand (), rounding)
 
 /// Two evaluation outcomes agree when both are the same error, or both are cells with one token
 /// (`NaN` is not equal to itself structurally, and is one token).

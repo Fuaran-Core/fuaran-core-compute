@@ -79,7 +79,8 @@ module internal Vec =
         | StringType
         | IntType
         | FloatType
-        | BoolType -> Str s
+        | BoolType
+        | DecimalType -> Str s
 
     /// The cell at physical row `p` — boxed on demand from the typed carrier, or read as it is from
     /// the boxed one.
@@ -165,6 +166,9 @@ module internal Vec =
                 i <- i + 1
 
             if ok then Bools(vals, mask) else boxed ()
+        // A decimal column has no typed carrier here (Phase 277): it is packed boxed, and every kernel
+        // over it reads cells through the reference arm. Its typed vector is Phase 280's.
+        | DecimalType -> boxed ()
         | StringType
         | DateType
         | TimestampType ->

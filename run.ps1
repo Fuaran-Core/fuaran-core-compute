@@ -5,7 +5,7 @@
 #   pwsh ./run.ps1                 full pass
 #   pwsh ./run.ps1 -SkipFormat     skip the Fantomas pass
 #   pwsh ./run.ps1 -SkipBuild      skip the build (implies a prior build)
-#   pwsh ./run.ps1 -SkipTests      skip the suite and the facade proof
+#   pwsh ./run.ps1 -SkipTests      skip the suite
 #   pwsh ./run.ps1 -Proofs         also run the F* proof leg once (installs the pinned prover)
 #Requires -Version 7.0
 [CmdletBinding()]
@@ -41,10 +41,6 @@ if (-not $SkipBuild) {
 
 if (-not $SkipTests) {
     dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-    # The dataframe facade's conformance report (see ./verify.ps1 for what it certifies).
-    dotnet run --project tests/Fuaran.Core.DataFrame.CSharp.Proof --no-build
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

@@ -3,7 +3,7 @@
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
 #   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
-# class since v0.30.0: first snapshot
+# class since v0.34.0: breaking
 doc	columnOp	sha256:6e529d2f6ec7e4c4412c5b2374b4065e2bff8d9b62b4ef6a5850a7ef259fd3ad	{"$type":"setCell","col":"s","row":1,"value":{"$type":"Int","v":1}}
 doc	columnOp / AggFn.Count	sha256:fe7dac1324aae87a94a345f59a28b3a68787e1fc2c3a2bc0533b4e7f9a2a25c6	{"$type":"applyTransform","pipeline":[{"$type":"groupBy","aggs":[{"fn":"count","name":"s","of":"s"}],"keys":["s"]}]}
 doc	columnOp / AggFn.CountDistinct	sha256:9a12cd85236b9c714e44225aaff2dd81c42a71b900c212f6608847945342a46c	{"$type":"applyTransform","pipeline":[{"$type":"groupBy","aggs":[{"fn":"countDistinct","name":"s","of":"s"}],"keys":["s"]}]}
@@ -33,6 +33,7 @@ doc	columnOp / BinOp.StartsWith	sha256:a0e645a9c9093725986d5d7c05b9c4effa357ecb5
 doc	columnOp / BinOp.Sub	sha256:8553dafc555cf82d0278c8625093992a5b1a2e903a81cb245837456aba2cdf52	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"binary","left":{"$type":"col","name":"s"},"op":"sub","right":{"$type":"col","name":"s"}}}]}
 doc	columnOp / Cell.Bool	sha256:b16bdeb9bb8213a7d2ba8ab6c984a01541744ead88bb4d64b1ab75ef102d569b	{"$type":"setCell","col":"s","row":1,"value":{"$type":"Bool","v":true}}
 doc	columnOp / Cell.Date	sha256:08542bb754e7bd94722ca461b9a8e45eca4093322a97cea5e020b840082b6b79	{"$type":"setCell","col":"s","row":1,"value":{"$type":"Date","v":"s"}}
+doc	columnOp / Cell.Decimal	sha256:15b9644c9660bc3098376a0e68604495d86a264dc3364eca6bde4efa89c03999	{"$type":"setCell","col":"s","row":1,"value":{"$type":"Decimal","v":"s"}}
 doc	columnOp / Cell.Float	sha256:585d5fa97efe6d67f456d60e07a3e2a4a867b984a9fd090a7efe71a7566424f0	{"$type":"setCell","col":"s","row":1,"value":{"$type":"Float","v":1.5}}
 doc	columnOp / Cell.Int	sha256:6e529d2f6ec7e4c4412c5b2374b4065e2bff8d9b62b4ef6a5850a7ef259fd3ad	{"$type":"setCell","col":"s","row":1,"value":{"$type":"Int","v":1}}
 doc	columnOp / Cell.Null	sha256:0b14e4bbc74b79ad6e57707271888c56406dacf37b93351f37cc996c66a8a109	{"$type":"setCell","col":"s","row":1,"value":{"$type":"Null"}}
@@ -51,6 +52,8 @@ doc	columnOp / ColExpr.Lit	sha256:dc3843a3783fbada278b33322da0fc4d81f0e9b5eb171b
 doc	columnOp / ColExpr.Not	sha256:641124b9c7935a7b089569f69086abb6a0a4439db9918bbe5cc3bb27ac53393d	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"not","expr":{"$type":"col","name":"s"}}}]}
 doc	columnOp / ColExpr.Now	sha256:3f66e15d4139f80ea86a793b21f12c9a85d0ca1611e7189a37b7c66af687f4d6	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"now","grain":"date"}}]}
 doc	columnOp / ColExpr.Param	sha256:773e6755326b0dd3bc8c2b6d52cb9322c32aa3558b3ee17c35028a88544665b3	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"param","name":"s"}}]}
+doc	columnOp / ColExpr.Quotient	sha256:c50e35aaeb2e973e0d3515445f1796f7b941a8bad0d67eb2e786aa7dec63008b	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]}
+doc	columnOp / ColExpr.Rounded	sha256:903cc45b51c0aa5853dcdcb11622d0d68d5d05b12fcbfb6ead57a9b27dda10a5	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"rounded","expr":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]}
 doc	columnOp / ColumnOp.AppendRows	sha256:d33db1bef9e8fd3899d7b8c574014e3d2813da76fc07ae79e3f4221483ecbdb4	{"$type":"appendRows","rows":[[{"col":"s","value":{"$type":"Int","v":1}}]]}
 doc	columnOp / ColumnOp.ApplyTransform	sha256:60fee9f502170831d8672de32c28779e7676c591db6bfb432939dcb6ddabface	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"col","name":"s"}}]}
 doc	columnOp / ColumnOp.InsertColumn	sha256:f1be13eac3782110decbf1cffe4fe29ca4316620908794928ae2e15b4f34e175	{"$type":"insertColumn","column":{"cells":[{"$type":"Int","v":1}],"name":"s","type":"int"},"index":1}
@@ -59,6 +62,7 @@ doc	columnOp / ColumnOp.SetCell	sha256:6e529d2f6ec7e4c4412c5b2374b4065e2bff8d9b6
 doc	columnOp / ColumnOp.SetColumn	sha256:316ae9f217bffc546e9726879ceaa18d2273c3fcce3deeb17ef1acdad7c12aa9	{"$type":"setColumn","column":{"cells":[{"$type":"Int","v":1}],"name":"s","type":"int"}}
 doc	columnOp / ColumnType.BoolType	sha256:ca6e2b67c18679af19c66c7af6d75f4bea630d75c0383f4b111db92ca92510e2	{"$type":"setColumn","column":{"cells":[{"$type":"Int","v":1}],"name":"s","type":"bool"}}
 doc	columnOp / ColumnType.DateType	sha256:6a38b8a5260472521fff693f0dbd0d6a55fa3d26611e8aaf9bc47a22213b376c	{"$type":"setColumn","column":{"cells":[{"$type":"Int","v":1}],"name":"s","type":"date"}}
+doc	columnOp / ColumnType.DecimalType	sha256:2ee57c786ab0651dcb55a3f8c13ede5aee90e7c2f411d8b21f7172f0d3c5679a	{"$type":"setColumn","column":{"cells":[{"$type":"Int","v":1}],"name":"s","type":"decimal"}}
 doc	columnOp / ColumnType.FloatType	sha256:b82793af6a85393ad3118e58f7b7ba8e4a455fa2fe84dfae8ee27657d7468931	{"$type":"setColumn","column":{"cells":[{"$type":"Int","v":1}],"name":"s","type":"float"}}
 doc	columnOp / ColumnType.IntType	sha256:316ae9f217bffc546e9726879ceaa18d2273c3fcce3deeb17ef1acdad7c12aa9	{"$type":"setColumn","column":{"cells":[{"$type":"Int","v":1}],"name":"s","type":"int"}}
 doc	columnOp / ColumnType.StringType	sha256:d16252c17debb557def2f7618b4d3957998de8179b4f6c6dd5813c29d7fb8200	{"$type":"setColumn","column":{"cells":[{"$type":"Int","v":1}],"name":"s","type":"string"}}
@@ -73,6 +77,13 @@ doc	columnOp / JoinKind.Right	sha256:2b99587dfd887be92cb17f982a43a35954fdded76aa
 doc	columnOp / JoinKind.Semi	sha256:783bdd953c1d897a7d94ff5538f27048b2edc75131900627dcfc9ffc0e194ae4	{"$type":"applyTransform","pipeline":[{"$type":"join","how":"semi","on":[{"a":"s","b":"s"}],"source":{"columns":{"s":{"validity":[true],"values":[1]}},"schema":[{"name":"s","type":"int"}]}}]}
 doc	columnOp / NowGrain.Date	sha256:3f66e15d4139f80ea86a793b21f12c9a85d0ca1611e7189a37b7c66af687f4d6	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"now","grain":"date"}}]}
 doc	columnOp / NowGrain.Timestamp	sha256:103e877c8699187b57eb1fd4b8f5219aa5ccfd845fe12f2bdb7af39a823da219	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"now","grain":"timestamp"}}]}
+doc	columnOp / RoundingMode.Ceiling	sha256:7a67aef627bf46bc10ce50932700e194d8c62647fc0576d4f29ae840e087a2b8	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"ceiling","scale":1}}}]}
+doc	columnOp / RoundingMode.Down	sha256:5ada8a6a5b2cf7afe21590cb967a722352bab8c04513ec5f79a60ab541c02da4	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"down","scale":1}}}]}
+doc	columnOp / RoundingMode.Floor	sha256:db478e3cf8b239b65195c35cbebaf5e0b95af8fcb58a9c1e2fa96a393b5b3f1e	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"floor","scale":1}}}]}
+doc	columnOp / RoundingMode.HalfDown	sha256:01177c7d485af233fe6b79f3c638a4372081143ca2aef92c53060c950c8680db	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-down","scale":1}}}]}
+doc	columnOp / RoundingMode.HalfEven	sha256:c50e35aaeb2e973e0d3515445f1796f7b941a8bad0d67eb2e786aa7dec63008b	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]}
+doc	columnOp / RoundingMode.HalfUp	sha256:5ce2b5042e0012dd02800946df47e36d0c3ae16ed46c56092a8c8431898d1303	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-up","scale":1}}}]}
+doc	columnOp / RoundingMode.Up	sha256:bf97f5416856d0af9e1c06de36b6a104d4c6cfd60facdfa4e59a99ab8a426135	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"up","scale":1}}}]}
 doc	columnOp / ScalarFn.Abs	sha256:80915e4e5942d89c9de0461e335d9e0e476f44c151dc6c7e1d0ea1148a510989	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"abs"}}]}
 doc	columnOp / ScalarFn.Ceil	sha256:48e88eb0f4d3e0b4e9e9f0a10591ca93a5e3497a39a66faa3421f389df1711eb	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"ceil"}}]}
 doc	columnOp / ScalarFn.Concat	sha256:1e0631dd8ec71e766d612d2f7848e34be13462ff2a463d24f3134a3b6920c9d1	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"concat"}}]}
@@ -90,8 +101,8 @@ doc	columnOp / ScalarFn.Sqrt	sha256:44b8324029e042735cc7348dfb58030bb98b1a4c193d
 doc	columnOp / ScalarFn.Substr	sha256:3edbbbd380c95d55215e502a3681d718f7cc27919593fc42980d21075db4af1e	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"substr"}}]}
 doc	columnOp / ScalarFn.Trim	sha256:a3e6f8443658d01b0e1b2bcf65b592e62afa377a02e051096e80ff75666174d0	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"trim"}}]}
 doc	columnOp / ScalarFn.Upper	sha256:36108e4ae92d99162ff2d14e19c4b2717d2f20ddcd8507f3d26b10d16520bcab	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"upper"}}]}
-doc	columnOp / Slot<Int32>.Lit	sha256:f8f14e5fee66b8e4f8ed84fd2d00a0f8625a108e5b9f2814c340b5dbcc781d84	{"$type":"applyTransform","pipeline":[{"$type":"limit","n":1,"offset":1}]}
-doc	columnOp / Slot<Int32>.Param	sha256:098f77da87537cbd16cb7b0f6148e3033a6e38f0902cbf8acc7ab807060c1420	{"$type":"applyTransform","pipeline":[{"$type":"limit","n":{"$param":"s"},"offset":{"$param":"s"}}]}
+doc	columnOp / Slot<Int32>.Lit	sha256:c50e35aaeb2e973e0d3515445f1796f7b941a8bad0d67eb2e786aa7dec63008b	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]}
+doc	columnOp / Slot<Int32>.Param	sha256:b66e194d4265f0f58aeb3d7c040b38d49d87427df593598748117b0e3b129a2d	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":{"$param":"s"}}}}]}
 doc	columnOp / Slot<String>.Lit	sha256:3581dca81161b353bda34ecde4cbef8eb5c1f2643c499bd8846bc7f3b97d5ddc	{"$type":"applyTransform","pipeline":[{"$type":"sort","by":[{"column":"s","dir":"asc"}]}]}
 doc	columnOp / Slot<String>.Param	sha256:148fef10b3f2b05000bcb285cedfd64230bbd3f5ba5db90b7c761e92edccddfd	{"$type":"applyTransform","pipeline":[{"$type":"sort","by":[{"column":{"$param":"s"},"dir":"asc"}]}]}
 doc	columnOp / SortDir.Asc	sha256:6e3668440593906a91c42a78da4637db3eeae9a40461d516f4b67768c1f34104	{"$type":"applyTransform","pipeline":[{"$type":"window","as":"s","fn":"rowNumber","of":"s","orderBy":[{"column":"s","dir":"asc"}],"partitionBy":["s"]}]}

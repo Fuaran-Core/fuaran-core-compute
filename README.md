@@ -6,7 +6,7 @@ evaluator whose semantics are pinned for cross-host parity, a **certified increm
 **columnar op-stream** — table edits as an append-only, hash-chained, replayable, tamper-evident
 stream.
 
-FSharp.Core-only and Fable-clean (the C# facade aside). Apache-2.0.
+FSharp.Core-only and Fable-clean. Apache-2.0.
 
 These packages shipped from the [Fuaran.Core](https://github.com/Fuaran-Core/fuaran-core) repository
 through `0.32.0` and are produced here from `0.33.0` on, **under the same package ids and the same
@@ -20,10 +20,8 @@ namespaces** — a consumer raises a version and changes nothing else. Why they 
 | **`Fuaran.Core.DataFrame`** | the declarative-compute layer: a serializable `Transform` / `ColExpr` algebra (the verb set below), a pure reference evaluator with pinned null, coercion, ordering and float semantics (the cross-host parity contract), a canonical wire codec, the change-relevance `evalFrom`, the typed row delta (`TableDelta`, `Delta.diff`, an associative composition) and the incremental evaluator (`Incremental.plan` / `prime` / `refresh`) | `Fuaran.Core.Column`, `Fuaran.Core.Wire` |
 | **`Fuaran.Core.Column.Ops`** | the columnar op algebra: a `ColumnOp` union (`SetCell` / `SetColumn` / `InsertColumn` / `RemoveColumn` / `AppendRows` / `ApplyTransform`) with a total `apply` / `canApply`, a partial `invert` (undo/redo), a structural `Diff`, a wire codec and a `StreamWitness` — so table edits ride `Fuaran.Core.OpStream` — plus `deltaOf` and `changedColumns`, the bridges into incremental evaluation | `DataFrame`, `Fuaran.Core.OpStream` |
 | **`Fuaran.Core.DataFrame.Conformance`** | the law families over the two packages above, beside the substrate's law kit they extend: `transformLaws` (host-evaluator parity against the reference), `aggregateParityLaws`, `columnarOpLaws` / `columnarOpLawsWith`, `incrementalLaws` / `incrementalLawsWith`, `IncrementalDelta.laws` / `lawsWith`, `paramLaws`, `schemaWalkLaws`, `nowLaws`, `slotParamLaws` — in module `DataFrameConformance` | `Fuaran.Core.Conformance` |
-| **`Fuaran.Core.DataFrame.CSharp`** | the dataframe half of the C#-shaped facade (`Expr`, `Step`, `Pipeline`, the slot types and the dataframe vocabularies) in the `Fuaran.Core.CSharp` namespace: construction by factory method, reading by `Match` / `Switch`, no F# option, list, function or union in a public member outside the declared bridge. .NET-only, **not** part of the Fable-clean set | `Fuaran.Core.CSharp` |
 
-Dependency order: `DataFrame` → `Column.Ops` → `DataFrame.Conformance`; `DataFrame.CSharp` over
-`DataFrame`. **This table is a derived roster, not a hand-kept list**: the suite holds its rows equal
+Dependency order: `DataFrame` → `Column.Ops` → `DataFrame.Conformance`. **This table is a derived roster, not a hand-kept list**: the suite holds its rows equal
 to the packable projects under `src/`.
 
 ## The verb set
@@ -49,6 +47,7 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `Binary` | `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`, `And`, `Or`, `Contains`, `StartsWith`, `EndsWith` |
 | `Not`, `Coalesce`, `Case`, `Cast`, `IsNull`, `InList`, `InParam` | logic, null handling, branching, typing, membership |
 | `ApplyFn` | `Abs`, `Round`, `Floor`, `Ceil`, `Sqrt`, `Least`, `Greatest`, `Length`, `Lower`, `Upper`, `Substr`, `Trim`, `Replace`, `Concat`, `IndexOf`, `DatePart`, `DateDiffDays` |
+| `Quotient`, `Rounded` | an exact (decimal) quotient, and an exact number brought to a stated `Rounding` — a scale slot and a `RoundingMode` |
 
 ## Adoption, in five lines
 
@@ -148,13 +147,12 @@ pipeline shape — for a row-preserving node like `lines`, measure first
 
 ## How it sits on the substrate
 
-The compute strand stands on five `Fuaran.Core` packages and on nothing above them:
+The compute strand stands on four `Fuaran.Core` packages and on nothing above them:
 `Fuaran.Core.Column` (the typed, null-aware columnar `Table` and its canonical codec) and
 `Fuaran.Core.Wire` (the canonical JSON) are what the dataframe is built over;
 `Fuaran.Core.OpStream` records columnar edits; `Fuaran.Core.Conformance` is the law kit the
-dataframe families extend; `Fuaran.Core.CSharp` is the facade the C# half is built over. All five are
-taken **by package**, at one pin (`FuaranCoreVersion` in [`Directory.Packages.props`](Directory.Packages.props)),
-and the `Compute boundary` tests refuse a sixth — or any reference that is not a public package.
+dataframe families extend. All four are taken **by package**, at one pin (`FuaranCoreVersion` in [`Directory.Packages.props`](Directory.Packages.props)),
+and the `Compute boundary` tests refuse a fifth — or any reference that is not a public package.
 
 ## The law kit
 
@@ -173,9 +171,9 @@ Requirements: the .NET SDK pinned in [`global.json`](global.json).
 
 ```powershell
 ./run.ps1            # restore tools, format, sweep, build, test
-./verify.ps1         # format-check + publication sweep + build + tests + facade proof (the gate)
+./verify.ps1         # format-check + publication sweep + build + tests (the gate)
 ./verify.ps1 -Proofs # ... and the F* proof leg (downloads the pinned prover once)
-./pack.ps1           # the four packages into a local folder feed
+./pack.ps1           # the three packages into a local folder feed
 ```
 
 The substrate packages restore from nuget.org; `nuget.config` also names a local folder feed so a
@@ -220,7 +218,7 @@ under `proofs/kit/` are adopted by copy from the Fuaran.Core repository and decl
 ## Releases
 
 A `v*` tag runs [`.github/workflows/publish-packages.yml`](.github/workflows/publish-packages.yml),
-which packs the four packages and pushes them to nuget.org under **Trusted Publishing** — an OIDC
+which packs the three packages and pushes them to nuget.org under **Trusted Publishing** — an OIDC
 exchange, no API key. **The nuget.org trusted-publishing policy for THIS repository
 (`Fuaran-Core/fuaran-core-compute`, workflow `publish-packages.yml`) must be registered by the package
 owner before the first tag**; until it is, the run fails at the `NuGet/login` step. That failure

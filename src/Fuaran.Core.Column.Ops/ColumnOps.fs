@@ -277,6 +277,8 @@ module ColumnOps =
         | Str s -> Canon.typed "Str" [ "v", JStr s ]
         | Date s -> Canon.typed "Date" [ "v", JStr s ]
         | Timestamp s -> Canon.typed "Timestamp" [ "v", JStr s ]
+        // Phase 277: the canonical decimal text as a JSON string (Core `DECISIONS.md` D72 K5).
+        | Decimal s -> Canon.typed "Decimal" [ "v", JStr s ]
 
     let private field (k: string) (el: JVal) : Result<JVal, string> =
         match el with
@@ -333,6 +335,17 @@ module ColumnOps =
             | "Str" -> v () |> Result.bind strOf |> Result.map Str
             | "Date" -> v () |> Result.bind strOf |> Result.map Date
             | "Timestamp" -> v () |> Result.bind strOf |> Result.map Timestamp
+            // Decimal text, canonicalised on read; an exact integer token is read too, and a
+            // fractional number token is refused, as the column codec refuses it (D72 K5).
+            | "Decimal" ->
+                v ()
+                |> Result.bind (function
+                    | JStr s ->
+                        match Cell.decimal s with
+                        | Some c -> Ok c
+                        | None -> Error("not decimal text: " + s)
+                    | JInt i -> Ok(Decimal(string i))
+                    | _ -> Error "expected decimal text")
             | other -> Error("unknown cell kind: " + other))
 
     let private columnToJson (c: Column) : JVal =

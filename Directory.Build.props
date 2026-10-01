@@ -29,7 +29,7 @@
        `fable/` in the package, so a Fable-compiled consumer compiles the package from source —
        alongside the `lib/` DLL for .NET. The standard dual-pack convention (Feliz / Thoth). The
        Fuaran.Core packages these depend on ship their own `fable/` source, so Fable resolves the
-       whole graph transitively. The C# facade is .NET-only and is not covered by this rule. -->
+       whole graph transitively. -->
   <ItemGroup Condition="'$(IsPackable)' == 'true' And '$(MSBuildProjectExtension)' == '.fsproj'">
     <Content Include="$(MSBuildProjectFile)" PackagePath="fable\" />
     <Content Include="*.fs" PackagePath="fable\" />

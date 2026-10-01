@@ -3,7 +3,7 @@
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
 #   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
-# class since v0.30.0: first snapshot
+# class since v0.34.0: breaking
 doc	pipeline	sha256:550548d3d7bf089a8a45fcb797fe094f1cc6caa13de897c823d29bfbb14072b2	[{"$type":"filter","pred":{"$type":"col","name":"s"}}]
 doc	pipeline / AggFn.Count	sha256:da304afcc9a509331438f6e1935f5d6da8b2571473b82423518c6a8819b82c8e	[{"$type":"groupBy","aggs":[{"fn":"count","name":"s","of":"s"}],"keys":["s"]}]
 doc	pipeline / AggFn.CountDistinct	sha256:b7eed063d04d14cb71106071777d52903f178c9cd174abaecf86db95baad1471	[{"$type":"groupBy","aggs":[{"fn":"countDistinct","name":"s","of":"s"}],"keys":["s"]}]
@@ -33,6 +33,7 @@ doc	pipeline / BinOp.StartsWith	sha256:b114bfc342755df510b4b0a11a02a6b5fc2b2e45c
 doc	pipeline / BinOp.Sub	sha256:9cb5f256b7f9ac53287e4357c9924f8ba6e696c8efa4804106d6306119afd814	[{"$type":"filter","pred":{"$type":"binary","left":{"$type":"col","name":"s"},"op":"sub","right":{"$type":"col","name":"s"}}}]
 doc	pipeline / Cell.Bool	sha256:860d28e72325ff8102b1fc6022889924acfba07353d51e44d1be8906b8330130	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Bool","value":true}}}]
 doc	pipeline / Cell.Date	sha256:bf194e947bf07cd8b78623c51153216767fc302254912146a3727f2270d8eb7e	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Date","value":"s"}}}]
+doc	pipeline / Cell.Decimal	sha256:01eee71f1640b7629acf6456cc7dbf548848f84df41c66ab6dbef7c770415db2	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Decimal","value":"s"}}}]
 doc	pipeline / Cell.Float	sha256:a0da6064ccb2d2cfba23ff2b04e97f97ab3ce292d17ad518dba69f0036272753	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Float","value":1.5}}}]
 doc	pipeline / Cell.Int	sha256:fb1eeb4dbad400d85359b80d02114505412746338613f7d037d3ab58cd247466	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Int","value":1}}}]
 doc	pipeline / Cell.Null	sha256:4fcb7645484b6375343e53572c12603ce813f6a4879b68469fcb5231129cc7fa	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Null"}}}]
@@ -51,8 +52,11 @@ doc	pipeline / ColExpr.Lit	sha256:fb1eeb4dbad400d85359b80d02114505412746338613f7
 doc	pipeline / ColExpr.Not	sha256:66b044dbbf745b1ae5cf974320c3e00e515001bb65940760f329216cd96666a8	[{"$type":"filter","pred":{"$type":"not","expr":{"$type":"col","name":"s"}}}]
 doc	pipeline / ColExpr.Now	sha256:827924443c9d3223699b1ebce59f96709f5f45e42895864032fe59601f70e417	[{"$type":"filter","pred":{"$type":"now","grain":"date"}}]
 doc	pipeline / ColExpr.Param	sha256:54824a81997b373d0b6d3d21497006a3f2ed3b430650fffacd39545b077fc39e	[{"$type":"filter","pred":{"$type":"param","name":"s"}}]
+doc	pipeline / ColExpr.Quotient	sha256:3b3d33b8a98f41efc7c5f363f074b5ff6d1361b8d686807e45a7ccf6dee60267	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]
+doc	pipeline / ColExpr.Rounded	sha256:3f3017ac46e68c14151fd0dbd3ee4470d6585aa886dae9ad0ec7ea8f77a572a1	[{"$type":"filter","pred":{"$type":"rounded","expr":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]
 doc	pipeline / ColumnType.BoolType	sha256:c70d4567bd4b85b79dd4f4a4006b50121b926c3cd768c476a0f0e9184061bfac	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"bool"}}]
 doc	pipeline / ColumnType.DateType	sha256:bc62ee3ecadd81e5eab64d7a9aa023c19338b51a1350ee75e2b30dc30770c1fe	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"date"}}]
+doc	pipeline / ColumnType.DecimalType	sha256:109830553d9d77dd26af1f68558fd0b8089407efb19aea658863c1266e42b330	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"decimal"}}]
 doc	pipeline / ColumnType.FloatType	sha256:09e0a7c30641315bd04c98eced3710a41bff202352da6e79186ec86f9e17ec2e	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"float"}}]
 doc	pipeline / ColumnType.IntType	sha256:1d6502b1a5723afd2cc7714c00262cb11a4f2f7e3fda04ad313590ec78e499c0	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"int"}}]
 doc	pipeline / ColumnType.StringType	sha256:32cdfb71e251b380731ff591682c4cc81daa49a044b183bb2b18948d69648bfd	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"string"}}]
@@ -67,6 +71,13 @@ doc	pipeline / JoinKind.Right	sha256:24fa7c94ce5633a921f22b3fe87db3d6825d9fb664f
 doc	pipeline / JoinKind.Semi	sha256:4bd87087b9189923844421ff5f81697bfce3050a8298d2101fee3b83e6b6e4b4	[{"$type":"join","how":"semi","on":[{"a":"s","b":"s"}],"source":{"columns":{"s":{"validity":[true],"values":[1]}},"schema":[{"name":"s","type":"int"}]}}]
 doc	pipeline / NowGrain.Date	sha256:827924443c9d3223699b1ebce59f96709f5f45e42895864032fe59601f70e417	[{"$type":"filter","pred":{"$type":"now","grain":"date"}}]
 doc	pipeline / NowGrain.Timestamp	sha256:5e519fb22f2b966a4faacc102c9a4b26085018d546819626f934453531d5763a	[{"$type":"filter","pred":{"$type":"now","grain":"timestamp"}}]
+doc	pipeline / RoundingMode.Ceiling	sha256:b4fb188f5aba463a8eab68affd50a98d68751e47ea337b46737ac6242cc517b5	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"ceiling","scale":1}}}]
+doc	pipeline / RoundingMode.Down	sha256:c4bf13346869331465bdf1ead326e84ea4e0b50de95fd3e102d921c178800e78	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"down","scale":1}}}]
+doc	pipeline / RoundingMode.Floor	sha256:33e6b3966bf11af700685099bee759c0348ef60a4f489e26c1f8c514e62ea614	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"floor","scale":1}}}]
+doc	pipeline / RoundingMode.HalfDown	sha256:4ffb19532b6c9a8cd40e1e7113847fcc48e9812dfe81fc4f167b1e1496b748d9	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-down","scale":1}}}]
+doc	pipeline / RoundingMode.HalfEven	sha256:3b3d33b8a98f41efc7c5f363f074b5ff6d1361b8d686807e45a7ccf6dee60267	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]
+doc	pipeline / RoundingMode.HalfUp	sha256:4844f292f78fd2fb692a59194e274dd63c8fe999dc8b04bb16f7c295f7fe69ba	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-up","scale":1}}}]
+doc	pipeline / RoundingMode.Up	sha256:ec983feea90e6e295fadb82f5f2e2fbb4a8b81ca50eedb1c7079c9fecd516ddb	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"up","scale":1}}}]
 doc	pipeline / ScalarFn.Abs	sha256:fa769ad8a2e781d7551401bbc93581976e3521b8af2878d39ea865be16fbbc6a	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"abs"}}]
 doc	pipeline / ScalarFn.Ceil	sha256:071cff715cef867ffe4a395825f1843cbce61bd741bad7fb9d53b8b68a1a67fc	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"ceil"}}]
 doc	pipeline / ScalarFn.Concat	sha256:e42bc2d7106ccb8bb9c5cb1ecee41877860d4d2e7dbfc1cc37027f0f41c94e15	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"concat"}}]
@@ -84,8 +95,8 @@ doc	pipeline / ScalarFn.Sqrt	sha256:3db5984976960053039811eadfdc812e592165738bcc
 doc	pipeline / ScalarFn.Substr	sha256:d1bb11b3835a641f873c58db835a31da28546f72115921582433c0b0d9cc27bc	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"substr"}}]
 doc	pipeline / ScalarFn.Trim	sha256:6b09a103adba6f73d10b678b1331a734308e269c0d4f636ac7b8532349be12f6	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"trim"}}]
 doc	pipeline / ScalarFn.Upper	sha256:22a07950b6711676cd443f413ad840bfdb4361d5f01721ca0e71358607f84c39	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"upper"}}]
-doc	pipeline / Slot<Int32>.Lit	sha256:a89acbf83d4e08390b27debe21648d33ad2001dcdda9f90a2c52d98479584630	[{"$type":"limit","n":1,"offset":1}]
-doc	pipeline / Slot<Int32>.Param	sha256:403bd29b7eda71ed801c67551e2b40f42cec610cb6df99a12ee4dabdca5ce055	[{"$type":"limit","n":{"$param":"s"},"offset":{"$param":"s"}}]
+doc	pipeline / Slot<Int32>.Lit	sha256:3b3d33b8a98f41efc7c5f363f074b5ff6d1361b8d686807e45a7ccf6dee60267	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]
+doc	pipeline / Slot<Int32>.Param	sha256:023fff388a16a328dd363ddcabef696556649ab3708e6a047c0d37d94cf0ad20	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":{"$param":"s"}}}}]
 doc	pipeline / Slot<String>.Lit	sha256:15e974c262fa119450bf35d8c663e45de6bc55c9e25effca8e2f5ab3508b09dc	[{"$type":"sort","by":[{"column":"s","dir":"asc"}]}]
 doc	pipeline / Slot<String>.Param	sha256:3ffca3a7d6b06729981b67245d8dd7742d286416aef0447f85ec8298ab2348c8	[{"$type":"sort","by":[{"column":{"$param":"s"},"dir":"asc"}]}]
 doc	pipeline / SortDir.Asc	sha256:9c797ca5218564ebedcb71032ecae025205204fb9ba8be22f6d9376004e60530	[{"$type":"window","as":"s","fn":"rowNumber","of":"s","orderBy":[{"column":"s","dir":"asc"}],"partitionBy":["s"]}]

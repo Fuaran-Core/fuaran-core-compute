@@ -479,9 +479,18 @@ module DataFrameConformance =
 
         let col name cells : Column = Column.create name IntType cells
 
+        // Phase 277 — a decimal column beside the three ints, derived from `b` (so it moves with
+        // `b` and with an append, and costs the draw nothing): `b`'s digits with `.5` appended.
+        let decimalOf (cells: Cell list) : Cell list =
+            cells
+            |> List.map (fun c ->
+                match c with
+                | Int v -> Cell.decimal (string v + ".5") |> Option.defaultValue Null
+                | _ -> Null)
+
         let mkTable (a: Cell list) (b: Cell list) (c: Cell list) : Table =
-            { Schema = [ "a", IntType; "b", IntType; "c", IntType ]
-              Columns = [ col "a" a; col "b" b; col "c" c ] }
+            { Schema = [ "a", IntType; "b", IntType; "c", IntType; "d", DecimalType ]
+              Columns = [ col "a" a; col "b" b; col "c" c; Column.create "d" DecimalType (decimalOf b) ] }
 
         let pipelineOf k : Transform list =
             match k with
@@ -497,7 +506,10 @@ module DataFrameConformance =
             | 4 ->
                 [ GroupBy([ "a" ], [ { Name = "s"; Fn = Sum; Of = "b" }; { Name = "n"; Fn = Count; Of = "c" } ])
                   Filter(Binary(Gt, Col "n", Lit(Int 0))) ]
-            | _ -> [ Transform.sortBy [ "b", Asc ]; Project [ "a", "a" ] ] // drops b, c
+            | 5 -> [ Transform.sortBy [ "b", Asc ]; Project [ "a", "a" ] ] // drops b, c
+            // Phase 277 — exact decimal arithmetic and an exact decimal sum through the seam.
+            | 6 -> [ Derive("e", Binary(Mul, Col "d", Lit(Cell.decimal "1.5" |> Option.defaultValue Null))) ]
+            | _ -> [ GroupBy([ "a" ], [ { Name = "s"; Fn = Sum; Of = "d" } ]) ]
 
         for i in 0 .. iterations - 1 do
             let nRows, r1 = ConfRng.intBelow 4 rng
@@ -514,7 +526,7 @@ module DataFrameConformance =
             let c0 = [ for _ in 1..rows -> draw () ]
             let oldSrc = mkTable a0 b0 c0
 
-            let pk, r2 = ConfRng.intBelow 6 r
+            let pk, r2 = ConfRng.intBelow 8 r
             r <- r2
             let pipeline = pipelineOf pk
 
@@ -1401,9 +1413,16 @@ module DataFrameConformance =
         let mutable reorder = 0
         let mutable declined = 0
         let mutable refused = 0
+        // Phase 277 — the iterations whose pipeline reads the decimal column over a table holding a
+        // present decimal: the exact arithmetic's typing and verdict are held only where reached.
+        let mutable decimals = 0
 
         let schema: Schema =
-            [ "i", IntType; "f", FloatType; "s", StringType; "b", BoolType ]
+            [ "i", IntType
+              "f", FloatType
+              "s", StringType
+              "b", BoolType
+              "m", DecimalType ]
 
         let mkTable (rows: int) (draw: unit -> int) : Table =
             let cellI () =
@@ -1428,6 +1447,19 @@ module DataFrameConformance =
                 | 1 -> Bool true
                 | _ -> Bool false
 
+            // A decimal in hundredths, from -0.4 to 0.59: exact values a float holds only nearly.
+            let cellM () =
+                let v = draw ()
+
+                if v % 6 = 0 then
+                    Null
+                else
+                    let c = v - 40
+                    let a = abs c
+
+                    Cell.decimal ((if c < 0 then "-" else "") + "0." + (string a).PadLeft(2, '0'))
+                    |> Option.defaultValue Null
+
             let col name ty (cell: unit -> Cell) =
                 Column.create name ty [ for _ in 1..rows -> cell () ]
 
@@ -1436,7 +1468,8 @@ module DataFrameConformance =
                 [ col "i" IntType cellI
                   col "f" FloatType cellF
                   col "s" StringType cellS
-                  col "b" BoolType cellB ] }
+                  col "b" BoolType cellB
+                  col "m" DecimalType cellM ] }
 
         let sortI = Transform.sortBy [ "i", Asc ]
         let sortF = Transform.sortBy [ "f", Desc ]
@@ -1451,6 +1484,14 @@ module DataFrameConformance =
         let strDerive = Derive("u", ApplyFn(Upper, [ Col "s" ]))
         // An integer derive that can overflow: total by data, declined by verdict.
         let intDerive = Derive("d", Binary(Add, Col "i", Col "i"))
+        // Phase 277 — exact decimal arithmetic, which the verdict admits; a decimal filter; and a
+        // decimal `Div`, which refuses on every row with a present decimal.
+        let decDerive = Derive("t", Binary(Sub, Binary(Mul, Col "m", Col "i"), Col "m"))
+
+        let decPred =
+            Filter(Binary(Ge, Col "m", Lit(Cell.decimal "0.1" |> Option.defaultValue Null)))
+
+        let decDiv = Derive("q", Binary(Div, Col "m", Lit(Int 3)))
 
         let pipelineOf (k: int) (n: int) : Transform list =
             match k with
@@ -1469,6 +1510,37 @@ module DataFrameConformance =
             | 8 -> [ strDerive; Filter(Binary(Eq, Col "u", Lit(Str "X"))) ]
             // a mix: everything at once, over a barrier
             | 9 -> [ sortI; totalPred; strDerive; totalPred2; Distinct; Project [ "s", "s" ] ]
+            // decimal: a reorder ahead of a sort and a fused top-n over the exact order; a decimal
+            // derive (total, but its type is not one the reorder admits); a refused decimal `Div`
+            | 11 -> [ Transform.sortBy [ "m", Desc ]; decPred; Transform.limit n 0 ]
+            | 12 -> [ decDerive; totalPred; Project [ "t", "t"; "i", "i" ] ]
+            | 13 -> [ decPred; decDiv ]
+            | 14 ->
+                [ GroupBy([ "b" ], [ { Name = "s"; Fn = Sum; Of = "m" } ])
+                  Transform.sortBy [ "s", Asc ] ]
+            // the rounding nodes at a literal scale, which the verdict admits: a quotient by an int
+            // column that carries zeros and nulls, and a decimal brought to one place
+            | 15 ->
+                [ Derive(
+                      "q",
+                      Quotient(
+                          Col "m",
+                          Col "i",
+                          { Scale = Slot.Lit 2
+                            Mode = RoundingMode.HalfEven }
+                      )
+                  )
+                  totalPred ]
+            | 16 ->
+                [ Derive(
+                      "r",
+                      Rounded(
+                          Col "m",
+                          { Scale = Slot.Lit 1
+                            Mode = RoundingMode.Floor }
+                      )
+                  )
+                  decPred ]
             | _ ->
                 [ intDerive
                   partialPred
@@ -1486,11 +1558,23 @@ module DataFrameConformance =
                 v
 
             let table = mkTable nRows draw
-            let pk, r2 = ConfRng.intBelow 11 r
+            let pk, r2 = ConfRng.intBelow 17 r
             let n, r3 = ConfRng.intBelow 4 r2
             r <- r3
             let pipeline = pipelineOf pk n
             rng <- r
+
+            let hasDecimal =
+                Table.tryColumn "m" table
+                |> Option.exists (fun c ->
+                    c.Cells
+                    |> List.exists (fun cell ->
+                        match cell with
+                        | Decimal _ -> true
+                        | _ -> false))
+
+            if pk >= 11 && hasDecimal then
+                decimals <- decimals + 1
 
             let attempt (f: unit -> 'a) : Result<'a, string> =
                 try
@@ -1590,4 +1674,5 @@ module DataFrameConformance =
           SampleAdequacy.reached "Conformance.plannerLaws" "pruning" seed [ "pruning", pruning ]
           SampleAdequacy.reached "Conformance.plannerLaws" "reorder" seed [ "reorder", reorder ]
           SampleAdequacy.reached "Conformance.plannerLaws" "declined reorder" seed [ "declined", declined ]
-          SampleAdequacy.reached "Conformance.plannerLaws" "refused pipeline" seed [ "refused", refused ] ]
+          SampleAdequacy.reached "Conformance.plannerLaws" "refused pipeline" seed [ "refused", refused ]
+          SampleAdequacy.reached "Conformance.plannerLaws" "decimal sample" seed [ "decimal", decimals ] ]
