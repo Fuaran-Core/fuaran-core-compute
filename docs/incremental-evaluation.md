@@ -1525,6 +1525,13 @@ than this phase: `Delta.diff` decided "changed" by the cell token, so `0.0` edit
 decides by `Delta.sameContent` — value and sign for a float, the text for a decimal, NaN one value —
 and the law compares raw bits.
 
+**The fixed cost of a small tick.** With the evaluator this fast, the 1,000-row tick was the one
+case CI found over the bound: the diff keyed the fresh table row by row on every tick. A reference
+witness now declares the columns its key reads, and a diff whose key columns are the same cell lists
+in both tables takes every row as in place without keying one, comparing each changed column by
+walking the two lists in step. The 1,000-row diff fell from 121-324 us and 72 KB to 27-54 us and
+3.7 KB, and that tick from 1.4-2.0x to 0.7-0.9x of the full evaluation.
+
 The figures, .NET and node, and the clock leg's full tables are in
 `benchmarks/results/2026-10-01-snapdragon-x1e80100-phase-323.md`.
 

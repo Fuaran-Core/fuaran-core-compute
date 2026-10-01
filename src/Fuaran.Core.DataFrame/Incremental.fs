@@ -1966,17 +1966,29 @@ module Incremental =
             else
                 // The dirty groups' member slots, in member order: the walk's order is ascending in
                 // place, and the partition is the prior one.
-                let slotsOf = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+                //
+                // Built on the first aggregate that is rescanned rather than maintained (Phase 323): a
+                // refresh whose every aggregate is maintained reads no member list at all.
+                let mutable slotsOf: System.Collections.Generic.Dictionary<int, ResizeArray<int>> =
+                    null
 
-                for g in 0 .. groupCount - 1 do
-                    if dirty[g] then
-                        slotsOf[g] <- ResizeArray<int>()
+                let slotsFor (g: int) : ResizeArray<int> =
+                    if isNull slotsOf then
+                        let d = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
 
-                for s in f.Order do
-                    let g = prior.RowGroups[s]
+                        for h in 0 .. groupCount - 1 do
+                            if dirty[h] then
+                                d[h] <- ResizeArray<int>()
 
-                    if g >= 0 && dirty[g] then
-                        slotsOf[g].Add s
+                        for s in f.Order do
+                            let h = prior.RowGroups[s]
+
+                            if h >= 0 && dirty[h] then
+                                d[h].Add s
+
+                        slotsOf <- d
+
+                    slotsOf[g]
 
                 let nk = idxs.Length
 
@@ -2103,7 +2115,6 @@ module Incremental =
                     if dirty[g] then
                         recomputed <- recomputed + 1
                         recomputedAt[g] <- true
-                        let slots = slotsOf[g]
                         let vals: Cell[] = Array.zeroCreate aggArr.Length
                         let priorVals = List.toArray prior.Aggs[g]
                         let read = System.Collections.Generic.Dictionary<int, Cell[]>()
@@ -2124,7 +2135,7 @@ module Incremental =
                                     match read.TryGetValue ci with
                                     | true, cs -> cs
                                     | _ ->
-                                        let cs = cellsAtSlots f ci slots
+                                        let cs = cellsAtSlots f ci (slotsFor g)
                                         read[ci] <- cs
                                         cs
 
