@@ -941,12 +941,14 @@ module Incremental =
             | DataFrame.RCol i -> seen.Add i |> ignore
             | DataFrame.RConst _
             | DataFrame.RFail _ -> ()
-            | DataFrame.RBinary(_, a, b) ->
+            | DataFrame.RBinary(_, a, b)
+            | DataFrame.RQuotient(_, _, a, b) ->
                 go a
                 go b
             | DataFrame.RNot a
             | DataFrame.RCast(_, a)
-            | DataFrame.RIsNull a -> go a
+            | DataFrame.RIsNull a
+            | DataFrame.RRounded(_, _, a) -> go a
             | DataFrame.RCoalesce xs
             | DataFrame.RApplyFn(_, xs) -> List.iter go xs
             | DataFrame.RCase(arms, otherwise) ->

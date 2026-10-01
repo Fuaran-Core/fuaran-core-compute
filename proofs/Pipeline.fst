@@ -18,7 +18,7 @@
        are the transpose each way, so the model carries the row-major form only and a `Table`
        IS a frame here), with the well-formedness `toFrame` establishes (every row as wide as
        the schema) carried as a refinement, because it is what `List.item i row` needs;
-     - the private `evalExpr env cols row e`, every one of its thirteen arms and its four inner
+     - the private `evalExpr env cols row e`, every one of its fifteen arms and its four inner
        loops (`Coalesce`'s `go`, `Case`'s `go`, `InList`'s `go sawNull`, `ApplyFn`'s `evalArgs`),
        in the order production evaluates and with every short circuit production takes;
      - `evalFilter` and `evalDerive` (with `inferType`, `colIndex` and the replace-or-append of a
@@ -37,7 +37,8 @@
      - THE CELL PRIMITIVES (`prims`): the four operator-class primitives `evalExpr`'s `Binary`
        arm dispatches to (`arith` / `comparison` / `logical` / `stringPred`, taken as ONE function
        of the operator, which is what the arm's `match op with …` makes of them), `castCell`,
-       `applyScalar` and `compareCells`. They are the arithmetic, the coercions and the pinned
+       `applyScalar`, `compareCells`, and (Phase 277) `quotientCell` and `roundedCell`, the one
+       rounding kernel over cells. They are the arithmetic, the coercions and the pinned
        float layout, and no theorem here reads a cell they produce: `eval_expr` threads their
        outcome and nothing else. What is ASSUMED of them is only what their TYPE says — each is a
        total function of its arguments that returns a cell or a named error — and, because a
@@ -290,8 +291,6 @@ type scalar_fn =
   | Least
   | Greatest
   | IndexOf
-  (* Phase 277: `Divide(dividend, divisor, scale, rule)`. *)
-  | Divide
 
 (* F#: `BinOp`. *)
 type bin_op =
@@ -337,6 +336,20 @@ type slot (a:Type0) =
   | SlotLit   : a -> slot a
   | SlotParam : string -> slot a
 
+(* F#: `RoundingMode` (Phase 277). Prefixed because `Floor` is already a `scalar_fn` constructor
+   here, as `NowGrain`'s cases are prefixed beside `cell`'s. *)
+type rounding_mode =
+  | RoundHalfEven
+  | RoundHalfUp
+  | RoundHalfDown
+  | RoundUp
+  | RoundDown
+  | RoundCeiling
+  | RoundFloor
+
+(* F#: `Rounding` — `{ Scale; Mode }`. *)
+type rounding = { r_scale : slot int; r_mode : rounding_mode }
+
 (* F#: `Schema`. *)
 type schema = list (string & column_type)
 
@@ -349,7 +362,7 @@ type data_source =
   | Embedded : frame -> data_source
   | Ref      : string -> data_source
 
-(* F#: `ColExpr`, all thirteen cases. *)
+(* F#: `ColExpr`, all fifteen cases. *)
 type col_expr =
   | Col      : string -> col_expr
   | Lit      : cell -> col_expr
@@ -364,6 +377,8 @@ type col_expr =
   | IsNull   : col_expr -> col_expr
   | InParam  : col_expr -> string -> col_expr
   | Now      : now_grain -> col_expr
+  | Quotient : col_expr -> col_expr -> rounding -> col_expr
+  | Rounded  : col_expr -> rounding -> col_expr
 
 (* F#: `Agg` — `{ Name; Fn; Of }`. *)
 type agg = { a_name : string; a_fn : agg_fn; a_of : string }
@@ -442,7 +457,7 @@ let cost_of (f:frame) (step:transform) : Tot nat =
    ====================================================================================== *)
 
 (* THE FIRST PARAMETER. The primitives `evalExpr` calls on cells, each naming its F# source. A
-   record of functions rather than four parameters, so that the differential hands the model
+   record of functions rather than six parameters, so that the differential hands the model
    production's own in one value. *)
 noeq type prims = {
   (* `Binary`'s dispatch — `arith` / `comparison` / `logical` / `stringPred` by operator class,
@@ -454,7 +469,23 @@ noeq type prims = {
   apply_fn  : scalar_fn -> list cell -> outcome cell eval_error;
   (* `compareCells` — `InList`'s membership test reads `Some 0` / `Some _` / `None` of it. *)
   compare   : cell -> cell -> option int;
+  (* `quotientCell` (Phase 277) — the mode, the resolved scale, the two operands. *)
+  quotient  : rounding_mode -> int -> cell -> cell -> outcome cell eval_error;
+  (* `roundedCell` (Phase 277). *)
+  rounded   : rounding_mode -> int -> cell -> outcome cell eval_error;
 }
+
+(* F#: `resolveScale` (Phase 277) — a rounding's scale against the env. A literal is itself; a
+   param reads the env, unbound is `UnboundParam` and a cell that is not an int a `TypeError`
+   naming the rounding scale. The range is the primitive's check. *)
+let scale_of (env:param_env) (s:slot int) : Tot (outcome int eval_error) =
+  match s with
+  | SlotLit n -> Ok n
+  | SlotParam name ->
+    (match assoc name env with
+     | Some (Int v) -> Ok v
+     | Some _ -> Error (TypeError ("rounding scale: param '" ^ name ^ "' is not bound to an int"))
+     | None -> Error (UnboundParam name (names env)))
 
 (* A row that fits its schema: the one fact `List.item` needs. *)
 type row_of (n:nat) = r:list cell{len r = n}
@@ -515,6 +546,24 @@ let rec eval_expr (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols
     (match eval_args pr env cols row args with
      | Error err -> Error err
      | Ok vs -> pr.apply_fn fn vs)
+  (* Phase 277: the scale, then the operands left to right, then the primitive. *)
+  | Quotient a b r ->
+    (match scale_of env r.r_scale with
+     | Error err -> Error err
+     | Ok n ->
+       (match eval_expr pr env cols row a with
+        | Error err -> Error err
+        | Ok av ->
+          (match eval_expr pr env cols row b with
+           | Error err -> Error err
+           | Ok bv -> pr.quotient r.r_mode n av bv)))
+  | Rounded a r ->
+    (match scale_of env r.r_scale with
+     | Error err -> Error err
+     | Ok n ->
+       (match eval_expr pr env cols row a with
+        | Error err -> Error err
+        | Ok av -> pr.rounded r.r_mode n av))
 
 (* `Coalesce`'s `go`: the first non-null value, `Null` when every one is null. *)
 and eval_coalesce (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols)) (xs:list col_expr)
@@ -928,6 +977,8 @@ let rec expr_nodes (e:col_expr) : Tot nat (decreases e) =
   | ApplyFn _ xs -> 1 + exprs_nodes xs
   | InList x items -> 1 + expr_nodes x + exprs_nodes items
   | Case cases els -> 1 + pairs_nodes cases + expr_nodes els
+  | Quotient a b _ -> 1 + expr_nodes a + expr_nodes b
+  | Rounded a _ -> 1 + expr_nodes a
 and exprs_nodes (l:list col_expr) : Tot nat (decreases l) =
   match l with
   | [] -> 0
@@ -992,6 +1043,18 @@ let rec expr_visits (pr:prims) (env:param_env) (cols:schema) (row:row_of (len co
          | Ok Null -> 0
          | Ok sv -> in_visits pr env cols row sv items)
   | ApplyFn _ args -> 1 + args_visits pr env cols row args
+  | Quotient a b r ->
+    1 + (match scale_of env r.r_scale with
+         | Error _ -> 0
+         | Ok _ ->
+           expr_visits pr env cols row a
+           + (match eval_expr pr env cols row a with
+              | Ok _ -> expr_visits pr env cols row b
+              | Error _ -> 0))
+  | Rounded a r ->
+    1 + (match scale_of env r.r_scale with
+         | Error _ -> 0
+         | Ok _ -> expr_visits pr env cols row a)
 
 and coalesce_visits (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols)) (xs:list col_expr)
   : Tot nat (decreases xs) =
@@ -1060,6 +1123,8 @@ let rec visits_le_nodes (pr:prims) (env:param_env) (cols:schema) (row:row_of (le
     (match eval_expr pr env cols row subject with
      | Ok sv -> in_le pr env cols row sv items
      | Error _ -> ())
+  | Quotient a b _ -> visits_le_nodes pr env cols row a; visits_le_nodes pr env cols row b
+  | Rounded a _ -> visits_le_nodes pr env cols row a
   | _ -> ()
 
 and coalesce_le (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols)) (xs:list col_expr)
@@ -1229,6 +1294,8 @@ let rec reads (x:col_expr) : Tot (list string) (decreases x) =
   | Coalesce xs | ApplyFn _ xs -> reads_list xs
   | Case cases els -> app (reads_cases cases) (reads els)
   | InList a items -> app (reads a) (reads_list items)
+  | Quotient a b _ -> app (reads a) (reads b)
+  | Rounded a _ -> reads a
 and reads_list (xs:list col_expr) : Tot (list string) (decreases xs) =
   match xs with
   | [] -> []
@@ -1345,6 +1412,13 @@ let rec eval_extends (pr:prims) (env:param_env) (cols:schema) (row:row_of (len c
      | Ok Null -> ()
      | Ok sv -> extends_in pr env cols row cols' row' sv false items)
   | ApplyFn _ args -> extends_args pr env cols row cols' row' args
+  | Quotient a b _ ->
+    agrees_app cols row cols' row' (reads a) (reads b);
+    eval_extends pr env cols row cols' row' a;
+    (match eval_expr pr env cols row a with
+     | Error _ -> ()
+     | Ok _ -> eval_extends pr env cols row cols' row' b)
+  | Rounded a _ -> eval_extends pr env cols row cols' row' a
 and extends_coalesce (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols))
   (cols':schema) (row':row_of (len cols')) (xs:list col_expr)
   : Lemma (requires agrees cols row cols' row' (reads_list xs))
@@ -1678,9 +1752,10 @@ let reorder_in_context (pr:prims) (other:other_fn) (env:param_env) (pre post:lis
    the evaluator's OWN arms can raise — an unknown column, an unbound param, an unpinned clock,
    a `Not` of a non-bool, an incomparable membership — from the verdict's clauses. What it
    assumes is stated in ONE place, `admits`, and it is the fourth parameter of this module: the
-   four cell primitives answer `Ok`, with a cell of the typer's type, on exactly the operand
+   cell primitives answer `Ok`, with a cell of the typer's type, on exactly the operand
    shapes the verdict admits (an integer `Add` is not one of them; a `Float` one is). That
-   record is the reading of `arith`, `castCell`, `applyScalar` and `compareCells` the F#
+   record is the reading of `arith`, `castCell`, `applyScalar`, `compareCells`, `quotientCell` and
+   `roundedCell` the F#
    verdict's every `true` is backed by, and `Conformance.plannerLaws` holds production to it
    over drawn tables; no theorem here reads a primitive's cell. Every theorem in this section
    is conditional on it, and on nothing else.
@@ -1833,12 +1908,7 @@ let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
       | Of FloatType -> Of FloatType
       | Of DecimalType -> Of DecimalType
       | _ -> Unknown)
-  | Round ->
-    (match ts with
-     | [Absent; _; _] -> Absent
-     | [_; _; _] -> Of DecimalType
-     | _ -> unary (fun _ -> Of FloatType))
-  | Floor | Ceil -> unary (fun t -> match t with Of DecimalType -> Of DecimalType | _ -> Of FloatType)
+  | Round | Floor | Ceil -> unary (fun t -> match t with Of DecimalType -> Of DecimalType | _ -> Of FloatType)
   | Sqrt -> unary (fun _ -> Of FloatType)
   | Length -> unary (fun _ -> Of IntType)
   | Lower | Upper | Trim -> unary (fun _ -> Of StringType)
@@ -1857,11 +1927,21 @@ let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
   | DateDiffDays -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
   | Least | Greatest -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else join_all ts)
   | IndexOf -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
-  | Divide ->
-    (match ts with
-     | [Absent; _; _; _] | [_; Absent; _; _] -> Absent
-     | [_; _; _; _] -> Of DecimalType
-     | _ -> Absent)
+
+(* F#: `Typing.rounded` (Phase 277). *)
+noextract
+let typing_rounded (a:typing) : Tot typing =
+  match a with
+  | Absent -> Absent
+  | Of IntType | Of DecimalType -> Of DecimalType
+  | _ -> Unknown
+
+(* F#: `Typing.quotient` (Phase 277). *)
+noextract
+let typing_quotient (a b:typing) : Tot typing =
+  match a, b with
+  | Absent, _ | _, Absent -> Absent
+  | _ -> if exact_t a && exact_t b then Of DecimalType else Unknown
 
 (* F#: `typing cols e` — the static typing over a schema, arm for arm. `colType` is the first
    column of that name, as `assoc` is. *)
@@ -1880,6 +1960,8 @@ let rec typing_of (cols:schema) (x:col_expr) : Tot typing (decreases x) =
   | InList a _ -> typing_in_list (typing_of cols a)
   | IsNull _ -> Of BoolType
   | InParam a _ -> typing_in_list (typing_of cols a)
+  | Quotient a b _ -> typing_quotient (typing_of cols a) (typing_of cols b)
+  | Rounded a _ -> typing_rounded (typing_of cols a)
 and typings_of (cols:schema) (xs:list col_expr) : Tot (list typing) (decreases xs) =
   match xs with
   | [] -> []
@@ -1986,7 +2068,8 @@ noextract
 let admit_fn (fn:scalar_fn) (ts:list typing) : Tot bool =
   match fn with
   | Abs -> (match ts with [Absent] | [Of FloatType] | [Of DecimalType] -> true | _ -> false)
-  | Round | Floor | Ceil | Sqrt -> (match ts with [Absent] -> true | [t] -> numeric_t t | _ -> false)
+  | Round | Floor | Ceil -> (match ts with [Absent] | [Of DecimalType] -> true | [t] -> numeric_t t | _ -> false)
+  | Sqrt -> (match ts with [Absent] -> true | [t] -> numeric_t t | _ -> false)
   | Length | Lower | Upper | Trim -> (match ts with [t] -> is_str t | _ -> false)
   | Substr -> (match ts with [t0; Of IntType; Of IntType] -> is_str t0 | _ -> false)
   | DatePart | DateDiffDays -> false
@@ -1997,7 +2080,20 @@ let admit_fn (fn:scalar_fn) (ts:list typing) : Tot bool =
      | [] -> false
      | _ -> (match present ts with [] -> true | first :: _ -> all_comparable first (present ts)))
   | IndexOf -> (match ts with [a; b] -> is_str a && is_str b | _ -> false)
-  | Divide -> false
+
+(* F#: `Planner.exactOrAbsent` (Phase 277) — an operand a rounding admits. *)
+noextract
+let exact_or_absent (t:typing) : Tot bool =
+  match t with
+  | Absent | Of IntType | Of DecimalType -> true
+  | _ -> false
+
+(* F#: `Planner.scaleAdmitted` (Phase 277) — a literal scale in `0 .. 1000`. *)
+noextract
+let scale_admitted (r:rounding) : Tot bool =
+  match r.r_scale with
+  | SlotLit n -> 0 <= n && n <= 1000
+  | SlotParam _ -> false
 
 (* F#: `neverNull` — a present literal, or the presence test. *)
 noextract
@@ -2032,6 +2128,10 @@ let rec expr_total (cols:schema) (x:col_expr) : Tot bool (decreases x) =
     expr_total cols a && all_total cols items && all_comparable (typing_of cols a) (typings_of cols items)
   | ApplyFn fn args ->
     all_total cols args && admit_fn fn (typings_of cols args) && substr_args_never_null fn args
+  | Quotient a b r ->
+    expr_total cols a && expr_total cols b && scale_admitted r
+    && exact_or_absent (typing_of cols a) && exact_or_absent (typing_of cols b)
+  | Rounded a r -> expr_total cols a && scale_admitted r && exact_or_absent (typing_of cols a)
 and all_total (cols:schema) (xs:list col_expr) : Tot bool (decreases xs) =
   match xs with
   | [] -> true
@@ -2076,7 +2176,20 @@ noeq type admits (pr:prims) = {
                                | Error _ -> False));
   compare_ok : (ta:typing) -> (tb:typing) -> (a:cell) -> (b:cell) ->
                Lemma (requires comparable ta tb /\ fits ta a /\ fits tb b /\ not (Null? a) /\ not (Null? b))
-                     (ensures Some? (pr.compare a b))
+                     (ensures Some? (pr.compare a b));
+  (* Phase 277: over exact (or null) operands and a scale in range, the two rounding primitives
+     answer, a decimal or null. *)
+  quotient_ok : (m:rounding_mode) -> (n:int) -> (ta:typing) -> (tb:typing) -> (a:cell) -> (b:cell) ->
+               Lemma (requires 0 <= n /\ n <= 1000 /\ exact_or_absent ta /\ exact_or_absent tb
+                               /\ fits ta a /\ fits tb b)
+                     (ensures (match pr.quotient m n a b with
+                               | Ok c -> fits (typing_quotient ta tb) c
+                               | Error _ -> False));
+  rounded_ok : (m:rounding_mode) -> (n:int) -> (ta:typing) -> (a:cell) ->
+               Lemma (requires 0 <= n /\ n <= 1000 /\ exact_or_absent ta /\ fits ta a)
+                     (ensures (match pr.rounded m n a with
+                               | Ok c -> fits (typing_rounded ta) c
+                               | Error _ -> False))
 }
 
 (* ---- the join's algebra, as far as the proof needs it ---- *)
@@ -2196,6 +2309,17 @@ let rec verdict_sound (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (ro
         | _ -> ());
        h.apply_ok fn (typings_of cols args) cs
      | Error _ -> ())
+  | Quotient a b r ->
+    verdict_sound pr h env cols row a;
+    verdict_sound pr h env cols row b;
+    (match r.r_scale, eval_expr pr env cols row a, eval_expr pr env cols row b with
+     | SlotLit n, Ok av, Ok bv -> h.quotient_ok r.r_mode n (typing_of cols a) (typing_of cols b) av bv
+     | _ -> ())
+  | Rounded a r ->
+    verdict_sound pr h env cols row a;
+    (match r.r_scale, eval_expr pr env cols row a with
+     | SlotLit n, Ok av -> h.rounded_ok r.r_mode n (typing_of cols a) av
+     | _ -> ())
 and sound_coalesce (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (row:row_of (len cols)) (xs:list col_expr)
   : Lemma (requires all_total cols xs /\ row_typed cols row)
           (ensures (match eval_coalesce pr env cols row xs with

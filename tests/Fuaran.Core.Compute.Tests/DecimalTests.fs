@@ -2,11 +2,13 @@ module Fuaran.Core.Tests.DecimalTests
 
 // ---------------------------------------------------------------------------
 //  Phase 277 — decimal arithmetic in the transform evaluator. Exact where the operation is closed
-//  (`Add`, `Sub`, `Mul`, `Mod`, negation, `Abs`, `Floor`, `Ceil`, the order), refused by name where
-//  it is not (`Div` points at `Divide`, a one-argument `Round` asks for its scale and rule, a
-//  decimal beside a float asks for a `Cast`), and never through a float in silence.
+//  (`Add`, `Sub`, `Mul`, `Mod`, negation, `Abs`, `Least`, `Greatest`, the order), a STATED rounding
+//  where it is not (`Quotient` and `Rounded` carry a typed `Rounding`; `Round` / `Floor` / `Ceil`
+//  are their scale-0 specialisations), refused by name where a pipeline has not said (`Div` names
+//  `Quotient`, a decimal beside a float names the `Cast`), and never through a float in silence.
 // ---------------------------------------------------------------------------
 
+open System.Numerics
 open Expecto
 open Fuaran.Core
 
@@ -31,13 +33,116 @@ let private lit (text: string) : ColExpr = Lit(dec text)
 
 let private value (e: ColExpr) : Result<Cell, EvalError> = eval1 [ "x", IntType, [ Int 0 ] ] e
 
+/// An expression over no columns under a param env — the reference expression evaluator.
+let private valueIn (env: Map<string, Cell>) (e: ColExpr) : Result<Cell, EvalError> =
+    DataFrame.evalExprInRow env [] [] e
+
 let private message (r: Result<Cell, EvalError>) : string =
     match r with
     | Error(TypeError m) -> m
     | other -> failwithf "expected a TypeError, got %A" other
 
-let private divide (a: string) (b: string) (scale: int) (rule: string) : Result<Cell, EvalError> =
-    value (ApplyFn(Divide, [ lit a; lit b; Lit(Int scale); Lit(Str rule) ]))
+let private allModes =
+    [ RoundingMode.HalfEven
+      RoundingMode.HalfUp
+      RoundingMode.HalfDown
+      RoundingMode.Up
+      RoundingMode.Down
+      RoundingMode.Ceiling
+      RoundingMode.Floor ]
+
+let private at (scale: int) (mode: RoundingMode) : Rounding = { Scale = Slot.Lit scale; Mode = mode }
+
+let private rounded (x: string) (scale: int) (mode: RoundingMode) : Result<Cell, EvalError> =
+    value (Rounded(lit x, at scale mode))
+
+let private quotient (a: string) (b: string) (scale: int) (mode: RoundingMode) : Result<Cell, EvalError> =
+    value (Quotient(lit a, lit b, at scale mode))
+
+// ---- an independent reference: rationals over BigInteger --------------------------------------
+
+/// A decimal text as the rational `p / q`, `q` a power of ten.
+let private ratOf (text: string) : BigInteger * BigInteger =
+    let negative = text.StartsWith "-"
+    let body = if negative then text.Substring 1 else text
+    let dot = body.IndexOf '.'
+
+    let digits, places =
+        if dot < 0 then
+            body, 0
+        else
+            body.Remove(dot, 1), body.Length - dot - 1
+
+    let p = BigInteger.Parse digits
+    (if negative then -p else p), BigInteger.Pow(BigInteger 10, places)
+
+/// The decimal text of `r / 10^scale`, canonical.
+let private textOf (r: BigInteger) (scale: int) : Cell =
+    let digits = BigInteger.Abs(r).ToString().PadLeft(scale + 1, '0')
+    let ip = digits.Substring(0, digits.Length - scale)
+    let fp = digits.Substring(digits.Length - scale)
+    dec ((if r.Sign < 0 then "-" else "") + ip + (if scale > 0 then "." + fp else ""))
+
+/// `p / q` (`q > 0`) to `scale` places under `mode`, from the floor and the ceiling of the scaled
+/// value and the fraction between them — a formulation the production kernel does not share.
+let private reference (p: BigInteger) (q: BigInteger) (scale: int) (mode: RoundingMode) : Cell =
+    let n = p * BigInteger.Pow(BigInteger 10, scale)
+
+    let fl =
+        BigInteger.Divide(n - (if n.Sign < 0 then q - BigInteger.One else BigInteger.Zero), q)
+
+    let ce = if fl * q = n then fl else fl + BigInteger.One
+    let frac2 = BigInteger.Compare(BigInteger 2 * (n - fl * q), q) // the fraction against one half
+    let towardZero = if n.Sign >= 0 then fl else ce
+    let awayFromZero = if n.Sign >= 0 then ce else fl
+
+    let r =
+        if fl = ce then
+            fl
+        else
+            match mode with
+            | RoundingMode.Floor -> fl
+            | RoundingMode.Ceiling -> ce
+            | RoundingMode.Down -> towardZero
+            | RoundingMode.Up -> awayFromZero
+            | RoundingMode.HalfUp ->
+                if frac2 < 0 then fl
+                elif frac2 > 0 then ce
+                else awayFromZero
+            | RoundingMode.HalfDown ->
+                if frac2 < 0 then fl
+                elif frac2 > 0 then ce
+                else towardZero
+            | RoundingMode.HalfEven ->
+                if frac2 < 0 then fl
+                elif frac2 > 0 then ce
+                elif fl.IsEven then fl
+                else ce
+
+    textOf r scale
+
+/// A drawn decimal text: up to nine digits at zero to four places, either sign.
+let private drawDecimal (rng: System.Random) : string =
+    let places = rng.Next 5
+    let digits = string (rng.Next(0, 1000000000))
+    let padded = digits.PadLeft(places + 1, '0')
+
+    let text =
+        padded.Substring(0, padded.Length - places)
+        + (if places > 0 then
+               "." + padded.Substring(padded.Length - places)
+           else
+               "")
+
+    let signed = if rng.Next 2 = 0 then "-" + text else text
+
+    match Cell.decimal signed with
+    | Some(Decimal t) -> t
+    | _ -> failwith "unreachable"
+
+let private placesOf (text: string) : int =
+    let dot = text.IndexOf '.'
+    if dot < 0 then 0 else text.Length - dot - 1
 
 [<Tests>]
 let tests =
@@ -80,6 +185,9 @@ let tests =
                   Expect.equal (cell "exact") (Bool true) "the decimal sum equals the header"
                   Expect.equal (cell "viaFloat") (Bool false) "the float sum does not"
 
+          testCase "the allocation case: 100.00 split three ways at two places, half-even, is 33.33"
+          <| fun _ -> Expect.equal (quotient "100.00" "3" 2 RoundingMode.HalfEven) (Ok(dec "33.33")) "33.33"
+
           testCase "Add, Sub, Mul, Mod, negation and Abs are exact, and an int promotes"
           <| fun _ ->
               Expect.equal (value (Binary(Add, lit "0.1", lit "0.2"))) (Ok(dec "0.3")) "0.1 + 0.2 = 0.3"
@@ -98,8 +206,6 @@ let tests =
               Expect.equal (value (Binary(Mod, lit "5.5", lit "0"))) (Ok Null) "mod by zero is null, as an int's"
               Expect.equal (value (Binary(Sub, lit "0", lit "2.5"))) (Ok(dec "-2.5")) "negation"
               Expect.equal (value (ApplyFn(Abs, [ lit "-2.5" ]))) (Ok(dec "2.5")) "abs"
-              Expect.equal (value (ApplyFn(Floor, [ lit "-2.5" ]))) (Ok(dec "-3")) "floor"
-              Expect.equal (value (ApplyFn(Ceil, [ lit "-2.5" ]))) (Ok(dec "-2")) "ceil"
 
               Expect.equal
                   (value (Binary(Mul, lit "99999999999999999999", lit "99999999999999999999")))
@@ -120,69 +226,183 @@ let tests =
                   (Ok(Bool true))
                   "a decimal equals the int of its value"
 
-          testCase "Divide takes a scale and a rule; each of the seven rules rounds as it names"
+          testCase "each mode's tie behaviour: the classic table at 2.5, 3.5, -2.5 and -3.5"
           <| fun _ ->
-              let cases =
-                  [ "half-even", "0.12", "-0.12"
-                    "half-up", "0.13", "-0.13"
-                    "half-down", "0.12", "-0.12"
-                    "up", "0.13", "-0.13"
-                    "down", "0.12", "-0.12"
-                    "ceiling", "0.13", "-0.12"
-                    "floor", "0.12", "-0.13" ]
+              let table =
+                  [ RoundingMode.HalfEven, [ "2"; "4"; "-2"; "-4" ]
+                    RoundingMode.HalfUp, [ "3"; "4"; "-3"; "-4" ]
+                    RoundingMode.HalfDown, [ "2"; "3"; "-2"; "-3" ]
+                    RoundingMode.Up, [ "3"; "4"; "-3"; "-4" ]
+                    RoundingMode.Down, [ "2"; "3"; "-2"; "-3" ]
+                    RoundingMode.Ceiling, [ "3"; "4"; "-2"; "-3" ]
+                    RoundingMode.Floor, [ "2"; "3"; "-3"; "-4" ] ]
 
-              for rule, pos, neg in cases do
-                  Expect.equal (divide "1" "8" 2 rule) (Ok(dec pos)) (sprintf "1/8 %s" rule)
-                  Expect.equal (divide "-1" "8" 2 rule) (Ok(dec neg)) (sprintf "-1/8 %s" rule)
+              for mode, expected in table do
+                  for x, e in List.zip [ "2.5"; "3.5"; "-2.5"; "-3.5" ] expected do
+                      Expect.equal (rounded x 0 mode) (Ok(dec e)) (sprintf "%A of %s" mode x)
+                      // The same tie through a quotient: x * 2 / 2 at scale 0.
+                      Expect.equal
+                          (quotient (string (float x * 2.0)) "2" 0 mode)
+                          (Ok(dec e))
+                          (sprintf "%A quotient of %s" mode x)
 
-              Expect.equal (divide "1" "3" 4 "half-even") (Ok(dec "0.3333")) "a third, to four places"
-              Expect.equal (divide "2" "3" 0 "half-up") (Ok(dec "1")) "scale zero"
-              Expect.equal (divide "0.135" "1" 2 "half-even") (Ok(dec "0.14")) "half-even on an odd digit"
-              Expect.equal (divide "1" "0" 2 "half-even") (Ok Null) "a zero divisor is null, as Div's is"
+          testCase "Round, Floor and Ceil over a decimal are Rounded at scale 0 under HalfUp, Floor and Ceiling"
+          <| fun _ ->
+              let rng = System.Random 2771
+
+              for _ in 1..400 do
+                  let x = drawDecimal rng
+
+                  for fn, mode in
+                      [ Round, RoundingMode.HalfUp
+                        Floor, RoundingMode.Floor
+                        Ceil, RoundingMode.Ceiling ] do
+                      Expect.equal (value (ApplyFn(fn, [ lit x ]))) (rounded x 0 mode) (sprintf "%A of %s" fn x)
+
+              Expect.equal (value (ApplyFn(Round, [ lit "-2.5" ]))) (Ok(dec "-3")) "round: ties away from zero"
+              Expect.equal (value (ApplyFn(Floor, [ lit "-2.5" ]))) (Ok(dec "-3")) "floor"
+              Expect.equal (value (ApplyFn(Ceil, [ lit "-2.5" ]))) (Ok(dec "-2")) "ceil"
+              Expect.equal (value (ApplyFn(Round, [ Lit(Float 2.5) ]))) (Ok(Float 3.0)) "over a float, unchanged"
+
+          testCase "Quotient is the exact quotient correctly rounded, against an independent BigInteger reference"
+          <| fun _ ->
+              let rng = System.Random 2772
+              let mutable terminating = 0
+
+              // Half the divisors are drawn from powers of two and five, so a terminating quotient
+              // is common rather than rare.
+              let terminatingDivisors = [| "2"; "-4"; "0.5"; "8"; "1.25"; "-0.04"; "625"; "1.6" |]
+
+              for i in 1..600 do
+                  let a = drawDecimal rng
+
+                  let b =
+                      if i % 2 = 0 then
+                          terminatingDivisors[rng.Next terminatingDivisors.Length]
+                      else
+                          drawDecimal rng
+
+                  let scale = rng.Next 7
+                  let mode = allModes[rng.Next allModes.Length]
+                  let pa, qa = ratOf a
+                  let pb, qb = ratOf b
+
+                  if pb.IsZero then
+                      Expect.equal (quotient a b scale mode) (Ok Null) "a zero divisor is null"
+                  else
+                      // a / b = (pa * qb) / (qa * pb), the denominator made positive.
+                      let p0 = pa * qb
+                      let q0 = qa * pb
+                      let p, q = if q0.Sign < 0 then -p0, -q0 else p0, q0
+                      let expected = reference p q scale mode
+                      Expect.equal (quotient a b scale mode) (Ok expected) (sprintf "%s / %s at %d %A" a b scale mode)
+
+                      // On a terminating quotient, it is `Rounded` of the exact quotient.
+                      let mutable den = q / BigInteger.GreatestCommonDivisor(p, q)
+
+                      while den % BigInteger 2 = BigInteger.Zero do
+                          den <- den / BigInteger 2
+
+                      while den % BigInteger 5 = BigInteger.Zero do
+                          den <- den / BigInteger 5
+
+                      if den.IsOne then
+                          terminating <- terminating + 1
+                          let exact = reference p q 40 RoundingMode.Down
+
+                          match exact with
+                          | Decimal t ->
+                              Expect.equal (quotient a b scale mode) (rounded t scale mode) "Rounded(exact a/b, r)"
+                          | other -> failtestf "%A" other
+
+              Expect.isGreaterThan terminating 20 "terminating quotients were reached"
+
+          testCase "Quotient(a*b, b, {scale(a); m}) = a, for every mode and a non-zero b"
+          <| fun _ ->
+              let rng = System.Random 2773
+
+              for _ in 1..300 do
+                  let a = drawDecimal rng
+                  let b = drawDecimal rng
+                  let mode = allModes[rng.Next allModes.Length]
+
+                  if (ratOf b |> fst).IsZero |> not then
+                      let ab = value (Binary(Mul, lit a, lit b))
+
+                      match ab with
+                      | Ok(Decimal t) ->
+                          Expect.equal (quotient t b (placesOf a) mode) (Ok(dec a)) (sprintf "(%s*%s)/%s" a b b)
+                      | other -> failtestf "%A" other
+
+          testCase "Rounded is idempotent at a scale, and the identity at a scale no smaller than the operand's places"
+          <| fun _ ->
+              let rng = System.Random 2774
+
+              for _ in 1..400 do
+                  let x = drawDecimal rng
+                  let scale = rng.Next 6
+                  let mode = allModes[rng.Next allModes.Length]
+
+                  match rounded x scale mode with
+                  | Ok(Decimal once) -> Expect.equal (rounded once scale mode) (Ok(Decimal once)) "idempotent"
+                  | other -> failtestf "%A" other
+
+                  Expect.equal (rounded x (placesOf x + rng.Next 3) mode) (Ok(dec x)) "the identity"
+
+          testCase "Rounded and Quotient: an int promotes, null propagates, a float names the cast"
+          <| fun _ ->
+              Expect.equal (value (Rounded(Lit(Int 7), at 0 RoundingMode.Down))) (Ok(dec "7")) "an int promotes"
 
               Expect.equal
-                  (value (ApplyFn(Divide, [ Lit Null; lit "2"; Lit(Int 2); Lit(Str "down") ])))
-                  (Ok Null)
-                  "null propagates"
-
-              Expect.equal
-                  (value (ApplyFn(Divide, [ lit "7"; Lit(Int 2); Lit(Int 1); Lit(Str "down") ])))
+                  (value (Quotient(lit "7", Lit(Int 2), at 1 RoundingMode.Down)))
                   (Ok(dec "3.5"))
-                  "an int divisor promotes"
+                  "an int divisor"
 
-          testCase "Round of a decimal takes a scale and a rule, and is exact where nothing is dropped"
+              Expect.equal (value (Rounded(Lit Null, at 2 RoundingMode.Up))) (Ok Null) "null"
+              Expect.equal (value (Quotient(Lit Null, lit "2", at 2 RoundingMode.Up))) (Ok Null) "null dividend"
+              Expect.equal (quotient "1" "0" 2 RoundingMode.HalfEven) (Ok Null) "a zero divisor is null, as Div's is"
+              Expect.stringContains (message (value (Rounded(Lit(Float 1.5), at 0 RoundingMode.Up)))) "Cast" "a float"
+
+              Expect.stringContains
+                  (message (value (Quotient(lit "1", Lit(Float 2.0), at 0 RoundingMode.Up))))
+                  "Cast"
+                  "a float divisor"
+
+          testCase "the scale: a literal outside 0..1000 and a param of the wrong shape are refused by name"
           <| fun _ ->
-              let round x n rule =
-                  value (ApplyFn(Round, [ lit x; Lit(Int n); Lit(Str rule) ]))
+              Expect.stringContains (message (rounded "1.5" 1001 RoundingMode.Up)) "rounding scale" "past 1000"
+              Expect.stringContains (message (rounded "1.5" -1 RoundingMode.Up)) "rounding scale" "negative"
 
-              Expect.equal (round "2.345" 2 "half-even") (Ok(dec "2.34")) "half-even"
-              Expect.equal (round "2.345" 2 "half-up") (Ok(dec "2.35")) "half-up"
-              Expect.equal (round "2.3" 2 "up") (Ok(dec "2.3")) "nothing to drop"
+              let byParam =
+                  Rounded(
+                      lit "1.255",
+                      { Scale = Slot.Param "places"
+                        Mode = RoundingMode.HalfEven }
+                  )
+
+              Expect.equal (valueIn (Map.ofList [ "places", Int 2 ]) byParam) (Ok(dec "1.26")) "a bound param"
+
+              Expect.stringContains
+                  (message (valueIn (Map.ofList [ "places", Str "2" ]) byParam))
+                  "rounding scale"
+                  "a param bound to a string names the slot"
+
+              match valueIn Map.empty byParam with
+              | Error(UnboundParam("places", _)) -> ()
+              | other -> failtestf "an unbound scale param is UnboundParam, got %A" other
+
+              Expect.equal (ColExpr.paramsOf byParam) [ "places" ] "the scale param is reported"
 
               Expect.equal
-                  (value (ApplyFn(Round, [ Lit(Int 7); Lit(Int 0); Lit(Str "down") ])))
-                  (Ok(dec "7"))
-                  "an int promotes"
+                  (ColExpr.substitute (Map.ofList [ "places", Int 2 ]) byParam)
+                  (Rounded(lit "1.255", at 2 RoundingMode.HalfEven))
+                  "and substituted, as Limit's slot is"
 
-          testCase "every refusal names what it needs: the scale, the rounding rule, or the cast"
+          testCase "every refusal names what it needs: the rounding, or the cast"
           <| fun _ ->
               let divMsg = message (value (Binary(Div, lit "1", lit "3")))
-              Expect.stringContains divMsg "scale" "Div names the scale"
-              Expect.stringContains divMsg "rounding rule" "and the rule"
-              Expect.stringContains divMsg "Divide" "and the function that takes them"
-
-              let roundMsg = message (value (ApplyFn(Round, [ lit "1.5" ])))
-              Expect.stringContains roundMsg "scale" "Round names the scale"
-              Expect.stringContains roundMsg "rounding rule" "and the rule"
-
-              let noRule = message (divide "1" "3" 2 "bankers")
-              Expect.stringContains noRule "rounding rule" "an unknown rule is named"
-              Expect.stringContains noRule "half-even" "with the rules it could have been"
-
-              let noScale =
-                  message (value (ApplyFn(Divide, [ lit "1"; lit "3"; Lit(Int -1); Lit(Str "down") ])))
-
-              Expect.stringContains noScale "scale" "a negative scale is named"
+              Expect.stringContains divMsg "rounding" "Div names the rounding"
+              Expect.stringContains divMsg "Quotient" "and the node that takes it"
 
               let mixed = message (value (Binary(Add, lit "1.5", Lit(Float 1.0))))
               Expect.stringContains mixed "decimal" "a decimal beside a float names both"
@@ -220,7 +440,6 @@ let tests =
               | Ok r -> Expect.equal (Table.rowCount r) 3 "1.5 and 1.50 are one value"
               | Error e -> failtestf "%A" e
 
-              // A join of the decimal key against the float column of the same values matches nothing.
               let floats = table [ "f", FloatType, [ Float 1.5; Float 2.0 ] ]
 
               match DataFrame.evalPipeline [ Join(Embedded floats, [ "k", "f" ], Inner) ] t with
@@ -260,35 +479,26 @@ let tests =
                         Of = "m"
                         As = "run" }
 
-              match DataFrame.evalPipeline [ spec CumulSum ] t with
-              | Ok r ->
-                  Expect.equal
-                      (Table.tryColumn "run" r |> Option.get).Cells
-                      [ dec "0.1"; dec "0.3"; dec "0.6" ]
-                      "cumulSum"
-              | Error e -> failtestf "%A" e
+              for fn in [ CumulSum; RollingSum ] do
+                  match DataFrame.evalPipeline [ spec fn ] t with
+                  | Ok r ->
+                      Expect.equal
+                          (Table.tryColumn "run" r |> Option.get).Cells
+                          [ dec "0.1"; dec "0.3"; dec "0.6" ]
+                          (sprintf "%A" fn)
+                  | Error e -> failtestf "%A" e
 
-              match DataFrame.evalPipeline [ spec RollingSum ] t with
-              | Ok r ->
-                  Expect.equal
-                      (Table.tryColumn "run" r |> Option.get).Cells
-                      [ dec "0.1"; dec "0.3"; dec "0.6" ]
-                      "rollingSum"
-              | Error e -> failtestf "%A" e
-
-          testCase "the typer and the totality verdict over decimal arithmetic"
+          testCase "the typer and the totality verdict over decimal arithmetic and the rounding nodes"
           <| fun _ ->
               let schema: Schema = [ "m", DecimalType; "i", IntType; "f", FloatType ]
               let ty e = DataFrame.typeOf schema e
               Expect.equal (ty (Binary(Add, Col "m", Col "i"))) (Some DecimalType) "an int promotes"
               Expect.equal (ty (Binary(Add, Col "m", Col "f"))) None "a decimal beside a float is refused"
               Expect.equal (ty (Binary(Lt, Col "m", Col "i"))) (Some BoolType) "an exact comparison"
-
-              Expect.equal
-                  (ty (ApplyFn(Divide, [ Col "m"; Col "i"; Lit(Int 2); Lit(Str "down") ])))
-                  (Some DecimalType)
-                  "divide"
-
+              Expect.equal (ty (Quotient(Col "m", Col "i", at 2 RoundingMode.Down))) (Some DecimalType) "quotient"
+              Expect.equal (ty (Rounded(Col "i", at 2 RoundingMode.Down))) (Some DecimalType) "rounded"
+              Expect.equal (ty (Rounded(Col "f", at 2 RoundingMode.Down))) None "a float rounded is refused"
+              Expect.equal (ty (ApplyFn(Round, [ Col "m" ]))) (Some DecimalType) "round of a decimal"
               Expect.equal (ty (Cast(DecimalType, Col "f"))) (Some DecimalType) "cast"
 
               let total e = Plan.isTotal schema (Derive("x", e))
@@ -296,21 +506,64 @@ let tests =
               Expect.isTrue (total (Binary(Mod, Col "m", Col "m"))) "nor a decimal mod"
               Expect.isTrue (total (Binary(Lt, Col "m", Col "i"))) "nor an exact comparison"
               Expect.isTrue (total (Cast(DecimalType, Col "i"))) "nor an int's cast"
+
+              Expect.isTrue
+                  (total (Quotient(Col "m", Col "i", at 2 RoundingMode.HalfEven)))
+                  "nor a literal-scale quotient"
+
+              Expect.isTrue (total (Rounded(Col "m", at 0 RoundingMode.Floor))) "nor a literal-scale rounding"
+              Expect.isTrue (total (ApplyFn(Round, [ Col "m" ]))) "nor round of a decimal"
               Expect.isFalse (total (Binary(Div, Col "m", Col "i"))) "a decimal Div refuses"
               Expect.isFalse (total (Binary(Add, Col "m", Col "f"))) "a decimal beside a float refuses"
+              Expect.isFalse (total (Quotient(Col "m", Col "f", at 2 RoundingMode.HalfEven))) "a float divisor refuses"
+              Expect.isFalse (total (Rounded(Col "m", at 1001 RoundingMode.Floor))) "a scale past 1000 refuses"
 
               Expect.isFalse
-                  (total (ApplyFn(Divide, [ Col "m"; Col "i"; Lit(Int 2); Lit(Str "down") ])))
-                  "divide is declined"
+                  (total (
+                      Rounded(
+                          Col "m",
+                          { Scale = Slot.Param "p"
+                            Mode = RoundingMode.Floor }
+                      )
+                  ))
+                  "a param scale is the env's"
 
-              Expect.isFalse (total (ApplyFn(Round, [ Col "m" ]))) "an unscaled round refuses"
-
-          testCase "a decimal literal round-trips the pipeline codec as decimal text"
+          testCase "the rounding nodes round-trip the pipeline codec; the mode is spelled only there"
           <| fun _ ->
               let p =
-                  [ Derive("x", ApplyFn(Divide, [ lit "1.25"; Lit(Int 3); Lit(Int 2); Lit(Str "half-even") ])) ]
+                  [ Derive("q", Quotient(lit "1.25", Lit(Int 3), at 2 RoundingMode.HalfEven))
+                    Derive(
+                        "r",
+                        Rounded(
+                            Col "q",
+                            { Scale = Slot.Param "places"
+                              Mode = RoundingMode.Ceiling }
+                        )
+                    ) ]
 
               let wire = DataFrameCodec.encodePipeline p
-              Expect.stringContains wire "{\"$type\":\"Decimal\",\"value\":\"1.25\"}" "a JSON string"
-              Expect.stringContains wire "\"divide\"" "the function's tag"
-              Expect.equal (DataFrameCodec.decodePipeline wire) (Ok p) "round-trips" ]
+
+              Expect.stringContains
+                  wire
+                  "{\"$type\":\"Decimal\",\"value\":\"1.25\"}"
+                  "a decimal literal is a JSON string"
+
+              Expect.stringContains wire "\"$type\":\"quotient\"" "the quotient's tag"
+              Expect.stringContains wire "\"rounding\":{\"mode\":\"half-even\",\"scale\":2}" "the rounding"
+              Expect.stringContains wire "{\"$param\":\"places\"}" "a param scale in the slot's wire form"
+              Expect.equal (DataFrameCodec.decodePipeline wire) (Ok p) "round-trips"
+
+              for mode in allModes do
+                  let one = [ Derive("r", Rounded(Col "x", at 1 mode)) ]
+
+                  Expect.equal
+                      (DataFrameCodec.decodePipeline (DataFrameCodec.encodePipeline one))
+                      (Ok one)
+                      (sprintf "%A" mode)
+
+              let unknown = wire.Replace("half-even", "bankers")
+
+              match DataFrameCodec.decodePipeline unknown with
+              | Error(UnknownType("bankers", allowed)) ->
+                  Expect.contains allowed "half-even" "the decode names the modes"
+              | other -> failtestf "an unknown mode is a decode error, got %A" other ]

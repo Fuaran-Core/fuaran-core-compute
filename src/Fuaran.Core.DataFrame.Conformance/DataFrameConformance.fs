@@ -1518,6 +1518,29 @@ module DataFrameConformance =
             | 14 ->
                 [ GroupBy([ "b" ], [ { Name = "s"; Fn = Sum; Of = "m" } ])
                   Transform.sortBy [ "s", Asc ] ]
+            // the rounding nodes at a literal scale, which the verdict admits: a quotient by an int
+            // column that carries zeros and nulls, and a decimal brought to one place
+            | 15 ->
+                [ Derive(
+                      "q",
+                      Quotient(
+                          Col "m",
+                          Col "i",
+                          { Scale = Slot.Lit 2
+                            Mode = RoundingMode.HalfEven }
+                      )
+                  )
+                  totalPred ]
+            | 16 ->
+                [ Derive(
+                      "r",
+                      Rounded(
+                          Col "m",
+                          { Scale = Slot.Lit 1
+                            Mode = RoundingMode.Floor }
+                      )
+                  )
+                  decPred ]
             | _ ->
                 [ intDerive
                   partialPred
@@ -1535,7 +1558,7 @@ module DataFrameConformance =
                 v
 
             let table = mkTable nRows draw
-            let pk, r2 = ConfRng.intBelow 15 r
+            let pk, r2 = ConfRng.intBelow 17 r
             let n, r3 = ConfRng.intBelow 4 r2
             r <- r3
             let pipeline = pipelineOf pk n

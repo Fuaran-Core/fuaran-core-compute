@@ -711,7 +711,7 @@ let private colDiffDifferential (seed: int) (trials: int) : ColDiffTally =
 // `compareCells`) and the TWELVE VERBS that evaluate no expression (`other_fn`).
 // `proofs/oracle/Pipeline.fs` is that model extracted. This runs it BESIDE production over the
 // `conformance/laws/transform-laws.json` vectors (decoded with the shipped codec) and a generated
-// sample — the vectors' own draw recipe, WIDENED to reach all fourteen verbs and all thirteen
+// sample — the vectors' own draw recipe, WIDENED to reach all fourteen verbs and all fifteen
 // expression kinds, with a `Ref` resolver, a param env, embedded and referenced right-hand
 // sources, and expressions that refuse — comparing the TABLE (byte for byte through
 // `ColumnCodec.encode`) and the COUNT, or the named `EvalError`.
@@ -822,8 +822,17 @@ let private pScalarFns: (ScalarFn * ModelPipe.scalar_fn) list =
       Sqrt, ModelPipe.Sqrt
       Least, ModelPipe.Least
       Greatest, ModelPipe.Greatest
-      IndexOf, ModelPipe.IndexOf
-      Divide, ModelPipe.Divide ]
+      IndexOf, ModelPipe.IndexOf ]
+
+/// Phase 277 — the seven rounding modes, one table read both ways.
+let private pModes: (RoundingMode * ModelPipe.rounding_mode) list =
+    [ RoundingMode.HalfEven, ModelPipe.RoundHalfEven
+      RoundingMode.HalfUp, ModelPipe.RoundHalfUp
+      RoundingMode.HalfDown, ModelPipe.RoundHalfDown
+      RoundingMode.Up, ModelPipe.RoundUp
+      RoundingMode.Down, ModelPipe.RoundDown
+      RoundingMode.Ceiling, ModelPipe.RoundCeiling
+      RoundingMode.Floor, ModelPipe.RoundFloor ]
 
 let private pAggFns: (AggFn * ModelPipe.agg_fn) list =
     [ Sum, ModelPipe.Sum
@@ -875,6 +884,24 @@ let private pGrains: (NowGrain * ModelPipe.now_grain) list =
     [ NowGrain.Date, ModelPipe.GrainDate
       NowGrain.Timestamp, ModelPipe.GrainTimestamp ]
 
+let private pSlotToModel (f: 'a -> 'b) (s: Slot<'a>) : ModelPipe.slot<'b> =
+    match s with
+    | Slot.Lit v -> ModelPipe.SlotLit(f v)
+    | Slot.Param n -> ModelPipe.SlotParam n
+
+let private pSlotOfModel (f: 'b -> 'a) (s: ModelPipe.slot<'b>) : Slot<'a> =
+    match s with
+    | ModelPipe.SlotLit v -> Slot.Lit(f v)
+    | ModelPipe.SlotParam n -> Slot.Param n
+
+let private pRoundingToModel (r: Rounding) : ModelPipe.rounding =
+    { ModelPipe.rounding.r_scale = pSlotToModel (fun (v: int) -> bigint v) r.Scale
+      ModelPipe.rounding.r_mode = pFwd pModes r.Mode }
+
+let private pRoundingOfModel (r: ModelPipe.rounding) : Rounding =
+    { Scale = pSlotOfModel int r.r_scale
+      Mode = pBack pModes r.r_mode }
+
 let rec private pExprToModel (e: ColExpr) : ModelPipe.col_expr =
     match e with
     | Col n -> ModelPipe.Col n
@@ -891,6 +918,8 @@ let rec private pExprToModel (e: ColExpr) : ModelPipe.col_expr =
     | IsNull x -> ModelPipe.IsNull(pExprToModel x)
     | InParam(x, n) -> ModelPipe.InParam(pExprToModel x, n)
     | Now g -> ModelPipe.Now(pFwd pGrains g)
+    | Quotient(a, b, r) -> ModelPipe.Quotient(pExprToModel a, pExprToModel b, pRoundingToModel r)
+    | Rounded(x, r) -> ModelPipe.Rounded(pExprToModel x, pRoundingToModel r)
 
 let rec private pExprOfModel (e: ModelPipe.col_expr) : ColExpr =
     match e with
@@ -908,6 +937,8 @@ let rec private pExprOfModel (e: ModelPipe.col_expr) : ColExpr =
     | ModelPipe.IsNull x -> IsNull(pExprOfModel x)
     | ModelPipe.InParam(x, n) -> InParam(pExprOfModel x, n)
     | ModelPipe.Now g -> Now(pBack pGrains g)
+    | ModelPipe.Quotient(a, b, r) -> Quotient(pExprOfModel a, pExprOfModel b, pRoundingOfModel r)
+    | ModelPipe.Rounded(x, r) -> Rounded(pExprOfModel x, pRoundingOfModel r)
 
 /// A `Table` as its row-major view — the transpose `toFrame` performs.
 let private pFrameOfTable (t: Table) : ModelPipe.frame =
@@ -936,16 +967,6 @@ let private pSourceOfModel (s: ModelPipe.data_source) : DataSource =
     match s with
     | ModelPipe.Embedded f -> Embedded(pTableOfFrame f)
     | ModelPipe.Ref r -> Ref r
-
-let private pSlotToModel (f: 'a -> 'b) (s: Slot<'a>) : ModelPipe.slot<'b> =
-    match s with
-    | Slot.Lit v -> ModelPipe.SlotLit(f v)
-    | Slot.Param n -> ModelPipe.SlotParam n
-
-let private pSlotOfModel (f: 'b -> 'a) (s: ModelPipe.slot<'b>) : Slot<'a> =
-    match s with
-    | ModelPipe.SlotLit v -> Slot.Lit(f v)
-    | ModelPipe.SlotParam n -> Slot.Param n
 
 let private pTransformToModel (t: Transform) : ModelPipe.transform =
     match t with
@@ -1084,7 +1105,28 @@ let private pPrims: ModelPipe.prims =
             match DataFrame.evalExprInRow Map.empty [] [] (InList(Lit(pCellOfModel a), [ Lit(pCellOfModel b) ])) with
             | Ok(Cell.Bool true) -> FStar_Pervasives_Native.Some 0I
             | Ok(Cell.Bool false) -> FStar_Pervasives_Native.Some 1I
-            | _ -> FStar_Pervasives_Native.None }
+            | _ -> FStar_Pervasives_Native.None
+      // Phase 277 — the two rounding primitives, through a one-node expression at a literal scale.
+      // A scale past int32 cannot reach production; the model's differential never draws one.
+      ModelPipe.prims.quotient =
+        fun m n a b ->
+            pOneNode (
+                Quotient(
+                    Lit(pCellOfModel a),
+                    Lit(pCellOfModel b),
+                    { Scale = Slot.Lit(int n)
+                      Mode = pBack pModes m }
+                )
+            )
+      ModelPipe.prims.rounded =
+        fun m n a ->
+            pOneNode (
+                Rounded(
+                    Lit(pCellOfModel a),
+                    { Scale = Slot.Lit(int n)
+                      Mode = pBack pModes m }
+                )
+            ) }
 
 /// The model's SECOND parameter — the twelve verbs that evaluate no expression — instantiated at
 /// production's own, one verb through the public entry point, over the frame crossed back to a
@@ -1177,6 +1219,8 @@ let rec private pExprTags (e: ColExpr) : string list =
     | IsNull x -> "IsNull" :: pExprTags x
     | InParam(x, _) -> "InParam" :: pExprTags x
     | Now _ -> [ "Now" ]
+    | Quotient(a, b, _) -> "Quotient" :: pExprTags a @ pExprTags b
+    | Rounded(x, _) -> "Rounded" :: pExprTags x
 
 type private PipeTally =
     {
@@ -1314,7 +1358,7 @@ let private pLawVectors () : (string * Transform list * Table * bool) list =
 
 /// The generated sample — the vectors' own draw recipe for the table (a tie-heavy string key, an
 /// int column carrying nulls, a float column, and since Phase 277 a decimal column), WIDENED in the pipeline: one to four steps over all
-/// fourteen verbs, expressions over all thirteen kinds, a right-hand source that is embedded,
+/// fourteen verbs, expressions over all fifteen kinds, a right-hand source that is embedded,
 /// resolved through `resolve` or unresolvable, and slots that are literals or params.
 let private pGenTable (rng: ConfRng.T) : Table * ConfRng.T =
     let extra, r1 = ConfRng.intBelow 4 rng
@@ -1356,7 +1400,7 @@ let private pPick (xs: 'a list) (rng: ConfRng.T) : 'a * ConfRng.T =
     List.item i xs, r
 
 let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
-    // Twenty draws over thirteen kinds: the seven extra land on the three leaves, so a tree is
+    // Twenty draws over fifteen kinds (Phase 277's two share `InParam`'s draw): the seven extra land on the three leaves, so a tree is
     // mostly columns and literals with the rarer kinds (an unbound list param, an unpinned clock,
     // an unknown column) present but not dominant — enough refusals to compare, enough tables too.
     let k, r = ConfRng.intBelow (if depth = 0 then 3 else 20) rng
@@ -1417,8 +1461,8 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
                   Least
                   IndexOf
                   Concat
-                  Divide
-                  Floor ]
+                  Floor
+                  Ceil ]
                 r
 
         let x, r2 = pGenExpr (depth - 1) r1
@@ -1429,8 +1473,6 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
             | Concat
             | Least
             | IndexOf -> [ x; y ]
-            // Phase 277: a scale and a rule, so the quotient is reached as well as its refusals.
-            | Divide -> [ x; y; Lit(Cell.Int 2); Lit(Cell.Str "half-even") ]
             | _ -> [ x ]
 
         ApplyFn(fn, args), r3
@@ -1441,8 +1483,24 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
         let x, r1 = pGenExpr (depth - 1) r
         IsNull x, r1
     | 11 ->
-        let x, r1 = pGenExpr (depth - 1) r
-        InParam(x, "items"), r1
+        // Phase 277 — the rounding nodes share this draw with `InParam`, so the kind count and
+        // every other draw's frequency stay as they were: a quotient, a rounded value, and the
+        // list param, a third each.
+        let which, r0 = ConfRng.intBelow 3 r
+        let x, r1 = pGenExpr (depth - 1) r0
+        let mode, r2 = pPick (pModes |> List.map fst) r1
+
+        let scale, r3 =
+            pPick [ Slot.Lit 0; Slot.Lit 2; Slot.Lit 1001; Slot.Param "p"; Slot.Param "s" ] r2
+
+        let rounding = { Scale = scale; Mode = mode }
+
+        match which with
+        | 0 ->
+            let y, r4 = pGenExpr (depth - 1) r3
+            Quotient(x, y, rounding), r4
+        | 1 -> Rounded(x, rounding), r3
+        | _ -> InParam(x, "items"), r3
     | _ ->
         let g, r1 = pPick [ NowGrain.Date; NowGrain.Timestamp ] r
         Now g, r1
@@ -1610,7 +1668,9 @@ let rec private pUnderCountNodes (e: ColExpr) : int =
     | Not x
     | Cast(_, x)
     | IsNull x
-    | InParam(x, _) -> 1 + pUnderCountNodes x
+    | InParam(x, _)
+    | Rounded(x, _) -> 1 + pUnderCountNodes x
+    | Quotient(a, b, _) -> 1 + pUnderCountNodes a + pUnderCountNodes b
     | Coalesce xs
     | ApplyFn(_, xs) -> 1 + List.sumBy pUnderCountNodes xs
     | InList(x, items) -> 1 + pUnderCountNodes x + List.sumBy pUnderCountNodes items
@@ -1922,7 +1982,9 @@ let proofOracleTests =
                     "InList"
                     "IsNull"
                     "InParam"
-                    "Now" ] do
+                    "Now"
+                    "Quotient"
+                    "Rounded" ] do
                   Expect.isTrue
                       (Set.contains kind t.PExprs)
                       (sprintf "the sample reached the %s expression kind (reached: %A)" kind t.PExprs)
@@ -2164,7 +2226,9 @@ let proofOracleTests =
                     "InList"
                     "IsNull"
                     "InParam"
-                    "Now" ] do
+                    "Now"
+                    "Quotient"
+                    "Rounded" ] do
                   Expect.isTrue
                       (Set.contains kind kinds)
                       (sprintf "the sample reached the %s expression kind (reached: %A)" kind kinds)

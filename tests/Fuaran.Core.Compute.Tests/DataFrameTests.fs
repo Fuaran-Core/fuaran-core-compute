@@ -2942,8 +2942,7 @@ let private allFns: ScalarFn list =
       Sqrt
       Least
       Greatest
-      IndexOf
-      Divide ]
+      IndexOf ]
 
 let private allTypes: ColumnType list =
     [ IntType
@@ -2972,7 +2971,7 @@ let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
     else
         let sub () = genExpr rng (depth - 1)
 
-        match rng.Next 14 with
+        match rng.Next 16 with
         | 0
         | 1
         | 2
@@ -3019,7 +3018,33 @@ let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
         | 10 -> ApplyFn(pick rng allFns, List.init (rng.Next 4) (fun _ -> sub ()))
         | 11 -> InList(sub (), List.init (rng.Next 4) (fun _ -> sub ()))
         | 12 -> IsNull(sub ())
-        | _ -> InParam(sub (), pick rng [ "p"; "unbound" ])
+        | 13 -> InParam(sub (), pick rng [ "p"; "unbound" ])
+        // Phase 277 — the two rounding nodes, at a literal scale, an out-of-range one, and a
+        // param scale bound to an int and to a string.
+        | _ ->
+            let rounding =
+                { Scale = pick rng [ Slot.Lit 0; Slot.Lit 2; Slot.Lit 1001; Slot.Param "p"; Slot.Param "q" ]
+                  Mode =
+                    pick
+                        rng
+                        [ RoundingMode.HalfEven
+                          RoundingMode.HalfUp
+                          RoundingMode.HalfDown
+                          RoundingMode.Up
+                          RoundingMode.Down
+                          RoundingMode.Ceiling
+                          RoundingMode.Floor ] }
+
+            let operand () =
+                if rng.Next 2 = 0 then
+                    sub ()
+                else
+                    familyCol (pick rng [ DecimalType; IntType; FloatType ])
+
+            if rng.Next 2 = 0 then
+                Quotient(operand (), operand (), rounding)
+            else
+                Rounded(operand (), rounding)
 
 /// Two evaluation outcomes agree when both are the same error, or both are cells with one token
 /// (`NaN` is not equal to itself structurally, and is one token).

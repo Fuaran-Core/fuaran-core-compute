@@ -866,6 +866,8 @@ module IncrementalDelta =
         | ApplyFn(_, xs) -> xs |> List.collect colsNamed
         | InList(x, xs) -> colsNamed x @ (xs |> List.collect colsNamed)
         | InParam(x, _) -> colsNamed x
+        | Quotient(x, y, _) -> colsNamed x @ colsNamed y
+        | Rounded(x, _) -> colsNamed x
 
     /// Phase 212 — every cross-row PRODUCER class whose appended column a later ROW-LOCAL step
     /// READS: the shape whose absence let `v0.26.0` publish a wrong answer.

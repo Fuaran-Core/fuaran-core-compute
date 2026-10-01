@@ -80,15 +80,16 @@ module LawVectorExport =
           "unknown-column" ]
 
     /// The decimal shapes (Phase 277), one vector each after the sixteen above: a decimal column
-    /// through every verb, the exact arithmetic and the two operations that name a scale and a
-    /// rounding rule, and the four refusals — a decimal `Div`, a decimal beside a float, a
-    /// one-argument `Round` of a decimal, and a `Divide` naming no rule it knows.
+    /// through every verb, the exact arithmetic, `Quotient` and `Rounded` under a stated rounding,
+    /// `Round` / `Floor` / `Ceil` as their scale-0 specialisations, and four refusals — a decimal
+    /// `Div`, a decimal beside a float, a float `Rounded`, and a scale past `1000`.
     let private decimalShapeNames =
         [ "decimal-filter"
           "decimal-project"
           "decimal-derive-exact"
-          "decimal-divide"
-          "decimal-round-mod-abs"
+          "decimal-quotient"
+          "decimal-rounded-mod-abs"
+          "decimal-round-floor-ceil"
           "decimal-cast"
           "decimal-group-agg"
           "decimal-join"
@@ -104,8 +105,8 @@ module LawVectorExport =
           "decimal-in-list"
           "decimal-div-refused"
           "decimal-float-refused"
-          "decimal-round-unscaled-refused"
-          "decimal-divide-rule-refused" ]
+          "decimal-rounded-float-refused"
+          "decimal-quotient-scale-refused" ]
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ decimalShapeNames
@@ -170,12 +171,29 @@ module LawVectorExport =
         | "decimal-project" -> [ Project [ "m", "amount"; "g", "g" ] ]
         | "decimal-derive-exact" ->
             [ Derive("t", Binary(Sub, Binary(Add, Binary(Mul, m, Lit(Int 3)), Col "v"), dec "0.05")) ]
-        | "decimal-divide" -> [ Derive("q", ApplyFn(Divide, [ m; Lit(Int 3); Lit(Int 4); Lit(Str "half-even") ])) ]
-        | "decimal-round-mod-abs" ->
+        | "decimal-quotient" ->
+            [ Derive(
+                  "q",
+                  Quotient(
+                      m,
+                      Lit(Int 3),
+                      { Scale = Slot.Lit 4
+                        Mode = RoundingMode.HalfEven }
+                  )
+              ) ]
+        | "decimal-rounded-mod-abs" ->
             [ Derive(
                   "r",
-                  ApplyFn(Round, [ Binary(Mod, ApplyFn(Abs, [ m ]), dec "0.7"); Lit(Int 1); Lit(Str "half-up") ])
+                  Rounded(
+                      Binary(Mod, ApplyFn(Abs, [ m ]), dec "0.7"),
+                      { Scale = Slot.Lit 1
+                        Mode = RoundingMode.HalfUp }
+                  )
               ) ]
+        | "decimal-round-floor-ceil" ->
+            [ Derive("r", ApplyFn(Round, [ m ]))
+              Derive("lo", ApplyFn(Floor, [ m ]))
+              Derive("hi", ApplyFn(Ceil, [ m ])) ]
         | "decimal-cast" -> [ Derive("c", Cast(DecimalType, Col "w")); Derive("f", Cast(FloatType, m)) ]
         | "decimal-group-agg" ->
             [ GroupBy(
@@ -212,8 +230,25 @@ module LawVectorExport =
             [ Filter(InList(m, [ cents ((137 + offset * 25) % 500 - 200) |> Lit; Lit(Int 2); dec "9.99" ])) ]
         | "decimal-div-refused" -> [ Derive("q", Binary(Div, m, Lit(Int 2))) ]
         | "decimal-float-refused" -> [ Derive("x", Binary(Add, m, Col "w")) ]
-        | "decimal-round-unscaled-refused" -> [ Derive("r", ApplyFn(Round, [ m ])) ]
-        | _ -> [ Derive("q", ApplyFn(Divide, [ m; Lit(Int 3); Lit(Int 2); Lit(Str "bankers") ])) ]
+        | "decimal-rounded-float-refused" ->
+            [ Derive(
+                  "r",
+                  Rounded(
+                      Col "w",
+                      { Scale = Slot.Lit 2
+                        Mode = RoundingMode.HalfEven }
+                  )
+              ) ]
+        | _ ->
+            [ Derive(
+                  "q",
+                  Quotient(
+                      m,
+                      Lit(Int 3),
+                      { Scale = Slot.Lit 1001
+                        Mode = RoundingMode.Down }
+                  )
+              ) ]
 
     let private pipelineOf (k: int) : Transform list =
         match k with
