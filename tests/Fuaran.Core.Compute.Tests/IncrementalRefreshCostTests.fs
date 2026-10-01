@@ -947,8 +947,11 @@ let private rowTokenDiff (idw: RowIdentity<'Id>) (before: Table) (after: Table) 
 
             go 0 [] Set.empty
 
-        let tokens (t: Table) =
-            RowAccess.rows t |> List.map DataFrame.rowTokenStringOfArray |> List.toArray
+        // Phase 323 (operator ruling 2026-10-01): "changed" is decided by `Delta.sameContent`, which
+        // tells -0.0 from 0.0 and a re-spelt decimal from the original, where the pre-272 model
+        // compared row tokens. The model follows the rule; what it models is still the dense form's
+        // pairing, ordering and refusals.
+        let tokens (t: Table) = RowAccess.rows t |> List.toArray
 
         keyIndex before
         |> Result.bind (fun bk ->
@@ -964,7 +967,11 @@ let private rowTokenDiff (idw: RowIdentity<'Id>) (before: Table) (after: Table) 
                     |> List.choose (fun (k, ai) ->
                         match Map.tryFind k bm with
                         | None -> Some(ByKey k, RowAdded)
-                        | Some bi -> if bt[bi] = at[ai] then None else Some(ByKey k, RowChanged))
+                        | Some bi ->
+                            if Array.forall2 Delta.sameContent bt[bi] at[ai] then
+                                None
+                            else
+                                Some(ByKey k, RowChanged))
 
                 let removed =
                     bk
@@ -981,7 +988,8 @@ let private rowTokenDiff (idw: RowIdentity<'Id>) (before: Table) (after: Table) 
 let private diffSchema: Schema = [ "id", StringType; "v", IntType; "w", FloatType ]
 
 /// The cells a drawn row takes: a small key pool so inserts collide with live keys, and the floats
-/// token equality treats specially (`-0.0` equal to `0.0`, every `NaN` one value) beside `Null`.
+/// token equality treats specially (`-0.0` equal to `0.0`, every `NaN` one value) beside `Null` —
+/// since Phase 323 the diff tells the two zeros apart, and the pool is what shows it.
 let private diffKeys = [| for i in 0..11 -> Str("k" + string i) |]
 let private diffInts = [| Int 1; Int 2; Int -3; Null |]
 let private diffFloats = [| Float 0.0; Float -0.0; Float nan; Float 1.5; Null |]

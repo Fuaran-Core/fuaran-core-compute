@@ -532,25 +532,29 @@ let groupByTailTests =
 
               Expect.equal (List.length restricted) 3 "every tail-bearing pipeline refreshed under restriction" ]
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Phase 323 — the seam's dirty-group recompute STREAMS the evaluator's accumulators
 // (`DataFrame.GroupAgg`) over a recomputed group's members, deferring to
-// `DataFrame.aggregateCells` exactly where the evaluator does. The law below holds the refresh equal
-// to the full evaluation for every aggregate, over int, float, decimal and string columns, on every
-// kind of keyed edit — a value edited in place, a row moved to another group, a row deleted, a row
-// inserted — cell by cell under `Cell.token`, which tells every two floats apart by their bits but
-// for the two zeros and the NaNs. So a float `Sum` rescanned in another order, or a `Max` that kept
-// the other of `Int 1` and `Float 1.0`, is red here even where `=` would call the cells equal.
+// `DataFrame.aggregateCells` exactly where the evaluator does, and an IN-PLACE refresh (every row
+// where it was) pays for the changed rows rather than for the table. The law below holds the
+// refresh equal to the full evaluation TO THE BIT for every aggregate, over int, float, decimal and
+// string columns, on every kind of keyed edit — a value edited in place, a row moved to another
+// group, a row deleted, a row inserted — so a float `Sum` rescanned in another order, a `Max` that
+// kept the other of `Int 1` and `Float 1.0`, or a reused cell from before an edit of `0.0` to
+// `-0.0`, is red here even where `=` would call the cells equal.
 //
-// Why the token and not the raw bits: `Delta.diff` is keyed on the same token, so an edit of `0.0`
-// to `-0.0` is NO edit to the seam — the row is stable, its group reused, and the refresh answers
-// the prior `0.0` where a full evaluation of the new source answers `-0.0`. That is the diff's
-// definition of a change, it predates this phase, and the first draw of this law found it (seed 5,
-// `Min` and `First` over a float column); it is reported, not absorbed here.
+// Its first draw found that last one: `Delta.diff` compared content by token, so `0.0` to `-0.0`
+// was no edit and the refresh answered the old zero. Since this phase (operator ruling 2026-10-01)
+// the diff compares by value and sign (`Delta.sameContent`), and this law compares raw bits.
 // ---------------------------------------------------------------------------
 
-/// Two tables equal cell by cell under `Cell.token` (see above), with equal schemas.
+/// Two tables equal to the bit: equal schemas, every float cell by its IEEE bits, every other cell
+/// structurally (a decimal by its text).
 let private sameBits (a: Table) (b: Table) : bool =
-    let cellEq (x: Cell) (y: Cell) = Cell.token x = Cell.token y
+    let cellEq (x: Cell) (y: Cell) =
+        match x, y with
+        | Float p, Float q -> System.BitConverter.DoubleToInt64Bits p = System.BitConverter.DoubleToInt64Bits q
+        | _ -> x = y
 
     a.Schema = b.Schema
     && List.length a.Columns = List.length b.Columns
@@ -591,7 +595,7 @@ let private seamTable (ty: ColumnType) (rows: (string * Cell * Cell) list) : Tab
 let streamedRecomputeTests =
     testList
         "Incremental — the dirty-group recompute streams the evaluator's accumulators (Phase 323)"
-        [ testCase "refresh equals the full evaluation under the token, for every aggregate and every keyed edit"
+        [ testCase "refresh equals the full evaluation to the bit, for every aggregate and every keyed edit"
           <| fun _ ->
               let everyFn =
                   [ Count; Sum; Mean; Min; Max; First; Last; Median; StdDev; CountDistinct ]
@@ -664,4 +668,103 @@ let streamedRecomputeTests =
                   (sprintf "refresh = full, to the bit: %s" (String.concat " | " (Seq.truncate 3 failures)))
 
               Expect.isGreaterThan compared 3_000 "the law compared, rather than skipping"
-              Expect.isGreaterThan recomputed 2_000 "the refreshes recomputed groups through the streamed path" ]
+              Expect.isGreaterThan recomputed 2_000 "the refreshes recomputed groups through the streamed path"
+
+          testCase
+              "an in-place refresh over a filter and a derive equals the full evaluation to the bit, and pays for the delta"
+          <| fun _ ->
+              // In place: the same rows in the same order, a few to many of them edited (past the
+              // point where a step reads a column whole rather than row by row), some edits flipping
+              // the filter, some moving a row to another group, some editing a group's first row.
+              // Each of those either takes the in-place path or declines it to the general walk; the
+              // answer is the full evaluation's either way, and the PRIOR state the next refresh starts
+              // from is the general walk's too, which the second refresh below holds.
+              let everyFn =
+                  [ Count; Sum; Mean; Min; Max; First; Last; Median; StdDev; CountDistinct ]
+
+              let failures = ResizeArray<string>()
+              let mutable compared = 0
+
+              for seed in 0..299 do
+                  let rng = System.Random(seed + 9_000)
+                  let ty = [| IntType; FloatType; DecimalType |][rng.Next 3]
+                  let pool = seamPool ty
+                  let n = 30 + rng.Next 60
+                  let key () = Str(string ("pqrs"[rng.Next 4]))
+
+                  let rows =
+                      [ for i in 0 .. n - 1 -> sprintf "r%d" i, key (), pool[rng.Next pool.Length] ]
+
+                  let edit (rs: (string * Cell * Cell) list) =
+                      let k = 1 + rng.Next(if rng.Next 3 = 0 then 40 else 3)
+                      let picked = set [ for _ in 1..k -> rng.Next n ]
+                      let moves = rng.Next 4 = 0
+
+                      rs
+                      |> List.mapi (fun i (id, kk, v) ->
+                          if picked.Contains i then
+                              id, (if moves then key () else kk), pool[rng.Next pool.Length]
+                          else
+                              id, kk, v)
+
+                  let rows1 = edit rows
+                  let t0 = seamTable ty rows
+                  let t1 = seamTable ty rows1
+                  let t2 = seamTable ty (edit rows1)
+
+                  for fn in everyFn do
+                      let pipeline =
+                          [ Filter(Not(IsNull(Col "v")))
+                            Derive("w", Col "v")
+                            GroupBy([ "k" ], [ agg "x" fn "w"; agg "n" Count "w" ]) ]
+
+                      match Incremental.primeOn idw pipeline t0 with
+                      | Error _ -> ()
+                      | Ok s0 ->
+                          let refreshTo (s: IncrementalEval) (a: Table) (b: Table) =
+                              Incremental.refreshOn idw pipeline s (ok (Delta.diff idw a b)) b
+
+                          match refreshTo s0 t0 t1, DataFrame.evalPipeline pipeline t1 with
+                          | Ok s1, Ok f1 ->
+                              compared <- compared + 1
+
+                              if not (sameBits (Incremental.result s1) f1) then
+                                  failures.Add(sprintf "seed %d %A over %A, first refresh" seed fn ty)
+
+                              match refreshTo s1 t1 t2, DataFrame.evalPipeline pipeline t2 with
+                              | Ok s2, Ok f2 ->
+                                  if not (sameBits (Incremental.result s2) f2) then
+                                      failures.Add(sprintf "seed %d %A over %A, second refresh" seed fn ty)
+                              | Error _, Error _ -> ()
+                              | r, f -> failures.Add(sprintf "seed %d %A over %A, second: %A vs %A" seed fn ty r f)
+                          | Error _, Error _ -> ()
+                          | r, f -> failures.Add(sprintf "seed %d %A over %A, first: %A vs %A" seed fn ty r f)
+
+              Expect.isEmpty
+                  (List.ofSeq failures |> List.truncate 3)
+                  (sprintf "in-place refresh = full, to the bit: %s" (String.concat " | " (Seq.truncate 3 failures)))
+
+              Expect.isGreaterThan compared 2_000 "the law compared, rather than skipping"
+
+          testCase "an in-place one-row edit re-evaluates one row and recomputes one group"
+          <| fun _ ->
+              let n = 2_000
+
+              let rows =
+                  [ for i in 0 .. n - 1 -> sprintf "r%d" i, Str(string ("pqrs"[i % 4])), Int i ]
+
+              let pipeline = [ Derive("w", Col "v"); GroupBy([ "k" ], [ agg "s" Sum "w" ]) ]
+              let before = seamTable IntType rows
+
+              let after =
+                  seamTable
+                      IntType
+                      (rows
+                       |> List.mapi (fun i (a, b, c) -> if i = 1_001 then a, b, Int -7 else a, b, c))
+
+              let s = step pipeline before after
+              Expect.equal (Ok(Incremental.result s)) (DataFrame.evalPipeline pipeline after) "refresh = full"
+
+              match (Incremental.footprint s).Recompute with
+              | GroupsRecomputed(1, 1) -> ()
+              | other -> failtestf "one row re-evaluated and one group recomputed, got %A" other ]

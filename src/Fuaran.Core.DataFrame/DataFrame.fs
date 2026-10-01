@@ -4398,17 +4398,29 @@ module DataFrame =
         /// cell itself, a `Decimal` canonicalised; `ValueNone` where `Column.aggregate` refuses it as
         /// outside the column's type — which the stream does not reproduce, but defers.
         let admitted (ty: ColumnType) (c: Cell) : Cell voption =
-            match c with
-            | Null -> ValueSome Null
-            | Decimal s when ty = DecimalType ->
-                match DecimalText.tryCanonical s with
-                | Some canonical -> ValueSome(if canonical = s then c else Decimal canonical)
-                | None -> ValueNone
+            match c, ty with
+            // The common pairs first, matched on both tags: a cell of the column's own type, or an
+            // int in a float or decimal column — `ColumnType.widens`' three rules, without its
+            // equality test per cell (Phase 323).
+            | Null, _ -> ValueSome Null
+            | Int _, (IntType | FloatType | DecimalType)
+            | Float _, FloatType
+            | Bool _, BoolType
+            | Str _, StringType
+            | Date _, DateType
+            | Timestamp _, TimestampType -> ValueSome c
             | _ ->
-                match Cell.typeOf c with
-                | Some t when ColumnType.widens t ty -> ValueSome c
-                | Some _ -> ValueNone
-                | None -> ValueSome c
+                match c with
+                | Null -> ValueSome Null
+                | Decimal s when ty = DecimalType ->
+                    match DecimalText.tryCanonical s with
+                    | Some canonical -> ValueSome(if canonical = s then c else Decimal canonical)
+                    | None -> ValueNone
+                | _ ->
+                    match Cell.typeOf c with
+                    | Some t when ColumnType.widens t ty -> ValueSome c
+                    | Some _ -> ValueNone
+                    | None -> ValueSome c
 
         let private isFinite (f: float) : bool =
             not (System.Double.IsNaN f || System.Double.IsInfinity f)

@@ -1470,16 +1470,17 @@ correctly gives it a verdict. Whether 1.6x stands for that node is the operator'
 is unchanged. Outside the windows the first build discarded, the other nodes stayed at or below 1.49 on the
 unpatched tree.
 
-### Streamed GroupBy aggregates, and the tick family they move (Phase 323)
+### Streamed GroupBy aggregates, and a refresh that pays for the delta (Phase 323)
 
 **The verdict first.** The `GroupBy` step now folds its aggregates in one pass, one accumulator per
 group slot, into typed output vectors; `byRegion`'s step at 100,000 rows reads 1.75 ms and 0.81 MB on
-.NET where it read 20.0 ms and 24.9 MB in the same paired run. The incremental seam's dirty-group
-recompute reads the same accumulators, so a recomputed group's cells are the full evaluation's. The
-tick family does **not** hold at 1.6x afterwards: `byRegion`, `filter > groupBy`,
-`filter > groupBy > filter` and the high-cardinality group-by read 1.8x to 2.4x in Release, in
-counted windows. The full evaluation halved and the tick did not move. That is the operator's to
-decide; `tickBound` is unchanged.
+.NET where it read 20.0 ms and 24.9 MB in the same paired run. That alone took the tick family out of
+its bound: the full evaluation halved and the tick did not move, so `byRegion`, `filter > groupBy`,
+`filter > groupBy > filter` and the high-cardinality group-by read 1.8x to 2.4x. Under the operator's
+ruling of 2026-10-01 (the bound stands; make the refresh pay for the delta) the seam then learned an
+IN-PLACE refresh, and on the final tree every corpus node holds 1.6x on the Release clock leg — the
+group-by nodes at 0.56 to 1.17, the worst node `window CumulSum` (Phase 333's) at 1.49 — with the
+leg green on its first counted attempt. `tickBound` is unchanged.
 
 **One aggregate semantics, held by a law.** `Column.aggregate` is still the single source. A stream
 answers only where its answer is that one — `Count`, `Sum`, `Mean`, `Min`, `Max`, `First`, `Last`
@@ -1493,26 +1494,38 @@ the double and int32 ranges, cells outside the type, empty groups), and is red a
 perturbed accumulators. A second law holds the whole step — key probe, streams, deferrals, typed
 output — equal to an oracle that calls `Column.aggregate` per group.
 
-**The seam: refresh equals full under the token.** `IncrementalGroupByTests` holds the refresh equal
-to the full evaluation for every aggregate, over int, float, decimal and string columns, on a value
-edited in place, a row moved to another group, a row deleted and a row inserted. The comparison is
-cell by cell under `Cell.token`, which tells every two floats apart by their bits except the two zeros
-and the NaNs. Its first draw found why the token and not the raw bits: an edit of `0.0` to `-0.0` is no
-edit to `Delta.diff`, which keys on the same token, so the row is stable, its group reused, and the
-refresh answers `0.0` where a full evaluation of the new source answers `-0.0`. That predates this
-phase (it reproduces on the pre-phase build) and is reported rather than absorbed.
+**Where the tick's time was.** A paired probe split the 100,000-row tick of `filter > groupBy` with
+the streamed evaluator: full 15.9 to 17.4 ms, diff 13.2 to 13.5, refresh 17.6 to 17.8 — the refresh
+unchanged from before the evaluator moved. Instrumented, a lone `GroupBy`'s refresh spent its time in
+the passes it made over EVERY row whatever the edit: the row tokens, the prior index, counting and
+unpacking source columns, re-evaluating or re-reading every row of every step, the carried-group loop.
 
-**Where the tick's time is.** A paired probe, pre-phase and phase trees interleaved, split the
-100,000-row tick: `filter > groupBy` read full 31.3 ms, diff 13.5 to 14.6, refresh 17.2, before;
-full 15.9 to 17.4, diff 13.2 to 13.5, refresh 17.6 to 17.8, after. The refresh did not get cheaper when
-its recompute was streamed, because the dirty group's aggregates were never a material part of it:
-instrumented, a lone `GroupBy`'s refresh spends its time in the passes every refresh makes over every
-row — the row tokens, the prior index, the frame's column unpack, the carried-group loop — each of the
-same order. Count and int `Sum` maintained by add and subtract, which the phase proposed, would remove
-the one part that was already immaterial, and was not built. Bringing these nodes back under 1.6x
-needs the refresh's per-row walk cut by about a third, which is seam work of its own.
+**The in-place refresh.** `Delta.diff` now records, beside a delta it produced, when every row of the
+new table sits where it sat (the same count, the same key at every index) and which rows' content
+moved. A refresh given such a delta, against the very table its state was evaluated over, takes the
+prior tokens as they are, builds the prior-slot and stability arrays without a lookup per row, does
+not count an unedited column's list, starts each `Filter` and `Derive` step from the prior
+evaluation's cells and evaluates the changed rows alone (reading them cell by cell rather than
+unpacking a column), and reuses the planned pipeline. Its `GroupBy` takes the prior partition, group
+order, member lists and group rows whenever every changed row stays in its group and is not a group's
+first row, and recomputes only those groups. `Count` and an int `Sum` are maintained there: the prior
+cell, less each changed member's prior contribution, plus its new one (on `byRegion` at 100,000 rows
+the dirty group's rescan had become 4 to 6 ms of an 8 to 10 ms refresh). A float `Sum` is rescanned
+over the group's members, so its bits stay the left fold. Anything the in-place reading does not
+cover — a moved, added or removed row, a sort, window, limit or join in the prefix, a row changing
+group — takes the general walk, whose answer it equals.
 
-The figures, .NET and node, and the clock leg's full table are in
+**The seam laws, to the bit.** `IncrementalGroupByTests` holds the refresh equal to the full evaluation
+to the IEEE bit for every aggregate, over int, float, decimal and string columns, on a value edited in
+place, a row moved to another group, a row deleted and a row inserted, and again over a filter and a
+derive with one to forty rows edited in place across two successive refreshes (so the state an
+in-place refresh leaves is the one the next refresh starts from). Its first draw found a defect older
+than this phase: `Delta.diff` decided "changed" by the cell token, so `0.0` edited to `-0.0` (and
+`1.50` re-spelt `1.5`) was no edit, and the refresh answered the old cell. Since this phase the diff
+decides by `Delta.sameContent` — value and sign for a float, the text for a decimal, NaN one value —
+and the law compares raw bits.
+
+The figures, .NET and node, and the clock leg's full tables are in
 `benchmarks/results/2026-10-01-snapdragon-x1e80100-phase-323.md`.
 
 ## What it does not do
