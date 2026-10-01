@@ -508,6 +508,26 @@ module internal KeyedIndexes =
             | true, (into, k) when obj.ReferenceEquals(into, source) && k.Scheme = scheme -> Some k
             | _ -> None
 
+    let private inPlaceByDelta =
+        System.Runtime.CompilerServices.ConditionalWeakTable<RowSetDelta, Table * Table * int[]>()
+
+    /// Phase 323 — record that `Delta.diff` found every row of `into` IN PLACE against `from`: the
+    /// same row count, and row `i` of each carrying the same key, so the delta holds no added and no
+    /// removed row and no row moved. `changed` lists the rows whose content moved, ascending. What
+    /// the incremental seam reads to make a refresh pay for the delta rather than for the table.
+    let attachInPlace (d: RowSetDelta) (from: Table) (into: Table) (changed: int[]) : unit =
+        inPlaceByDelta.AddOrUpdate(d, (from, into, changed))
+
+    /// The in-place record of a delta `Delta.diff` produced INTO `source` (by object identity):
+    /// the table it was diffed FROM and the changed rows. `None` for any other delta.
+    let inPlaceOf (d: TableDelta) (source: Table) : (Table * int[]) option =
+        match d with
+        | FullRefresh -> None
+        | RowSet r ->
+            match inPlaceByDelta.TryGetValue r with
+            | true, (from, into, changed) when obj.ReferenceEquals(into, source) -> Some(from, changed)
+            | _ -> None
+
 /// The delta algebra: construction, validation, composition, and the projections a consumer reads.
 [<RequireQualifiedAccess>]
 module Delta =
@@ -779,15 +799,17 @@ module Delta =
 
     // ---- diffing two tables (the reference producer) ----
 
-    /// Every row's canonical content token, in row order, indexable in O(1) (Phase 206).
+    /// Every row's cells, in row order, indexable in O(1) (Phase 206, as content tokens until Phase 323).
     ///
     /// This replaced a `rowContentToken t i` that read the row by index — a `Column.cell` per
     /// column, each walking its column list from the head — and was called once per candidate row.
     /// Computing the whole table's tokens in one transpose is linear, and the comparison below
     /// then costs a string equality rather than a table scan. Computed lazily at the point of use,
     /// so a diff that refuses on a keying defect never pays for it.
-    let private rowTokens (t: Table) : string[] =
-        RowAccess.rows t |> List.map DataFrame.rowTokenStringOfArray |> List.toArray
+    ///
+    /// Phase 323 — rows now, compared cell by cell under `sameContent` rather than as content
+    /// tokens, so an ordinal diff decides "changed" by the rule the keyed diff does.
+    let private rowArrays (t: Table) : Cell[][] = RowAccess.rows t |> List.toArray
 
     /// Index a table's rows by identity, refusing whole if the witness cannot key every row uniquely.
     let private keyIndex (idw: RowIdentity<'Id>) (t: Table) : Result<(string * int) list, DeltaDefect> =
@@ -813,6 +835,26 @@ module Delta =
                         go (i + 1) ((k, i) :: acc) (Set.add k seen)
 
         go 0 [] Set.empty
+
+    /// Is a cell's CONTENT unchanged — the rule `diff` decides "changed" by (Phase 323, an operator
+    /// ruling)? A float by its value and sign, so `0.0` edited to `-0.0` is a change (NaN is one
+    /// value); a decimal by its
+    /// text, so `1.50` re-spelt `1.5` is a change; every other cell by `CellKey.equals`, which for
+    /// them is already exact. It was token equality, under which both edits were no edit: the row
+    /// stayed `Stable`, the incremental seam reused what it had computed from the old cell, and a
+    /// refresh answered `0.0` where a full evaluation of the new source answered `-0.0`. Grouping and
+    /// distinctness still compare by token (two zeros are one group); what a delta reports is
+    /// whether the source MOVED, and a consumer can see both of these moves.
+    let internal sameContent (a: Cell) (b: Cell) : bool =
+        match a, b with
+        // Every NaN is one value (its payload is not portable across hosts); the two zeros are told
+        // apart by the sign of their reciprocal, which every host computes alike.
+        | Float x, Float y ->
+            if System.Double.IsNaN x then System.Double.IsNaN y
+            elif x = 0.0 && y = 0.0 then (1.0 / x) = (1.0 / y)
+            else x = y
+        | Decimal x, Decimal y -> System.String.Equals(x, y)
+        | _ -> DataFrame.CellKey.equals a b
 
     /// The delta from `before` to `after`, addressed by the witness's identity.
     ///
@@ -1149,7 +1191,7 @@ module Delta =
                         let a = aCol ci
 
                         for r in 0 .. shared - 1 do
-                            if inPlace[r] && not changed[r] && not (DataFrame.CellKey.equals b[r] a[r]) then
+                            if inPlace[r] && not changed[r] && not (sameContent b[r] a[r]) then
                                 changed[r] <- true
 
                 // A row that moved is compared whole, across every column: its two positions differ,
@@ -1161,7 +1203,7 @@ module Delta =
                     while not differs && ci < names.Length do
                         let b = bCol ci
                         let a = aCol ci
-                        differs <- not (DataFrame.CellKey.equals b[bi] a[ai])
+                        differs <- not (sameContent b[bi] a[ai])
                         ci <- ci + 1
 
                     differs
@@ -1213,6 +1255,17 @@ module Delta =
                       InvalidatedColumns = [] }
 
                 KeyedIndexes.attach delta after aKnown
+
+                // Phase 323 — every row in place: say so, with the changed rows, for the seam.
+                if na = nb && Array.forall id inPlace then
+                    KeyedIndexes.attachInPlace
+                        delta
+                        before
+                        after
+                        [| for r in 0 .. na - 1 do
+                               if changed[r] then
+                                   yield r |]
+
                 Ok(RowSet delta)
 
     /// The delta from `before` to `after` for a source with NO identity — rows compared by position,
@@ -1226,12 +1279,12 @@ module Delta =
             let nb = Table.rowCount before
             let na = Table.rowCount after
             let shared = min nb na
-            let beforeTokens = rowTokens before
-            let afterTokens = rowTokens after
+            let beforeRows = rowArrays before
+            let afterRows = rowArrays after
 
             let changed =
                 [ for i in 0 .. shared - 1 do
-                      if beforeTokens[i] <> afterTokens[i] then
+                      if not (Array.forall2 sameContent beforeRows[i] afterRows[i]) then
                           ByOrdinal i, RowChanged ]
 
             let added = [ for i in shared .. na - 1 -> ByOrdinal i, RowAdded ]

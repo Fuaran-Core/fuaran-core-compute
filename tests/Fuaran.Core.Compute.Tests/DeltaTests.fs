@@ -458,7 +458,10 @@ let tests =
               | Error(DuplicateIdentity(_, k)) -> Expect.equal k "s:a" "names the repeated identity"
               | other -> failtestf "expected DuplicateIdentity, got %A" other
 
-          testCase "row content is compared by the PINNED canonical token, so -0.0 and 0.0 agree"
+          // Phase 323 (operator ruling 2026-10-01): content is compared by value AND sign, so an edit of
+          // 0.0 to -0.0 is a change. Under the token rule it was not, and a refresh answered the old
+          // zero where a full evaluation of the new source answered the new one.
+          testCase "row content tells -0.0 from 0.0, and a re-spelt decimal from the original (Phase 323)"
           <| fun _ ->
               let mk (v: float) : Table =
                   { Schema = [ "id", StringType; "v", FloatType ]
@@ -467,7 +470,26 @@ let tests =
                         Column.create "v" FloatType [ Float v ] ] }
 
               let d = ok (Delta.diff idWitness (mk 0.0) (mk -0.0))
-              Expect.isTrue (Delta.isQuiet d) "-0.0 and 0.0 are the same value in the columnar model"
+              Expect.isFalse (Delta.isQuiet d) "-0.0 is a different cell from 0.0, so the edit is a change"
+              Expect.isTrue (Delta.isQuiet (ok (Delta.diff idWitness (mk nan) (mk nan)))) "NaN is one value"
+
+              Expect.isTrue
+                  (Delta.isQuiet (ok (Delta.diff idWitness (mk 0.0) (mk 0.0))))
+                  "an unedited zero is no change"
+
+              let dec (v: string) : Table =
+                  { Schema = [ "id", StringType; "v", DecimalType ]
+                    Columns =
+                      [ Column.create "id" StringType [ Str "a" ]
+                        Column.create "v" DecimalType [ Decimal v ] ] }
+
+              Expect.isFalse
+                  (Delta.isQuiet (ok (Delta.diff idWitness (dec "1.50") (dec "1.5"))))
+                  "a decimal re-spelt is a different cell"
+
+              Expect.isFalse
+                  (Delta.isQuiet (Delta.diffByOrdinal (mk 0.0) (mk -0.0)))
+                  "the ordinal diff decides by the same rule"
 
           testCase "a composite key witness addresses rows by the tuple"
           <| fun _ ->

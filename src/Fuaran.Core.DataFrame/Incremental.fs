@@ -13,7 +13,8 @@ namespace Fuaran.Core
 //     restriction of `DataFrame.evalPipeline`, never a second semantics: a
 //     re-evaluated cell goes through `DataFrame.evalExprInRow`'s array twin
 //     (`resolveExpr` once per step, `evalResolved` per row), a recomputed
-//     aggregate through `DataFrame.aggregateCells`, a derived column's type
+//     aggregate through the evaluator's own streams (`DataFrame.GroupAgg`,
+//     Phase 323) or `DataFrame.aggregateCells`, a derived column's type
 //     through `DataFrame.inferCellType`. One implementation, called on fewer
 //     rows. The conformance family certifies the two results identical for
 //     every (base, delta) pair, so a divergence is a failing law rather than a
@@ -445,6 +446,12 @@ type IncrementalEval =
             /// `None` where it was not the path taken. The instrument `IncrementalRefreshCostTests`
             /// reads: a one-cell edit is one chunk, whatever the row count.
             ChunksTouched: int option
+            /// Phase 323 — per source schema column, whether its cell list was exactly the source's
+            /// row count (unpadded, uncut), as the walk found it; empty where no walk ran.
+            SourceExact: bool[]
+            /// Phase 323 — the group table's rows (key cells, then aggregate cells) as the
+            /// maintained `GroupBy` last computed them, aligned with `GroupOrder`; empty otherwise.
+            GroupRows: Cell[][]
         }
 
 /// The incremental evaluation seam: classify a pipeline, prime a state over a source, then refresh
@@ -895,12 +902,19 @@ module Incremental =
     /// did not reach the step). `Steps` accumulates this evaluation's, one array per evaluating step,
     /// indexed by this frame's slots: the walk's `evalIdx` is always `Steps.Count`.
     type private WalkRows =
-        { Tokens: string[]
-          Prior: int[]
-          Stable: bool[]
-          PriorSteps: Cell[][]
-          PriorCount: int
-          Steps: ResizeArray<Cell[]> }
+        {
+            Tokens: string[]
+            Prior: int[]
+            Stable: bool[]
+            PriorSteps: Cell[][]
+            PriorCount: int
+            Steps: ResizeArray<Cell[]>
+            /// Phase 323 — when not `null`, every slot holds the row the PRIOR evaluation held at that
+            /// slot (the delta found every row in place and no prefix step reorders), the slots not
+            /// listed here are `Stable`, and these are the changed slots, ascending. A step may then
+            /// start from the prior step's cells and evaluate only these.
+            InPlace: int[]
+        }
 
     /// The value the prior evaluation computed at evaluating step `evalIdx` for the row now at slot
     /// `s`, where it may still be reused — the row is `Stable` and the prior evaluation reached that
@@ -969,6 +983,46 @@ module Incremental =
     /// `DataFrame.evalResolved` reads. A scratch array per step, refilled per evaluated row at just
     /// the columns the step's expression reads: the evaluator reads cells out of it and keeps none of
     /// it, so a row costs no allocation of its own.
+    /// Phase 323 — how many changed rows an in-place step reads one cell at a time from a source
+    /// column's list (each read walks the list to the row) before unpacking the column whole is the
+    /// cheaper reading.
+    [<Literal>]
+    let private sparseRowLimit = 16
+
+    /// Does the ASCENDING order `order` hold slot `s`? A binary search, written out: Fable maps no
+    /// `System.Array.BinarySearch` (Phase 323).
+    let private reaches (order: int[]) (s: int) : bool =
+        let mutable lo = 0
+        let mutable hi = order.Length - 1
+        let mutable found = false
+
+        while not found && lo <= hi do
+            let mid = lo + (hi - lo) / 2
+            let v = order[mid]
+
+            if v = s then found <- true
+            elif v < s then lo <- mid + 1
+            else hi <- mid - 1
+
+        found
+
+    /// The cell at slot `s` of column `c`: from the column's array where it has one, else by walking
+    /// the source list to it — one row's read, without unpacking the column.
+    let private cellAtSlot (f: WalkFrame) (c: int) (s: int) : Cell =
+        let a = f.Data[c]
+
+        if not (isNull a) then
+            a[s]
+        else
+            let mutable rest = f.Origins[c].Value
+            let mutable i = 0
+
+            while i < s do
+                rest <- rest.Tail
+                i <- i + 1
+
+            rest.Head
+
     let private fillRow (f: WalkFrame) (cols: int[]) (s: int) (into: Cell[]) =
         for c in cols do
             into[c] <- (column f c)[s]
@@ -1052,12 +1106,51 @@ module Incremental =
         (resolved: DataFrame.ResolvedExpr)
         (evaluated: int)
         : Result<Cell[] * int, EvalError> =
-        let step: Cell[] = Array.zeroCreate r.Stable.Length
         let scratch: Cell[] = Array.zeroCreate f.Data.Length
         let reads = columnsRead resolved
         let mutable n = evaluated
         let mutable failed = None
         let mutable k = 0
+
+        // Phase 323 — in place, the step starts from the prior evaluation's cells for this very step
+        // (every stable row's value, and `null` where the prior walk did not reach the row, which a
+        // stable row's walk does not reach now either) and evaluates the changed rows alone. A
+        // changed row the walk no longer reaches is cleared, as the full walk would leave it. The
+        // changed rows are read cell by cell from the source's lists when they are few, so a column
+        // the step reads is not unpacked whole to read one row of it.
+        let inPlace =
+            not (isNull r.InPlace)
+            && evalIdx < r.PriorSteps.Length
+            && r.PriorSteps[evalIdx].Length = r.Stable.Length
+
+        let step: Cell[] =
+            if inPlace then
+                Array.copy r.PriorSteps[evalIdx]
+            else
+                Array.zeroCreate r.Stable.Length
+
+        if inPlace then
+            let sparse = r.InPlace.Length <= sparseRowLimit
+            let mutable j = 0
+
+            while failed.IsNone && j < r.InPlace.Length do
+                let s = r.InPlace[j]
+
+                if reaches f.Order s then
+                    for c in reads do
+                        scratch[c] <- if sparse then cellAtSlot f c s else (column f c)[s]
+
+                    match DataFrame.evalResolved scratch resolved with
+                    | Ok c ->
+                        step[s] <- c
+                        n <- n + 1
+                    | Error e -> failed <- Some e
+                else
+                    step[s] <- Unchecked.defaultof<Cell>
+
+                j <- j + 1
+
+            k <- f.Order.Length
 
         while failed.IsNone && k < f.Order.Length do
             let s = f.Order[k]
@@ -1328,7 +1421,15 @@ module Incremental =
             evalStep r f evalIdx resolved evaluated
             |> Result.bind (fun (step, n) ->
                 r.Steps.Add step
-                let kept = f.Order |> Array.filter (fun s -> step[s] = Bool true)
+                // Matched, not compared: `=` on a cell is structural equality through the generic
+                // comparer, once per row (Phase 323).
+                let kept =
+                    f.Order
+                    |> Array.filter (fun s ->
+                        match step[s] with
+                        | Bool true -> true
+                        | _ -> false)
+
                 walk resolve env prior r { f with Order = kept } n caches rest)
         | WProject pairs :: rest ->
             let resolveOne (src, out) =
@@ -1453,10 +1554,14 @@ module Incremental =
 
     /// The prior evaluation's group caches, positional as `GroupOutcome` records them.
     type private PriorGroups =
-        { Order: string[]
-          RowGroups: int[]
-          Members: string list[]
-          Aggs: Cell list[] }
+        {
+            Order: string[]
+            RowGroups: int[]
+            Members: string list[]
+            Aggs: Cell list[]
+            /// Phase 323 — the group rows, aligned with `Order`.
+            Rows: Cell[][]
+        }
 
     /// Recompute a final `GroupBy` over the walked frame, recomputing only the affected groups'
     /// aggregates and reusing the cached cells for the rest. Mirrors `evalGroupBy`'s order of
@@ -1644,31 +1749,81 @@ module Incremental =
                 // the prior list itself) when every member is stable, the members are the prior
                 // members in the prior order, and the prior aggregates are cached; recomputed
                 // otherwise.
-                while failed.IsNone && gi < groupCount do
-                    let pg = if groupStable[gi] then priorOf gi else -1
+                //
+                // Phase 323 — which groups are reused is decided first (it reads nothing an
+                // aggregate computes), and the recomputed groups' aggregates are then STREAMED: one
+                // `DataFrame.GroupAgg` accumulator per aggregate, fed each recomputed group's
+                // members in member order — the evaluator's own streams, so a recomputed group's
+                // cells are the cells the full evaluation computes, to the bit. A group-aggregate
+                // the stream defers is computed by `DataFrame.aggregateCells` over its members, as
+                // every recomputed group's was before.
+                let reusedFrom: int[] = Array.create groupCount -1
+
+                for g in 0 .. groupCount - 1 do
+                    let pg = if groupStable[g] then priorOf g else -1
 
                     if
                         pg >= 0
                         && pg < prior.Members.Length
                         && pg < prior.Aggs.Length
-                        && sameMembers prior.Members[pg] groupSlots[gi]
+                        && sameMembers prior.Members[pg] groupSlots[g]
                     then
+                        reusedFrom[g] <- pg
+
+                let aggArr = List.toArray resolvedAggs
+
+                let streams =
+                    if reusedFrom |> Array.forall (fun pg -> pg >= 0) then
+                        [||]
+                    else
+                        aggArr
+                        |> Array.map (fun (a, ty, ci) ->
+                            let s =
+                                DataFrame.GroupAgg.Stream(
+                                    a.Fn,
+                                    ty,
+                                    Cells(column f ci),
+                                    groupCount,
+                                    DataFrame.GroupAgg.Exact
+                                )
+
+                            for g in 0 .. groupCount - 1 do
+                                if reusedFrom[g] < 0 then
+                                    for slot in groupSlots[g] do
+                                        s.Feed(g, slot)
+
+                            s)
+
+                while failed.IsNone && gi < groupCount do
+                    let pg = reusedFrom[gi]
+
+                    if pg >= 0 then
                         members[gi] <- prior.Members[pg]
                         aggCells[gi] <- prior.Aggs[pg]
                     else
                         recomputed <- recomputed + 1
                         recomputedAt[gi] <- true
 
-                        match
-                            resolvedAggs
-                            |> traverse (fun (a, ty, ci) ->
-                                DataFrame.aggregateCells a.Fn ty (columnOf groupSlots[gi] ci))
-                        with
-                        | Ok vals ->
-                            aggCells[gi] <- vals
+                        // In aggregate order, stopping at the first error — the traverse this replaced.
+                        let vals: Cell[] = Array.zeroCreate aggArr.Length
+                        let mutable j = 0
+
+                        while failed.IsNone && j < aggArr.Length do
+                            match streams[j].TryCell gi with
+                            | ValueSome c -> vals[j] <- c
+                            | ValueNone ->
+                                let a, ty, ci = aggArr[j]
+
+                                match DataFrame.aggregateCells a.Fn ty (columnOf groupSlots[gi] ci) with
+                                | Ok c -> vals[j] <- c
+                                | Error e -> failed <- Some e
+
+                            j <- j + 1
+
+                        if failed.IsNone then
+                            aggCells[gi] <- List.ofArray vals
                             let slots = groupSlots[gi]
                             members[gi] <- List.init slots.Count (fun j -> r.Tokens[slots[j]])
-                        | Error e -> failed <- Some e
 
                     gi <- gi + 1
 
@@ -1684,6 +1839,337 @@ module Incremental =
                           Aggs = aggCells
                           Recomputed = recomputed
                           RecomputedAt = recomputedAt })
+
+    /// The cells of column `c` at the ASCENDING slots `slots`: from the column's array where it has
+    /// one, else in one walk down the source list — without unpacking the column (Phase 323).
+    let private cellsAtSlots (f: WalkFrame) (c: int) (slots: ResizeArray<int>) : Cell[] =
+        let out: Cell[] = Array.zeroCreate slots.Count
+        let a = f.Data[c]
+
+        if not (isNull a) then
+            for j in 0 .. slots.Count - 1 do
+                out[j] <- a[slots[j]]
+        else
+            let mutable rest = f.Origins[c].Value
+            let mutable at = 0
+
+            for j in 0 .. slots.Count - 1 do
+                while at < slots[j] do
+                    rest <- rest.Tail
+                    at <- at + 1
+
+                out[j] <- rest.Head
+
+        out
+
+    /// Phase 323 — the maintained `GroupBy` of an IN-PLACE refresh (`WalkRows.InPlace`), paying for
+    /// the changed rows rather than for the table: `Some` where it applies, `None` to take
+    /// `groupStep`'s general walk, whose answer it equals.
+    ///
+    /// It applies when every changed row is still in the group it was in (the walk reaches it
+    /// exactly when it reached it before, and its key cells name the same group) and is not the
+    /// first member of that group (whose cells are the group row's key cells). Then the partition,
+    /// the group order and every member list are the prior evaluation's, row for row, and the
+    /// groups `groupStep` would recompute are exactly the changed rows' groups — every other group
+    /// is stable with the same members, which is `groupStep`'s reuse condition. Those are
+    /// recomputed over their members in member order by the evaluator's streams (deferring to
+    /// `DataFrame.aggregateCells` where a stream defers), in group order, and the first error is
+    /// `groupStep`'s first error. The rest is the prior state's: its rows, its member lists, its
+    /// aggregate cells.
+    ///
+    /// A `Count`, and an int `Sum` whose changed members all hold an int now, is MAINTAINED rather
+    /// than recomputed: the prior cell, less what each changed member contributed before, plus what
+    /// it contributes now — exact, so the same cell `Column.aggregate` answers over the members. It
+    /// needs each changed member's prior cell, which an in-place walk has: a derived column's in the
+    /// prior evaluation's step cells, a source column's in the prior source's column of the same
+    /// schema position (the frame column's cell list must be exactly ONE current source column's
+    /// list, which names the position). Anything it cannot
+    /// read, or a cell `Column.aggregate` would refuse, is recomputed. A float `Sum` is never
+    /// maintained: its bits are the left fold over the members in order, so it is rescanned.
+    let private groupStepInPlace
+        (f: WalkFrame)
+        (r: WalkRows)
+        (keys: string list)
+        (aggs: Agg list)
+        (prior: PriorGroups)
+        (source: Table)
+        (priorSource: Table)
+        (priorExact: bool[])
+        : Result<GroupOutcome, EvalError> option =
+        let cols = f.Cols
+        let groupCount = prior.Order.Length
+
+        let keyIdx = keys |> List.map (colIndex cols)
+
+        let aggIdx =
+            aggs
+            |> List.map (fun a ->
+                match colType cols a.Of, colIndex cols a.Of with
+                | Some ty, Some ci -> Some(a, ty, ci)
+                | _ -> None)
+
+        if
+            isNull r.InPlace
+            || groupCount = 0
+            || prior.RowGroups.Length <> r.Stable.Length
+            || prior.Members.Length <> groupCount
+            || prior.Aggs.Length <> groupCount
+            || prior.Rows.Length <> groupCount
+            || keyIdx |> List.exists Option.isNone
+            || aggIdx |> List.exists Option.isNone
+        then
+            None
+        else
+            let idxs = keyIdx |> List.map Option.get |> List.toArray
+            let aggArr = aggIdx |> List.map Option.get |> List.toArray
+            let probe: Cell[] = Array.zeroCreate idxs.Length
+            let dirty: bool[] = Array.zeroCreate groupCount
+            let changedIn = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+            let mutable applies = true
+            let mutable j = 0
+
+            while applies && j < r.InPlace.Length do
+                let s = r.InPlace[j]
+                let pg = prior.RowGroups[s]
+                let reached = reaches f.Order s
+
+                if reached <> (pg >= 0) then
+                    applies <- false
+                elif pg >= 0 then
+                    for k in 0 .. idxs.Length - 1 do
+                        probe[k] <- cellAtSlot f idxs[k] s
+
+                    let opener =
+                        match prior.Members[pg] with
+                        | t :: _ -> System.String.Equals(t, r.Tokens[s])
+                        | [] -> true
+
+                    if
+                        opener
+                        || not (System.String.Equals(DataFrame.rowTokenStringOfArray probe, prior.Order[pg]))
+                    then
+                        applies <- false
+                    else
+                        dirty[pg] <- true
+
+                        match changedIn.TryGetValue pg with
+                        | true, xs -> xs.Add s
+                        | _ ->
+                            let xs = ResizeArray<int>()
+                            xs.Add s
+                            changedIn[pg] <- xs
+
+                j <- j + 1
+
+            if not applies then
+                None
+            else
+                // The dirty groups' member slots, in member order: the walk's order is ascending in
+                // place, and the partition is the prior one.
+                let slotsOf = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+
+                for g in 0 .. groupCount - 1 do
+                    if dirty[g] then
+                        slotsOf[g] <- ResizeArray<int>()
+
+                for s in f.Order do
+                    let g = prior.RowGroups[s]
+
+                    if g >= 0 && dirty[g] then
+                        slotsOf[g].Add s
+
+                let nk = idxs.Length
+
+                // The cell column `c` held at slot `s` in the PRIOR evaluation, where it can be read.
+                let priorCellAt (c: int) (s: int) : Cell voption =
+                    let a = f.Data[c]
+                    let mutable stepIdx = -1
+
+                    if not (isNull a) then
+                        for idx in 0 .. r.Steps.Count - 1 do
+                            if obj.ReferenceEquals(r.Steps[idx], a) then
+                                stepIdx <- idx
+
+                    if stepIdx >= 0 then
+                        if stepIdx < r.PriorSteps.Length && s < r.PriorSteps[stepIdx].Length then
+                            let v = r.PriorSteps[stepIdx][s]
+                            if isNull (box v) then ValueNone else ValueSome v
+                        else
+                            ValueNone
+                    elif not (isNull (box priorSource)) && f.Origins[c].IsSome then
+                        // The current source column this frame column IS: the one schema position
+                        // whose cell list is the frame column's list.
+                        let list = f.Origins[c].Value
+                        let mutable at = -1
+                        let mutable matches = 0
+
+                        source.Schema
+                        |> List.iteri (fun i (name, _) ->
+                            match Table.tryColumn name source with
+                            | Some sc when obj.ReferenceEquals(sc.Cells, list) ->
+                                at <- i
+                                matches <- matches + 1
+                            | _ -> ())
+
+                        let priorColumn =
+                            if matches = 1 && at < priorExact.Length && priorExact[at] then
+                                Table.tryColumn (fst (List.item at priorSource.Schema)) priorSource
+                            else
+                                None
+
+                        match priorColumn with
+                        | Some pc ->
+                            let mutable rest = pc.Cells
+                            let mutable i = 0
+
+                            while i < s && not rest.IsEmpty do
+                                rest <- rest.Tail
+                                i <- i + 1
+
+                            if rest.IsEmpty then ValueNone else ValueSome rest.Head
+                        | None -> ValueNone
+                    else
+                        ValueNone
+
+                // A maintained `Count` or int `Sum` (see above), or `ValueNone` to recompute.
+                let maintained (fn: AggFn) (ty: ColumnType) (c: int) (priorCell: Cell) (changed: ResizeArray<int>) =
+                    if not (fn = Count || (fn = Sum && ty = IntType)) then
+                        ValueNone
+                    else
+                        let mutable ok = true
+                        let mutable allNewInt = true
+                        let mutable delta = 0L
+                        let mutable i = 0
+
+                        while ok && i < changed.Count do
+                            let s = changed[i]
+
+                            match priorCellAt c s, DataFrame.GroupAgg.admitted ty (cellAtSlot f c s) with
+                            | ValueSome before, ValueSome now ->
+                                if fn = Count then
+                                    let present (x: Cell) =
+                                        match x with
+                                        | Null -> 0L
+                                        | _ -> 1L
+
+                                    delta <- delta + present now - present before
+                                else
+                                    match before with
+                                    | Int x -> delta <- delta - int64 x
+                                    | Null -> ()
+                                    | _ -> ok <- false
+
+                                    match now with
+                                    | Int x -> delta <- delta + int64 x
+                                    | _ -> allNewInt <- false
+                            | _ -> ok <- false
+
+                            i <- i + 1
+
+                        if not ok then
+                            ValueNone
+                        elif fn = Count then
+                            match priorCell with
+                            | Int n -> ValueSome(Int(int (int64 n + delta)))
+                            | _ -> ValueNone
+                        elif not allNewInt then
+                            ValueNone
+                        else
+                            let before =
+                                match priorCell with
+                                | Int x -> ValueSome(int64 x)
+                                | Null -> ValueSome 0L
+                                | _ -> ValueNone
+
+                            match before with
+                            | ValueSome b ->
+                                let total = b + delta
+
+                                if total >= int64 System.Int32.MinValue && total <= int64 System.Int32.MaxValue then
+                                    ValueSome(Int(int total))
+                                else
+                                    ValueNone
+                            | ValueNone -> ValueNone
+
+                let members = Array.copy prior.Members
+                let aggCells = Array.copy prior.Aggs
+                let rows = Array.copy prior.Rows
+                let recomputedAt: bool[] = Array.zeroCreate groupCount
+                let mutable recomputed = 0
+                let mutable failed = None
+                let mutable g = 0
+
+                while failed.IsNone && g < groupCount do
+                    if dirty[g] then
+                        recomputed <- recomputed + 1
+                        recomputedAt[g] <- true
+                        let slots = slotsOf[g]
+                        let vals: Cell[] = Array.zeroCreate aggArr.Length
+                        let priorVals = List.toArray prior.Aggs[g]
+                        let read = System.Collections.Generic.Dictionary<int, Cell[]>()
+                        let mutable k = 0
+
+                        while failed.IsNone && k < aggArr.Length do
+                            let a, ty, ci = aggArr[k]
+
+                            match
+                                (if k < priorVals.Length then
+                                     maintained a.Fn ty ci priorVals[k] changedIn[g]
+                                 else
+                                     ValueNone)
+                            with
+                            | ValueSome c -> vals[k] <- c
+                            | ValueNone ->
+                                let cells =
+                                    match read.TryGetValue ci with
+                                    | true, cs -> cs
+                                    | _ ->
+                                        let cs = cellsAtSlots f ci slots
+                                        read[ci] <- cs
+                                        cs
+
+                                let stream =
+                                    DataFrame.GroupAgg.Stream(a.Fn, ty, Cells cells, 1, DataFrame.GroupAgg.Exact)
+
+                                for i in 0 .. cells.Length - 1 do
+                                    stream.Feed(0, i)
+
+                                match stream.TryCell 0 with
+                                | ValueSome c -> vals[k] <- c
+                                | ValueNone ->
+                                    match DataFrame.aggregateCells a.Fn ty (List.ofArray cells) with
+                                    | Ok c -> vals[k] <- c
+                                    | Error e -> failed <- Some e
+
+                            k <- k + 1
+
+                        if failed.IsNone then
+                            aggCells[g] <- List.ofArray vals
+                            rows[g] <- Array.append (Array.sub prior.Rows[g] 0 nk) vals
+
+                    g <- g + 1
+
+                match failed with
+                | Some e -> Some(Error e)
+                | None ->
+                    let keyCols = keys |> List.map (fun k -> k, colType cols k |> Option.get)
+
+                    let aggCols =
+                        aggArr
+                        |> Array.toList
+                        |> List.map (fun (a, ty, _) -> a.Name, DataFrame.aggregateType a.Fn ty)
+
+                    Some(
+                        Ok
+                            { Cols = keyCols @ aggCols
+                              Rows = List.ofArray rows
+                              Order = prior.Order
+                              RowGroups = prior.RowGroups
+                              Members = members
+                              Aggs = aggCells
+                              Recomputed = recomputed
+                              RecomputedAt = recomputedAt }
+                    )
 
     // ---- identity tokens ----
 
@@ -1827,13 +2313,26 @@ module Incremental =
     /// exactly as `RowAccess.columns` pads (a name the table does not carry, or a column shorter
     /// than the table, reads `Null` — the total `Column.cell` policy), and beside each the source's
     /// own list where the array is that list unpadded.
-    let private frameOf (t: Table) (n: int) : WalkFrame =
+    let private frameOf (t: Table) (n: int) (priorSource: Table) (priorExact: bool[]) : WalkFrame =
+        // Phase 323 — a column whose cell list IS the list of the prior source's column of that name
+        // (an in-place refresh: the edit did not touch it) has the length the prior frame found, so
+        // it is not walked again to count it. `priorSource` is `null` everywhere else; where it is
+        // not, the caller has established that it held exactly `n` rows, row for row, under this
+        // schema, and `priorExact` says which of its columns' lists were exactly `n` long.
+        let unchanged (ci: int) (name: string) (c: Column) =
+            not (isNull (box priorSource))
+            && ci < priorExact.Length
+            && priorExact[ci]
+            && (match Table.tryColumn name priorSource with
+                | Some pc -> System.Object.ReferenceEquals(pc.Cells, c.Cells)
+                | None -> false)
+
         let unpacked =
             t.Schema
-            |> List.map (fun (name, _) ->
+            |> List.mapi (fun ci (name, _) ->
                 match Table.tryColumn name t with
                 | Some c ->
-                    if List.length c.Cells = n then
+                    if unchanged ci name c || List.length c.Cells = n then
                         null, Some c.Cells
                     else
                         let a = List.toArray c.Cells
@@ -1863,9 +2362,25 @@ module Incremental =
         (tokens: string[])
         (prior: IncrementalEval option)
         (named: Set<string> option)
+        (inPlace: int[] option)
         (recomputeOf: int -> int -> Recompute)
         : Result<IncrementalEval, EvalError> =
         let rowCount = tokens.Length
+
+        // Phase 323 — the in-place reading holds only over a prefix that never reorders the rows.
+        let inPlaceRows =
+            match inPlace, prior, named with
+            | Some changed, Some s, Some _ when
+                obj.ReferenceEquals(tokens, s.Tokens)
+                && prefix
+                   |> List.forall (function
+                       | WFilter _
+                       | WDerive _
+                       | WProject _ -> true
+                       | _ -> false)
+                ->
+                changed
+            | _ -> null
 
         let priorTokens =
             prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
@@ -1902,25 +2417,35 @@ module Incremental =
         let priorOf: int[] = Array.zeroCreate rowCount
         let stable: bool[] = Array.zeroCreate rowCount
 
-        for i in 0 .. rowCount - 1 do
-            let token = tokens[i]
+        // Phase 323 — in place, every row's prior slot is its slot and every row but the changed
+        // ones is stable: what the loop below computes, by construction rather than by lookup.
+        if not (isNull inPlaceRows) then
+            for i in 0 .. rowCount - 1 do
+                priorOf[i] <- i
+                stable[i] <- true
 
-            // The reference test is an OPTIMISATION and is unobservable, which is what makes it safe
-            // in a Fable-compiled library where strings are primitives and `ReferenceEquals` compares
-            // by VALUE: tokens are unique within a frame, so the only `j` with `priorTokens[j] =
-            // token` is `i` whenever `priorTokens[i] = token`.
-            let ps =
-                if i < priorTokens.Length && System.Object.ReferenceEquals(token, priorTokens[i]) then
-                    i
-                else
-                    priorSlotOf token
+            for c in inPlaceRows do
+                stable[c] <- false
+        else
+            for i in 0 .. rowCount - 1 do
+                let token = tokens[i]
 
-            priorOf[i] <- ps
+                // The reference test is an OPTIMISATION and is unobservable, which is what makes it safe
+                // in a Fable-compiled library where strings are primitives and `ReferenceEquals` compares
+                // by VALUE: tokens are unique within a frame, so the only `j` with `priorTokens[j] =
+                // token` is `i` whenever `priorTokens[i] = token`.
+                let ps =
+                    if i < priorTokens.Length && System.Object.ReferenceEquals(token, priorTokens[i]) then
+                        i
+                    else
+                        priorSlotOf token
 
-            stable[i] <-
-                match named with
-                | None -> false
-                | Some ns -> ps >= 0 && not (Set.contains token ns)
+                priorOf[i] <- ps
+
+                stable[i] <-
+                    match named with
+                    | None -> false
+                    | Some ns -> ps >= 0 && not (Set.contains token ns)
 
         let rows =
             { Tokens = tokens
@@ -1928,7 +2453,8 @@ module Incremental =
               Stable = stable
               PriorSteps = priorSteps
               PriorCount = priorTokens.Length
-              Steps = ResizeArray<Cell[]>() }
+              Steps = ResizeArray<Cell[]>()
+              InPlace = inPlaceRows }
 
         let priorCaches =
             match prior with
@@ -1937,7 +2463,15 @@ module Incremental =
                   JoinKeys = s.JoinKeys }
             | None -> noCaches
 
-        walk resolve env priorCaches rows (frameOf source rowCount) 0 noCaches prefix
+        let priorSource, priorExact =
+            match prior with
+            | Some s when not (isNull inPlaceRows) -> s.Source.Value, s.SourceExact
+            | _ -> Unchecked.defaultof<Table>, [||]
+
+        let frame0 = frameOf source rowCount priorSource priorExact
+        let sourceExact = frame0.Origins |> Array.map Option.isSome
+
+        walk resolve env priorCaches rows frame0 0 noCaches prefix
         |> Result.bind (fun (frame, evaluated, caches) ->
             let stepCells = rows.Steps.ToArray()
 
@@ -1966,7 +2500,9 @@ module Incremental =
                       GroupOrder = [||]
                       TailCells = [||]
                       ChunkedOutput = None
-                      ChunksTouched = None }
+                      ChunksTouched = None
+                      SourceExact = sourceExact
+                      GroupRows = [||] }
             | Some(keys, aggs, tail) ->
                 let priorGroups =
                     match prior with
@@ -1974,14 +2510,18 @@ module Incremental =
                         { Order = s.GroupOrder
                           RowGroups = s.RowGroups
                           Members = s.GroupMembers
-                          Aggs = s.GroupAggs }
+                          Aggs = s.GroupAggs
+                          Rows = s.GroupRows }
                     | None ->
                         { Order = [||]
                           RowGroups = [||]
                           Members = [||]
-                          Aggs = [||] }
+                          Aggs = [||]
+                          Rows = [||] }
 
-                groupStep frame rows keys aggs priorGroups
+                (match groupStepInPlace frame rows keys aggs priorGroups source priorSource priorExact with
+                 | Some outcome -> outcome
+                 | None -> groupStep frame rows keys aggs priorGroups)
                 |> Result.bind (fun g ->
                     // Phase 202 — one state shape whichever side of the branch below built it, so
                     // the tail cannot quietly record a different kind of answer from the no-tail
@@ -2009,7 +2549,9 @@ module Incremental =
                           GroupOrder = g.Order
                           TailCells = tailCells
                           ChunkedOutput = None
-                          ChunksTouched = None }
+                          ChunksTouched = None
+                          SourceExact = sourceExact
+                          GroupRows = List.toArray g.Rows }
 
                     if List.isEmpty tail then
                         // The pipeline every pre-202 state was built for. Taken as its own branch
@@ -2059,7 +2601,8 @@ module Incremental =
                               Stable = Array.init groupCount (fun gi -> groupPrior[gi] >= 0 && not g.RecomputedAt[gi])
                               PriorSteps = priorTail
                               PriorCount = priorOrder.Length
-                              Steps = ResizeArray<Cell[]>() }
+                              Steps = ResizeArray<Cell[]>()
+                              InPlace = null }
 
                         let rowArrays = List.toArray g.Rows
                         let width = List.length g.Cols
@@ -2126,7 +2669,9 @@ module Incremental =
               GroupOrder = [||]
               TailCells = [||]
               ChunkedOutput = None
-              ChunksTouched = None })
+              ChunksTouched = None
+              SourceExact = [||]
+              GroupRows = [||] })
 
     /// The shared entry: run the incremental path when the shape and the witness allow it, and the
     /// reference path otherwise. `named` is `None` for "every row".
@@ -2148,6 +2693,7 @@ module Incremental =
         (prior: IncrementalEval option)
         (named: Set<string> option)
         (known: KeyedIndex option)
+        (inPlace: int[] option)
         (recomputeOf: int -> int -> Recompute)
         (onDeclined: FallBackReason -> int -> Recompute)
         : Result<IncrementalEval, EvalError> =
@@ -2156,8 +2702,15 @@ module Incremental =
         // the written one is what a refresh compares against (`pipelineOf`), the planned one is
         // what ran (`plannedOf`).
         let written = pipeline
-        let pipeline = Plan.rewrite source.Schema pipeline
-        let p = plan pipeline
+
+        // Phase 323 — an in-place refresh is over the state's own pipeline, env and source schema
+        // (`refreshWith` found nothing stale), so the planned form and its plan are the state's.
+        let pipeline, p =
+            match inPlace, prior with
+            | Some _, Some s -> s.Planned, s.Plan
+            | _ ->
+                let planned = Plan.rewrite source.Schema pipeline
+                planned, plan planned
 
         (match p.Strategy, split pipeline with
          | ReferenceOnly r, _ -> runReference resolve env idw.Scheme pipeline p source prepared (onDeclined r)
@@ -2173,10 +2726,14 @@ module Incremental =
                  prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
 
              // Phase 273 — keys the delta carried for this very source are reused, not re-minted.
+             //
+             // Phase 323 — in place (see `refreshWith`), the source's tokens ARE the prior's, row for
+             // row: `tokensOfKnown` would return each prior instance, so the array is shared.
              let tokens =
-                 match known with
-                 | Some k -> Ok(tokensOfKnown k priorTokens)
-                 | None -> tokensOf idw priorTokens source
+                 match inPlace, known with
+                 | Some _, Some k when priorTokens.Length = k.Keys.Length -> Ok priorTokens
+                 | _, Some k -> Ok(tokensOfKnown k priorTokens)
+                 | _, None -> tokensOf idw priorTokens source
 
              match tokens with
              | Error defect ->
@@ -2196,6 +2753,7 @@ module Incremental =
                      tokens
                      prior
                      named
+                     inPlace
                      recomputeOf)
         |> Result.map (fun s ->
             { s with
@@ -2222,7 +2780,7 @@ module Incremental =
         (pipeline: Transform list)
         (source: Table)
         : Result<IncrementalEval, EvalError> =
-        run resolve env idw pipeline source None None None None (fun evaluated _ -> Primed evaluated) (fun _ n ->
+        run resolve env idw pipeline source None None None None None (fun evaluated _ -> Primed evaluated) (fun _ n ->
             Primed n)
 
     // ---- Phase 268 — the chunked path ----
@@ -2451,7 +3009,9 @@ module Incremental =
           GroupOrder = [||]
           TailCells = [||]
           ChunkedOutput = Some out
-          ChunksTouched = Some touched }
+          ChunksTouched = Some touched
+          SourceExact = [||]
+          GroupRows = [||] }
 
     /// `prime` over a source prepared once (`DataFrame.prepare`; Phase 267): the state `prime`
     /// builds over the prepared table — equal to it in every field a consumer can read — with the
@@ -2478,6 +3038,7 @@ module Incremental =
                 pipeline
                 (Prepared.table prepared)
                 (Some prepared)
+                None
                 None
                 None
                 None
@@ -2545,6 +3106,20 @@ module Incremental =
         // full refresh, or a diff into some other table) carries none and the refresh mints.
         let known = KeyedIndexes.carried idw.Scheme delta source
 
+        // Phase 323 — every row in place against the very table this state was evaluated over: the
+        // refresh may then pay for the changed rows rather than for the table (`runIncremental`).
+        // Anything else — another `before`, a hand-built delta, a moved, added or removed row —
+        // takes the general walk.
+        let inPlace =
+            match KeyedIndexes.inPlaceOf delta source with
+            | Some(from, changed) when
+                state.Source.IsValueCreated
+                && obj.ReferenceEquals(from, state.Source.Value)
+                && state.Tokens.Length > 0
+                ->
+                Some changed
+            | _ -> None
+
         match stale with
         | Some r ->
             // The answer is a full evaluation either way; taking it through the incremental path
@@ -2560,6 +3135,7 @@ module Incremental =
                 None
                 None
                 known
+                None
                 (fun evaluated _ -> FullRecompute(evaluated, r))
                 (fun declined n -> FullRecompute(n, declined))
         | None ->
@@ -2612,6 +3188,7 @@ module Incremental =
                     (Some state)
                     named
                     known
+                    inPlace
                     (fun evaluated groups ->
                         match state.Plan.Strategy with
                         | RowLocalThenGroups -> GroupsRecomputed(evaluated, groups)
