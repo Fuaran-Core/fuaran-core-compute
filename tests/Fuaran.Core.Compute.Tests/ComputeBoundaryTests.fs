@@ -2,18 +2,17 @@
 /// test from Phase 257).
 ///
 /// The substrate's test refuses an UPWARD reference: no spine assembly may reach the compute layer.
-/// This one holds the other half of the same line. The four packages this repository produces stand
-/// on exactly five substrate packages — `Fuaran.Core.Column` and `Fuaran.Core.Wire` (the table and
+/// This one holds the other half of the same line. The three packages this repository produces stand
+/// on exactly four substrate packages — `Fuaran.Core.Column` and `Fuaran.Core.Wire` (the table and
 /// the canonical JSON the dataframe is built over), `Fuaran.Core.OpStream` (which records columnar
-/// edits), `Fuaran.Core.Conformance` (the kit the dataframe families extend) and `Fuaran.Core.CSharp`
-/// (the facade the dataframe half is built over) — and they take each by PACKAGE, never by project.
-/// A sixth substrate reference, or a reference to anything that is not a public package, is a design
+/// edits) and `Fuaran.Core.Conformance` (the kit the dataframe families extend) — and they take each
+/// by PACKAGE, never by project. A fifth substrate reference, or a reference to anything that is not a public package, is a design
 /// question for a seam, not a line to add to a project file.
 ///
 /// Two readings, because each misses what the other sees:
 ///
 ///   * the PROJECT FILES — every project under `src/`: its `PackageReference`s must name only
-///     FSharp.Core and the five, and its `ProjectReference`s only the other compute projects;
+///     FSharp.Core and the four, and its `ProjectReference`s only the other compute projects;
 ///   * the BUILT ASSEMBLIES — each compute dll's assembly-reference table, read from its metadata
 ///     (without loading it). The compiler writes a reference there for every assembly a compiled
 ///     construct actually uses, so an `open` that resolved against an assembly arriving TRANSITIVELY
@@ -28,13 +27,12 @@ open System.Reflection.PortableExecutable
 open System.Xml.Linq
 open Expecto
 
-/// The four assemblies this repository produces.
+/// The three assemblies this repository produces.
 let compute: Set<string> =
     set
         [ "Fuaran.Core.DataFrame"
           "Fuaran.Core.Column.Ops"
-          "Fuaran.Core.DataFrame.Conformance"
-          "Fuaran.Core.DataFrame.CSharp" ]
+          "Fuaran.Core.DataFrame.Conformance" ]
 
 /// The substrate packages the compute strand stands on — and nothing above them.
 let allowedSubstrate: Set<string> =
@@ -42,8 +40,7 @@ let allowedSubstrate: Set<string> =
         [ "Fuaran.Core.Column"
           "Fuaran.Core.Wire"
           "Fuaran.Core.OpStream"
-          "Fuaran.Core.Conformance"
-          "Fuaran.Core.CSharp" ]
+          "Fuaran.Core.Conformance" ]
 
 /// The only non-substrate package a shipped project may take.
 let allowedOther: Set<string> = set [ "FSharp.Core" ]
@@ -53,7 +50,7 @@ let allowedOther: Set<string> = set [ "FSharp.Core" ]
 // ---------------------------------------------------------------------------
 
 /// A project's references that break the line: a package outside the allowed set, or a project
-/// outside this repository's four. `(project, offending reference)` pairs.
+/// outside this repository's three. `(project, offending reference)` pairs.
 let violations (projects: Map<string, string list * string list>) : (string * string) list =
     [ for KeyValue(name, (packages, projectRefs)) in projects do
           for p in packages do
@@ -65,7 +62,7 @@ let violations (projects: Map<string, string list * string list>) : (string * st
                   yield name, "project " + r ]
 
 /// A built assembly's references into the Fuaran family that break the line: any `Fuaran.*`
-/// assembly that is neither one of the four nor one of the allowed five.
+/// assembly that is neither one of the three nor one of the allowed four.
 let assemblyViolations (refs: Map<string, string list>) : (string * string) list =
     [ for KeyValue(name, rs) in refs do
           for r in rs do
@@ -81,7 +78,8 @@ let assemblyViolations (refs: Map<string, string list>) : (string * string) list
 
 let private srcDir () = Snapshots.repoFile "src"
 
-/// The project file for an assembly name under `src/` — `.fsproj`, or `.csproj` for the facade.
+/// The project file for an assembly name under `src/` — `.fsproj`, or `.csproj` should a C# project
+/// return (the src/ roster check below then names it).
 let private projectFileOf (name: string) : string option =
     [ ".fsproj"; ".csproj" ]
     |> List.map (fun ext -> Path.Combine(srcDir (), name, name + ext))
@@ -120,7 +118,7 @@ let internal referencedAssemblies (dllPath: string) : string list =
 
     [ for h in md.AssemblyReferences -> md.GetString((md.GetAssemblyReference h).Name) ]
 
-/// The built dll for a compute assembly: the copy beside this suite (the suite references all four),
+/// The built dll for a compute assembly: the copy beside this suite (the suite references all three),
 /// otherwise the project's own build output (`PublicSurfaceTests.assemblyFor`, the surface gate's own
 /// locator).
 let private builtAssembly (name: string) : Result<string, string> =
@@ -159,7 +157,7 @@ let tests =
               Expect.equal
                   (violations above)
                   [ "Fuaran.Core.DataFrame", "package Fuaran.Core.Propagation" ]
-                  "a substrate package above the five is a violation"
+                  "a substrate package above the four is a violation"
 
               let privatePackage =
                   clean
@@ -194,28 +192,28 @@ let tests =
                   [ "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Tree" ]
                   "an assembly the kit brings transitively is a violation once compiled code uses it"
 
-          testCase "every project under src/ takes the substrate by package, and only the five"
+          testCase "every project under src/ takes the substrate by package, and only the four"
           <| fun _ ->
               let projects = projectReferences ()
 
               Expect.equal
                   (projects |> Map.keys |> Set.ofSeq)
                   compute
-                  "src/ holds exactly this repository's four projects"
+                  "src/ holds exactly this repository's three projects"
 
               let found = violations projects
 
               Expect.isEmpty
                   found
                   (sprintf
-                      "project(s) under src/ reference outside the line: %s. The compute strand stands on Column, Wire, OpStream, Conformance and CSharp, taken by package; anything more is a seam to design, not a reference to add."
+                      "project(s) under src/ reference outside the line: %s. The compute strand stands on Column, Wire, OpStream and Conformance, taken by package; anything more is a seam to design, not a reference to add."
                       (render found))
 
               // Not vacuous: the reader does find the packages a project names.
               let dataFramePackages = projects["Fuaran.Core.DataFrame"] |> fst
               Expect.contains dataFramePackages "Fuaran.Core.Column" "DataFrame's package references name Column"
 
-          testCase "no built compute assembly references a substrate assembly above the five"
+          testCase "no built compute assembly references a substrate assembly above the four"
           <| fun _ ->
               let refs =
                   [ for name in compute ->
@@ -229,13 +227,12 @@ let tests =
               Expect.isEmpty
                   found
                   (sprintf
-                      "built compute assembly(ies) reference a substrate assembly outside the five: %s. The compiler writes a reference for every assembly a compiled construct uses, so a type that arrived transitively through the kit lands here even though no project file names it."
+                      "built compute assembly(ies) reference a substrate assembly outside the four: %s. The compiler writes a reference for every assembly a compiled construct uses, so a type that arrived transitively through the kit lands here even though no project file names it."
                       (render found))
 
               // Not vacuous: each reads the substrate it is built over.
               for name, below in
                   [ "Fuaran.Core.DataFrame", "Fuaran.Core.Column"
                     "Fuaran.Core.Column.Ops", "Fuaran.Core.OpStream"
-                    "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Conformance"
-                    "Fuaran.Core.DataFrame.CSharp", "Fuaran.Core.CSharp" ] do
+                    "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Conformance" ] do
                   Expect.contains refs[name] below (sprintf "%s references %s" name below) ]

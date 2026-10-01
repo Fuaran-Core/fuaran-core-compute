@@ -8,12 +8,6 @@
   },
   "exclusions": [
     {
-      "package": "Fuaran.Core.DataFrame.CSharp",
-      "reason": "facade",
-      "phase": "fuaran-core#257",
-      "note": "The dataframe half of the C# authoring facade, split out of `Fuaran.Core.CSharp` by Phase 257 with no change to what it is. It constructs the `ColExpr` and `Transform` values `Fuaran.Core.DataFrame` constructs, so every claim a theorem here would make is a claim about that package, which `proofs/Pipeline.fst` models. What is its own is the one-line-per-case MAPPING, held by its certification tests (`tests/Fuaran.Core.DataFrame.CSharp.Proof`) for the reason its parent's is."
-    },
-    {
       "package": "Fuaran.Core.DataFrame.Conformance",
       "reason": "content-free-seam",
       "phase": "fuaran-core#257",

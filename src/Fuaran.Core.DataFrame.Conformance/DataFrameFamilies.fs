@@ -20,42 +20,6 @@ module DataFrameFamilies =
 
     open Families
 
-    /// The families this package ships, in declaration order. Renderings sort by `Id`.
-    let families: LawFamily list =
-        let f m entry witness reason discharges =
-            { Id = m + "." + entry
-              Module = m
-              Entry = entry
-              Witness = witness
-              OptIn = Option.isSome reason
-              Reason = reason
-              Discharges = discharges }
-
-        let c entry witness reason discharges =
-            f "Conformance" entry witness reason discharges
-
-        let none: string list = []
-
-        [ c "transformLaws" none (Some SeamNotEveryDomainHas) []
-          // Phase 257 — the `GroupBy` half. The `Column.aggregate` null-skip half stays in the kit
-          // as `Conformance.aggregateNullSkipLaws`.
-          c "aggregateParityLaws" none (Some SeamNotEveryDomainHas) []
-          c "columnarOpLaws" none (Some SeamNotEveryDomainHas) []
-          // Phase 246 — the columnar pair at a domain's `StreamGen<ColumnOp, Table>`. `StreamGen` is
-          // a base-run witness, so the reason stays `SeamNotEveryDomainHas`.
-          c "columnarOpLawsWith" [ "StreamGen" ] (Some SeamNotEveryDomainHas) []
-          c "incrementalLaws" none (Some SeamNotEveryDomainHas) []
-          c "incrementalLawsWith" [ "StreamGen" ] (Some SeamNotEveryDomainHas) []
-          c "paramLaws" none (Some SeamNotEveryDomainHas) []
-          c "schemaWalkLaws" none (Some SeamNotEveryDomainHas) []
-          c "nowLaws" none (Some SeamNotEveryDomainHas) []
-          c "slotParamLaws" none (Some SeamNotEveryDomainHas) []
-          // Phase 269 — the planner held to the reference as written.
-          c "plannerLaws" none (Some SeamNotEveryDomainHas) []
-
-          f "IncrementalDelta" "laws" none (Some SeamNotEveryDomainHas) []
-          f "IncrementalDelta" "lawsWith" none (Some SeamNotEveryDomainHas) [] ]
-
     /// The refusable-family audit rows for the families above — Phase 220's vocabulary, moved
     /// verbatim except `aggregateParityLaws`, whose null-skip law stayed in the kit.
     let refusalAudit: RefusalAudit list =
@@ -141,6 +105,63 @@ module DataFrameFamilies =
           "Conformance.nowLaws",
           Unconditional
               "each iteration BUILDS both grains, a clock-bearing pipeline and a clock-free one over the same input, and runs the constant-witness, counting-witness and unpinned cases — the draw varies the reading and the row count, never which branch is taken" ]
+
+    // Core `0.33.0` (its Phase 297) carries each family's adequacy class and refusal verdict ON the
+    // `LawFamily` record. This package declares them once, in the two lists above, keyed by family
+    // id, and `families` reads its row's pair from them as it is built, so the record is complete
+    // and each fact still has one declaration. A family with no row in either list fails at load,
+    // naming it, rather than shipping a record that cannot say how its run is read.
+    let private adequacyOf (id: string) : AdequacyClass =
+        match census |> List.tryFind (fun (k, _) -> k = id) with
+        | Some(_, cls) -> cls
+        | None -> failwithf "DataFrameFamilies: %s has no adequacy-census row" id
+
+    let private refusalOf (id: string) : RefusalVerdict =
+        match refusalAudit |> List.tryFind (fun a -> a.Family = id) with
+        | Some a ->
+            { Population = a.Population
+              Why = a.Why }
+        | None -> failwithf "DataFrameFamilies: %s has no refusal-audit row" id
+
+    /// The families this package ships, in declaration order. Renderings sort by `Id`.
+    let families: LawFamily list =
+        let f m entry witness reason discharges =
+            let id = m + "." + entry
+
+            { Id = id
+              Module = m
+              Entry = entry
+              Witness = witness
+              OptIn = Option.isSome reason
+              Reason = reason
+              Discharges = discharges
+              Adequacy = adequacyOf id
+              Refusal = refusalOf id }
+
+        let c entry witness reason discharges =
+            f "Conformance" entry witness reason discharges
+
+        let none: string list = []
+
+        [ c "transformLaws" none (Some SeamNotEveryDomainHas) []
+          // Phase 257 — the `GroupBy` half. The `Column.aggregate` null-skip half stays in the kit
+          // as `Conformance.aggregateNullSkipLaws`.
+          c "aggregateParityLaws" none (Some SeamNotEveryDomainHas) []
+          c "columnarOpLaws" none (Some SeamNotEveryDomainHas) []
+          // Phase 246 — the columnar pair at a domain's `StreamGen<ColumnOp, Table>`. `StreamGen` is
+          // a base-run witness, so the reason stays `SeamNotEveryDomainHas`.
+          c "columnarOpLawsWith" [ "StreamGen" ] (Some SeamNotEveryDomainHas) []
+          c "incrementalLaws" none (Some SeamNotEveryDomainHas) []
+          c "incrementalLawsWith" [ "StreamGen" ] (Some SeamNotEveryDomainHas) []
+          c "paramLaws" none (Some SeamNotEveryDomainHas) []
+          c "schemaWalkLaws" none (Some SeamNotEveryDomainHas) []
+          c "nowLaws" none (Some SeamNotEveryDomainHas) []
+          c "slotParamLaws" none (Some SeamNotEveryDomainHas) []
+          // Phase 269 — the planner held to the reference as written.
+          c "plannerLaws" none (Some SeamNotEveryDomainHas) []
+
+          f "IncrementalDelta" "laws" none (Some SeamNotEveryDomainHas) []
+          f "IncrementalDelta" "lawsWith" none (Some SeamNotEveryDomainHas) [] ]
 
     /// This package's share, for a reader composing it with the kit's `Families.roster`.
     let roster: Roster =

@@ -43,7 +43,7 @@
     <Compile Include="ConformanceVacuityTests.fs" />
     <Compile Include="PackageRosterTests.fs" />
     <Compile Include="PublicSurfaceTests.fs" />
-    <!-- The compute boundary, held from this side: the substrate by package, and only the five
+    <!-- The compute boundary, held from this side: the substrate by package, and only the four
          packages the strand stands on. After PublicSurfaceTests, whose assembly locator it reuses. -->
     <!-- The committed WIRE-surface baseline per wire-bearing package (api/wire/). Reads
          PublicSurfaceTests.fs and PackageRosterTests.fs, so it follows both. -->
@@ -62,9 +62,6 @@
     <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Core.Column.Ops\Fuaran.Core.Column.Ops.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.Conformance\Fuaran.Core.DataFrame.Conformance.fsproj" />
-    <!-- The C# facade: referenced so its built assembly sits beside this suite's, where the
-         public-surface and boundary legs read its metadata. Nothing here calls it. -->
-    <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.CSharp\Fuaran.Core.DataFrame.CSharp.csproj" />
     <!-- The F*-extracted oracle (never packed; see proofs/README.md). -->
     <ProjectReference Include="..\..\proofs\oracle\Fuaran.Core.Compute.Proofs.Oracle.fsproj" />
   </ItemGroup>

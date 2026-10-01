@@ -3,18 +3,17 @@
     <!-- ONE property for every Fuaran.Core package this repository pins: they are produced by one
          repository at one version, so one number is the only honest way to name them. Raise it in
          one edit, and only to a version the public registry serves. -->
-    <FuaranCoreVersion>0.32.0</FuaranCoreVersion>
+    <FuaranCoreVersion>0.33.0</FuaranCoreVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="FSharp.Core" Version="10.1.300" />
     <!-- The substrate, by package. The compute strand stands on Column and Wire, records its edits
-         through OpStream, extends the Conformance kit and builds its C# half over CSharp — and on
-         nothing above those five (the boundary test in tests/ holds that). -->
+         through OpStream and extends the Conformance kit — and on nothing above those four (the
+         boundary test in tests/ holds that). -->
     <PackageVersion Include="Fuaran.Core.Column" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Fuaran.Core.Wire" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Fuaran.Core.OpStream" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Fuaran.Core.Conformance" Version="$(FuaranCoreVersion)" />
-    <PackageVersion Include="Fuaran.Core.CSharp" Version="$(FuaranCoreVersion)" />
     <!-- TEST-ONLY. -->
     <!-- The composition suite's substrate (tests/ only): Propagation over a tree edited by Ops. -->
     <PackageVersion Include="Fuaran.Core.Propagation" Version="$(FuaranCoreVersion)" />

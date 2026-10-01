@@ -88,11 +88,11 @@ let internal isPackable (fallback: string option) (projectText: string) : bool =
 /// THE derivation, kept in one small function on purpose: the Fable surface's completeness
 /// check (Phase 185) derives the same set, and two spellings of "what ships" would drift
 /// exactly the way the documents this file gates drifted. `src/*/*.fsproj` +
-/// `src/*/*.csproj` — the C# facade is a published package too, and a roster scoped to F#
-/// would leave it undocumented by construction, which is the same excusal-by-the-shape-of-
+/// `src/*/*.csproj` — a C# project under `src/` is a published package too, and a roster scoped
+/// to F# would leave it undocumented by construction, which is the same excusal-by-the-shape-of-
 /// the-derivation that 185's own header names. Checked against that sibling after both
-/// landed: it covers every project type under `src/` and carries `Fuaran.Core.CSharp` as an
-/// explicit exclusion, so the two rosters range over one set.
+/// landed: it covers every project type under `src/` and names any package off the Fable surface
+/// as an explicit exclusion, so the two rosters range over one set.
 let internal packableProjects (root: string) : PackableProject list =
     let srcDir = Path.Combine(root, "src")
 

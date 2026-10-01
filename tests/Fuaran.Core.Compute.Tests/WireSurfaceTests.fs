@@ -284,8 +284,7 @@ let internal roots: WireRoot list =
 /// here that stops being packable, or that gains a root above, fails the roster test.
 let internal notWire: (string * string) list =
     [ "Fuaran.Core.DataFrame.Conformance",
-      "the law families over the dataframe layer; the transform law corpus is pinned by its own emission test (`--emit-laws`)"
-      "Fuaran.Core.DataFrame.CSharp", "the dataframe half of the C# facade; it emits through the packages it wraps" ]
+      "the law families over the dataframe layer; the transform law corpus is pinned by its own emission test (`--emit-laws`)" ]
 
 /// Build every document of one root: `(name, emitted bytes)`, plus the construction logs for the
 /// per-case documents so the suite can prove each reached its case.

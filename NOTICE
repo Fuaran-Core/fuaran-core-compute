@@ -3,8 +3,8 @@ Copyright 2026 Diametrical Ltd
 
 This product includes software developed at Diametrical Ltd.
 
-The sources of Fuaran.Core.DataFrame, Fuaran.Core.Column.Ops,
-Fuaran.Core.DataFrame.Conformance and Fuaran.Core.DataFrame.CSharp were first
+The sources of Fuaran.Core.DataFrame, Fuaran.Core.Column.Ops and
+Fuaran.Core.DataFrame.Conformance were first
 published in the Fuaran.Core repository (https://github.com/Fuaran-Core/fuaran-core)
 under the same license, and were carried here with their history.
 

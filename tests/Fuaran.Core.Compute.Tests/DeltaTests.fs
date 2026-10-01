@@ -377,7 +377,8 @@ let tests =
                           { Added = []
                             Removed = []
                             Retyped = []
-                            Reordered = false }))
+                            Reordered = false
+                            Order = [] }))
                   FullRefresh
                   "a schema change is FullRefresh"
 

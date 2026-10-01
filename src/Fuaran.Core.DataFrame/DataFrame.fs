@@ -6416,7 +6416,7 @@ module DataFrameCodec =
     /// Decode a pipeline from a wire string (six-code `ColumnError` envelope; `NotJson` on a
     /// syntax error).
     let decodePipeline (s: string) : Result<Transform list, ColumnError> =
-        match Json.parse s with
+        match Json.parseDetailed s with
         | Error m -> Error(NotJson m)
         | Ok(JArr xs) -> mapM decodeTransform xs
         | Ok _ -> Error(MalformedShape "pipeline: expected a JSON array of transform steps")
