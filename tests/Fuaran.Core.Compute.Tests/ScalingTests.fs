@@ -662,31 +662,258 @@ let mutable private clockRuns = 0
 /// The number of clock cases whose bodies have run in this process.
 let clockCasesRun () = clockRuns
 
-/// How many attempts a clock case gets. A timing assertion is red only if it is red on every one.
+/// How many COUNTED attempts a clock case gets. A timing assertion is red only if it is red on every
+/// one. Since Phase 285 an attempt counts only when its window was not saturated (`Calibration`).
 let private clockAttempts = 3
 
-/// A clock case: `body` runs up to `clockAttempts` times, and the case fails only when every attempt
-/// fails. Only an assertion failure is retried; anything else (an evaluation error) is a defect and
+/// Phase 285 — the calibration workload that tells the clock leg when the machine is busy.
+///
+/// Three attempts inside one loaded window are three samples of the same window: they cannot tell
+/// "slower code" from "busier machine". So the leg times a FIXED workload that touches no code under
+/// test, immediately before and after every clock case's measurement (and, in the two long tick
+/// cases, between cells), and compares those readings with the leg's own quiet baseline.
+///
+/// The workload is an integer multiply-xor chain: every step depends on the one before, so it runs
+/// at exactly the rate the core it is scheduled on retires dependent integer work, and it allocates
+/// and touches no memory at all — it cannot move the collector the cases are timed against. One run
+/// is a fixed 2^22 steps (about 6 ms on the reference machine); a READING is the best of nine runs,
+/// the same minimum-of-runs estimator `bestMs` and `batchedMs` use, so a reading moves with
+/// sustained load and not with one preemption.
+///
+/// A memory walk was measured and REJECTED (doc, "The clock leg knows when the machine is busy"):
+/// a pointer chase over a 4 MB ring read 0.67x to 1.8x its own baseline on a quiet machine, and ran
+/// FASTER under an all-core burner than quiet (the burner holds the clock frequency up), so it
+/// could neither stay below k when quiet nor rise above it under load. The integer chain read
+/// within 1.05x of its baseline quiet and 1.17x above it under the burner.
+module Calibration =
+    let private steps = 1 <<< 22
+    let private runsPerReading = 9
+
+    let mutable private sink = 0L
+
+    let private runOnce () : float =
+        let t0 = Stopwatch.GetTimestamp()
+        let mutable acc = 0x5851F42DL
+
+        for s in 1..steps do
+            acc <- (acc ^^^ int64 s) * 0x100000001B3L
+
+        let t1 = Stopwatch.GetTimestamp()
+        // Published, so the loop cannot be removed as dead code.
+        sink <- sink ^^^ acc
+        float (t1 - t0) * 1000.0 / float Stopwatch.Frequency
+
+    /// One calibration reading, in ms: the best of `runsPerReading` runs of the fixed workload.
+    let reading () : float =
+        let mutable best = runOnce ()
+
+        for _ in 2..runsPerReading do
+            best <- min best (runOnce ())
+
+        best
+
+    /// How many readings the leg-start baseline takes the best of.
+    let baselineRuns = 15
+
+    /// The saturation factor k: a window is saturated when any of its readings exceeds k times the
+    /// baseline, or its highest reading exceeds k times its lowest. Measured, not chosen — the quiet
+    /// and loaded distributions it sits between are in docs/incremental-evaluation.md ("The clock
+    /// leg knows when the machine is busy").
+    let k = 1.25
+
+    /// A case gives up after this many saturated windows; the leg's verdict is then "machine
+    /// saturated, no verdict" for it (exit 3), never red and never green.
+    let maxDiscarded = 5
+
+    /// The leg-wide budget for discarded windows and their back-off, in seconds. Once the leg has
+    /// spent this long on windows it threw away, a further saturated window ends its case at once:
+    /// the gate queue's run time stays bounded on a machine that never quietens.
+    let legBudgetSeconds = 600.0
+
+    /// The back-off before retrying a saturated window: 2 s, doubling, at most 16 s.
+    let backoffMs (discarded: int) : int =
+        min 16_000 (2_000 * (1 <<< (discarded - 1)))
+
+    let mutable private baseline = nan
+
+    /// The leg's quiet baseline: measured on first use (the leg's entry point forces it before any
+    /// case runs), the best of `baselineRuns` readings after a warm-up, and then FIXED for the leg.
+    /// It is not lowered by a later, faster reading: on a laptop-class CPU the integer chain alone
+    /// reads across a 1.6x range as the clock frequency moves with the leg's own work, and a baseline
+    /// ratcheted down to the fastest reading ever seen judged every ordinary window saturated (the
+    /// measurement is in the doc). The guard that matters to a ratio verdict is the bracket
+    /// disagreement below, which a frequency change and a load change both trip.
+    let baselineMs () : float =
+        if System.Double.IsNaN baseline then
+            reading () |> ignore
+            baseline <- List.min [ for _ in 1..baselineRuns -> reading () ]
+
+        baseline
+
+    let mutable private window: float list option = None
+
+    /// A reading taken inside the current window and added to it; outside a window it does nothing.
+    let checkpoint () =
+        match window with
+        | Some rs -> window <- Some(reading () :: rs)
+        | None -> ()
+
+    /// Open a window: the bracket's first reading.
+    let openWindow () =
+        baselineMs () |> ignore
+        window <- Some [ reading () ]
+
+    /// Close the window: its readings, in order, and the baseline they are judged against.
+    let closeWindow () : float list * float =
+        let c = reading ()
+        let rs = List.rev (c :: defaultArg window [])
+        window <- None
+        rs, baseline
+
+    /// Saturated: a reading above k times the baseline, or two CONSECUTIVE readings disagreeing by
+    /// more than k. Consecutive, not highest-against-lowest: in a window with checkpoints between
+    /// cells each cell's measurement sits between two consecutive readings, and it is the load
+    /// change across THAT bracket that can move the cell's ratio. A long window's slow drift from
+    /// one cell to the next does not touch any one cell's tick-against-full comparison.
+    let saturated (baselineMs: float) (readings: float list) : bool =
+        List.exists (fun r -> r > k * baselineMs) readings
+        || readings |> List.pairwise |> List.exists (fun (a, b) -> max a b > k * min a b)
+
+/// What a clock case ended as (Phase 285): a verdict from an unsaturated window, or none.
+type ClockVerdict =
+    | ClockGreen
+    | ClockRed
+    | ClockSaturated
+    | ClockErrored
+
+/// One clock case's account: attempts counted, windows discarded as saturated, and its verdict.
+type ClockOutcome =
+    { Name: string
+      Counted: int
+      Discarded: int
+      Verdict: ClockVerdict }
+
+let private clockOutcomeLog = System.Collections.Generic.List<ClockOutcome>()
+
+/// Every clock case's outcome, in the order the cases ran.
+let clockOutcomes () : ClockOutcome list = List.ofSeq clockOutcomeLog
+
+/// The calibration baseline as it stands (the leg's entry point forces and prints it at leg start).
+let clockBaselineMs () : float = Calibration.baselineMs ()
+
+/// Raised by a clock case that stayed saturated past its budget: NOT an assertion failure, so it is
+/// never read as a timing red, and the entry point turns it into the leg's distinct exit code.
+exception MachineSaturated of string
+
+let mutable private legDiscardedSeconds = 0.0
+
+/// A clock case (Phase 282, Phase 285): `body` runs in a WINDOW bracketed by calibration readings.
+///
+/// - A saturated window is INCONCLUSIVE: logged with its readings, retried after a back-off, and
+///   never counted as an attempt, whatever the body said — a green under load is no more a verdict
+///   than a red, because load can deflate a ratio's denominator as easily as inflate its numerator.
+/// - An unsaturated window counts. The case fails only when all `clockAttempts` counted attempts
+///   are red.
+/// - Past `Calibration.maxDiscarded` saturated windows (or the leg-wide budget), the case raises
+///   `MachineSaturated`: no verdict, and the gate is not green.
+///
+/// Only an assertion failure is a timing verdict; anything else (an evaluation error) is a defect and
 /// fails at once. A correctness assertion inside `body` is retried with it, harmlessly: it is
-/// deterministic, so it fails every attempt.
+/// deterministic, so it fails every counted attempt.
 let private clockCase (name: string) (body: unit -> unit) : Test =
     testCase name
     <| fun _ ->
         clockRuns <- clockRuns + 1
 
-        let rec attempt (k: int) =
-            printfn "  [clock] %s: attempt %d of %d" name k clockAttempts
+        let record counted discarded verdict =
+            clockOutcomeLog.Add
+                { Name = name
+                  Counted = counted
+                  Discarded = discarded
+                  Verdict = verdict }
 
-            try
-                body ()
+        let rec window (counted: int) (discarded: int) =
+            printfn "  [clock] %s: attempt %d of %d" name (counted + 1) clockAttempts
+            let started = Stopwatch.StartNew()
+            Calibration.openWindow ()
 
-                if k > 1 then
-                    printfn "  [clock] %s: green on attempt %d" name k
-            with :? AssertException as e when k < clockAttempts ->
-                printfn "  [clock] %s: attempt %d red: %s" name k (e.Message.Trim())
-                attempt (k + 1)
+            let result =
+                try
+                    body ()
+                    Ok()
+                with
+                | :? AssertException as e -> Error e
+                | _ ->
+                    Calibration.closeWindow () |> ignore
+                    record counted discarded ClockErrored
+                    reraise ()
 
-        attempt 1
+            let readings, b = Calibration.closeWindow ()
+            let shown = readings |> List.map (sprintf "%.3f") |> String.concat ", "
+
+            if Calibration.saturated b readings then
+                let discarded = discarded + 1
+
+                let said =
+                    match result with
+                    | Ok() -> "green"
+                    | Error _ -> "red"
+
+                printfn
+                    "  [clock] %s: window SATURATED, discarded (it read %s; not counted) - calibration [%s] ms against baseline %.3f ms, k %.2f"
+                    name
+                    said
+                    shown
+                    b
+                    Calibration.k
+
+                if
+                    discarded >= Calibration.maxDiscarded
+                    || legDiscardedSeconds >= Calibration.legBudgetSeconds
+                then
+                    record counted discarded ClockSaturated
+
+                    raise (
+                        MachineSaturated(
+                            sprintf
+                                "machine saturated, no verdict: %s - %d window(s) discarded as saturated, %d counted attempt(s)"
+                                name
+                                discarded
+                                counted
+                        )
+                    )
+
+                let pause = Calibration.backoffMs discarded
+                printfn "  [clock] %s: backing off %d ms before the next window" name pause
+                System.Threading.Thread.Sleep pause
+
+                legDiscardedSeconds <- legDiscardedSeconds + started.Elapsed.TotalSeconds + float pause / 1000.0
+
+                window counted discarded
+            else
+                let counted = counted + 1
+                printfn "  [clock] %s: window counted - calibration [%s] ms against baseline %.3f ms" name shown b
+
+                match result with
+                | Ok() ->
+                    if counted > 1 || discarded > 0 then
+                        printfn "  [clock] %s: green on attempt %d" name counted
+
+                    record counted discarded ClockGreen
+                | Error e when counted < clockAttempts ->
+                    printfn
+                        "  [clock] %s: attempt %d red: %s (calibration [%s] ms)"
+                        name
+                        counted
+                        (e.Message.Trim())
+                        shown
+
+                    window counted discarded
+                | Error e ->
+                    record counted discarded ClockRed
+                    raise e
+
+        window 0 0
 
 // `testSequenced`, not `testList` alone: every case here measures the clock, and Expecto runs a
 // suite in parallel by default, so an unsequenced timing family measures whatever else the runner
@@ -1182,6 +1409,10 @@ let clockTests =
                           tickBound
                           n
 
+                      // Phase 285: a calibration reading between cells, so a load that arrives in the
+                      // middle of this case's window is seen rather than only its two ends.
+                      Calibration.checkpoint ()
+
                       Expect.isLessThan
                           tickMs
                           (tickBound * fullMs)
@@ -1249,6 +1480,9 @@ let clockTests =
                           ratio
                           bound
 
+                      // Phase 285: a calibration reading between cells (see the case above).
+                      Calibration.checkpoint ()
+
                       if ratio >= bound then
                           failures.Add(sprintf "%s @ %d: x%.2f against x%.1f" nd.Name n ratio bound)
 
@@ -1292,6 +1526,32 @@ let scalingTests =
                   (Test.toTestCodeList clockTests |> Seq.length)
                   clockInventory
                   "the clock leg's case count is the inventory's — update both, and the doc's table"
+
+          testCase "the clock leg's saturation rule: above k times the baseline, or a bracket disagreeing by k"
+          <| fun _ ->
+              // Phase 285. The rule is pure, so it is pinned here, in the main suite, where no clock
+              // runs; the leg applies it to readings it times.
+              let k = Calibration.k
+              let b = 10.0
+              Expect.isFalse (Calibration.saturated b [ b; b ]) "a window reading the baseline is not saturated"
+
+              Expect.isFalse
+                  (Calibration.saturated b [ b; 1.2 * b; 1.2 * b; b ])
+                  "a steady window within k of the baseline is not saturated"
+
+              Expect.isTrue
+                  (Calibration.saturated b [ b; (k + 0.01) * b ])
+                  "a reading above k times the baseline is saturated"
+
+              Expect.isTrue
+                  (Calibration.saturated b [ 0.7 * b; 0.7 * (k + 0.01) * b ])
+                  "two consecutive readings disagreeing by more than k are saturated, below k times the baseline"
+
+              // Consecutive, not highest-against-lowest: a slow drift across a long window's cells
+              // touches no one cell's bracket.
+              Expect.isFalse
+                  (Calibration.saturated b [ 0.7 * b; 0.8 * b; 0.9 * b; b ])
+                  "a drift whose every step is within k is not saturated"
 
           testCase "the top-N step itself is a single pass, and the obvious shape is not"
           <| fun _ ->
