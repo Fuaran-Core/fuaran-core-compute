@@ -32,6 +32,7 @@ method Fuaran.Core.IncrementalDelta.lawsWith(System.Int32, System.Int32, System.
 method Fuaran.Core.IncrementalDelta.report(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.IncrementalSample>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Core.IncrementalDelta.samples(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.IncrementalSample>
 method Fuaran.Core.IncrementalDelta.samplesWith(System.Int32, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.IncrementalSample>
+method Fuaran.Core.PipelineQueryConformance.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
 property Fuaran.Core.Conformance.columnarOpStreamGen : Fuaran.Core.StreamGen`2<Fuaran.Core.ColumnOp, Fuaran.Core.Table> { get }
 property Fuaran.Core.DataFrameConformance.columnarOpStreamGen : Fuaran.Core.StreamGen`2<Fuaran.Core.ColumnOp, Fuaran.Core.Table> { get }
 property Fuaran.Core.DataFrameFamilies.census : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.AdequacyClass>> { get }
@@ -54,3 +55,4 @@ type Fuaran.Core.DataFrameConformance (module)
 type Fuaran.Core.DataFrameFamilies (module)
 type Fuaran.Core.IncrementalDelta (module)
 type Fuaran.Core.IncrementalSample (record)
+type Fuaran.Core.PipelineQueryConformance (module)

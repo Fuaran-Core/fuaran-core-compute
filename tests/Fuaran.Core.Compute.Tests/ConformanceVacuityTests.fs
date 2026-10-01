@@ -39,7 +39,9 @@ let private run id iterations results =
 /// these are two- and three-hundred-iteration property runs.
 let private runs =
     lazy
-        ([ run
+        ([ // Phase 281 — the registered pipeline query, at the size its own suite runs it.
+           run "PipelineQueryConformance.laws" 100 (PipelineQueryConformance.laws 2810 100)
+           run
                "Conformance.transformLaws"
                LawVectorExport.iterations
                (Conformance.transformLaws

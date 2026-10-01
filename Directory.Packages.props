@@ -15,6 +15,9 @@
     <PackageVersion Include="Fuaran.Core.Wire" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Fuaran.Core.OpStream" Version="$(FuaranCoreVersion)" />
     <PackageVersion Include="Fuaran.Core.Conformance" Version="$(FuaranCoreVersion)" />
+    <!-- Phase 281: the registered pipeline query pairs the substrate's Query declaration with a
+         pipeline; only Fuaran.Core.DataFrame.PipelineQuery takes it. -->
+    <PackageVersion Include="Fuaran.Core.Query" Version="$(FuaranCoreVersion)" />
     <!-- TEST-ONLY. -->
     <!-- The composition suite's substrate (tests/ only): Propagation over a tree edited by Ops. -->
     <PackageVersion Include="Fuaran.Core.Propagation" Version="$(FuaranCoreVersion)" />

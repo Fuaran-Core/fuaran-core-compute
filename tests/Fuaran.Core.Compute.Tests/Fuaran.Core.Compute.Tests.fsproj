@@ -26,6 +26,8 @@
     <Compile Include="PlanTests.fs" />
     <!-- Phase 277: decimal arithmetic in the evaluator. -->
     <Compile Include="DecimalTests.fs" />
+    <!-- Phase 281: the registered pipeline query. -->
+    <Compile Include="PipelineQueryTests.fs" />
     <Compile Include="IncrementalGroupByTests.fs" />
     <Compile Include="IncrementalRefreshCostTests.fs" />
     <!-- Phase 250's composition, carried from the substrate's suite by Phase 261: deltaOf,
@@ -64,6 +66,7 @@
     <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Core.Column.Ops\Fuaran.Core.Column.Ops.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.Conformance\Fuaran.Core.DataFrame.Conformance.fsproj" />
+    <ProjectReference Include="..\..\src\Fuaran.Core.DataFrame.PipelineQuery\Fuaran.Core.DataFrame.PipelineQuery.fsproj" />
     <!-- The F*-extracted oracle (never packed; see proofs/README.md). -->
     <ProjectReference Include="..\..\proofs\oracle\Fuaran.Core.Compute.Proofs.Oracle.fsproj" />
   </ItemGroup>
