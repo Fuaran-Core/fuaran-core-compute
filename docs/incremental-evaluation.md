@@ -870,7 +870,8 @@ dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build -- --clock-leg
 ```
 
 The leg raises its own scheduling priority to above normal (on a host that refuses, it says so and
-runs anyway). Each case gets three attempts and prints every one. The entry point counts the cases
+runs anyway). Each case gets three attempts and prints every one. (Since Phase 285 an attempt counts only
+when its calibration window was not saturated; see "The clock leg knows when the machine is busy".) The entry point counts the cases
 whose bodies ran and fails the leg (exit 2) on fewer than `clockInventory`: 0 of 14 with a filter that
 matches nothing, 1 of 14 with one that matches one case. A main-suite case pins `clockInventory`
 against the list's length, so neither moves alone.
@@ -1373,6 +1374,101 @@ The Phase 283 counted case now runs for a composite `(id, grp)` witness declared
 `withKeyEquality` as well as for `byColumn`. Across four ticks of three pipelines it renders exactly the
 added rows' keys (0 per in-place tick of 1,000 rows, 1 per reshaping tick) in both the Debug and the
 Release build. An undeclared witness would render 1,000.
+
+### The clock leg knows when the machine is busy (Phase 285)
+
+**The rule.** Three attempts inside one loaded window are three samples of the same window. They cannot
+tell slower code from a busier machine. So the leg times a fixed calibration workload that touches no
+code under test. It reads it at leg start (the baseline, best of 15 readings after a warm-up), right
+before and right after every clock case's measurement, and between cells in the two long tick cases.
+A window is **saturated** when any of its readings is above k times the baseline, or when two
+consecutive readings disagree by more than k. **k = 1.25.** Each cell is measured between two
+consecutive readings, so a load change across THAT bracket is what can move the cell's ratio. A slow
+drift across a long window's thirty cells does not.
+
+**The three outcomes.**
+
+| Outcome | When | Leg exit |
+|---|---|---|
+| GREEN | every case green on a counted (unsaturated) attempt | 0 |
+| RED | a case red on all three counted attempts, or an evaluation error | 1 (2 if cases are missing) |
+| NO VERDICT — "machine saturated, no verdict" | a case discarded 5 saturated windows (`Calibration.maxDiscarded`), or the leg spent 600 s (`legBudgetSeconds`) on discarded windows and their back-off, with nothing red | 3 |
+
+A saturated window is inconclusive whatever the body said. It is logged with every calibration
+reading, retried after a back-off (2 s, doubling, at most 16 s), and never counted as an attempt. A
+green under load is no more a verdict than a red, because load can deflate a ratio's denominator as
+easily as inflate its numerator. Red outranks no-verdict: a leg with one red case and one saturated
+case exits 1. `verify.ps1` reports exit 3 as no verdict, not as a failure of the code, and it is still
+not green. After the cases, the leg prints one summary line per case (attempts counted, windows
+discarded as saturated, verdict) and the baseline at leg start and at leg end. Every counted window's
+readings are in the log too, so the evidence for any verdict can be read back from it.
+
+**The workload, and the one rejected.** An integer multiply-xor chain: 2^22 dependent steps per run,
+about 6 ms. A reading is the best of nine runs, the same minimum-of-runs estimator `bestMs` uses. It
+allocates nothing, so it cannot move the collector the cases are timed against. The shard's example,
+a memory walk, was measured and rejected. A pointer chase over a 4 MB single-cycle ring read 0.67 to
+1.95 times its own baseline on an idle machine. Under an all-core burner it ran **faster** (32 ms
+against 75 to 90 ms idle), because the burner holds the clock frequency up. So it could neither stay
+below k when the machine was quiet nor rise above k under load. Probe, 40 readings each, ratio to a
+best-of-15 baseline (`--clock-calibration [n]` prints the same figures for the shipped workload):
+
+| Workload | idle, run 1: p50 / max | idle, run 2: p50 / max | all-core burner: baseline, p50 / max |
+|---|---|---|---|
+| 4 MB pointer chase, best of 3 | 1.26 / 1.42 | 1.00 / 1.21 (min 0.67) | 32.5 ms (idle 75 to 90), 1.62 / 2.34 |
+| integer chain 2^22, best of 9 (shipped) | 0.96 / 1.04 | 1.00 / 1.04 | 7.34 ms (idle 6.26 to 6.50), 1.00 / 1.01 |
+
+**The baseline is fixed for the leg.** The first build lowered the baseline to any faster reading. On
+this laptop-class CPU the integer chain reads across a 1.6x range as the clock frequency follows the
+leg's own work (5.27 to 8.6 ms in one leg). The lowered baseline then judged every later window
+saturated: 8 windows were discarded and the corpus case ended with no verdict on a run where nothing
+was wrong. The leg-start baseline is not lowered.
+
+**k, from the legs.** Every calibration reading of every window in each Release leg run (unpatched
+tree unless marked). The reading ratio is against that leg's baseline. "Adjacent" is the disagreement
+between consecutive readings.
+
+| Run (load) | reading / baseline p99 / max | adjacent p99 / max | windows discarded | leg |
+|---|---|---|---|---|
+| ambient, other sessions on the machine at 100% CPU | 1.08 / 1.10 | 1.07 / 1.08 | 0 | RED, `window CumulSum` (below) |
+| all-core burner from before leg start | 1.13 / 1.13 | 1.08 / 1.08 | 0 | green |
+| burner toggling 7 s on, 7 s off | 1.06 / 1.06 | 1.12 / 1.12 | 0 | green |
+| a concurrent full `verify.ps1` of this repository | 1.12 / 1.12 | 1.10 / 1.10 | 0 | green |
+| that `verify.ps1`'s own leg (concurrent with the probe leg) | 1.12 / 1.12 | 1.06 / 1.06 | 0 | green, 441/441 + 15/15 |
+| burner toggling 5 s, at the leg's own (above-normal) priority | 1.23 / 1.24 | 1.22 / 1.22 | 0 | green on attempt 3 of the corpus case |
+| burner toggling 3 s, at high priority | 1.30 / 1.30 | 1.18 / 1.18 | 1 | green, after one discard and retry |
+| injected regression, ambient | 1.15 / 1.19 | 1.08 / 1.11 | 0 | RED, both tick cases, all three attempts |
+| injected regression, burner toggling 7 s | 1.06 / 1.06 | 1.11 / 1.12 | 0 | RED, both tick cases, all three attempts |
+
+The steady runs never read above 1.19 of the baseline or disagreed by more than 1.12. k = 1.25 clears
+the worst of them by a margin, so a steady machine reaches a verdict. Load that competes at the leg's
+own priority or above, or a frequency swing like the one in the rejected first build (5.5 to 7.1 ms
+across one cell, 1.29), crosses it. A lower k (1.10 was tried first) discarded ordinary windows. An
+injected forced saturation (k = 1.0001, one discard allowed, not committed) ends every case with no
+verdict and the leg exits 3 with the message above.
+
+**What the guard cannot see, stated plainly.** Load that is constant from before the leg starts raises
+the baseline with it, so it reads as quiet. That is safe for these cases, by measurement: a case's
+verdict is a ratio of two figures from one window, and constant load scales both. Under the all-core
+burner from leg start the corpus case's worst cell read 1.42, the tightest of any run, because steady
+load also holds the clock frequency steady. The reds in these runs came from steady windows, not
+loaded ones.
+
+**The acceptance.** Under both loads, the all-core burner and a concurrent full gate, the leg reported
+no timing red on the post-phase tree. A regression injected per row (two extra `Delta.diff` calls per
+tick, a temporary patch) was red on all three counted attempts of both tick cases, on the ambient
+machine and under the toggling burner. It was never reported green.
+
+**The tick family in Release, and the 1.5x question.** A quiet machine was not available during this
+phase: other sessions on the machine held it at 57% to 100% CPU throughout. Across the nine Release leg runs
+of the unpatched tree, `window CumulSum` was the worst corpus node every time, at 1.42 to 1.99. It was
+above 1.5 in seven of the nine runs and above 1.6 in four. So 1.5x does not hold across five
+consecutive runs, and restoring 1.5x is not proposed. The finding goes the other way.
+`window CumulSum` at 1,000 and 20,000 rows read 1.58 to 1.78 **inside steady brackets** (consecutive
+calibration readings within 1.05 of each other, most within 1.01), and it was red on all three counted
+attempts in one ambient run. That is the cell's own figure, not load, so the saturation guard
+correctly gives it a verdict. Whether 1.6x stands for that node is the operator's decision; `tickBound`
+is unchanged. Outside the windows the first build discarded, the other nodes stayed at or below 1.49 on the
+unpatched tree.
 
 ## What it does not do
 
