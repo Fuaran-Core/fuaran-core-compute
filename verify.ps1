@@ -57,8 +57,13 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 dotnet build tests/Fuaran.Core.Compute.Tests -c Release --nologo
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 dotnet run --project tests/Fuaran.Core.Compute.Tests -c Release --no-build -- --clock-leg
+if ($LASTEXITCODE -eq 3) {
+    # Phase 285: no verdict, not a red - a case found no unsaturated calibration window in its budget.
+    Write-Host '==== verify: the clock leg reached NO VERDICT (machine saturated) - not a timing red; re-run when the machine is quieter' -ForegroundColor Yellow
+    exit $LASTEXITCODE
+}
 if ($LASTEXITCODE -ne 0) {
-    Write-Host '==== verify: the clock leg FAILED (a timing case red on all three attempts, or cases missing)' -ForegroundColor Red
+    Write-Host '==== verify: the clock leg FAILED (a timing case red on all three counted attempts, or cases missing)' -ForegroundColor Red
     exit $LASTEXITCODE
 }
 
