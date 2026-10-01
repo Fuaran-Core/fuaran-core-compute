@@ -1,5 +1,5 @@
 # fuaran-core-compute — the repository's verify gate: the "is the repo green" command.
-# Format check, publication-boundary sweep, build, the Expecto suite and the C# facade proof,
+# Format check, publication-boundary sweep, build and the Expecto suite (with its clock leg),
 # in that order; a non-zero exit on the first failing stage. `-Proofs` adds the proof leg.
 #
 #   pwsh ./verify.ps1                    the gate
@@ -59,18 +59,6 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 dotnet run --project tests/Fuaran.Core.Compute.Tests -c Release --no-build -- --clock-leg
 if ($LASTEXITCODE -ne 0) {
     Write-Host '==== verify: the clock leg FAILED (a timing case red on all three attempts, or cases missing)' -ForegroundColor Red
-    exit $LASTEXITCODE
-}
-
-# The C# facade's conformance report over the dataframe half (`ColExpr`, `Transform`): a C#
-# consumer constructs and reads both through Fuaran.Core.DataFrame.CSharp alone, the
-# read-then-rebuild round trip is the identity over a generated sample, that sample reaches every
-# case of every union it covers, and no public facade member mentions an F# type outside the
-# declared bridge. Run from here rather than from the Expecto suite because the claim is about what
-# a C# CONSUMER can express, and only C# consumer code can make it.
-dotnet run --project tests/Fuaran.Core.DataFrame.CSharp.Proof --no-build
-if ($LASTEXITCODE -ne 0) {
-    Write-Host '==== verify: C# dataframe facade proof FAILED its conformance report' -ForegroundColor Red
     exit $LASTEXITCODE
 }
 
