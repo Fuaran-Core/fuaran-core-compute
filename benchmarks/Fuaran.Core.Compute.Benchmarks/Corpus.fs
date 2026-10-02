@@ -6,7 +6,7 @@
 /// Fable maps (arrays, `Dictionary`, `ResizeArray`), and integer arithmetic that stays well inside
 /// int32 so the generators produce the same tables under node as on .NET.
 ///
-/// Three groups, one table per shape in the results:
+/// Four groups, one table per shape in the results:
 ///
 ///   * the SHEET — a spreadsheet-shaped workload: an `orders` table, a `targets` table and a scalar
 ///     `threshold`, with two nodes (`lines` and `byRegion`) at 1,000 / 10,000 / 100,000 rows, and a
@@ -15,7 +15,9 @@
 ///     `Filter > Sort > Limit 10`, `Filter > GroupBy > Filter`) at 1,000 and 20,000 rows, as a full
 ///     evaluation and as a one-row-edit restricted refresh;
 ///   * the SHAPES the suite never times — an inner join, a high-cardinality group-by, a pivot with
-///     50 on-values, a one-partition window and a two-key sort.
+///     50 on-values, a one-partition window and a two-key sort;
+///   * the TYPED family (Phase 280) — filter, group-and-sum, sort and join over one value column
+///     carried as a decimal, a float and an integer, at 1,000 / 10,000 / 100,000 rows.
 module Fuaran.Core.Compute.Benchmarks.Corpus
 
 open System.Collections.Generic
@@ -375,3 +377,139 @@ let checkShape (name: string) (input: Table) (pipeline: Transform list) : unit =
 
     if got <> want then
         failwithf "benchmark corpus: %s produced %d rows, expected %d" name got want
+
+// ---- the typed family (Phase 280) --------------------------------------------------------------
+
+/// The typed family's sizes.
+let typedSizes = [ 1_000; 10_000; 100_000 ]
+
+/// The three value types the family compares: the same values carried as an exact decimal, as a
+/// float and as an integer count of hundredths.
+let typedTypes = [ DecimalType; FloatType; IntType ]
+
+/// The family's verbs, by the name each result row carries.
+let typedVerbs = [ "filter"; "group-and-sum"; "sort"; "join" ]
+
+/// The number of `grp` values the group-and-sum folds into.
+let typedGroups = 50
+
+/// The hundredths row `i` holds: a permutation of `0 .. 99,999` taken by multiplication with a prime
+/// coprime to 100,000, so the values are distinct at every size and arrive unordered. Inside int32.
+let typedHundredths (i: int) : int = (i * 7919) % 100_000
+
+/// `h` hundredths as the canonical decimal text (`DecimalText`): no trailing fraction zero, no point
+/// on a whole number.
+let typedDecimalText (h: int) : string =
+    let whole = h / 100
+    let frac = h % 100
+
+    if frac = 0 then
+        string whole
+    elif frac % 10 = 0 then
+        string whole + "." + string (frac / 10)
+    elif frac < 10 then
+        string whole + ".0" + string frac
+    else
+        string whole + "." + string frac
+
+/// The cell carrying `h` hundredths under `ty`.
+let typedCell (ty: ColumnType) (h: int) : Cell =
+    match ty with
+    | DecimalType -> Decimal(typedDecimalText h)
+    | FloatType -> Float(float h / 100.0)
+    | _ -> Int h
+
+/// The family's input: `id:int, grp:string, v:<ty>`, `n` rows.
+let typedTable (ty: ColumnType) (n: int) : Table =
+    { Schema = [ "id", IntType; "grp", StringType; "v", ty ]
+      Columns =
+        [ col "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+          col "grp" StringType [ for i in 0 .. n - 1 -> Str("g" + string (i % typedGroups)) ]
+          col "v" ty [ for i in 0 .. n - 1 -> typedCell ty (typedHundredths i) ] ] }
+
+/// The join's right side: every left value once, in another order (a second prime coprime to every
+/// size, reduced first so the product stays inside int32), so each left row matches exactly one
+/// right row.
+let typedRight (ty: ColumnType) (n: int) : Table =
+    { Schema = [ "rv", ty; "b", IntType ]
+      Columns =
+        [ col "rv" ty [ for j in 0 .. n - 1 -> typedCell ty (typedHundredths ((j * (104729 % n)) % n)) ]
+          col "b" IntType [ for j in 0 .. n - 1 -> Int j ] ] }
+
+/// The filter's threshold, 500 in every carrier: about half the rows pass at every size.
+let typedThreshold = 50_000
+
+/// One verb's pipeline over `ty` at `n` rows.
+let typedPipeline (verb: string) (ty: ColumnType) (n: int) : Transform list =
+    match verb with
+    | "filter" -> [ Filter(Binary(Gt, Col "v", Lit(typedCell ty typedThreshold))) ]
+    | "group-and-sum" -> [ GroupBy([ "grp" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ]
+    | "sort" -> [ Transform.sortBy [ "v", Asc ] ]
+    | "join" -> [ Join(Embedded(typedRight ty n), [ "v", "rv" ], Inner) ]
+    | other -> failwithf "benchmark corpus: no typed verb named '%s'" other
+
+/// The output row count each verb must produce at `n` rows, asserted before timing.
+let typedOutputRows (verb: string) (n: int) : int =
+    match verb with
+    | "filter" ->
+        let mutable c = 0
+
+        for i in 0 .. n - 1 do
+            if typedHundredths i > typedThreshold then
+                c <- c + 1
+
+        c
+    | "group-and-sum" -> min n typedGroups
+    | _ -> n
+
+/// The type's name as a result row prints it.
+let typedName (ty: ColumnType) : string =
+    match ty with
+    | DecimalType -> "decimal"
+    | FloatType -> "float"
+    | _ -> "int"
+
+/// Evaluate one case and check it: its row count, and for the group-and-sum the decimal arm's totals
+/// equal to the integer arm's hundredths rendered as decimal text, so the decimal path is timed
+/// computing the exact answer.
+let checkTyped (verb: string) (ty: ColumnType) (n: int) (input: Table) (pipeline: Transform list) : unit =
+    let out =
+        DataFrame.evalPipeline pipeline input |> orFail (verb + " " + typedName ty)
+
+    let want = typedOutputRows verb n
+    let got = Table.rowCount out
+
+    if got <> want then
+        failwithf "benchmark corpus: %s over %s produced %d rows, expected %d" verb (typedName ty) got want
+
+    if verb = "group-and-sum" && ty = DecimalType then
+        let totals = Dictionary<string, int64>()
+
+        for i in 0 .. n - 1 do
+            let g = "g" + string (i % typedGroups)
+            let prior = if totals.ContainsKey g then totals[g] else 0L
+            totals[g] <- prior + int64 (typedHundredths i)
+
+        let groups = cellsOf "grp" out
+        let sums = cellsOf "s" out
+
+        List.zip groups sums
+        |> List.iter (fun (g, s) ->
+            let key =
+                match g with
+                | Str k -> k
+                | other -> failwithf "benchmark corpus: a group key %A" other
+
+            let h = totals[key]
+            let whole = h / 100L
+            let frac = int (h % 100L)
+            let text = typedDecimalText frac
+            // `typedDecimalText` renders hundredths below 100 as `0.xx`; splice the whole part in.
+            let expected =
+                if frac = 0 then
+                    string whole
+                else
+                    string whole + text.Substring 1
+
+            if s <> Decimal expected then
+                failwithf "benchmark corpus: group %s summed to %A, expected %s" key s expected)

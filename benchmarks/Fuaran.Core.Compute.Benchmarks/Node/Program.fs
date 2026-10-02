@@ -6,7 +6,8 @@
 ///
 /// Usage: `node Program.js [runs]` once compiled (see run-node.ps1), or
 /// `dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks/Node -- [runs]`.
-/// `runs` is the number of measured samples per case (default 10), after two warm-up calls.
+/// `runs` is the number of measured samples per case (default 10), after two warm-up calls; a second
+/// argument `typed` times only the typed family (`node Program.js 10 typed`).
 module Fuaran.Core.Compute.Benchmarks.Node.Program
 
 open System
@@ -124,6 +125,23 @@ let private table (title: string) (lines: (string * int * string) list) =
     for case, n, cell in lines do
         printfn "| %s | %s | %s |" case (rows n) cell
 
+/// The typed family (Phase 280): each verb over the same values carried as a decimal, a float and
+/// an integer, at three sizes.
+let private typedTable () =
+    table
+        "Typed values (Phase 280): decimal beside float and int"
+        [ for verb in Corpus.typedVerbs do
+              for n in Corpus.typedSizes do
+                  for ty in Corpus.typedTypes do
+                      yield!
+                          measured
+                              (fun () -> Corpus.typedTable ty n, Corpus.typedPipeline verb ty n)
+                              (fun (input, pipeline) -> Corpus.checkTyped verb ty n input pipeline)
+                              [ verb + ", " + Corpus.typedName ty,
+                                Evaluator,
+                                (fun (input, pipeline) () -> box (Fuaran.Core.DataFrame.evalPipeline pipeline input)) ]
+                              n ]
+
 [<EntryPoint>]
 let main argv =
     let runs =
@@ -136,51 +154,56 @@ let main argv =
 
     runsRef.Value <- runs
 
-    table
-        "Sheet"
-        [ for n in Corpus.sheetSizes do
-              yield!
-                  measured
-                      (fun () ->
-                          let a = Corpus.ordersArrays n
-                          a, Corpus.ordersTable a)
-                      (fun (a, orders) -> Corpus.checkSheet a orders)
-                      [ "lines: hand arm", HandArm, (fun (a, _) () -> box (Corpus.handLines a Corpus.threshold))
-                        "lines: evaluator", Evaluator, (fun (_, o) () -> box (Corpus.evalLines o))
-                        "byRegion: hand arm", HandArm, (fun (a, _) () -> box (Corpus.handByRegion a))
-                        "byRegion: evaluator", Evaluator, (fun (_, o) () -> box (Corpus.evalByRegion o)) ]
-                      n ]
+    // `typed` as the second argument times the typed family alone (Phase 280).
+    let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
 
-    table
-        "Scaling pipelines"
-        [ for name, pipeline in Corpus.scalingPipelines do
-              for n in Corpus.scalingSizes do
+    if not onlyTyped then
+        table
+            "Sheet"
+            [ for n in Corpus.sheetSizes do
                   yield!
                       measured
-                          (fun () -> Corpus.refreshInputs pipeline n)
-                          (fun inputs ->
-                              let full = Corpus.scalingFull inputs |> Corpus.orFail "full evaluation"
-                              let refreshed = Corpus.scalingRefresh inputs |> Corpus.orFail "refresh"
-
-                              if Fuaran.Core.Incremental.result refreshed <> full then
-                                  failwithf
-                                      "benchmark corpus: the refresh of %s at %d rows disagrees with the full evaluation"
-                                      name
-                                      n)
-                          [ name + ": full", Evaluator, (fun i () -> box (Corpus.scalingFull i))
-                            name + ": refresh", Evaluator, (fun i () -> box (Corpus.scalingRefresh i)) ]
+                          (fun () ->
+                              let a = Corpus.ordersArrays n
+                              a, Corpus.ordersTable a)
+                          (fun (a, orders) -> Corpus.checkSheet a orders)
+                          [ "lines: hand arm", HandArm, (fun (a, _) () -> box (Corpus.handLines a Corpus.threshold))
+                            "lines: evaluator", Evaluator, (fun (_, o) () -> box (Corpus.evalLines o))
+                            "byRegion: hand arm", HandArm, (fun (a, _) () -> box (Corpus.handByRegion a))
+                            "byRegion: evaluator", Evaluator, (fun (_, o) () -> box (Corpus.evalByRegion o)) ]
                           n ]
 
-    table
-        "Shapes"
-        [ for name, n, _ in Corpus.shapes do
-              yield!
-                  measured
-                      (fun () -> Corpus.shape name)
-                      (fun (input, pipeline) -> Corpus.checkShape name input pipeline)
-                      [ name,
-                        Evaluator,
-                        (fun (input, pipeline) () -> box (Fuaran.Core.DataFrame.evalPipeline pipeline input)) ]
-                      n ]
+        table
+            "Scaling pipelines"
+            [ for name, pipeline in Corpus.scalingPipelines do
+                  for n in Corpus.scalingSizes do
+                      yield!
+                          measured
+                              (fun () -> Corpus.refreshInputs pipeline n)
+                              (fun inputs ->
+                                  let full = Corpus.scalingFull inputs |> Corpus.orFail "full evaluation"
+                                  let refreshed = Corpus.scalingRefresh inputs |> Corpus.orFail "refresh"
 
+                                  if Fuaran.Core.Incremental.result refreshed <> full then
+                                      failwithf
+                                          "benchmark corpus: the refresh of %s at %d rows disagrees with the full evaluation"
+                                          name
+                                          n)
+                              [ name + ": full", Evaluator, (fun i () -> box (Corpus.scalingFull i))
+                                name + ": refresh", Evaluator, (fun i () -> box (Corpus.scalingRefresh i)) ]
+                              n ]
+
+        table
+            "Shapes"
+            [ for name, n, _ in Corpus.shapes do
+                  yield!
+                      measured
+                          (fun () -> Corpus.shape name)
+                          (fun (input, pipeline) -> Corpus.checkShape name input pipeline)
+                          [ name,
+                            Evaluator,
+                            (fun (input, pipeline) () -> box (Fuaran.Core.DataFrame.evalPipeline pipeline input)) ]
+                          n ]
+
+    typedTable ()
     0

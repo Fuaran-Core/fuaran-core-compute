@@ -34,6 +34,12 @@ let private checkAll () =
         Corpus.checkShape name t p
         printfn "%s: %d output rows, as expected" name (Corpus.shapeOutputRows name)
 
+    for verb in Corpus.typedVerbs do
+        for n in Corpus.typedSizes do
+            for ty in Corpus.typedTypes do
+                Corpus.checkTyped verb ty n (Corpus.typedTable ty n) (Corpus.typedPipeline verb ty n)
+                printfn "%s over %s, %d rows: as expected" verb (Corpus.typedName ty) n
+
 [<EntryPoint>]
 let main argv =
     if argv = [| "--check" |] then

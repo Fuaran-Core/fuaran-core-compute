@@ -91,3 +91,33 @@ type Shapes() =
 
     [<Benchmark>]
     member _.Evaluate() = DataFrame.evalPipeline pipeline input
+
+/// The typed family (Phase 280): each verb over the same values carried as a decimal, a float and
+/// an integer, at three sizes.
+[<MemoryDiagnoser>]
+type Typed() =
+    let mutable input = Unchecked.defaultof<Table>
+    let mutable pipeline: Transform list = []
+
+    static member Verbs = Corpus.typedVerbs
+    static member Types = Corpus.typedTypes |> List.map Corpus.typedName
+    static member Sizes = Corpus.typedSizes
+
+    [<ParamsSource("Verbs")>]
+    member val Verb = "" with get, set
+
+    [<ParamsSource("Types")>]
+    member val Type = "" with get, set
+
+    [<ParamsSource("Sizes")>]
+    member val Rows = 0 with get, set
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        let ty = Corpus.typedTypes |> List.find (fun t -> Corpus.typedName t = this.Type)
+        input <- Corpus.typedTable ty this.Rows
+        pipeline <- Corpus.typedPipeline this.Verb ty this.Rows
+        Corpus.checkTyped this.Verb ty this.Rows input pipeline
+
+    [<Benchmark>]
+    member _.Evaluate() = DataFrame.evalPipeline pipeline input
