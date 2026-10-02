@@ -231,8 +231,10 @@ under `proofs/kit/` are adopted by copy from the Fuaran.Core repository and decl
 ## Releases
 
 A `v*` tag runs [`.github/workflows/publish-packages.yml`](.github/workflows/publish-packages.yml),
-which packs the three packages and pushes them to nuget.org under **Trusted Publishing** — an OIDC
-exchange, no API key. **The nuget.org trusted-publishing policy for THIS repository
+which packs the four `Fuaran.Compute.*` packages (`Fuaran.Compute.DataFrame`,
+`Fuaran.Compute.ColumnOps`, `Fuaran.Compute.PipelineQuery` and `Fuaran.Compute.Conformance`) and
+pushes them to nuget.org under **Trusted Publishing** — an OIDC exchange, no API key.
+**The nuget.org trusted-publishing policy for THIS repository
 (`Fuaran-Core/fuaran-core-compute`, workflow `publish-packages.yml`) must be registered by the package
 owner before the first tag**; until it is, the run fails at the `NuGet/login` step. That failure
 reads like an authentication problem and is the missing registration. A branch push publishes

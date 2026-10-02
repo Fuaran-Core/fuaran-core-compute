@@ -1,7 +1,6 @@
 # Pack the four packages this repository produces into a local folder feed:
-# Fuaran.Core.DataFrame, Fuaran.Core.Column.Ops, Fuaran.Core.DataFrame.PipelineQuery and
-# Fuaran.Core.DataFrame.Conformance, at the
-# standing <Version> in Directory.Build.props.
+# Fuaran.Compute.DataFrame, Fuaran.Compute.ColumnOps, Fuaran.Compute.PipelineQuery and
+# Fuaran.Compute.Conformance, at the standing <Version> in Directory.Build.props.
 #
 #   pwsh ./pack.ps1                 pack into ../../local-nuget-feed (the development loop's feed)
 #   pwsh ./pack.ps1 -Feed <path>    pack elsewhere

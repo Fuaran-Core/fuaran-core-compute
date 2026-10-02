@@ -46,7 +46,18 @@ CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
 It rewrites EVERY drifted baseline, not only the one you were looking at: stage the baselines you
 meant to move by name.
 
-## 0.36.0 — DRAFT
+## 0.36.0 — released 2026-10-02 as `v0.36.0`
+
+**Release record.** The cut-time Fable gate ran green against the candidate on 2026-10-02: the four packages
+at `0.36.0` compiled under Fable 5 over the substrate at `0.33.0` (a scratch project referencing
+`Fuaran.Compute.DataFrame`, `Fuaran.Compute.ColumnOps`, `Fuaran.Compute.PipelineQuery` and
+`Fuaran.Compute.Conformance` from the candidate feed, every transitive `Fuaran.Core.*` package from the
+released `0.33.0` on nuget.org; `fable_modules` carried all four at `0.36.0`, their packaged `fable/` sources
+under the new paths and the `Fuaran.Compute` namespace; the emitted program ran under node over a `GroupBy`, a
+decimal `Quotient` / `Rounded` derive and a sort with a limit, and its prepared-source and incremental answers
+— `refresh` and `refreshPrepared` after an edit and an insert — were byte-equal to the full evaluation's, and
+to the same program's answers on .NET). The full gate (`verify.ps1`) ran green on the release commit through
+the dispatch queue. The proof leg is CI's, on the push of the release commit.
 
 The first version under the packages' own ids (Phase 322, `DECISIONS.md` D4). The slot was opened as
 `0.35.0` by Phase 268, which makes a prepared source a persistent VERSION — chunked columns that
