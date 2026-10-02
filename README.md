@@ -116,7 +116,7 @@ pipeline. Measure your own before adopting it for a row-preserving shape.
 
 ## Composing with `Propagation` — an edit, one refreshed row, a column-granular dirty set
 
-`Column.Ops` is the bridge between a table edit and the two evaluators downstream of it. Worked once,
+`ColumnOps` is the bridge between a table edit and the two evaluators downstream of it. Worked once,
 over an `orders` table of 1,000 rows keyed by `id` and a `lines` pipeline that derives
 `amount = qty * price`:
 
@@ -147,7 +147,7 @@ let dirty =
   and the dirty set then degrades to the node-level one. A node that reads a recomputed node is always
   dirty: which of its columns moved is not known until it is recomputed.
 - **The sheet.** The `PropagationComposition` suite composes both halves: a source edited through
-  `Column.Ops`, a formula tree edited by `UpdateNode`, driven by `Propagation.evalFromWith` with each
+  `ColumnOps`, a formula tree edited by `UpdateNode`, driven by `Propagation.evalFromWith` with each
   table node's incremental state carried as its prior, and certified by the substrate's
   `Conformance.propagationEvaluatorLawsWith` — including two evaluators the family must refuse, one
   that trusts a stale prior and one whose prior-blind reading drifts from the reference. The sheet
@@ -186,7 +186,7 @@ Requirements: the .NET SDK pinned in [`global.json`](global.json).
 ./run.ps1            # restore tools, format, sweep, build, test
 ./verify.ps1         # format-check + publication sweep + build + tests (the gate)
 ./verify.ps1 -Proofs # ... and the F* proof leg (downloads the pinned prover once)
-./pack.ps1           # the three packages into a local folder feed
+./pack.ps1           # the four packages into a local folder feed
 ```
 
 The substrate packages restore from nuget.org; `nuget.config` also names a local folder feed so a
