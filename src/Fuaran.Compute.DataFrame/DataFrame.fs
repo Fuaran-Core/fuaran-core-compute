@@ -5490,13 +5490,20 @@ module DataFrame =
             // One key: a fresh coder numbers its values in first-appearance order already, so the
             // codes ARE the slots.
             | [| v |] ->
-                let codes = codesOf (coder false) v phys true
-                let mutable seen = 0
+                let c = coder false
+                let codes = codesOf c v phys true
 
-                for i in 0 .. n - 1 do
+                // Each slot's first row, scanning only until the last slot has been met: a key of
+                // five values reads a handful of rows, not every one.
+                let mutable seen = 0
+                let mutable i = 0
+
+                while seen < c.Count && i < n do
                     if codes[i] = seen then
                         first.Add i
                         seen <- seen + 1
+
+                    i <- i + 1
 
                 codes, first
             | _ ->
