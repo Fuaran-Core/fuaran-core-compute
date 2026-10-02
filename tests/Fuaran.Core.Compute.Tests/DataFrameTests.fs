@@ -4824,3 +4824,556 @@ let inPlaceOrderingTests =
                           prior <- next
 
               Expect.isGreaterThan ticks 1000 "the sample refreshed" ]
+
+// ---- Phase 324: window and sort under order codes ----
+
+/// One cell of a column of `ty` for the ordering laws: duplicates, nulls, `NaN`, both zeros and the
+/// infinities among the floats, two spellings of one decimal, ordinal-only string distinctions, and
+/// int values either in a narrow band or at int32's ends (`wide`), whose span no offset code covers.
+/// In a `dirty` column one cell in eight is outside the type, so the column packs boxed and takes the
+/// comparator path.
+let private orderCell (rng: System.Random) (ty: ColumnType) (wide: bool) (dirty: bool) : Cell =
+    let pick (xs: Cell[]) = xs[rng.Next xs.Length]
+
+    if dirty && rng.Next 8 = 0 then
+        pick [| Int 1; Str "x"; Float 2.0; Bool true |]
+    else
+        match ty with
+        | IntType when wide ->
+            pick
+                [| Null
+                   Int System.Int32.MaxValue
+                   Int System.Int32.MinValue
+                   Int 0
+                   Int 5
+                   Int 5
+                   Int -7 |]
+        | IntType -> if rng.Next 6 = 0 then Null else Int(rng.Next(-3, 4))
+        | FloatType ->
+            pick
+                [| Null
+                   Float 0.0
+                   Float -0.0
+                   Float nan
+                   Float infinity
+                   Float -infinity
+                   Float 1.5
+                   Float 1.5
+                   Float -2.25
+                   Float 1e-300 |]
+        | DecimalType ->
+            pick
+                [| Null
+                   Decimal "1.50"
+                   Decimal "1.5"
+                   Decimal "-2"
+                   Decimal "0.10"
+                   Decimal "3" |]
+        | BoolType -> pick [| Null; Bool true; Bool false |]
+        | DateType -> pick [| Null; Date "2026-01-02"; Date "2025-12-31"; Date "2026-01-02" |]
+        | _ -> pick [| Null; Str "b"; Str "a"; Str ""; Str "B"; Str "ab"; Str "a" |]
+
+let private orderTypes =
+    [| IntType; FloatType; DecimalType; StringType; BoolType; DateType |]
+
+/// Case `seed` of the ordering laws: a table of 0 to 40 rows over five columns (the fifth an int
+/// column whose values may span int32), read through a selection that drops and permutes rows.
+let private orderCase (seed: int) : Frame =
+    let rng = System.Random seed
+    let n = if rng.Next 10 = 0 then rng.Next 3 else rng.Next 41
+    let types = Array.init 4 (fun _ -> orderTypes[rng.Next orderTypes.Length])
+    let wide = rng.Next 2 = 0
+
+    let schema = [ for j in 0..3 -> sprintf "c%d" j, types[j] ] @ [ "w", IntType ]
+
+    let columns =
+        [ for j in 0..3 ->
+              let dirty = rng.Next 6 = 0
+              Column.create (sprintf "c%d" j) types[j] [ for _ in 1..n -> orderCell rng types[j] false dirty ] ]
+        @ [ Column.create "w" IntType [ for _ in 1..n -> orderCell rng IntType wide false ] ]
+
+    let f = Frame.ofTable { Schema = schema; Columns = columns }
+    // A selection: some physical rows dropped, the rest shuffled.
+    let kept = [| 0 .. n - 1 |] |> Array.filter (fun _ -> rng.Next 5 <> 0)
+
+    for i in kept.Length - 1 .. -1 .. 1 do
+        let j = rng.Next(i + 1)
+        let t = kept[i]
+        kept[i] <- kept[j]
+        kept[j] <- t
+
+    if rng.Next 3 = 0 then f else Frame.select f kept
+
+/// One to three sort keys over the case's columns, each in a random direction.
+let private orderKeysOf (rng: System.Random) : (int * SortDir) list =
+    [ for _ in 1 .. 1 + rng.Next 3 -> rng.Next 5, (if rng.Next 2 = 0 then Asc else Desc) ]
+
+/// The reference order: the stable `List.sortWith` under the pinned row comparator the evaluator
+/// sorted with before Phase 324, over the frame's rows in logical order.
+let private referenceOrder (rows: Cell[][]) (keys: (int * SortDir) list) : int list =
+    List.sortWith (fun a b -> DataFrame.compareResolved keys rows[a] rows[b]) [ 0 .. rows.Length - 1 ]
+
+/// The ordering law over `seeds` under `perturbation`: wherever every key is coded, the coded
+/// permutation — packed, and compared as a code tuple — is the reference order, and two rows share
+/// their codes exactly when the reference comparator calls them equal. Returns the failures and how
+/// many cases were coded and how many fell to the comparator.
+let private orderingLaw (perturbation: DataFrame.Ordering.Perturbation) (seeds: int seq) =
+    let failures = ResizeArray<string>()
+    let mutable coded = 0
+    let mutable boxed = 0
+    let mutable packed = 0
+
+    for seed in seeds do
+        let f = orderCase seed
+        let rng = System.Random(seed + 7)
+        let keys = orderKeysOf rng
+        let rows = Frame.rowsOf f
+        let phys = Frame.physical f
+        let n = rows.Length
+        let expected = referenceOrder rows keys
+        let keyVecs = keys |> List.map (fun (ci, dir) -> f.Vecs[ci], dir) |> List.toArray
+
+        match DataFrame.Ordering.codesAll DataFrame.Ordering.EveryTypedKey keyVecs phys with
+        | ValueNone -> boxed <- boxed + 1
+        | ValueSome codes ->
+            coded <- coded + 1
+            let o = DataFrame.Ordering.build perturbation null 0 codes n
+
+            if not (isNull o.Packed) then
+                packed <- packed + 1
+
+            for label, order in [ "packed", o; "tuple", { o with Packed = null } ] do
+                let got = DataFrame.Ordering.permutation order |> List.ofArray
+
+                if got <> expected then
+                    failures.Add(sprintf "seed %d keys %A (%s): coded %A, reference %A" seed keys label got expected)
+
+            for a in 0 .. n - 1 do
+                for b in 0 .. n - 1 do
+                    let same = DataFrame.Ordering.sameCodes codes a b
+                    let tied = DataFrame.compareResolved keys rows[a] rows[b] = 0
+
+                    if same <> tied then
+                        failures.Add(
+                            sprintf "seed %d keys %A: rows %d and %d share codes %b, tie %b" seed keys a b same tied
+                        )
+
+    List.ofSeq failures, coded, boxed, packed
+
+/// `compareCells` as the reference window read it (Phase 277's decimal arm included).
+let private refCompareCells (a: Cell) (b: Cell) : int option =
+    let num c =
+        match c with
+        | Int i -> float i
+        | Float x -> x
+        | _ -> nan
+
+    match a, b with
+    | (Int _ | Float _), (Int _ | Float _) -> Some(Kernels.compareFloat (num a) (num b))
+    | Decimal _, (Decimal _ | Int _)
+    | Int _, Decimal _ -> Cell.compare a b
+    | Bool x, Bool y -> Some(compare x y)
+    | Str x, Str y
+    | Date x, Date y
+    | Timestamp x, Timestamp y -> Some(System.String.CompareOrdinal(x, y))
+    | _ -> None
+
+/// The reference `Window` column — the row-list algorithm the evaluator ran before Phase 324,
+/// kept here as the oracle: each partition's rows gathered by `CellKey`, sorted with the stable
+/// `List.sortWith` under `compareResolved`, the function computed over the ordered list, and the
+/// outputs scattered back to the rows' positions.
+let private referenceWindow (cols: Schema) (rows: Cell[][]) (spec: WindowSpec) : Cell[] =
+    let idx name =
+        cols |> List.tryFindIndex (fun (c, _) -> c = name)
+
+    let sourceIsDecimal =
+        cols |> List.exists (fun (c, ty) -> c = spec.Of && ty = DecimalType)
+
+    let partIdx = spec.PartitionBy |> List.choose idx |> List.toArray
+    let orderKeys = DataFrame.resolveSortKeys cols spec.OrderBy
+    let slots = DataFrame.CellKey.slots ()
+    let probe: Cell[] = Array.zeroCreate partIdx.Length
+    let parts = ResizeArray<ResizeArray<int * Cell[]>>()
+
+    rows
+    |> Array.iteri (fun i row ->
+        for j in 0 .. partIdx.Length - 1 do
+            probe[j] <- row[partIdx[j]]
+
+        match slots.TryGetValue probe with
+        | true, p -> parts[p].Add((i, row))
+        | _ ->
+            slots[Array.copy probe] <- parts.Count
+            parts.Add(ResizeArray [ i, row ]))
+
+    let ofIdx = idx spec.Of
+
+    let valueAt (row: Cell[]) =
+        match ofIdx with
+        | Some i -> row[i]
+        | None -> Null
+
+    let asNum c =
+        match c with
+        | Int i -> Some(float i)
+        | Float x -> Some x
+        | _ -> None
+
+    let decimalText c =
+        match c with
+        | Decimal s -> Some s
+        | Int i -> Some(string i)
+        | _ -> None
+
+    let out = Array.create rows.Length Null
+
+    for members in parts do
+        let ordered =
+            List.ofSeq members
+            |> List.sortWith (fun (_, a) (_, b) -> DataFrame.compareResolved orderKeys a b)
+            |> Array.ofList
+
+        let len = ordered.Length
+        let vals = ordered |> Array.map (snd >> valueAt)
+
+        let tiedWithPrev k =
+            k > 0
+            && DataFrame.compareResolved orderKeys (snd ordered[k - 1]) (snd ordered[k]) = 0
+
+        let outs: Cell[] = Array.create len Null
+
+        match spec.Fn with
+        | RowNumber ->
+            for k in 0 .. len - 1 do
+                outs[k] <- Int(k + 1)
+        | Rank
+        | DenseRank ->
+            let mutable r = 0
+
+            for k in 0 .. len - 1 do
+                if not (tiedWithPrev k) then
+                    r <- r + 1
+
+                outs[k] <- Int r
+        | CompetitionRank ->
+            let mutable r = 0
+
+            for k in 0 .. len - 1 do
+                if not (tiedWithPrev k) then
+                    r <- k + 1
+
+                outs[k] <- Int r
+        | NTile b ->
+            let small = len / b
+            let big = len % b
+            let bigRows = big * (small + 1)
+
+            for k in 0 .. len - 1 do
+                outs[k] <-
+                    if k < bigRows then
+                        Int(k / (small + 1) + 1)
+                    else
+                        Int(big + (k - bigRows) / small + 1)
+        | Lag ->
+            for k in 1 .. len - 1 do
+                outs[k] <- vals[k - 1]
+        | Lead ->
+            for k in 0 .. len - 2 do
+                outs[k] <- vals[k + 1]
+        | CumulSum when sourceIsDecimal ->
+            let mutable acc = DecimalText.zero
+
+            for k in 0 .. len - 1 do
+                match decimalText vals[k] with
+                | Some x -> acc <- DecimalText.add acc x |> Option.defaultValue acc
+                | None -> ()
+
+                outs[k] <- Decimal acc
+        | CumulSum ->
+            let mutable acc = 0.0
+
+            for k in 0 .. len - 1 do
+                match asNum vals[k] with
+                | Some x -> acc <- acc + x
+                | None -> ()
+
+                outs[k] <- Float acc
+        | RollingMean
+        | RollingSum ->
+            for k in 0 .. len - 1 do
+                if sourceIsDecimal && spec.Fn = RollingSum then
+                    let mutable sum = DecimalText.zero
+                    let mutable count = 0
+
+                    for j in max 0 (k - 2) .. k do
+                        match decimalText vals[j] with
+                        | Some x ->
+                            sum <- DecimalText.add sum x |> Option.defaultValue sum
+                            count <- count + 1
+                        | None -> ()
+
+                    outs[k] <- if count = 0 then Null else Decimal sum
+                else
+                    let mutable sum = 0.0
+                    let mutable count = 0
+
+                    for j in max 0 (k - 2) .. k do
+                        let x =
+                            match vals[j] with
+                            | Decimal t -> DecimalText.tryToFloat t
+                            | c -> asNum c
+
+                        match x with
+                        | Some x ->
+                            sum <- sum + x
+                            count <- count + 1
+                        | None -> ()
+
+                    outs[k] <-
+                        if count = 0 then Null
+                        elif spec.Fn = RollingSum then Float sum
+                        else Float(sum / float count)
+        | CumulMax
+        | CumulMin ->
+            let mutable acc = Null
+
+            for k in 0 .. len - 1 do
+                let v = vals[k]
+
+                acc <-
+                    match acc, v with
+                    | _, Null -> acc
+                    | Null, _ -> v
+                    | _ ->
+                        match refCompareCells acc v with
+                        | Some c -> if (spec.Fn = CumulMin) = (c <= 0) then acc else v
+                        | None -> acc
+
+                outs[k] <- acc
+
+        for k in 0 .. len - 1 do
+            out[fst ordered[k]] <- outs[k]
+
+    out
+
+let private windowFns =
+    [| RowNumber
+       Rank
+       DenseRank
+       CompetitionRank
+       NTile 1
+       NTile 3
+       Lag
+       Lead
+       CumulSum
+       CumulMax
+       CumulMin
+       RollingMean
+       RollingSum |]
+
+/// The window law over `seeds` under `perturbation`: the frame path's column (and, under `Exact`,
+/// the public row form's) is the reference window's, cell for cell and bit for bit.
+let private windowLaw (perturbation: DataFrame.Ordering.Perturbation) (seeds: int seq) =
+    let failures = ResizeArray<string>()
+    let mutable cases = 0
+
+    for seed in seeds do
+        let f = orderCase seed
+        let rng = System.Random(seed + 11)
+        let name j = fst (List.item j f.Cols)
+
+        let spec =
+            { PartitionBy = [ for _ in 1 .. rng.Next 3 -> name (rng.Next 5) ]
+              OrderBy =
+                orderKeysOf rng
+                |> List.map (fun (ci, dir) -> name ci, dir)
+                |> List.truncate (rng.Next 3)
+              Fn = windowFns[rng.Next windowFns.Length]
+              Of = name (rng.Next 5)
+              As = "w" }
+
+        let rows = Frame.rowsOf f
+        let expected = referenceWindow f.Cols rows spec
+        let phys = Frame.physical f
+
+        match DataFrame.windowColumnOf perturbation f.Cols (fun ci -> f.Vecs[ci]) phys spec with
+        | Error e -> failures.Add(sprintf "seed %d %A: refused %A" seed spec e)
+        | Ok(_, column) ->
+            cases <- cases + 1
+            let got = Array.init rows.Length (DataFrame.windowCellAt column)
+
+            if not (Array.forall2 sameCell got expected) then
+                failures.Add(sprintf "seed %d %A: frame path %A, reference %A" seed spec got expected)
+
+            if perturbation = DataFrame.Ordering.Exact then
+                match DataFrame.windowStep f.Cols (rows |> Array.map List.ofArray |> List.ofArray) spec with
+                | Error e -> failures.Add(sprintf "seed %d %A: the row form refused %A" seed spec e)
+                | Ok(_, outRows) ->
+                    let col = outRows |> List.map List.last |> Array.ofList
+
+                    if not (Array.forall2 sameCell col expected) then
+                        failures.Add(sprintf "seed %d %A: row form %A, reference %A" seed spec col expected)
+
+    List.ofSeq failures, cases
+
+/// Sort the logical rows of a one-column table under `dir` and read the column back.
+let private sortedColumn (ty: ColumnType) (cells: Cell list) (dir: SortDir) : Cell list =
+    DataFrame.evalPipeline
+        [ Transform.sortBy [ "x", dir ] ]
+        { Schema = [ "x", ty ]
+          Columns = [ col "x" ty cells ] }
+    |> okTable
+    |> cellsOf "x"
+
+[<Tests>]
+let orderCodeTests =
+    testList
+        "DataFrame — window and sort under order codes (Phase 324)"
+        [ testCase
+              "the coded order is the stable sort's, packed and as a tuple, and codes tie exactly where the comparator does"
+          <| fun _ ->
+              let failures, coded, boxed, packed =
+                  orderingLaw DataFrame.Ordering.Exact (seq { 0..2999 })
+
+              Expect.isEmpty failures "the coded order is the reference order"
+              // Not vacuous: most cases are coded, some keep the comparator (a cell outside its type),
+              // and the packed path is the common one.
+              Expect.isGreaterThan coded 1500 "the law codes most cases"
+              Expect.isGreaterThan boxed 100 "the law reaches the comparator path"
+              Expect.isGreaterThan packed 1500 "the law reaches the packed path"
+
+          testCase "the ordering law is red against a reversed tie-break"
+          <| fun _ ->
+              let failures, _, _, _ =
+                  orderingLaw DataFrame.Ordering.TieBreakReversed (seq { 0..2999 })
+
+              Expect.isNonEmpty failures "the law finds the reversed tie-break"
+
+          testCase "every window function over the frame path and the row form is the reference window, bit for bit"
+          <| fun _ ->
+              let failures, cases = windowLaw DataFrame.Ordering.Exact (seq { 0..2999 })
+              Expect.isEmpty failures "the window is the reference window"
+              Expect.isGreaterThan cases 2900 "the law answers"
+
+          testCase "the window law is red against a reversed tie-break"
+          <| fun _ ->
+              let failures, _ = windowLaw DataFrame.Ordering.TieBreakReversed (seq { 0..2999 })
+              Expect.isNonEmpty failures "the law finds the reversed tie-break"
+
+          testCase "sort, sort > limit and the coded order agree over the generated cases"
+          <| fun _ ->
+              // `evalSort` and the top-n (planned from a sort then a limit) through the evaluator, over
+              // every coded case, against the reference order read through the selection.
+              let mutable checkedCases = 0
+
+              for seed in 0..999 do
+                  let f = orderCase seed
+                  let rng = System.Random(seed + 7)
+                  let keys = orderKeysOf rng
+                  let rows = Frame.rowsOf f
+                  // Compared as tokens: a `NaN` cell is not structurally equal to itself.
+                  let tokens (row: Cell[]) =
+                      row |> Array.map Cell.token |> Array.toList
+
+                  let expected = referenceOrder rows keys |> List.map (fun i -> tokens rows[i])
+                  let by = keys |> List.map (fun (ci, dir) -> fst (List.item ci f.Cols), dir)
+                  let t = Frame.toTable f
+                  let keyVecs = keys |> List.map (fun (ci, dir) -> f.Vecs[ci], dir) |> List.toArray
+
+                  match DataFrame.Ordering.codesAll DataFrame.Ordering.EveryTypedKey keyVecs (Frame.physical f) with
+                  | ValueNone -> ()
+                  | ValueSome _ ->
+                      checkedCases <- checkedCases + 1
+
+                      let rowsOf (t: Table) =
+                          Frame.rowsOf (Frame.ofTable t) |> Array.toList |> List.map tokens
+
+                      let sorted = DataFrame.evalPipeline [ Transform.sortBy by ] t |> okTable
+                      Expect.equal (rowsOf sorted) expected (sprintf "seed %d sort" seed)
+                      let n = rng.Next 5
+                      let off = rng.Next 3
+
+                      let top =
+                          DataFrame.evalPipeline [ Transform.sortBy by; Transform.limit n off ] t
+                          |> okTable
+
+                      Expect.equal
+                          (rowsOf top)
+                          (expected |> List.skip (min off expected.Length) |> List.truncate n)
+                          (sprintf "seed %d sort > limit %d %d" seed n off)
+
+              Expect.isGreaterThan checkedCases 400 "the sample reaches coded sorts"
+
+          testCase "nulls sort last in both directions; NaN is the greatest float, so first descending"
+          <| fun _ ->
+              let xs =
+                  [ Float 1.0
+                    Null
+                    Float nan
+                    Float -0.0
+                    Float 0.0
+                    Float -infinity
+                    Null
+                    Float nan ]
+
+              Expect.equal
+                  (sortedColumn FloatType xs Asc |> List.map Cell.token)
+                  ([ Float -infinity
+                     Float -0.0
+                     Float 0.0
+                     Float 1.0
+                     Float nan
+                     Float nan
+                     Null
+                     Null ]
+                   |> List.map Cell.token)
+                  "ascending: -0.0 and 0.0 tie and keep their order; NaN after every value; nulls last"
+
+              Expect.equal
+                  (sortedColumn FloatType xs Desc |> List.map Cell.token)
+                  ([ Float nan
+                     Float nan
+                     Float 1.0
+                     Float -0.0
+                     Float 0.0
+                     Float -infinity
+                     Null
+                     Null ]
+                   |> List.map Cell.token)
+                  "descending: NaN first; the tied zeros still in frame order; nulls still last"
+
+              Expect.equal
+                  (sortedColumn StringType [ Str "b"; Null; Str "B"; Str "a"; Str "" ] Desc)
+                  [ Str "b"; Str "a"; Str "B"; Str ""; Null ]
+                  "strings ordinal, descending, null last"
+
+              Expect.equal
+                  (sortedColumn IntType [ Int System.Int32.MaxValue; Null; Int System.Int32.MinValue; Int 0 ] Desc)
+                  [ Int System.Int32.MaxValue; Int 0; Int System.Int32.MinValue; Null ]
+                  "an int key spanning int32 is ranked, not offset"
+
+          testCase "a multi-key window over duplicate keys numbers ties in frame order, per partition"
+          <| fun _ ->
+              let t =
+                  tbl
+                      [ "p", StringType; "a", IntType; "b", StringType ]
+                      [ col "p" StringType [ Str "x"; Str "y"; Str "x"; Str "x"; Null; Str "x"; Null ]
+                        col "a" IntType [ Int 1; Int 1; Int 2; Int 1; Int 3; Null; Int 3 ]
+                        col "b" StringType [ Str "q"; Str "q"; Str "q"; Str "q"; Null; Str "r"; Null ] ]
+
+              let rows =
+                  DataFrame.evalPipeline
+                      [ Window
+                            { PartitionBy = [ "p" ]
+                              OrderBy = [ "a", Desc; "b", Asc ]
+                              Fn = RowNumber
+                              Of = "a"
+                              As = "rn" } ]
+                      t
+                  |> okTable
+                  |> cellsOf "rn"
+
+              // Partition x: rows 0, 2, 3, 5 — a desc puts 2 first, then the tied 0 and 3 in frame
+              // order, then 5 (a null `a`, last whatever the direction). Partition y: row 1. The null
+              // partition: rows 4 and 6, tied on every key, in frame order.
+              Expect.equal rows [ Int 2; Int 1; Int 1; Int 3; Int 1; Int 4; Int 2 ] "row numbers" ]

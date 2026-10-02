@@ -481,6 +481,52 @@ let topNTests =
 
               expectRestrictedAndEqual pipeline after next
 
+          // Phase 324 — the full evaluation the seam is held to now sorts under ORDER CODES (and a
+          // top-n under the arithmetic ones). The seam's merge still compares cells; this case holds
+          // the two to one answer over a sequence of edits that make and break ties on BOTH keys,
+          // move rows to and from a null key, and cross the cut with an offset.
+          testCase
+              "Phase 324 — a two-key top-n with an offset: every refresh is the full evaluation, ties and nulls included"
+          <| fun _ ->
+              let pipeline = [ Transform.sortBy [ "a", Asc; "b", Desc ]; Transform.limit 3 1 ]
+
+              let start =
+                  [ "r0", Int 2, Int 0
+                    "r1", Int 1, Int 5
+                    "r2", Null, Int 1
+                    "r3", Int 1, Int 5
+                    "r4", Int 3, Null
+                    "r5", Int 1, Int 2
+                    "r6", Int 2, Int 0 ]
+
+              let edits =
+                  [ "r4", Int 1, Int 5 // ties r1 and r3 on both keys
+                    "r2", Int 0, Null // a null `a` leaves the tail for the head
+                    "r1", Null, Int 5 // and one joins the tail
+                    "r6", Int 1, Int 9 // crosses the cut
+                    "r0", Int 1, Int 5 // a third full tie
+                    "r5", Int -1, Int 0 ] // displaces the offset row
+
+              let mutable rows = start
+              let mutable state = ok (Incremental.primeOn idw pipeline (table rows))
+
+              for id, a, b in edits do
+                  let before = table rows
+                  rows <- rows |> List.map (fun (i, a0, b0) -> if i = id then i, a, b else i, a0, b0)
+                  let after = table rows
+                  let delta = ok (Delta.diff idw before after)
+                  state <- ok (Incremental.refreshOn idw pipeline state delta after)
+
+                  Expect.equal
+                      (Ok(Incremental.result state))
+                      (DataFrame.evalPipeline pipeline after)
+                      (sprintf "after editing %s" id)
+
+              // The last answer, by name: a ascending, b descending, ties in arrival order, nulls last.
+              // The order is r5 (-1), r2 (0), r6 (1, 9), then r0, r3, r4 tied on (1, 5) in arrival
+              // order, then r1 (null); the offset skips r5 and the window keeps the next three.
+              Expect.equal (referenceIds pipeline (table rows)) [ "r2"; "r6"; "r0" ] "the window, by name"
+
           testCase "the reason string for a param-slotted limit reads"
           <| fun _ ->
               let s = Incremental.reasonString (UnresolvedSlotParam("limit", "take"))

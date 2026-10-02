@@ -1308,28 +1308,59 @@ module Incremental =
         // frame IS the reference's frame here (the walk's invariant), so the appended column is the
         // reference's column by construction. `evaluated` does not move and no step is recorded: a
         // window evaluates no expression, so it caches no cell and the reference charges it nothing.
+        //
+        // Phase 324 — the column is the reference's `windowColumnOf` over the columns the window
+        // READS, each packed once from its slot array in the walk's order (exactly as the public row
+        // form packs its own), so no row is materialised: the partition slots, the coded order and
+        // the scan are the frame path's own. The other columns are SHARED, array and origin, as a
+        // `Derive` shares them: no array is written after the step that made it, and a column the
+        // window does not read is never unpacked.
         | WWindow spec :: rest ->
-            let every = Array.init f.Data.Length id
+            let order = f.Order
+            let types = f.Cols |> List.map snd |> List.toArray
+            let packed = System.Collections.Generic.Dictionary<int, Vec>()
 
-            let rows =
-                f.Order
-                |> Array.map (fun s ->
-                    let row: Cell[] = Array.zeroCreate f.Data.Length
-                    fillRow f every s row
-                    row)
-                |> List.ofArray
+            // Every slot alive, in slot order: a column no step unpacked is then its source list.
+            let identity =
+                lazy
+                    (order.Length = r.Stable.Length
+                     && (let mutable same = true
+                         let mutable i = 0
 
-            DataFrame.windowStepRows f.Cols rows spec
-            |> Result.bind (fun (cols2, rows2) ->
-                let width = List.length cols2
-                let data2 = Array.init width (fun _ -> Array.zeroCreate r.Stable.Length)
+                         while same && i < order.Length do
+                             same <- order[i] = i
+                             i <- i + 1
 
-                rows2
-                |> List.iteri (fun k (row: Cell[]) ->
-                    let s = f.Order[k]
+                         same))
 
-                    for c in 0 .. width - 1 do
-                        data2[c][s] <- row[c])
+            let vecOf (ci: int) : Vec =
+                match packed.TryGetValue ci with
+                | true, v -> v
+                | _ ->
+                    let fromColumn () =
+                        let a = column f ci
+                        Vec.pack types[ci] (order |> Array.map (fun s -> a[s]))
+
+                    // A column still its source list packs straight from the list, as `Frame.ofTable`
+                    // packs it (Phase 327), rather than through an unpacked array.
+                    let v =
+                        match f.Origins[ci] with
+                        | Some origin when isNull f.Data[ci] && identity.Value ->
+                            match Vec.packList types[ci] order.Length origin with
+                            | ValueSome v -> v
+                            | ValueNone -> fromColumn ()
+                        | _ -> fromColumn ()
+
+                    packed[ci] <- v
+                    v
+
+            DataFrame.windowColumnOf DataFrame.Ordering.Exact f.Cols vecOf (Array.init order.Length id) spec
+            |> Result.bind (fun (ty, appended) ->
+                let cols2 = f.Cols @ [ spec.As, ty ]
+                let last: Cell[] = Array.zeroCreate r.Stable.Length
+
+                for k in 0 .. order.Length - 1 do
+                    last[order[k]] <- DataFrame.windowCellAt appended k
 
                 // `Stable` is cleared for EVERY slot, dead ones too: the appended column is a
                 // function of the whole frame (see `WalkRows`).
@@ -1339,10 +1370,10 @@ module Incremental =
                     resolve
                     env
                     prior
-                    r
+                    { r with InPlace = null }
                     { Cols = cols2
-                      Data = data2
-                      Origins = Array.create width None
+                      Data = Array.append f.Data [| last |]
+                      Origins = Array.append f.Origins [| None |]
                       Order = f.Order }
                     evaluated
                     caches
@@ -2420,6 +2451,10 @@ module Incremental =
         // `WSort` and `WLimit`), so only the row-local steps ahead of it read in place. A maintained
         // group step reads the in-place changed rows against the walked order, so a prefix that
         // sorts or limits ahead of one keeps the general reading.
+        //
+        // Phase 324 — a `Window` reads as a sort does: it moves no row, the walk clears the in-place
+        // reading at it, and it recomputes its column over the whole frame (clearing `Stable`), so
+        // only the frame's build and the row-local steps ahead of it read in place.
         let inPlaceRows =
             let rowLocal =
                 function
@@ -2431,7 +2466,8 @@ module Incremental =
             let ordering =
                 function
                 | WSort _
-                | WLimit _ -> true
+                | WLimit _
+                | WWindow _ -> true
                 | step -> rowLocal step
 
             match inPlace, prior, named with

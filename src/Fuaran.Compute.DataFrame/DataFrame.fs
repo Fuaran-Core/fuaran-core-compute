@@ -5148,6 +5148,84 @@ module DataFrame =
                 elif typed then Floats(floats, mask)
                 else Vec.pack ty cells
 
+    /// The slot of every LOGICAL row under the key vectors `keyVecs` (read at `phys`), and each
+    /// slot's key cells — slots numbered from 0 in first-appearance order, keys equal exactly when
+    /// their cells are token-equal (`CellKey`). The grouping `GroupBy` records (Phase 323) and the
+    /// partition a `Window` computes over (Phase 324): one definition, so a window's partitions are
+    /// the groups a `GroupBy` over the same keys forms.
+    let private keySlots (keyVecs: Vec[]) (phys: int[]) : int[] * ResizeArray<Cell[]> =
+        let slots = CellKey.slots ()
+        let probe: Cell[] = Array.zeroCreate keyVecs.Length
+        let groupKeys = ResizeArray<Cell[]>()
+        let slotOf: int[] = Array.zeroCreate phys.Length
+
+        // One key over a string or int carrier is probed by its carrier value, unboxed: within one
+        // carrier, two present values are token-equal exactly when they are equal (ordinal
+        // strings of one family, or ints), and every `Null` is one group — `CellKey`'s partition
+        // and its first-appearance order, without a boxed cell per row. Any other key set is
+        // probed through `CellKey`.
+        let mutable nullSlot = -1
+
+        let openSlot (i: int) (p: int) =
+            let g = groupKeys.Count
+            groupKeys.Add [| Vec.cellAt keyVecs[0] p |]
+            slotOf[i] <- g
+            g
+
+        let nullAt (i: int) =
+            if nullSlot >= 0 then
+                slotOf[i] <- nullSlot
+            else
+                nullSlot <- groupKeys.Count
+                groupKeys.Add [| Null |]
+                slotOf[i] <- nullSlot
+
+        match keyVecs with
+        // No key: one slot holding every row (none over no rows), as the probe of an empty key
+        // through `CellKey` answers, without a probe per row.
+        | [||] ->
+            if phys.Length > 0 then
+                groupKeys.Add [||]
+
+        | [| Strs(_, a, m) |] ->
+            let index = System.Collections.Generic.Dictionary<string, int>()
+
+            for i in 0 .. phys.Length - 1 do
+                let p = phys[i]
+
+                if not m[p] then
+                    nullAt i
+                else
+                    match index.TryGetValue a[p] with
+                    | true, g -> slotOf[i] <- g
+                    | _ -> index[a[p]] <- openSlot i p
+        | [| Ints(a, m) |] ->
+            let index = System.Collections.Generic.Dictionary<int, int>()
+
+            for i in 0 .. phys.Length - 1 do
+                let p = phys[i]
+
+                if not m[p] then
+                    nullAt i
+                else
+                    match index.TryGetValue a[p] with
+                    | true, g -> slotOf[i] <- g
+                    | _ -> index[a[p]] <- openSlot i p
+        | _ ->
+            for i in 0 .. phys.Length - 1 do
+                let p = phys[i]
+
+                for j in 0 .. keyVecs.Length - 1 do
+                    probe[j] <- Vec.cellAt keyVecs[j] p
+
+                match CellKey.slotOf slots probe groupKeys.Count with
+                | g, false -> slotOf[i] <- g
+                | g, true ->
+                    groupKeys.Add(Array.copy probe)
+                    slotOf[i] <- g
+
+        slotOf, groupKeys
+
     /// One column of a group's members — physical rows, in member order — as the cell list an
     /// aggregate reads: built from the back, so it is one pass and one cons per member, and read
     /// straight from the column's vector (Phase 267), so only the aggregated column is boxed.
@@ -5187,71 +5265,9 @@ module DataFrame =
             // logical order, into per-slot accumulators. A group's member list is built only if an
             // aggregate defers to `Column.aggregate`, and then for every group at once, from
             // `slotOf`, in the same member order.
-            let slots = CellKey.slots ()
-            let probe: Cell[] = Array.zeroCreate idxs.Length
             let keyVecs = idxs |> Array.map (fun ci -> f.Vecs[ci])
-            let groupKeys = ResizeArray<Cell[]>()
             let phys = Frame.physical f
-            let slotOf: int[] = Array.zeroCreate phys.Length
-
-            // One key over a string or int carrier is probed by its carrier value, unboxed: within one
-            // carrier, two present values are token-equal exactly when they are equal (ordinal
-            // strings of one family, or ints), and every `Null` is one group — `CellKey`'s partition
-            // and its first-appearance order, without a boxed cell per row. Any other key set is
-            // probed through `CellKey`.
-            let mutable nullSlot = -1
-
-            let openSlot (i: int) (p: int) =
-                let g = groupKeys.Count
-                groupKeys.Add [| Vec.cellAt keyVecs[0] p |]
-                slotOf[i] <- g
-                g
-
-            let nullAt (i: int) =
-                if nullSlot >= 0 then
-                    slotOf[i] <- nullSlot
-                else
-                    nullSlot <- groupKeys.Count
-                    groupKeys.Add [| Null |]
-                    slotOf[i] <- nullSlot
-
-            match keyVecs with
-            | [| Strs(_, a, m) |] ->
-                let index = System.Collections.Generic.Dictionary<string, int>()
-
-                for i in 0 .. phys.Length - 1 do
-                    let p = phys[i]
-
-                    if not m[p] then
-                        nullAt i
-                    else
-                        match index.TryGetValue a[p] with
-                        | true, g -> slotOf[i] <- g
-                        | _ -> index[a[p]] <- openSlot i p
-            | [| Ints(a, m) |] ->
-                let index = System.Collections.Generic.Dictionary<int, int>()
-
-                for i in 0 .. phys.Length - 1 do
-                    let p = phys[i]
-
-                    if not m[p] then
-                        nullAt i
-                    else
-                        match index.TryGetValue a[p] with
-                        | true, g -> slotOf[i] <- g
-                        | _ -> index[a[p]] <- openSlot i p
-            | _ ->
-                for i in 0 .. phys.Length - 1 do
-                    let p = phys[i]
-
-                    for j in 0 .. idxs.Length - 1 do
-                        probe[j] <- Vec.cellAt keyVecs[j] p
-
-                    match CellKey.slotOf slots probe groupKeys.Count with
-                    | g, false -> slotOf[i] <- g
-                    | g, true ->
-                        groupKeys.Add(Array.copy probe)
-                        slotOf[i] <- g
+            let slotOf, groupKeys = keySlots keyVecs phys
 
             // resolve each agg's source column + type
             let resolveAgg (a: Agg) =
@@ -5371,40 +5387,415 @@ module DataFrame =
                     | Some c -> signed c
                     | None -> 0
 
+    /// Sort keys as ORDER CODES (Phase 324): each key read ONCE into an int per logical row, so a
+    /// sort compares ints rather than calling a comparator per key per comparison.
+    ///
+    /// A key's codes ascend in the key's pinned order (`keyComparer`: its direction applied, nulls
+    /// last regardless of direction), and two rows share a code EXACTLY when that comparator calls
+    /// them equal:
+    ///
+    ///   * an `int` key is its value offset from the least present value — or from the greatest,
+    ///     descending — where the values span a range a few times the row count; past that, and for
+    ///     every `string`, `float` and `decimal` key, a DENSE RANK of the distinct present values,
+    ///     computed once per sort through the key's existing total order (ordinal strings,
+    ///     `Kernels.compareFloat` for floats: `-0.0` with `0.0`, `NaN` above every value; the exact
+    ///     scaled integers of a decimal vector);
+    ///   * a `bool` key is 0 / 1;
+    ///   * a `Null` takes the code past every present one.
+    ///
+    /// A boxed key vector (`Cells`) is never coded: its comparator orders an incomparable pair equal,
+    /// which is not a total order, so ranks cannot stand in for it, and its callers keep the
+    /// comparator path.
+    ///
+    /// The tie-break is the LOGICAL POSITION, which is what makes a sort under the codes the stable
+    /// sort of the frame order: a stable sort is exactly a sort by (keys, position). Where the
+    /// product of the keys' ranges and the row count stays below 2^53, every row's (codes, position)
+    /// is PACKED into one number exactly — the codes as mixed-radix digits, the position as the last —
+    /// and the sort is a sort of plain numbers with no comparator. The packing is carried in a float
+    /// rather than an `int64` because a float is exact to 2^53 on both hosts, where an `int64` is a
+    /// big integer under Fable; past the bound the codes are compared as a tuple.
+    module internal Ordering =
+
+        /// What the ordering laws perturb to show they can fail (Phase 324). The evaluator runs `Exact`.
+        type Perturbation =
+            /// The stable sort's tie-break: the logical position, ascending.
+            | Exact
+            /// Ties broken by DESCENDING position — ordered correctly on every key, and different from
+            /// the stable sort on the first duplicate key.
+            | TieBreakReversed
+
+        /// One key's codes, one per logical row, and how many distinct codes it may hold.
+        [<Struct>]
+        type KeyCodes = { Codes: int[]; Range: int }
+
+        /// 2^53: every integer below it is exact in a float, on both hosts.
+        let private exactBound: float = 9007199254740992.0
+
+        /// Codes from per-row distinct-value ids (`-1` a null, `-2` a `NaN`): the ids ranked by
+        /// sorting the distinct values once, a `NaN` above every value, the direction applied, a
+        /// null last.
+        let private ofIds
+            (ids: int[])
+            (distinct: 'T[])
+            (cmp: 'T -> 'T -> int)
+            (anyNaN: bool)
+            (dir: SortDir)
+            : KeyCodes =
+            let d = distinct.Length
+            // The distinct values' ids sorted by value: the id at index `r` has rank `r` (the values
+            // are distinct, so no two compare equal). A plain list, not an `int[]`: under Fable a
+            // typed array's sort with a comparator is the slow path in the JavaScript engines.
+            let byValue = ResizeArray<int>(d)
+
+            for j in 0 .. d - 1 do
+                byValue.Add j
+
+            byValue.Sort(System.Comparison(fun a b -> cmp distinct[a] distinct[b]))
+            let rankOf: int[] = Array.zeroCreate d
+
+            for r in 0 .. d - 1 do
+                rankOf[byValue[r]] <- r
+
+            let nanShift = if anyNaN then 1 else 0
+            let nullCode = d + nanShift
+            let codes: int[] = Array.zeroCreate ids.Length
+
+            for i in 0 .. ids.Length - 1 do
+                let id = ids[i]
+
+                codes[i] <-
+                    if id = -1 then nullCode
+                    elif id = -2 then (if dir = Asc then d else 0)
+                    elif dir = Asc then rankOf[id]
+                    else nanShift + (d - 1 - rankOf[id])
+
+            { Codes = codes; Range = nullCode + 1 }
+
+        /// A float carrier's codes: dense ranks under `Kernels.compareFloat` (`-0.0` keyed with
+        /// `0.0`, every `NaN` one value above the rest).
+        let private ofFloats (vals: float[]) (mask: bool[]) (phys: int[]) (dir: SortDir) : KeyCodes =
+            let index = System.Collections.Generic.Dictionary<float, int>()
+            let distinct = ResizeArray<float>()
+            let ids: int[] = Array.zeroCreate phys.Length
+            let mutable anyNaN = false
+
+            for i in 0 .. phys.Length - 1 do
+                let p = phys[i]
+
+                if not mask[p] then
+                    ids[i] <- -1
+                else
+                    let x = vals[p]
+
+                    if System.Double.IsNaN x then
+                        ids[i] <- -2
+                        anyNaN <- true
+                    else
+                        let k = if x = 0.0 then 0.0 else x
+
+                        match index.TryGetValue k with
+                        | true, id -> ids[i] <- id
+                        | _ ->
+                            let id = distinct.Count
+                            index[k] <- id
+                            distinct.Add k
+                            ids[i] <- id
+
+            ofIds ids (distinct.ToArray()) (fun (a: float) b -> compare a b) anyNaN dir
+
+        /// A string carrier's codes: dense ranks under the ordinal order.
+        let private ofStrings (vals: string[]) (mask: bool[]) (phys: int[]) (dir: SortDir) : KeyCodes =
+            let index = System.Collections.Generic.Dictionary<string, int>()
+            let distinct = ResizeArray<string>()
+            let ids: int[] = Array.zeroCreate phys.Length
+
+            for i in 0 .. phys.Length - 1 do
+                let p = phys[i]
+
+                if not mask[p] then
+                    ids[i] <- -1
+                else
+                    let x = vals[p]
+
+                    match index.TryGetValue x with
+                    | true, id -> ids[i] <- id
+                    | _ ->
+                        let id = distinct.Count
+                        index[x] <- id
+                        distinct.Add x
+                        ids[i] <- id
+
+            ofIds ids (distinct.ToArray()) (fun (a: string) b -> System.String.CompareOrdinal(a, b)) false dir
+
+        /// An int carrier's codes: the value offset from the least present one (ascending) or the
+        /// greatest (descending), where the values span at most a few times the row count; past
+        /// that, dense ranks of the values in the float carrier, where every int is exact — or
+        /// `ValueNone` there when only the arithmetic codes were asked for.
+        let private ofInts
+            (arithmeticOnly: bool)
+            (vals: int[])
+            (mask: bool[])
+            (phys: int[])
+            (dir: SortDir)
+            : KeyCodes voption =
+            let n = phys.Length
+            let mutable lo = System.Int32.MaxValue
+            let mutable hi = System.Int32.MinValue
+            let mutable any = false
+
+            for i in 0 .. n - 1 do
+                let p = phys[i]
+
+                if mask[p] then
+                    any <- true
+                    let v = vals[p]
+
+                    if v < lo then
+                        lo <- v
+
+                    if v > hi then
+                        hi <- v
+
+            if not any then
+                ValueSome
+                    { Codes = Array.zeroCreate n
+                      Range = 1 }
+            else
+                let span = float hi - float lo
+
+                if span <= 4.0 * float n + 16.0 then
+                    let nullCode = int span + 1
+                    let codes: int[] = Array.zeroCreate n
+
+                    for i in 0 .. n - 1 do
+                        let p = phys[i]
+
+                        codes[i] <-
+                            if not mask[p] then nullCode
+                            elif dir = Asc then vals[p] - lo
+                            else hi - vals[p]
+
+                    ValueSome { Codes = codes; Range = nullCode + 1 }
+                elif arithmeticOnly then
+                    ValueNone
+                else
+                    let asFloat: float[] = Array.zeroCreate vals.Length
+
+                    for i in 0 .. n - 1 do
+                        let p = phys[i]
+                        asFloat[p] <- float vals[p]
+
+                    ValueSome(ofFloats asFloat mask phys dir)
+
+        /// Which keys a caller has coded. A full sort codes every typed key: ranking a key costs a
+        /// sort of its distinct values, which a sort of the rows repays many times over. A top-n
+        /// compares most rows ONCE, against the heap's root, so a key worth coding there is one
+        /// whose codes are arithmetic — an `int` within its span, a `bool` — and a key that would
+        /// need ranking is cheaper compared in place.
+        type Coding =
+            | EveryTypedKey
+            | ArithmeticOnly
+
+        /// One key's codes over the logical rows `phys` reads, or `ValueNone` for a key `coding`
+        /// does not code (always a boxed vector).
+        let codesOf (coding: Coding) (v: Vec) (dir: SortDir) (phys: int[]) : KeyCodes voption =
+            let ranked = coding = EveryTypedKey
+
+            match v with
+            | Ints(a, m) -> ofInts (not ranked) a m phys dir
+            | Floats(a, m) when ranked -> ValueSome(ofFloats a m phys dir)
+            // Every value of one decimal vector is an exact integer at the column's one scale.
+            | Decs(a, _, _, m) when ranked -> ValueSome(ofFloats a m phys dir)
+            | Strs(_, a, m) when ranked -> ValueSome(ofStrings a m phys dir)
+            | Floats _
+            | Decs _
+            | Strs _ -> ValueNone
+            | Bools(a, m) ->
+                let codes =
+                    phys
+                    |> Array.map (fun p ->
+                        if not m[p] then 2
+                        elif a[p] = (dir = Asc) then 1
+                        else 0)
+
+                ValueSome { Codes = codes; Range = 3 }
+            | Cells _ -> ValueNone
+
+        /// Every key's codes, in key order, or `ValueNone` when `coding` leaves any key uncoded.
+        let codesAll (coding: Coding) (keys: (Vec * SortDir)[]) (phys: int[]) : KeyCodes[] voption =
+            let out: KeyCodes[] = Array.zeroCreate keys.Length
+            let mutable ok = true
+            let mutable k = 0
+
+            while ok && k < keys.Length do
+                let v, dir = keys[k]
+
+                match codesOf coding v dir phys with
+                | ValueSome c -> out[k] <- c
+                | ValueNone -> ok <- false
+
+                k <- k + 1
+
+            if ok then ValueSome out else ValueNone
+
+        /// Do logical rows `a` and `b` share every key's code — are they tied under the keys?
+        let sameCodes (keys: KeyCodes[]) (a: int) (b: int) : bool =
+            let mutable same = true
+            let mutable k = 0
+
+            while same && k < keys.Length do
+                same <- keys[k].Codes[a] = keys[k].Codes[b]
+                k <- k + 1
+
+            same
+
+        /// A total order over the logical rows `0 .. N-1`: a LEAD code first when there is one (a
+        /// window's partition slot), then the keys' codes in key order, then the position.
+        /// `Packed` holds each row's whole sort key as one exact number where the ranges allow,
+        /// and is `null` where they do not.
+        type Order =
+            { N: int
+              Lead: int[]
+              Keys: KeyCodes[]
+              Packed: float[]
+              Perturbation: Perturbation }
+
+        /// The position term of the order: the position, or its reverse under the perturbation.
+        let private tie (o: Order) (i: int) : int =
+            match o.Perturbation with
+            | Exact -> i
+            | TieBreakReversed -> o.N - 1 - i
+
+        /// The order over `n` rows under `lead` (`null` for none; `leadRange` codes) and `keys`.
+        let build (perturbation: Perturbation) (lead: int[]) (leadRange: int) (keys: KeyCodes[]) (n: int) : Order =
+            let mutable span = if isNull lead then 1.0 else float leadRange
+
+            for k in keys do
+                span <- span * float k.Range
+
+            let o =
+                { N = n
+                  Lead = lead
+                  Keys = keys
+                  Packed = null
+                  Perturbation = perturbation }
+
+            if span * float n > exactBound then
+                o
+            else
+                let packed: float[] = Array.zeroCreate n
+                let fn = float n
+
+                for i in 0 .. n - 1 do
+                    let mutable c = if isNull lead then 0.0 else float lead[i]
+
+                    for k in keys do
+                        c <- c * float k.Range + float k.Codes[i]
+
+                    packed[i] <- c * fn + float (tie o i)
+
+                { o with Packed = packed }
+
+        /// Compare logical rows `a` and `b` under the order; never 0 for two different rows.
+        let compareRows (o: Order) (a: int) (b: int) : int =
+            if not (isNull o.Packed) then
+                compare o.Packed[a] o.Packed[b]
+            else
+                let mutable c = if isNull o.Lead then 0 else compare o.Lead[a] o.Lead[b]
+
+                let mutable k = 0
+
+                while c = 0 && k < o.Keys.Length do
+                    let codes = o.Keys[k].Codes
+                    c <- compare codes[a] codes[b]
+                    k <- k + 1
+
+                if c <> 0 then c else compare (tie o a) (tie o b)
+
+        /// The logical rows in the order's sequence.
+        let permutation (o: Order) : int[] =
+            let n = o.N
+
+            if not (isNull o.Packed) then
+                let sorted = Array.copy o.Packed
+                // Rows already in key order — a window over a sequence column, a sort of sorted
+                // input — are the common case, and one pass recognises them without a sort.
+                let mutable ascending = true
+                let mutable i = 1
+
+                while ascending && i < n do
+                    ascending <- sorted[i - 1] < sorted[i]
+                    i <- i + 1
+
+                if not ascending then
+                    Array.sortInPlace sorted
+
+                let fn = float n
+                // The position is the packed key's last digit, and `tie` is its own inverse.
+                sorted |> Array.map (fun k -> tie o (int (k % fn)))
+            else
+                // A plain list of positions, not an `int[]`: under Fable a typed array's sort with
+                // a comparator is the slow path in the JavaScript engines.
+                let order = ResizeArray<int>(n)
+
+                for i in 0 .. n - 1 do
+                    order.Add i
+
+                order.Sort(System.Comparison(compareRows o))
+                order.ToArray()
+
+    /// A sort's keys over the logical rows `phys` reads, as the comparator over LOGICAL positions the
+    /// pinned order is (`keyComparer`, key by key), ties broken by position — the path a boxed key
+    /// vector keeps, since its comparator is not a total order and cannot be coded, and the path a
+    /// top-n keeps for a key it does not code (Phase 324).
+    let private comparatorOrder (phys: int[]) (keys: (Vec * SortDir)[]) : int -> int -> int =
+        let cmps = keys |> Array.map (fun (v, dir) -> keyComparer v dir)
+
+        fun a b ->
+            let pa = phys[a]
+            let pb = phys[b]
+            let mutable c = 0
+            let mutable k = 0
+
+            while c = 0 && k < cmps.Length do
+                let cmp = cmps[k]
+                c <- cmp pa pb
+                k <- k + 1
+
+            if c <> 0 then c else compare a b
+
+    /// A sort's resolved keys with their vectors, in key order.
+    let private sortKeyVecs (f: Frame) (by: (string * SortDir) list) : (Vec * SortDir)[] =
+        resolveSortKeys f.Cols by
+        |> List.map (fun (ci, dir) -> f.Vecs[ci], dir)
+        |> List.toArray
+
     let private evalSort (f: Frame) (by: (string * SortDir) list) : Frame =
         // A permutation of the selection (Phase 267): the logical positions sorted under the keys,
         // ties broken by position — which is exactly the stable sort over the frame order the
         // reference's `List.sortWith` is, stated as a total order so the algorithm cannot matter.
+        // Phase 324: the keys as ORDER CODES, packed with the position into one number per row
+        // where the ranges allow (`Ordering`); a boxed key keeps the comparator.
         let phys = Frame.physical f
+        let keys = sortKeyVecs f by
 
-        let cmps =
-            resolveSortKeys f.Cols by
-            |> List.map (fun (ci, dir) -> keyComparer f.Vecs[ci] dir)
-            |> List.toArray
+        match Ordering.codesAll Ordering.EveryTypedKey keys phys with
+        | ValueSome codes ->
+            let perm =
+                Ordering.permutation (Ordering.build Ordering.Exact null 0 codes phys.Length)
 
-        // A plain list of positions rather than an `int[]`: under Fable an `int[]` is a typed array,
-        // and a typed array's sort with a comparator is the slow path in the JavaScript engines.
-        let order = ResizeArray<int>(phys.Length)
+            Frame.select f (perm |> Array.map (fun i -> phys[i]))
+        | ValueNone ->
+            // A plain list of positions rather than an `int[]`: under Fable an `int[]` is a typed
+            // array, and a typed array's sort with a comparator is the slow path in the JavaScript
+            // engines.
+            let order = ResizeArray<int>(phys.Length)
 
-        for i in 0 .. phys.Length - 1 do
-            order.Add i
+            for i in 0 .. phys.Length - 1 do
+                order.Add i
 
-        order.Sort(
-            System.Comparison(fun a b ->
-                let pa = phys[a]
-                let pb = phys[b]
-                let mutable c = 0
-                let mutable k = 0
-
-                while c = 0 && k < cmps.Length do
-                    let cmp = cmps[k]
-                    c <- cmp pa pb
-                    k <- k + 1
-
-                if c <> 0 then c else compare a b)
-        )
-
-        Frame.select f (Array.init order.Count (fun i -> phys[order[i]]))
+            order.Sort(System.Comparison(comparatorOrder phys keys))
+            Frame.select f (Array.init order.Count (fun i -> phys[order[i]]))
 
     let private evalDistinct (f: Frame) : Frame =
         // Dedup by TOKEN equality over the whole row (`CellKey`; Phase 41's canonical token, so
@@ -5447,24 +5838,15 @@ module DataFrame =
         elif window >= len then
             evalLimit (evalSort f by) n offset
         else
-            let cmps =
-                resolveSortKeys f.Cols by
-                |> List.map (fun (ci, dir) -> keyComparer f.Vecs[ci] dir)
-                |> List.toArray
+            // The total order over LOGICAL positions `evalSort` sorts under: the keys' arithmetic
+            // order codes where every key has them (Phase 324; `Ordering.Coding`), else the
+            // comparator.
+            let cmp: int -> int -> int =
+                let keys = sortKeyVecs f by
 
-            // The total order over LOGICAL positions `evalSort` sorts under.
-            let cmp (a: int) (b: int) : int =
-                let pa = phys[a]
-                let pb = phys[b]
-                let mutable c = 0
-                let mutable k = 0
-
-                while c = 0 && k < cmps.Length do
-                    let cmp = cmps[k]
-                    c <- cmp pa pb
-                    k <- k + 1
-
-                if c <> 0 then c else compare a b
+                match Ordering.codesAll Ordering.ArithmeticOnly keys phys with
+                | ValueSome codes -> Ordering.compareRows (Ordering.build Ordering.Exact null 0 codes len)
+                | ValueNone -> comparatorOrder phys keys
 
             // A max-heap of the `window` least positions seen so far: its root is the greatest of
             // them, and a position that sorts before the root replaces it.
@@ -5721,214 +6103,406 @@ module DataFrame =
         | RollingMean
         | RollingSum -> true
 
-    /// The `Window` step's appended column over full-width rows under `cols`: its type, and one
-    /// cell per row in the rows' own order. The frame form appends it as a vector and shares the
-    /// rest; the row-form twins (`windowStep`, `windowStepRows`) append it to each row.
-    let private windowColumn
+    /// A `Window` step's ordering over the logical rows (Phase 324): every row's partition SLOT (the
+    /// typed key slots a `GroupBy` over the partition columns forms), the PERMUTATION that lists the
+    /// rows partition by partition, each partition in its order keys' order with ties in frame order,
+    /// and the test of whether two rows tie on the order keys. No row is materialised.
+    ///
+    /// The order keys are ORDER CODES (`Ordering`) with the slot as the leading code; a boxed order
+    /// key (a `Cells` vector, whose comparator is not a total order) keeps the reference's algorithm
+    /// instead — each partition's rows, in frame order, through the stable `List.sortWith` under the
+    /// pinned comparator — so its answer is the one it always was.
+    [<NoComparison; NoEquality>]
+    type internal WindowOrder =
+        {
+            /// The partition slot of each logical row.
+            Slot: int[]
+            /// How many partitions there are.
+            Partitions: int
+            /// The logical rows, partition by partition, each in its window order.
+            Perm: int[]
+            /// The order keys' codes by logical row, where every order key is coded; `ValueNone` for
+            /// a boxed order key.
+            Codes: Ordering.KeyCodes[] voption
+            /// Do two logical rows tie on the order keys?
+            Same: int -> int -> bool
+        }
+
+    /// The window ordering of the logical rows `phys` reads, over the vectors `vecOf` names by
+    /// schema index, with the partition and order columns already resolved. `perturbation` is the
+    /// laws' (Phase 324); the evaluator passes `Ordering.Exact`.
+    let internal windowOrder
+        (perturbation: Ordering.Perturbation)
+        (vecOf: int -> Vec)
+        (phys: int[])
+        (partIdx: int[])
+        (orderKeys: (int * SortDir) list)
+        : WindowOrder =
+        let n = phys.Length
+        let slotOf, slotKeys = keySlots (partIdx |> Array.map vecOf) phys
+        let partitions = slotKeys.Count
+        let keyVecs = orderKeys |> List.map (fun (ci, dir) -> vecOf ci, dir) |> List.toArray
+
+        match Ordering.codesAll Ordering.EveryTypedKey keyVecs phys with
+        | ValueSome codes ->
+            let order = Ordering.build perturbation slotOf partitions codes n
+
+            { Slot = slotOf
+              Partitions = partitions
+              Perm = Ordering.permutation order
+              Codes = ValueSome codes
+              Same = Ordering.sameCodes codes }
+        | ValueNone ->
+            let cmps = keyVecs |> Array.map (fun (v, dir) -> keyComparer v dir)
+
+            let cmp (a: int) (b: int) : int =
+                let pa = phys[a]
+                let pb = phys[b]
+                let mutable c = 0
+                let mutable k = 0
+
+                while c = 0 && k < cmps.Length do
+                    let compareKey = cmps[k]
+                    c <- compareKey pa pb
+                    k <- k + 1
+
+                c
+
+            // Each partition's rows in frame order, then sorted stably — the reference's algorithm,
+            // over positions rather than rows. Under the perturbation the partition is reversed
+            // first, so a tie keeps the LATER row first.
+            let members = Array.init partitions (fun _ -> ResizeArray<int>())
+
+            for i in 0 .. n - 1 do
+                members[slotOf[i]].Add i
+
+            let perm =
+                members
+                |> Array.collect (fun m ->
+                    let rows = List.ofSeq m
+
+                    let rows =
+                        match perturbation with
+                        | Ordering.Exact -> rows
+                        | Ordering.TieBreakReversed -> List.rev rows
+
+                    rows |> List.sortWith cmp |> List.toArray)
+
+            { Slot = slotOf
+              Partitions = partitions
+              Perm = perm
+              Codes = ValueNone
+              Same = fun a b -> cmp a b = 0 }
+
+    /// A `Window` step's appended column, one value per LOGICAL row (Phase 324): typed where the
+    /// function's output is — the positional and ranking family an `int`, a float running total or
+    /// rolling window a `float` (absent where the window held no value) — so the frame form packs
+    /// no cell it would then unpack, and boxed (`WCells`) otherwise.
+    [<NoComparison; NoEquality>]
+    type internal WindowColumn =
+        | WInts of int[]
+        | WFloats of float[] * present: bool[]
+        | WCells of Cell[]
+
+    /// The window column's cell at logical row `i` — what the row-form twins append.
+    let internal windowCellAt (w: WindowColumn) (i: int) : Cell =
+        match w with
+        | WInts a -> Int a[i]
+        | WFloats(a, m) -> if m[i] then Float a[i] else Null
+        | WCells cells -> cells[i]
+
+    /// The window column as a vector of `count` physical rows, logical row `i` at `phys[i]` — the
+    /// vector `Vec.packAt` packs from the same cells.
+    let private windowVecAt (ty: ColumnType) (count: int) (phys: int[]) (w: WindowColumn) : Vec =
+        match w with
+        | WInts a ->
+            let vals: int[] = Array.zeroCreate count
+            let mask: bool[] = Array.zeroCreate count
+
+            for i in 0 .. a.Length - 1 do
+                vals[phys[i]] <- a[i]
+                mask[phys[i]] <- true
+
+            Ints(vals, mask)
+        | WFloats(a, m) ->
+            let vals: float[] = Array.zeroCreate count
+            let mask: bool[] = Array.zeroCreate count
+
+            for i in 0 .. a.Length - 1 do
+                if m[i] then
+                    vals[phys[i]] <- a[i]
+                    mask[phys[i]] <- true
+
+            Floats(vals, mask)
+        | WCells cells -> Vec.packAt ty count (fun i -> phys[i]) cells
+
+    /// The `Window` step's appended column (Phase 324): its type, and one value per LOGICAL row of
+    /// the rows `phys` reads, over the vectors `vecOf` names by schema index. The frame form packs it
+    /// back at the physical rows; the public row form (`windowStep`) and the incremental seam's
+    /// window step pack the columns they read and place the cell on each row. Each partition is one
+    /// run of the window ordering's permutation, scanned in sequence.
+    let internal windowColumnOf
+        (perturbation: Ordering.Perturbation)
         (cols: Schema)
-        (rows: Cell[][])
+        (vecOf: int -> Vec)
+        (phys: int[])
         (spec: WindowSpec)
-        : Result<ColumnType * Cell[], EvalError> =
+        : Result<ColumnType * WindowColumn, EvalError> =
         match spec.Fn, colIndex cols spec.Of with
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
-        | _ ->
+        | _, ofIdx ->
+            let n = phys.Length
             // A running total over a decimal column stays exact (Phase 277).
             let sourceIsDecimal = colType cols spec.Of = Some DecimalType
             let partIdx = spec.PartitionBy |> List.choose (colIndex cols) |> List.toArray
-
             // The ORDER keys resolved once for the step (Phase 263), not once per comparison.
             let orderKeys = resolveSortKeys cols spec.OrderBy
+            let wo = windowOrder perturbation vecOf phys partIdx orderKeys
+            let perm = wo.Perm
 
-            // Partition by TOKEN equality over the partition cells (`CellKey`; Phase 41's canonical
-            // token, so float partition keys group host-identically), each row tagged with its
-            // original position so input order is restored after windowing; the partition cells are
-            // not needed for output. Phase 265: a hash table to a slot and one growable member list
-            // per slot, local to the step, in place of a persistent map over token lists. Partitions
-            // are visited in first-appearance order where the map visited them in token order; every
-            // output is scattered back to its row's tag below, so the visiting order reaches nothing.
-            let slots = CellKey.slots ()
-            let probe: Cell[] = Array.zeroCreate partIdx.Length
-            let partitionRows = ResizeArray<ResizeArray<int * Cell[]>>()
+            // The output sink the function's type calls for; the other two stay `null`.
+            let intOut =
+                match spec.Fn with
+                | RowNumber
+                | Rank
+                | DenseRank
+                | CompetitionRank
+                | NTile _ -> true
+                | _ -> false
 
-            rows
-            |> Array.iteri (fun i row ->
-                for j in 0 .. partIdx.Length - 1 do
-                    probe[j] <- row[partIdx[j]]
+            let floatOut =
+                match spec.Fn with
+                | RollingMean -> true
+                | CumulSum
+                | RollingSum -> not sourceIsDecimal
+                | _ -> false
 
-                match CellKey.slotOf slots probe partitionRows.Count with
-                | p, false -> partitionRows[p].Add((i, row))
-                | _, true ->
-                    let members = ResizeArray<int * Cell[]>()
-                    members.Add((i, row))
-                    partitionRows.Add members)
+            let ints: int[] = if intOut then Array.zeroCreate n else null
+            let floats: float[] = if floatOut then Array.zeroCreate n else null
+            let present: bool[] = if floatOut then Array.zeroCreate n else null
 
-            let partitions = partitionRows |> Seq.map List.ofSeq |> List.ofSeq
+            let out: Cell[] = if intOut || floatOut then null else Array.create n Null
 
-            let ofIdx = colIndex cols spec.Of
+            let ofVec =
+                if windowReadsOf spec.Fn then
+                    ofIdx |> Option.map vecOf
+                else
+                    None
 
-            let valueAt (row: Cell[]) =
-                match ofIdx with
-                | Some i -> row[i]
+            let valueAt (i: int) : Cell =
+                match ofVec with
+                | Some v -> Vec.cellAt v phys[i]
                 | None -> Null
 
-            let computed =
-                partitions
-                |> List.collect (fun members ->
-                    let ordered =
-                        members |> List.sortWith (fun (_, a) (_, b) -> compareResolved orderKeys a b)
+            // The source value in the float carrier, as `asNum` reads it — read from a typed vector
+            // without boxing the cell.
+            let numAt: int -> float voption =
+                match ofVec with
+                | Some(Ints(a, m)) ->
+                    fun i ->
+                        let p = phys[i]
+                        if m[p] then ValueSome(float a[p]) else ValueNone
+                | Some(Floats(a, m)) ->
+                    fun i ->
+                        let p = phys[i]
+                        if m[p] then ValueSome a[p] else ValueNone
+                | _ ->
+                    fun i ->
+                        match asNum (valueAt i) with
+                        | Some x -> ValueSome x
+                        | None -> ValueNone
 
-                    let vals = ordered |> List.map (snd >> valueAt)
+            // A rolling window's value: as `numAt`, and a decimal at its nearest float (Phase 277):
+            // a window's MEAN over a decimal column is a float, as `Mean` over one is (D72 K7).
+            let windowNumAt: int -> float voption =
+                match ofVec with
+                | Some(Ints _)
+                | Some(Floats _) -> numAt
+                | _ ->
+                    fun i ->
+                        match valueAt i with
+                        | Decimal t ->
+                            match DecimalText.tryToFloat t with
+                            | Some x -> ValueSome x
+                            | None -> ValueNone
+                        | c ->
+                            match asNum c with
+                            | Some x -> ValueSome x
+                            | None -> ValueNone
 
-                    let outs =
-                        match spec.Fn with
-                        | RowNumber -> ordered |> List.mapi (fun i _ -> Int(i + 1))
-                        | Rank
-                        | DenseRank ->
-                            // dense-ish rank by the order key: ties (equal order keys) share a rank.
-                            //
-                            // The predecessor is carried by the fold (Phase 206). It used to be
-                            // fetched as `ordered |> List.item (i - 1)`, which walks the partition
-                            // from its head for every row — quadratic in the PARTITION size, on a
-                            // list this loop is already traversing in order. Same steps, same
-                            // scan, same ranks.
-                            ((None, []), ordered)
-                            ||> List.fold (fun (prev, acc) (_, row) ->
-                                let step =
-                                    match prev with
-                                    | None -> 1
-                                    | Some p -> if compareResolved orderKeys p row = 0 then 0 else 1
+            // One partition: the permutation's run `[s, e)`.
+            let partition (s: int) (e: int) =
+                let len = e - s
 
-                                Some row, step :: acc)
-                            |> snd
-                            |> List.rev
-                            |> List.scan (+) 0
-                            |> List.tail
-                            |> List.map Int
-                        | Lag -> Null :: (vals |> List.truncate (max 0 (List.length vals - 1)))
-                        | Lead -> (vals |> List.skip (min 1 (List.length vals))) @ [ Null ]
-                        // Phase 277: over a decimal column the running total is EXACT and a decimal,
-                        // as `Sum` over one is (Core `DECISIONS.md` D72 K7) — never a float in silence.
-                        | CumulSum when sourceIsDecimal ->
-                            vals
-                            |> List.scan
-                                (fun (acc: string) v ->
-                                    match decimalText v with
-                                    | Some x -> DecimalText.add acc x |> Option.defaultValue acc
-                                    | None -> acc)
-                                DecimalText.zero
-                            |> List.tail
-                            |> List.map Decimal
-                        | CumulSum ->
-                            vals
-                            |> List.scan
-                                (fun (acc: float) v ->
-                                    match asNum v with
-                                    | Some x -> acc + x
-                                    | None -> acc)
-                                0.0
-                            |> List.tail
-                            |> List.map Float
-                        | RollingMean
-                        | RollingSum ->
-                            // trailing window of up to 3 (current + 2 preceding), present values only.
-                            //
-                            // Phase 264 — the values are read by index from an array; `List.skip lo`
-                            // walked the partition from its head for every row, quadratic in the
-                            // partition size. Each window is still summed FRESH, left to right from
-                            // zero, exactly as `List.sum` did: a running add/subtract accumulator
-                            // would be linear too, but it changes the last bit of a float sum, and
-                            // therefore the wire bytes. Three reads per row is already linear.
-                            let arr = List.toArray vals
+                match spec.Fn with
+                | RowNumber ->
+                    for k in 0 .. len - 1 do
+                        ints[perm[s + k]] <- k + 1
+                // Dense-ish rank by the order key: ties (equal order keys) share a rank.
+                | Rank
+                | DenseRank ->
+                    let mutable r = 0
 
-                            // Phase 277: over a decimal column a window's SUM is exact and a decimal;
-                            // its MEAN is a float, as `Mean` over a decimal column is (D72 K7), each
-                            // value read at its nearest float — the type says so.
-                            let asWindowNum (c: Cell) : float option =
-                                match c with
-                                | Decimal t -> DecimalText.tryToFloat t
-                                | _ -> asNum c
+                    for k in 0 .. len - 1 do
+                        if k = 0 || not (wo.Same perm[s + k - 1] perm[s + k]) then
+                            r <- r + 1
 
-                            List.init arr.Length (fun i ->
-                                if sourceIsDecimal && spec.Fn = RollingSum then
-                                    let mutable sum = DecimalText.zero
-                                    let mutable count = 0
+                        ints[perm[s + k]] <- r
+                // Phase 101 — SQL RANK(): a tied block shares its LOWEST rank and the next distinct
+                // order key skips by the block's size (1, 1, 3 — where the dense `Rank`/`DenseRank`
+                // above give 1, 1, 2).
+                | CompetitionRank ->
+                    let mutable r = 0
 
-                                    for j in max 0 (i - 2) .. i do
-                                        match decimalText arr[j] with
-                                        | Some x ->
-                                            sum <- DecimalText.add sum x |> Option.defaultValue sum
-                                            count <- count + 1
-                                        | None -> ()
+                    for k in 0 .. len - 1 do
+                        if k = 0 || not (wo.Same perm[s + k - 1] perm[s + k]) then
+                            r <- k + 1
 
-                                    if count = 0 then Null else Decimal sum
-                                else
-                                    let mutable sum = 0.0
-                                    let mutable count = 0
+                        ints[perm[s + k]] <- r
+                // Phase 101 — SQL NTILE(n): the first `count % n` buckets take one extra row.
+                | NTile buckets ->
+                    let small = len / buckets
+                    let big = len % buckets
+                    // rows [0, big*(small+1)) fill the oversized buckets; the rest the rest.
+                    let bigRows = big * (small + 1)
 
-                                    for j in max 0 (i - 2) .. i do
-                                        match asWindowNum arr[j] with
-                                        | Some x ->
-                                            sum <- sum + x
-                                            count <- count + 1
-                                        | None -> ()
+                    for k in 0 .. len - 1 do
+                        let bucket =
+                            if k < bigRows then
+                                k / (small + 1) + 1
+                            else
+                                big + (k - bigRows) / small + 1
 
-                                    if count = 0 then Null
-                                    elif spec.Fn = RollingSum then Float sum
-                                    else Float(sum / float count))
-                        // Phase 101 — SQL RANK(): a tied block shares its LOWEST rank and the next
-                        // distinct order key skips by the block's size (1, 1, 3 — where the dense
-                        // `Rank`/`DenseRank` above give 1, 1, 2).
-                        | CompetitionRank ->
-                            ordered
-                            |> List.fold
-                                (fun (acc, i, cur, prev) (_, row) ->
-                                    let r =
-                                        match prev with
-                                        | Some p when compareResolved orderKeys p row = 0 -> cur
-                                        | _ -> i + 1
+                        ints[perm[s + k]] <- bucket
+                | Lag ->
+                    for k in 1 .. len - 1 do
+                        out[perm[s + k]] <- valueAt perm[s + k - 1]
+                | Lead ->
+                    for k in 0 .. len - 2 do
+                        out[perm[s + k]] <- valueAt perm[s + k + 1]
+                // Phase 277: over a decimal column the running total is EXACT and a decimal, as
+                // `Sum` over one is (Core `DECISIONS.md` D72 K7) — never a float in silence.
+                | CumulSum when sourceIsDecimal ->
+                    let mutable acc = DecimalText.zero
 
-                                    (Int r :: acc), i + 1, r, Some row)
-                                ([], 0, 0, None)
-                            |> fun (acc, _, _, _) -> List.rev acc
-                        // Phase 101 — SQL NTILE(n): the first `count % n` buckets take one extra row.
-                        | NTile buckets ->
-                            let count = List.length ordered
-                            let small = count / buckets
-                            let big = count % buckets
-                            // rows [0, big*(small+1)) fill the oversized buckets; the rest the rest.
-                            let bigRows = big * (small + 1)
+                    for k in 0 .. len - 1 do
+                        let i = perm[s + k]
 
-                            ordered
-                            |> List.mapi (fun i _ ->
-                                if i < bigRows then
-                                    Int(i / (small + 1) + 1)
-                                else
-                                    Int(big + (i - bigRows) / small + 1))
-                        // Phase 101 — running max/min over present values; nulls carry the prior
-                        // value forward, so a leading run of nulls is `Null` (never a seeded 0).
-                        | CumulMax
-                        | CumulMin ->
-                            let pick (acc: Cell) (v: Cell) =
-                                match acc, v with
-                                | _, Null -> acc
-                                | Null, _ -> v
-                                | _ ->
-                                    match compareCells acc v with
-                                    | Some c -> if (spec.Fn = CumulMin) = (c <= 0) then acc else v
-                                    | None -> acc
+                        match decimalText (valueAt i) with
+                        | Some x -> acc <- DecimalText.add acc x |> Option.defaultValue acc
+                        | None -> ()
 
-                            vals |> List.scan pick Null |> List.tail
+                        out[i] <- Decimal acc
+                // The running float total, left to right from 0.0 in window order.
+                // A typed source is read straight from its carrier, one array read per row.
+                | CumulSum ->
+                    let mutable acc = 0.0
 
-                    List.map2 (fun (i, _) out -> i, out) ordered outs)
+                    match ofVec with
+                    | Some(Ints(a, m)) ->
+                        for k in 0 .. len - 1 do
+                            let i = perm[s + k]
+                            let p = phys[i]
 
-            // Restore input order by scattering each output to its row's tag (Phase 264) — every tag
-            // in 0 .. n-1 occurs exactly once, so this is the `List.sortBy fst` it replaces, in one
-            // pass.
-            let restored = Array.create rows.Length Null
+                            if m[p] then
+                                acc <- acc + float a[p]
 
-            for i, out in computed do
-                restored[i] <- out
+                            floats[i] <- acc
+                            present[i] <- true
+                    | Some(Floats(a, m)) ->
+                        for k in 0 .. len - 1 do
+                            let i = perm[s + k]
+                            let p = phys[i]
+
+                            if m[p] then
+                                acc <- acc + a[p]
+
+                            floats[i] <- acc
+                            present[i] <- true
+                    | _ ->
+                        for k in 0 .. len - 1 do
+                            let i = perm[s + k]
+
+                            match numAt i with
+                            | ValueSome x -> acc <- acc + x
+                            | ValueNone -> ()
+
+                            floats[i] <- acc
+                            present[i] <- true
+                // Trailing window of up to 3 (current + 2 preceding), present values only. Each
+                // window is summed FRESH, left to right from zero (Phase 264): a running
+                // add/subtract accumulator would change the last bit of a float sum, and therefore
+                // the wire bytes.
+                | RollingMean
+                | RollingSum ->
+                    let decimalSum = sourceIsDecimal && spec.Fn = RollingSum
+
+                    for k in 0 .. len - 1 do
+                        let first = s + max 0 (k - 2)
+                        let last = s + k
+                        let i = perm[last]
+
+                        if decimalSum then
+                            let mutable sum = DecimalText.zero
+                            let mutable count = 0
+
+                            for j in first..last do
+                                match decimalText (valueAt perm[j]) with
+                                | Some x ->
+                                    sum <- DecimalText.add sum x |> Option.defaultValue sum
+                                    count <- count + 1
+                                | None -> ()
+
+                            out[i] <- if count = 0 then Null else Decimal sum
+                        else
+                            let mutable sum = 0.0
+                            let mutable count = 0
+
+                            for j in first..last do
+                                match windowNumAt perm[j] with
+                                | ValueSome x ->
+                                    sum <- sum + x
+                                    count <- count + 1
+                                | ValueNone -> ()
+
+                            if count > 0 then
+                                floats[i] <- if spec.Fn = RollingSum then sum else sum / float count
+                                present[i] <- true
+                // Phase 101 — running max/min over present values; nulls carry the prior value
+                // forward, so a leading run of nulls is `Null` (never a seeded 0).
+                | CumulMax
+                | CumulMin ->
+                    let mutable acc = Null
+
+                    for k in 0 .. len - 1 do
+                        let i = perm[s + k]
+                        let v = valueAt i
+
+                        acc <-
+                            match acc, v with
+                            | _, Null -> acc
+                            | Null, _ -> v
+                            | _ ->
+                                match compareCells acc v with
+                                | Some c -> if (spec.Fn = CumulMin) = (c <= 0) then acc else v
+                                | None -> acc
+
+                        out[i] <- acc
+
+            // The partitions are the permutation's runs of one slot, scanned in sequence; each
+            // output lands at its row's logical position, so the visiting order reaches nothing.
+            let mutable s = 0
+
+            while s < n do
+                let g = wo.Slot[perm[s]]
+                let mutable e = s + 1
+
+                while e < n && wo.Slot[perm[e]] = g do
+                    e <- e + 1
+
+                partition s e
+                s <- e
 
             let ty =
                 match spec.Fn with
@@ -5948,17 +6522,39 @@ module DataFrame =
                 | CumulMax
                 | CumulMin -> colType cols spec.Of |> Option.defaultValue StringType
 
-            Ok(ty, restored)
+            let column =
+                if intOut then WInts ints
+                elif floatOut then WFloats(floats, present)
+                else WCells out
+
+            Ok(ty, column)
+
+    /// The window column over full-width rows under `cols` (the public row form, `windowStep`): each
+    /// column the step reads packed once under its declared type — a column holding a
+    /// cell outside its type packs boxed, and is ordered by the pinned comparator as before — and
+    /// the frame path run over the rows in their own order.
+    let private windowColumnOfRows (cols: Schema) (rows: Cell[][]) (spec: WindowSpec) =
+        let types = cols |> List.map snd |> List.toArray
+        let packed = System.Collections.Generic.Dictionary<int, Vec>()
+
+        let vecOf (ci: int) : Vec =
+            match packed.TryGetValue ci with
+            | true, v -> v
+            | _ ->
+                let v = Vec.pack types[ci] (rows |> Array.map (fun r -> r[ci]))
+                packed[ci] <- v
+                v
+
+        windowColumnOf Ordering.Exact cols vecOf (Array.init rows.Length id) spec
 
     let private evalWindow (f: Frame) (spec: WindowSpec) : Result<Frame, EvalError> =
-        // The rows gathered through the selection; the one new column packed back at their
-        // physical positions and APPENDED (a `Window` always appends, where a `Derive` upserts);
-        // every other vector shared.
+        // The window read from the vectors through the selection (Phase 324); the one new column
+        // placed back at its physical positions and APPENDED (a `Window` always appends, where a
+        // `Derive` upserts); every other vector shared.
         let phys = Frame.physical f
 
-        windowColumn f.Cols (Frame.rowsOf f) spec
-        |> Result.map (fun (ty, cells) ->
-            Frame.appendColumn f spec.As ty (Vec.packAt ty f.Count (fun i -> phys[i]) cells))
+        windowColumnOf Ordering.Exact f.Cols (fun ci -> f.Vecs[ci]) phys spec
+        |> Result.map (fun (ty, column) -> Frame.appendColumn f spec.As ty (windowVecAt ty f.Count phys column))
 
     let private evalPivot (f: Frame) (spec: PivotSpec) : Result<Frame, EvalError> =
         let need name =
@@ -6553,25 +7149,12 @@ module DataFrame =
         : Result<Schema * Cell list list, EvalError> =
         let arr = rows |> List.map List.toArray |> List.toArray
 
-        windowColumn cols arr spec
+        windowColumnOfRows cols arr spec
         |> Result.map (fun (ty, col) ->
             cols @ [ spec.As, ty ],
             arr
-            |> Array.mapi (fun i r -> List.ofArray (Array.append r [| col[i] |]))
+            |> Array.mapi (fun i r -> List.ofArray (Array.append r [| windowCellAt col i |]))
             |> List.ofArray)
-
-    /// `windowStep` over array rows (Phase 263) — the twin the incremental seam calls, whose
-    /// working rows are arrays already, so it pays no conversion either way.
-    let internal windowStepRows
-        (cols: Schema)
-        (rows: Cell[] list)
-        (spec: WindowSpec)
-        : Result<Schema * Cell[] list, EvalError> =
-        let arr = List.toArray rows
-
-        windowColumn cols arr spec
-        |> Result.map (fun (ty, col) ->
-            cols @ [ spec.As, ty ], arr |> Array.mapi (fun i r -> Array.append r [| col[i] |]) |> List.ofArray)
 
     /// The reference `Join`'s key-column resolution (Phase 120): the left and right column indices
     /// its `on` pairs name, or the FIRST unresolvable name in the order the reference reports it —
