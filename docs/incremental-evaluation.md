@@ -894,8 +894,8 @@ time. It printed figures and moved to the leg only so that the main suite ran no
 | a group-tail refresh against the full evaluation | time: the win (the loss bound retired by Phase 274) | CLOCK | leg |
 | a step's cost does not depend on which column | time ratio, guards a per-row name lookup | CLOCK — no counter sees the lookup | leg |
 | a join / a pivot / a group-by over n keys / a distinct is linear | complexity; guard quadratic scans | CLOCK — same | leg |
-| the table-fed tick at most 1.5× the full evaluation (Phase 274; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running | CLOCK; its countable part is the Phase 274 row below | leg |
-| the table-fed tick on every Phase 262 corpus node at most 1.5× the full evaluation (Phase 283; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
+| the table-fed tick at most 1.6× the full evaluation plus a fixed per-call floor (Phase 274; floor Phase 327; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, per row and per call | CLOCK; its countable part is the Phase 274 row below | leg |
+| the table-fed tick on every Phase 262 corpus node at most 1.6× the full evaluation plus a fixed per-call floor (Phase 283; floor Phase 327; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, per row and per call, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
 | `Delta.diff` costs what keying costs (1,000 and 20,000 rows) | work: the keying and a constant | COUNTABLE — keys minted, bytes allocated | main suite |
 | `Filter > Sort > Limit 10`: the fused pair against the full sort (`PlanTests`) | work: the top-n does less than the sort | COUNTABLE — bytes allocated | main suite |
 | the top-N step is a single pass (Phase 207) | work | already counted (visits) | main suite |
@@ -1534,6 +1534,69 @@ walking the two lists in step. The 1,000-row diff fell from 121-324 us and 72 KB
 
 The figures, .NET and node, and the clock leg's full tables are in
 `benchmarks/results/2026-10-01-snapdragon-x1e80100-phase-323.md`.
+
+### The tick bound gains a per-call floor (Phase 327)
+
+**The condition.** Under the operator's ruling of 2026-10-02 both tick cases on the clock leg hold
+
+    tick <= 1.6 x full + floor,    floor = 0.03 x the leg's calibration baseline
+
+where the tick is `Delta.diff` plus the refresh over a one-row edit and the full is the evaluation
+of the new table it replaces. The two terms bound two different costs. The ratio bounds the tick's
+**per-row** cost: what it pays as the table grows must stay within 1.6 times what re-running pays.
+The floor bounds its **per-call** cost, which no optimisation can drive to zero: a one-row tick
+always sets up a diff and walks the pipeline's steps, whatever the table's size. A ratio alone tends
+to an allowance of nothing as the full evaluation gets faster, so every speed-up of the evaluator
+tightened the bound on the seam until the seam's fixed cost failed it. That is what happened here:
+this phase halved the full evaluation's boundary cost (the `Table` unpack) and the tick, which never
+crosses that boundary, did not move. `tickBound` stays 1.6. Any further move of either number is the
+operator's act.
+
+**The floor is measured, not chosen.** It is expressed in units of Phase 285's calibration baseline,
+so it scales with the machine exactly as the saturation factor does. The one-row tick of every
+corpus node and every `Scaling` tick pipeline was read at 10 and 100 rows, Release, three runs on an
+i7-8650U (baseline 5.2 to 5.7 ms):
+
+| Reading | 10 rows | 100 rows |
+|---|---:|---:|
+| worst `Scaling` tick pipeline | 0.0157 units (group tail, 0.085 ms) | 0.0075 units |
+| worst other corpus node | 0.0110 units (`filter > groupBy`, 0.059 ms) | 0.0060 units |
+| inner join, pivot, `window CumulSum` | 0.0040 to 0.0075 units | 0.0166 to 0.0427 units |
+
+At 10 rows the per-row work is ten rows' worth and what remains is the call. At 100 rows the join,
+the pivot and `window CumulSum` already grow with the row count (four to six times their 10-row tick),
+which is per-row cost the ratio bounds, not per-call cost, so they do not set the floor. The worst
+per-call reading is 0.0157 units; the floor is twice that, rounded: **0.03** (0.15 to 0.21 ms on this
+machine). It is under three percent of the allowance at 100,000 rows, where the ratio still decides.
+
+**The floor does not hide a per-row regression.** On the final tree, with 400 integer operations per
+source row injected into the refresh of every table of 20,000 rows or more, both cases were red on
+all three counted attempts, every window counted: the `Scaling` case at 20,000 rows (`filter >
+groupBy` x3.3, x4.6, x9.9) with its 1,000-row cells at x0.58 to x1.46, and the corpus case at 20,000
+and 100,000 rows (`filter > groupBy` x4.5 to x7.3, `filter > sort > limit` x1.9 to x2.7, `lines` x2.7
+to x4.2, `byRegion` x3.9 to x5.8).
+
+**The tick this exposed, and its cure.** Measured against the cheaper full evaluation, one tick was
+over the bound on its per-row cost: `filter > sort > limit` read x1.27 to x1.74 at 20,000 rows and up
+to x1.68 at 100,000. Instrumented, its refresh spent most of its time outside the sort: the in-place
+reading (Phase 323) declined any prefix with a `Sort` in it, so the refresh counted every unedited
+column's list and compared every row's token against the delta; and the ten-row result was read back
+by unpacking every source column whole. The in-place reading now admits a prefix with a `Sort` or a
+`Limit` and no group step after it: every row still sits at its prior slot, so the frame is built
+without re-counting the unchanged columns, and the walk clears the in-place reading at the first sort
+or limit, because a sort reorders the frame and a limit lets a row the delta did not name enter or
+leave its window, and only the general reading covers that. A short result (at most sixteen rows) is
+read back by one walk of each source list in slot order. The `filter > sort > limit` refresh at
+20,000 rows fell from 1.51 MB to 1.03 MB and its tick by about 40 percent; a law in the DataFrame
+family holds chains of one-cell edits over sorts, limits and the steps after them equal to the
+reference (and goes red if the limit's clearing is removed).
+
+**On the final tree** both Release clock legs were green on their first counted attempt, every
+window counted. The corpus `filter > sort > limit` node read x0.42 to x0.83 (it read x1.15 to x1.68
+before the refresh change), the `Scaling` tick pipelines at most x1.48 at 1,000 rows and at most
+x1.21 above it, and the worst node was `window CumulSum` at x1.38 to x1.49.
+
+The figures, .NET and node, are in `benchmarks/results/2026-10-02-i7-8650u-phase-327.md`.
 
 ## What it does not do
 

@@ -1287,11 +1287,14 @@ module Incremental =
                     let moved = arrival |> Array.filter (fun s -> not r.Stable[s]) |> sortSlots
                     mergeOrders cmp posOf cachedStable moved
 
+            // Phase 327 — after a sort the frame's order is no longer ascending, which is what an
+            // in-place step's `reaches` reads, so the steps after it take the general reading. The
+            // slot numbering, `Prior` and `Stable` are unchanged, and that is all it reads.
             walk
                 resolve
                 env
                 prior
-                r
+                { r with InPlace = null }
                 { f with Order = ordered }
                 evaluated
                 { caches with
@@ -1362,7 +1365,10 @@ module Incremental =
 
             let kept = if stop > lo then Array.sub f.Order lo (stop - lo) else [||]
 
-            walk resolve env prior r { f with Order = kept } evaluated caches rest
+            // Phase 327 — a window over the frame lets a row the delta did not name enter or leave
+            // it, which an in-place step (evaluating the changed rows alone) would miss, so the steps
+            // after a limit take the general reading, as the steps after a sort do.
+            walk resolve env prior { r with InPlace = null } { f with Order = kept } evaluated caches rest
         // Phase 120 — a filtering join (`Semi` / `Anti`): a `Filter` whose predicate reads a
         // relation instead of an expression. The verdict is recorded as a `Filter`'s is, so it is an
         // evaluating step; `evaluated` does not move, because the reference charges a join nothing.
@@ -1509,6 +1515,26 @@ module Incremental =
                 let cells =
                     match f.Origins[ci] with
                     | Some origin when identity -> origin
+                    // Phase 327 — a few rows (a top-N board) of a column no step unpacked are read
+                    // by one walk of its list in slot order, rather than by unpacking the column
+                    // whole to read them.
+                    | Some origin when isNull f.Data[ci] && f.Order.Length <= sparseRowLimit ->
+                        let order = f.Order
+                        let bySlot = Array.init order.Length id |> Array.sortBy (fun k -> order[k])
+                        let out: Cell[] = Array.zeroCreate order.Length
+                        let mutable rest = origin
+                        let mutable pos = 0
+
+                        for k in bySlot do
+                            let s = order[k]
+
+                            while pos < s do
+                                rest <- rest.Tail
+                                pos <- pos + 1
+
+                            out[k] <- rest.Head
+
+                        List.ofArray out
                     | _ ->
                         let a = column f ci
                         let mutable acc = []
@@ -2379,16 +2405,32 @@ module Incremental =
         let rowCount = tokens.Length
 
         // Phase 323 — the in-place reading holds only over a prefix that never reorders the rows.
+        //
+        // Phase 327 — or over one with a `Sort` or a `Limit` in it and no group step after: every
+        // row still sits at its prior slot, so the frame is built without re-counting the unchanged
+        // columns, and the walk clears the in-place reading at the first sort or limit (`walk`'s
+        // `WSort` and `WLimit`), so only the row-local steps ahead of it read in place. A maintained
+        // group step reads the in-place changed rows against the walked order, so a prefix that
+        // sorts or limits ahead of one keeps the general reading.
         let inPlaceRows =
+            let rowLocal =
+                function
+                | WFilter _
+                | WDerive _
+                | WProject _ -> true
+                | _ -> false
+
+            let ordering =
+                function
+                | WSort _
+                | WLimit _ -> true
+                | step -> rowLocal step
+
             match inPlace, prior, named with
             | Some changed, Some s, Some _ when
                 obj.ReferenceEquals(tokens, s.Tokens)
-                && prefix
-                   |> List.forall (function
-                       | WFilter _
-                       | WDerive _
-                       | WProject _ -> true
-                       | _ -> false)
+                && (prefix |> List.forall rowLocal
+                    || (Option.isNone final && prefix |> List.forall ordering))
                 ->
                 changed
             | _ -> null

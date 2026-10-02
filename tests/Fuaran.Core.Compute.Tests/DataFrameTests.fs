@@ -4008,7 +4008,77 @@ let frameTests =
               Expect.equal (Frame.toTable (Frame.ofTable t)) expected "padded, cut and absent-as-null"
               Expect.equal (DataFrame.evalPipeline [] t) (Ok expected) "and the empty pipeline says the same"
 
-          // ---- Phase 327: the boundary laws over every column type, and interned cells on the way out ----
+          // ---- Phase 327: the boundary packed from the list, its laws over every column type, and interned cells ----
+
+          testCase
+              "the boundary packs a fitting column straight from its list into the vector pack answers, and a ragged or out-of-type one falls back by name"
+          <| fun _ ->
+              // `Vec.packList` must answer exactly the vector `Vec.pack` answers over the same cells
+              // where it answers at all, and `ValueNone` - sending `Frame.ofTable` to
+              // `Frame.unpackFallback` - in every other case. The sample is guarded: every column
+              // type reaches the direct path, and the ragged, out-of-type and null-carrier cases
+              // all reach the fall-back.
+              let rng = System.Random 3270
+              let mutable direct = Set.empty
+              let mutable ragged = 0
+              let mutable outOfType = 0
+
+              for _ in 1..600 do
+                  let ty = pick rng allTypes
+                  let n = rng.Next 9
+
+                  let cells =
+                      [ for _ in 1..n ->
+                            match rng.Next 6 with
+                            | 0 -> Null
+                            | _ -> conformingCell rng ty ]
+
+                  match rng.Next 4 with
+                  | 0 ->
+                      // Ragged: the list one cell short of the row count, or one long.
+                      let declared = if rng.Next 2 = 0 then n + 1 else max 0 (n - 1)
+
+                      if declared <> n then
+                          Expect.equal (Vec.packList ty declared cells) ValueNone "a ragged column falls back"
+                          ragged <- ragged + 1
+                  | 1 when n > 0 ->
+                      // One cell out of the column's type (a `Str` in an int column, else an `Int`).
+                      let wrong = if ty = IntType then Str "mistyped" else Int 1
+                      let k = rng.Next n
+                      let mistyped = cells |> List.mapi (fun i c -> if i = k then wrong else c)
+                      Expect.equal (Vec.packList ty n mistyped) ValueNone "an out-of-type cell falls back"
+
+                      Expect.equal (Vec.declaredType (Vec.pack ty (List.toArray mistyped))) None "and pack boxes it too"
+
+                      outOfType <- outOfType + 1
+                  | _ ->
+                      match Vec.packList ty n cells with
+                      | ValueSome v ->
+                          let expected = Vec.pack ty (List.toArray cells)
+                          direct <- Set.add (ColumnType.tag ty) direct
+                          Expect.equal (Vec.declaredType v) (Vec.declaredType expected) "the same vector kind"
+                          Expect.equal (Vec.length v) n "the column's length"
+
+                          Expect.equal
+                              [ for p in 0 .. n - 1 -> DataFrame.cellToken (Vec.cellAt v p) ]
+                              [ for p in 0 .. n - 1 -> DataFrame.cellToken (Vec.cellAt expected p) ]
+                              "every cell reads back as pack's does"
+
+                          match v, expected with
+                          | Decs(a, s, _, m), Decs(a', s', _, m') ->
+                              Expect.equal (s, a, m) (s', a', m') "the same scale and scaled integers"
+                          | Decs _, _
+                          | _, Decs _ -> failtest "one path packed a decimal vector and the other did not"
+                          | _ -> ()
+                      | ValueNone -> failtestf "a fitting %A column fell back: %A" ty cells
+
+              // A string-family cell carrying a null string is not the typed carrier's to hold.
+              Expect.equal (Vec.packList StringType 1 [ Str null ]) ValueNone "a null carrier falls back"
+
+              Expect.equal direct (allTypes |> List.map ColumnType.tag |> Set.ofList) "every column type packs directly"
+
+              Expect.isGreaterThan ragged 50 "the sample reached ragged columns"
+              Expect.isGreaterThan outOfType 50 "the sample reached out-of-type cells"
 
           testCase
               "the boundary laws hold over every column type and a ragged column: Table in, Table out and the round trip"
@@ -4634,3 +4704,104 @@ let kernelTests =
                               "the sum is the sequential fold, to the last bit"
                       | other -> failtestf "one sum expected, got %A" other
                   | Error e -> failtestf "evaluation failed: %s" (DataFrame.errorString e) ]
+
+// ---------------------------------------------------------------------------
+//  Phase 327 — the in-place refresh over a sort or a limit. A one-cell edit
+//  leaves every row at its slot, so the refresh builds its frame without
+//  re-counting the unchanged columns and reads the row-local steps ahead of the
+//  first sort or limit in place; every step after it takes the general reading,
+//  because a sort reorders the frame and a limit lets a row the delta did not
+//  name enter or leave its window. Held here against the reference over chains
+//  of in-place edits, on the shapes where that distinction decides the answer.
+// ---------------------------------------------------------------------------
+
+[<Tests>]
+let inPlaceOrderingTests =
+    testList
+        "Incremental — in place over a sort or a limit (Phase 327)"
+        [ testCase
+              "chains of one-cell edits refresh to the reference answer over sorts, limits and the steps after them"
+          <| fun _ ->
+              let idw = RowIdentity.byColumn "id"
+
+              let ok r =
+                  match r with
+                  | Ok v -> v
+                  | Error e -> failtestf "unexpected error %A" e
+
+              let pipelines: Transform list list =
+                  [ [ Filter(Binary(Ge, Col "a", Lit(Int 0)))
+                      Transform.sortBy [ "a", Desc ]
+                      Transform.limit 3 0 ]
+                    [ Filter(Binary(Ge, Col "a", Lit(Int 0)))
+                      Transform.sortBy [ "a", Desc ]
+                      Transform.limit 3 0
+                      Derive("x", Binary(Mul, Col "b", Lit(Int 2))) ]
+                    [ Filter(Binary(Ge, Col "a", Lit(Int 0)))
+                      Transform.limit 4 1
+                      Derive("x", Binary(Add, Col "a", Col "b"))
+                      Filter(Binary(Gt, Col "x", Lit(Int 3))) ]
+                    [ Derive("x", Binary(Mul, Col "a", Lit(Int 3)))
+                      Transform.sortBy [ "b", Asc; "x", Desc ]
+                      Filter(Binary(Ne, Col "b", Lit(Int 2)))
+                      Transform.limit 5 0 ]
+                    [ Transform.sortBy [ "a", Asc ]
+                      Derive("x", Binary(Sub, Col "a", Col "b"))
+                      Transform.limit 2 2 ] ]
+
+              let rng = System.Random 3272
+              let mutable ticks = 0
+
+              for p in pipelines do
+                  for _ in 1..40 do
+                      let n = 1 + rng.Next 12
+
+                      let mk (a: int[]) (b: int[]) : Table =
+                          { Schema = [ "id", IntType; "a", IntType; "b", IntType ]
+                            Columns =
+                              [ col "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+                                col "a" IntType [ for v in a -> if v = 99 then Null else Int v ]
+                                col "b" IntType [ for v in b -> Int v ] ] }
+
+                      let a = Array.init n (fun _ -> if rng.Next 8 = 0 then 99 else rng.Next(-3, 6))
+                      let b = Array.init n (fun _ -> rng.Next 4)
+                      let mutable prior = mk a b
+                      let mutable state = ok (Incremental.primeOn idw p prior)
+
+                      for _ in 1..6 do
+                          // One cell of `a` or `b` edited, every other column's list kept by reference:
+                          // the delta finds every row in place.
+                          let i = rng.Next n
+                          let edited = if rng.Next 2 = 0 then "a" else "b"
+
+                          let value =
+                              if edited = "a" && rng.Next 6 = 0 then
+                                  Null
+                              else
+                                  Int(rng.Next(-3, 6))
+
+                          let next =
+                              { prior with
+                                  Columns =
+                                      prior.Columns
+                                      |> List.map (fun c ->
+                                          if c.Name <> edited then
+                                              c
+                                          else
+                                              Column.create
+                                                  c.Name
+                                                  c.Type
+                                                  (c.Cells |> List.mapi (fun j x -> if j = i then value else x))) }
+
+                          let delta = ok (Delta.diff idw prior next)
+                          state <- ok (Incremental.refreshOn idw p state delta next)
+                          ticks <- ticks + 1
+
+                          Expect.equal
+                              (tokenised (Ok(Incremental.result state)))
+                              (tokenised (DataFrame.evalPipeline p next))
+                              (sprintf "%A after editing %s at row %d" p edited i)
+
+                          prior <- next
+
+              Expect.isGreaterThan ticks 1000 "the sample refreshed" ]

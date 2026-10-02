@@ -405,6 +405,124 @@ module internal Vec =
     /// Pack a dense column: `cells[i]` at physical row `i`.
     let pack (ty: ColumnType) (cells: Cell[]) : Vec = packAt ty cells.Length id cells
 
+    /// Hand the cells of `cells` to `put` with their rows, in one walk of the list; `false` where
+    /// `put` refused a cell or the list is not exactly `n` long (a ragged column).
+    let inline private walkExact (n: int) (cells: Cell list) ([<InlineIfLambda>] put: int -> Cell -> bool) : bool =
+        let mutable rest = cells
+        let mutable ok = true
+        let mutable i = 0
+
+        while ok && i < n do
+            match rest with
+            | c :: tail ->
+                ok <- put i c
+                rest <- tail
+                i <- i + 1
+            | [] -> ok <- false
+
+        ok && List.isEmpty rest
+
+    /// Pack a column's own list straight into the typed vector `ty` names (Phase 327): one walk of
+    /// the list per column, no intermediate cell array. `ValueNone` — and the boundary takes its
+    /// fall-back, `Frame.unpackFallback` — where the list is not exactly `n` long, or a present cell
+    /// is not of `ty` (or, for a decimal, the column does not fit `ScaledDecimal`), or a string-family
+    /// cell carries a null string: every case in which `pack` would not answer the typed vector this
+    /// answers. Where it answers, the vector is the one `pack ty (List.toArray cells)` answers.
+    let packList (ty: ColumnType) (n: int) (cells: Cell list) : Vec voption =
+        match ty with
+        | IntType ->
+            let vals: int[] = Array.zeroCreate n
+            let mask: bool[] = Array.zeroCreate n
+
+            let ok =
+                walkExact n cells (fun i c ->
+                    match c with
+                    | Int v ->
+                        vals[i] <- v
+                        mask[i] <- true
+                        true
+                    | Null -> true
+                    | _ -> false)
+
+            if ok then ValueSome(Ints(vals, mask)) else ValueNone
+        | FloatType ->
+            let vals: float[] = Array.zeroCreate n
+            let mask: bool[] = Array.zeroCreate n
+
+            let ok =
+                walkExact n cells (fun i c ->
+                    match c with
+                    | Float v ->
+                        vals[i] <- v
+                        mask[i] <- true
+                        true
+                    | Null -> true
+                    | _ -> false)
+
+            if ok then ValueSome(Floats(vals, mask)) else ValueNone
+        | BoolType ->
+            let vals: bool[] = Array.zeroCreate n
+            let mask: bool[] = Array.zeroCreate n
+
+            let ok =
+                walkExact n cells (fun i c ->
+                    match c with
+                    | Bool v ->
+                        vals[i] <- v
+                        mask[i] <- true
+                        true
+                    | Null -> true
+                    | _ -> false)
+
+            if ok then ValueSome(Bools(vals, mask)) else ValueNone
+        // The cells ride in the vector (Phase 280), so the walk fills that array — the carrier, not
+        // an intermediate — and the scale is read from it. Every slot is written before the array is
+        // kept, so its initial fill (null on .NET, not on node) is never read.
+        | DecimalType ->
+            let out: Cell[] = Array.zeroCreate n
+
+            if
+                walkExact n cells (fun i c ->
+                    out[i] <- c
+                    true)
+            then
+                match ScaledDecimal.scaleOf out with
+                | Some scale ->
+                    let vals: float[] = Array.zeroCreate n
+                    let mask: bool[] = Array.zeroCreate n
+
+                    for i in 0 .. n - 1 do
+                        match out[i] with
+                        | Decimal s ->
+                            // `scaleOf` admitted every present cell at this scale, so this always reads.
+                            vals[i] <- ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0
+                            mask[i] <- true
+                        | _ -> ()
+
+                    ValueSome(Decs(vals, scale, out, mask))
+                | None -> ValueNone
+            else
+                ValueNone
+        | StringType
+        | DateType
+        | TimestampType ->
+            let vals: string[] = Array.zeroCreate n
+            let mask: bool[] = Array.zeroCreate n
+
+            let ok =
+                walkExact n cells (fun i c ->
+                    match c, ty with
+                    | Str s, StringType
+                    | Date s, DateType
+                    | Timestamp s, TimestampType when not (isNull s) ->
+                        vals[i] <- s
+                        mask[i] <- true
+                        true
+                    | Null, _ -> true
+                    | _ -> false)
+
+            if ok then ValueSome(Strs(ty, vals, mask)) else ValueNone
+
     /// The vector's cells at the physical rows `phys`, in that order, as a dense vector of the same
     /// kind — no cell is boxed on the typed path.
     let gather (v: Vec) (phys: int[]) : Vec =
@@ -688,20 +806,30 @@ module internal Frame =
             | None -> true
             | Some s -> s |> Array.forall (fun p -> p >= 0 && p < f.Count))
 
-    /// A table as a frame: one typed unpack per schema column, the identity selection.
+    /// The fall-back of the boundary in (Phase 327): the column's list copied to an array, padded or
+    /// cut, then packed — the path every column took before `Vec.packList`, and the one a ragged
+    /// column, an absent one or one with a cell out of its type still takes.
     ///
     /// A short column is padded with `Null` to the table's row count and a long one is cut to it;
     /// a schema name the table carries no column for is all `Null`. That is exactly what the
     /// per-index reads this replaced answered (`Column.cell` is total and `Null` past the end), and
     /// what `RowAccess.columns` still answers for the row form. A column that needed neither keeps
     /// its list as the vector's origin.
-    ///
-    /// Each column's list is copied to an array before it is packed. A pack straight from the list
-    /// in one walk measured at under half this cost (Phase 327; the figures are in
-    /// `benchmarks/results/2026-10-02-i7-8650u-phase-327.md`) and is deliberately NOT taken yet: the
-    /// table-fed tick does not cross this boundary, so a cheaper unpack lowers only the full
-    /// evaluation the tick is held against, and it roughly doubled the tick family's ratios. It waits
-    /// on a cheaper tick.
+    let unpackFallback (n: int) (ty: ColumnType) (column: Column option) : Vec * Cell list option =
+        match column with
+        | Some c ->
+            let a = List.toArray c.Cells
+
+            if a.Length = n then
+                Vec.pack ty a, Some c.Cells
+            else
+                Vec.pack ty (Array.init n (fun i -> if i < a.Length then a[i] else Null)), None
+        | None -> Vec.pack ty (Array.create n Null), None
+
+    /// A table as a frame: one typed unpack per schema column, the identity selection. Each column
+    /// is packed straight from its list in one walk
+    /// (`Vec.packList`), keeping the list as its origin; a column that does not fit takes
+    /// `unpackFallback`.
     let ofTable (t: Table) : Frame =
         let n = Table.rowCount t
 
@@ -710,13 +838,10 @@ module internal Frame =
             |> List.map (fun (name, ty) ->
                 match Table.tryColumn name t with
                 | Some c ->
-                    let a = List.toArray c.Cells
-
-                    if a.Length = n then
-                        Vec.pack ty a, Some c.Cells
-                    else
-                        Vec.pack ty (Array.init n (fun i -> if i < a.Length then a[i] else Null)), None
-                | None -> Vec.pack ty (Array.create n Null), None)
+                    match Vec.packList ty n c.Cells with
+                    | ValueSome v -> v, Some c.Cells
+                    | ValueNone -> unpackFallback n ty (Some c)
+                | None -> unpackFallback n ty None)
             |> List.toArray
 
         { Cols = t.Schema
