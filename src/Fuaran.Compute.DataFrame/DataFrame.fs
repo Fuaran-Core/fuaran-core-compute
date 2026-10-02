@@ -5529,15 +5529,8 @@ module DataFrame =
 
         /// An int carrier's codes: the value offset from the least present one (ascending) or the
         /// greatest (descending), where the values span at most a few times the row count; past
-        /// that, dense ranks of the values in the float carrier, where every int is exact — or
-        /// `ValueNone` there when only the arithmetic codes were asked for.
-        let private ofInts
-            (arithmeticOnly: bool)
-            (vals: int[])
-            (mask: bool[])
-            (phys: int[])
-            (dir: SortDir)
-            : KeyCodes voption =
+        /// that, dense ranks of the values in the float carrier, where every int is exact.
+        let private ofInts (vals: int[]) (mask: bool[]) (phys: int[]) (dir: SortDir) : KeyCodes =
             let n = phys.Length
             let mutable lo = System.Int32.MaxValue
             let mutable hi = System.Int32.MinValue
@@ -5557,9 +5550,8 @@ module DataFrame =
                         hi <- v
 
             if not any then
-                ValueSome
-                    { Codes = Array.zeroCreate n
-                      Range = 1 }
+                { Codes = Array.zeroCreate n
+                  Range = 1 }
             else
                 let span = float hi - float lo
 
@@ -5575,9 +5567,7 @@ module DataFrame =
                             elif dir = Asc then vals[p] - lo
                             else hi - vals[p]
 
-                    ValueSome { Codes = codes; Range = nullCode + 1 }
-                elif arithmeticOnly then
-                    ValueNone
+                    { Codes = codes; Range = nullCode + 1 }
                 else
                     let asFloat: float[] = Array.zeroCreate vals.Length
 
@@ -5585,31 +5575,16 @@ module DataFrame =
                         let p = phys[i]
                         asFloat[p] <- float vals[p]
 
-                    ValueSome(ofFloats asFloat mask phys dir)
+                    ofFloats asFloat mask phys dir
 
-        /// Which keys a caller has coded. A full sort codes every typed key: ranking a key costs a
-        /// sort of its distinct values, which a sort of the rows repays many times over. A top-n
-        /// compares most rows ONCE, against the heap's root, so a key worth coding there is one
-        /// whose codes are arithmetic — an `int` within its span, a `bool` — and a key that would
-        /// need ranking is cheaper compared in place.
-        type Coding =
-            | EveryTypedKey
-            | ArithmeticOnly
-
-        /// One key's codes over the logical rows `phys` reads, or `ValueNone` for a key `coding`
-        /// does not code (always a boxed vector).
-        let codesOf (coding: Coding) (v: Vec) (dir: SortDir) (phys: int[]) : KeyCodes voption =
-            let ranked = coding = EveryTypedKey
-
+        /// One key's codes over the logical rows `phys` reads, or `ValueNone` for a boxed vector.
+        let codesOf (v: Vec) (dir: SortDir) (phys: int[]) : KeyCodes voption =
             match v with
-            | Ints(a, m) -> ofInts (not ranked) a m phys dir
-            | Floats(a, m) when ranked -> ValueSome(ofFloats a m phys dir)
+            | Ints(a, m) -> ValueSome(ofInts a m phys dir)
+            | Floats(a, m) -> ValueSome(ofFloats a m phys dir)
             // Every value of one decimal vector is an exact integer at the column's one scale.
-            | Decs(a, _, _, m) when ranked -> ValueSome(ofFloats a m phys dir)
-            | Strs(_, a, m) when ranked -> ValueSome(ofStrings a m phys dir)
-            | Floats _
-            | Decs _
-            | Strs _ -> ValueNone
+            | Decs(a, _, _, m) -> ValueSome(ofFloats a m phys dir)
+            | Strs(_, a, m) -> ValueSome(ofStrings a m phys dir)
             | Bools(a, m) ->
                 let codes =
                     phys
@@ -5621,8 +5596,8 @@ module DataFrame =
                 ValueSome { Codes = codes; Range = 3 }
             | Cells _ -> ValueNone
 
-        /// Every key's codes, in key order, or `ValueNone` when `coding` leaves any key uncoded.
-        let codesAll (coding: Coding) (keys: (Vec * SortDir)[]) (phys: int[]) : KeyCodes[] voption =
+        /// Every key's codes, in key order, or `ValueNone` when any key's vector is boxed.
+        let codesAll (keys: (Vec * SortDir)[]) (phys: int[]) : KeyCodes[] voption =
             let out: KeyCodes[] = Array.zeroCreate keys.Length
             let mutable ok = true
             let mutable k = 0
@@ -5630,7 +5605,7 @@ module DataFrame =
             while ok && k < keys.Length do
                 let v, dir = keys[k]
 
-                match codesOf coding v dir phys with
+                match codesOf v dir phys with
                 | ValueSome c -> out[k] <- c
                 | ValueNone -> ok <- false
 
@@ -5746,8 +5721,8 @@ module DataFrame =
 
     /// A sort's keys over the logical rows `phys` reads, as the comparator over LOGICAL positions the
     /// pinned order is (`keyComparer`, key by key), ties broken by position — the path a boxed key
-    /// vector keeps, since its comparator is not a total order and cannot be coded, and the path a
-    /// top-n keeps for a key it does not code (Phase 324).
+    /// vector keeps, since its comparator is not a total order and cannot be coded, and the top-n's
+    /// order (Phase 324, measured there).
     let private comparatorOrder (phys: int[]) (keys: (Vec * SortDir)[]) : int -> int -> int =
         let cmps = keys |> Array.map (fun (v, dir) -> keyComparer v dir)
 
@@ -5779,7 +5754,7 @@ module DataFrame =
         let phys = Frame.physical f
         let keys = sortKeyVecs f by
 
-        match Ordering.codesAll Ordering.EveryTypedKey keys phys with
+        match Ordering.codesAll keys phys with
         | ValueSome codes ->
             let perm =
                 Ordering.permutation (Ordering.build Ordering.Exact null 0 codes phys.Length)
@@ -5838,15 +5813,18 @@ module DataFrame =
         elif window >= len then
             evalLimit (evalSort f by) n offset
         else
-            // The total order over LOGICAL positions `evalSort` sorts under: the keys' arithmetic
-            // order codes where every key has them (Phase 324; `Ordering.Coding`), else the
-            // comparator.
-            let cmp: int -> int -> int =
-                let keys = sortKeyVecs f by
-
-                match Ordering.codesAll Ordering.ArithmeticOnly keys phys with
-                | ValueSome codes -> Ordering.compareRows (Ordering.build Ordering.Exact null 0 codes len)
-                | ValueNone -> comparatorOrder phys keys
+            // The total order over LOGICAL positions `evalSort` sorts under, as the comparator.
+            //
+            // Phase 324 measured the top-n under ORDER CODES and kept the comparator: the heap
+            // compares most rows once, against its root, so coding a key costs a pass over every
+            // row (and, for a string, float or decimal key, a sort of its distinct values) to save
+            // about one comparison per row. Over 100,000 rows with a limit of 10, an int key read
+            // 12.0 to 12.6 ms coded against 12.0 to 12.3 ms compared, allocating 1.2 MB more; a
+            // string key costs its ranking outright. The order is the same total order either way
+            // (`Ordering`'s codes tie exactly where this comparator does), so a top-n that would
+            // gain from codes — a window reaching most of the frame is the full sort already —
+            // can take them without a change of answer.
+            let cmp: int -> int -> int = comparatorOrder phys (sortKeyVecs f by)
 
             // A max-heap of the `window` least positions seen so far: its root is the greatest of
             // them, and a position that sorts before the root replaces it.
@@ -6143,7 +6121,7 @@ module DataFrame =
         let partitions = slotKeys.Count
         let keyVecs = orderKeys |> List.map (fun (ci, dir) -> vecOf ci, dir) |> List.toArray
 
-        match Ordering.codesAll Ordering.EveryTypedKey keyVecs phys with
+        match Ordering.codesAll keyVecs phys with
         | ValueSome codes ->
             let order = Ordering.build perturbation slotOf partitions codes n
 

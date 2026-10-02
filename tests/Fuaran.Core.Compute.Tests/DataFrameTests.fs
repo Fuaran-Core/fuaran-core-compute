@@ -4933,7 +4933,7 @@ let private orderingLaw (perturbation: DataFrame.Ordering.Perturbation) (seeds: 
         let expected = referenceOrder rows keys
         let keyVecs = keys |> List.map (fun (ci, dir) -> f.Vecs[ci], dir) |> List.toArray
 
-        match DataFrame.Ordering.codesAll DataFrame.Ordering.EveryTypedKey keyVecs phys with
+        match DataFrame.Ordering.codesAll keyVecs phys with
         | ValueNone -> boxed <- boxed + 1
         | ValueSome codes ->
             coded <- coded + 1
@@ -5280,7 +5280,7 @@ let orderCodeTests =
                   let t = Frame.toTable f
                   let keyVecs = keys |> List.map (fun (ci, dir) -> f.Vecs[ci], dir) |> List.toArray
 
-                  match DataFrame.Ordering.codesAll DataFrame.Ordering.EveryTypedKey keyVecs (Frame.physical f) with
+                  match DataFrame.Ordering.codesAll keyVecs (Frame.physical f) with
                   | ValueNone -> ()
                   | ValueSome _ ->
                       checkedCases <- checkedCases + 1
