@@ -1357,10 +1357,28 @@ module Incremental =
             DataFrame.windowColumnOf DataFrame.Ordering.Exact f.Cols vecOf (Array.init order.Length id) spec
             |> Result.bind (fun (ty, appended) ->
                 let cols2 = f.Cols @ [ spec.As, ty ]
-                let last: Cell[] = Array.zeroCreate r.Stable.Length
 
-                for k in 0 .. order.Length - 1 do
-                    last[order[k]] <- DataFrame.windowCellAt appended k
+                // Every slot alive in slot order: the appended column is built as the cell LIST the
+                // result hands back, carried as the column's origin (unpacked only if a later step
+                // reads it), as `Frame.toTable` builds it — not stored cell by cell into a slot array
+                // first. Measured (Phase 324) at 20,000 rows, filling that array cost more than the
+                // window itself: every boxed cell stored into an array that size is a reference from
+                // an old-generation object to a young one.
+                let data2, origins2 =
+                    if identity.Value then
+                        let mutable cells = []
+
+                        for k in order.Length - 1 .. -1 .. 0 do
+                            cells <- DataFrame.windowCellAt appended k :: cells
+
+                        Array.append f.Data [| null |], Array.append f.Origins [| Some cells |]
+                    else
+                        let last: Cell[] = Array.zeroCreate r.Stable.Length
+
+                        for k in 0 .. order.Length - 1 do
+                            last[order[k]] <- DataFrame.windowCellAt appended k
+
+                        Array.append f.Data [| last |], Array.append f.Origins [| None |]
 
                 // `Stable` is cleared for EVERY slot, dead ones too: the appended column is a
                 // function of the whole frame (see `WalkRows`).
@@ -1372,8 +1390,8 @@ module Incremental =
                     prior
                     { r with InPlace = null }
                     { Cols = cols2
-                      Data = Array.append f.Data [| last |]
-                      Origins = Array.append f.Origins [| None |]
+                      Data = data2
+                      Origins = origins2
                       Order = f.Order }
                     evaluated
                     caches

@@ -67,8 +67,9 @@ order, nulls last in both directions, `NaN` the greatest float. Underneath, in
   total order, `bool` 0 / 1, a null past every value. Where the keys' ranges allow, the codes and
   the row's position pack into one exact number and the sort compares plain numbers. A key whose
   column holds a cell outside its type keeps the comparator, so its answer is the one it was.
-- **The incremental seam's window step** packs only the columns the window reads and shares the
-  rest; a window is admitted to the in-place reading as a sort is.
+- **The incremental seam's window step** packs only the columns the window reads, shares the rest,
+  and carries its column as the cell list the result hands back; a window is admitted to the
+  in-place reading as a sort is.
 
 A top-n (a `Sort` then a `Limit`) keeps its comparator: measured under codes it was at parity and
 heavier, since its heap compares most rows only once.
@@ -76,8 +77,8 @@ heavier, since its heap compares most rows only once.
 **Measured** (`benchmarks/results/2026-10-02-i7-8650u-phase-324.md`): at 100,000 rows the
 one-partition window step at 1/50 of its `8a39a42` cost on .NET and the two-key sort at 1/8; on node
 the window 3.3 to 4.9 times faster and the two-key sort 3.0 to 3.9 times. A sort allocates more than
-it did (its codes and packed keys); a window far less. The tick family stays inside its bound, the
-window's ratio higher than it was (a faster full evaluation is a smaller denominator).
+it did (its codes and packed keys); a window far less. The tick family stays inside its bound: a
+window's refresh now costs what its full evaluation costs, so its tick is the diff more.
 
 **What a consumer does.** Nothing.
 
