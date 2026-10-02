@@ -188,6 +188,32 @@ module internal ScaledDecimal =
         let signed = if u < 0.0 then "-" + text else text
         DecimalText.tryCanonical signed |> Option.defaultValue signed
 
+/// The cells a typed vector boxes on the way out, shared where they can be (Phase 327): the two
+/// `Bool` cells, and one `Int` cell per value in `[Lo, Hi]`, allocated once. A shared cell is the
+/// same union case with the same value as a fresh one, so every comparison the evaluator makes —
+/// structural equality, `Cell.compare`, `cellToken`, `CellKey` — reads them alike; nothing in this
+/// assembly compares a cell by reference, and interning only ever makes EQUAL cells identical.
+module internal InternedCells =
+
+    /// The lowest interned integer.
+    [<Literal>]
+    let Lo = -128
+
+    /// The highest interned integer.
+    [<Literal>]
+    let Hi = 1023
+
+    let private trueCell = Bool true
+    let private falseCell = Bool false
+    let private ints: Cell[] = Array.init (Hi - Lo + 1) (fun k -> Int(k + Lo))
+
+    /// The `Bool` cell for `b` — one of two shared instances.
+    let ofBool (b: bool) : Cell = if b then trueCell else falseCell
+
+    /// The `Int` cell for `v` — shared inside `[Lo, Hi]`, fresh outside it.
+    let ofInt (v: int) : Cell =
+        if v >= Lo && v <= Hi then ints[v - Lo] else Int v
+
 /// The evaluator's frame: a schema, one vector per schema column (`Vecs` co-indexes with `Cols`),
 /// and the selection — the PHYSICAL row of each LOGICAL row, in logical order — or `None` for the
 /// identity, every physical row in physical order. `Count` is the physical row count: the length
@@ -238,13 +264,14 @@ module internal Vec =
         | BoolType
         | DecimalType -> Str s
 
-    /// The cell at physical row `p` — boxed on demand from the typed carrier, or read as it is from
-    /// the boxed one.
+    /// The cell at physical row `p` — boxed on demand from the typed carrier (a `Bool`, and an `Int`
+    /// in the interned range, read as the shared cell: `InternedCells`), or read as it is from the
+    /// boxed one.
     let cellAt (v: Vec) (p: int) : Cell =
         match v with
-        | Ints(a, m) -> if m[p] then Int a[p] else Null
+        | Ints(a, m) -> if m[p] then InternedCells.ofInt a[p] else Null
         | Floats(a, m) -> if m[p] then Float a[p] else Null
-        | Bools(a, m) -> if m[p] then Bool a[p] else Null
+        | Bools(a, m) -> if m[p] then InternedCells.ofBool a[p] else Null
         | Strs(ty, a, m) -> if m[p] then strCell ty a[p] else Null
         | Decs(_, _, cells, _) -> cells[p]
         | Cells a -> a[p]
@@ -668,6 +695,13 @@ module internal Frame =
     /// per-index reads this replaced answered (`Column.cell` is total and `Null` past the end), and
     /// what `RowAccess.columns` still answers for the row form. A column that needed neither keeps
     /// its list as the vector's origin.
+    ///
+    /// Each column's list is copied to an array before it is packed. A pack straight from the list
+    /// in one walk measured at under half this cost (Phase 327; the figures are in
+    /// `benchmarks/results/2026-10-02-i7-8650u-phase-327.md`) and is deliberately NOT taken yet: the
+    /// table-fed tick does not cross this boundary, so a cheaper unpack lowers only the full
+    /// evaluation the tick is held against, and it roughly doubled the tick family's ratios. It waits
+    /// on a cheaper tick.
     let ofTable (t: Table) : Frame =
         let n = Table.rowCount t
 

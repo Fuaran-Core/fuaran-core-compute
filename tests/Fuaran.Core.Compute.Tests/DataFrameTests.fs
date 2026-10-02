@@ -4008,6 +4008,200 @@ let frameTests =
               Expect.equal (Frame.toTable (Frame.ofTable t)) expected "padded, cut and absent-as-null"
               Expect.equal (DataFrame.evalPipeline [] t) (Ok expected) "and the empty pipeline says the same"
 
+          // ---- Phase 327: the boundary laws over every column type, and interned cells on the way out ----
+
+          testCase
+              "the boundary laws hold over every column type and a ragged column: Table in, Table out and the round trip"
+          <| fun _ ->
+              // Table in: every column unpacks to the padded (or cut) cells, typed exactly where
+              // every present cell is of its declared type, and keeps its own list as the origin
+              // exactly where the list is the table's length. Table out: a frame's table, read back
+              // through the vectors with no origin to hand back, is the padded table, through a
+              // selection too. Round trip: `toTable (ofTable t)` is the padded table. The sample is
+              // guarded: every column type unpacks typed, and ragged and boxed columns both occur.
+              let rng = System.Random 3271
+              let mutable typed = Set.empty
+              let mutable ragged = 0
+              let mutable boxed = 0
+              let mutable keptOrigin = 0
+
+              for i in 1..300 do
+                  let n = rng.Next 7
+                  let t = frameTable rng n (i % 3 = 0)
+
+                  // Every fourth table has one column cut short, and every fifth one column too long.
+                  let t =
+                      if n > 0 && (i % 4 = 0 || i % 5 = 0) then
+                          let k = rng.Next t.Columns.Length
+
+                          { t with
+                              Columns =
+                                  t.Columns
+                                  |> List.mapi (fun ci c ->
+                                      if ci <> k then
+                                          c
+                                      elif i % 4 = 0 then
+                                          Column.create c.Name c.Type (List.truncate (n - 1) c.Cells)
+                                      else
+                                          Column.create c.Name c.Type (c.Cells @ [ List.head c.Cells ])) }
+                      else
+                          t
+
+                  let n = Table.rowCount t
+                  let frame = Frame.ofTable t
+                  Expect.isTrue (Frame.wellFormed frame) "the unpacked table is well-formed"
+
+                  let paddedCells (name: string) : Cell list =
+                      let cells =
+                          match Table.tryColumn name t with
+                          | Some c -> c.Cells
+                          | None -> []
+
+                      [ for p in 0 .. n - 1 -> List.tryItem p cells |> Option.defaultValue Null ]
+
+                  t.Schema
+                  |> List.iteri (fun ci (name, ty) ->
+                      let expected = paddedCells name
+                      let v = frame.Vecs[ci]
+
+                      Expect.equal
+                          [ for p in 0 .. n - 1 -> DataFrame.cellToken (Vec.cellAt v p) ]
+                          (expected |> List.map DataFrame.cellToken)
+                          "Table in: the padded cells"
+
+                      let fits =
+                          expected
+                          |> List.forall (fun c ->
+                              match c, ty with
+                              | Null, _
+                              | Int _, IntType
+                              | Float _, FloatType
+                              | Bool _, BoolType
+                              | Str _, StringType
+                              | Date _, DateType
+                              | Timestamp _, TimestampType
+                              | Decimal _, DecimalType -> true
+                              | _ -> false)
+
+                      Expect.equal
+                          (Vec.declaredType v)
+                          (if fits then Some ty else None)
+                          "Table in: typed exactly where it fits"
+
+                      if fits then
+                          typed <- Set.add (ColumnType.tag ty) typed
+                      else
+                          boxed <- boxed + 1
+
+                      match Table.tryColumn name t with
+                      | Some c when List.length c.Cells = n ->
+                          Expect.isTrue
+                              (match frame.Origins[ci] with
+                               | Some o -> obj.ReferenceEquals(o, c.Cells)
+                               | None -> false)
+                              "Table in: a column of the table's length keeps its own list"
+
+                          keptOrigin <- keptOrigin + 1
+                      | Some _ ->
+                          Expect.isNone frame.Origins[ci] "Table in: a ragged column keeps no origin"
+                          ragged <- ragged + 1
+                      | None -> Expect.isNone frame.Origins[ci] "Table in: an absent column keeps no origin")
+
+                  let padded: Table =
+                      { Schema = t.Schema
+                        Columns =
+                          t.Schema
+                          |> List.map (fun (name, ty) -> Column.create name ty (paddedCells name)) }
+
+                  Expect.equal (tokenised (Ok(Frame.toTable frame))) (tokenised (Ok padded)) "round trip"
+
+                  let unOriginated =
+                      { frame with
+                          Origins = Array.create frame.Vecs.Length None }
+
+                  Expect.equal (tokenised (Ok(Frame.toTable unOriginated))) (tokenised (Ok padded)) "Table out"
+
+                  let reversed = Frame.select frame (Array.init n (fun p -> n - 1 - p))
+
+                  let paddedReversed =
+                      { padded with
+                          Columns =
+                              padded.Columns
+                              |> List.map (fun c -> Column.create c.Name c.Type (List.rev c.Cells)) }
+
+                  Expect.equal
+                      (tokenised (Ok(Frame.toTable reversed)))
+                      (tokenised (Ok paddedReversed))
+                      "Table out through a selection"
+
+              Expect.equal typed (allTypes |> List.map ColumnType.tag |> Set.ofList) "every column type unpacks typed"
+
+              Expect.isGreaterThan ragged 50 "the sample reached ragged columns"
+              Expect.isGreaterThan boxed 50 "the sample reached boxed columns"
+              Expect.isGreaterThan keptOrigin 500 "the sample kept origins"
+
+          testCase
+              "an interned cell is the fresh cell under every comparison the evaluator makes, and only equal cells are shared"
+          <| fun _ ->
+              // `cellAt` hands back one shared `Bool` per value and one shared `Int` per value in
+              // `[Lo, Hi]`. Interning is sound only if nothing tells the shared cell from a fresh
+              // one: structural equality, `Cell.compare`, the hash, `cellToken` and the grouping
+              // comparer `CellKey` all agree, over the range, its edges and past them.
+              let ints =
+                  [ InternedCells.Lo - 3 .. InternedCells.Hi + 3 ]
+                  @ [ System.Int32.MinValue; System.Int32.MaxValue ]
+
+              let read (v: Vec) = Vec.cellAt v 0
+              let mutable shared = 0
+
+              let same (a: Cell) (fresh: Cell) =
+                  Expect.equal a fresh "structurally equal"
+                  Expect.equal (Cell.compare a fresh) (Some 0) "Cell.compare"
+                  Expect.equal (hash a) (hash fresh) "hash"
+                  Expect.equal (DataFrame.cellToken a) (DataFrame.cellToken fresh) "cellToken"
+                  Expect.isTrue (DataFrame.CellKey.equals a fresh) "CellKey.equals"
+                  Expect.equal (DataFrame.CellKey.hashCell a) (DataFrame.CellKey.hashCell fresh) "CellKey.hashCell"
+
+              for v in ints do
+                  let a = read (Ints([| v |], [| true |]))
+                  let b = read (Ints([| v |], [| true |]))
+                  same a (Int v)
+
+                  let inRange = v >= InternedCells.Lo && v <= InternedCells.Hi
+
+                  Expect.equal (obj.ReferenceEquals(a, b)) inRange (sprintf "%d is shared exactly inside the range" v)
+
+                  if inRange then
+                      shared <- shared + 1
+
+                  // A shared cell never equals a different value.
+                  Expect.notEqual a (Int(v ^^^ 1)) "not equal to a neighbour"
+
+              for b in [ true; false ] do
+                  let a = read (Bools([| b |], [| true |]))
+                  same a (Bool b)
+                  Expect.isTrue (obj.ReferenceEquals(a, read (Bools([| b |], [| true |])))) "a bool is shared"
+                  Expect.notEqual a (Bool(not b)) "not equal to the other bool"
+
+              Expect.equal shared (InternedCells.Hi - InternedCells.Lo + 1) "the whole range is shared"
+              Expect.equal (read (Ints([| 5 |], [| false |]))) Null "an absent row reads Null"
+
+              // And through the boundary out: a frame's table hands back the shared cells.
+              let t =
+                  tbl
+                      [ "i", IntType; "b", BoolType ]
+                      [ col "i" IntType [ Int 1; Int 2 ]; col "b" BoolType [ Bool true; Bool true ] ]
+
+              let f = Frame.ofTable t
+
+              let out = Frame.toTable { f with Origins = Array.create 2 None }
+
+              match out.Columns with
+              | [ i; b ] ->
+                  Expect.equal i.Cells [ Int 1; Int 2 ] "ints read back"
+                  Expect.isTrue (obj.ReferenceEquals(List.item 0 b.Cells, List.item 1 b.Cells)) "one shared true"
+              | _ -> failtest "two columns"
+
           testCase
               "the typed path types a derived column from its cells: all null is String, an upsert replaces in place, a window appends"
           <| fun _ ->
