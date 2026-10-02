@@ -463,11 +463,6 @@ module PipelineQueryCodec =
                         | None -> Error("unknown column type: " + tag))))
             el
 
-    let private queryErrorText (e: QueryError) : string =
-        match e with
-        | ExecutionFailed(m, _) -> m
-        | other -> sprintf "%A" other
-
     /// The pair as a JSON value.
     let encodeJson (pq: PipelineQuery) : JVal =
         let query =
@@ -503,7 +498,8 @@ module PipelineQueryCodec =
             Decode.getProp "query" el
             |> Result.bind (fun j ->
                 QueryCodec.decode (Canon.render j)
-                |> Result.mapError (fun e -> "query: " + queryErrorText e))
+                // The substrate's codec answers its decode refusal as text (Core 0.34.0, Phase 295).
+                |> Result.mapError (fun e -> "query: " + e))
 
         let pipeline () =
             Decode.getProp "pipeline" el
