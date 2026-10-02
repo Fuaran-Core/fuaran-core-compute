@@ -544,6 +544,30 @@ module internal Vec =
             )
         | Cells a -> Cells(Array.init n (fun i -> a[phys[i]]))
 
+    /// `gather` where a negative index reads `Null` (Phase 325): the side a combining join pads.
+    /// A padded slot of a typed vector is a cleared mask bit over a zero carrier (the empty string
+    /// for a string vector, as a host that fills string arrays with it would hold anyway).
+    let gatherOrNull (v: Vec) (idx: int[]) : Vec =
+        let n = idx.Length
+        let present = Array.init n (fun i -> idx[i] >= 0)
+
+        let maskOf (m: bool[]) =
+            Array.init n (fun i -> present[i] && m[idx[i]])
+
+        match v with
+        | Ints(a, m) -> Ints(Array.init n (fun i -> if present[i] then a[idx[i]] else 0), maskOf m)
+        | Floats(a, m) -> Floats(Array.init n (fun i -> if present[i] then a[idx[i]] else 0.0), maskOf m)
+        | Bools(a, m) -> Bools(Array.init n (fun i -> present[i] && a[idx[i]]), maskOf m)
+        | Strs(ty, a, m) -> Strs(ty, Array.init n (fun i -> if present[i] then a[idx[i]] else ""), maskOf m)
+        | Decs(a, s, c, m) ->
+            Decs(
+                Array.init n (fun i -> if present[i] then a[idx[i]] else 0.0),
+                s,
+                Array.init n (fun i -> if present[i] then c[idx[i]] else Null),
+                maskOf m
+            )
+        | Cells a -> Cells(Array.init n (fun i -> if present[i] then a[idx[i]] else Null))
+
     /// Two DENSE vectors end to end: the same kind when both are typed alike, boxed otherwise. Two
     /// decimal vectors at different scales are packed again from their cells, so the result is the
     /// vector `pack DecimalType` makes of the joined column.

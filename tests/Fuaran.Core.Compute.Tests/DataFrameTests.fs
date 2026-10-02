@@ -5377,3 +5377,400 @@ let orderCodeTests =
               // order, then 5 (a null `a`, last whatever the direction). Partition y: row 1. The null
               // partition: rows 4 and 6, tied on every key, in frame order.
               Expect.equal rows [ Int 2; Int 1; Int 1; Int 3; Int 1; Int 4; Int 2 ] "row numbers" ]
+
+// ---- Phase 325: the typed row hasher, held to the two relations row by row ----
+//
+// Every keyed verb now hashes through one typed row hasher (`RowHash`): codes read from the typed
+// vectors, a boxed column through its cells. These laws hold each verb to an ORACLE written row by
+// row over the table's cells with the public statement of its relation — `joinKeysMatch` (`cellEq`
+// pairwise) for the join and the pivot's on-value match, `rowTokenString` (the token) for
+// `Distinct`, `Intersect`, `Except`, `GroupBy` and the pivot's index groups — over key columns drawn
+// so that the vectors are of every kind (int, float, string, date, decimal, and boxed columns mixing
+// `Int` with `Float` or one string under two tags), holding `Int 1` beside `Float 1.0`, both zeroes,
+// `NaN` and `Null`, on one side or two. The relations differ on purpose (`Int 1` matches `Float 1.0`
+// in a join and is a different value to `Distinct`), so a hasher that swapped them — or that keyed
+// `Int 1` apart from `Float 1.0` in the join — fails here.
+
+/// The key column kinds the draw mixes: each a declared type and the cells it may hold. The first
+/// five pack typed; the last three hold cells outside one carrier and stay boxed.
+let private rowHashKinds: (string * ColumnType * Cell[]) list =
+    [ "int", IntType, [| Int -1; Int 0; Int 1; Int 2; Null |]
+      "float", FloatType, [| Float -1.0; Float 0.0; Float -0.0; Float 1.0; Float 1.5; Float nan; Null |]
+      "string", StringType, [| Str "a"; Str "b"; Str "1"; Null |]
+      "date", DateType, [| Date "a"; Date "b"; Null |]
+      "decimal", DecimalType, [| Decimal "1.50"; Decimal "1.5"; Decimal "2"; Null |]
+      "int+float", FloatType, [| Int 1; Float 1.0; Int 0; Float -0.0; Float nan; Float 2.0; Null |]
+      "string+date", StringType, [| Str "a"; Date "a"; Str "b"; Null |]
+      "number+decimal", DecimalType, [| Int 1; Float 1.0; Decimal "1"; Decimal "1.0"; Null |] ]
+
+/// A seeded draw: `next bound` in `[0, bound)`.
+let private rowHashRng (seed: int) : int -> int =
+    let mutable state = uint32 seed
+
+    fun bound ->
+        state <- state * 1664525u + 1013904223u
+        int ((state >>> 8) % uint32 bound)
+
+/// A table of `rows` rows: key columns `k0 .. k(n-1)` of the given kinds, and a payload `v` (the
+/// row's ordinal plus `offset`, so every output row says which input row it came from).
+let private rowHashTable
+    (next: int -> int)
+    (kinds: (string * ColumnType * Cell[]) list)
+    (rows: int)
+    (offset: int)
+    : Table =
+    let keys =
+        kinds
+        |> List.mapi (fun j (_, ty, pool) ->
+            let name = "k" + string j
+            name, ty, [ for _ in 1..rows -> pool[next pool.Length] ])
+
+    { Schema = (keys |> List.map (fun (n, ty, _) -> n, ty)) @ [ "v", IntType ]
+      Columns =
+        (keys |> List.map (fun (n, ty, cells) -> col n ty cells))
+        @ [ col "v" IntType [ for i in 0 .. rows - 1 -> Int(i + offset) ] ] }
+
+/// A table's rows, cell by cell, in schema order.
+let private rowHashRows (t: Table) : Cell list list =
+    let cols = t.Schema |> List.map (fun (n, _) -> cellsOf n t)
+    let n = Table.rowCount t
+    [ for i in 0 .. n - 1 -> cols |> List.map (fun c -> List.item i c) ]
+
+/// The table `rows` builds under `schema`.
+let private rowHashOf (schema: Schema) (rows: Cell list list) : Table =
+    tbl schema (schema |> List.mapi (fun j (n, ty) -> col n ty (rows |> List.map (List.item j))))
+
+/// A table rendered exactly, column by column (`exactCell`).
+let private rowHashRender (t: Table) =
+    t.Columns |> List.map (fun c -> c.Name, c.Cells |> List.map exactCell)
+
+/// The join a nested loop computes: `cellEq` pairwise on the key (`joinKeysMatch`), left order,
+/// each left row's matches in right order, right-only rows after every left-side row.
+let private oracleJoin (left: Table) (right: Table) (on: (string * string) list) (how: JoinKind) : Table =
+    let li =
+        on
+        |> List.map (fun (l, _) -> left.Schema |> List.findIndex (fun (n, _) -> n = l))
+
+    let ri =
+        on
+        |> List.map (fun (_, r) -> right.Schema |> List.findIndex (fun (n, _) -> n = r))
+
+    let lrows = rowHashRows left
+    let rrows = rowHashRows right
+
+    let keyOf (idx: int list) (row: Cell list) =
+        idx |> List.map (fun i -> List.item i row)
+
+    let matches (l: Cell list) (r: Cell list) =
+        DataFrame.joinKeysMatch (keyOf li l) (keyOf ri r)
+
+    match how with
+    | Semi
+    | Anti ->
+        lrows
+        |> List.filter (fun l -> (rrows |> List.exists (matches l)) = (how = Semi))
+        |> rowHashOf left.Schema
+    | Inner
+    | Left
+    | Right
+    | Outer ->
+        let leftNames = left.Schema |> List.map fst |> Set.ofList
+
+        let outRight =
+            right.Schema
+            |> List.map (fun (n, ty) -> (if Set.contains n leftNames then n + "_right" else n), ty)
+
+        let lnulls = left.Schema |> List.map (fun _ -> Null)
+        let rnulls = right.Schema |> List.map (fun _ -> Null)
+
+        let fromLeft =
+            [ for l in lrows do
+                  let ms = rrows |> List.filter (matches l)
+
+                  if List.isEmpty ms then
+                      if how = Left || how = Outer then
+                          yield l @ rnulls
+                  else
+                      for r in ms -> l @ r ]
+
+        let rightOnly =
+            if how = Right || how = Outer then
+                [ for r in rrows do
+                      if not (lrows |> List.exists (fun l -> matches l r)) then
+                          yield lnulls @ r ]
+            else
+                []
+
+        rowHashOf (left.Schema @ outRight) (fromLeft @ rightOnly)
+
+/// `Intersect` / `Except` row by row: the left rows whose token is (or is not) among the right's.
+let private oracleSetOp (keep: bool) (left: Table) (right: Table) : Table =
+    let rightTokens =
+        rowHashRows right |> List.map DataFrame.rowTokenString |> Set.ofList
+
+    rowHashRows left
+    |> List.filter (fun r -> Set.contains (DataFrame.rowTokenString r) rightTokens = keep)
+    |> rowHashOf left.Schema
+
+/// `Distinct` row by row: each token's first row.
+let private oracleDistinct (t: Table) : Table =
+    rowHashRows t
+    |> List.fold
+        (fun (seen, acc) r ->
+            let tok = DataFrame.rowTokenString r
+
+            if Set.contains tok seen then
+                seen, acc
+            else
+                Set.add tok seen, r :: acc)
+        (Set.empty, [])
+    |> snd
+    |> List.rev
+    |> rowHashOf t.Schema
+
+/// Rows grouped by the token of the cells at `idx`, groups in first-appearance order, each with its
+/// first row's key cells and its rows in frame order.
+let private oracleGroups (idx: int list) (rows: Cell list list) : (Cell list * Cell list list) list =
+    let keyOf (r: Cell list) =
+        idx |> List.map (fun i -> List.item i r)
+
+    rows
+    |> List.fold
+        (fun (order: string list, groups: Map<string, Cell list * Cell list list>) r ->
+            let tok = DataFrame.rowTokenString (keyOf r)
+
+            match Map.tryFind tok groups with
+            | Some(k, rs) -> order, Map.add tok (k, rs @ [ r ]) groups
+            | None -> order @ [ tok ], Map.add tok (keyOf r, [ r ]) groups)
+        ([], Map.empty)
+    |> fun (order, groups) -> order |> List.map (fun t -> Map.find t groups)
+
+/// `GroupBy keys` with a `Count` and a `Sum` of `v`, row by row.
+let private oracleGroupBy (t: Table) (keys: string list) : Table =
+    let idx =
+        keys |> List.map (fun k -> t.Schema |> List.findIndex (fun (n, _) -> n = k))
+
+    let vi = t.Schema |> List.findIndex (fun (n, _) -> n = "v")
+
+    let agg fn cells =
+        DataFrame.aggregateCells fn IntType cells
+        |> Result.defaultWith (fun _ -> failtest "agg")
+
+    oracleGroups idx (rowHashRows t)
+    |> List.map (fun (k, rs) ->
+        let vs = rs |> List.map (List.item vi)
+        k @ [ agg Count vs; agg Sum vs ])
+    |> rowHashOf (
+        (keys
+         |> List.map (fun k -> k, t.Schema |> List.find (fun (n, _) -> n = k) |> snd))
+        @ [ "n", DataFrame.aggregateType Count IntType
+            "s", DataFrame.aggregateType Sum IntType ]
+    )
+
+/// The per-pair pivot scan: index groups by token, on-values the distinct present cells sorted by
+/// `cellString`, and each (group, on-value) the `Sum` of the group's `v` over the rows whose on cell
+/// `cellEq`-matches the on-value.
+let private oraclePivot (t: Table) (index: string list) (on: string) : Table =
+    let pos name =
+        t.Schema |> List.findIndex (fun (n, _) -> n = name)
+
+    let idx = index |> List.map pos
+    let oi = pos on
+    let vi = pos "v"
+    let rows = rowHashRows t
+
+    let onValues =
+        rows
+        |> List.map (List.item oi)
+        |> List.filter (fun c -> not (Cell.isNull c))
+        |> List.distinct
+        |> List.sortBy DataFrame.cellString
+
+    let agg cells =
+        DataFrame.aggregateCells Sum IntType cells
+        |> Result.defaultWith (fun _ -> failtest "agg")
+
+    oracleGroups idx rows
+    |> List.map (fun (k, rs) ->
+        k
+        @ (onValues
+           |> List.map (fun ov ->
+               rs
+               |> List.filter (fun r -> DataFrame.joinKeysMatch [ List.item oi r ] [ ov ])
+               |> List.map (List.item vi)
+               |> agg)))
+    |> rowHashOf (
+        (index
+         |> List.map (fun n -> n, t.Schema |> List.find (fun (c, _) -> c = n) |> snd))
+        @ (onValues
+           |> List.map (fun ov -> DataFrame.cellString ov, DataFrame.aggregateType Sum IntType))
+    )
+
+/// The draws every law below runs: seeded kinds for one or two key columns on each side, sizes
+/// from 0 to 24 rows, so empty sides, all-null keys and heavy duplication all occur.
+let private rowHashCases (seed: int) (count: int) =
+    let next = rowHashRng seed
+    let kinds = List.toArray rowHashKinds
+
+    [ for c in 1..count ->
+          let width = 1 + next 2
+          let lk = List.init width (fun _ -> kinds[next kinds.Length])
+          let rk = List.init width (fun _ -> kinds[next kinds.Length])
+          c, lk, rk, rowHashTable next lk (next 25) 0, rowHashTable next rk (next 25) 1000 ]
+
+let private kindNames (ks: (string * ColumnType * Cell[]) list) =
+    ks |> List.map (fun (n, _, _) -> n) |> String.concat ","
+
+[<Tests>]
+let typedRowHashTests =
+    testList
+        "DataFrame.TypedRowHash"
+        [ testCase "every join kind equals the nested loop over cellEq, across key kinds, NaN, -0.0 and Null"
+          <| fun _ ->
+              for c, lk, rk, left, right in rowHashCases 3251 400 do
+                  let on = lk |> List.mapi (fun j _ -> "k" + string j, "k" + string j)
+
+                  for how in [ Inner; Left; Right; Outer; Semi; Anti ] do
+                      let actual =
+                          DataFrame.evalPipeline [ Join(Embedded right, on, how) ] left |> okTable
+
+                      Expect.equal
+                          (rowHashRender actual)
+                          (rowHashRender (oracleJoin left right on how))
+                          (sprintf
+                              "case %d, %A join, left keys [%s], right keys [%s]"
+                              c
+                              how
+                              (kindNames lk)
+                              (kindNames rk))
+
+          testCase "a join keys Int 1 to Float 1.0 and NaN to NaN, and no Null to anything"
+          <| fun _ ->
+              // The relation's edges in one fixture, typed on both sides (an int vector against a
+              // float vector) and boxed on one: a hasher that keys the int arm apart from the float
+              // arm drops the first two matches.
+              let left =
+                  tbl
+                      [ "k", IntType; "v", IntType ]
+                      [ col "k" IntType [ Int 1; Int 0; Null; Int 2 ]
+                        col "v" IntType [ Int 1; Int 2; Int 3; Int 4 ] ]
+
+              let right =
+                  tbl
+                      [ "k", FloatType; "w", IntType ]
+                      [ col "k" FloatType [ Float 1.0; Float -0.0; Null; Float nan ]
+                        col "w" IntType [ Int 10; Int 20; Int 30; Int 40 ] ]
+
+              let inner =
+                  DataFrame.evalPipeline [ Join(Embedded right, [ "k", "k" ], Inner) ] left
+                  |> okTable
+
+              Expect.equal
+                  (cellsOf "v" inner)
+                  [ Int 1; Int 2 ]
+                  "Int 1 meets Float 1.0, Int 0 meets -0.0, Null meets nothing"
+
+              Expect.equal (cellsOf "w" inner) [ Int 10; Int 20 ] "the right rows matched"
+
+              let nanSide =
+                  tbl
+                      [ "k", FloatType; "v", IntType ]
+                      [ col "k" FloatType [ Float nan; Null ]; col "v" IntType [ Int 1; Int 2 ] ]
+
+              let nanJoin =
+                  DataFrame.evalPipeline [ Join(Embedded right, [ "k", "k" ], Inner) ] nanSide
+                  |> okTable
+
+              Expect.equal (cellsOf "w" nanJoin) [ Int 40 ] "NaN meets NaN; Null meets nothing, not even Null"
+
+          testCase "Intersect, Except and Distinct equal the token relation row by row"
+          <| fun _ ->
+              for c, lk, _, left, right0 in rowHashCases 3252 400 do
+                  // The set operations need the left's column names: the other side is drawn over the
+                  // SAME key kinds half the time and over others the rest, renamed to match.
+                  let right =
+                      { right0 with
+                          Schema =
+                              right0.Schema
+                              |> List.mapi (fun j (_, ty) -> (List.item j left.Schema |> fst), ty)
+                          Columns =
+                              right0.Columns
+                              |> List.mapi (fun j cl ->
+                                  { cl with
+                                      Name = List.item j left.Schema |> fst }) }
+
+                  if List.length right.Schema = List.length left.Schema then
+                      // Overlap: the left's own rows, appended to the right, so membership is reached.
+                      let right =
+                          rowHashOf right.Schema (rowHashRows right @ (rowHashRows left |> List.truncate 5))
+
+                      for keep, verb in [ true, Intersect(Embedded right); false, Except(Embedded right) ] do
+                          let actual = DataFrame.evalPipeline [ verb ] left |> okTable
+
+                          Expect.equal
+                              (rowHashRender actual)
+                              (rowHashRender (oracleSetOp keep left right))
+                              (sprintf
+                                  "case %d, %s, keys [%s]"
+                                  c
+                                  (if keep then "intersect" else "except")
+                                  (kindNames lk))
+
+                  let keysOnly =
+                      Project(
+                          left.Schema
+                          |> List.filter (fun (n, _) -> n <> "v")
+                          |> List.map (fun (n, _) -> n, n)
+                      )
+
+                  let projected = DataFrame.evalPipeline [ keysOnly ] left |> okTable
+
+                  Expect.equal
+                      (rowHashRender (DataFrame.evalPipeline [ Distinct ] projected |> okTable))
+                      (rowHashRender (oracleDistinct projected))
+                      (sprintf "case %d, distinct, keys [%s]" c (kindNames lk))
+
+          testCase "GroupBy and Pivot partition by the token and match on-values by cellEq, row by row"
+          <| fun _ ->
+              for c, lk, rk, left, right in rowHashCases 3253 300 do
+                  let keys = lk |> List.mapi (fun j _ -> "k" + string j)
+
+                  Expect.equal
+                      (rowHashRender (
+                          DataFrame.evalPipeline
+                              [ GroupBy(
+                                    keys,
+                                    [ { Name = "n"; Fn = Count; Of = "v" }; { Name = "s"; Fn = Sum; Of = "v" } ]
+                                ) ]
+                              left
+                          |> okTable
+                      ))
+                      (rowHashRender (oracleGroupBy left keys))
+                      (sprintf "case %d, group by [%s]" c (kindNames lk))
+
+                  // The pivot: the left's keys as the index, a column of the right's first kind as
+                  // the on column (so on-values mix kinds the index does not).
+                  let onCol = (List.head right.Columns).Cells |> List.truncate (Table.rowCount left)
+
+                  let onCells = onCol @ List.replicate (Table.rowCount left - List.length onCol) Null
+
+                  let _, onTy, _ = List.head rk
+
+                  let pivotSrc =
+                      { left with
+                          Schema = left.Schema @ [ "o", onTy ]
+                          Columns = left.Columns @ [ col "o" onTy onCells ] }
+
+                  Expect.equal
+                      (rowHashRender (
+                          DataFrame.evalPipeline
+                              [ Pivot
+                                    { Index = keys
+                                      On = "o"
+                                      Values = "v"
+                                      Agg = Sum } ]
+                              pivotSrc
+                          |> okTable
+                      ))
+                      (rowHashRender (oraclePivot pivotSrc keys "o"))
+                      (sprintf "case %d, pivot index [%s] on %s" c (kindNames lk) (kindNames [ List.head rk ])) ]

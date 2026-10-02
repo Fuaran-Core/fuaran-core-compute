@@ -1251,9 +1251,12 @@ module DataFrame =
     //     (`Int 1` and `Float 1.0` are two values), `-0.0` equal to `0.0`, one `NaN` bucket, and `Null` a
     //     value equal to itself. `GroupBy`, `Distinct`, `Intersect`/`Except`, `Pivot`'s index groups,
     //     `Window`'s partitions and the seam's maintained grouping partition on it.
-    //   * `cellEq` equality — `cellEqToken` below it: a join key's and a pivot on-value's match. The
-    //     numeric family compares as floats (`Int 1` MATCHES `Float 1.0`), and a `Null` matches nothing,
+    //   * `cellEq` equality — `cellEq` below: a join key's and a pivot on-value's match. The numeric
+    //     family compares as floats (`Int 1` MATCHES `Float 1.0`), and a `Null` matches nothing,
     //     itself included.
+    //
+    // The verbs hash by both through one typed row hasher (`RowHash`, Phase 325), whose coder takes the
+    // relation as an argument.
     //
     // A verb that swapped one for the other would still type-check and would silently merge or split
     // groups, so each call site names the relation it means.
@@ -1353,23 +1356,6 @@ module DataFrame =
                 table[Array.copy probe] <- next
                 next, true
 
-    /// One key cell as a hash token that two cells share EXACTLY when `cellEq` holds between them, or
-    /// `None` for `Null`, which `cellEq` matches to nothing (itself included). NOT `CellKey`'s relation
-    /// (see above): `cellToken` type-tags `Int 1` and `Float 1.0` apart, while `cellEq` compares the
-    /// numeric family as floats and matches them. So an `Int` is tokenised through its float value —
-    /// the `Float` branch of `cellToken`, which also puts `-0.0` with `0.0` and every `NaN` in one
-    /// bucket, both exactly `compareCells`' answer. Every other family compares by ordinal or boolean
-    /// identity within its own tag, which is what `cellToken` already encodes (Phase 264).
-    let private cellEqToken (c: Cell) : string option =
-        match c with
-        | Null -> None
-        | Int i -> Some(cellToken (Float(float i)))
-        // A decimal keys on its canonical token (Phase 277): it matches a decimal of the same value
-        // and nothing else. Not an int of the same value either — an int already matches the float
-        // of its value here, and one hash token cannot match a decimal to an int AND an int to a
-        // float while keeping the decimal off the float, so the decimal stays in its own family.
-        | other -> Some(cellToken other)
-
     /// A total comparison between two *present, same-family* cells. `None` ⇒ incomparable (a type
     /// error). Numerics compare as float; strings/date/timestamp by ordinal (ISO sorts
     /// chronologically); bool false < true.
@@ -1412,7 +1398,7 @@ module DataFrame =
         match a, b with
         | Null, _
         | _, Null -> false
-        // A decimal matches only a decimal (see `cellEqToken`, which this relation must agree with).
+        // A decimal matches only a decimal (see `RowHash`'s coder, which this relation must agree with).
         | Decimal _, Decimal _ -> Cell.compare a b = Some 0
         | Decimal _, _
         | _, Decimal _ -> false
@@ -5148,81 +5134,376 @@ module DataFrame =
                 elif typed then Floats(floats, mask)
                 else Vec.pack ty cells
 
+    /// The typed row hasher (Phase 325): every keyed verb — `GroupBy`'s key probe, `Window`'s
+    /// partitions, `Distinct`, `Intersect` / `Except`, `Pivot`'s index groups and its on-value
+    /// match, and the join — keys rows through it, reading the typed vectors and boxing no cell.
+    ///
+    /// Two passes. A CODER gives each key column's values dense integer codes, reading the vector's
+    /// carrier (an `int`, a `float`, a `string`) where the vector is typed and the cell where it is
+    /// not, so a typed column and a boxed one holding equal values code alike. An INDEX then numbers
+    /// the rows' code tuples: one code is its own slot, and several pack into one exact integer
+    /// where their ranges allow (a plain array lookup when the packed range is small), with a hash
+    /// table over the code tuple only when they do not.
+    ///
+    /// The coder speaks one of the two relations the evaluator partitions by (see `CellKey` above),
+    /// and the caller names which:
+    ///
+    ///  * TOKEN (`cellEq = false`) — `CellKey`'s: `Int 1` and `Float 1.0` are two values, the two
+    ///    zeroes one, every `NaN` one, `Null` a value equal to itself. The partitioning verbs.
+    ///  * `cellEq` (`cellEq = true`) — the join's and the pivot on-value's: the numeric family by
+    ///    value as floats (`Int 1` matches `Float 1.0`, `NaN` matches `NaN`, `-0.0` matches `0.0`), a
+    ///    decimal only a decimal of the same value, and `Null` nothing at all — it has no code, so a
+    ///    row holding one is never indexed and never found.
+    ///
+    /// A join key whose two columns are both `int` vectors is coded in the token relation, which is
+    /// `cellEq` over present ints (the null rule is the caller's either way): the int arm never
+    /// goes through the float carrier, and a column that may hold a float always does.
+    module internal RowHash =
+
+        /// The four codes a value outside the dictionaries takes, by index into `Coder.Specials`.
+        let private SNaN = 0
+        let private SNull = 1
+        let private SFalse = 2
+        let private STrue = 3
+
+        /// One key column's codes: a dictionary per carrier, one counter over all of them, so two
+        /// values share a code exactly when the relation equates them.
+        type Coder =
+            { CellEq: bool
+              Ints: System.Collections.Generic.Dictionary<int, int>
+              Nums: System.Collections.Generic.Dictionary<float, int>
+              Strs: System.Collections.Generic.Dictionary<string, int>
+              Dates: System.Collections.Generic.Dictionary<string, int>
+              Stamps: System.Collections.Generic.Dictionary<string, int>
+              Decs: System.Collections.Generic.Dictionary<string, int>
+              Specials: int[]
+              mutable Count: int }
+
+        let coder (cellEq: bool) : Coder =
+            { CellEq = cellEq
+              Ints = System.Collections.Generic.Dictionary<int, int>()
+              Nums = System.Collections.Generic.Dictionary<float, int>()
+              Strs = System.Collections.Generic.Dictionary<string, int>()
+              Dates = System.Collections.Generic.Dictionary<string, int>()
+              Stamps = System.Collections.Generic.Dictionary<string, int>()
+              Decs = System.Collections.Generic.Dictionary<string, int>()
+              Specials = Array.create 4 -1
+              Count = 0 }
+
+        /// `k`'s code in `d`, opening the next one when `openNew` and it has none; `-1` otherwise.
+        let private codeIn
+            (c: Coder)
+            (d: System.Collections.Generic.Dictionary<'k, int>)
+            (k: 'k)
+            (openNew: bool)
+            : int =
+            match d.TryGetValue k with
+            | true, x -> x
+            | _ ->
+                if openNew then
+                    let x = c.Count
+                    d[k] <- x
+                    c.Count <- x + 1
+                    x
+                else
+                    -1
+
+        let private special (c: Coder) (s: int) (openNew: bool) : int =
+            let x = c.Specials[s]
+
+            if x >= 0 || not openNew then
+                x
+            else
+                let y = c.Count
+                c.Specials[s] <- y
+                c.Count <- y + 1
+                y
+
+        /// A float's code: every `NaN` one value, `-0.0` with `0.0` (adding `0.0` turns `-0.0` into
+        /// `0.0` and leaves every other float as it is), anything else by IEEE equality.
+        let private floatCode (c: Coder) (f: float) (openNew: bool) : int =
+            if System.Double.IsNaN f then
+                special c SNaN openNew
+            else
+                codeIn c c.Nums (f + 0.0) openNew
+
+        let private intCode (c: Coder) (i: int) (openNew: bool) : int =
+            if c.CellEq then
+                floatCode c (float i) openNew
+            else
+                codeIn c c.Ints i openNew
+
+        let private nullCode (c: Coder) (openNew: bool) : int =
+            if c.CellEq then -1 else special c SNull openNew
+
+        let private boolCode (c: Coder) (b: bool) (openNew: bool) : int =
+            special c (if b then STrue else SFalse) openNew
+
+        /// A string carrier's code under the tag the cell would carry (`Vec.strCell`'s mapping).
+        let private strCode (c: Coder) (ty: ColumnType) (s: string) (openNew: bool) : int =
+            match ty with
+            | DateType -> codeIn c c.Dates s openNew
+            | TimestampType -> codeIn c c.Stamps s openNew
+            | StringType
+            | IntType
+            | FloatType
+            | BoolType
+            | DecimalType -> codeIn c c.Strs s openNew
+
+        /// One cell's code — the boxed path, agreeing with every typed one above case for case.
+        let cellCode (c: Coder) (cell: Cell) (openNew: bool) : int =
+            match cell with
+            | Null -> nullCode c openNew
+            | Int i -> intCode c i openNew
+            | Float f -> floatCode c f openNew
+            | Bool b -> boolCode c b openNew
+            | Str s -> codeIn c c.Strs s openNew
+            | Date s -> codeIn c c.Dates s openNew
+            | Timestamp s -> codeIn c c.Stamps s openNew
+            // The canonical text (Phase 277): `1.50` and `1.5` are one value, in both relations.
+            | Decimal _ -> codeIn c c.Decs (Cell.token cell) openNew
+
+        /// The code of the value at each physical row `phys[i]` of `v`, read from the carrier.
+        let codesOf (c: Coder) (v: Vec) (phys: int[]) (openNew: bool) : int[] =
+            let n = phys.Length
+            let out: int[] = Array.zeroCreate n
+
+            match v with
+            | Ints(a, m) ->
+                for i in 0 .. n - 1 do
+                    let p = phys[i]
+                    let code = if m[p] then intCode c a[p] openNew else nullCode c openNew
+                    out[i] <- code
+            | Floats(a, m) ->
+                for i in 0 .. n - 1 do
+                    let p = phys[i]
+
+                    let code =
+                        if m[p] then
+                            floatCode c a[p] openNew
+                        else
+                            nullCode c openNew
+
+                    out[i] <- code
+            | Bools(a, m) ->
+                for i in 0 .. n - 1 do
+                    let p = phys[i]
+                    let code = if m[p] then boolCode c a[p] openNew else nullCode c openNew
+                    out[i] <- code
+            | Strs(ty, a, m) ->
+                for i in 0 .. n - 1 do
+                    let p = phys[i]
+
+                    let code =
+                        if m[p] then
+                            strCode c ty a[p] openNew
+                        else
+                            nullCode c openNew
+
+                    out[i] <- code
+            | Decs(_, _, cells, _) ->
+                for i in 0 .. n - 1 do
+                    let code = cellCode c cells[phys[i]] openNew
+                    out[i] <- code
+            | Cells cells ->
+                for i in 0 .. n - 1 do
+                    let code = cellCode c cells[phys[i]] openNew
+                    out[i] <- code
+
+            out
+
+        /// Code tuples as a hash-table key: equal exactly when every code is.
+        let private codeRow: System.Collections.Generic.IEqualityComparer<int[]> =
+            { new System.Collections.Generic.IEqualityComparer<int[]> with
+                member _.Equals(a, b) =
+                    if a.Length <> b.Length then
+                        false
+                    else
+                        let mutable same = true
+                        let mutable i = 0
+
+                        while same && i < a.Length do
+                            same <- a[i] = b[i]
+                            i <- i + 1
+
+                        same
+
+                member _.GetHashCode r =
+                    let mutable h = r.Length
+
+                    for x in r do
+                        h <- ((h <<< 5) ^^^ (h >>> 27)) ^^^ x
+
+                    h }
+
+        /// Slots over rows of codes (`codes[j][i]` is row `i`'s code in key column `j`, each below
+        /// `cards[j]`), numbered from 0 in the order `Open` first meets them. A row holding a `-1`
+        /// code has no slot: `Open` and `Find` answer `-1` for it.
+        [<Sealed>]
+        type Index(cards: int[], rows: int) =
+            let k = cards.Length
+
+            // The packed key `((c0 * card1 + c1) * card2 + c2) ...` is exact while the product of the
+            // ranges is an `int`; below a small multiple of the rows it indexes an array directly.
+            let range = cards |> Array.fold (fun acc c -> acc * float (max c 1)) 1.0
+            let packs = range <= 2147483647.0
+            let direct = packs && range <= float (max 1024 (4 * rows))
+            let table: int[] = if direct then Array.create (int range) -1 else [||]
+            let packed = System.Collections.Generic.Dictionary<int, int>()
+            let wide = System.Collections.Generic.Dictionary<int[], int>(codeRow)
+            let probe: int[] = Array.zeroCreate k
+            let mutable count = 0
+
+            let present (codes: int[][]) (i: int) : bool =
+                let mutable ok = true
+                let mutable j = 0
+
+                while ok && j < k do
+                    ok <- codes[j][i] >= 0
+                    j <- j + 1
+
+                ok
+
+            let keyOf (codes: int[][]) (i: int) : int =
+                let mutable key = 0
+
+                for j in 0 .. k - 1 do
+                    key <- key * max cards[j] 1 + codes[j][i]
+
+                key
+
+            /// The number of slots opened.
+            member _.Count = count
+
+            /// Row `i`'s slot, opening the next when the tuple is new; `-1` for a row with no code.
+            member _.Open(codes: int[][], i: int) : int =
+                if not (present codes i) then
+                    -1
+                elif direct then
+                    let key = keyOf codes i
+                    let s = table[key]
+
+                    if s >= 0 then
+                        s
+                    else
+                        let fresh = count
+                        table[key] <- fresh
+                        count <- fresh + 1
+                        fresh
+                elif packs then
+                    let key = keyOf codes i
+
+                    match packed.TryGetValue key with
+                    | true, s -> s
+                    | _ ->
+                        let fresh = count
+                        packed[key] <- fresh
+                        count <- fresh + 1
+                        fresh
+                else
+                    for j in 0 .. k - 1 do
+                        probe[j] <- codes[j][i]
+
+                    match wide.TryGetValue probe with
+                    | true, s -> s
+                    | _ ->
+                        let fresh = count
+                        wide[Array.copy probe] <- fresh
+                        count <- fresh + 1
+                        fresh
+
+            /// Row `i`'s slot if `Open` has met its tuple, else `-1`. Opens nothing.
+            member _.Find(codes: int[][], i: int) : int =
+                if not (present codes i) then
+                    -1
+                elif direct then
+                    table[keyOf codes i]
+                elif packs then
+                    match packed.TryGetValue(keyOf codes i) with
+                    | true, s -> s
+                    | _ -> -1
+                else
+                    for j in 0 .. k - 1 do
+                        probe[j] <- codes[j][i]
+
+                    match wide.TryGetValue probe with
+                    | true, s -> s
+                    | _ -> -1
+
+        /// The TOKEN slot of every logical row under `keyVecs` (read at `phys`), numbered from 0 in
+        /// first-appearance order, and each slot's first logical row. No key is one slot holding
+        /// every row (none over no rows).
+        let slots (keyVecs: Vec[]) (phys: int[]) : int[] * ResizeArray<int> =
+            let n = phys.Length
+            let first = ResizeArray<int>()
+
+            match keyVecs with
+            // One key: a fresh coder numbers its values in first-appearance order already, so the
+            // codes ARE the slots.
+            | [| v |] ->
+                let codes = codesOf (coder false) v phys true
+
+                for i in 0 .. n - 1 do
+                    if codes[i] = first.Count then
+                        first.Add i
+
+                codes, first
+            | _ ->
+                let coders = keyVecs |> Array.map (fun _ -> coder false)
+
+                let codes =
+                    Array.init keyVecs.Length (fun j -> codesOf coders[j] keyVecs[j] phys true)
+
+                let index = Index(coders |> Array.map (fun c -> c.Count), n)
+                let slotOf: int[] = Array.zeroCreate n
+
+                for i in 0 .. n - 1 do
+                    let s = index.Open(codes, i)
+                    slotOf[i] <- s
+
+                    if s = first.Count then
+                        first.Add i
+
+                slotOf, first
+
+        /// Two sides keyed alike: one coder per key column, the BUILD side's rows opened (in its
+        /// order) and the PROBE side's looked up, so a probe row's slot is the build slot its tuple
+        /// equals, or `-1`. The coders see the build side first and only it opens codes, so every
+        /// probe code is one the build side holds or `-1`.
+        let twoSided
+            (cellEqOf: int -> bool)
+            (buildVecs: Vec[])
+            (buildPhys: int[])
+            (probeVecs: Vec[])
+            (probePhys: int[])
+            : int[] * int[] * int =
+            let k = buildVecs.Length
+            let coders = Array.init k (fun j -> coder (cellEqOf j))
+
+            let buildCodes =
+                Array.init k (fun j -> codesOf coders[j] buildVecs[j] buildPhys true)
+
+            let probeCodes =
+                Array.init k (fun j -> codesOf coders[j] probeVecs[j] probePhys false)
+
+            let index = Index(coders |> Array.map (fun c -> c.Count), buildPhys.Length)
+            let buildSlots = Array.init buildPhys.Length (fun i -> index.Open(buildCodes, i))
+            let probeSlots = Array.init probePhys.Length (fun i -> index.Find(probeCodes, i))
+            buildSlots, probeSlots, index.Count
+
     /// The slot of every LOGICAL row under the key vectors `keyVecs` (read at `phys`), and each
     /// slot's key cells — slots numbered from 0 in first-appearance order, keys equal exactly when
-    /// their cells are token-equal (`CellKey`). The grouping `GroupBy` records (Phase 323) and the
-    /// partition a `Window` computes over (Phase 324): one definition, so a window's partitions are
-    /// the groups a `GroupBy` over the same keys forms.
+    /// their cells are token-equal (`CellKey`'s relation, through the typed row hasher `RowHash`).
+    /// The grouping `GroupBy` records (Phase 323) and the partition a `Window` computes over
+    /// (Phase 324): one definition, so a window's partitions are the groups a `GroupBy` over the
+    /// same keys forms. A slot's key cells are its first row's.
     let private keySlots (keyVecs: Vec[]) (phys: int[]) : int[] * ResizeArray<Cell[]> =
-        let slots = CellKey.slots ()
-        let probe: Cell[] = Array.zeroCreate keyVecs.Length
-        let groupKeys = ResizeArray<Cell[]>()
-        let slotOf: int[] = Array.zeroCreate phys.Length
+        let slotOf, first = RowHash.slots keyVecs phys
+        let groupKeys = ResizeArray<Cell[]>(first.Count)
 
-        // One key over a string or int carrier is probed by its carrier value, unboxed: within one
-        // carrier, two present values are token-equal exactly when they are equal (ordinal
-        // strings of one family, or ints), and every `Null` is one group — `CellKey`'s partition
-        // and its first-appearance order, without a boxed cell per row. Any other key set is
-        // probed through `CellKey`.
-        let mutable nullSlot = -1
-
-        let openSlot (i: int) (p: int) =
-            let g = groupKeys.Count
-            groupKeys.Add [| Vec.cellAt keyVecs[0] p |]
-            slotOf[i] <- g
-            g
-
-        let nullAt (i: int) =
-            if nullSlot >= 0 then
-                slotOf[i] <- nullSlot
-            else
-                nullSlot <- groupKeys.Count
-                groupKeys.Add [| Null |]
-                slotOf[i] <- nullSlot
-
-        match keyVecs with
-        // No key: one slot holding every row (none over no rows), as the probe of an empty key
-        // through `CellKey` answers, without a probe per row.
-        | [||] ->
-            if phys.Length > 0 then
-                groupKeys.Add [||]
-
-        | [| Strs(_, a, m) |] ->
-            let index = System.Collections.Generic.Dictionary<string, int>()
-
-            for i in 0 .. phys.Length - 1 do
-                let p = phys[i]
-
-                if not m[p] then
-                    nullAt i
-                else
-                    match index.TryGetValue a[p] with
-                    | true, g -> slotOf[i] <- g
-                    | _ -> index[a[p]] <- openSlot i p
-        | [| Ints(a, m) |] ->
-            let index = System.Collections.Generic.Dictionary<int, int>()
-
-            for i in 0 .. phys.Length - 1 do
-                let p = phys[i]
-
-                if not m[p] then
-                    nullAt i
-                else
-                    match index.TryGetValue a[p] with
-                    | true, g -> slotOf[i] <- g
-                    | _ -> index[a[p]] <- openSlot i p
-        | _ ->
-            for i in 0 .. phys.Length - 1 do
-                let p = phys[i]
-
-                for j in 0 .. keyVecs.Length - 1 do
-                    probe[j] <- Vec.cellAt keyVecs[j] p
-
-                match CellKey.slotOf slots probe groupKeys.Count with
-                | g, false -> slotOf[i] <- g
-                | g, true ->
-                    groupKeys.Add(Array.copy probe)
-                    slotOf[i] <- g
+        for i in first do
+            let p = phys[i]
+            groupKeys.Add(keyVecs |> Array.map (fun v -> Vec.cellAt v p))
 
         slotOf, groupKeys
 
@@ -5777,16 +6058,13 @@ module DataFrame =
         // float-bearing rows dedup host-identically), keeping each row's first appearance. Phase 265: a
         // hash set local to the step, keyed on the row array itself, replaces a persistent set of token
         // lists — no string is minted. The rows kept become the selection.
-        let seen = System.Collections.Generic.HashSet<Cell[]>(CellKey.row)
+        //
+        // Phase 325: the rows are keyed through the typed row hasher over every column (`RowHash`,
+        // the token relation), so no row is gathered and no cell boxed; a row is kept when it opens
+        // its slot.
         let phys = Frame.physical f
-        let rows = Frame.rowsOf f
-        let kept = ResizeArray<int>()
-
-        for i in 0 .. rows.Length - 1 do
-            if seen.Add rows[i] then
-                kept.Add phys[i]
-
-        Frame.select f (kept.ToArray())
+        let _, first = RowHash.slots f.Vecs phys
+        Frame.select f (Array.init first.Count (fun s -> phys[first[s]]))
 
     let private evalLimit (f: Frame) (n: int) (offset: int) : Frame =
         let phys = Frame.physical f
@@ -5906,106 +6184,88 @@ module DataFrame =
         List.length leftKeys = List.length rightKeys
         && List.forall2 cellEq leftKeys rightKeys
 
-    /// A join key's hash token over its projected key cells — `cellEqToken` per cell, length-prefixed
-    /// so the concatenation is injective — or `None` when any key cell is `Null`. Two keys share a
-    /// token exactly when `joinKeyEq` holds between them.
-    let private joinKeyToken (keys: Cell[]) : string option =
-        let tokens = keys |> Array.map cellEqToken
-
-        if tokens |> Array.exists Option.isNone then
-            None
-        else
-            Some(tokens |> Array.map (Option.get >> lengthPrefixed) |> String.concat "")
-
-    /// Append `v` to the list `d` holds under `k`, creating it on first sight — arrival order kept.
-    let private addTo (d: System.Collections.Generic.Dictionary<string, ResizeArray<'v>>) (k: string) (v: 'v) =
-        match d.TryGetValue k with
-        | true, vs -> vs.Add v
-        | _ ->
-            let vs = ResizeArray()
-            vs.Add v
-            d[k] <- vs
-
+    /// The join (Phase 325 — typed; Phase 264 made it a hash join). The right side arrives as a
+    /// frame, unpacked typed at the boundary. Its key columns are coded through the typed row
+    /// hasher in the `cellEq` relation (`RowHash`; an int key column against an int key column in
+    /// the token relation, which is `cellEq` over present ints), each right row whose key holds no
+    /// `Null` is opened in right order, and the right rows of each key slot are listed in arrival
+    /// order. Each left row then FINDS its slot — in left order, emitting that row's matches in
+    /// right arrival order, which is the order the nested loop the hash join replaced produced.
+    /// The answer is a pair of index vectors (left row, right row; `-1` for the side a combining
+    /// join pads with nulls), and every output column is GATHERED through them from its typed
+    /// vector: no row is assembled and no cell boxed on a typed column.
     let private evalJoin
         (f: Frame)
-        (rightCols: Schema)
-        (rightRows: Cell[][])
+        (right: Frame)
         (on: (string * string) list)
         (how: JoinKind)
         : Result<Frame, EvalError> =
+        let rightCols = right.Cols
+
         match joinKeyIdx f.Cols rightCols on with
         | Error e -> Error e
         | Ok(li, ri) ->
-            let keyOf (idx: int list) (row: Cell[]) =
-                joinKeyToken (idx |> List.map (fun i -> row[i]) |> List.toArray)
+            let lphys = Frame.physical f
+            let rphys = Frame.physical right
+            let lkeys = li |> List.map (fun i -> f.Vecs[i]) |> List.toArray
+            let rkeys = ri |> List.map (fun i -> right.Vecs[i]) |> List.toArray
 
-            // Phase 264 — a hash join. The right rows are indexed ONCE by key token, each token
-            // holding its right row indices in arrival order; a right row with a null key is left
-            // out, since `cellEq` matches it to nothing. Probing per left row, in left order, and
-            // emitting that row's matches in right arrival order is exactly the order the nested
-            // loop produced, which filtered the whole right frame per left row: O(n × m) key
-            // comparisons, each allocating two key lists.
-            let index = System.Collections.Generic.Dictionary<string, ResizeArray<int>>()
+            // An int key against an int key is coded in the token relation (no float carrier); every
+            // other pair in `cellEq`'s.
+            let intPair (j: int) =
+                match lkeys[j], rkeys[j] with
+                | Ints _, Ints _ -> true
+                | _ -> false
 
-            rightRows
-            |> Array.iteri (fun j rr ->
-                match keyOf ri rr with
-                | Some k -> addTo index k j
-                | None -> ())
-
-            let matchesOf (lr: Cell[]) : ResizeArray<int> option =
-                match keyOf li lr with
-                | Some k ->
-                    match index.TryGetValue k with
-                    | true, js -> Some js
-                    | _ -> None
-                | None -> None
-
-            let leftRows = Frame.rowsOf f
-
-            // The combining joins (Inner / Left / Right / Outer) — left cols ++ right cols.
-            let combiningJoin () =
-                // output schema: left cols ++ right cols (collisions suffixed _right)
-                let leftNames = available f.Cols |> Set.ofList
-
-                let outRight =
-                    rightCols
-                    |> List.map (fun (n, ty) -> (if Set.contains n leftNames then n + "_right" else n), ty)
-
-                let outCols = f.Cols @ outRight
-                let leftNulls = Array.create (List.length f.Cols) Null
-                let rightNulls = Array.create (List.length rightCols) Null
-
-                let combine (lr: Cell[]) (rr: Cell[]) = Array.append lr rr
-
-                // A right row is matched when some left row's probe emitted it — `keyMatch` is
-                // symmetric, so that is exactly the reverse scan's "some left row matches it".
-                let matched = Array.create rightRows.Length false
-                let out = ResizeArray<Cell[]>()
-
-                for lr in leftRows do
-                    match matchesOf lr, how with
-                    | None, (Left | Outer) -> out.Add(combine lr rightNulls)
-                    // The filtering joins never reach here; the match is total so the compiler
-                    // can say so.
-                    | None, (Inner | Right | Semi | Anti) -> ()
-                    | Some js, _ ->
-                        for n in 0 .. js.Count - 1 do
-                            let j = js[n]
-                            matched[j] <- true
-                            out.Add(combine lr rightRows[j])
-
-                // right-only unmatched rows (for Right / Outer), after every left-side row, in right
-                // order — read from the matched flags rather than a second pass the other way.
-                match how with
-                | Right
-                | Outer ->
-                    for j in 0 .. rightRows.Length - 1 do
-                        if not matched[j] then
-                            out.Add(combine leftNulls rightRows[j])
+            // The token relation codes a null; a join key matches none, so a null int key is struck
+            // out (the `cellEq` coder gives a null no code of its own).
+            let strikeNulls (j: int) (v: Vec) (phys: int[]) (codes: int[]) =
+                match v with
+                | Ints(_, m) when intPair j ->
+                    for i in 0 .. codes.Length - 1 do
+                        if not m[phys[i]] then
+                            codes[i] <- -1
                 | _ -> ()
 
-                Frame.ofRows outCols (out.ToArray())
+                codes
+
+            // The right side BUILDS (its rows opened in right order), the left side PROBES: a right
+            // row whose key holds a `Null` is never indexed, a left row with one finds nothing.
+            let coders = Array.init lkeys.Length (fun j -> RowHash.coder (not (intPair j)))
+
+            let rcodes =
+                Array.init rkeys.Length (fun j ->
+                    strikeNulls j rkeys[j] rphys (RowHash.codesOf coders[j] rkeys[j] rphys true))
+
+            let lcodes =
+                Array.init lkeys.Length (fun j ->
+                    strikeNulls j lkeys[j] lphys (RowHash.codesOf coders[j] lkeys[j] lphys false))
+
+            let index = RowHash.Index(coders |> Array.map (fun c -> c.Count), rphys.Length)
+            let rslots = Array.init rphys.Length (fun i -> index.Open(rcodes, i))
+            let lslots = Array.init lphys.Length (fun i -> index.Find(lcodes, i))
+            let slotCount = index.Count
+
+            // Each slot's right rows, in right order: a count per slot, its start, then a fill.
+            let starts: int[] = Array.zeroCreate (slotCount + 1)
+
+            for s in rslots do
+                if s >= 0 then
+                    starts[s + 1] <- starts[s + 1] + 1
+
+            for s in 0 .. slotCount - 1 do
+                starts[s + 1] <- starts[s + 1] + starts[s]
+
+            let members: int[] = Array.zeroCreate starts[slotCount]
+            let cursor = Array.copy starts
+
+            for j in 0 .. rslots.Length - 1 do
+                let s = rslots[j]
+
+                if s >= 0 then
+                    let at = cursor[s]
+                    members[at] <- j
+                    cursor[s] <- at + 1
 
             match how with
             // Phase 101 — the filtering joins: the LEFT schema only, each qualifying left row once,
@@ -6013,18 +6273,70 @@ module DataFrame =
             // — a selection over the left frame.
             | Semi
             | Anti ->
-                let phys = Frame.physical f
+                let keep = (how = Semi)
                 let kept = ResizeArray<int>()
 
-                for i in 0 .. leftRows.Length - 1 do
-                    if (matchesOf leftRows[i]).IsSome = (how = Semi) then
-                        kept.Add phys[i]
+                for i in 0 .. lphys.Length - 1 do
+                    if (lslots[i] >= 0) = keep then
+                        kept.Add lphys[i]
 
                 Ok(Frame.select f (kept.ToArray()))
+            // The combining joins (Inner / Left / Right / Outer) — left cols ++ right cols.
             | Inner
             | Left
             | Right
-            | Outer -> Ok(combiningJoin ())
+            | Outer ->
+                // output schema: left cols ++ right cols (collisions suffixed _right)
+                let leftNames = available f.Cols |> Set.ofList
+
+                let outRight =
+                    rightCols
+                    |> List.map (fun (n, ty) -> (if Set.contains n leftNames then n + "_right" else n), ty)
+
+                let padsLeft = (how = Left || how = Outer)
+                let padsRight = (how = Right || how = Outer)
+                let lout = ResizeArray<int>()
+                let rout = ResizeArray<int>()
+
+                // A right row is matched when some left row's probe emitted it — the key relation is
+                // symmetric, so that is exactly the reverse scan's "some left row matches it".
+                let matched = Array.create rphys.Length false
+
+                for i in 0 .. lphys.Length - 1 do
+                    let s = lslots[i]
+
+                    if s >= 0 then
+                        for at in starts[s] .. starts[s + 1] - 1 do
+                            let j = members[at]
+                            matched[j] <- true
+                            lout.Add lphys[i]
+                            rout.Add rphys[j]
+                    elif padsLeft then
+                        lout.Add lphys[i]
+                        rout.Add -1
+
+                // right-only unmatched rows (for Right / Outer), after every left-side row, in right
+                // order — read from the matched flags rather than a second pass the other way.
+                if padsRight then
+                    for j in 0 .. rphys.Length - 1 do
+                        if not matched[j] then
+                            lout.Add -1
+                            rout.Add rphys[j]
+
+                let lidx = lout.ToArray()
+                let ridx = rout.ToArray()
+
+                let vecs =
+                    Array.append
+                        (f.Vecs |> Array.map (fun v -> Vec.gatherOrNull v lidx))
+                        (right.Vecs |> Array.map (fun v -> Vec.gatherOrNull v ridx))
+
+                Ok
+                    { Cols = f.Cols @ outRight
+                      Vecs = vecs
+                      Origins = Array.create vecs.Length None
+                      Sel = None
+                      Count = lidx.Length }
 
     let private evalUnion (f: Frame) (other: Frame) : Result<Frame, EvalError> =
         if available f.Cols <> available other.Cols then
@@ -6036,28 +6348,22 @@ module DataFrame =
     /// token `Distinct` dedups on (Phase 41), so membership is host-identical and `Null` is a value
     /// that matches itself. `keepPresent` selects intersect (`true`) from except (`false`). The
     /// left's order and duplicate multiplicity survive, so `· Distinct` recovers the SQL set forms.
-    let private evalSetOp
-        (verb: string)
-        (keepPresent: bool)
-        (f: Frame)
-        (otherCols: Schema)
-        (otherRows: Cell[][])
-        : Result<Frame, EvalError> =
-        if available f.Cols <> available otherCols then
+    let private evalSetOp (verb: string) (keepPresent: bool) (f: Frame) (other: Frame) : Result<Frame, EvalError> =
+        if available f.Cols <> available other.Cols then
             Error(JoinError(verb + " requires matching column names"))
         else
-            // TOKEN equality over whole rows (`CellKey`), in a hash set local to the step (Phase 265).
-            let rightRows = System.Collections.Generic.HashSet<Cell[]>(CellKey.row)
-
-            for row in otherRows do
-                rightRows.Add row |> ignore
-
+            // TOKEN equality over whole rows (Phase 265), through the typed row hasher (Phase 325):
+            // the other side's rows are opened, each left row looks its tuple up, and no row is
+            // gathered or cell boxed on either side.
             let phys = Frame.physical f
-            let rows = Frame.rowsOf f
+
+            let _, found, _ =
+                RowHash.twoSided (fun _ -> false) other.Vecs (Frame.physical other) f.Vecs phys
+
             let kept = ResizeArray<int>()
 
-            for i in 0 .. rows.Length - 1 do
-                if rightRows.Contains rows[i] = keepPresent then
+            for i in 0 .. phys.Length - 1 do
+                if (found[i] >= 0) = keepPresent then
                     kept.Add phys[i]
 
             Ok(Frame.select f (kept.ToArray()))
@@ -6553,13 +6859,14 @@ module DataFrame =
                 |> Result.bind (fun valIdx ->
                     let valType = snd (List.item valIdx f.Cols)
 
-                    let idxArr = List.toArray idxIdx
-                    let rows = Frame.rowsOf f
+                    let phys = Frame.physical f
+                    let onVec = f.Vecs[onIdx]
+                    let valVec = f.Vecs[valIdx]
 
                     // distinct on-values (sorted by canonical string for a deterministic column order)
                     let onValues =
-                        rows
-                        |> Array.map (fun row -> row[onIdx])
+                        phys
+                        |> Array.map (fun p -> Vec.cellAt onVec p)
                         |> Array.filter (fun c -> not (Cell.isNull c))
                         |> List.ofArray
                         |> List.distinct
@@ -6569,50 +6876,47 @@ module DataFrame =
                     // per-pair filter it replaces scanned the whole frame for every (group, on-value)
                     // pair, re-minting the index token per row inside the filter: O(g × v × n).
                     //
-                    // An on-value's column set, keyed by the `cellEq` token: a row lands in EVERY
-                    // column whose on-value `cellEq` matches its own, which is what the filter
+                    // An on-value's column set, keyed by its `cellEq` code (Phase 325: the typed row
+                    // hasher's `cellEq` coder, where it was a token string per row): a row lands in
+                    // EVERY column whose on-value `cellEq` matches its own, which is what the filter
                     // selected. Usually that is one column; two on-values `List.distinct` keeps apart
-                    // but `cellEq` equates (`Int 1` and `Float 1.0`, or two `NaN`s) are two columns,
-                    // and each collects every row either matches.
+                    // but `cellEq` equates (`Int 1` and `Float 1.0`, or two `NaN`s) share a code, are
+                    // two columns, and each collects every row either matches.
                     let onCount = List.length onValues
-                    let columnsOf = System.Collections.Generic.Dictionary<string, ResizeArray<int>>()
+                    let onCoder = RowHash.coder true
+                    let onCodes = onValues |> List.map (fun ov -> RowHash.cellCode onCoder ov true)
+                    let columnsOf = Array.init onCoder.Count (fun _ -> ResizeArray<int>())
 
-                    onValues
-                    |> List.iteri (fun c ov ->
-                        match cellEqToken ov with
-                        | Some t -> addTo columnsOf t c
-                        | None -> ())
+                    onCodes
+                    |> List.iteri (fun c code ->
+                        if code >= 0 then
+                            columnsOf[code].Add c)
+
+                    let rowOn = RowHash.codesOf onCoder onVec phys false
 
                     // Index groups in first-appearance order by TOKEN equality over the index cells
-                    // (`CellKey`; Phase 41's canonical token — NOT the `cellEq` relation the on-values
-                    // match by above), carrying the first row's index-key cells for the output rows.
-                    // Each group's cells arrive in frame order, which is the order the filter
-                    // aggregated. Phase 265: keyed on the cells, so no row token is minted per row.
-                    let groupOf = CellKey.slots ()
-                    let probe: Cell[] = Array.zeroCreate idxArr.Length
-                    let groups = ResizeArray<Cell list * ResizeArray<Cell>[]>()
+                    // (Phase 41's canonical token — NOT the `cellEq` relation the on-values match by
+                    // above), through the typed row hasher (Phase 325), carrying the first row's
+                    // index-key cells for the output rows. Each group's cells arrive in frame order,
+                    // which is the order the filter aggregated.
+                    let idxVecs = idxIdx |> List.map (fun i -> f.Vecs[i]) |> List.toArray
+                    let slotOf, first = RowHash.slots idxVecs phys
 
-                    for row in rows do
-                        for j in 0 .. idxArr.Length - 1 do
-                            probe[j] <- row[idxArr[j]]
+                    let groups =
+                        Array.init first.Count (fun g ->
+                            let p = phys[first[g]]
+                            let key = idxVecs |> Array.map (fun v -> Vec.cellAt v p) |> List.ofArray
+                            key, Array.init onCount (fun _ -> ResizeArray<Cell>()))
 
-                        let g =
-                            match CellKey.slotOf groupOf probe groups.Count with
-                            | g, false -> g
-                            | g, true ->
-                                groups.Add((List.ofArray probe, Array.init onCount (fun _ -> ResizeArray())))
-                                g
+                    for i in 0 .. phys.Length - 1 do
+                        let code = rowOn[i]
 
-                        match cellEqToken row[onIdx] with
-                        | Some t ->
-                            match columnsOf.TryGetValue t with
-                            | true, cs ->
-                                let _, cells = groups[g]
+                        if code >= 0 then
+                            let _, cells = groups[slotOf[i]]
+                            let v = Vec.cellAt valVec phys[i]
 
-                                for c in cs do
-                                    cells[c].Add(row[valIdx])
-                            | _ -> ()
-                        | None -> ()
+                            for c in columnsOf[code] do
+                                cells[c].Add v
 
                     let idxCols = spec.Index |> List.map (fun n -> n, colType f.Cols n |> Option.get)
 
@@ -6621,7 +6925,7 @@ module DataFrame =
 
                     // An absent pair aggregates the EMPTY list, exactly as a filter that matched no
                     // row did — `Null` or `Int 0` by the aggregate's own rule.
-                    List.ofSeq groups
+                    List.ofArray groups
                     |> traverseResult (fun (k, cells) ->
                         List.init onCount id
                         |> traverseResult (fun c -> cells[c] |> List.ofSeq |> aggCells spec.Agg valType)
@@ -6741,8 +7045,6 @@ module DataFrame =
 
     /// A table's rows for the right-hand side of a two-table verb — the same transpose the left
     /// side paid at the boundary, without unpacking a frame it would only gather again.
-    let private rowsOfTable (t: Table) : Cell[][] = RowAccess.rows t |> List.toArray
-
     /// One step over the frame, running the row-local verbs through the kernel set `k` (Phase 270).
     /// Internal so the suite can run both members of the kernel pair on one host and hold their
     /// answers equal; every entry point folds through it with `Kernels.host`.
@@ -6778,17 +7080,17 @@ module DataFrame =
         | Unpivot(idVars, valueVars) -> evalUnpivot f idVars valueVars
         | Join(right, on, how) ->
             evalSource resolve right
-            |> Result.bind (fun t -> evalJoin f t.Schema (rowsOfTable t) on how)
+            |> Result.bind (fun t -> evalJoin f (Frame.ofTable t) on how)
         | Union other ->
             evalSource resolve other
             |> Result.map Frame.ofTable
             |> Result.bind (evalUnion f)
         | Intersect other ->
             evalSource resolve other
-            |> Result.bind (fun t -> evalSetOp "intersect" true f t.Schema (rowsOfTable t))
+            |> Result.bind (fun t -> evalSetOp "intersect" true f (Frame.ofTable t))
         | Except other ->
             evalSource resolve other
-            |> Result.bind (fun t -> evalSetOp "except" false f t.Schema (rowsOfTable t))
+            |> Result.bind (fun t -> evalSetOp "except" false f (Frame.ofTable t))
 
     /// One step over the frame through the host kernels (`Kernels.host`, chosen when the package is
     /// compiled). Internal so the suite can hold the frame's well-formedness after every step of a
