@@ -1347,7 +1347,10 @@ let private pLawVectors () : (string * Transform list * Table * bool) list =
     use doc =
         System.Text.Json.JsonDocument.Parse(File.ReadAllText(Snapshots.repoFile "conformance/laws/transform-laws.json"))
 
-    [ for v in doc.RootElement.GetProperty("vectors").EnumerateArray() ->
+    // Phase 321: the evalPipeline vectors; the columnOp and delta kinds after them run no pipeline.
+    [ for v in
+          doc.RootElement.GetProperty("vectors").EnumerateArray()
+          |> Seq.filter (fun v -> v.GetProperty("case").GetString() = "evalPipeline") ->
           let id = v.GetProperty("id").GetString()
           let input = v.GetProperty("input")
 

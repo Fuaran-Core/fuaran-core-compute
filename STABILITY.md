@@ -304,8 +304,10 @@ Also: FS0025 is a compile error in every project (`Directory.Build.props`); the 
 draw decimals and each carries a `sample adequacy` guard that goes red on a sample with none (so
 `aggregateParityLaws` and `paramLaws` move from `Unconditional` to `Guarded`, and four families
 report one more law each); the `ColumnOps` and `Pipeline` proof models carry the decimal column type
-and the widening join. `0.35.0` is an untagged, publicly unpinned draft that already carries a
-breaking move, so the number does not move.
+and the widening join. `conformance/laws/transform-laws.json` gains 13 vectors after the 39 it carried
+(which are byte-identical): nine `columnOp` vectors and four `delta` vectors over decimal columns, two
+case kinds a host meets when it next raises its copy. `0.35.0` is an untagged, publicly unpinned draft
+that already carries a breaking move, so the number does not move.
 
 **What adopting it costs.** A consumer that relied on the strict `cellFits` to refuse an int in a
 float or decimal column adds its own check. A consumer that sorted or filtered floats holding `NaN`

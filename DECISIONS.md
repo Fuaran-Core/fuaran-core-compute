@@ -35,13 +35,20 @@ typed `Of FloatType` would make the same addition read as total while both opera
 time. So `Int ⊔ Float` and `Int ⊔ Decimal` stay `Unknown` in the typer, and `DataFrame.typeOf` answers
 `None` for them — undecided, never wrong.
 
-**Also recorded.** `conformance/laws/transform-laws.json` is the `transformLaws` family's vectors:
-every row is an `evalPipeline` case, and other hosts read the file. Decimal rows through the columnar
-op wire and the delta wire would be new CASE KINDS in a file those hosts consume, which is a
-cross-host wire addition rather than a re-emit; this phase certifies those wires in this repository
-(`columnarOpLaws` and `IncrementalDelta` now draw decimals and are guarded on it, and the
-`DecimalStrand` suite round-trips both wires byte for byte) and does not add the case kinds. None of
-the existing vectors moved under the rulings above.
+**Also recorded: the law vectors carry the two wires (operator ruling, 2026-10-02).**
+`conformance/laws/transform-laws.json` is this repository's derived file, and Phase 277 had already
+appended its decimal `evalPipeline` vectors to it, so decimal rows through the columnar op wire and
+the delta wire are the same act. They are appended AFTER the 39 `evalPipeline` vectors, which are
+byte-identical, as two further case kinds: `columnOp` (a source table and an op; the result table or
+a refusal, and the op's re-encoded wire string) and `delta` (two tables and a key column; the
+encoded delta). `iterations` still counts the `evalPipeline` vectors only. The hosts' copies of the
+file follow the 2026-09-20 ruling: they stay as they are until each host raises, and meet the two
+kinds then. None of the existing vectors moved under the rulings above.
+
+**Carried to Phase 338, not built here (operator ruling, 2026-10-02).** Refusing a `Float` beside
+a `Decimal` at a derive, and typing a derive by its expression rather than by its cells, move with
+the rewrite of the totality verdict and `Pipeline.fst` that phase makes; rule 2 above is what this
+phase ships in the meantime.
 
 ## 2026-10-02 — D2: FS0025 is an error here, and `cellFits` widens exactly as `ColumnType.widens` does
 

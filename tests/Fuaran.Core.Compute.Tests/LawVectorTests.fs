@@ -53,8 +53,11 @@ let private parseVectors (json: string) : Result<ParsedVector list, string> =
     | Ok doc ->
         match field "vectors" doc with
         | Some(JArr items) ->
+            // Phase 321: the evalPipeline vectors only; the `columnOp` and `delta` kinds after them
+            // are read by `parseWireVectors`.
             let parsed =
                 items
+                |> List.filter (fun v -> str "case" v = Some "evalPipeline")
                 |> List.map (fun v ->
                     match str "id" v, field "input" v, field "expected" v with
                     | Some id, Some input, Some expected ->
@@ -108,6 +111,80 @@ let private checkVector (v: ParsedVector) : string option =
             | Error e, verdict, _ ->
                 Some(sprintf "%s: the reference refused the pipeline (%A), but the vector says `%s`" v.Id e verdict)
         | other -> Some(sprintf "%s: input.source is not an embedded table (%A)" v.Id other)
+
+// ---------------------------------------------------------------------------
+//  Phase 321 — the columnar op and delta wire vectors, read and checked as a host would.
+// ---------------------------------------------------------------------------
+
+/// One `columnOp` or `delta` vector: its case, its id, and its input and expected members.
+type private WireVector =
+    { Id: string
+      Case: string
+      Input: JVal
+      Expected: JVal }
+
+let private parseWireVectors (json: string) : Result<WireVector list, string> =
+    match Json.parse json with
+    | Error m -> Error("the vector file did not parse: " + m)
+    | Ok doc ->
+        match field "vectors" doc with
+        | Some(JArr items) ->
+            Ok
+                [ for v in items do
+                      match str "case" v, str "id" v, field "input" v, field "expected" v with
+                      | Some("columnOp" | "delta" as case), Some id, Some input, Some expected ->
+                          yield
+                              { Id = id
+                                Case = case
+                                Input = input
+                                Expected = expected }
+                      | _ -> () ]
+        | _ -> Error "the vector file carries no `vectors` array"
+
+let private embedded (what: string) (v: WireVector) (wire: string option) : Result<Table, string> =
+    match wire with
+    | None -> Error(sprintf "%s: input.%s missing" v.Id what)
+    | Some w ->
+        match ColumnCodec.decode w with
+        | Ok(Embedded t) -> Ok t
+        | Ok other -> Error(sprintf "%s: input.%s is not an embedded table (%A)" v.Id what other)
+        | Error e -> Error(sprintf "%s: input.%s did not decode (%s)" v.Id what (ColumnCodec.errorString e))
+
+/// Run one wire vector the way a host would, through the public codecs, and report what disagreed.
+let private checkWireVector (v: WireVector) : string option =
+    let disagree what (actual: string) (expected: string option) =
+        if Some actual = expected then
+            None
+        else
+            Some(sprintf "%s: the reference answered %s\n  %s\nbut the vector records\n  %A" v.Id what actual expected)
+
+    match v.Case with
+    | "columnOp" ->
+        match embedded "source" v (str "source" v.Input), str "op" v.Input with
+        | Error m, _ -> Some m
+        | _, None -> Some(v.Id + ": input.op missing")
+        | Ok source, Some opWire ->
+            match ColumnOps.decode opWire with
+            | Error m -> Some(sprintf "%s: input.op did not decode (%s)" v.Id m)
+            | Ok op ->
+                match disagree "the op" (ColumnOps.encode op) (str "op" v.Expected) with
+                | Some m -> Some m
+                | None ->
+                    match ColumnOps.apply op source, str "verdict" v.Expected with
+                    | Ok t, Some "ok" -> disagree "the table" (ColumnCodec.encode (Embedded t)) (str "table" v.Expected)
+                    | Error _, Some "error" -> None
+                    | r, verdict -> Some(sprintf "%s: the reference answered %A, the vector says %A" v.Id r verdict)
+    | _ ->
+        match
+            embedded "before" v (str "before" v.Input), embedded "after" v (str "after" v.Input), str "key" v.Input
+        with
+        | Error m, _, _
+        | _, Error m, _ -> Some m
+        | _, _, None -> Some(v.Id + ": input.key missing")
+        | Ok before, Ok after, Some key ->
+            match Delta.diff (RowIdentity.byColumn key) before after with
+            | Error e -> Some(sprintf "%s: the reference refused the diff (%A)" v.Id e)
+            | Ok d -> disagree "the delta" (DeltaCodec.encode d) (str "delta" v.Expected)
 
 // ---------------------------------------------------------------------------
 //  Phase 216 — the corpus copy's TWO readings, told apart.
@@ -378,6 +455,37 @@ let tests =
                       (vectors |> List.exists (fun v -> v.Verdict = "error"))
                       "a refused pipeline was rendered — the law requires the host to refuse it too"
 
+          testCase
+              "the columnar op and delta vectors decode with the public codecs and record what the reference answered"
+          <| fun _ ->
+              // Phase 321: a decimal through the columnar op wire and the delta wire, beside the
+              // evaluator's decimal vectors. Both verdicts on the op wire, every op kind that writes
+              // a cell, and a decimal identity on the delta wire must be reached.
+              match parseWireVectors (LawVectorExport.renderTransformVectors ()) with
+              | Error m -> failtest m
+              | Ok vectors ->
+                  let failures = vectors |> List.choose checkWireVector
+                  Expect.isEmpty failures (sprintf "%A" failures)
+
+                  let ops = vectors |> List.filter (fun v -> v.Case = "columnOp")
+                  let deltas = vectors |> List.filter (fun v -> v.Case = "delta")
+
+                  for verdict in [ "ok"; "error" ] do
+                      Expect.isTrue
+                          (ops |> List.exists (fun v -> str "verdict" v.Expected = Some verdict))
+                          (sprintf "a columnOp vector with verdict %s" verdict)
+
+                  for kind in [ "setCell"; "setColumn"; "insertColumn"; "appendRows" ] do
+                      Expect.isTrue (ops |> List.exists (fun v -> v.Id.Contains kind)) (sprintf "a %s vector" kind)
+
+                  Expect.isTrue
+                      (deltas
+                       |> List.exists (fun v ->
+                           match str "delta" v.Expected with
+                           | Some d -> d.Contains "m:"
+                           | None -> false))
+                      "a delta vector keys a row by a decimal's canonical token"
+
           testCase "the rendered artefact is LF-only and byte-stable across renders"
           <| fun _ ->
               let once = LawVectorExport.renderTransformVectors ()
@@ -413,7 +521,11 @@ let tests =
                   | Ok vectors ->
                       // First the oracle question — is what the file records still true of
                       // this kit? — because that is the failure a host would suffer.
-                      let failures = vectors |> List.choose checkVector
+                      let failures =
+                          (vectors |> List.choose checkVector)
+                          @ (match parseWireVectors committed with
+                             | Ok wire -> wire |> List.choose checkWireVector
+                             | Error m -> [ m ])
 
                       Expect.isEmpty
                           failures

@@ -410,6 +410,102 @@ module LawVectorExport =
                     Expected = expectedOf (DataFrame.evalPipeline pipeline table) } ]
 
     // -----------------------------------------------------------------------
+    //  Phase 321 — the decimal through the columnar op wire and the delta wire
+    // -----------------------------------------------------------------------
+    //
+    // Two further case kinds, appended AFTER the evalPipeline vectors so those stay byte-identical.
+    // Each is a reference answer computed by calling the reference, as the evalPipeline ones are:
+    //
+    //   * `columnOp` — `input.source` an embedded table and `input.op` a `ColumnOp` wire string; a
+    //     host decodes both, applies the op, and compares: an `ok` vector requires the result table
+    //     to encode to `expected.table` byte for byte, an `error` vector requires the host to refuse
+    //     the op too (unnamed, as above). Every vector also records `expected.op`, the op's wire
+    //     string after a decode and re-encode, which a host's op codec must reproduce.
+    //   * `delta` — `input.before` / `input.after` two embedded tables and `input.key` the column
+    //     whose cell is each row's identity; a host diffs them by that identity and encodes the
+    //     delta, which must equal `expected.delta` byte for byte (a decimal key renders as its
+    //     canonical `m:` token).
+
+    /// A delta vector's table: a unique decimal identity `id` and a decimal measure `m`.
+    let private keyedMoney (ids: string list) (amounts: Cell list) : Table =
+        let dec (text: string) =
+            Cell.decimal text |> Option.defaultValue Null
+
+        { Schema = [ "id", DecimalType; "m", DecimalType ]
+          Columns =
+            [ Column.create "id" DecimalType (ids |> List.map dec)
+              Column.create "m" DecimalType amounts ] }
+
+    let private columnOpCases: (string * ColumnOp) list =
+        [ "setCell-decimal", SetCell("m", 0, cents 1999)
+          "setCell-int-into-decimal", SetCell("m", 1, Int 7)
+          "setCell-int-into-float", SetCell("w", 0, Int 3)
+          "setCell-float-into-decimal-refused", SetCell("m", 0, Float 1.5)
+          "setCell-decimal-into-float-refused", SetCell("w", 0, cents 150)
+          "setCell-decimal-into-int-refused", SetCell("v", 0, cents 100)
+          "setColumn-decimal", SetColumn(Column.create "m" DecimalType [ cents -5; Null; Int 12; cents 100001 ])
+          "insertColumn-decimal",
+          InsertColumn(4, Column.create "fee" DecimalType [ cents 5; cents 0; Null; cents -125 ])
+          "appendRows-decimal",
+          AppendRows(
+              [ [ "g", Str "d"; "m", cents 12345; "v", Int 9; "w", Float 0.5 ]
+                [ "g", Str "e"; "m", Int 2; "v", Int 10; "w", Float 1.5 ] ]
+          ) ]
+
+    let private deltaCases: (string * Table * Table) list =
+        let ids = [ "0.5"; "1.25"; "2"; "10.75" ]
+        let amounts = [ cents 150; cents -2999; cents 0; Null ]
+        let before = keyedMoney ids amounts
+
+        [ "decimal-edit", before, keyedMoney ids [ cents 150; cents -3000; cents 0; Null ]
+          "decimal-key-removed-and-added",
+          before,
+          keyedMoney [ "0.5"; "1.25"; "10.75"; "11.5" ] [ cents 150; cents -2999; Null; cents 1 ]
+          "null-filled-with-a-decimal", before, keyedMoney ids [ cents 150; cents -2999; cents 0; cents 1 ]
+          "quiet", before, before ]
+
+    /// The columnar op and delta vectors, in a fixed order after the evalPipeline ones.
+    let wireVectors () : Vector list =
+        let source = decimalTable 4 1
+
+        let opVectors =
+            columnOpCases
+            |> List.mapi (fun i (name, op) ->
+                let wire = ColumnOps.encode op
+
+                let reEncoded =
+                    match ColumnOps.decode wire with
+                    | Ok back -> ColumnOps.encode back
+                    | Error m -> failwithf "column-op vector %s did not decode: %s" name m
+
+                { Id = sprintf "column-op-%d-%s" i name
+                  Case = "columnOp"
+                  Input = [ "op", jstr wire; "source", jstr (ColumnCodec.encode (Embedded source)) ]
+                  Expected =
+                    (match ColumnOps.apply op source with
+                     | Ok t -> [ "verdict", jstr "ok"; "table", jstr (ColumnCodec.encode (Embedded t)) ]
+                     | Error _ -> [ "verdict", jstr "error" ])
+                    @ [ "op", jstr reEncoded ] })
+
+        let deltaVectors =
+            deltaCases
+            |> List.mapi (fun i (name, before, after) ->
+                let d =
+                    match Delta.diff (RowIdentity.byColumn "id") before after with
+                    | Ok d -> d
+                    | Error e -> failwithf "delta vector %s did not diff: %A" name e
+
+                { Id = sprintf "delta-%d-%s" i name
+                  Case = "delta"
+                  Input =
+                    [ "after", jstr (ColumnCodec.encode (Embedded after))
+                      "before", jstr (ColumnCodec.encode (Embedded before))
+                      "key", jstr "id" ]
+                  Expected = [ "verdict", jstr "ok"; "delta", jstr (DeltaCodec.encode d) ] })
+
+        opVectors @ deltaVectors
+
+    // -----------------------------------------------------------------------
     //  the rendered artefact
     // -----------------------------------------------------------------------
 
@@ -434,7 +530,14 @@ module LawVectorExport =
         + "(i + offset) mod 4 = 3, else ((i*137 + offset*25) mod 500 - 200) hundredths; v = "
         + "Int(i*2 - offset); w = Float((i + offset) / 4). A second operand table, where a shape "
         + "takes one, is the same build over rows - 1 rows. These are BEHAVIOUR vectors: a host asserts the encoded result, not the framing "
-        + "of this file."
+        + "of this file. "
+        + "After the evalPipeline vectors come two further case kinds (Phase 321), each a reference "
+        + "answer over hand-declared inputs: `columnOp` vectors carry `input.source` (an embedded table) "
+        + "and `input.op` (a canonical ColumnOp wire string); a host applies the op and compares as for "
+        + "evalPipeline (`expected.table` on `ok`, a refusal on `error`), and re-encodes its decode of "
+        + "`input.op` to `expected.op`. `delta` vectors carry `input.before`, `input.after` and "
+        + "`input.key`; a host diffs the two tables keyed by that column's cell token and encodes the "
+        + "delta to `expected.delta`. `iterations` counts the evalPipeline vectors only."
 
     let renderTransformVectors () : string =
         let sb = StringBuilder()
@@ -448,7 +551,7 @@ module LawVectorExport =
         line ("  \"description\": " + jstr description + ",")
         line "  \"vectors\": ["
 
-        let rendered = allVectors () |> List.map renderVector
+        let rendered = allVectors () @ wireVectors () |> List.map renderVector
         let last = List.length rendered - 1
 
         rendered

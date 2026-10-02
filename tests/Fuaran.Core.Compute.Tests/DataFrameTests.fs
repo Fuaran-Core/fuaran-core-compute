@@ -4518,9 +4518,10 @@ let kernelTests =
                   | Ok d -> d
                   | Error m -> failtestf "the vector file did not parse: %s" m
 
+              // Phase 321: the evalPipeline vectors; the columnOp and delta kinds run no pipeline.
               let vectors =
                   match jsonMember "vectors" doc with
-                  | Some(JArr items) -> items
+                  | Some(JArr items) -> items |> List.filter (fun v -> jsonText "case" v = Some "evalPipeline")
                   | _ -> failtest "the vector file carries no vectors"
 
               Expect.isGreaterThan vectors.Length 0 "there are vectors to run"
