@@ -5392,9 +5392,11 @@ let orderCodeTests =
 // `Int 1` apart from `Float 1.0` in the join — fails here.
 
 /// The key column kinds the draw mixes: each a declared type and the cells it may hold. The first
-/// five pack typed; the last three hold cells outside one carrier and stay boxed.
+/// six pack typed; the last three hold cells outside one carrier and stay boxed. The far-apart ints
+/// meet a side whose ints are close together, so a value outside a direct table's range is probed.
 let private rowHashKinds: (string * ColumnType * Cell[]) list =
     [ "int", IntType, [| Int -1; Int 0; Int 1; Int 2; Null |]
+      "int, far apart", IntType, [| Int System.Int32.MinValue; Int 1; Int System.Int32.MaxValue; Null |]
       "float", FloatType, [| Float -1.0; Float 0.0; Float -0.0; Float 1.0; Float 1.5; Float nan; Null |]
       "string", StringType, [| Str "a"; Str "b"; Str "1"; Null |]
       "date", DateType, [| Date "a"; Date "b"; Null |]

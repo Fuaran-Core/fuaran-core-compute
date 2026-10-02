@@ -5169,15 +5169,25 @@ module DataFrame =
         /// One key column's codes: a dictionary per carrier, one counter over all of them, so two
         /// values share a code exactly when the relation equates them.
         type Coder =
-            { CellEq: bool
-              Ints: System.Collections.Generic.Dictionary<int, int>
-              Nums: System.Collections.Generic.Dictionary<float, int>
-              Strs: System.Collections.Generic.Dictionary<string, int>
-              Dates: System.Collections.Generic.Dictionary<string, int>
-              Stamps: System.Collections.Generic.Dictionary<string, int>
-              Decs: System.Collections.Generic.Dictionary<string, int>
-              Specials: int[]
-              mutable Count: int }
+            {
+                CellEq: bool
+                Ints: System.Collections.Generic.Dictionary<int, int>
+                Nums: System.Collections.Generic.Dictionary<float, int>
+                Strs: System.Collections.Generic.Dictionary<string, int>
+                Dates: System.Collections.Generic.Dictionary<string, int>
+                Stamps: System.Collections.Generic.Dictionary<string, int>
+                Decs: System.Collections.Generic.Dictionary<string, int>
+                Specials: int[]
+                /// A direct table over the int values `[IntLo, IntHi]` (token relation
+                /// only): built from the first int vector a fresh coder meets when its range is small, so
+                /// an int key column is coded by an array read instead of a dictionary probe. A value in
+                /// the range is coded through the table and never the dictionary, so the two never hold
+                /// one value twice.
+                mutable IntLo: int
+                mutable IntHi: int
+                mutable IntTable: int[]
+                mutable Count: int
+            }
 
         let coder (cellEq: bool) : Coder =
             { CellEq = cellEq
@@ -5188,10 +5198,13 @@ module DataFrame =
               Stamps = System.Collections.Generic.Dictionary<string, int>()
               Decs = System.Collections.Generic.Dictionary<string, int>()
               Specials = Array.create 4 -1
+              IntLo = 0
+              IntHi = -1
+              IntTable = [||]
               Count = 0 }
 
         /// `k`'s code in `d`, opening the next one when `openNew` and it has none; `-1` otherwise.
-        let private codeIn
+        let inline private codeIn
             (c: Coder)
             (d: System.Collections.Generic.Dictionary<'k, int>)
             (k: 'k)
@@ -5230,8 +5243,43 @@ module DataFrame =
         let private intCode (c: Coder) (i: int) (openNew: bool) : int =
             if c.CellEq then
                 floatCode c (float i) openNew
+            // Compared against both ends, never as `i - IntLo`, which overflows for a far value.
+            elif i >= c.IntLo && i <= c.IntHi then
+                let at = i - c.IntLo
+                let x = c.IntTable[at]
+
+                if x >= 0 || not openNew then
+                    x
+                else
+                    let y = c.Count
+                    c.IntTable[at] <- y
+                    c.Count <- y + 1
+                    y
             else
                 codeIn c c.Ints i openNew
+
+        /// Give a FRESH token coder a direct table over an int vector's present values (at `phys`)
+        /// when their range is at most a small multiple of the rows; otherwise leave it without one.
+        let private intTableFor (c: Coder) (a: int[]) (m: bool[]) (phys: int[]) : unit =
+            if not c.CellEq && c.Count = 0 && c.IntTable.Length = 0 then
+                let mutable lo = System.Int32.MaxValue
+                let mutable hi = System.Int32.MinValue
+
+                for p in phys do
+                    if m[p] then
+                        let x = a[p]
+
+                        if x < lo then
+                            lo <- x
+
+                        if x > hi then
+                            hi <- x
+
+                // The range as a float, so a span across the whole int range cannot overflow.
+                if lo <= hi && float hi - float lo < float (max 1024 (4 * phys.Length)) then
+                    c.IntLo <- lo
+                    c.IntHi <- hi
+                    c.IntTable <- Array.create (hi - lo + 1) -1
 
         let private nullCode (c: Coder) (openNew: bool) : int =
             if c.CellEq then -1 else special c SNull openNew
@@ -5270,6 +5318,9 @@ module DataFrame =
 
             match v with
             | Ints(a, m) ->
+                if openNew then
+                    intTableFor c a m phys
+
                 for i in 0 .. n - 1 do
                     let p = phys[i]
                     let code = if m[p] then intCode c a[p] openNew else nullCode c openNew
