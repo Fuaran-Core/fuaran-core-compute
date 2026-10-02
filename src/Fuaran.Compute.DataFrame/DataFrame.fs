@@ -5287,16 +5287,16 @@ module DataFrame =
         let private boolCode (c: Coder) (b: bool) (openNew: bool) : int =
             special c (if b then STrue else SFalse) openNew
 
-        /// A string carrier's code under the tag the cell would carry (`Vec.strCell`'s mapping).
-        let private strCode (c: Coder) (ty: ColumnType) (s: string) (openNew: bool) : int =
+        /// The dictionary a string carrier is coded in: the tag the cell would carry (`Vec.strCell`'s mapping).
+        let private strsOf (c: Coder) (ty: ColumnType) : System.Collections.Generic.Dictionary<string, int> =
             match ty with
-            | DateType -> codeIn c c.Dates s openNew
-            | TimestampType -> codeIn c c.Stamps s openNew
+            | DateType -> c.Dates
+            | TimestampType -> c.Stamps
             | StringType
             | IntType
             | FloatType
             | BoolType
-            | DecimalType -> codeIn c c.Strs s openNew
+            | DecimalType -> c.Strs
 
         /// One cell's code — the boxed path, agreeing with every typed one above case for case.
         let cellCode (c: Coder) (cell: Cell) (openNew: bool) : int =
@@ -5342,14 +5342,12 @@ module DataFrame =
                     let code = if m[p] then boolCode c a[p] openNew else nullCode c openNew
                     out[i] <- code
             | Strs(ty, a, m) ->
+                let d = strsOf c ty
+
                 for i in 0 .. n - 1 do
                     let p = phys[i]
 
-                    let code =
-                        if m[p] then
-                            strCode c ty a[p] openNew
-                        else
-                            nullCode c openNew
+                    let code = if m[p] then codeIn c d a[p] openNew else nullCode c openNew
 
                     out[i] <- code
             | Decs(_, _, cells, _) ->
@@ -5493,10 +5491,12 @@ module DataFrame =
             // codes ARE the slots.
             | [| v |] ->
                 let codes = codesOf (coder false) v phys true
+                let mutable seen = 0
 
                 for i in 0 .. n - 1 do
-                    if codes[i] = first.Count then
+                    if codes[i] = seen then
                         first.Add i
+                        seen <- seen + 1
 
                 codes, first
             | _ ->
