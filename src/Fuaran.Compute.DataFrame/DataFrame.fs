@@ -1243,6 +1243,88 @@ module DataFrame =
     let internal rowTokenStringOfArray (cells: Cell[]) : string =
         cells |> Array.map (cellToken >> lengthPrefixed) |> String.concat ""
 
+    /// Where a probe of `OpenSlots` starts: the hash folded so its high bits reach the mask.
+    let private probeStart (h: int) (mask: int) : int =
+        (h ^^^ (h >>> 16) ^^^ (h >>> 8)) &&& mask
+
+    /// The JavaScript host's slot table (Phase 326): keys to the slot numbers a caller gives them,
+    /// by linear probing over the key's hash in power-of-two arrays kept at most half full. It
+    /// stands where `Dictionary` stands on .NET wherever the evaluator numbers keys — the token
+    /// slots (`CellKey`), the row hasher's codes and its code-tuple index (`RowHash`) — because the
+    /// Fable runtime's dictionary hashes into a map of buckets and reaches a custom comparer
+    /// through an interface on every probe. Find and add only, never remove; an entry whose value
+    /// is `-1` is empty, so the keys array's initial fill (null, or the empty string for a string
+    /// array) is never read as a key. The table numbers nothing itself: a slot is the number its
+    /// caller passed on the add, so the order slots are numbered in is the order the caller met
+    /// its keys — first-seen for groups — whatever the hashes. Compiled on both hosts, so the suite
+    /// holds it to `Dictionary` on .NET; only the JavaScript build reaches it from the evaluator.
+    [<Sealed>]
+    type internal OpenSlots<'K>(hashOf: 'K -> int, same: 'K -> 'K -> bool) =
+        let mutable cap = 16
+        let mutable hashes: int[] = Array.zeroCreate 16
+        let mutable values: int[] = Array.create 16 -1
+        let mutable keys: 'K[] = Array.zeroCreate 16
+        let mutable count = 0
+
+        /// Every index below is masked by `cap - 1`, and every array is `cap` long: the mask is the
+        /// range proof the unchecked accessors need.
+        let place (h: int) (k: 'K) (v: int) : unit =
+            let mask = cap - 1
+            let mutable i = probeStart h mask
+
+            while Raw.get i values >= 0 do
+                i <- (i + 1) &&& mask
+
+            Raw.set hashes i h
+            Raw.set keys i k
+            Raw.set values i v
+
+        let grow () : unit =
+            let oldHashes = hashes
+            let oldKeys = keys
+            let oldValues = values
+            cap <- cap * 2
+            hashes <- Array.zeroCreate cap
+            keys <- Array.zeroCreate cap
+            values <- Array.create cap -1
+
+            for i in 0 .. oldValues.Length - 1 do
+                let v = Raw.get i oldValues
+
+                if v >= 0 then
+                    place (Raw.get i oldHashes) (Raw.get i oldKeys) v
+
+        /// The number of keys held.
+        member _.Count = count
+
+        /// `k`'s slot, or `-1` when the table does not hold it.
+        member _.Find(k: 'K) : int =
+            let h = hashOf k
+            let mask = cap - 1
+            let mutable i = probeStart h mask
+            let mutable r = -2
+
+            while r = -2 do
+                let v = Raw.get i values
+
+                if v < 0 then
+                    r <- -1
+                elif Raw.get i hashes = h && same (Raw.get i keys) k then
+                    r <- v
+                else
+                    i <- (i + 1) &&& mask
+
+            r
+
+        /// Hold `k` at slot `v` (`v >= 0`); the caller has found `k` absent. The table then owns
+        /// `k`, so a caller reusing a probe buffer passes a copy.
+        member _.Add(k: 'K, v: int) : unit =
+            if (count + 1) * 2 > cap then
+                grow ()
+
+            place (hashOf k) k v
+            count <- count + 1
+
     // ---- the two cell equalities the evaluator partitions by (Phase 265) ----
     //
     // Two relations over cells sit side by side here, and they are DIFFERENT on purpose:
@@ -1332,6 +1414,23 @@ module DataFrame =
 
                     h }
 
+#if FABLE_COMPILER
+        /// A fresh slot table: token-equal rows of cells to a slot number. Under JavaScript the open
+        /// slot table (Phase 326), over `row`'s hash and equality.
+        let slots () : OpenSlots<Cell[]> =
+            OpenSlots<Cell[]>((fun cells -> row.GetHashCode cells), (fun a b -> row.Equals(a, b)))
+
+        /// Look `probe`'s cells up in `table`, opening slot `next` on a miss; returns the slot and
+        /// whether this call opened it — `slotOf` below, over the open slot table.
+        let inline slotOf (table: OpenSlots<Cell[]>) (probe: Cell[]) (next: int) : int * bool =
+            let s = table.Find probe
+
+            if s >= 0 then
+                s, false
+            else
+                table.Add(Array.copy probe, next)
+                next, true
+#else
         /// A fresh slot table: token-equal rows of cells to a slot number.
         let slots () : System.Collections.Generic.Dictionary<Cell[], int> =
             System.Collections.Generic.Dictionary<Cell[], int>(row)
@@ -1355,6 +1454,7 @@ module DataFrame =
             | _ ->
                 table[Array.copy probe] <- next
                 next, true
+#endif
 
     /// A total comparison between two *present, same-family* cells. `None` ⇒ incomparable (a type
     /// error). Numerics compare as float; strings/date/timestamp by ordinal (ISO sorts
@@ -1443,6 +1543,33 @@ module DataFrame =
         else
             Error(overflowed ctx r)
 
+#if FABLE_COMPILER
+    /// Is the float `r` inside the int32 band? (Phase 326.)
+    let inline private inInt32Band (r: float) : bool = r >= -2147483648.0 && r <= 2147483647.0
+
+    /// The JavaScript host's `checkedInt` (Phase 326): an int64 is a BigInt there, so the integer
+    /// operation `op` over the int32 operands `x` and `y` is carried in float64 — its result `r` —
+    /// and recomputed in int64 only when `r` leaves the int32 band, so the refusal and its message
+    /// are the .NET host's, byte for byte. `r` is exact wherever it is inside the band: a sum or a
+    /// difference of two int32s is below 2^33, a remainder below its divisor, and a product inside
+    /// the band is below 2^53 — while a product past 2^53 rounds to a float that is still past the
+    /// band (rounding is monotone and 2^31 is a float), so it is recomputed.
+    let private checkedFloatInt (op: BinOp) (ctx: string) (r: float) (x: float) (y: float) : Result<Cell, EvalError> =
+        if inInt32Band r then
+            Ok(Int(int r))
+        else
+            let xi = int64 x
+            let yi = int64 y
+
+            checkedInt
+                ctx
+                (match op with
+                 | Sub -> xi - yi
+                 | Mul -> xi * yi
+                 | Mod -> xi % yi
+                 | _ -> xi + yi)
+#endif
+
     /// A cell as exact-decimal text — a `Decimal`'s, or an `Int`'s digits (the lossless promotion
     /// `ColumnType.widens` pins) — or `None` for any other cell.
     let private decimalText (c: Cell) : string option =
@@ -1505,6 +1632,38 @@ module DataFrame =
                     | Int _, Int _ -> true
                     | _ -> false
 
+#if FABLE_COMPILER
+                // Under JavaScript an int64 is a BigInt (Phase 326), so the integer result is carried
+                // in the float the operands already are, and recomputed in int64 only when it leaves
+                // the int32 band, for the refusal's message (`checkedFloatInt`).
+                match op with
+                | Add ->
+                    if bothInt then
+                        checkedFloatInt Add "add" (x + y) x y
+                    else
+                        Ok(Float(x + y))
+                | Sub ->
+                    if bothInt then
+                        checkedFloatInt Sub "sub" (x - y) x y
+                    else
+                        Ok(Float(x - y))
+                | Mul ->
+                    if bothInt then
+                        checkedFloatInt Mul "mul" (x * y) x y
+                    else
+                        Ok(Float(x * y))
+                | Div -> Ok(if y = 0.0 then Null else Float(x / y))
+                | Mod ->
+                    if not bothInt then
+                        Error(TypeError "mod requires integer operands")
+                    elif y = 0.0 then
+                        Ok Null
+                    else
+                        // The remainder of two integers is exact in a float, within int32, and `0` (a
+                        // `-0.0` the int conversion reads as `0`) for `Int32.MinValue % -1`.
+                        checkedFloatInt Mod "mod" (x % y) x y
+                | _ -> Error(TypeError "not an arithmetic operator")
+#else
                 // Integer operands are exact in their `float` carrier (an `Int` holds an int32, which a
                 // double represents exactly); recover them and accumulate in int64 so the range check
                 // sees the true result before any int32 wrap. int32*int32 ≤ 2^62, so int64 cannot overflow.
@@ -1538,6 +1697,7 @@ module DataFrame =
                         // result is always within int32, so the check is a no-op safeguard.
                         checkedInt "mod" (xi % yi)
                 | _ -> Error(TypeError "not an arithmetic operator")
+#endif
             | _ -> Error(TypeError "arithmetic on a non-numeric operand")
 
     let private comparison (op: BinOp) (a: Cell) (b: Cell) : Result<Cell, EvalError> =
@@ -3576,6 +3736,45 @@ module DataFrame =
         /// rule and message; `Mod` by zero answers null. int64 remainder avoids the .NET
         /// `Int32.MinValue % -1` OverflowException (Phase 39).
         let intOp (op: BinOp) : (int -> int -> int) option =
+#if FABLE_COMPILER
+            // Under JavaScript (Phase 326) the result is carried in float64 and recomputed in int64
+            // (a BigInt there) only when it leaves the int32 band, for `ranged`'s refusal and message;
+            // `checkedFloatInt` says why the carried result is exact inside the band.
+            match op with
+            | Add ->
+                Some(fun x y ->
+                    let r = float x + float y
+
+                    if inInt32Band r then
+                        int r
+                    else
+                        ranged "add" (int64 x + int64 y))
+            | Sub ->
+                Some(fun x y ->
+                    let r = float x - float y
+
+                    if inInt32Band r then
+                        int r
+                    else
+                        ranged "sub" (int64 x - int64 y))
+            | Mul ->
+                Some(fun x y ->
+                    let r = float x * float y
+
+                    if inInt32Band r then
+                        int r
+                    else
+                        ranged "mul" (int64 x * int64 y))
+            | Mod ->
+                Some(fun x y ->
+                    if y = 0 then
+                        slot.Null <- true
+                        0
+                    else
+                        // A remainder is inside the band, `Int32.MinValue % -1` included (`0`).
+                        int (float x % float y))
+            | _ -> None
+#else
             match op with
             | Add -> Some(fun x y -> ranged "add" (int64 x + int64 y))
             | Sub -> Some(fun x y -> ranged "sub" (int64 x - int64 y))
@@ -3588,6 +3787,7 @@ module DataFrame =
                     else
                         ranged "mod" (int64 x % int64 y))
             | _ -> None
+#endif
 
         /// The float-carrier arithmetic an operator performs; `Div` by zero answers null, and `Mod`
         /// is integer-only in the reference, so it is not here.
@@ -3943,25 +4143,25 @@ module DataFrame =
                 | Ints(vals, mask) ->
                     Of IntType,
                     NInt(fun p ->
-                        slot.Null <- not mask[p]
-                        vals[p])
+                        slot.Null <- not (Raw.at p mask)
+                        Raw.at p vals)
                 | Floats(vals, mask) ->
                     Of FloatType,
                     NFloat(fun p ->
-                        slot.Null <- not mask[p]
-                        vals[p])
+                        slot.Null <- not (Raw.at p mask)
+                        Raw.at p vals)
                 | Bools(vals, mask) ->
                     Of BoolType,
                     NBool(fun p ->
-                        slot.Null <- not mask[p]
-                        vals[p])
+                        slot.Null <- not (Raw.at p mask)
+                        Raw.at p vals)
                 | Strs(ty, vals, mask) ->
                     Of ty,
                     NStr(
                         ty,
                         fun p ->
-                            slot.Null <- not mask[p]
-                            vals[p]
+                            slot.Null <- not (Raw.at p mask)
+                            Raw.at p vals
                     )
                 // A column whose cells disagree with its declared type is typed as declared, as the
                 // schema-only typer types it, and read boxed: every kernel over it checks the tag per
@@ -4389,7 +4589,7 @@ module DataFrame =
 
                 while Option.isNone errors[j] && i < hi do
                     slot.Error <- None
-                    let p = phys[i]
+                    let p = Raw.get i phys
                     let keepIt = keep p
 
                     match slot.Error with
@@ -4505,12 +4705,12 @@ module DataFrame =
                     let slot = c.Slot
 
                     fun i ->
-                        let p = phys[i]
+                        let p = Raw.get i phys
                         let v = r p
 
                         if Option.isNone slot.Error && not slot.Null then
-                            vals[p] <- v
-                            mask[p] <- true)
+                            Raw.put vals p v
+                            Raw.put mask p true)
 
             match failed with
             | Some e -> Error e
@@ -4943,43 +5143,46 @@ module DataFrame =
             /// for the typed carriers; every other case is `Feed` row by row.
             member this.FeedAll(slotOf: int[], phys: int[]) : unit =
                 let n = phys.Length
+                // The loops prove `i` for `phys` and, checked once here, for `slotOf` (Phase 326); the
+                // physical row and the slot each reads are indexes they do not prove.
+                Raw.within n slotOf
 
                 if mode = MDefer then
                     ()
                 elif mode = MCount && kind <> 0 && not countsNulls then
                     for i in 0 .. n - 1 do
-                        if mask[phys[i]] then
-                            let g = slotOf[i]
-                            count[g] <- count[g] + 1
+                        if Raw.at (Raw.get i phys) mask then
+                            let g = Raw.get i slotOf
+                            Raw.put count g (Raw.at g count + 1)
                 elif mode = MSumInt && kind = 1 then
                     for i in 0 .. n - 1 do
-                        let p = phys[i]
+                        let p = Raw.get i phys
 
-                        if mask[p] then
-                            let g = slotOf[i]
-                            longs[g] <- longs[g] + int64 ints[p]
-                            count[g] <- count[g] + 1
+                        if Raw.at p mask then
+                            let g = Raw.get i slotOf
+                            Raw.put longs g (Raw.at g longs + int64 (Raw.at p ints))
+                            Raw.put count g (Raw.at g count + 1)
                 elif (mode = MSumFloat || mode = MMean) && kind = 2 then
                     for i in 0 .. n - 1 do
-                        let p = phys[i]
+                        let p = Raw.get i phys
 
-                        if mask[p] then
-                            let g = slotOf[i]
-                            let f = floats[p]
-                            totals[g] <- totals[g] + f
-                            count[g] <- count[g] + 1
+                        if Raw.at p mask then
+                            let g = Raw.get i slotOf
+                            let f = Raw.at p floats
+                            Raw.put totals g (Raw.at g totals + f)
+                            Raw.put count g (Raw.at g count + 1)
 
                             if not (isFinite f) then
-                                nonFinite[g] <- true
+                                Raw.put nonFinite g true
                 elif mode = MSumDecimal && kind = 4 then
                     for i in 0 .. n - 1 do
-                        let p = phys[i]
+                        let p = Raw.get i phys
 
-                        if mask[p] then
-                            addScaled slotOf[i] floats[p]
+                        if Raw.at p mask then
+                            addScaled (Raw.get i slotOf) (Raw.at p floats)
                 else
                     for i in 0 .. n - 1 do
-                        this.Feed(slotOf[i], phys[i])
+                        this.Feed(Raw.get i slotOf, Raw.get i phys)
 
             /// Slot `g`'s answer, or `ValueNone` where it defers to `Column.aggregate`.
             member _.TryCell(g: int) : Cell voption =
@@ -5166,17 +5369,26 @@ module DataFrame =
         let private SFalse = 2
         let private STrue = 3
 
+#if FABLE_COMPILER
+        /// The table a coder keeps per carrier: the open slot table under JavaScript (Phase 326),
+        /// `Dictionary` on .NET.
+        type CodeMap<'k> = OpenSlots<'k>
+#else
+        /// The table a coder keeps per carrier.
+        type CodeMap<'k> = System.Collections.Generic.Dictionary<'k, int>
+#endif
+
         /// One key column's codes: a dictionary per carrier, one counter over all of them, so two
         /// values share a code exactly when the relation equates them.
         type Coder =
             {
                 CellEq: bool
-                Ints: System.Collections.Generic.Dictionary<int, int>
-                Nums: System.Collections.Generic.Dictionary<float, int>
-                Strs: System.Collections.Generic.Dictionary<string, int>
-                Dates: System.Collections.Generic.Dictionary<string, int>
-                Stamps: System.Collections.Generic.Dictionary<string, int>
-                Decs: System.Collections.Generic.Dictionary<string, int>
+                Ints: CodeMap<int>
+                Nums: CodeMap<float>
+                Strs: CodeMap<string>
+                Dates: CodeMap<string>
+                Stamps: CodeMap<string>
+                Decs: CodeMap<string>
                 Specials: int[]
                 /// A direct table over the int values `[IntLo, IntHi]` (token relation
                 /// only): built from the first int vector a fresh coder meets when its range is small, so
@@ -5189,6 +5401,31 @@ module DataFrame =
                 mutable Count: int
             }
 
+#if FABLE_COMPILER
+        let private ints () : CodeMap<int> =
+            OpenSlots<int>((fun i -> i), (fun a b -> a = b))
+
+        // A float key is never `NaN` here (a special code) and never `-0.0` (`floatCode` adds `0.0`).
+        let private nums () : CodeMap<float> =
+            OpenSlots<float>((fun f -> hash f), (fun a b -> a = b))
+
+        let private strs () : CodeMap<string> =
+            OpenSlots<string>((fun s -> hash s), (fun a b -> System.String.Equals(a, b)))
+
+        let coder (cellEq: bool) : Coder =
+            { CellEq = cellEq
+              Ints = ints ()
+              Nums = nums ()
+              Strs = strs ()
+              Dates = strs ()
+              Stamps = strs ()
+              Decs = strs ()
+              Specials = Array.create 4 -1
+              IntLo = 0
+              IntHi = -1
+              IntTable = [||]
+              Count = 0 }
+#else
         let coder (cellEq: bool) : Coder =
             { CellEq = cellEq
               Ints = System.Collections.Generic.Dictionary<int, int>()
@@ -5202,14 +5439,23 @@ module DataFrame =
               IntHi = -1
               IntTable = [||]
               Count = 0 }
+#endif
 
         /// `k`'s code in `d`, opening the next one when `openNew` and it has none; `-1` otherwise.
-        let inline private codeIn
-            (c: Coder)
-            (d: System.Collections.Generic.Dictionary<'k, int>)
-            (k: 'k)
-            (openNew: bool)
-            : int =
+        let inline private codeIn (c: Coder) (d: CodeMap<'k>) (k: 'k) (openNew: bool) : int =
+#if FABLE_COMPILER
+            let x = d.Find k
+
+            if x >= 0 then
+                x
+            elif openNew then
+                let y = c.Count
+                d.Add(k, y)
+                c.Count <- y + 1
+                y
+            else
+                -1
+#else
             match d.TryGetValue k with
             | true, x -> x
             | _ ->
@@ -5220,6 +5466,7 @@ module DataFrame =
                     x
                 else
                     -1
+#endif
 
         let private special (c: Coder) (s: int) (openNew: bool) : int =
             let x = c.Specials[s]
@@ -5246,13 +5493,13 @@ module DataFrame =
             // Compared against both ends, never as `i - IntLo`, which overflows for a far value.
             elif i >= c.IntLo && i <= c.IntHi then
                 let at = i - c.IntLo
-                let x = c.IntTable[at]
+                let x = Raw.get at c.IntTable
 
                 if x >= 0 || not openNew then
                     x
                 else
                     let y = c.Count
-                    c.IntTable[at] <- y
+                    Raw.set c.IntTable at y
                     c.Count <- y + 1
                     y
             else
@@ -5266,8 +5513,8 @@ module DataFrame =
                 let mutable hi = System.Int32.MinValue
 
                 for p in phys do
-                    if m[p] then
-                        let x = a[p]
+                    if Raw.at p m then
+                        let x = Raw.at p a
 
                         if x < lo then
                             lo <- x
@@ -5288,7 +5535,7 @@ module DataFrame =
             special c (if b then STrue else SFalse) openNew
 
         /// The dictionary a string carrier is coded in: the tag the cell would carry (`Vec.strCell`'s mapping).
-        let private strsOf (c: Coder) (ty: ColumnType) : System.Collections.Generic.Dictionary<string, int> =
+        let private strsOf (c: Coder) (ty: ColumnType) : CodeMap<string> =
             match ty with
             | DateType -> c.Dates
             | TimestampType -> c.Stamps
@@ -5322,42 +5569,58 @@ module DataFrame =
                     intTableFor c a m phys
 
                 for i in 0 .. n - 1 do
-                    let p = phys[i]
-                    let code = if m[p] then intCode c a[p] openNew else nullCode c openNew
-                    out[i] <- code
-            | Floats(a, m) ->
-                for i in 0 .. n - 1 do
-                    let p = phys[i]
+                    let p = Raw.get i phys
 
                     let code =
-                        if m[p] then
-                            floatCode c a[p] openNew
+                        if Raw.at p m then
+                            intCode c (Raw.at p a) openNew
                         else
                             nullCode c openNew
 
-                    out[i] <- code
+                    Raw.set out i code
+            | Floats(a, m) ->
+                for i in 0 .. n - 1 do
+                    let p = Raw.get i phys
+
+                    let code =
+                        if Raw.at p m then
+                            floatCode c (Raw.at p a) openNew
+                        else
+                            nullCode c openNew
+
+                    Raw.set out i code
             | Bools(a, m) ->
                 for i in 0 .. n - 1 do
-                    let p = phys[i]
-                    let code = if m[p] then boolCode c a[p] openNew else nullCode c openNew
-                    out[i] <- code
+                    let p = Raw.get i phys
+
+                    let code =
+                        if Raw.at p m then
+                            boolCode c (Raw.at p a) openNew
+                        else
+                            nullCode c openNew
+
+                    Raw.set out i code
             | Strs(ty, a, m) ->
                 let d = strsOf c ty
 
                 for i in 0 .. n - 1 do
-                    let p = phys[i]
+                    let p = Raw.get i phys
 
-                    let code = if m[p] then codeIn c d a[p] openNew else nullCode c openNew
+                    let code =
+                        if Raw.at p m then
+                            codeIn c d (Raw.at p a) openNew
+                        else
+                            nullCode c openNew
 
-                    out[i] <- code
+                    Raw.set out i code
             | Decs(_, _, cells, _) ->
                 for i in 0 .. n - 1 do
-                    let code = cellCode c cells[phys[i]] openNew
-                    out[i] <- code
+                    let code = cellCode c (Raw.at (Raw.get i phys) cells) openNew
+                    Raw.set out i code
             | Cells cells ->
                 for i in 0 .. n - 1 do
-                    let code = cellCode c cells[phys[i]] openNew
-                    out[i] <- code
+                    let code = cellCode c (Raw.at (Raw.get i phys) cells) openNew
+                    Raw.set out i code
 
             out
 
@@ -5398,8 +5661,17 @@ module DataFrame =
             let packs = range <= 2147483647.0
             let direct = packs && range <= float (max 1024 (4 * rows))
             let table: int[] = if direct then Array.create (int range) -1 else [||]
+#if FABLE_COMPILER
+            // Under JavaScript the open slot table (Phase 326), over the packed key and over
+            // `codeRow`'s hash and equality.
+            let packed = OpenSlots<int>((fun key -> key), (fun a b -> a = b))
+
+            let wide =
+                OpenSlots<int[]>((fun r -> codeRow.GetHashCode r), (fun a b -> codeRow.Equals(a, b)))
+#else
             let packed = System.Collections.Generic.Dictionary<int, int>()
             let wide = System.Collections.Generic.Dictionary<int[], int>(codeRow)
+#endif
             let probe: int[] = Array.zeroCreate k
             let mutable count = 0
 
@@ -5408,7 +5680,7 @@ module DataFrame =
                 let mutable j = 0
 
                 while ok && j < k do
-                    ok <- codes[j][i] >= 0
+                    ok <- Raw.at i (Raw.at j codes) >= 0
                     j <- j + 1
 
                 ok
@@ -5417,7 +5689,7 @@ module DataFrame =
                 let mutable key = 0
 
                 for j in 0 .. k - 1 do
-                    key <- key * max cards[j] 1 + codes[j][i]
+                    key <- key * max (Raw.get j cards) 1 + Raw.at i (Raw.at j codes)
 
                 key
 
@@ -5430,18 +5702,29 @@ module DataFrame =
                     -1
                 elif direct then
                     let key = keyOf codes i
-                    let s = table[key]
+                    let s = Raw.at key table
 
                     if s >= 0 then
                         s
                     else
                         let fresh = count
-                        table[key] <- fresh
+                        Raw.put table key fresh
                         count <- fresh + 1
                         fresh
                 elif packs then
                     let key = keyOf codes i
 
+#if FABLE_COMPILER
+                    let s = packed.Find key
+
+                    if s >= 0 then
+                        s
+                    else
+                        let fresh = count
+                        packed.Add(key, fresh)
+                        count <- fresh + 1
+                        fresh
+#else
                     match packed.TryGetValue key with
                     | true, s -> s
                     | _ ->
@@ -5449,10 +5732,22 @@ module DataFrame =
                         packed[key] <- fresh
                         count <- fresh + 1
                         fresh
+#endif
                 else
                     for j in 0 .. k - 1 do
-                        probe[j] <- codes[j][i]
+                        Raw.set probe j (Raw.at i (Raw.at j codes))
 
+#if FABLE_COMPILER
+                    let s = wide.Find probe
+
+                    if s >= 0 then
+                        s
+                    else
+                        let fresh = count
+                        wide.Add(Array.copy probe, fresh)
+                        count <- fresh + 1
+                        fresh
+#else
                     match wide.TryGetValue probe with
                     | true, s -> s
                     | _ ->
@@ -5460,24 +5755,33 @@ module DataFrame =
                         wide[Array.copy probe] <- fresh
                         count <- fresh + 1
                         fresh
+#endif
 
             /// Row `i`'s slot if `Open` has met its tuple, else `-1`. Opens nothing.
             member _.Find(codes: int[][], i: int) : int =
                 if not (present codes i) then
                     -1
                 elif direct then
-                    table[keyOf codes i]
+                    Raw.at (keyOf codes i) table
                 elif packs then
+#if FABLE_COMPILER
+                    packed.Find(keyOf codes i)
+#else
                     match packed.TryGetValue(keyOf codes i) with
                     | true, s -> s
                     | _ -> -1
+#endif
                 else
                     for j in 0 .. k - 1 do
-                        probe[j] <- codes[j][i]
+                        Raw.set probe j (Raw.at i (Raw.at j codes))
 
+#if FABLE_COMPILER
+                    wide.Find probe
+#else
                     match wide.TryGetValue probe with
                     | true, s -> s
                     | _ -> -1
+#endif
 
         /// The TOKEN slot of every logical row under `keyVecs` (read at `phys`), numbered from 0 in
         /// first-appearance order, and each slot's first logical row. No key is one slot holding
@@ -5499,7 +5803,7 @@ module DataFrame =
                 let mutable i = 0
 
                 while seen < c.Count && i < n do
-                    if codes[i] = seen then
+                    if Raw.get i codes = seen then
                         first.Add i
                         seen <- seen + 1
 
@@ -5517,7 +5821,7 @@ module DataFrame =
 
                 for i in 0 .. n - 1 do
                     let s = index.Open(codes, i)
-                    slotOf[i] <- s
+                    Raw.set slotOf i s
 
                     if s = first.Count then
                         first.Add i
@@ -5789,80 +6093,120 @@ module DataFrame =
             for j in 0 .. d - 1 do
                 byValue.Add j
 
-            byValue.Sort(System.Comparison(fun a b -> cmp distinct[a] distinct[b]))
+            byValue.Sort(System.Comparison(fun a b -> cmp (Raw.at a distinct) (Raw.at b distinct)))
             let rankOf: int[] = Array.zeroCreate d
 
             for r in 0 .. d - 1 do
-                rankOf[byValue[r]] <- r
+                Raw.put rankOf byValue[r] r
 
             let nanShift = if anyNaN then 1 else 0
             let nullCode = d + nanShift
             let codes: int[] = Array.zeroCreate ids.Length
+            // The direction read once, not per row: under JavaScript a union's `=` is a structural
+            // comparison call (Phase 326).
+            let asc = (dir = Asc)
 
             for i in 0 .. ids.Length - 1 do
-                let id = ids[i]
+                let id = Raw.get i ids
 
-                codes[i] <-
+                let code =
                     if id = -1 then nullCode
-                    elif id = -2 then (if dir = Asc then d else 0)
-                    elif dir = Asc then rankOf[id]
-                    else nanShift + (d - 1 - rankOf[id])
+                    elif id = -2 then (if asc then d else 0)
+                    elif asc then Raw.at id rankOf
+                    else nanShift + (d - 1 - Raw.at id rankOf)
+
+                Raw.set codes i code
 
             { Codes = codes; Range = nullCode + 1 }
 
         /// A float carrier's codes: dense ranks under `Kernels.compareFloat` (`-0.0` keyed with
         /// `0.0`, every `NaN` one value above the rest).
         let private ofFloats (vals: float[]) (mask: bool[]) (phys: int[]) (dir: SortDir) : KeyCodes =
+#if FABLE_COMPILER
+            // Under JavaScript the open slot table (Phase 326).
+            let index = OpenSlots<float>((fun f -> hash f), (fun a b -> a = b))
+#else
             let index = System.Collections.Generic.Dictionary<float, int>()
+#endif
             let distinct = ResizeArray<float>()
             let ids: int[] = Array.zeroCreate phys.Length
             let mutable anyNaN = false
 
             for i in 0 .. phys.Length - 1 do
-                let p = phys[i]
+                let p = Raw.get i phys
 
-                if not mask[p] then
-                    ids[i] <- -1
+                if not (Raw.at p mask) then
+                    Raw.set ids i -1
                 else
-                    let x = vals[p]
+                    let x = Raw.at p vals
 
                     if System.Double.IsNaN x then
-                        ids[i] <- -2
+                        Raw.set ids i -2
                         anyNaN <- true
                     else
                         let k = if x = 0.0 then 0.0 else x
 
+#if FABLE_COMPILER
+                        let found = index.Find k
+
+                        if found >= 0 then
+                            Raw.set ids i found
+                        else
+                            let id = distinct.Count
+                            index.Add(k, id)
+                            distinct.Add k
+                            Raw.set ids i id
+#else
                         match index.TryGetValue k with
-                        | true, id -> ids[i] <- id
+                        | true, id -> Raw.set ids i id
                         | _ ->
                             let id = distinct.Count
                             index[k] <- id
                             distinct.Add k
-                            ids[i] <- id
+                            Raw.set ids i id
+#endif
 
             ofIds ids (distinct.ToArray()) (fun (a: float) b -> compare a b) anyNaN dir
 
         /// A string carrier's codes: dense ranks under the ordinal order.
         let private ofStrings (vals: string[]) (mask: bool[]) (phys: int[]) (dir: SortDir) : KeyCodes =
+#if FABLE_COMPILER
+            // Under JavaScript the open slot table (Phase 326).
+            let index =
+                OpenSlots<string>((fun s -> hash s), (fun a b -> System.String.Equals(a, b)))
+#else
             let index = System.Collections.Generic.Dictionary<string, int>()
+#endif
             let distinct = ResizeArray<string>()
             let ids: int[] = Array.zeroCreate phys.Length
 
             for i in 0 .. phys.Length - 1 do
-                let p = phys[i]
+                let p = Raw.get i phys
 
-                if not mask[p] then
-                    ids[i] <- -1
+                if not (Raw.at p mask) then
+                    Raw.set ids i -1
                 else
-                    let x = vals[p]
+                    let x = Raw.at p vals
 
+#if FABLE_COMPILER
+                    let found = index.Find x
+
+                    if found >= 0 then
+                        Raw.set ids i found
+                    else
+                        let id = distinct.Count
+                        index.Add(x, id)
+                        distinct.Add x
+                        Raw.set ids i id
+#else
                     match index.TryGetValue x with
-                    | true, id -> ids[i] <- id
+                    | true, id -> Raw.set ids i id
                     | _ ->
                         let id = distinct.Count
                         index[x] <- id
                         distinct.Add x
-                        ids[i] <- id
+                        Raw.set ids i id
+#endif
 
             ofIds ids (distinct.ToArray()) (fun (a: string) b -> System.String.CompareOrdinal(a, b)) false dir
 
@@ -5876,11 +6220,11 @@ module DataFrame =
             let mutable any = false
 
             for i in 0 .. n - 1 do
-                let p = phys[i]
+                let p = Raw.get i phys
 
-                if mask[p] then
+                if Raw.at p mask then
                     any <- true
-                    let v = vals[p]
+                    let v = Raw.at p vals
 
                     if v < lo then
                         lo <- v
@@ -5897,22 +6241,25 @@ module DataFrame =
                 if span <= 4.0 * float n + 16.0 then
                     let nullCode = int span + 1
                     let codes: int[] = Array.zeroCreate n
+                    let asc = (dir = Asc)
 
                     for i in 0 .. n - 1 do
-                        let p = phys[i]
+                        let p = Raw.get i phys
 
-                        codes[i] <-
-                            if not mask[p] then nullCode
-                            elif dir = Asc then vals[p] - lo
-                            else hi - vals[p]
+                        let code =
+                            if not (Raw.at p mask) then nullCode
+                            elif asc then Raw.at p vals - lo
+                            else hi - Raw.at p vals
+
+                        Raw.set codes i code
 
                     { Codes = codes; Range = nullCode + 1 }
                 else
                     let asFloat: float[] = Array.zeroCreate vals.Length
 
                     for i in 0 .. n - 1 do
-                        let p = phys[i]
-                        asFloat[p] <- float vals[p]
+                        let p = Raw.get i phys
+                        Raw.put asFloat p (float (Raw.at p vals))
 
                     ofFloats asFloat mask phys dir
 
@@ -5925,11 +6272,13 @@ module DataFrame =
             | Decs(a, _, _, m) -> ValueSome(ofFloats a m phys dir)
             | Strs(_, a, m) -> ValueSome(ofStrings a m phys dir)
             | Bools(a, m) ->
+                let asc = (dir = Asc)
+
                 let codes =
                     phys
                     |> Array.map (fun p ->
-                        if not m[p] then 2
-                        elif a[p] = (dir = Asc) then 1
+                        if not (Raw.at p m) then 2
+                        elif Raw.at p a = asc then 1
                         else 0)
 
                 ValueSome { Codes = codes; Range = 3 }
@@ -5958,7 +6307,7 @@ module DataFrame =
             let mutable k = 0
 
             while same && k < keys.Length do
-                same <- keys[k].Codes[a] = keys[k].Codes[b]
+                same <- Raw.at a keys[k].Codes = Raw.at b keys[k].Codes
                 k <- k + 1
 
             same
@@ -6001,27 +6350,31 @@ module DataFrame =
                 let fn = float n
 
                 for i in 0 .. n - 1 do
-                    let mutable c = if isNull lead then 0.0 else float lead[i]
+                    let mutable c = if isNull lead then 0.0 else float (Raw.at i lead)
 
                     for k in keys do
-                        c <- c * float k.Range + float k.Codes[i]
+                        c <- c * float k.Range + float (Raw.at i k.Codes)
 
-                    packed[i] <- c * fn + float (tie o i)
+                    Raw.set packed i (c * fn + float (tie o i))
 
                 { o with Packed = packed }
 
         /// Compare logical rows `a` and `b` under the order; never 0 for two different rows.
         let compareRows (o: Order) (a: int) (b: int) : int =
             if not (isNull o.Packed) then
-                compare o.Packed[a] o.Packed[b]
+                compare (Raw.at a o.Packed) (Raw.at b o.Packed)
             else
-                let mutable c = if isNull o.Lead then 0 else compare o.Lead[a] o.Lead[b]
+                let mutable c =
+                    if isNull o.Lead then
+                        0
+                    else
+                        compare (Raw.at a o.Lead) (Raw.at b o.Lead)
 
                 let mutable k = 0
 
                 while c = 0 && k < o.Keys.Length do
                     let codes = o.Keys[k].Codes
-                    c <- compare codes[a] codes[b]
+                    c <- compare (Raw.at a codes) (Raw.at b codes)
                     k <- k + 1
 
                 if c <> 0 then c else compare (tie o a) (tie o b)
@@ -6037,12 +6390,17 @@ module DataFrame =
                 let mutable ascending = true
                 let mutable i = 1
 
+                Raw.within n sorted
+
                 while ascending && i < n do
-                    ascending <- sorted[i - 1] < sorted[i]
+                    ascending <- Raw.get (i - 1) sorted < Raw.get i sorted
                     i <- i + 1
 
                 if not ascending then
-                    Array.sortInPlace sorted
+                    // The packed keys are finite and non-negative, so the engine's own numeric sort orders
+                    // them exactly as `Array.sortInPlace` does (Phase 326: under JavaScript that is a
+                    // comparator sort).
+                    Raw.sortFinite sorted
 
                 let fn = float n
                 // The position is the packed key's last digit, and `tie` is its own inverse.
@@ -6560,20 +6918,27 @@ module DataFrame =
         | WInts a ->
             let vals: int[] = Array.zeroCreate count
             let mask: bool[] = Array.zeroCreate count
+            // The loop proves `i` for `a`, and for `phys` once it is checked to be as long (Phase 326);
+            // the physical row it writes is an index it does not prove.
+            Raw.within a.Length phys
 
             for i in 0 .. a.Length - 1 do
-                vals[phys[i]] <- a[i]
-                mask[phys[i]] <- true
+                let p = Raw.get i phys
+                Raw.put vals p (Raw.get i a)
+                Raw.put mask p true
 
             Ints(vals, mask)
         | WFloats(a, m) ->
             let vals: float[] = Array.zeroCreate count
             let mask: bool[] = Array.zeroCreate count
+            Raw.within a.Length phys
+            Raw.within a.Length m
 
             for i in 0 .. a.Length - 1 do
-                if m[i] then
-                    vals[phys[i]] <- a[i]
-                    mask[phys[i]] <- true
+                if Raw.get i m then
+                    let p = Raw.get i phys
+                    Raw.put vals p (Raw.get i a)
+                    Raw.put mask p true
 
             Floats(vals, mask)
         | WCells cells -> Vec.packAt ty count (fun i -> phys[i]) cells
@@ -6634,7 +6999,7 @@ module DataFrame =
 
             let valueAt (i: int) : Cell =
                 match ofVec with
-                | Some v -> Vec.cellAt v phys[i]
+                | Some v -> Vec.cellAt v (Raw.at i phys)
                 | None -> Null
 
             // The source value in the float carrier, as `asNum` reads it — read from a typed vector
@@ -6643,12 +7008,16 @@ module DataFrame =
                 match ofVec with
                 | Some(Ints(a, m)) ->
                     fun i ->
-                        let p = phys[i]
-                        if m[p] then ValueSome(float a[p]) else ValueNone
+                        let p = Raw.at i phys
+
+                        if Raw.at p m then
+                            ValueSome(float (Raw.at p a))
+                        else
+                            ValueNone
                 | Some(Floats(a, m)) ->
                     fun i ->
-                        let p = phys[i]
-                        if m[p] then ValueSome a[p] else ValueNone
+                        let p = Raw.at i phys
+                        if Raw.at p m then ValueSome(Raw.at p a) else ValueNone
                 | _ ->
                     fun i ->
                         match asNum (valueAt i) with
@@ -6690,7 +7059,7 @@ module DataFrame =
                         if k = 0 || not (wo.Same perm[s + k - 1] perm[s + k]) then
                             r <- r + 1
 
-                        ints[perm[s + k]] <- r
+                        Raw.put ints (Raw.at (s + k) perm) r
                 // Phase 101 — SQL RANK(): a tied block shares its LOWEST rank and the next distinct
                 // order key skips by the block's size (1, 1, 3 — where the dense `Rank`/`DenseRank`
                 // above give 1, 1, 2).
@@ -6701,7 +7070,7 @@ module DataFrame =
                         if k = 0 || not (wo.Same perm[s + k - 1] perm[s + k]) then
                             r <- k + 1
 
-                        ints[perm[s + k]] <- r
+                        Raw.put ints (Raw.at (s + k) perm) r
                 // Phase 101 — SQL NTILE(n): the first `count % n` buckets take one extra row.
                 | NTile buckets ->
                     let small = len / buckets
@@ -6716,7 +7085,7 @@ module DataFrame =
                             else
                                 big + (k - bigRows) / small + 1
 
-                        ints[perm[s + k]] <- bucket
+                        Raw.put ints (Raw.at (s + k) perm) bucket
                 | Lag ->
                     for k in 1 .. len - 1 do
                         out[perm[s + k]] <- valueAt perm[s + k - 1]
@@ -6729,7 +7098,7 @@ module DataFrame =
                     let mutable acc = DecimalText.zero
 
                     for k in 0 .. len - 1 do
-                        let i = perm[s + k]
+                        let i = Raw.at (s + k) perm
 
                         match decimalText (valueAt i) with
                         | Some x -> acc <- DecimalText.add acc x |> Option.defaultValue acc
@@ -6744,34 +7113,34 @@ module DataFrame =
                     match ofVec with
                     | Some(Ints(a, m)) ->
                         for k in 0 .. len - 1 do
-                            let i = perm[s + k]
-                            let p = phys[i]
+                            let i = Raw.at (s + k) perm
+                            let p = Raw.at i phys
 
-                            if m[p] then
-                                acc <- acc + float a[p]
+                            if Raw.at p m then
+                                acc <- acc + float (Raw.at p a)
 
-                            floats[i] <- acc
-                            present[i] <- true
+                            Raw.put floats i acc
+                            Raw.put present i true
                     | Some(Floats(a, m)) ->
                         for k in 0 .. len - 1 do
-                            let i = perm[s + k]
-                            let p = phys[i]
+                            let i = Raw.at (s + k) perm
+                            let p = Raw.at i phys
 
-                            if m[p] then
-                                acc <- acc + a[p]
+                            if Raw.at p m then
+                                acc <- acc + Raw.at p a
 
-                            floats[i] <- acc
-                            present[i] <- true
+                            Raw.put floats i acc
+                            Raw.put present i true
                     | _ ->
                         for k in 0 .. len - 1 do
-                            let i = perm[s + k]
+                            let i = Raw.at (s + k) perm
 
                             match numAt i with
                             | ValueSome x -> acc <- acc + x
                             | ValueNone -> ()
 
-                            floats[i] <- acc
-                            present[i] <- true
+                            Raw.put floats i acc
+                            Raw.put present i true
                 // Trailing window of up to 3 (current + 2 preceding), present values only. Each
                 // window is summed FRESH, left to right from zero (Phase 264): a running
                 // add/subtract accumulator would change the last bit of a float sum, and therefore
@@ -6810,7 +7179,7 @@ module DataFrame =
 
                             if count > 0 then
                                 floats[i] <- if spec.Fn = RollingSum then sum else sum / float count
-                                present[i] <- true
+                                Raw.put present i true
                 // Phase 101 — running max/min over present values; nulls carry the prior value
                 // forward, so a leading run of nulls is `Null` (never a seeded 0).
                 | CumulMax
@@ -6818,7 +7187,7 @@ module DataFrame =
                     let mutable acc = Null
 
                     for k in 0 .. len - 1 do
-                        let i = perm[s + k]
+                        let i = Raw.at (s + k) perm
                         let v = valueAt i
 
                         acc <-
@@ -6966,15 +7335,28 @@ module DataFrame =
                             let key = idxVecs |> Array.map (fun v -> Vec.cellAt v p) |> List.ofArray
                             key, Array.init onCount (fun _ -> ResizeArray<Cell>()))
 
+                    // The loop proves `i` for `phys`, and for `rowOn` and `slotOf` once each is checked to
+                    // hold a row per logical row; the slot and the code it reads are indexes it does not
+                    // prove (Phase 326).
+                    Raw.within phys.Length rowOn
+                    Raw.within phys.Length slotOf
+
                     for i in 0 .. phys.Length - 1 do
-                        let code = rowOn[i]
+                        let code = Raw.get i rowOn
 
                         if code >= 0 then
-                            let _, cells = groups[slotOf[i]]
-                            let v = Vec.cellAt valVec phys[i]
+                            let _, cells = Raw.at (Raw.get i slotOf) groups
+                            let v = Vec.cellAt valVec (Raw.get i phys)
+#if FABLE_COMPILER
+                            // A counted loop: `for` over a list compiles to an enumerator there.
+                            let targets = Raw.at code columnsOf
 
+                            for j in 0 .. targets.Count - 1 do
+                                cells[targets[j]].Add v
+#else
                             for c in columnsOf[code] do
                                 cells[c].Add v
+#endif
 
                     let idxCols = spec.Index |> List.map (fun n -> n, colType f.Cols n |> Option.get)
 

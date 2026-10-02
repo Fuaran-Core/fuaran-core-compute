@@ -26,6 +26,96 @@ open Fuaran.Core
 //  and nothing here uses spans, intrinsics, pooled buffers or threads.
 // ============================================================================
 
+/// Array access as the JavaScript host should emit it (Phase 326). Fable compiles every `a[i]` on an
+/// `Int32Array`, a `Float64Array` or a plain array to one shared bounds-checked helper, which goes
+/// megamorphic across the three and costs more than the loop around it; these accessors are what
+/// the evaluator's loops index through instead. On .NET each is the plain index, inlined, so the
+/// compiled code there is the code it was.
+///
+/// Two families, and the rule that keeps refusal behaviour unchanged:
+///
+///  * `get` / `set` carry NO bounds check under JavaScript. They are used only where the code
+///    around the access proves the index: a loop over `0 .. n - 1` reading arrays allocated `n`
+///    long (or checked to be at least `n` long before it starts), or a range test on the index
+///    immediately before it. No general accessor drops the check.
+///  * `at` / `put` are the checked read and write for every other index — a row number read out of
+///    a selection, an index vector, a caller's argument. Under JavaScript each is the bounds test
+///    inlined at the call site rather than the shared helper, and an index outside the array is
+///    refused with the .NET runtime's own message, so a malformed frame is refused alike on both
+///    hosts.
+module internal Raw =
+
+    /// The refusal of an index outside its array: the .NET runtime's message, on every host.
+    let outOfRange () : 'T =
+        failwith "Index was outside the bounds of the array."
+
+    /// The refusal of a span reaching past its array: the .NET runtime's message, on every host.
+    let outOfSpan () : 'T =
+        failwith "Specified argument was out of the range of valid values."
+
+#if FABLE_COMPILER
+    /// `a[i]`, unchecked: only where the enclosing loop proves `0 <= i < a.Length`.
+    [<Fable.Core.Emit("$1[$0]")>]
+    let get (i: int) (a: 'T[]) : 'T = Fable.Core.Util.jsNative
+
+    /// `a[i] <- v`, unchecked: only where the enclosing loop proves `0 <= i < a.Length`.
+    [<Fable.Core.Emit("$0[$1] = $2")>]
+    let set (a: 'T[]) (i: int) (v: 'T) : unit = Fable.Core.Util.jsNative
+
+    /// `a[i]`, checked: the bounds test inlined, refusing with `outOfRange`.
+    let inline at (i: int) (a: 'T[]) : 'T =
+        if uint32 i >= uint32 a.Length then
+            outOfRange ()
+        else
+            get i a
+
+    /// `a[i] <- v`, checked: the bounds test inlined, refusing with `outOfRange`.
+    let inline put (a: 'T[]) (i: int) (v: 'T) : unit =
+        if uint32 i >= uint32 a.Length then
+            outOfRange ()
+        else
+            set a i v
+
+    /// The check a loop over `0 .. n - 1` makes once, before it indexes `a` through `get` / `set`:
+    /// an `a` shorter than `n` is refused as the first out-of-range index in it would have been.
+    let inline within (n: int) (a: 'T[]) : unit =
+        if a.Length < n then
+            outOfRange ()
+
+    /// `within`, refusing as a span over the first `n` elements of `a` is refused: where the .NET
+    /// host takes such a span before its loop, the JavaScript host refuses with its message.
+    let inline withinSpan (n: int) (a: 'T[]) : unit =
+        if a.Length < n then
+            outOfSpan ()
+
+    /// Sort `a` ascending in place with the engine's own numeric sort, which a typed array of
+    /// floats sorts without a comparator. Only for floats holding no `NaN`: on those it is the order
+    /// `Array.sortInPlace` gives, where that compiles to a comparator sort under JavaScript.
+    [<Fable.Core.Emit("$0.sort()")>]
+    let sortFinite (a: float[]) : unit = Fable.Core.Util.jsNative
+#else
+    /// `a[i]`; the runtime checks it, as it always did.
+    let inline get (i: int) (a: 'T[]) : 'T = a[i]
+
+    /// `a[i] <- v`; the runtime checks it, as it always did.
+    let inline set (a: 'T[]) (i: int) (v: 'T) : unit = a[i] <- v
+
+    /// `a[i]`; the runtime checks it, as it always did.
+    let inline at (i: int) (a: 'T[]) : 'T = a[i]
+
+    /// `a[i] <- v`; the runtime checks it, as it always did.
+    let inline put (a: 'T[]) (i: int) (v: 'T) : unit = a[i] <- v
+
+    /// Nothing: the runtime checks every index the loop makes, as it always did.
+    let inline within (_: int) (_: 'T[]) : unit = ()
+
+    /// Nothing: the runtime checks the span, as it always did.
+    let inline withinSpan (_: int) (_: 'T[]) : unit = ()
+
+    /// `Array.sortInPlace`, as it always was.
+    let inline sortFinite (a: float[]) : unit = Array.sortInPlace a
+#endif
+
 /// One column's cells as a dense vector: a typed carrier beside a validity mask (`true` = present)
 /// where every present cell agrees with the column's declared type, or the boxed cells where one
 /// does not. The three string-carrying families share one carrier and are told apart by the type
@@ -214,7 +304,7 @@ module internal InternedCells =
 
     /// The `Int` cell for `v` — shared inside `[Lo, Hi]`, fresh outside it.
     let ofInt (v: int) : Cell =
-        if v >= Lo && v <= Hi then ints[v - Lo] else Int v
+        if v >= Lo && v <= Hi then Raw.get (v - Lo) ints else Int v
 
 /// The evaluator's frame: a schema, one vector per schema column (`Vecs` co-indexes with `Cols`),
 /// and the selection — the PHYSICAL row of each LOGICAL row, in logical order — or `None` for the
@@ -271,12 +361,20 @@ module internal Vec =
     /// boxed one.
     let cellAt (v: Vec) (p: int) : Cell =
         match v with
-        | Ints(a, m) -> if m[p] then InternedCells.ofInt a[p] else Null
-        | Floats(a, m) -> if m[p] then Float a[p] else Null
-        | Bools(a, m) -> if m[p] then InternedCells.ofBool a[p] else Null
-        | Strs(ty, a, m) -> if m[p] then strCell ty a[p] else Null
-        | Decs(_, _, cells, _) -> cells[p]
-        | Cells a -> a[p]
+        | Ints(a, m) ->
+            if Raw.at p m then
+                InternedCells.ofInt (Raw.at p a)
+            else
+                Null
+        | Floats(a, m) -> if Raw.at p m then Float(Raw.at p a) else Null
+        | Bools(a, m) ->
+            if Raw.at p m then
+                InternedCells.ofBool (Raw.at p a)
+            else
+                Null
+        | Strs(ty, a, m) -> if Raw.at p m then strCell ty (Raw.at p a) else Null
+        | Decs(_, _, cells, _) -> Raw.at p cells
+        | Cells a -> Raw.at p a
 
     /// Is any selected row present?
     let anyPresent (mask: bool[]) (phys: int[]) : bool = phys |> Array.exists (fun p -> mask[p])
@@ -293,7 +391,7 @@ module internal Vec =
             let out = Array.create count Null
 
             for i in 0 .. n - 1 do
-                out[posOf i] <- cells[i]
+                Raw.put out (posOf i) (Raw.get i cells)
 
             Cells out
 
@@ -305,11 +403,11 @@ module internal Vec =
             let mutable i = 0
 
             while ok && i < n do
-                match cells[i] with
+                match Raw.get i cells with
                 | Int v ->
                     let p = posOf i
-                    vals[p] <- v
-                    mask[p] <- true
+                    Raw.put vals p v
+                    Raw.put mask p true
                 | Null -> ()
                 | _ -> ok <- false
 
@@ -323,11 +421,11 @@ module internal Vec =
             let mutable i = 0
 
             while ok && i < n do
-                match cells[i] with
+                match Raw.get i cells with
                 | Float v ->
                     let p = posOf i
-                    vals[p] <- v
-                    mask[p] <- true
+                    Raw.put vals p v
+                    Raw.put mask p true
                 | Null -> ()
                 | _ -> ok <- false
 
@@ -341,11 +439,11 @@ module internal Vec =
             let mutable i = 0
 
             while ok && i < n do
-                match cells[i] with
+                match Raw.get i cells with
                 | Bool v ->
                     let p = posOf i
-                    vals[p] <- v
-                    mask[p] <- true
+                    Raw.put vals p v
+                    Raw.put mask p true
                 | Null -> ()
                 | _ -> ok <- false
 
@@ -364,13 +462,13 @@ module internal Vec =
                 let out = Array.create count Null
 
                 for i in 0 .. n - 1 do
-                    match cells[i] with
+                    match Raw.get i cells with
                     | Decimal s ->
                         let p = posOf i
                         // `scaleOf` admitted every present cell at this scale, so this always reads.
-                        vals[p] <- ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0
-                        mask[p] <- true
-                        out[p] <- cells[i]
+                        Raw.put vals p (ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0)
+                        Raw.put mask p true
+                        Raw.put out p (Raw.get i cells)
                     | _ -> ()
 
                 Decs(vals, scale, out, mask)
@@ -385,7 +483,7 @@ module internal Vec =
 
             while ok && i < n do
                 let s =
-                    match cells[i], ty with
+                    match Raw.get i cells, ty with
                     | Str s, StringType
                     | Date s, DateType
                     | Timestamp s, TimestampType -> s
@@ -393,10 +491,10 @@ module internal Vec =
 
                 if not (isNull s) then
                     let p = posOf i
-                    vals[p] <- s
-                    mask[p] <- true
+                    Raw.put vals p s
+                    Raw.put mask p true
                 else
-                    match cells[i] with
+                    match Raw.get i cells with
                     | Null -> ()
                     | _ -> ok <- false
 
@@ -440,8 +538,8 @@ module internal Vec =
                 walkExact n cells (fun i c ->
                     match c with
                     | Int v ->
-                        vals[i] <- v
-                        mask[i] <- true
+                        Raw.set vals i v
+                        Raw.set mask i true
                         true
                     | Null -> true
                     | _ -> false)
@@ -455,8 +553,8 @@ module internal Vec =
                 walkExact n cells (fun i c ->
                     match c with
                     | Float v ->
-                        vals[i] <- v
-                        mask[i] <- true
+                        Raw.set vals i v
+                        Raw.set mask i true
                         true
                     | Null -> true
                     | _ -> false)
@@ -470,8 +568,8 @@ module internal Vec =
                 walkExact n cells (fun i c ->
                     match c with
                     | Bool v ->
-                        vals[i] <- v
-                        mask[i] <- true
+                        Raw.set vals i v
+                        Raw.set mask i true
                         true
                     | Null -> true
                     | _ -> false)
@@ -485,7 +583,7 @@ module internal Vec =
 
             if
                 walkExact n cells (fun i c ->
-                    out[i] <- c
+                    Raw.set out i c
                     true)
             then
                 match ScaledDecimal.scaleOf out with
@@ -494,11 +592,11 @@ module internal Vec =
                     let mask: bool[] = Array.zeroCreate n
 
                     for i in 0 .. n - 1 do
-                        match out[i] with
+                        match Raw.get i out with
                         | Decimal s ->
                             // `scaleOf` admitted every present cell at this scale, so this always reads.
-                            vals[i] <- ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0
-                            mask[i] <- true
+                            Raw.set vals i (ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0)
+                            Raw.set mask i true
                         | _ -> ()
 
                     ValueSome(Decs(vals, scale, out, mask))
@@ -517,14 +615,65 @@ module internal Vec =
                     | Str s, StringType
                     | Date s, DateType
                     | Timestamp s, TimestampType when not (isNull s) ->
-                        vals[i] <- s
-                        mask[i] <- true
+                        Raw.set vals i s
+                        Raw.set mask i true
                         true
                     | Null, _ -> true
                     | _ -> false)
 
             if ok then ValueSome(Strs(ty, vals, mask)) else ValueNone
 
+#if FABLE_COMPILER
+    /// The vector's cells at the physical rows `phys`, in that order, as a dense vector of the same
+    /// kind — no cell is boxed on the typed path.
+    ///
+    /// Under JavaScript (Phase 326) one loop per carrier rather than `Array.init` over a closure:
+    /// the loop proves `i` for `phys` and the output (both `n` long); the row it reads, `phys[i]`,
+    /// is an index the loop does not prove, so it goes through the checked `Raw.at`.
+    let gather (v: Vec) (phys: int[]) : Vec =
+        let n = phys.Length
+
+        let inline pick (a: 'T[]) (out: 'T[]) : 'T[] =
+            for i in 0 .. n - 1 do
+                let x = Raw.at (Raw.get i phys) a
+                Raw.set out i x
+
+            out
+
+        match v with
+        | Ints(a, m) -> Ints(pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
+        | Floats(a, m) -> Floats(pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
+        | Bools(a, m) -> Bools(pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
+        | Strs(ty, a, m) -> Strs(ty, pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
+        | Decs(a, s, c, m) ->
+            Decs(pick a (Array.zeroCreate n), s, pick c (Array.zeroCreate n), pick m (Array.zeroCreate n))
+        | Cells a -> Cells(pick a (Array.zeroCreate n))
+
+    /// `gather` where a negative index reads `Null` (Phase 325): the side a combining join pads.
+    /// A padded slot of a typed vector is a cleared mask bit over a zero carrier (the empty string
+    /// for a string vector, as a host that fills string arrays with it would hold anyway). Under
+    /// JavaScript one loop per carrier, as `gather`.
+    let gatherOrNull (v: Vec) (idx: int[]) : Vec =
+        let n = idx.Length
+
+        let inline pick (a: 'T[]) (pad: 'T) (out: 'T[]) : 'T[] =
+            for i in 0 .. n - 1 do
+                let p = Raw.get i idx
+                let x = if p >= 0 then Raw.at p a else pad
+                Raw.set out i x
+
+            out
+
+        let maskOf (m: bool[]) = pick m false (Array.zeroCreate n)
+
+        match v with
+        | Ints(a, m) -> Ints(pick a 0 (Array.zeroCreate n), maskOf m)
+        | Floats(a, m) -> Floats(pick a 0.0 (Array.zeroCreate n), maskOf m)
+        | Bools(a, m) -> Bools(pick a false (Array.zeroCreate n), maskOf m)
+        | Strs(ty, a, m) -> Strs(ty, pick a "" (Array.zeroCreate n), maskOf m)
+        | Decs(a, s, c, m) -> Decs(pick a 0.0 (Array.zeroCreate n), s, pick c Null (Array.zeroCreate n), maskOf m)
+        | Cells a -> Cells(pick a Null (Array.zeroCreate n))
+#else
     /// The vector's cells at the physical rows `phys`, in that order, as a dense vector of the same
     /// kind — no cell is boxed on the typed path.
     let gather (v: Vec) (phys: int[]) : Vec =
@@ -567,6 +716,7 @@ module internal Vec =
                 maskOf m
             )
         | Cells a -> Cells(Array.init n (fun i -> if present[i] then a[idx[i]] else Null))
+#endif
 
     /// Two DENSE vectors end to end: the same kind when both are typed alike, boxed otherwise. Two
     /// decimal vectors at different scales are packed again from their cells, so the result is the
@@ -890,8 +1040,18 @@ module internal Frame =
                 let v = f.Vecs[ci]
                 let mutable acc = []
 
+#if FABLE_COMPILER
+                // Under JavaScript (Phase 326) a counted loop: a descending `for` compiles there to a
+                // range enumerator. The loop proves `i` for `phys`.
+                let mutable i = n - 1
+
+                while i >= 0 do
+                    acc <- Vec.cellAt v (Raw.get i phys) :: acc
+                    i <- i - 1
+#else
                 for i in n - 1 .. -1 .. 0 do
                     acc <- Vec.cellAt v phys[i] :: acc
+#endif
 
                 acc
 
@@ -905,9 +1065,28 @@ module internal Frame =
         let phys = physical f
         let w = f.Vecs.Length
 
+#if FABLE_COMPILER
+        // Under JavaScript (Phase 326) counted loops rather than `Array.init` over closures; the loops
+        // prove `i` for `phys` and the rows, and `ci` for `Vecs` and each row (all `w` wide).
+        let n = phys.Length
+        let rows: Cell[][] = Array.zeroCreate n
+
+        for i in 0 .. n - 1 do
+            let p = Raw.get i phys
+            let row: Cell[] = Array.zeroCreate w
+
+            for ci in 0 .. w - 1 do
+                let c = Vec.cellAt (Raw.get ci f.Vecs) p
+                Raw.set row ci c
+
+            Raw.set rows i row
+
+        rows
+#else
         Array.init phys.Length (fun i ->
             let p = phys[i]
             Array.init w (fun ci -> Vec.cellAt f.Vecs[ci] p))
+#endif
 
     /// A frame from full-width rows under `cols`: one typed pack per column, the identity
     /// selection. The inverse of `rowsOf` — what a verb that emitted fresh rows hands back.

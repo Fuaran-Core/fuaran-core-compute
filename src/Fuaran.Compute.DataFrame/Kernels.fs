@@ -113,7 +113,7 @@ module internal Kernels =
 
     /// Is row `p` set in `bits`?
     let isSet (bits: uint32[]) (p: int) : bool =
-        (bits[p >>> 5] >>> (p &&& 31)) &&& 1u <> 0u
+        (Raw.at (p >>> 5) bits >>> (p &&& 31)) &&& 1u <> 0u
 
     /// THE evaluator's float ordering (Phase 321): IEEE order on the values that are not `NaN`,
     /// `-0.0` equal to `0.0`, and `NaN` one value ABOVE every other — the substrate's `Cell.compare`
@@ -160,19 +160,29 @@ module internal Kernels =
 
         let cmpInts (op: CmpOp) (vals: int[]) (mask: bool[]) (k: int) (count: int) : uint32[] =
             let out: uint32[] = Array.zeroCreate (words count)
+            // The loop proves `p` once `mask` and `vals` are known to hold `count` rows (Phase 326),
+            // and `p >>> 5` for `out`, which holds a bit per row. The mask is checked first and as a
+            // span, because the native member takes a span over it before anything else.
+            Raw.withinSpan count mask
+            Raw.within count vals
 
             for p in 0 .. count - 1 do
-                if mask[p] && holds op (compare vals[p] k) then
-                    out[p >>> 5] <- out[p >>> 5] ||| (1u <<< (p &&& 31))
+                if Raw.get p mask && holds op (compare (Raw.get p vals) k) then
+                    Raw.set out (p >>> 5) (Raw.get (p >>> 5) out ||| (1u <<< (p &&& 31)))
 
             out
 
         let cmpFloats (op: CmpOp) (vals: float[]) (mask: bool[]) (k: float) (count: int) : uint32[] =
             let out: uint32[] = Array.zeroCreate (words count)
+            // The loop proves `p` once `mask` and `vals` are known to hold `count` rows (Phase 326),
+            // and `p >>> 5` for `out`, which holds a bit per row. The mask is checked first and as a
+            // span, because the native member takes a span over it before anything else.
+            Raw.withinSpan count mask
+            Raw.within count vals
 
             for p in 0 .. count - 1 do
-                if mask[p] && holds op (compareFloat vals[p] k) then
-                    out[p >>> 5] <- out[p >>> 5] ||| (1u <<< (p &&& 31))
+                if Raw.get p mask && holds op (compareFloat (Raw.get p vals) k) then
+                    Raw.set out (p >>> 5) (Raw.get (p >>> 5) out ||| (1u <<< (p &&& 31)))
 
             out
 
@@ -184,7 +194,7 @@ module internal Kernels =
             let out = ResizeArray<int>()
 
             for w in 0 .. bits.Length - 1 do
-                let word = bits[w]
+                let word = Raw.get w bits
 
                 if word <> 0u then
                     for b in 0..31 do

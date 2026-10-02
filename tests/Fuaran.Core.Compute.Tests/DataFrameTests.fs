@@ -3936,7 +3936,147 @@ let private frameSample (seed: int) (count: int) : (Table * Transform list) list
 let frameTests =
     testList
         "Frame"
-        [ testCase "every step of every generated pipeline leaves the frame well-formed, and the fold is the reference"
+        [ // Phase 326: the JavaScript host indexes the frame's arrays through `Raw` — unchecked only
+          // where a loop proves the index, checked everywhere else with the .NET runtime's own
+          // refusal. This pins the refusals a malformed frame meets on THIS host, and that the
+          // shared messages are the runtime's; the node leg's parity probe holds the JavaScript host
+          // to the same lines byte for byte (the Phase 326 results file).
+          testCase "a malformed frame is refused alike on both hosts, with the runtime's messages"
+          <| fun _ ->
+              let message (f: unit -> unit) : string =
+                  try
+                      f ()
+                      "answered"
+                  with e ->
+                      e.Message
+
+              let indexMessage = message (fun () -> ([||]: int[])[0] |> ignore)
+
+              let spanMessage =
+                  message (fun () -> System.ReadOnlySpan<bool>([||], 0, 1).Length |> ignore)
+
+              Expect.equal
+                  (message (fun () -> Raw.outOfRange () |> ignore))
+                  indexMessage
+                  "the index refusal is the runtime's"
+
+              Expect.equal
+                  (message (fun () -> Raw.outOfSpan () |> ignore))
+                  spanMessage
+                  "the span refusal is the runtime's"
+
+              let t =
+                  tbl
+                      [ "k", StringType; "v", IntType; "f", FloatType ]
+                      [ col "k" StringType [ Str "a"; Str "b"; Str "a" ]
+                        col "v" IntType [ Int 1; Int 2; Int 3 ]
+                        col "f" FloatType [ Float 0.5; Float 1.5; Float 2.5 ] ]
+
+              let good = Frame.ofTable t
+              // A selection naming a row past the vectors; every vector a row short of the frame.
+              let badSel = Frame.select good [| 0; 7; 1 |]
+
+              let shortVecs =
+                  { good with
+                      Vecs = good.Vecs |> Array.map (fun v -> Vec.slice v 0 2) }
+
+              Expect.isFalse (Frame.wellFormed badSel) "the selection is malformed"
+              Expect.isFalse (Frame.wellFormed shortVecs) "the vectors are malformed"
+
+              let step (frame: Frame) (s: Transform) () =
+                  match DataFrame.evalStep DataFrame.noResolve Map.empty frame s with
+                  | Ok f -> Frame.toTable f |> ignore
+                  | Error e -> failwith (DataFrame.errorString e)
+
+              let reading =
+                  [ "derive", Derive("w", Binary(Add, Col "v", Lit(Int 1)))
+                    "sort", Transform.sortBy [ "v", Desc ]
+                    "groupBy", GroupBy([ "k" ], [ { Name = "s"; Fn = Sum; Of = "v" } ])
+                    "distinct", Distinct
+                    "join", Join(Embedded t, [ "v", "v" ], Inner)
+                    "window",
+                    Window
+                        { PartitionBy = [ "k" ]
+                          OrderBy = [ "v", Asc ]
+                          Fn = CumulSum
+                          Of = "v"
+                          As = "cs" }
+                    "pivot",
+                    Pivot
+                        { Index = [ "k" ]
+                          On = "v"
+                          Values = "f"
+                          Agg = Sum } ]
+
+              Expect.equal
+                  (message (fun () -> Frame.toTable badSel |> ignore))
+                  indexMessage
+                  "toTable over the selection"
+
+              Expect.equal (message (step badSel (Transform.limit 2 0))) indexMessage "limit over the selection"
+
+              for name, s in reading do
+                  Expect.equal (message (step badSel s)) indexMessage (name + " over the selection")
+                  Expect.equal (message (step shortVecs s)) indexMessage (name + " over the short vectors")
+
+              // The filter kernel takes a span over the mask before its loop, so a short mask is
+              // refused as a span is.
+              Expect.equal
+                  (message (step shortVecs (Filter(Binary(Gt, Col "v", Lit(Int 1))))))
+                  spanMessage
+                  "filter over the short vectors"
+
+          // Phase 326: the JavaScript host's slot table stands where `Dictionary` stands on .NET for
+          // the token slots, the row hasher and the order codes. Held here to `Dictionary` over keys
+          // whose hash collides on purpose (probing and growth both exercised), and to the caller's
+          // numbering: slot `s` is the `s`-th new key met, whatever the hashes — the first-seen
+          // order groups are emitted in.
+          testCase "the open slot table holds what a Dictionary holds, numbered in first-seen order"
+          <| fun _ ->
+              let rng = System.Random 326
+              let table = DataFrame.OpenSlots<int>((fun k -> k % 7), (fun a b -> a = b))
+              let reference = System.Collections.Generic.Dictionary<int, int>()
+              let met = ResizeArray<int>()
+
+              for _ in 1..5000 do
+                  let k = rng.Next(-2000, 2000)
+                  let found = table.Find k
+
+                  match reference.TryGetValue k with
+                  | true, s -> Expect.equal found s "a held key finds its slot"
+                  | _ ->
+                      Expect.equal found -1 "an absent key finds nothing"
+                      let s = reference.Count
+                      reference[k] <- s
+                      table.Add(k, s)
+                      met.Add k
+
+              Expect.equal table.Count reference.Count "as many keys as the dictionary"
+
+              for s in 0 .. met.Count - 1 do
+                  Expect.equal (table.Find met[s]) s "slot s is the s-th key met"
+
+              // Rows of cells under the token relation, as the JavaScript `CellKey.slots` keys them.
+              let rows =
+                  DataFrame.OpenSlots<Cell[]>(
+                      (fun cells -> DataFrame.CellKey.row.GetHashCode cells),
+                      (fun a b -> DataFrame.CellKey.row.Equals(a, b))
+                  )
+
+              let keys =
+                  [ [| Int 1; Str "a" |]
+                    [| Float 1.0; Str "a" |]
+                    [| Float -0.0; Null |]
+                    [| Float nan; Null |] ]
+
+              keys |> List.iteri (fun s k -> rows.Add(k, s))
+              Expect.equal (rows.Find [| Int 1; Str "a" |]) 0 "an int key is its own"
+              Expect.equal (rows.Find [| Float 1.0; Str "a" |]) 1 "a float key is not the int's"
+              Expect.equal (rows.Find [| Float 0.0; Null |]) 2 "-0.0 and 0.0 are one token"
+              Expect.equal (rows.Find [| Float nan; Null |]) 3 "every NaN is one token"
+              Expect.equal (rows.Find [| Int 2; Str "a" |]) -1 "an unmet row finds nothing"
+
+          testCase "every step of every generated pipeline leaves the frame well-formed, and the fold is the reference"
           <| fun _ ->
               // Every vector the frame's row count, every selection entry inside it — after each
               // step, whichever family the step belongs to, over frames a `Filter` emptied, a
