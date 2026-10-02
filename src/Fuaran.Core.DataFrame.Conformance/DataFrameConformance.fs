@@ -112,14 +112,22 @@ module DataFrameConformance =
     let aggregateParityLaws (seed: int) (iterations: int) : LawResult list =
         let mutable rng = ConfRng.ofSeed seed
         let mutable parity = None
+        // Phase 321 — the decimal columns the sample reached, each holding a present decimal cell.
+        let mutable decimals = 0
 
         let fns = [ Sum; Mean; Min; Max; Count; Median; StdDev; First; Last; CountDistinct ]
 
         for i in 0 .. iterations - 1 do
-            let isInt, r1 = ConfRng.intBelow 2 rng
+            let kind, r1 = ConfRng.intBelow 3 rng
             let nRows, r2 = ConfRng.intBelow 6 r1
             rng <- r2
-            let ty = if isInt = 0 then IntType else FloatType
+
+            let ty =
+                match kind with
+                | 0 -> IntType
+                | 1 -> FloatType
+                | _ -> DecimalType
+
             let mutable r = rng
 
             let cells =
@@ -133,12 +141,19 @@ module DataFrameConformance =
                           let v, r'' = ConfRng.intBelow 200 r
                           r <- r''
 
-                          if ty = IntType then
-                              Int(v - 100)
-                          else
-                              Float(float (v - 100) * 0.5) ]
+                          match ty with
+                          | IntType -> Int(v - 100)
+                          | FloatType -> Float(float (v - 100) * 0.5)
+                          // Hundredths, so a sum needs every digit and a float would lose one.
+                          | _ ->
+                              Cell.decimal (sprintf "%d.%02d" ((v - 100) / 3) (v % 100))
+                              |> Option.defaultValue Null ]
 
             rng <- r
+
+            if ty = DecimalType && cells |> List.exists (fun c -> c <> Null) then
+                decimals <- decimals + 1
+
             let col = Column.create "c" ty cells
 
             let table =
@@ -170,7 +185,10 @@ module DataFrameConformance =
 
         [ { Law = "Column.aggregate is byte-identical to a single-group GroupBy (single source of truth)"
             Passed = parity.IsNone
-            Counterexample = parity } ]
+            Counterexample = parity }
+          // Phase 321 — a sample that drew no present decimal certifies the decimal arms of the ten
+          // aggregates by nothing.
+          SampleAdequacy.reached "Conformance.aggregateParityLaws" "decimal column" seed [ "decimal", decimals ] ]
 
     // ---- columnar op-algebra + op-stream (Phase 31) ----
     // The teeth on `ColumnOps`: a table-edit op DU applies totally, `canApply ≡ apply`, `apply ∘ invert =
@@ -182,19 +200,62 @@ module DataFrameConformance =
     // Phase 246 — the kit's own sample, lifted out of the family so the witness-taking form can run
     // the same laws over a DOMAIN'S generator. `columnarOpLaws` still runs exactly this pair.
 
+    // Phase 321 — a decimal column beside the two ints, so the algebra's cell checks, its inverse
+    // and its stream's encoding meet a decimal cell and the int-into-decimal widening.
+    let private kitDecimal (text: string) : Cell =
+        Cell.decimal text |> Option.defaultValue Null
+
     let private columnarKitTable: Table =
-        { Schema = [ "a", IntType; "b", IntType ]
+        { Schema = [ "a", IntType; "b", IntType; "m", DecimalType ]
           Columns =
             [ Column.create "a" IntType [ Int 1; Int 2; Int 3 ]
-              Column.create "b" IntType [ Int 4; Int 5; Int 6 ] ] }
+              Column.create "b" IntType [ Int 4; Int 5; Int 6 ]
+              Column.create "m" DecimalType [ kitDecimal "1.5"; kitDecimal "-0.25"; kitDecimal "100" ] ] }
+
+    /// Does the op carry a decimal cell?
+    let private carriesDecimal (op: ColumnOp) : bool =
+        let isDec (c: Cell) =
+            match c with
+            | Decimal _ -> true
+            | _ -> false
+
+        match op with
+        | SetCell(_, _, v) -> isDec v
+        | SetColumn c
+        | InsertColumn(_, c) -> c.Cells |> List.exists isDec
+        | AppendRows rows -> rows |> List.exists (List.exists (snd >> isDec))
+        | RemoveColumn _
+        | ApplyTransform _ -> false
 
     // a (possibly-invalid) op generated against the current table state
     let private columnarKitOp (t: Table) (r: ConfRng.T) : ColumnOp * ConfRng.T =
         let rc = Table.rowCount t
         let names = Table.columnNames t
-        let kind, r1 = ConfRng.intBelow 7 r
+        let kind, r1 = ConfRng.intBelow 9 r
 
         match kind with
+        // Phase 321 — a decimal written into whichever column the roll names: accepted in a decimal
+        // column, refused by name in an int one (`cellFits` widens an int INTO a decimal column,
+        // never a decimal out of one).
+        | 7 when not (List.isEmpty names) && rc > 0 ->
+            let v, r2 = ConfRng.intBelow 1000 r1
+            let ci, r3 = ConfRng.intBelow (List.length names) r2
+            let row, r4 = ConfRng.intBelow rc r3
+            SetCell(List.item ci names, row, kitDecimal (sprintf "%d.%03d" (v / 7) v)), r4
+        // ... and an int into the decimal column, the widening, when the table still has it.
+        | 8 when List.contains "m" names && rc > 0 ->
+            let v, r2 = ConfRng.intBelow 100 r1
+            let row, r3 = ConfRng.intBelow rc r2
+            SetCell("m", row, Int v), r3
+        | 7
+        | 8 ->
+            let v, r2 = ConfRng.intBelow 100 r1
+
+            AppendRows(
+                [ names
+                  |> List.map (fun n -> n, (if n = "m" then kitDecimal (string v + ".5") else Int v)) ]
+            ),
+            r2
         | 0 ->
             let v, r2 = ConfRng.intBelow 100 r1
 
@@ -455,8 +516,25 @@ module DataFrameConformance =
     /// with a coverage guard so a sample that refuses nothing invertible reports vacuity rather than a
     /// hollow green); and that the table-edit stream built via `OpStream.append` over the columnar
     /// `StreamWitness` **verifies** and **replays** back to the live state from the base table.
+    ///
+    /// Since Phase 321 the evolving table carries a decimal column and the roll writes decimals and
+    /// ints into it, guarded on the decimal cells the sample drew.
     let columnarOpLaws (seed: int) (iterations: int) : LawResult list =
-        columnarOpRun "columnarOpLaws" ColumnOps.invert columnarKitTable columnarKitOp seed iterations
+        let mutable decimals = 0
+
+        let counted (t: Table) (r: ConfRng.T) =
+            let op, r' = columnarKitOp t r
+
+            if carriesDecimal op then
+                decimals <- decimals + 1
+
+            op, r'
+
+        let laws =
+            columnarOpRun "columnarOpLaws" ColumnOps.invert columnarKitTable counted seed iterations
+
+        laws
+        @ [ SampleAdequacy.reached "Conformance.columnarOpLaws" "decimal cell" seed [ "decimal op", decimals ] ]
 
     // ---- incremental DataFrame evaluation (Phase 34) ----
     // The teeth on `DataFrame.evalFrom`: the incremental path is byte-identical to a full `evalPipeline`
@@ -664,6 +742,9 @@ module DataFrameConformance =
         let mutable unboundDefect = None
         let mutable completeness = None
         let mutable roundTrip = None
+        // Phase 321 — the decimal params the sample bound (an int column plus a decimal param is
+        // exact decimal arithmetic, which substitution must reproduce digit for digit).
+        let mutable decimalParams = 0
 
         let col name cells : Column = Column.create name IntType cells
 
@@ -694,7 +775,15 @@ module DataFrameConformance =
             for nm in names do
                 let v, r' = ConfRng.intBelow 40 r
                 r <- r'
-                env <- Map.add nm (Int(v - 20)) env
+
+                let cell =
+                    if v % 3 = 0 then
+                        decimalParams <- decimalParams + 1
+                        Cell.decimal (string (v - 20) + ".125") |> Option.defaultValue Null
+                    else
+                        Int(v - 20)
+
+                env <- Map.add nm cell env
 
             // a pipeline referencing every param exactly once — one Derive per param over the input
             // table (rows ≥ 1), so every param is *consulted* on evaluation (a later step behind a
@@ -801,7 +890,8 @@ module DataFrameConformance =
             Counterexample = completeness }
           { Law = "a pipeline carrying Param steps round-trips the codec byte-stably"
             Passed = roundTrip.IsNone
-            Counterexample = roundTrip } ]
+            Counterexample = roundTrip }
+          SampleAdequacy.reached "Conformance.paramLaws" "decimal param" seed [ "decimal param", decimalParams ] ]
 
     // ---- Static output-schema derivation (Phase 112) ----
     // The teeth on `SchemaWalk`: a walk that derives a pipeline's output columns WITHOUT evaluating
@@ -835,17 +925,27 @@ module DataFrameConformance =
         let mutable typesAgree = None
         let mutable closedSeen = 0
         let mutable openSeen = 0
+        // Phase 321 — the accepted samples whose pipeline read the decimal column.
+        let mutable decimalSteps = 0
 
         let col name ty cells : Column = Column.create name ty cells
 
-        // The left/base table: two int columns and a string grouping column.
+        let dec (text: string) : Cell =
+            Cell.decimal text |> Option.defaultValue Null
+
+        // The left/base table: two int columns, a string grouping column and (Phase 321) a decimal.
         let baseTable (n: int) : Table =
             let a = [ for i in 1..n -> Int(i % 3) ]
             let b = [ for i in 1..n -> if i % 4 = 0 then Null else Int(i * 2) ]
             let g = [ for i in 1..n -> Str(if i % 2 = 0 then "x" else "y") ]
+            let m = [ for i in 1..n -> if i % 5 = 0 then Null else dec (string i + ".25") ]
 
-            { Schema = [ "a", IntType; "b", IntType; "g", StringType ]
-              Columns = [ col "a" IntType a; col "b" IntType b; col "g" StringType g ] }
+            { Schema = [ "a", IntType; "b", IntType; "g", StringType; "m", DecimalType ]
+              Columns =
+                [ col "a" IntType a
+                  col "b" IntType b
+                  col "g" StringType g
+                  col "m" DecimalType m ] }
 
         // The right-hand table a combining join reaches. Its `g` COLLIDES with the left's, so the
         // evaluator's `_right` suffix rule is exercised on every combining sample.
@@ -857,11 +957,12 @@ module DataFrameConformance =
 
         // A schema-identical peer, so the three set ops have something they accept.
         let peerTable: Table =
-            { Schema = [ "a", IntType; "b", IntType; "g", StringType ]
+            { Schema = [ "a", IntType; "b", IntType; "g", StringType; "m", DecimalType ]
               Columns =
                 [ col "a" IntType [ Int 1; Int 2 ]
                   col "b" IntType [ Int 8; Null ]
-                  col "g" StringType [ Str "x"; Str "z" ] ] }
+                  col "g" StringType [ Str "x"; Str "z" ]
+                  col "m" DecimalType [ dec "1.25"; Null ] ] }
 
         let resolve (name: string) : Result<Table, EvalError> =
             match name with
@@ -913,7 +1014,18 @@ module DataFrameConformance =
               Join(Ref "right", [ "g", "g" ], Anti)
               Union(Embedded peerTable)
               Intersect(Ref "peer")
-              Except(Embedded peerTable) ]
+              Except(Embedded peerTable)
+              // Phase 321 — the decimal column through a derive, an aggregate and a window.
+              Derive("cost", Binary(Mul, Col "m", Lit(dec "1.5")))
+              GroupBy([ "g" ], [ { Name = "total"; Fn = Sum; Of = "m" }; { Name = "top"; Fn = Max; Of = "m" } ])
+              Window(win [ "g" ] [ "m", Asc ] CumulSum "m" "runm") ]
+
+        let readsDecimal (step: Transform) : bool =
+            match step with
+            | Derive("cost", _)
+            | GroupBy(_, [ _; { Name = "top" } ])
+            | Window { As = "runm" } -> true
+            | _ -> false
 
         for i in 0 .. iterations - 1 do
             let rows, r1 = ConfRng.intBelow 4 rng
@@ -933,6 +1045,9 @@ module DataFrameConformance =
             match DataFrame.evalPipelineWith resolve pipeline table with
             | Error _ -> () // the evaluator rejected it; there is no output schema to agree about
             | Ok result ->
+                if pipeline |> List.exists readsDecimal then
+                    decimalSteps <- decimalSteps + 1
+
                 // The walk is given the input schema and NO source declarations, so an undeclared
                 // `Ref` is the honest "unknown" while the evaluator resolves it — which is precisely
                 // the asymmetry the `AtLeast` case exists to carry.
@@ -1005,7 +1120,8 @@ module DataFrameConformance =
               if closedSeen > 0 && openSeen > 0 then
                   None
               else
-                  Some(sprintf "seed=%d: closed=%d open=%d over %d iterations" seed closedSeen openSeen iterations) } ]
+                  Some(sprintf "seed=%d: closed=%d open=%d over %d iterations" seed closedSeen openSeen iterations) }
+          SampleAdequacy.reached "Conformance.schemaWalkLaws" "decimal step" seed [ "decimal step", decimalSteps ] ]
 
     /// **`Now` at a pinned clock is deterministic** (Phase 125) — the law that makes a
     /// clock-dependent pipeline a legitimate thing for a conformance kit to certify at all.

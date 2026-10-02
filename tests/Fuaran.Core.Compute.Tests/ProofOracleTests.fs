@@ -86,9 +86,8 @@ let private colTypeToModel (t: ColumnType) : ModelCol.coltype =
     | StringType -> ModelCol.StringType
     | DateType -> ModelCol.DateType
     | TimestampType -> ModelCol.TimestampType
-    // `ColumnOps.fst` carries the six types it was written over and not the decimal (Core `0.33.0`),
-    // so this generator draws no decimal column (`colTypePool`) and a decimal never reaches here.
-    | DecimalType -> failwith "the ColumnOps model has no decimal column type"
+    // Phase 321: the model carries the decimal column type, so the differential draws one.
+    | DecimalType -> ModelCol.DecimalType
 
 let private colTypeOfModel (t: ModelCol.coltype) : ColumnType =
     match t with
@@ -98,6 +97,7 @@ let private colTypeOfModel (t: ModelCol.coltype) : ColumnType =
     | ModelCol.StringType -> StringType
     | ModelCol.DateType -> DateType
     | ModelCol.TimestampType -> TimestampType
+    | ModelCol.DecimalType -> DecimalType
 
 /// The honest cell bridge: type + carrier, the carrier a rendering that parses back exactly.
 let private cellToModel (c: Cell) : ModelCol.cell =
@@ -109,7 +109,9 @@ let private cellToModel (c: Cell) : ModelCol.cell =
     | Str s -> ModelCol.Present(ModelCol.StringType, s)
     | Date s -> ModelCol.Present(ModelCol.DateType, s)
     | Timestamp s -> ModelCol.Present(ModelCol.TimestampType, s)
-    | Decimal _ -> failwith "the ColumnOps model has no decimal cell"
+    // The decimal text VERBATIM, as the other string-carried kinds: production compares a decimal
+    // cell structurally (its text), and the carrier premise is that the model compares the same.
+    | Decimal s -> ModelCol.Present(ModelCol.DecimalType, s)
 
 /// The BLIND cell bridge — the go-red's instrument: every present cell is read as a string, so
 /// the model's type check sees a `Str` where production sees an `Int`, and the two must part.
@@ -127,6 +129,7 @@ let private cellOfModel (c: ModelCol.cell) : Cell =
     | ModelCol.Present(ModelCol.StringType, s) -> Str s
     | ModelCol.Present(ModelCol.DateType, s) -> Date s
     | ModelCol.Present(ModelCol.TimestampType, s) -> Timestamp s
+    | ModelCol.Present(ModelCol.DecimalType, s) -> Decimal s
 
 let private columnToModelWith (bridge: Cell -> ModelCol.cell) (c: Column) : ModelCol.column =
     { ModelCol.column.name = c.Name
@@ -232,7 +235,13 @@ let private colRejClass (r: ColumnRejection) : string =
 let private colNamePool = [ "a"; "b"; "c"; "d" ]
 
 let private colTypePool =
-    [ IntType; FloatType; BoolType; StringType; DateType; TimestampType ]
+    [ IntType
+      FloatType
+      BoolType
+      StringType
+      DateType
+      TimestampType
+      DecimalType ]
 
 /// A cell for a column of type `ty`: mostly fitting, sometimes `Null`, sometimes of another type.
 let private genColCell (ty: ColumnType) (r: ConfRng.T) : Cell * ConfRng.T =
@@ -247,8 +256,8 @@ let private genColCell (ty: ColumnType) (r: ConfRng.T) : Cell * ConfRng.T =
         | StringType -> Str(sprintf "s%d" v)
         | DateType -> Date(sprintf "2026-01-%02d" (1 + v % 28))
         | TimestampType -> Timestamp(sprintf "2026-01-01T00:00:%02dZ" (v % 60))
-        // Not in `colTypePool` (the ColumnOps model has no decimal), so never drawn here.
-        | DecimalType -> Decimal(string v)
+        // Phase 321: a decimal with a fraction, so it is never the digits of an int.
+        | DecimalType -> Decimal(sprintf "%d.%d" (v / 10) (1 + v % 9))
 
     if roll < 7 then
         ofType ty, r2

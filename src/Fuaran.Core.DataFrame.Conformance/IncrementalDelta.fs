@@ -118,21 +118,36 @@ module IncrementalDelta =
     /// The generated table: a string identity column and two int columns, `b` drawn from a small
     /// range so groups have several members (a one-row-per-group corpus would never exercise a
     /// maintained aggregate at all).
-    let private mkTable (rows: (string * Cell * Cell) list) : Table =
-        { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
-          Columns =
-            [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-              Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
-              Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
+    ///
+    /// Phase 321 — and a decimal column `m`, derived from `a` (its digits with `.25` appended, a null
+    /// where `a` is null), so it moves with every edit to `a` and costs the draw nothing.
+    let private moneyOf (rows: (string * Cell * Cell) list) : Column =
+        Column.create
+            "m"
+            DecimalType
+            (rows
+             |> List.map (fun (_, a, _) ->
+                 match a with
+                 | Int v -> Cell.decimal (string v + ".25") |> Option.defaultValue Null
+                 | _ -> Null))
 
-    /// The same rows with a fourth column — a SCHEMA change, which is not a row change and which
-    /// the seam must recognise as such rather than diff its way through.
-    let private mkWideTable (rows: (string * Cell * Cell) list) : Table =
-        { Schema = [ "id", StringType; "a", IntType; "b", IntType; "c", IntType ]
+    let private mkTable (rows: (string * Cell * Cell) list) : Table =
+        { Schema = [ "id", StringType; "a", IntType; "b", IntType; "m", DecimalType ]
           Columns =
             [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
               Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
               Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b))
+              moneyOf rows ] }
+
+    /// The same rows with a fourth column — a SCHEMA change, which is not a row change and which
+    /// the seam must recognise as such rather than diff its way through.
+    let private mkWideTable (rows: (string * Cell * Cell) list) : Table =
+        { Schema = [ "id", StringType; "a", IntType; "b", IntType; "m", DecimalType; "c", IntType ]
+          Columns =
+            [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+              Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
+              Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b))
+              moneyOf rows
               Column.create "c" IntType (rows |> List.map (fun _ -> Int 1)) ] }
 
     /// The relation the filtering-join pipelines match against (Phase 120): a two-row lookup on
@@ -200,10 +215,13 @@ module IncrementalDelta =
         | 2 ->
             [ Filter(Binary(Gt, Col "a", Lit(Int 0)))
               Derive("d", Binary(Mul, Col "a", Lit(Int 2))) ]
-        | 3 -> [ GroupBy([ "b" ], [ agg "n" Count "a"; agg "s" Sum "a" ]) ]
+        // Phase 321 — every group-by that sums `a` also sums the decimal `m` beside it, so the
+        // maintained decimal sum rides the shapes the family already draws (an aggregate column
+        // added to a group table moves no refresh class) and reaches a share the guard can hold.
+        | 3 -> [ GroupBy([ "b" ], [ agg "n" Count "a"; agg "s" Sum "a"; agg "sm" Sum "m" ]) ]
         | 4 ->
             [ Filter(Binary(Gt, Col "a", Lit(Int -5)))
-              GroupBy([ "b" ], [ agg "mx" Max "a"; agg "f" First "id"; agg "l" Last "id" ]) ]
+              GroupBy([ "b" ], [ agg "mx" Max "a"; agg "f" First "id"; agg "l" Last "id"; agg "mm" Max "m" ]) ]
         | 5 -> [ Transform.sortBy [ "b", Asc ] ] // merged order over the TIE-HEAVY key (Phase 115)
         | 6 -> [ Project [ "b", "b" ]; Distinct ] // declined: whole-relation
         // Phase 202 — this was the family's "maintainable step that is not last" DECLINE until the
@@ -421,7 +439,7 @@ module IncrementalDelta =
             // cell cache is observable at all, since every other tail step here evaluates no
             // expression and is charged none. A group whose aggregates were reused must not have
             // this expression re-evaluated, and one whose aggregates moved must.
-            [ GroupBy([ "b" ], [ agg "s" Sum "a"; agg "n" Count "a" ])
+            [ GroupBy([ "b" ], [ agg "s" Sum "a"; agg "n" Count "a"; agg "sm" Sum "m" ])
               Derive("mean2", Binary(Mul, Col "s", Lit(Int 2)))
               Filter(Binary(Ge, Col "mean2", Lit(Int -20))) ]
         | 34 ->
@@ -430,7 +448,7 @@ module IncrementalDelta =
             // then a cut. Which group survives the cut is decided by an aggregate the delta moved
             // indirectly, so a stale group row changes the window's membership rather than one
             // cell of it.
-            [ GroupBy([ "b" ], [ agg "s" Sum "a"; agg "f" First "id" ])
+            [ GroupBy([ "b" ], [ agg "s" Sum "a"; agg "f" First "id"; agg "sm" Sum "m" ])
               Transform.sortBy [ "s", Desc ]
               Transform.limit 2 0 ]
         | 35 ->
@@ -462,7 +480,7 @@ module IncrementalDelta =
             // IN each group, so an unchanged relation and an unchanged row can still move a group's
             // aggregate and therefore the tail's verdict on it.
             [ Join(Embedded lookup, [ "b", "k" ], Semi)
-              GroupBy([ "b" ], [ agg "n" Count "a"; agg "s" Sum "a" ])
+              GroupBy([ "b" ], [ agg "n" Count "a"; agg "s" Sum "a"; agg "sm" Sum "m" ])
               Filter(Binary(Gt, Col "s", Lit(Int -20))) ]
         | 37 ->
             // A partition-global window feeding a maintained group feeding a tail that reads the
@@ -609,7 +627,7 @@ module IncrementalDelta =
                     Of = "a"
                     As = "run" }
               Filter(Binary(Gt, Col "run", Lit(Int 0)))
-              GroupBy([ "b" ], [ agg "n" Count "a"; agg "s" Sum "a" ])
+              GroupBy([ "b" ], [ agg "n" Count "a"; agg "s" Sum "a"; agg "sm" Sum "m" ])
               Filter(Binary(Gt, Col "n", Lit(Int 0))) ]
         | 43 ->
             // The same survivor set feeding a MERGED ORDER and then a CUT — the two cross-row steps
@@ -1053,6 +1071,22 @@ module IncrementalDelta =
 
                   if restricted then
                       crossRowColumnsReadRowLocally s.Pipeline
+                  else
+                      []
+          )
+          // Phase 321 — the decimal column read by a maintained step: a sample that never refreshed
+          // a pipeline over it certifies the seam's decimal keys and sums by nothing.
+          ReachesEvery(
+              "decimal column",
+              [ "decimal aggregate" ],
+              fun s ->
+                  if
+                      s.Pipeline
+                      |> List.exists (function
+                          | GroupBy(_, aggs) -> aggs |> List.exists (fun a -> a.Of = "m")
+                          | _ -> false)
+                  then
+                      [ "decimal aggregate" ]
                   else
                       []
           )

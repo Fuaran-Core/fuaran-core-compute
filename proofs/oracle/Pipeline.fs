@@ -2382,22 +2382,39 @@ let type_of : cell  ->  FStar_Pervasives_Native.option<column_type> = (fun ( c  
      end))
 
 
-let rec first_type : Prims.list<cell>  ->  FStar_Pervasives_Native.option<column_type> = (fun ( cells  :  Prims.list<cell> ) -> (match (cells) with
-| [] -> begin
-     FStar_Pervasives_Native.None
+let widens : column_type  ->  column_type  ->  Prims.bool = (fun ( from  :  column_type ) ( target  :  column_type ) -> (((Prims.op_Equals from target) || ((Prims.op_Equals from IntType) && (Prims.op_Equals target FloatType))) || ((Prims.op_Equals from IntType) && (Prims.op_Equals target DecimalType))))
+
+
+let widen_type : column_type  ->  column_type  ->  column_type = (fun ( acc  :  column_type ) ( t  :  column_type ) ->  
+if (widens acc t) then begin
+     t
+     end else begin
+     acc
+     end)
+
+
+let step_type : FStar_Pervasives_Native.option<column_type>  ->  cell  ->  FStar_Pervasives_Native.option<column_type> = (fun ( acc  :  FStar_Pervasives_Native.option<column_type> ) ( v  :  cell ) -> (match ((((type_of v)), (acc))) with
+| (FStar_Pervasives_Native.None, uu___) -> begin
+     acc
      end
-| (v)::t -> begin
-     (match ((type_of v)) with
-| FStar_Pervasives_Native.Some (ty) -> begin
+| (FStar_Pervasives_Native.Some (ty), FStar_Pervasives_Native.None) -> begin
      FStar_Pervasives_Native.Some (ty)
      end
-| FStar_Pervasives_Native.None -> begin
-     (first_type t)
-     end)
+| (FStar_Pervasives_Native.Some (ty), FStar_Pervasives_Native.Some (a)) -> begin
+     FStar_Pervasives_Native.Some ((widen_type a ty))
      end))
 
 
-let infer_type : Prims.list<cell>  ->  column_type = (fun ( cells  :  Prims.list<cell> ) -> (match ((first_type cells)) with
+let rec infer_from : FStar_Pervasives_Native.option<column_type>  ->  Prims.list<cell>  ->  FStar_Pervasives_Native.option<column_type> = (fun ( acc  :  FStar_Pervasives_Native.option<column_type> ) ( cells  :  Prims.list<cell> ) -> (match (cells) with
+| [] -> begin
+     acc
+     end
+| (v)::t -> begin
+     (infer_from (step_type acc v) t)
+     end))
+
+
+let infer_type : Prims.list<cell>  ->  column_type = (fun ( cells  :  Prims.list<cell> ) -> (match ((infer_from FStar_Pervasives_Native.None cells)) with
 | FStar_Pervasives_Native.Some (ty) -> begin
      ty
      end

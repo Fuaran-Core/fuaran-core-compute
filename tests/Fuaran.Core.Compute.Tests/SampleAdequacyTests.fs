@@ -279,6 +279,72 @@ let motivatingInstanceTests =
                   "and the guard refuses to certify the sample they held over" ]
 
 // ---------------------------------------------------------------------------
+//  Phase 321 — the decimal reach of every kit-drawn family that ranges over cells
+// ---------------------------------------------------------------------------
+
+[<Tests>]
+let decimalReachTests =
+    testList
+        "SampleAdequacy.decimal"
+        [ testCase "every kit-drawn family that ranges over cells reaches a decimal, and says so"
+          <| fun _ ->
+              let decimalGuards (rs: LawResult list) =
+                  adequacyLaws rs |> List.filter (fun r -> r.Law.Contains "decimal")
+
+              for family, rs in
+                  [ "aggregateParityLaws", Conformance.aggregateParityLaws 4242 200
+                    "columnarOpLaws", Conformance.columnarOpLaws 4242 200
+                    "schemaWalkLaws", Conformance.schemaWalkLaws 1121 300
+                    "paramLaws", Conformance.paramLaws 4242 200
+                    "IncrementalDelta.laws", IncrementalDelta.laws 7 60 ] do
+                  let guards = decimalGuards rs
+                  Expect.isNonEmpty guards (sprintf "%s carries a decimal guard" family)
+
+                  for g in guards do
+                      Expect.isTrue g.Passed (sprintf "%s: %s — %A" family g.Law g.Counterexample)
+
+          testCase "the incremental family's decimal guard goes red over the corpus as it stood before Phase 321"
+          <| fun _ ->
+              // The go-red, stated against the history: the same seed's samples with every pipeline
+              // that reads the decimal column dropped are the sample the family drew before this
+              // phase, and the guard must refuse it rather than read green by omission.
+              let demand =
+                  IncrementalDelta.demands
+                  |> List.filter (function
+                      | ReachesEvery("decimal column", _, _) -> true
+                      | _ -> false)
+
+              let readsMoney (s: IncrementalSample) =
+                  s.Pipeline
+                  |> List.exists (function
+                      | GroupBy(_, aggs) -> aggs |> List.exists (fun a -> a.Of = "m")
+                      | Sort keys -> keys |> List.exists (fun (k, _) -> k = Slot.Lit "m")
+                      | _ -> false)
+
+              let xs = IncrementalDelta.samples 7 60
+
+              match SampleAdequacy.check "IncrementalDelta" 7 demand xs with
+              | [ r ] -> Expect.isTrue r.Passed "the shipped sample reaches both decimal verdicts"
+              | rs -> failtestf "expected one decimal-column law, got %d" (List.length rs)
+
+              match SampleAdequacy.check "IncrementalDelta" 7 demand (xs |> List.filter (readsMoney >> not)) with
+              | [ r ] ->
+                  Expect.isFalse r.Passed "a sample with no decimal read is refused"
+                  Expect.stringContains (cx r) "decimal aggregate" "and it names the verdict it never reached"
+              | rs -> failtestf "expected one decimal-column law, got %d" (List.length rs)
+
+          testCase "a kit family's decimal guard goes red on a sample that drew no decimal"
+          <| fun _ ->
+              for family, dimension in
+                  [ "Conformance.aggregateParityLaws", "decimal column"
+                    "Conformance.columnarOpLaws", "decimal cell"
+                    "Conformance.schemaWalkLaws", "decimal step"
+                    "Conformance.paramLaws", "decimal param" ] do
+                  let hollow = SampleAdequacy.reached family dimension 4242 [ "decimal", 0 ]
+                  Expect.isFalse hollow.Passed (sprintf "%s: a zero count is red" family)
+                  Expect.stringContains (cx hollow) "decimal" "and it names what was never drawn" ]
+
+// ---------------------------------------------------------------------------
 //  census completeness — the half a declaration cannot check about itself
 // ---------------------------------------------------------------------------
 

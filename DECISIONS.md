@@ -1,5 +1,75 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-02 — D3: one float order, the substrate's; a derived column's type is the join its cells widen into, and the static typer stays exact
+
+**Decided (Phase 321).** Three rulings about how the evaluator types and orders what it computes,
+taken together because each is the decimal's arrival exposing an older looseness.
+
+**1. The evaluator orders floats as the substrate does: `NaN` one value ABOVE every other.** The
+evaluator compared floats with the host's `compare`, which puts `NaN` below every value on .NET and,
+under Fable, answers `1` for both `compare nan 1.0` and `compare 1.0 nan` — an order on one host and
+not an order on the other. The substrate's `Cell.compare` (its Phase 315) puts `NaN` last, and
+`Column.aggregate`'s `Min` / `Max` already read that order, so a descending sort and a `Max` named
+two different largest values. `Kernels.compareFloat` now states the order once; the sort kernel,
+the compiled comparison arm and both comparison kernels (the portable loop and the vector one, whose
+`NaN` lanes moved from `<` / `<=` to `>` / `>=`) read it. A float filter `x > k` now keeps a `NaN`
+row and `x < k` drops it; a sort puts `NaN` after `+Inf` and before the nulls. Recorded as breaking.
+
+**2. A derived column's type is the join of its present cells' types under `ColumnType.widens`.**
+It was the type of the first present cell, so a `Case` answering `Int 1` on one row and `Float 2.5`
+on the next built an int column holding a float — a table the substrate's `Table.validate` refuses,
+and whose `Sum` its Phase 299 turns into an error. Now `Int` and `Float` join at `Float`, `Int` and
+`Decimal` at `Decimal` (the common money shape: `Coalesce(amount, Lit(Int 0))`). A pair no widening
+relates keeps the EARLIER type, which is the pre-321 answer for that pair, `Float` beside `Decimal`
+included. **Declined: refusing `Float ⊔ Decimal` by name at a derive.** It would add a whole-column
+refusal to `Derive`, which the planner's totality verdict (proved sound over the evaluator in
+`proofs/Pipeline.fst`) does not model: a derive the verdict calls total could then fail, and the
+reorder that verdict licenses could change which error a pipeline reports. That is a change to the
+verdict and its proof, and it is left to a phase of its own rather than half-made here. The model
+moved with the rule: `Pipeline.fst`'s `infer_type` is the same fold, re-verified and re-extracted.
+
+**3. The static typer's join stays EXACT.** The phase that brought rule 2 also asked for
+`Typing.join` to widen. It does not, because `Of t` is an exactness claim the totality verdict reads:
+`Of IntType + Of IntType` is not total (two ints can overflow), and a `Case` of an int and a float
+typed `Of FloatType` would make the same addition read as total while both operands are ints at run
+time. So `Int ⊔ Float` and `Int ⊔ Decimal` stay `Unknown` in the typer, and `DataFrame.typeOf` answers
+`None` for them — undecided, never wrong.
+
+**Also recorded.** `conformance/laws/transform-laws.json` is the `transformLaws` family's vectors:
+every row is an `evalPipeline` case, and other hosts read the file. Decimal rows through the columnar
+op wire and the delta wire would be new CASE KINDS in a file those hosts consume, which is a
+cross-host wire addition rather than a re-emit; this phase certifies those wires in this repository
+(`columnarOpLaws` and `IncrementalDelta` now draw decimals and are guarded on it, and the
+`DecimalStrand` suite round-trips both wires byte for byte) and does not add the case kinds. None of
+the existing vectors moved under the rulings above.
+
+## 2026-10-02 — D2: FS0025 is an error here, and `cellFits` widens exactly as `ColumnType.widens` does
+
+**Decided (Phase 321; the `cellFits` half is an operator ruling of 2026-09-30).**
+
+**1. An incomplete match is a compile error in every project but the proof oracle.**
+`Directory.Build.props` escalates FS0025. The strand matches over the substrate's closed unions
+(`Cell`, `ColumnType`), which gain cases on a raise; as a warning, an arm blind to the new case
+compiled and threw `MatchFailureException` on the first value of it. As an error, the raise itself
+names every arm that must move. The proof oracle is exempt by project name: it is extracted F\*
+code, total by proof rather than by syntax, and it keeps its own `NoWarn` set. **The dry run this
+phase was asked to record:** with FS0025 an error, the repository at Core `0.33.0` built with ZERO
+errors — the substrate's raise (Phase 277) had already given every exhaustive arm its `Decimal` case,
+so the escalation now guards the next raise rather than closing a list on this one.
+
+**2. `ColumnOps.cellFits` accepts a cell whose type widens into the column's.** It was exact type
+equality. The substrate's codec decodes a JSON int into a decimal (and a float) column, and its
+`Table.validate` checks every cell through `widens`, so a strict edit check refused cells the
+substrate's own wire produces and its own validator accepts: a table valid on one side of the
+boundary failed an edit on the other. Now an `Int` fits a `FloatType` or `DecimalType` column, and
+nothing else widens (`Float` into decimal and decimal into float are refused by name). **The cell is
+stored as given, never converted**, so `invert` restores the previous cell verbatim and its round
+trip is exact as before. **The strict reading is declined**, for the reason above. `proofs/ColumnOps.fst`
+moved with it: the model gained `DecimalType` and a `widens`, `cell_fits` reads it, every theorem
+re-verified unchanged, and the oracle differential now draws decimal columns (it could not before).
+`cellToJson` writes the canonical decimal text, so a cell built by hand as `1.50` encodes as `1.5`,
+the spelling the decoder reads.
+
 ## 2026-09-26 — D1: the compute strand is cut from Fuaran.Core into this repository under the same ids; it opens at `0.33.0`, and the forwarding module goes when the substrate removes the strand
 
 **Decided (Phase 259, carrying out the Fuaran.Core repository's D66).** The substrate's D66 ruled

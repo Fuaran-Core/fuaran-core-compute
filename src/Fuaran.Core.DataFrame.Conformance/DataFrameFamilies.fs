@@ -40,7 +40,7 @@ module DataFrameFamilies =
           r
               "Conformance.aggregateParityLaws"
               NoRefusal
-              "an Error only lands in a parity bucket, and the kit draws no type that can raise one"
+              "an Error only lands in a parity bucket, and the kit draws no type or magnitude that can raise one (its decimals are hundredths far inside the float range)"
           r "Conformance.columnarOpLaws" Drawn "delegates to columnarOpLawsWith"
           r
               "Conformance.columnarOpLawsWith"
@@ -80,18 +80,25 @@ module DataFrameFamilies =
           // release: a ROW-LOCAL step reading a column a cross-row step appended, per producer
           // class. The corpus carried ten window-bearing pipelines and not one of them, so the
           // family that exists to see that defect certified green against an evaluator carrying it.
-          "IncrementalDelta.lawsWith", Guarded [ "refresh class"; "cross-row column read"; "source rows" ]
+          // Phase 321 — and the decimal column read by a maintained step.
+          "IncrementalDelta.lawsWith",
+          Guarded [ "refresh class"; "cross-row column read"; "decimal column"; "source rows" ]
           "IncrementalDelta.laws",
           Guarded
               [ "refresh class"
                 "cross-row column read"
+                "decimal column (delegates to lawsWith)"
                 "source rows (delegates to lawsWith)" ]
           // Phase 181. Every other arm is BUILT each iteration — an op applied, inverted, chained
           // and replayed — but the inverse-only-for-applicable law is about the ops the table
           // REFUSES, and whether the generator refused an INVERTIBLE one is a property of the run.
           "Conformance.columnarOpLawsWith", Guarded [ "invert's refusal population" ]
-          "Conformance.columnarOpLaws", Guarded [ "invert's refusal population (delegates to columnarOpLawsWith)" ]
-          "Conformance.schemaWalkLaws", Guarded [ "derivation verdict (its own parity vacuity guard)" ]
+          // Phase 321 — the kit's own roll writes decimals into its decimal column, guarded on them.
+          "Conformance.columnarOpLaws",
+          Guarded
+              [ "invert's refusal population (delegates to columnarOpLawsWith)"
+                "decimal cell" ]
+          "Conformance.schemaWalkLaws", Guarded [ "derivation verdict (its own parity vacuity guard)"; "decimal step" ]
           // `evalFrom` answers every change but a value edit by evaluating in full, so only a value
           // edit can tell the incremental path from the full one.
           "Conformance.incrementalLawsWith", Guarded [ "value edit" ]
@@ -112,12 +119,12 @@ module DataFrameFamilies =
                 "decimal sample" ]
 
           // ---- unconditional: every iteration builds the evidence for every branch ----
-          "Conformance.aggregateParityLaws",
-          Unconditional "each iteration compares aggregate against a single-group groupBy on the same column"
+          // Phase 321 — guarded since the column type became a three-way draw with the decimal.
+          "Conformance.aggregateParityLaws", Guarded [ "decimal column" ]
           "Conformance.incrementalLaws",
           Unconditional "each iteration compares evalFrom against a full evalPipeline over the same change"
-          "Conformance.paramLaws",
-          Unconditional "each iteration binds a param, leaves one unbound, and round-trips the pipeline"
+          // Phase 321 — guarded on the decimal params it binds (one draw in three).
+          "Conformance.paramLaws", Guarded [ "decimal param" ]
           "Conformance.slotParamLaws",
           Unconditional
               "each iteration BUILDS the bound, substituted, unbound, mistyped and literal-only runs over the same drawn table — the draw varies the table, the page size and which column is ordered on, never which branch is taken"

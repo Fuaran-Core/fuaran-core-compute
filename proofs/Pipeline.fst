@@ -683,15 +683,33 @@ let type_of (c:cell) : Tot (option column_type) =
   | Null -> None
   | Decimal _ -> Some DecimalType
 
-(* F#: `cells |> List.tryPick Cell.typeOf`. *)
-let rec first_type (cells:list cell) : Tot (option column_type) =
-  match cells with
-  | [] -> None
-  | v :: t -> (match type_of v with Some ty -> Some ty | None -> first_type t)
+(* F#: `ColumnType.widens` (the substrate's, `0.33.0`). *)
+let widens (from target:column_type) : Tot bool =
+  from = target || (from = IntType && target = FloatType) || (from = IntType && target = DecimalType)
 
-(* F#: `inferType` — `… |> Option.defaultValue StringType`. *)
+(* F#: `widenColumnType acc t` — the join where `widens` relates the pair (the wider type), the
+   EARLIER type where it relates neither way. `joinColumnType acc t` is `t` when `acc` widens into
+   it and `acc` when `t` widens into `acc`, so the earlier-type fallback makes both of the last two
+   cases `acc`. (Phase 321.) *)
+let widen_type (acc t:column_type) : Tot column_type =
+  if widens acc t then t else acc
+
+(* F#: one step of `inferType`'s fold — a null leaves the type so far, a present cell joins it. *)
+let step_type (acc:option column_type) (v:cell) : Tot (option column_type) =
+  match type_of v, acc with
+  | None, _ -> acc
+  | Some ty, None -> Some ty
+  | Some ty, Some a -> Some (widen_type a ty)
+
+(* F#: `inferType`'s `go` — the present cells' types joined in row order. *)
+let rec infer_from (acc:option column_type) (cells:list cell) : Tot (option column_type) (decreases cells) =
+  match cells with
+  | [] -> acc
+  | v :: t -> infer_from (step_type acc v) t
+
+(* F#: `inferType` — `go None cells |> Option.defaultValue StringType`. *)
 let infer_type (cells:list cell) : Tot column_type =
-  match first_type cells with
+  match infer_from None cells with
   | Some ty -> ty
   | None -> StringType
 
@@ -1575,11 +1593,17 @@ let rec all_str_or_null (cells:list cell) : Tot bool =
   | Str _ :: t | Null :: t -> all_str_or_null t
   | _ -> false
 
-let rec infer_str_or_null (cells:list cell)
-  : Lemma (requires all_str_or_null cells) (ensures infer_type cells == StringType) =
+let rec infer_str_or_null_from (acc:option column_type) (cells:list cell)
+  : Lemma (requires all_str_or_null cells /\ (acc == None \/ acc == Some StringType))
+          (ensures (infer_from acc cells == None \/ infer_from acc cells == Some StringType))
+          (decreases cells) =
   match cells with
   | [] -> ()
-  | _ :: t -> infer_str_or_null t
+  | v :: t -> infer_str_or_null_from (step_type acc v) t
+
+let infer_str_or_null (cells:list cell)
+  : Lemma (requires all_str_or_null cells) (ensures infer_type cells == StringType) =
+  infer_str_or_null_from None cells
 
 (* THE ROW LEMMA. Filtering the derived rows answers what filtering the rows answers — the same
    first error, or the kept rows, each extended by the cell the derive gives it; and the derive

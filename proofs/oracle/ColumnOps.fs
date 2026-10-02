@@ -135,6 +135,7 @@ type coltype =
 | StringType
 | DateType
 | TimestampType
+| DecimalType
 
 
 let uu___is_IntType : coltype  ->  Prims.bool = (fun ( projectee  :  coltype ) -> (match (projectee) with
@@ -191,6 +192,15 @@ let uu___is_TimestampType : coltype  ->  Prims.bool = (fun ( projectee  :  colty
      end))
 
 
+let uu___is_DecimalType : coltype  ->  Prims.bool = (fun ( projectee  :  coltype ) -> (match (projectee) with
+| DecimalType -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
 let tag : coltype  ->  Prims.string = (fun ( t  :  coltype ) -> (match (t) with
 | IntType -> begin
      "int"
@@ -209,7 +219,13 @@ let tag : coltype  ->  Prims.string = (fun ( t  :  coltype ) -> (match (t) with
      end
 | TimestampType -> begin
      "timestamp"
+     end
+| DecimalType -> begin
+     "decimal"
      end))
+
+
+let widens : coltype  ->  coltype  ->  Prims.bool = (fun ( from  :  coltype ) ( target  :  coltype ) -> (((Prims.op_Equals from target) || ((Prims.op_Equals from IntType) && (Prims.op_Equals target FloatType))) || ((Prims.op_Equals from IntType) && (Prims.op_Equals target DecimalType))))
 
 type cell =
 | Null
@@ -661,7 +677,7 @@ let cell_fits : Prims.string  ->  coltype  ->  cell  ->  outcome<unit, rejection
      (match ((type_of c)) with
 | FStar_Pervasives_Native.Some (t) -> begin
       
-if (Prims.op_Equals t ty) then begin
+if (widens t ty) then begin
      Ok (())
      end else begin
      Error (CellTypeMismatch (col_name, (tag ty), (cell_type_name c)))

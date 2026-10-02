@@ -69,8 +69,8 @@ type internal KernelSet =
         /// (`mask[p]`) and satisfies `vals[p] op k`: the rows on which the comparison is `true`.
         CmpInts: CmpOp -> int[] -> bool[] -> int -> int -> uint32[]
         /// `CmpFloats op vals mask k count` — the same over a float vector, under the evaluator's
-        /// pinned float ordering (`compare`: `NaN` equal to itself and below every other value,
-        /// `-0.0` equal to `0.0`).
+        /// pinned float ordering (`compareFloat`: `NaN` equal to itself and above every other
+        /// value, `-0.0` equal to `0.0`).
         CmpFloats: CmpOp -> float[] -> bool[] -> float -> int -> uint32[]
         /// The rows set in both bitmaps.
         And: uint32[] -> uint32[] -> uint32[]
@@ -113,6 +113,24 @@ module internal Kernels =
     let isSet (bits: uint32[]) (p: int) : bool =
         (bits[p >>> 5] >>> (p &&& 31)) &&& 1u <> 0u
 
+    /// THE evaluator's float ordering (Phase 321): IEEE order on the values that are not `NaN`,
+    /// `-0.0` equal to `0.0`, and `NaN` one value ABOVE every other — the substrate's `Cell.compare`
+    /// order, which `Column.aggregate`'s `Min` / `Max` already read, so a sort and an aggregate
+    /// agree about where a `NaN` sits. Stated here rather than delegated to the host's `compare`,
+    /// which put `NaN` below every value on .NET and answered `1` for both `compare nan 1.0` and
+    /// `compare 1.0 nan` under Fable — an order on one host and not an order on the other.
+    let compareFloat (a: float) (b: float) : int =
+        if System.Double.IsNaN a then
+            (if System.Double.IsNaN b then 0 else 1)
+        elif System.Double.IsNaN b then
+            -1
+        elif a < b then
+            -1
+        elif a > b then
+            1
+        else
+            0
+
     /// The comparison `op` makes of an ordering's answer `c`.
     let holds (op: CmpOp) (c: int) : bool =
         match op with
@@ -151,7 +169,7 @@ module internal Kernels =
             let out: uint32[] = Array.zeroCreate (words count)
 
             for p in 0 .. count - 1 do
-                if mask[p] && holds op (compare vals[p] k) then
+                if mask[p] && holds op (compareFloat vals[p] k) then
                     out[p >>> 5] <- out[p >>> 5] ||| (1u <<< (p &&& 31))
 
             out
@@ -246,11 +264,11 @@ module internal Kernels =
             | CNe -> intLoop (fun a b -> Vector128.OnesComplement(Vector128.Equals(a, b))) op vals mask k count
 
         // The pinned float ordering differs from the IEEE comparisons the vector unit makes in one
-        // place only: a `NaN` row compares BELOW a non-`NaN` constant, where every IEEE comparison
-        // but `<>` is false. So `<` and `<=` also take the `NaN` rows (`v <> v`); `>`, `>=` and `=`
-        // are false there under both, and `<>` true under both. A `NaN` CONSTANT orders above every
-        // row that is not `NaN` and equal to the ones that are, which no single IEEE comparison
-        // says; that case takes the portable loop.
+        // place only: a `NaN` row compares ABOVE a non-`NaN` constant (Phase 321), where every IEEE
+        // comparison but `<>` is false. So `>` and `>=` also take the `NaN` rows (`v <> v`); `<`,
+        // `<=` and `=` are false there under both, and `<>` true under both. A `NaN` CONSTANT
+        // orders above every row that is not `NaN` and equal to the ones that are, which no single
+        // IEEE comparison says; that case takes the portable loop.
         let inline private floatLoop
             ([<InlineIfLambda>] cmp: Vector128<float> -> Vector128<float> -> Vector128<float>)
             (nanTrue: bool)
@@ -293,7 +311,7 @@ module internal Kernels =
                 p <- p + 16
 
             while p < count do
-                if mask[p] && holds op (compare vals[p] k) then
+                if mask[p] && holds op (compareFloat vals[p] k) then
                     out[p >>> 5] <- out[p >>> 5] ||| (1u <<< (p &&& 31))
 
                 p <- p + 1
@@ -305,10 +323,10 @@ module internal Kernels =
                 Portable.cmpFloats op vals mask k count
             else
                 match op with
-                | CLt -> floatLoop (fun a b -> Vector128.LessThan(a, b)) true op vals mask k count
-                | CLe -> floatLoop (fun a b -> Vector128.LessThanOrEqual(a, b)) true op vals mask k count
-                | CGt -> floatLoop (fun a b -> Vector128.GreaterThan(a, b)) false op vals mask k count
-                | CGe -> floatLoop (fun a b -> Vector128.GreaterThanOrEqual(a, b)) false op vals mask k count
+                | CLt -> floatLoop (fun a b -> Vector128.LessThan(a, b)) false op vals mask k count
+                | CLe -> floatLoop (fun a b -> Vector128.LessThanOrEqual(a, b)) false op vals mask k count
+                | CGt -> floatLoop (fun a b -> Vector128.GreaterThan(a, b)) true op vals mask k count
+                | CGe -> floatLoop (fun a b -> Vector128.GreaterThanOrEqual(a, b)) true op vals mask k count
                 | CEq -> floatLoop (fun a b -> Vector128.Equals(a, b)) false op vals mask k count
                 | CNe ->
                     floatLoop (fun a b -> Vector128.OnesComplement(Vector128.Equals(a, b))) false op vals mask k count

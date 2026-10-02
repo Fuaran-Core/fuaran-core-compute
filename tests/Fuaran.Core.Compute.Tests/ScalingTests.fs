@@ -187,6 +187,23 @@ let private build (n: int) : Table =
 
     }
 
+/// Phase 321 — `build`'s table with DECIMAL identity, grouping key and summed measure: the id is a
+/// decimal (`RowIdentity.byColumn` keys it through the canonical token, one key per row), the
+/// grouping key a decimal of bounded cardinality, and `b` a decimal, so `pipeline`'s `Sum` is an
+/// exact decimal sum. `a` stays the int `editOne` edits and the filter reads.
+let private buildDecimal (n: int) : Table =
+    let dec (text: string) =
+        match Cell.decimal text with
+        | Some c -> c
+        | None -> failwithf "not decimal text: %s" text
+
+    { Schema = [ "id", DecimalType; "grp", DecimalType; "a", IntType; "b", DecimalType ]
+      Columns =
+        [ Column.create "id" DecimalType [ for i in 0 .. n - 1 -> dec (string i + ".5") ]
+          Column.create "grp" DecimalType [ for i in 0 .. n - 1 -> dec (string (i % 17) + ".25") ]
+          Column.create "a" IntType [ for i in 0 .. n - 1 -> Int i ]
+          Column.create "b" DecimalType [ for i in 0 .. n - 1 -> dec (string (i % 7) + ".01") ] ] }
+
 /// Edit ONE row of the table — the delta the incremental seam is meant to answer cheaply.
 let private editOne (t: Table) : Table =
     let n = Table.rowCount t
@@ -1401,12 +1418,18 @@ let clockTests =
               // (log in the phase's run scratch, figures in docs/incremental-evaluation.md): the
               // one-`Work`-record-per-row refresh alone cost several full evaluations at 20,000 and
               // 100,000 rows. The Release tables, every corpus node, both hosts, are in the doc.
+              //
+              // Phase 321 re-measures the bar with DECIMAL keys: the identity, the grouping key and
+              // the summed measure decimal (`buildDecimal`), on the two group-by shapes, held to the
+              // same bound — no separate allowance for a decimal key.
               for n in [ small; large; 100_000 ] do
-                  for label, p in
-                      [ "tick: filter > groupBy", pipeline
-                        "tick: filter > sort > limit", topNPipeline
-                        "tick: group tail", groupTailPipeline ] do
-                      let before = build n
+                  for label, p, mk in
+                      [ "tick: filter > groupBy", pipeline, build
+                        "tick: filter > sort > limit", topNPipeline, build
+                        "tick: group tail", groupTailPipeline, build
+                        "tick: decimal filter > groupBy", pipeline, buildDecimal
+                        "tick: decimal group tail", groupTailPipeline, buildDecimal ] do
+                      let before = mk n
                       let after = editOne before
                       let state = ok (Incremental.primeOn idw p before)
 

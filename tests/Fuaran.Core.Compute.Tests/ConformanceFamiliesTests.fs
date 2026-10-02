@@ -140,7 +140,8 @@ let conformanceTests =
           testCase "aggregateParityLaws certify single-source parity (Phase 36)"
           <| fun _ ->
               let results = Conformance.aggregateParityLaws 4242 200
-              Expect.equal (List.length results) 1 "the parity law reported"
+              // Phase 321: and the decimal column's adequacy guard beside it.
+              Expect.equal (List.length results) 2 "the parity law and its decimal guard reported"
 
               if results |> List.exists (fun r -> not r.Passed) then
                   let fails =

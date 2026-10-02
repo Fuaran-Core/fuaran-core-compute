@@ -137,6 +137,7 @@ type coltype =
   | StringType
   | DateType
   | TimestampType
+  | DecimalType
 
 (* F#: `ColumnType.tag`. *)
 let tag (t:coltype) : Tot string =
@@ -147,9 +148,17 @@ let tag (t:coltype) : Tot string =
   | StringType -> "string"
   | DateType -> "date"
   | TimestampType -> "timestamp"
+  | DecimalType -> "decimal"
+
+(* F#: `ColumnType.widens` (the substrate's, `0.33.0`) — a cell of type `from` is carriable in a
+   column of type `target`: the type itself, or an int into a float or a decimal column. *)
+let widens (from:coltype) (target:coltype) : Tot bool =
+  from = target
+  || (from = IntType && target = FloatType)
+  || (from = IntType && target = DecimalType)
 
 (* F#: `Cell`. `Null` is the validity mask's absent marker; a present cell is its type and an
-   opaque carrier — the six value constructors collapsed to the one thing the algebra reads. *)
+   opaque carrier — the seven value constructors collapsed to the one thing the algebra reads. *)
 type cell =
   | Null    : cell
   | Present : ty:coltype -> carrier:string -> cell
@@ -235,13 +244,14 @@ let cell_type_name (c:cell) : Tot string =
   | Some t -> tag t
   | None -> "null"
 
-(* F#: `cellFits` — a cell fits a column type iff it is `Null` or exactly that type. *)
+(* F#: `cellFits` — a cell fits a column type iff it is `Null` or of a type that widens into it
+   (Phase 321: was exact type equality). The cell is stored as given, never converted. *)
 let cell_fits (col_name:string) (ty:coltype) (c:cell) : Tot (outcome unit rejection) =
   match c with
   | Null -> Ok ()
   | _ ->
     (match type_of c with
-     | Some t -> if t = ty then Ok () else Error (CellTypeMismatch col_name (tag ty) (cell_type_name c))
+     | Some t -> if widens t ty then Ok () else Error (CellTypeMismatch col_name (tag ty) (cell_type_name c))
      | None -> Error (CellTypeMismatch col_name (tag ty) (cell_type_name c)))
 
 (* F#: `cellsFit` — `List.tryPick` over the column's cells: the FIRST misfit, else `Ok`. *)

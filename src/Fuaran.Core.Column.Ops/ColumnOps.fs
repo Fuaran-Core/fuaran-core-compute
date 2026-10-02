@@ -63,14 +63,18 @@ module ColumnOps =
         | Some t -> ColumnType.tag t
         | None -> "null"
 
-    /// A cell "fits" a column type iff it is `Null` or exactly that type (no widening — strict, so
-    /// `invert` round-trips exactly).
+    /// A cell "fits" a column type iff it is `Null` or of a type that WIDENS into it
+    /// (`ColumnType.widens`: the type itself, or an `Int` into a float or a decimal column) — the
+    /// rule the substrate's `Table.validate` checks every cell by, so a table valid on one side of
+    /// the boundary never fails an edit on the other (Phase 321, `DECISIONS.md` D2). The cell is
+    /// stored as given, never converted: `invert` restores the previous cell verbatim, so its round
+    /// trip is exact under the widened rule as it was under the strict one.
     let private cellFits (colName: string) (ty: ColumnType) (c: Cell) : Result<unit, ColumnRejection> =
         match c with
         | Null -> Ok()
         | _ ->
             match Cell.typeOf c with
-            | Some t when t = ty -> Ok()
+            | Some t when ColumnType.widens t ty -> Ok()
             | _ -> Error(CellTypeMismatch(colName, ColumnType.tag ty, cellTypeName c))
 
     let private cellsFit (col: Column) : Result<unit, ColumnRejection> =
@@ -278,7 +282,10 @@ module ColumnOps =
         | Date s -> Canon.typed "Date" [ "v", JStr s ]
         | Timestamp s -> Canon.typed "Timestamp" [ "v", JStr s ]
         // Phase 277: the canonical decimal text as a JSON string (Core `DECISIONS.md` D72 K5).
-        | Decimal s -> Canon.typed "Decimal" [ "v", JStr s ]
+        // Phase 321: canonicalised on the way OUT as the decoder canonicalises on the way in, so a
+        // cell built by hand as `1.50` encodes as `1.5` and the wire round trip is byte-identical;
+        // text that is not decimal at all is written as found, for the decoder to refuse by name.
+        | Decimal s -> Canon.typed "Decimal" [ "v", JStr(DecimalText.tryCanonical s |> Option.defaultValue s) ]
 
     let private field (k: string) (el: JVal) : Result<JVal, string> =
         match el with

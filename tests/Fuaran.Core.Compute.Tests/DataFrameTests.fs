@@ -1117,7 +1117,7 @@ let tests =
           testCase "paramLaws certify substitution + unbound defect + paramsOf completeness + codec (Phase 77)"
           <| fun _ ->
               let results = Conformance.paramLaws 7714 200
-              Expect.equal (List.length results) 4 "four param laws reported"
+              Expect.equal (List.length results) 5 "four param laws and the decimal guard reported"
 
               if results |> List.exists (fun r -> not r.Passed) then
                   let fails =
@@ -1400,7 +1400,8 @@ let tests =
           testCase "schemaWalkLaws certify the walk against the evaluator's schema (Phase 112)"
           <| fun _ ->
               let results = Conformance.schemaWalkLaws 1121 300
-              Expect.equal (List.length results) 4 "closed-exact, open-sound, types, non-vacuity"
+              // Phase 321: and the decimal step's adequacy guard.
+              Expect.equal (List.length results) 5 "closed-exact, open-sound, types, non-vacuity, decimal"
 
               if results |> List.exists (fun r -> not r.Passed) then
                   let fails =
@@ -4446,7 +4447,10 @@ let kernelTests =
 
                       Expect.equal
                           (bitsOf pf count)
-                          (cmpDefinition op count (fun p -> mask[p]) (fun p -> compare fv[p] fk))
+                          (cmpDefinition op count (fun p -> mask[p]) (fun p ->
+                              // Phase 321: the definition is the SUBSTRATE's order (NaN above
+                              // every value, -0.0 = 0.0), not the host's `compare`.
+                              Cell.compare (Float fv[p]) (Float fk) |> Option.get))
                           "the float kernel is the per-row definition, NaN and -0.0 included"
 
                   let a = Kernels.portable.CmpInts CGe iv mask ik count

@@ -210,8 +210,11 @@ let tests =
                   Conformance.columnarOpLaws 4242 200
                   |> List.filter (fun r -> r.Law.StartsWith "sample adequacy")
 
-              Expect.equal (List.length adequacy) 1 "the family emits exactly one adequacy law"
-              Expect.isTrue (List.head adequacy).Passed "and the shipped generator reaches the population"
+              // Phase 321 added the second: the decimal cells the kit's roll writes.
+              Expect.equal (List.length adequacy) 2 "the family emits two adequacy laws"
+
+              for a in adequacy do
+                  Expect.isTrue a.Passed (sprintf "and the shipped generator reaches the population: %s" a.Law)
 
               // its teeth: a generator that never refuses an invertible op must fail it
               let hollow =
@@ -264,8 +267,8 @@ let tests =
 
               Expect.equal
                   (List.length results)
-                  7
-                  "totality + equivalence + inversion + inverse-only-for-applicable + verify + replay + adequacy"
+                  8
+                  "totality + equivalence + inversion + inverse-only-for-applicable + verify + replay + two adequacy guards (Phase 321's decimal cell the second)"
 
               if results |> List.exists (fun r -> not r.Passed) then
                   let fails =

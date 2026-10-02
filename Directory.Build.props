@@ -2,6 +2,13 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- FS0025 (incomplete pattern match) is an ERROR in every project here. The closed unions this
+         strand matches over (Cell, ColumnType) gain cases on a substrate raise; a warning lets a
+         case-blind arm compile and throw MatchFailureException on the first value of the new case,
+         while an error makes the raise itself name every arm that must move (Phase 321,
+         DECISIONS.md D2). The proof oracle is exempt: it is extracted F* code whose matches are
+         total by proof rather than by syntax, and it keeps its own NoWarn set for that reason. -->
+    <WarningsAsErrors Condition="'$(MSBuildProjectName)' != 'Fuaran.Core.Compute.Proofs.Oracle'">$(WarningsAsErrors);FS0025</WarningsAsErrors>
     <WarnOn>3390;$(WarnOn)</WarnOn>
     <!-- The version every package in this repository ships at. 0.33.0 was the first version this
          repository emitted: the four ids shipped from the Fuaran.Core repository through 0.32.0, and

@@ -1374,7 +1374,10 @@ module DataFrame =
     /// The numeric family's comparison, in the float carrier every numeric cell is compared in. One
     /// definition, because the compiled comparison kernel (Phase 266) and `compareCells` must agree
     /// on every float, `NaN` and `-0.0` included, on every host — two calls to one function do.
-    let private compareNum (x: float) (y: float) : int = compare x y
+    /// Since Phase 321 it is `Kernels.compareFloat` — `NaN` one value above every other, the
+    /// substrate's `Cell.compare` order — and no longer the host's `compare`, which ordered `NaN`
+    /// first on .NET and did not order it at all under Fable.
+    let private compareNum (x: float) (y: float) : int = Kernels.compareFloat x y
 
     /// A numeric cell's value in the float carrier. Total only over the numeric family; a caller
     /// has matched the family before it reads this.
@@ -1415,6 +1418,25 @@ module DataFrame =
             match compareCells a b with
             | Some 0 -> true
             | _ -> false
+
+    /// The least column type two present cells' types both widen into (Phase 321): the type
+    /// itself, or the wider of a pair `ColumnType.widens` relates — `Int` and `Float` join at
+    /// `Float`, `Int` and `Decimal` at `Decimal` — and `None` for any other pair, `Float` beside
+    /// `Decimal` included (`widens` refuses that retype in both directions). The derived column's
+    /// `inferType` reads it; the typer's `Typing.join` deliberately does not (see there).
+    let internal joinColumnType (a: ColumnType) (b: ColumnType) : ColumnType option =
+        if ColumnType.widens a b then Some b
+        elif ColumnType.widens b a then Some a
+        else None
+
+    /// One step of a derived column's typing over its present cells in row order (Phase 321): the
+    /// join where the two types have one, and the EARLIER type where they have none — the
+    /// first-present rule the column was typed by before the join, kept for a pair no widening
+    /// relates, so a column whose cells span two families is typed exactly as it was.
+    let internal widenColumnType (acc: ColumnType) (t: ColumnType) : ColumnType =
+        match joinColumnType acc t with
+        | Some j -> j
+        | None -> acc
 
     /// Range-check an `int64` arithmetic result against the `int32` band (Phase 39). A value outside
     /// the band is a named `OverflowError`, never a silent two's-complement wrap (which diverges
@@ -2172,6 +2194,13 @@ module DataFrame =
 
         /// The least typing covering both: `Absent` is the identity, two equal types agree, and
         /// anything else is `Unknown`.
+        ///
+        /// Deliberately NOT the widening join the derived column's type takes (`inferType`,
+        /// Phase 321, `DECISIONS.md` D3): `Of t` is an EXACTNESS claim the totality verdict reads.
+        /// `Of IntType + Of IntType` is not total because two ints can overflow; a `Case` of an
+        /// int and a float typed `Of FloatType` would let that same addition read as total while
+        /// both operands are ints at run time. So `Int ⊔ Float` and `Int ⊔ Decimal` stay
+        /// `Unknown` here, and `Float ⊔ Decimal` is `Unknown` as it always was.
         let join (a: Typing) (b: Typing) : Typing =
             match a, b with
             | Absent, t
@@ -2424,8 +2453,9 @@ module DataFrame =
 
     /// The column type a `Derive` of `e` produces, where the expression alone decides it.
     ///
-    /// The evaluator types a derived column from its FIRST PRESENT cell and falls back to
-    /// `StringType` when there is none (`inferCellType`), so a static answer is sound only where
+    /// The evaluator types a derived column from its present cells' types joined (Phase 321; the
+    /// first present cell's before it) and falls back to `StringType` when there is none
+    /// (`inferCellType`), so a static answer is sound only where
     /// the two agree on every frame: an expression whose present values are all strings, or that
     /// has none, is `StringType` over a full frame and over an empty one alike. Any other static
     /// type is that type over a frame with a present cell and `StringType` over an empty or
@@ -4006,10 +4036,39 @@ module DataFrame =
 
     // ---- type inference for derived/melted columns ----
 
-    /// Infer a column type from its cells — the first present cell's type, else `StringType`
-    /// (an all-null derived column has no observable type; `string` is the safe default).
+    /// Infer a column type from its cells — the present cells' types joined in row order under
+    /// `ColumnType.widens` (`widenColumnType`, Phase 321: a column holding `Int 1` and `Float 2.5`
+    /// is a float column, one holding `Int 0` and `Decimal 1.5` a decimal column, where the first
+    /// present cell used to decide and left a cell its column's type does not carry), else
+    /// `StringType` (an all-null derived column has no observable type; `string` is the safe
+    /// default).
     let private inferType (cells: Cell list) : ColumnType =
-        cells |> List.tryPick Cell.typeOf |> Option.defaultValue StringType
+        let rec go (acc: ColumnType option) (rest: Cell list) =
+            match rest with
+            | [] -> acc
+            | c :: tail ->
+                match Cell.typeOf c, acc with
+                | None, _ -> go acc tail
+                | Some t, None -> go (Some t) tail
+                | Some t, Some a -> go (Some(widenColumnType a t)) tail
+
+        go None cells |> Option.defaultValue StringType
+
+    /// `inferType` over the cells an index range reads (Phase 321) — the same fold, for a caller
+    /// holding its cells in an array or behind a row order rather than in a list.
+    let internal inferTypeAt (count: int) (cellAt: int -> Cell) : ColumnType =
+        let mutable acc: ColumnType option = None
+
+        for i in 0 .. count - 1 do
+            match Cell.typeOf (cellAt i) with
+            | None -> ()
+            | Some t ->
+                acc <-
+                    match acc with
+                    | None -> Some t
+                    | Some a -> Some(widenColumnType a t)
+
+        acc |> Option.defaultValue StringType
 
     // ---- aggregates (Phase 36: the pinned semantics live in `Column.aggregate`; the evaluator calls it) ----
 
@@ -4280,8 +4339,9 @@ module DataFrame =
 
             Array.tryPick id errors
 
-        // The derived column's type is the type of its first present cell, `StringType` when there
-        // is none (`inferCellType`): an all-null typed vector types as the reference types it.
+        // The derived column's type is its present cells' types joined (`inferCellType`; a typed
+        // vector holds one type, so the join is that type), `StringType` when there is none: an
+        // all-null typed vector types as the reference types it.
         let typed
             (read: CompiledExpr -> int -> 'a)
             (mk: 'a[] -> bool[] -> Vec)
@@ -4367,7 +4427,7 @@ module DataFrame =
                 match failed with
                 | Some e -> Error e
                 | None ->
-                    let ty = cells |> Array.tryPick Cell.typeOf |> Option.defaultValue StringType
+                    let ty = inferTypeAt cells.Length (fun i -> cells[i])
                     Ok(ty, Vec.packAt ty count (fun i -> phys[i]) cells)
 
         derived |> Result.map (fun (ty, vec) -> Frame.withColumn f name ty vec)
@@ -6224,8 +6284,9 @@ module DataFrame =
     /// aggregate-column typing.
     let aggregateType (fn: AggFn) (srcType: ColumnType) : ColumnType = aggType fn srcType
 
-    /// The column type a `Derive`d column takes from its computed cells: the first non-null cell's
-    /// type, `StringType` when every cell is null. Exposed because the type is a function of the
+    /// The column type a `Derive`d column takes from its computed cells: the present cells' types
+    /// joined under `ColumnType.widens` in row order (Phase 321; it was the first present cell's
+    /// type), `StringType` when every cell is null. Exposed because the type is a function of the
     /// WHOLE column, not of one row — the one place a row-local step is not row-local, and an
     /// incremental evaluator that overlooked it would type a column differently from the reference.
     let inferCellType (cells: Cell list) : ColumnType = inferType cells

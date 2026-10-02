@@ -1466,15 +1466,13 @@ module Incremental =
             |> Result.bind (fun (step, n) ->
                 r.Steps.Add step
 
-                // A derived column's TYPE is a function of the whole column, not of one row: the
-                // type of its first present cell among the rows alive AT THIS STEP in frame order —
-                // `DataFrame.inferCellType`'s pick, over precisely the set the reference evaluator
-                // holds here. Reading it off a cache would type the column differently from the
-                // reference the moment a filter downstream dropped the only typed row.
-                let ty =
-                    f.Order
-                    |> Array.tryPick (fun s -> Cell.typeOf step[s])
-                    |> Option.defaultValue StringType
+                // A derived column's TYPE is a function of the whole column, not of one row: its
+                // present cells' types joined among the rows alive AT THIS STEP in frame order —
+                // `DataFrame.inferCellType`'s fold (Phase 321: the widening join, where it was the
+                // first present cell), over precisely the set the reference evaluator holds here.
+                // Reading it off a cache would type the column differently from the reference the
+                // moment a filter downstream dropped the only typed row.
+                let ty = DataFrame.inferTypeAt f.Order.Length (fun i -> step[f.Order[i]])
 
                 // The step's cells ARE the derived column: live at every slot in `Order`, and a slot
                 // outside it is never read again this walk.
@@ -2867,19 +2865,45 @@ module Incremental =
             | Derive(name, expr) -> Some(name, expr)
             | _ -> None)
 
-    /// The type of the first present cell over the chunks in row order, or `None` where every cell
-    /// is absent — the reference's typing rule for a derived column, read off a rope. Stops at the
-    /// first present cell, so it is O(1) on any column that has one near its head.
-    let private firstPresentType (chunks: Vec[]) : ColumnType option =
-        chunks
-        |> Array.tryPick (fun v ->
+    /// The present cells' types joined over the chunks in row order (`DataFrame.inferCellType`'s
+    /// fold, Phase 321), or `None` where every cell is absent — the reference's typing rule for a
+    /// derived column, read off a rope. A typed chunk holds one type, so it folds as that type once
+    /// (a mask scan that stops at its first present row); a boxed chunk folds cell by cell, in row
+    /// order, because the fold keeps the EARLIER type for a pair no widening relates and so cannot
+    /// combine per-chunk summaries.
+    let private presentType (chunks: Vec[]) : ColumnType option =
+        let mutable acc: ColumnType option = None
+
+        let fold (t: ColumnType) =
+            acc <-
+                match acc with
+                | None -> Some t
+                | Some a -> Some(DataFrame.widenColumnType a t)
+
+        for v in chunks do
             match v with
-            | Ints(_, m) -> if Array.exists id m then Some IntType else None
-            | Floats(_, m) -> if Array.exists id m then Some FloatType else None
-            | Bools(_, m) -> if Array.exists id m then Some BoolType else None
-            | Strs(ty, _, m) -> if Array.exists id m then Some ty else None
-            | Decs(_, _, _, m) -> if Array.exists id m then Some DecimalType else None
-            | Cells a -> a |> Array.tryPick Cell.typeOf)
+            | Ints(_, m) ->
+                if Array.exists id m then
+                    fold IntType
+            | Floats(_, m) ->
+                if Array.exists id m then
+                    fold FloatType
+            | Bools(_, m) ->
+                if Array.exists id m then
+                    fold BoolType
+            | Strs(ty, _, m) ->
+                if Array.exists id m then
+                    fold ty
+            | Decs(_, _, _, m) ->
+                if Array.exists id m then
+                    fold DecimalType
+            | Cells a ->
+                for c in a do
+                    match Cell.typeOf c with
+                    | Some t -> fold t
+                    | None -> ()
+
+        acc
 
     /// Does the vector hold no present cell at all?
     let private nonePresent (v: Vec) : bool =
@@ -2995,7 +3019,7 @@ module Incremental =
 
                         let ty =
                             if Set.contains name derived then
-                                firstPresentType chunks |> Option.defaultValue StringType
+                                presentType chunks |> Option.defaultValue StringType
                             else
                                 tyLocal
 
