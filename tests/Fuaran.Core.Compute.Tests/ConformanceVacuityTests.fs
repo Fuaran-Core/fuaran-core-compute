@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.ConformanceVacuityTests
+module Fuaran.Compute.Tests.ConformanceVacuityTests
 
 // Phase 196 — vacuity measured, per law family, at the reference witness: the families THIS
 // repository ships (Phase 259 carried this share of the Fuaran.Core repository's census here with
@@ -16,6 +16,7 @@ module Fuaran.Core.Tests.ConformanceVacuityTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 //  the reference run

@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.Program
+module Fuaran.Compute.Tests.Program
 
 open Expecto
 

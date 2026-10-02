@@ -1,12 +1,12 @@
 (*
    Pipeline — the counted transform-pipeline driver AND the expression evaluator it charges for:
-   `Fuaran.Core.DataFrame`'s closed `ColExpr` and `Transform` algebra, the private `evalExpr` with
+   `Fuaran.Compute.DataFrame`'s closed `ColExpr` and `Transform` algebra, the private `evalExpr` with
    its four inner loops, `evalFilter`, `evalDerive`, `evalStep`'s dispatch, and
    `evalPipelineWithInEnvCounted`'s fold with its cost model, modelled clause for clause and proved
    total, budget-monotone and work-bounded (fuaran-core Phase 154; the evaluator made concrete by
    Phase 234).
 
-   WHAT IS MODELLED. `src/Fuaran.Core.DataFrame/DataFrame.fs`:
+   WHAT IS MODELLED. `src/Fuaran.Compute.DataFrame/DataFrame.fs`:
 
      - the two closed DUs, `ColExpr` (thirteen cases) and `Transform` (fourteen verbs), with every
        payload type they carry (`Cell`, `ColumnType`, `BinOp`, `ScalarFn`, `AggFn`, `WindowFn`,

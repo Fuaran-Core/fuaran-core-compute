@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.PlanTests
+module Fuaran.Compute.Tests.PlanTests
 
 // ---------------------------------------------------------------------------
 //  Phase 269 — the planner, pinned case by case.
@@ -17,6 +17,7 @@ module Fuaran.Core.Tests.PlanTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 let private schema: Schema =
     [ "i", IntType; "f", FloatType; "s", StringType; "b", BoolType ]

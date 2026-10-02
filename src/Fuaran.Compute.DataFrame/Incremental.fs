@@ -1,7 +1,9 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Core.DataFrame — the incremental `Transform` evaluation seam
+//  Fuaran.Compute.DataFrame — the incremental `Transform` evaluation seam
 //  (Phase 99). A pipeline evaluated against a DELTA (the Phase 98
 //  representation) rather than from scratch: the rows a delta names are
 //  re-evaluated, every other row's value is reused, and a step that cannot

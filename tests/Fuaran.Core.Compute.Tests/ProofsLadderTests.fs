@@ -24,7 +24,7 @@
 /// Each rule is a pure function with a go-red over synthetic input beside the live reading, because
 /// every live case reads files that are expected to be correct, and a checker that matched nothing
 /// would pass them all.
-module Fuaran.Core.Tests.ProofsLadderTests
+module Fuaran.Compute.Tests.ProofsLadderTests
 
 open System
 open System.IO

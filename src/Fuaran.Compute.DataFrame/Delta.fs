@@ -1,7 +1,9 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Core.DataFrame — the typed delta representation for the column layer
+//  Fuaran.Compute.DataFrame — the typed delta representation for the column layer
 //  (Phase 98). A `TableDelta` says what changed in one columnar table between a
 //  prior state and now: rows added / changed / removed **addressed by identity**,
 //  columns invalidated, and `FullRefresh` as the honest top element — "everything

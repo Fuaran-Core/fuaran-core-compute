@@ -1,7 +1,9 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Core.DataFrame.PipelineQuery (Phase 281) — a registered pipeline
+//  Fuaran.Compute.PipelineQuery (Phase 281) — a registered pipeline
 //  query: a named declaration whose body is a pipeline over a source.
 //
 //  The substrate's `Query` is a declaration — an id, typed parameters, a result

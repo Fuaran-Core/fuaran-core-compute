@@ -1,5 +1,62 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-02 — D4: the packages take their own ids — `Fuaran.Compute.*` and the `Fuaran.Compute` namespace — opening at `0.36.0`; the `Fuaran.Core.*` ids stop at `0.34.0`
+
+**Decided (Phase 322, superseding D1's first ruling).** D1 kept the ids and namespaces the strand
+shipped with, on the argument that a rename is a source change in every consumer for no gain. The
+gain turned out to be real and the cost of not paying it recurring: a reader of `Fuaran.Core.DataFrame`
+is told by its name that the dataframe is a property of the substrate, which the substrate's own
+boundary (its D51: the compute layer is the witness-free strand, not a Core property) says it is not,
+and every review of the split had to explain the mismatch again. A pin is a bad reason to keep a name
+that says the wrong thing. The name follows the producer.
+
+**1. The mapping.**
+
+| Through `0.34.0` | From `0.36.0` |
+|---|---|
+| `Fuaran.Core.DataFrame` | `Fuaran.Compute.DataFrame` |
+| `Fuaran.Core.Column.Ops` | `Fuaran.Compute.ColumnOps` |
+| `Fuaran.Core.DataFrame.Conformance` | `Fuaran.Compute.Conformance` |
+| `Fuaran.Core.DataFrame.PipelineQuery` (Phase 281; never published) | `Fuaran.Compute.PipelineQuery` |
+
+The fourth row is the package Phase 281 added after D1; it is renamed with the others, so its first
+publication is under the new id. The C# facade (`Fuaran.Core.DataFrame.CSharp`) has no row: it was
+deleted outright beside the substrate raise to `0.33.0` (the `0.36.0` STABILITY entry on its removal),
+so there is no `Fuaran.Compute.CSharp`.
+
+**2. One namespace, `Fuaran.Compute`; the module names inside are unchanged.** Every source file
+declares `namespace Fuaran.Compute` and opens `Fuaran.Core` for the substrate types it is built over.
+`DataFrame`, `ColumnOps`, `Transform`, `Incremental`, `Delta`, `Plan`, `DataFrameConformance` and the
+rest keep their names, so a consumer's change is its package references and one `open` per file.
+The pre-split forwarding module moves with its namespace: `Conformance.<family>` still resolves for a
+file opening both namespaces, the fully qualified `Fuaran.Core.Conformance.<family>` does not.
+
+**3. The new ids open at `0.36.0`, the `0.35.0` draft ADVANCED rather than reclassed.** `0.35.0` was
+untagged and unpinned, so it could have been reclassed in place; but the draft rule advances a slot
+that takes a change of a higher class than it carries, and the first version under new ids should be
+a fresh contract rather than a number whose entry already described additions to the old ones. The
+`0.35.0` entry's content is folded into the `0.36.0` entry, which says `0.35.0` was never released.
+
+**4. The old ids stop at `0.34.0`, with no deprecation package.** They are not republished; nuget.org
+keeps every published version restorable, which is all a consumer that has not moved needs.
+
+**5. What does NOT change.** The repository (`fuaran-core-compute`), its organisation, the
+solution and the unshipped test, benchmark and proof-oracle projects keep the repository's name
+(`Fuaran.Core.Compute.*`) — the repository is not renamed and none of those projects is a package —
+and so does the claims ladder's subject. The wire format names no CLR type, so no canonical byte moves:
+each `api/wire/` baseline's body is byte-identical to its predecessor's.
+
+**6. How the move is classed.** The `Public surface` and `Wire surface` families compare each
+package with its baseline at the newest tag; a tag cut before the rename holds the baseline under the
+old id, so both read through a declared predecessor map (`PublicSurfaceTests.predecessorIds`) rather
+than reporting a first snapshot. That is what makes the rename read as the `removal` it is, and what
+keeps the decimal's wire `breaking` since `v0.34.0` stated across the rename instead of reset.
+
+**7. The registration is an operator act.** nuget.org Trusted Publishing policies are scoped to
+package ids, so the policy for this repository must be extended to the `Fuaran.Compute.*` ids before
+the first `v*` tag under them; a failed `NuGet/login` on that tag is the missing registration, not an
+authentication fault (the publish workflow's header says so where the failure is met).
+
 ## 2026-10-02 — D3: one float order, the substrate's; a derived column's type is the join its cells widen into, and the static typer stays exact
 
 **Decided (Phase 321).** Three rulings about how the evaluator types and orders what it computes,

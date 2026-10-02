@@ -1,0 +1,654 @@
+# Fuaran.Compute.DataFrame — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Compute.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
+ctor Fuaran.Compute.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>)
+ctor Fuaran.Compute.IncrementalPlan..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>, Fuaran.Compute.IncrementalStrategy)
+ctor Fuaran.Compute.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, System.String, System.String, Fuaran.Core.AggFn)
+ctor Fuaran.Compute.PlanDeclined..ctor(Fuaran.Compute.RewriteClass, System.Int32, System.String)
+ctor Fuaran.Compute.PlanReport..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanRewrite>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanDeclined>)
+ctor Fuaran.Compute.PlanRewrite..ctor(Fuaran.Compute.RewriteClass, System.Int32, System.String)
+ctor Fuaran.Compute.RecomputeFootprint..ctor(System.Int32, System.Int32, Fuaran.Compute.Recompute)
+ctor Fuaran.Compute.Rounding..ctor(Fuaran.Compute.Slot`1<System.Int32>, Fuaran.Compute.RoundingMode)
+ctor Fuaran.Compute.RowIdentity`1..ctor(System.String, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpFunc`2<System.Int32, Microsoft.FSharp.Core.FSharpOption`1<!0>>>, Microsoft.FSharp.Core.FSharpFunc`2<!0, System.String>)
+ctor Fuaran.Compute.RowSetDelta..ctor(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<Fuaran.Compute.RowRef, Fuaran.Compute.RowChange>>, Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+ctor Fuaran.Compute.WindowSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.SortDir>>, Fuaran.Compute.WindowFn, System.String, System.String)
+field Fuaran.Compute.BinOp+Tags.Add : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.And : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Contains : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Div : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.EndsWith : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Eq : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Ge : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Gt : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Le : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Lt : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Mod : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Mul : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Ne : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Or : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.StartsWith : System.Int32 (literal)
+field Fuaran.Compute.BinOp+Tags.Sub : System.Int32 (literal)
+field Fuaran.Compute.Change+Tags.ColumnValuesChanged : System.Int32 (literal)
+field Fuaran.Compute.Change+Tags.FullChange : System.Int32 (literal)
+field Fuaran.Compute.Change+Tags.RowsAppended : System.Int32 (literal)
+field Fuaran.Compute.Change+Tags.SchemaChanged : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.ApplyFn : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Binary : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Case : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Cast : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Coalesce : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Col : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.InList : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.InParam : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.IsNull : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Lit : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Not : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Now : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Param : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Quotient : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Rounded : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.DuplicateIdentity : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.DuplicateInvalidatedColumn : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.DuplicateRow : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.EmptyColumnName : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.EmptyRowKey : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.EmptyScheme : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.MissingIdentity : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.MixedAddressing : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.NegativeOrdinal : System.Int32 (literal)
+field Fuaran.Compute.DeltaDefect+Tags.SchemeMismatch : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.AggError : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.ArityError : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.JoinError : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.OverflowError : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.TypeError : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.UnboundParam : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.UnknownColumn : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.UnpinnedClock : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.UnresolvedSource : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.AggregateStepNotLast : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.AggregateStepRepeated : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.DeltaIsFullRefresh : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.EnvChanged : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.JoinNotRowPreserving : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.OrdinalAddressing : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.PipelineChanged : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.RowIdentityUnusable : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.SourceSchemaMoved : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.StepNotRowLocal : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.UnresolvedSlotParam : System.Int32 (literal)
+field Fuaran.Compute.FallBackReason+Tags.WindowFrameUnbounded : System.Int32 (literal)
+field Fuaran.Compute.IncrementalStrategy+Tags.ReferenceOnly : System.Int32 (literal)
+field Fuaran.Compute.IncrementalStrategy+Tags.RowLocal : System.Int32 (literal)
+field Fuaran.Compute.IncrementalStrategy+Tags.RowLocalThenGroups : System.Int32 (literal)
+field Fuaran.Compute.JoinKind+Tags.Anti : System.Int32 (literal)
+field Fuaran.Compute.JoinKind+Tags.Inner : System.Int32 (literal)
+field Fuaran.Compute.JoinKind+Tags.Left : System.Int32 (literal)
+field Fuaran.Compute.JoinKind+Tags.Outer : System.Int32 (literal)
+field Fuaran.Compute.JoinKind+Tags.Right : System.Int32 (literal)
+field Fuaran.Compute.JoinKind+Tags.Semi : System.Int32 (literal)
+field Fuaran.Compute.KeyEqualityDisagreement+Tags.DistinctIdsEqualKey : System.Int32 (literal)
+field Fuaran.Compute.KeyEqualityDisagreement+Tags.EqualIdsDistinctKeys : System.Int32 (literal)
+field Fuaran.Compute.KeyEqualityDisagreement+Tags.NotDeclared : System.Int32 (literal)
+field Fuaran.Compute.KeyEqualityDisagreement+Tags.UnequalHashes : System.Int32 (literal)
+field Fuaran.Compute.NowGrain+Tags.Date : System.Int32 (literal)
+field Fuaran.Compute.NowGrain+Tags.Timestamp : System.Int32 (literal)
+field Fuaran.Compute.Recompute+Tags.FullRecompute : System.Int32 (literal)
+field Fuaran.Compute.Recompute+Tags.GroupsRecomputed : System.Int32 (literal)
+field Fuaran.Compute.Recompute+Tags.Primed : System.Int32 (literal)
+field Fuaran.Compute.Recompute+Tags.ReusedPrior : System.Int32 (literal)
+field Fuaran.Compute.Recompute+Tags.RowsRecomputed : System.Int32 (literal)
+field Fuaran.Compute.RewriteClass+Tags.FilterBeforeDerive : System.Int32 (literal)
+field Fuaran.Compute.RewriteClass+Tags.FilterBeforeSort : System.Int32 (literal)
+field Fuaran.Compute.RewriteClass+Tags.PruneColumns : System.Int32 (literal)
+field Fuaran.Compute.RewriteClass+Tags.TopN : System.Int32 (literal)
+field Fuaran.Compute.RoundingMode+Tags.Ceiling : System.Int32 (literal)
+field Fuaran.Compute.RoundingMode+Tags.Down : System.Int32 (literal)
+field Fuaran.Compute.RoundingMode+Tags.Floor : System.Int32 (literal)
+field Fuaran.Compute.RoundingMode+Tags.HalfDown : System.Int32 (literal)
+field Fuaran.Compute.RoundingMode+Tags.HalfEven : System.Int32 (literal)
+field Fuaran.Compute.RoundingMode+Tags.HalfUp : System.Int32 (literal)
+field Fuaran.Compute.RoundingMode+Tags.Up : System.Int32 (literal)
+field Fuaran.Compute.RowChange+Tags.RowAdded : System.Int32 (literal)
+field Fuaran.Compute.RowChange+Tags.RowChanged : System.Int32 (literal)
+field Fuaran.Compute.RowChange+Tags.RowRemoved : System.Int32 (literal)
+field Fuaran.Compute.RowChange+Tags.RowTransient : System.Int32 (literal)
+field Fuaran.Compute.RowRef+Tags.ByKey : System.Int32 (literal)
+field Fuaran.Compute.RowRef+Tags.ByOrdinal : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Abs : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Ceil : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Concat : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.DateDiffDays : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.DatePart : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Floor : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Greatest : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.IndexOf : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Least : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Length : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Lower : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Replace : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Round : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Sqrt : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Substr : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Trim : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Upper : System.Int32 (literal)
+field Fuaran.Compute.SchemaKnowledge+Tags.AtLeast : System.Int32 (literal)
+field Fuaran.Compute.SchemaKnowledge+Tags.Closed : System.Int32 (literal)
+field Fuaran.Compute.Slot`1+Tags.Lit : System.Int32 (literal)
+field Fuaran.Compute.Slot`1+Tags.Param : System.Int32 (literal)
+field Fuaran.Compute.SortDir+Tags.Asc : System.Int32 (literal)
+field Fuaran.Compute.SortDir+Tags.Desc : System.Int32 (literal)
+field Fuaran.Compute.StepIncrementality+Tags.FallBack : System.Int32 (literal)
+field Fuaran.Compute.StepIncrementality+Tags.FilterByRelation : System.Int32 (literal)
+field Fuaran.Compute.StepIncrementality+Tags.MaintainGroups : System.Int32 (literal)
+field Fuaran.Compute.StepIncrementality+Tags.MergeOrder : System.Int32 (literal)
+field Fuaran.Compute.StepIncrementality+Tags.PropagateRows : System.Int32 (literal)
+field Fuaran.Compute.StepIncrementality+Tags.RecomputeFrame : System.Int32 (literal)
+field Fuaran.Compute.StepIncrementality+Tags.TruncateOrder : System.Int32 (literal)
+field Fuaran.Compute.TableDelta+Tags.FullRefresh : System.Int32 (literal)
+field Fuaran.Compute.TableDelta+Tags.RowSet : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Derive : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Distinct : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Except : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Filter : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.GroupBy : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Intersect : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Join : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Limit : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Pivot : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Project : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Sort : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Union : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Unpivot : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Window : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.CompetitionRank : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.CumulMax : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.CumulMin : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.CumulSum : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.DenseRank : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.Lag : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.Lead : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.NTile : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.Rank : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.RollingMean : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.RollingSum : System.Int32 (literal)
+field Fuaran.Compute.WindowFn+Tags.RowNumber : System.Int32 (literal)
+method Fuaran.Compute.ColExprModule.paramsOf(Fuaran.Compute.ColExpr) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.ColExprModule.substitute(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.ColExprModule.substituteListParams(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.ColExprModule.substituteNow(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.NowGrain, Fuaran.Core.Cell>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.ColExprModule.usesNow(Fuaran.Compute.ColExpr) : System.Boolean
+method Fuaran.Compute.DataFrame.aggregateCells(Fuaran.Core.AggFn, Fuaran.Core.ColumnType, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Cell, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.aggregateType(Fuaran.Core.AggFn, Fuaran.Core.ColumnType) : Fuaran.Core.ColumnType
+method Fuaran.Compute.DataFrame.cellString(Fuaran.Core.Cell) : System.String
+method Fuaran.Compute.DataFrame.cellToken(Fuaran.Core.Cell) : System.String
+method Fuaran.Compute.DataFrame.errorString(Fuaran.Compute.EvalError) : System.String
+method Fuaran.Compute.DataFrame.evalExprInRow(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>, Fuaran.Compute.ColExpr) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Cell, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalFrom(Fuaran.Core.Table, Fuaran.Compute.Change, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipeline(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineAsWritten(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineAt(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.NowGrain, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineInEnv(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineInEnvAt(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.NowGrain, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineWith(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineWithInEnv(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineWithInEnvAsWritten(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineWithInEnvAt(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.NowGrain, Fuaran.Core.Cell>, Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPipelineWithInEnvCounted(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`2<Fuaran.Core.Table, System.Int32>, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalPrepared(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalSource(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Fuaran.Core.DataSource) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.inferCellType(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Fuaran.Core.ColumnType
+method Fuaran.Compute.DataFrame.joinKeyIndices(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, System.String>>) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<System.Int32>, Microsoft.FSharp.Collections.FSharpList`1<System.Int32>>, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.joinKeysMatch(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.Boolean
+method Fuaran.Compute.DataFrame.noResolve(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.prepare(Fuaran.Core.Table) : Fuaran.Compute.Prepared
+method Fuaran.Compute.DataFrame.rowCompareBy(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.SortDir>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.Int32
+method Fuaran.Compute.DataFrame.rowToken(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.DataFrame.rowTokenString(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.String
+method Fuaran.Compute.DataFrame.toTable(Fuaran.Compute.Prepared) : Fuaran.Core.Table
+method Fuaran.Compute.DataFrame.typeOf(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Fuaran.Compute.ColExpr) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
+method Fuaran.Compute.DataFrame.windowFrameBounded(Fuaran.Compute.WindowFn) : System.Boolean
+method Fuaran.Compute.DataFrame.windowStep(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Fuaran.Compute.WindowSpec) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>>, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrameCodec.decodeExpr(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.ColExpr, Fuaran.Core.ColumnError>
+method Fuaran.Compute.DataFrameCodec.decodePipeline(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.ColumnError>
+method Fuaran.Compute.DataFrameCodec.decodePipelineJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.ColumnError>
+method Fuaran.Compute.DataFrameCodec.decodeTransform(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Transform, Fuaran.Core.ColumnError>
+method Fuaran.Compute.DataFrameCodec.encodeExpr(Fuaran.Compute.ColExpr) : Fuaran.Core.JVal
+method Fuaran.Compute.DataFrameCodec.encodePipeline(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : System.String
+method Fuaran.Compute.DataFrameCodec.encodeTransform(Fuaran.Compute.Transform) : Fuaran.Core.JVal
+method Fuaran.Compute.Delta.compose(Fuaran.Compute.TableDelta, Fuaran.Compute.TableDelta) : Fuaran.Compute.TableDelta
+method Fuaran.Compute.Delta.composeAll(System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.TableDelta>) : Fuaran.Compute.TableDelta
+method Fuaran.Compute.Delta.composeChange(Fuaran.Compute.RowChange, Fuaran.Compute.RowChange) : Fuaran.Compute.RowChange
+method Fuaran.Compute.Delta.composeChecked(Fuaran.Compute.TableDelta, Fuaran.Compute.TableDelta) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.TableDelta, Fuaran.Compute.DeltaDefect>
+method Fuaran.Compute.Delta.defectString(Fuaran.Compute.DeltaDefect) : System.String
+method Fuaran.Compute.Delta.defects(Fuaran.Compute.TableDelta) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.DeltaDefect>
+method Fuaran.Compute.Delta.diffByOrdinal(Fuaran.Core.Table, Fuaran.Core.Table) : Fuaran.Compute.TableDelta
+method Fuaran.Compute.Delta.diff`1(Fuaran.Compute.RowIdentity`1<!!0>, Fuaran.Core.Table, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.TableDelta, Fuaran.Compute.DeltaDefect>
+method Fuaran.Compute.Delta.empty(System.String) : Fuaran.Compute.TableDelta
+method Fuaran.Compute.Delta.isFullRefresh(Fuaran.Compute.TableDelta) : System.Boolean
+method Fuaran.Compute.Delta.isQuiet(Fuaran.Compute.TableDelta) : System.Boolean
+method Fuaran.Compute.Delta.normalise(Fuaran.Compute.TableDelta) : Fuaran.Compute.TableDelta
+method Fuaran.Compute.Delta.ofChange(System.String, Fuaran.Compute.Change) : Fuaran.Compute.TableDelta
+method Fuaran.Compute.Delta.ofColumns(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>) : Fuaran.Compute.TableDelta
+method Fuaran.Compute.Delta.ofRows(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<Fuaran.Compute.RowRef, Fuaran.Compute.RowChange>>) : Fuaran.Compute.TableDelta
+method Fuaran.Compute.Delta.refToken(Fuaran.Compute.RowRef) : System.String
+method Fuaran.Compute.Delta.resolve`1(Fuaran.Compute.RowIdentity`1<!!0>, Fuaran.Core.Table, Fuaran.Compute.TableDelta) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.Int32>>, Fuaran.Compute.DeltaDefect>
+method Fuaran.Compute.Delta.rowsWith(Fuaran.Compute.RowChange, Fuaran.Compute.TableDelta) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.RowRef>
+method Fuaran.Compute.Delta.toChange(Fuaran.Compute.TableDelta) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Change>
+method Fuaran.Compute.Delta.tryRowSet(Fuaran.Compute.TableDelta) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.RowSetDelta>
+method Fuaran.Compute.Delta.validate(Fuaran.Compute.TableDelta) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.TableDelta, Fuaran.Compute.DeltaDefect>
+method Fuaran.Compute.DeltaCodec.decode(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.TableDelta, Fuaran.Core.ColumnError>
+method Fuaran.Compute.DeltaCodec.decodeJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.TableDelta, Fuaran.Core.ColumnError>
+method Fuaran.Compute.DeltaCodec.encode(Fuaran.Compute.TableDelta) : System.String
+method Fuaran.Compute.DeltaCodec.encodeJson(Fuaran.Compute.TableDelta) : Fuaran.Core.JVal
+method Fuaran.Compute.Incremental.chunksTouched(Fuaran.Compute.IncrementalEval) : Microsoft.FSharp.Core.FSharpOption`1<System.Int32>
+method Fuaran.Compute.Incremental.footprint(Fuaran.Compute.IncrementalEval) : Fuaran.Compute.RecomputeFootprint
+method Fuaran.Compute.Incremental.footprintString(Fuaran.Compute.RecomputeFootprint) : System.String
+method Fuaran.Compute.Incremental.isIncremental(Fuaran.Compute.IncrementalPlan) : System.Boolean
+method Fuaran.Compute.Incremental.joinKindName(Fuaran.Compute.JoinKind) : System.String
+method Fuaran.Compute.Incremental.pipelineOf(Fuaran.Compute.IncrementalEval) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+method Fuaran.Compute.Incremental.plan'(Fuaran.Compute.IncrementalEval) : Fuaran.Compute.IncrementalPlan
+method Fuaran.Compute.Incremental.plan(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.IncrementalPlan
+method Fuaran.Compute.Incremental.planOver(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : System.Tuple`2<Fuaran.Compute.IncrementalPlan, Fuaran.Compute.PlanReport>
+method Fuaran.Compute.Incremental.plannedOf(Fuaran.Compute.IncrementalEval) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+method Fuaran.Compute.Incremental.primeOnPrepared`1(Fuaran.Compute.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Compute.EvalError>
+method Fuaran.Compute.Incremental.primeOn`1(Fuaran.Compute.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Compute.EvalError>
+method Fuaran.Compute.Incremental.primePrepared`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Compute.EvalError>
+method Fuaran.Compute.Incremental.prime`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Compute.EvalError>
+method Fuaran.Compute.Incremental.reasonString(Fuaran.Compute.FallBackReason) : System.String
+method Fuaran.Compute.Incremental.refreshOnPrepared`1(Fuaran.Compute.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.IncrementalEval, Fuaran.Compute.TableDelta, Fuaran.Compute.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Compute.EvalError>
+method Fuaran.Compute.Incremental.refreshOn`1(Fuaran.Compute.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.IncrementalEval, Fuaran.Compute.TableDelta, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Compute.EvalError>
+method Fuaran.Compute.Incremental.refreshPrepared`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.IncrementalEval, Fuaran.Compute.TableDelta, Fuaran.Compute.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Compute.EvalError>
+method Fuaran.Compute.Incremental.refresh`1(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.RowIdentity`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.IncrementalEval, Fuaran.Compute.TableDelta, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Compute.EvalError>
+method Fuaran.Compute.Incremental.result(Fuaran.Compute.IncrementalEval) : Fuaran.Core.Table
+method Fuaran.Compute.Incremental.resultPrepared(Fuaran.Compute.IncrementalEval) : Fuaran.Compute.Prepared
+method Fuaran.Compute.Incremental.rowsEvaluated(Fuaran.Compute.RecomputeFootprint) : System.Int32
+method Fuaran.Compute.Incremental.source(Fuaran.Compute.IncrementalEval) : Fuaran.Core.Table
+method Fuaran.Compute.Incremental.strategy(Fuaran.Compute.IncrementalEval) : Fuaran.Compute.IncrementalStrategy
+method Fuaran.Compute.Incremental.windowFnName(Fuaran.Compute.WindowFn) : System.String
+method Fuaran.Compute.NowGrainModule.ofTag(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.NowGrain>
+method Fuaran.Compute.NowGrainModule.tag(Fuaran.Compute.NowGrain) : System.String
+method Fuaran.Compute.Plan.explain(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.PlanReport
+method Fuaran.Compute.Plan.isTotal(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Fuaran.Compute.Transform) : System.Boolean
+method Fuaran.Compute.Plan.rewrite(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+method Fuaran.Compute.RowIdentity.byColumn(System.String) : Fuaran.Compute.RowIdentity`1<Fuaran.Core.Cell>
+method Fuaran.Compute.RowIdentity.byColumns(Microsoft.FSharp.Collections.FSharpList`1<System.String>) : Fuaran.Compute.RowIdentity`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
+method Fuaran.Compute.RowIdentity.checkKeyEquality`1(Fuaran.Compute.RowIdentity`1<!!0>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Compute.KeyEqualityDisagreement>
+method Fuaran.Compute.RowIdentity.withKeyEquality`1(System.Collections.Generic.IEqualityComparer`1<!!0>, Fuaran.Compute.RowIdentity`1<!!0>) : Fuaran.Compute.RowIdentity`1<!!0>
+method Fuaran.Compute.SchemaWalk.columns(Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColumnKnowledge>
+method Fuaran.Compute.SchemaWalk.has(System.String, Fuaran.Compute.SchemaKnowledge) : System.Boolean
+method Fuaran.Compute.SchemaWalk.isClosed(Fuaran.Compute.SchemaKnowledge) : System.Boolean
+method Fuaran.Compute.SchemaWalk.names(Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.SchemaWalk.noSources(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>
+method Fuaran.Compute.SchemaWalk.ofMap(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>, System.String) : Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>
+method Fuaran.Compute.SchemaWalk.ofPipeline(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.SchemaKnowledge
+method Fuaran.Compute.SchemaWalk.ofPipelineFrom(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>>, Fuaran.Compute.SchemaKnowledge, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.SchemaKnowledge
+method Fuaran.Compute.SchemaWalk.ofSchema(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>) : Fuaran.Compute.SchemaKnowledge
+method Fuaran.Compute.SchemaWalk.ofSource(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>>, Fuaran.Core.DataSource) : Fuaran.Compute.SchemaKnowledge
+method Fuaran.Compute.SchemaWalk.ofTransform(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>>, Fuaran.Compute.SchemaKnowledge, Fuaran.Compute.Transform) : Fuaran.Compute.SchemaKnowledge
+method Fuaran.Compute.SchemaWalk.reason(Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Core.FSharpOption`1<System.String>
+method Fuaran.Compute.SchemaWalk.typeOf(System.String, Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
+method Fuaran.Compute.SlotModule.isParam`1(Fuaran.Compute.Slot`1<!!0>) : System.Boolean
+method Fuaran.Compute.SlotModule.paramName`1(Fuaran.Compute.Slot`1<!!0>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.SlotModule.tryLit`1(Fuaran.Compute.Slot`1<!!0>) : Microsoft.FSharp.Core.FSharpOption`1<!!0>
+method Fuaran.Compute.TransformModule.limit(System.Int32, System.Int32) : Fuaran.Compute.Transform
+method Fuaran.Compute.TransformModule.paramsOf(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.TransformModule.slotParamsOf(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.TransformModule.sortBy(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.SortDir>>) : Fuaran.Compute.Transform
+method Fuaran.Compute.TransformModule.substitute(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+method Fuaran.Compute.TransformModule.substituteListParams(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+method Fuaran.Compute.TransformModule.substituteNow(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.NowGrain, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+method Fuaran.Compute.TransformModule.usesNow(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : System.Boolean
+property Fuaran.Compute.DataFrameCodec.pipelineCodec : Fuaran.Core.Corpus+Codec`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>> { get }
+property Fuaran.Compute.NowGrainModule.allTags : Microsoft.FSharp.Collections.FSharpList`1<System.String> { get }
+property Fuaran.Compute.RowIdentity.ordinalScheme : System.String { get }
+record-field Fuaran.Compute.Agg.Fn #1 : Fuaran.Core.AggFn
+record-field Fuaran.Compute.Agg.Name #0 : System.String
+record-field Fuaran.Compute.Agg.Of #2 : System.String
+record-field Fuaran.Compute.ColumnKnowledge.Name #0 : System.String
+record-field Fuaran.Compute.ColumnKnowledge.Type #1 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
+record-field Fuaran.Compute.IncrementalPlan.Steps #0 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>
+record-field Fuaran.Compute.IncrementalPlan.Strategy #1 : Fuaran.Compute.IncrementalStrategy
+record-field Fuaran.Compute.PivotSpec.Agg #3 : Fuaran.Core.AggFn
+record-field Fuaran.Compute.PivotSpec.Index #0 : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+record-field Fuaran.Compute.PivotSpec.On #1 : System.String
+record-field Fuaran.Compute.PivotSpec.Values #2 : System.String
+record-field Fuaran.Compute.PlanDeclined.At #1 : System.Int32
+record-field Fuaran.Compute.PlanDeclined.Class #0 : Fuaran.Compute.RewriteClass
+record-field Fuaran.Compute.PlanDeclined.Reason #2 : System.String
+record-field Fuaran.Compute.PlanReport.Applied #2 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanRewrite>
+record-field Fuaran.Compute.PlanReport.Declined #3 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanDeclined>
+record-field Fuaran.Compute.PlanReport.Planned #1 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+record-field Fuaran.Compute.PlanReport.Written #0 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+record-field Fuaran.Compute.PlanRewrite.At #1 : System.Int32
+record-field Fuaran.Compute.PlanRewrite.Class #0 : Fuaran.Compute.RewriteClass
+record-field Fuaran.Compute.PlanRewrite.Detail #2 : System.String
+record-field Fuaran.Compute.RecomputeFootprint.Recompute #2 : Fuaran.Compute.Recompute
+record-field Fuaran.Compute.RecomputeFootprint.ResultRows #1 : System.Int32
+record-field Fuaran.Compute.RecomputeFootprint.SourceRows #0 : System.Int32
+record-field Fuaran.Compute.Rounding.Mode #1 : Fuaran.Compute.RoundingMode
+record-field Fuaran.Compute.Rounding.Scale #0 : Fuaran.Compute.Slot`1<System.Int32>
+record-field Fuaran.Compute.RowIdentity`1.KeyOf #1 : Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpFunc`2<System.Int32, Microsoft.FSharp.Core.FSharpOption`1<!0>>>
+record-field Fuaran.Compute.RowIdentity`1.KeyString #2 : Microsoft.FSharp.Core.FSharpFunc`2<!0, System.String>
+record-field Fuaran.Compute.RowIdentity`1.Scheme #0 : System.String
+record-field Fuaran.Compute.RowSetDelta.InvalidatedColumns #2 : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+record-field Fuaran.Compute.RowSetDelta.Rows #1 : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<Fuaran.Compute.RowRef, Fuaran.Compute.RowChange>>
+record-field Fuaran.Compute.RowSetDelta.Scheme #0 : System.String
+record-field Fuaran.Compute.WindowSpec.As #4 : System.String
+record-field Fuaran.Compute.WindowSpec.Fn #2 : Fuaran.Compute.WindowFn
+record-field Fuaran.Compute.WindowSpec.Of #3 : System.String
+record-field Fuaran.Compute.WindowSpec.OrderBy #1 : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.SortDir>>
+record-field Fuaran.Compute.WindowSpec.PartitionBy #0 : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+type Fuaran.Compute.Agg (record)
+type Fuaran.Compute.BinOp (union)
+type Fuaran.Compute.BinOp+Tags (type)
+type Fuaran.Compute.Change (union)
+type Fuaran.Compute.Change+ColumnValuesChanged (type)
+type Fuaran.Compute.Change+SchemaChanged (type)
+type Fuaran.Compute.Change+Tags (type)
+type Fuaran.Compute.ColExpr (union)
+type Fuaran.Compute.ColExpr+ApplyFn (type)
+type Fuaran.Compute.ColExpr+Binary (type)
+type Fuaran.Compute.ColExpr+Case (type)
+type Fuaran.Compute.ColExpr+Cast (type)
+type Fuaran.Compute.ColExpr+Coalesce (type)
+type Fuaran.Compute.ColExpr+Col (type)
+type Fuaran.Compute.ColExpr+InList (type)
+type Fuaran.Compute.ColExpr+InParam (type)
+type Fuaran.Compute.ColExpr+IsNull (type)
+type Fuaran.Compute.ColExpr+Lit (type)
+type Fuaran.Compute.ColExpr+Not (type)
+type Fuaran.Compute.ColExpr+Now (type)
+type Fuaran.Compute.ColExpr+Param (type)
+type Fuaran.Compute.ColExpr+Quotient (type)
+type Fuaran.Compute.ColExpr+Rounded (type)
+type Fuaran.Compute.ColExpr+Tags (type)
+type Fuaran.Compute.ColExprModule (module)
+type Fuaran.Compute.ColumnKnowledge (record)
+type Fuaran.Compute.DataFrame (module)
+type Fuaran.Compute.DataFrameCodec (module)
+type Fuaran.Compute.Delta (module)
+type Fuaran.Compute.DeltaCodec (module)
+type Fuaran.Compute.DeltaDefect (union)
+type Fuaran.Compute.DeltaDefect+DuplicateIdentity (type)
+type Fuaran.Compute.DeltaDefect+DuplicateInvalidatedColumn (type)
+type Fuaran.Compute.DeltaDefect+DuplicateRow (type)
+type Fuaran.Compute.DeltaDefect+MissingIdentity (type)
+type Fuaran.Compute.DeltaDefect+MixedAddressing (type)
+type Fuaran.Compute.DeltaDefect+NegativeOrdinal (type)
+type Fuaran.Compute.DeltaDefect+SchemeMismatch (type)
+type Fuaran.Compute.DeltaDefect+Tags (type)
+type Fuaran.Compute.EvalError (union)
+type Fuaran.Compute.EvalError+AggError (type)
+type Fuaran.Compute.EvalError+ArityError (type)
+type Fuaran.Compute.EvalError+JoinError (type)
+type Fuaran.Compute.EvalError+OverflowError (type)
+type Fuaran.Compute.EvalError+Tags (type)
+type Fuaran.Compute.EvalError+TypeError (type)
+type Fuaran.Compute.EvalError+UnboundParam (type)
+type Fuaran.Compute.EvalError+UnknownColumn (type)
+type Fuaran.Compute.EvalError+UnpinnedClock (type)
+type Fuaran.Compute.EvalError+UnresolvedSource (type)
+type Fuaran.Compute.FallBackReason (union)
+type Fuaran.Compute.FallBackReason+AggregateStepNotLast (type)
+type Fuaran.Compute.FallBackReason+AggregateStepRepeated (type)
+type Fuaran.Compute.FallBackReason+JoinNotRowPreserving (type)
+type Fuaran.Compute.FallBackReason+RowIdentityUnusable (type)
+type Fuaran.Compute.FallBackReason+StepNotRowLocal (type)
+type Fuaran.Compute.FallBackReason+Tags (type)
+type Fuaran.Compute.FallBackReason+UnresolvedSlotParam (type)
+type Fuaran.Compute.FallBackReason+WindowFrameUnbounded (type)
+type Fuaran.Compute.Incremental (module)
+type Fuaran.Compute.IncrementalEval (record)
+type Fuaran.Compute.IncrementalPlan (record)
+type Fuaran.Compute.IncrementalStrategy (union)
+type Fuaran.Compute.IncrementalStrategy+ReferenceOnly (type)
+type Fuaran.Compute.IncrementalStrategy+Tags (type)
+type Fuaran.Compute.JoinKind (union)
+type Fuaran.Compute.JoinKind+Tags (type)
+type Fuaran.Compute.KeyEqualityDisagreement (union)
+type Fuaran.Compute.KeyEqualityDisagreement+DistinctIdsEqualKey (type)
+type Fuaran.Compute.KeyEqualityDisagreement+EqualIdsDistinctKeys (type)
+type Fuaran.Compute.KeyEqualityDisagreement+NotDeclared (type)
+type Fuaran.Compute.KeyEqualityDisagreement+Tags (type)
+type Fuaran.Compute.KeyEqualityDisagreement+UnequalHashes (type)
+type Fuaran.Compute.NowGrain (union)
+type Fuaran.Compute.NowGrain+Tags (type)
+type Fuaran.Compute.NowGrainModule (module)
+type Fuaran.Compute.PivotSpec (record)
+type Fuaran.Compute.Plan (module)
+type Fuaran.Compute.PlanDeclined (record)
+type Fuaran.Compute.PlanReport (record)
+type Fuaran.Compute.PlanRewrite (record)
+type Fuaran.Compute.Prepared (record)
+type Fuaran.Compute.Recompute (union)
+type Fuaran.Compute.Recompute+FullRecompute (type)
+type Fuaran.Compute.Recompute+GroupsRecomputed (type)
+type Fuaran.Compute.Recompute+Primed (type)
+type Fuaran.Compute.Recompute+RowsRecomputed (type)
+type Fuaran.Compute.Recompute+Tags (type)
+type Fuaran.Compute.RecomputeFootprint (record)
+type Fuaran.Compute.RewriteClass (union)
+type Fuaran.Compute.RewriteClass+Tags (type)
+type Fuaran.Compute.Rounding (record)
+type Fuaran.Compute.RoundingMode (union)
+type Fuaran.Compute.RoundingMode+Tags (type)
+type Fuaran.Compute.RowChange (union)
+type Fuaran.Compute.RowChange+Tags (type)
+type Fuaran.Compute.RowIdentity (module)
+type Fuaran.Compute.RowIdentity`1 (record)
+type Fuaran.Compute.RowRef (union)
+type Fuaran.Compute.RowRef+ByKey (type)
+type Fuaran.Compute.RowRef+ByOrdinal (type)
+type Fuaran.Compute.RowRef+Tags (type)
+type Fuaran.Compute.RowSetDelta (record)
+type Fuaran.Compute.ScalarFn (union)
+type Fuaran.Compute.ScalarFn+Tags (type)
+type Fuaran.Compute.SchemaKnowledge (union)
+type Fuaran.Compute.SchemaKnowledge+AtLeast (type)
+type Fuaran.Compute.SchemaKnowledge+Closed (type)
+type Fuaran.Compute.SchemaKnowledge+Tags (type)
+type Fuaran.Compute.SchemaWalk (module)
+type Fuaran.Compute.SlotModule (module)
+type Fuaran.Compute.Slot`1 (union)
+type Fuaran.Compute.Slot`1+Lit (type)
+type Fuaran.Compute.Slot`1+Param (type)
+type Fuaran.Compute.Slot`1+Tags (type)
+type Fuaran.Compute.SortDir (union)
+type Fuaran.Compute.SortDir+Tags (type)
+type Fuaran.Compute.StepIncrementality (union)
+type Fuaran.Compute.StepIncrementality+FallBack (type)
+type Fuaran.Compute.StepIncrementality+FilterByRelation (type)
+type Fuaran.Compute.StepIncrementality+MaintainGroups (type)
+type Fuaran.Compute.StepIncrementality+MergeOrder (type)
+type Fuaran.Compute.StepIncrementality+RecomputeFrame (type)
+type Fuaran.Compute.StepIncrementality+Tags (type)
+type Fuaran.Compute.StepIncrementality+TruncateOrder (type)
+type Fuaran.Compute.TableDelta (union)
+type Fuaran.Compute.TableDelta+RowSet (type)
+type Fuaran.Compute.TableDelta+Tags (type)
+type Fuaran.Compute.Transform (union)
+type Fuaran.Compute.Transform+Derive (type)
+type Fuaran.Compute.Transform+Except (type)
+type Fuaran.Compute.Transform+Filter (type)
+type Fuaran.Compute.Transform+GroupBy (type)
+type Fuaran.Compute.Transform+Intersect (type)
+type Fuaran.Compute.Transform+Join (type)
+type Fuaran.Compute.Transform+Limit (type)
+type Fuaran.Compute.Transform+Pivot (type)
+type Fuaran.Compute.Transform+Project (type)
+type Fuaran.Compute.Transform+Sort (type)
+type Fuaran.Compute.Transform+Tags (type)
+type Fuaran.Compute.Transform+Union (type)
+type Fuaran.Compute.Transform+Unpivot (type)
+type Fuaran.Compute.Transform+Window (type)
+type Fuaran.Compute.TransformModule (module)
+type Fuaran.Compute.WindowFn (union)
+type Fuaran.Compute.WindowFn+NTile (type)
+type Fuaran.Compute.WindowFn+Tags (type)
+type Fuaran.Compute.WindowSpec (record)
+union-case Fuaran.Compute.BinOp.Add #0()
+union-case Fuaran.Compute.BinOp.And #11()
+union-case Fuaran.Compute.BinOp.Contains #13()
+union-case Fuaran.Compute.BinOp.Div #3()
+union-case Fuaran.Compute.BinOp.EndsWith #15()
+union-case Fuaran.Compute.BinOp.Eq #5()
+union-case Fuaran.Compute.BinOp.Ge #10()
+union-case Fuaran.Compute.BinOp.Gt #9()
+union-case Fuaran.Compute.BinOp.Le #8()
+union-case Fuaran.Compute.BinOp.Lt #7()
+union-case Fuaran.Compute.BinOp.Mod #4()
+union-case Fuaran.Compute.BinOp.Mul #2()
+union-case Fuaran.Compute.BinOp.Ne #6()
+union-case Fuaran.Compute.BinOp.Or #12()
+union-case Fuaran.Compute.BinOp.StartsWith #14()
+union-case Fuaran.Compute.BinOp.Sub #1()
+union-case Fuaran.Compute.Change.FullChange #3()
+union-case Fuaran.Compute.Change.NewColumnValuesChanged #0(column: System.String)
+union-case Fuaran.Compute.Change.NewSchemaChanged #2(Item: Fuaran.Core.SchemaDelta)
+union-case Fuaran.Compute.Change.RowsAppended #1()
+union-case Fuaran.Compute.ColExpr.NewApplyFn #8(Item1: Fuaran.Compute.ScalarFn, Item2: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColExpr>)
+union-case Fuaran.Compute.ColExpr.NewBinary #3(Item1: Fuaran.Compute.BinOp, Item2: Fuaran.Compute.ColExpr, Item3: Fuaran.Compute.ColExpr)
+union-case Fuaran.Compute.ColExpr.NewCase #6(cases: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr>>, elseExpr: Fuaran.Compute.ColExpr)
+union-case Fuaran.Compute.ColExpr.NewCast #7(Item1: Fuaran.Core.ColumnType, Item2: Fuaran.Compute.ColExpr)
+union-case Fuaran.Compute.ColExpr.NewCoalesce #5(Item: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColExpr>)
+union-case Fuaran.Compute.ColExpr.NewCol #0(Item: System.String)
+union-case Fuaran.Compute.ColExpr.NewInList #9(Item1: Fuaran.Compute.ColExpr, Item2: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColExpr>)
+union-case Fuaran.Compute.ColExpr.NewInParam #11(Item1: Fuaran.Compute.ColExpr, name: System.String)
+union-case Fuaran.Compute.ColExpr.NewIsNull #10(Item: Fuaran.Compute.ColExpr)
+union-case Fuaran.Compute.ColExpr.NewLit #1(Item: Fuaran.Core.Cell)
+union-case Fuaran.Compute.ColExpr.NewNot #4(Item: Fuaran.Compute.ColExpr)
+union-case Fuaran.Compute.ColExpr.NewNow #12(grain: Fuaran.Compute.NowGrain)
+union-case Fuaran.Compute.ColExpr.NewParam #2(name: System.String)
+union-case Fuaran.Compute.ColExpr.NewQuotient #13(dividend: Fuaran.Compute.ColExpr, divisor: Fuaran.Compute.ColExpr, rounding: Fuaran.Compute.Rounding)
+union-case Fuaran.Compute.ColExpr.NewRounded #14(Item1: Fuaran.Compute.ColExpr, Item2: Fuaran.Compute.Rounding)
+union-case Fuaran.Compute.DeltaDefect.EmptyColumnName #5()
+union-case Fuaran.Compute.DeltaDefect.EmptyRowKey #1()
+union-case Fuaran.Compute.DeltaDefect.EmptyScheme #0()
+union-case Fuaran.Compute.DeltaDefect.NewDuplicateIdentity #9(scheme: System.String, key: System.String)
+union-case Fuaran.Compute.DeltaDefect.NewDuplicateInvalidatedColumn #6(name: System.String)
+union-case Fuaran.Compute.DeltaDefect.NewDuplicateRow #3(row: System.String)
+union-case Fuaran.Compute.DeltaDefect.NewMissingIdentity #8(scheme: System.String, index: System.Int32)
+union-case Fuaran.Compute.DeltaDefect.NewMixedAddressing #4(scheme: System.String, row: System.String)
+union-case Fuaran.Compute.DeltaDefect.NewNegativeOrdinal #2(index: System.Int32)
+union-case Fuaran.Compute.DeltaDefect.NewSchemeMismatch #7(left: System.String, right: System.String)
+union-case Fuaran.Compute.EvalError.NewAggError #2(detail: System.String)
+union-case Fuaran.Compute.EvalError.NewArityError #4(fn: System.String, expected: System.Int32, got: System.Int32)
+union-case Fuaran.Compute.EvalError.NewJoinError #3(detail: System.String)
+union-case Fuaran.Compute.EvalError.NewOverflowError #6(detail: System.String)
+union-case Fuaran.Compute.EvalError.NewTypeError #1(detail: System.String)
+union-case Fuaran.Compute.EvalError.NewUnboundParam #7(name: System.String, bound: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Compute.EvalError.NewUnknownColumn #0(name: System.String, available: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Compute.EvalError.NewUnpinnedClock #8(grain: Fuaran.Compute.NowGrain)
+union-case Fuaran.Compute.EvalError.NewUnresolvedSource #5(ref: System.String)
+union-case Fuaran.Compute.FallBackReason.DeltaIsFullRefresh #2()
+union-case Fuaran.Compute.FallBackReason.EnvChanged #5()
+union-case Fuaran.Compute.FallBackReason.NewAggregateStepNotLast #1(verb: System.String)
+union-case Fuaran.Compute.FallBackReason.NewAggregateStepRepeated #11(verb: System.String)
+union-case Fuaran.Compute.FallBackReason.NewJoinNotRowPreserving #10(kind: System.String)
+union-case Fuaran.Compute.FallBackReason.NewRowIdentityUnusable #7(defect: Fuaran.Compute.DeltaDefect)
+union-case Fuaran.Compute.FallBackReason.NewStepNotRowLocal #0(verb: System.String)
+union-case Fuaran.Compute.FallBackReason.NewUnresolvedSlotParam #8(verb: System.String, param: System.String)
+union-case Fuaran.Compute.FallBackReason.NewWindowFrameUnbounded #9(fn: System.String)
+union-case Fuaran.Compute.FallBackReason.OrdinalAddressing #3()
+union-case Fuaran.Compute.FallBackReason.PipelineChanged #6()
+union-case Fuaran.Compute.FallBackReason.SourceSchemaMoved #4()
+union-case Fuaran.Compute.IncrementalStrategy.NewReferenceOnly #2(reason: Fuaran.Compute.FallBackReason)
+union-case Fuaran.Compute.IncrementalStrategy.RowLocal #0()
+union-case Fuaran.Compute.IncrementalStrategy.RowLocalThenGroups #1()
+union-case Fuaran.Compute.JoinKind.Anti #5()
+union-case Fuaran.Compute.JoinKind.Inner #0()
+union-case Fuaran.Compute.JoinKind.Left #1()
+union-case Fuaran.Compute.JoinKind.Outer #3()
+union-case Fuaran.Compute.JoinKind.Right #2()
+union-case Fuaran.Compute.JoinKind.Semi #4()
+union-case Fuaran.Compute.KeyEqualityDisagreement.NewDistinctIdsEqualKey #2(row: System.Int32, other: System.Int32, key: System.String)
+union-case Fuaran.Compute.KeyEqualityDisagreement.NewEqualIdsDistinctKeys #1(row: System.Int32, other: System.Int32, key: System.String, otherKey: System.String)
+union-case Fuaran.Compute.KeyEqualityDisagreement.NewNotDeclared #0(scheme: System.String)
+union-case Fuaran.Compute.KeyEqualityDisagreement.NewUnequalHashes #3(row: System.Int32, other: System.Int32, key: System.String)
+union-case Fuaran.Compute.NowGrain.Date #0()
+union-case Fuaran.Compute.NowGrain.Timestamp #1()
+union-case Fuaran.Compute.Recompute.NewFullRecompute #4(rowsEvaluated: System.Int32, reason: Fuaran.Compute.FallBackReason)
+union-case Fuaran.Compute.Recompute.NewGroupsRecomputed #3(rowsEvaluated: System.Int32, groupsRecomputed: System.Int32)
+union-case Fuaran.Compute.Recompute.NewPrimed #0(rowsEvaluated: System.Int32)
+union-case Fuaran.Compute.Recompute.NewRowsRecomputed #2(rowsEvaluated: System.Int32)
+union-case Fuaran.Compute.Recompute.ReusedPrior #1()
+union-case Fuaran.Compute.RewriteClass.FilterBeforeDerive #3()
+union-case Fuaran.Compute.RewriteClass.FilterBeforeSort #2()
+union-case Fuaran.Compute.RewriteClass.PruneColumns #1()
+union-case Fuaran.Compute.RewriteClass.TopN #0()
+union-case Fuaran.Compute.RoundingMode.Ceiling #5()
+union-case Fuaran.Compute.RoundingMode.Down #4()
+union-case Fuaran.Compute.RoundingMode.Floor #6()
+union-case Fuaran.Compute.RoundingMode.HalfDown #2()
+union-case Fuaran.Compute.RoundingMode.HalfEven #0()
+union-case Fuaran.Compute.RoundingMode.HalfUp #1()
+union-case Fuaran.Compute.RoundingMode.Up #3()
+union-case Fuaran.Compute.RowChange.RowAdded #0()
+union-case Fuaran.Compute.RowChange.RowChanged #1()
+union-case Fuaran.Compute.RowChange.RowRemoved #2()
+union-case Fuaran.Compute.RowChange.RowTransient #3()
+union-case Fuaran.Compute.RowRef.NewByKey #0(key: System.String)
+union-case Fuaran.Compute.RowRef.NewByOrdinal #1(index: System.Int32)
+union-case Fuaran.Compute.ScalarFn.Abs #0()
+union-case Fuaran.Compute.ScalarFn.Ceil #3()
+union-case Fuaran.Compute.ScalarFn.Concat #9()
+union-case Fuaran.Compute.ScalarFn.DateDiffDays #12()
+union-case Fuaran.Compute.ScalarFn.DatePart #8()
+union-case Fuaran.Compute.ScalarFn.Floor #2()
+union-case Fuaran.Compute.ScalarFn.Greatest #15()
+union-case Fuaran.Compute.ScalarFn.IndexOf #16()
+union-case Fuaran.Compute.ScalarFn.Least #14()
+union-case Fuaran.Compute.ScalarFn.Length #4()
+union-case Fuaran.Compute.ScalarFn.Lower #5()
+union-case Fuaran.Compute.ScalarFn.Replace #11()
+union-case Fuaran.Compute.ScalarFn.Round #1()
+union-case Fuaran.Compute.ScalarFn.Sqrt #13()
+union-case Fuaran.Compute.ScalarFn.Substr #7()
+union-case Fuaran.Compute.ScalarFn.Trim #10()
+union-case Fuaran.Compute.ScalarFn.Upper #6()
+union-case Fuaran.Compute.SchemaKnowledge.NewAtLeast #1(columns: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColumnKnowledge>, reason: System.String)
+union-case Fuaran.Compute.SchemaKnowledge.NewClosed #0(columns: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColumnKnowledge>)
+union-case Fuaran.Compute.Slot`1.NewLit #0(Item: !0)
+union-case Fuaran.Compute.Slot`1.NewParam #1(name: System.String)
+union-case Fuaran.Compute.SortDir.Asc #0()
+union-case Fuaran.Compute.SortDir.Desc #1()
+union-case Fuaran.Compute.StepIncrementality.NewFallBack #5(reason: Fuaran.Compute.FallBackReason)
+union-case Fuaran.Compute.StepIncrementality.NewFilterByRelation #4(kind: System.String, on: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, System.String>>)
+union-case Fuaran.Compute.StepIncrementality.NewMaintainGroups #1(keys: Microsoft.FSharp.Collections.FSharpList`1<System.String>, aggregates: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Compute.StepIncrementality.NewMergeOrder #2(by: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.SortDir>>)
+union-case Fuaran.Compute.StepIncrementality.NewRecomputeFrame #3(partitionBy: Microsoft.FSharp.Collections.FSharpList`1<System.String>, orderBy: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.SortDir>>)
+union-case Fuaran.Compute.StepIncrementality.NewTruncateOrder #6(n: System.Int32, offset: System.Int32)
+union-case Fuaran.Compute.StepIncrementality.PropagateRows #0()
+union-case Fuaran.Compute.TableDelta.FullRefresh #0()
+union-case Fuaran.Compute.TableDelta.NewRowSet #1(Item: Fuaran.Compute.RowSetDelta)
+union-case Fuaran.Compute.Transform.Distinct #9()
+union-case Fuaran.Compute.Transform.NewDerive #2(Item1: System.String, Item2: Fuaran.Compute.ColExpr)
+union-case Fuaran.Compute.Transform.NewExcept #13(Item: Fuaran.Core.DataSource)
+union-case Fuaran.Compute.Transform.NewFilter #0(Item: Fuaran.Compute.ColExpr)
+union-case Fuaran.Compute.Transform.NewGroupBy #3(Item1: Microsoft.FSharp.Collections.FSharpList`1<System.String>, Item2: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Agg>)
+union-case Fuaran.Compute.Transform.NewIntersect #12(Item: Fuaran.Core.DataSource)
+union-case Fuaran.Compute.Transform.NewJoin #4(Item1: Fuaran.Core.DataSource, Item2: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, System.String>>, Item3: Fuaran.Compute.JoinKind)
+union-case Fuaran.Compute.Transform.NewLimit #10(n: Fuaran.Compute.Slot`1<System.Int32>, offset: Fuaran.Compute.Slot`1<System.Int32>)
+union-case Fuaran.Compute.Transform.NewPivot #6(Item: Fuaran.Compute.PivotSpec)
+union-case Fuaran.Compute.Transform.NewProject #1(Item: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, System.String>>)
+union-case Fuaran.Compute.Transform.NewSort #8(Item: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<Fuaran.Compute.Slot`1<System.String>, Fuaran.Compute.SortDir>>)
+union-case Fuaran.Compute.Transform.NewUnion #11(Item: Fuaran.Core.DataSource)
+union-case Fuaran.Compute.Transform.NewUnpivot #7(idVars: Microsoft.FSharp.Collections.FSharpList`1<System.String>, valueVars: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Compute.Transform.NewWindow #5(Item: Fuaran.Compute.WindowSpec)
+union-case Fuaran.Compute.WindowFn.CompetitionRank #7()
+union-case Fuaran.Compute.WindowFn.CumulMax #9()
+union-case Fuaran.Compute.WindowFn.CumulMin #10()
+union-case Fuaran.Compute.WindowFn.CumulSum #4()
+union-case Fuaran.Compute.WindowFn.DenseRank #6()
+union-case Fuaran.Compute.WindowFn.Lag #2()
+union-case Fuaran.Compute.WindowFn.Lead #3()
+union-case Fuaran.Compute.WindowFn.NewNTile #8(buckets: System.Int32)
+union-case Fuaran.Compute.WindowFn.Rank #1()
+union-case Fuaran.Compute.WindowFn.RollingMean #5()
+union-case Fuaran.Compute.WindowFn.RollingSum #11()
+union-case Fuaran.Compute.WindowFn.RowNumber #0()

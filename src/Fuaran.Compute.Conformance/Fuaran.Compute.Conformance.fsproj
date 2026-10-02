@@ -3,8 +3,8 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>true</IsPackable>
-    <PackageId>Fuaran.Core.DataFrame.Conformance</PackageId>
-    <Description>Fuaran.Core.DataFrame.Conformance — the law families over the dataframe layer, beside the Fuaran.Core.Conformance kit they extend: transform parity against the DataFrame reference evaluator, the columnar op-algebra and op-stream (ColumnOps), incremental evaluation (evalFrom and the IncrementalDelta equivalence family), params and slot params, the static output-schema walk, the pinned evaluation clock, and aggregate-versus-GroupBy parity. The families ship in module DataFrameConformance; the pre-split Conformance.* spellings forward to them (marked for removal in Phase 258). FSharp.Core only, Fable-clean.</Description>
+    <PackageId>Fuaran.Compute.Conformance</PackageId>
+    <Description>Fuaran.Compute.Conformance — the law families over the dataframe layer, beside the Fuaran.Core.Conformance kit they extend: transform parity against the DataFrame reference evaluator, the columnar op-algebra and op-stream (ColumnOps), incremental evaluation (evalFrom and the IncrementalDelta equivalence family), params and slot params, the static output-schema walk, the pinned evaluation clock, and aggregate-versus-GroupBy parity. The families ship in module DataFrameConformance; the pre-split Conformance.* spellings forward to them (marked for removal in Phase 258). FSharp.Core only, Fable-clean.</Description>
   </PropertyGroup>
   <ItemGroup>
     <!-- The families, in their own module. They read `ConfRng`, `LawResult`, `StreamGen` and the
@@ -26,10 +26,10 @@
   <ItemGroup>
     <PackageReference Include="Fuaran.Core.Conformance" />
     <PackageReference Include="Fuaran.Core.Column" />
-    <ProjectReference Include="..\Fuaran.Core.DataFrame\Fuaran.Core.DataFrame.fsproj" />
-    <ProjectReference Include="..\Fuaran.Core.Column.Ops\Fuaran.Core.Column.Ops.fsproj" />
+    <ProjectReference Include="..\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
+    <ProjectReference Include="..\Fuaran.Compute.ColumnOps\Fuaran.Compute.ColumnOps.fsproj" />
     <!-- Phase 281 - the registered pipeline query, whose law family ships here. -->
-    <ProjectReference Include="..\Fuaran.Core.DataFrame.PipelineQuery\Fuaran.Core.DataFrame.PipelineQuery.fsproj" />
+    <ProjectReference Include="..\Fuaran.Compute.PipelineQuery\Fuaran.Compute.PipelineQuery.fsproj" />
     <PackageReference Include="Fuaran.Core.OpStream" />
     <PackageReference Include="Fuaran.Core.Wire" />
   </ItemGroup>

@@ -4,7 +4,7 @@
    with the five clauses Phase 138 proved for trees proved here for columns (fuaran-core
    Phase 176).
 
-   WHAT IS MODELLED. `src/Fuaran.Core.Column.Ops/ColumnOps.fs` — the six-case `ColumnOp`, the
+   WHAT IS MODELLED. `src/Fuaran.Compute.ColumnOps/ColumnOps.fs` — the six-case `ColumnOp`, the
    eight-case `ColumnRejection`, and the four functions over the `Fuaran.Core.Column` `Table`: a
    schema (an ordered `(name, type)` list), the columns (each a name, a type and a cell list), where
    `Null` IS the validity mask and a present cell is its type and an OPAQUE CARRIER. Nothing in the

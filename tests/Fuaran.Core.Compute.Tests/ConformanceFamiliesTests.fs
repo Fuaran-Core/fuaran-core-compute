@@ -1,7 +1,7 @@
-module Fuaran.Core.Tests.ConformanceFamiliesTests
+module Fuaran.Compute.Tests.ConformanceFamiliesTests
 
 // The law families this repository ships, held to the assembly that ships them (Phase 259, carried
-// from the Fuaran.Core repository's suite with `Fuaran.Core.DataFrame.Conformance`).
+// from the Fuaran.Core repository's suite with `Fuaran.Compute.Conformance`).
 //
 // Two properties of the assembly that nothing else asserts:
 //   * the roster share (`DataFrameFamilies.roster`) names EXACTLY the law entry points the assembly
@@ -16,6 +16,7 @@ open System
 open System.Reflection
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 /// The law entry points one module declares, by REFLECTION OVER RETURN TYPE.
 let lawMethods (t: Type) : MethodInfo list =
@@ -36,7 +37,7 @@ let compareRoster (declared: Set<string>) (shipped: Set<string>) : string list *
 /// The family's home module; the roster keys families by the forwarded spelling a consumer calls
 /// today, so the home is read through the forwards rather than rostered twice.
 [<Literal>]
-let private forwardedHome = "Fuaran.Core.DataFrameConformance"
+let private forwardedHome = "Fuaran.Compute.DataFrameConformance"
 
 let private assembly () = KitRoster.assemblies |> List.exactlyOne
 
@@ -46,8 +47,8 @@ let private shippedIds () : Set<string> =
     [ for t in assembly().GetTypes() do
           if t.IsPublic && t.FullName <> forwardedHome then
               let prefix =
-                  if t.FullName.StartsWith("Fuaran.Core.", StringComparison.Ordinal) then
-                      t.FullName.Substring "Fuaran.Core.".Length
+                  if t.FullName.StartsWith("Fuaran.Compute.", StringComparison.Ordinal) then
+                      t.FullName.Substring "Fuaran.Compute.".Length
                   else
                       t.FullName
 
@@ -101,7 +102,7 @@ let familiesTests =
                       |> Set.ofArray
 
               let home = membersOf forwardedHome
-              let forwards = membersOf "Fuaran.Core.Conformance"
+              let forwards = membersOf "Fuaran.Compute.Conformance"
               let unforwarded, orphaned = compareRoster forwards home
 
               Expect.isEmpty
@@ -111,7 +112,7 @@ let familiesTests =
               Expect.isEmpty orphaned "these forwards name no DataFrameConformance member"
 
               let homeType = asm.GetType forwardedHome
-              let fwdType = asm.GetType "Fuaran.Core.Conformance"
+              let fwdType = asm.GetType "Fuaran.Compute.Conformance"
 
               for m in lawMethods homeType do
                   let ps = m.GetParameters() |> Array.map _.ParameterType
@@ -135,7 +136,7 @@ let conformanceTests =
         [
 
           // The substrate's Phase 257 split the family: the parity half ships from
-          // Fuaran.Core.DataFrame.Conformance under this name, and the null-skip half is
+          // Fuaran.Compute.Conformance under this name, and the null-skip half is
           // `aggregateNullSkipLaws`, in the kit (certified there).
           testCase "aggregateParityLaws certify single-source parity (Phase 36)"
           <| fun _ ->

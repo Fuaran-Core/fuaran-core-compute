@@ -1,4 +1,6 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
 //  Phase 281 — the law family over the registered pipeline query, on the

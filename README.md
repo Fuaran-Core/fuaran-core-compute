@@ -9,20 +9,31 @@ stream.
 FSharp.Core-only and Fable-clean. Apache-2.0.
 
 These packages shipped from the [Fuaran.Core](https://github.com/Fuaran-Core/fuaran-core) repository
-through `0.32.0` and are produced here from `0.33.0` on, **under the same package ids and the same
-namespaces** — a consumer raises a version and changes nothing else. Why they moved is
-[`DECISIONS.md`](DECISIONS.md) D1.
+through `0.32.0` and were produced here from `0.33.0`, at first under their original ids. **From
+`0.36.0` they carry their own: `Fuaran.Compute.*` package ids and the `Fuaran.Compute` namespace**,
+and the `Fuaran.Core.*` ids they replaced stop at `0.34.0`, their last published version (no
+deprecation package is published; nuget.org keeps that release). A consumer moves its package
+references to the new ids and adds `open Fuaran.Compute` beside `open Fuaran.Core`: the module
+names inside are unchanged. Why the packages moved is [`DECISIONS.md`](DECISIONS.md) D1; why they
+were renamed, and the mapping, is D4.
+
+| Through `0.34.0` | From `0.36.0` |
+|---|---|
+| `Fuaran.Core.DataFrame` | `Fuaran.Compute.DataFrame` |
+| `Fuaran.Core.Column.Ops` | `Fuaran.Compute.ColumnOps` |
+| `Fuaran.Core.DataFrame.Conformance` | `Fuaran.Compute.Conformance` |
+| (first published under the new id) | `Fuaran.Compute.PipelineQuery` |
 
 ## Packages
 
 | Package | What it owns | Built over |
 |---|---|---|
-| **`Fuaran.Core.DataFrame`** | the declarative-compute layer: a serializable `Transform` / `ColExpr` algebra (the verb set below), a pure reference evaluator with pinned null, coercion, ordering and float semantics (the cross-host parity contract), a canonical wire codec, the change-relevance `evalFrom`, the typed row delta (`TableDelta`, `Delta.diff`, an associative composition) and the incremental evaluator (`Incremental.plan` / `prime` / `refresh`) | `Fuaran.Core.Column`, `Fuaran.Core.Wire` |
-| **`Fuaran.Core.Column.Ops`** | the columnar op algebra: a `ColumnOp` union (`SetCell` / `SetColumn` / `InsertColumn` / `RemoveColumn` / `AppendRows` / `ApplyTransform`) with a total `apply` / `canApply`, a partial `invert` (undo/redo), a structural `Diff`, a wire codec and a `StreamWitness` — so table edits ride `Fuaran.Core.OpStream` — plus `deltaOf` and `changedColumns`, the bridges into incremental evaluation | `DataFrame`, `Fuaran.Core.OpStream` |
-| **`Fuaran.Core.DataFrame.PipelineQuery`** | the registered pipeline query: a substrate `Query` declaration paired with the `Transform` pipeline that is its body (`PipelineQuery`), a registry on the substrate's default-deny pattern that admits a pair only when the pipeline's static output schema is closed and IS the declared result schema and its parameter reads agree with the declared parameters both ways and by type (`PipelineQueryRegistry.register` / `enumerate` / `dispatch`, reusing the substrate's `DuplicateQuery` / `NoSuchQuery` and its `Deferred` dispatch), and a canonical wire codec | `DataFrame`, `Fuaran.Core.Query` |
-| **`Fuaran.Core.DataFrame.Conformance`** | the law families over the packages above, beside the substrate's law kit they extend: `transformLaws` (host-evaluator parity against the reference), `aggregateParityLaws`, `columnarOpLaws` / `columnarOpLawsWith`, `incrementalLaws` / `incrementalLawsWith`, `IncrementalDelta.laws` / `lawsWith`, `paramLaws`, `schemaWalkLaws`, `nowLaws`, `slotParamLaws` — in module `DataFrameConformance` — and `PipelineQueryConformance.laws` | `Fuaran.Core.Conformance` |
+| **`Fuaran.Compute.DataFrame`** | the declarative-compute layer: a serializable `Transform` / `ColExpr` algebra (the verb set below), a pure reference evaluator with pinned null, coercion, ordering and float semantics (the cross-host parity contract), a canonical wire codec, the change-relevance `evalFrom`, the typed row delta (`TableDelta`, `Delta.diff`, an associative composition) and the incremental evaluator (`Incremental.plan` / `prime` / `refresh`) | `Fuaran.Core.Column`, `Fuaran.Core.Wire` |
+| **`Fuaran.Compute.ColumnOps`** | the columnar op algebra: a `ColumnOp` union (`SetCell` / `SetColumn` / `InsertColumn` / `RemoveColumn` / `AppendRows` / `ApplyTransform`) with a total `apply` / `canApply`, a partial `invert` (undo/redo), a structural `Diff`, a wire codec and a `StreamWitness` — so table edits ride `Fuaran.Core.OpStream` — plus `deltaOf` and `changedColumns`, the bridges into incremental evaluation | `DataFrame`, `Fuaran.Core.OpStream` |
+| **`Fuaran.Compute.PipelineQuery`** | the registered pipeline query: a substrate `Query` declaration paired with the `Transform` pipeline that is its body (`PipelineQuery`), a registry on the substrate's default-deny pattern that admits a pair only when the pipeline's static output schema is closed and IS the declared result schema and its parameter reads agree with the declared parameters both ways and by type (`PipelineQueryRegistry.register` / `enumerate` / `dispatch`, reusing the substrate's `DuplicateQuery` / `NoSuchQuery` and its `Deferred` dispatch), and a canonical wire codec | `DataFrame`, `Fuaran.Core.Query` |
+| **`Fuaran.Compute.Conformance`** | the law families over the packages above, beside the substrate's law kit they extend: `transformLaws` (host-evaluator parity against the reference), `aggregateParityLaws`, `columnarOpLaws` / `columnarOpLawsWith`, `incrementalLaws` / `incrementalLawsWith`, `IncrementalDelta.laws` / `lawsWith`, `paramLaws`, `schemaWalkLaws`, `nowLaws`, `slotParamLaws` — in module `DataFrameConformance` — and `PipelineQueryConformance.laws` | `Fuaran.Core.Conformance` |
 
-Dependency order: `DataFrame` → `Column.Ops` → `DataFrame.PipelineQuery` → `DataFrame.Conformance`. **This table is a derived roster, not a hand-kept list**: the suite holds its rows equal
+Dependency order: `DataFrame` → `ColumnOps` → `PipelineQuery` → `Conformance`. **This table is a derived roster, not a hand-kept list**: the suite holds its rows equal
 to the packable projects under `src/`.
 
 ## The verb set
@@ -54,6 +65,7 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 
 ```fsharp
 open Fuaran.Core
+open Fuaran.Compute
 
 let pipeline = [ Filter(Binary(Gt, Col "v", Lit(Int 2))); GroupBy([ "g" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ]
 let full = DataFrame.evalPipeline pipeline table                              // the reference answer
@@ -158,7 +170,7 @@ and the `Compute boundary` tests refuse a fifth — or any reference that is not
 ## The law kit
 
 `Fuaran.Core.Conformance` is a property-based law kit a domain runs against its own witness; this
-repository's `Fuaran.Core.DataFrame.Conformance` adds the families over the dataframe layer, reading
+repository's `Fuaran.Compute.Conformance` adds the families over the dataframe layer, reading
 the kit's `ConfRng`, `LawResult`, `StreamGen` and adequacy guard and nothing private of it. A host
 with its own dataframe evaluator certifies against `transformLaws`, and a host that cannot link this
 package reads the same reference answers from

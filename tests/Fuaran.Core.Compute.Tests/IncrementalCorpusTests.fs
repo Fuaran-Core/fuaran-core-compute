@@ -1,9 +1,10 @@
-module Fuaran.Core.Tests.IncrementalCorpusTests
+module Fuaran.Compute.Tests.IncrementalCorpusTests
 
 open System
 open System.IO
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 //  Phase 115 — the incremental seam measured against a VENDORED corpus vector

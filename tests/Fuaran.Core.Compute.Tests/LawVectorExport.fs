@@ -1,4 +1,4 @@
-namespace Fuaran.Core.Tests
+namespace Fuaran.Compute.Tests
 
 // ============================================================================
 //  The host-neutral export of `Conformance.transformLaws`' reference answers,
@@ -11,7 +11,7 @@ namespace Fuaran.Core.Tests
 //  its exporter runs the law and records what the kit answered.
 //  `transformLaws` is a PARITY family: it takes a HOST evaluator `under` and a
 //  `gen`, and certifies that `under` agrees with
-//  `Fuaran.Core.DataFrame.evalPipeline` byte-for-byte. Running it HERE with the
+//  `Fuaran.Compute.DataFrame.evalPipeline` byte-for-byte. Running it HERE with the
 //  reference as `under` would certify the reference against itself, which is
 //  why the corpus manifest recorded it as not exported.
 //
@@ -43,6 +43,7 @@ module LawVectorExport =
     open System.Reflection
     open System.Text
     open Fuaran.Core
+    open Fuaran.Compute
 
     /// The family directory inside the shared corpus and the artefact in it. The directory name is
     /// the interface — hosts resolve `laws/` — so it is named once here.
@@ -355,7 +356,7 @@ module LawVectorExport =
     /// The version of the reference that produced the answers, read from the assembly rather than a
     /// literal: the version decides what the reference answers, so a file naming it from a literal
     /// could describe a reference that is not the one that produced the vectors. The assembly is
-    /// `Fuaran.Core.DataFrame`'s — the evaluator the vectors record, built from THIS repository at
+    /// `Fuaran.Compute.DataFrame`'s — the evaluator the vectors record, built from THIS repository at
     /// its `<Version>` (Phase 259; until the split it was read off the conformance kit's assembly,
     /// which shipped at the same number). The `+<sha>` build metadata is dropped — it moves with
     /// every build, and the committed artefact must be stable across rebuilds of the same version.
@@ -510,9 +511,9 @@ module LawVectorExport =
     // -----------------------------------------------------------------------
 
     let private description =
-        "The reference answers Fuaran.Core.Conformance.transformLaws compares a host evaluator "
+        "The reference answers Fuaran.Compute.DataFrameConformance.transformLaws compares a host evaluator "
         + "against, over a sample declared by `seed` and `iterations` and computed by calling "
-        + "Fuaran.Core.DataFrame.evalPipeline. `input.source` is a canonical DataSource wire string "
+        + "Fuaran.Compute.DataFrame.evalPipeline. `input.source` is a canonical DataSource wire string "
         + "(an Embedded table) and `input.pipeline` a canonical Transform pipeline wire string — "
         + "both decode with the host's existing dataframe codec; no new codec is needed. A host "
         + "runs the family by decoding both, evaluating the pipeline with ITS OWN evaluator, and "

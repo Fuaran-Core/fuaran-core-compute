@@ -1,7 +1,9 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Core.DataFrame (Phase 29) — the declarative-compute layer over the
+//  Fuaran.Compute.DataFrame (Phase 29) — the declarative-compute layer over the
 //  `Fuaran.Core.Column` strand: a serializable dataframe-transform algebra
 //  (`Transform` + `ColExpr`), a pure reference evaluator with *pinned* semantics
 //  (null/NA propagation, type coercion, group/sort stability, float
@@ -17,8 +19,8 @@ namespace Fuaran.Core
 
 // `AggFn` (the group/window aggregate function set) moved to `Fuaran.Core.Column` (Phase 36) so the
 // aggregate semantics are a public, single-source surface (`Column.aggregate`) the `GroupBy`/`Pivot`
-// evaluation below *calls* rather than inlines. It stays `Fuaran.Core.AggFn` (same namespace), so every
-// reference here is unchanged.
+// evaluation below *calls* rather than inlines. It stays `Fuaran.Core.AggFn`, reached here through
+// `open Fuaran.Core` since this layer took its own namespace (Phase 322), so every reference is unchanged.
 
 type JoinKind =
     | Inner

@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.SampleAdequacyTests
+module Fuaran.Compute.Tests.SampleAdequacyTests
 
 // Phase 121 — the sample-adequacy guard at the families THIS repository ships, and the
 // census-completeness check over their share of the roster (Phase 259: the instances below and the
@@ -11,6 +11,7 @@ module Fuaran.Core.Tests.SampleAdequacyTests
 open System
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 

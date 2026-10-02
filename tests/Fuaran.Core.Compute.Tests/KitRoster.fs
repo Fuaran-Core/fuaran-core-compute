@@ -1,15 +1,16 @@
 /// The law-family roster as this suite reads it: the share THIS repository ships (Phase 259).
 ///
 /// The kit's families ship from two assemblies since the Fuaran.Core repository's Phase 257: the
-/// families that read the dataframe layer from `Fuaran.Core.DataFrame.Conformance`, built here, and
+/// families that read the dataframe layer from `Fuaran.Compute.Conformance`, built here, and
 /// every other one from `Fuaran.Core.Conformance`, pinned from the substrate. Each package declares
 /// its own share (`DataFrameFamilies.roster` here), and this module is the one place the suite reads
 /// it, so every roster, census and audit check below quantifies over exactly the families this
 /// repository is answerable for. The substrate's own share is certified by the substrate's suite.
-module Fuaran.Core.Tests.KitRoster
+module Fuaran.Compute.Tests.KitRoster
 
 open System.Reflection
 open Fuaran.Core
+open Fuaran.Compute
 
 /// This repository's share.
 let rosters: Families.Roster list = [ DataFrameFamilies.roster ]
@@ -54,7 +55,7 @@ let obligations: (string * string) list =
 /// The assembly this share ships from, loaded by name: an F# module has no `typeof`, and every type
 /// it declares a family over belongs to the kit.
 let assemblies: Assembly list =
-    [ Assembly.Load(AssemblyName "Fuaran.Core.DataFrame.Conformance") ]
+    [ Assembly.Load(AssemblyName "Fuaran.Compute.Conformance") ]
 
 /// The adequacy and refusal cells, over the composed roster.
 let adequacyToken (cases: (string * CaseCount) list) (id: string) : string =

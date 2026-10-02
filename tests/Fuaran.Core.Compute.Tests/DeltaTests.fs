@@ -1,7 +1,8 @@
-module Fuaran.Core.Tests.DeltaTests
+module Fuaran.Compute.Tests.DeltaTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 //  Phase 98 — the typed delta representation for the column layer.

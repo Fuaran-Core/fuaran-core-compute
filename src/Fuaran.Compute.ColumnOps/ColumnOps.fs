@@ -1,7 +1,9 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Core.Column.Ops (Phase 31) — a columnar op-algebra over the
+//  Fuaran.Compute.ColumnOps (Phase 31) — a columnar op-algebra over the
 //  `Fuaran.Core.Column` `Table`, bridging Core's two strands. `Column` /
 //  `DataFrame` are a witness-free *data* strand with no replayable *edit*
 //  history; this adds an op DU + a total `apply` + a partial `invert` + a

@@ -1,4 +1,6 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
 //  The forwards (Phase 257; marked for removal in Phase 258).
@@ -14,6 +16,12 @@ namespace Fuaran.Core
 //  back to this package (which is the upward reference the boundary test
 //  refuses). Each member is a plain call to its home in `DataFrameConformance`;
 //  nothing is defined here that is not defined there. See DECISIONS.md D68.
+//
+//  Since Phase 322 the module is `Fuaran.Compute.Conformance` (this layer took
+//  its own namespace): the unqualified spelling `Conformance.<family>` still
+//  resolves for a consumer that opens both `Fuaran.Core` and `Fuaran.Compute`,
+//  by the same every-module-of-that-name rule; the fully qualified
+//  `Fuaran.Core.Conformance.<family>` spelling of a dataframe family does not.
 // ============================================================================
 
 /// Forwards from the pre-Phase-257 spellings to `DataFrameConformance`. Marked for removal in

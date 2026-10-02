@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.WireSurfaceTests
+module Fuaran.Compute.Tests.WireSurfaceTests
 
 // ---------------------------------------------------------------------------
 // Phase 214 — a committed baseline for the WIRE surface, and the class of a canonical-encode
@@ -69,6 +69,7 @@ open System.Text
 open Microsoft.FSharp.Reflection
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---- the exemplar builder -------------------------------------------------
 
@@ -277,15 +278,15 @@ let private derived<'T> (package: string) (label: string) (encode: 'T -> string)
 /// `notWire`, so the choice cannot be skipped.
 let internal roots: WireRoot list =
     [ // Phase 281 — the registered pipeline query: the declaration, the pipeline and the sources.
-      derived<PipelineQuery> "Fuaran.Core.DataFrame.PipelineQuery" "pipelineQuery" PipelineQueryCodec.encode
-      derived<Transform list> "Fuaran.Core.DataFrame" "pipeline" DataFrameCodec.encodePipeline
-      derived<TableDelta> "Fuaran.Core.DataFrame" "tableDelta" DeltaCodec.encode
-      derived<ColumnOp> "Fuaran.Core.Column.Ops" "columnOp" ColumnOps.encode ]
+      derived<PipelineQuery> "Fuaran.Compute.PipelineQuery" "pipelineQuery" PipelineQueryCodec.encode
+      derived<Transform list> "Fuaran.Compute.DataFrame" "pipeline" DataFrameCodec.encodePipeline
+      derived<TableDelta> "Fuaran.Compute.DataFrame" "tableDelta" DeltaCodec.encode
+      derived<ColumnOp> "Fuaran.Compute.ColumnOps" "columnOp" ColumnOps.encode ]
 
 /// Packable packages that emit no wire document of their own, each with the reason. A package
 /// here that stops being packable, or that gains a root above, fails the roster test.
 let internal notWire: (string * string) list =
-    [ "Fuaran.Core.DataFrame.Conformance",
+    [ "Fuaran.Compute.Conformance",
       "the law families over the dataframe layer; the transform law corpus is pinned by its own emission test (`--emit-laws`)" ]
 
 /// Build every document of one root: `(name, emitted bytes)`, plus the construction logs for the
@@ -578,9 +579,9 @@ let private newestTag () : Result<string, string> =
 
 /// The class of `docs` against the package's baseline AS OF `tag`, in the words a header states.
 let internal statedClassAt (tag: string) (package: string) (docs: WireDoc list) : string =
-    match git (sprintf "show %s:api/wire/%s.txt" tag package) with
+    match PublicSurfaceTests.baselineAtTag (fun at -> git ("show " + at)) tag "api/wire" package with
     | Error _ -> "first snapshot"
-    | Ok text ->
+    | Ok(_, text) ->
         match headline (classifyPackage (parseDocs text) docs) with
         | None -> "unchanged"
         | Some c -> wireClassName c
@@ -848,7 +849,7 @@ let tests =
               // `cols` is the alias Phase 213 kept. A document written with it decodes, and
               // re-encodes to exactly the bytes the baseline pins for a `project` step — so the
               // alias is outside the pinned surface, and adding one cannot move it.
-              let committed = parseDocs (File.ReadAllText(wirePath "Fuaran.Core.DataFrame"))
+              let committed = parseDocs (File.ReadAllText(wirePath "Fuaran.Compute.DataFrame"))
 
               let project =
                   committed |> List.find (fun d -> d.Name = "pipeline / Transform.Project")
@@ -866,7 +867,7 @@ let tests =
 
           test "the probe measures real content: the DataFrame baseline names the members 213 moved" {
               let tokens =
-                  parseDocs (File.ReadAllText(wirePath "Fuaran.Core.DataFrame"))
+                  parseDocs (File.ReadAllText(wirePath "Fuaran.Compute.DataFrame"))
                   |> List.map (fun d -> tokensOf d.Canonical)
                   |> Set.unionMany
 

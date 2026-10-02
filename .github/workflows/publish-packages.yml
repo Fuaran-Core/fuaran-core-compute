@@ -1,7 +1,7 @@
 name: publish-packages
 
-# Released distribution channel for this repository's four packages (Fuaran.Core.DataFrame,
-# Fuaran.Core.Column.Ops, Fuaran.Core.DataFrame.PipelineQuery, Fuaran.Core.DataFrame.Conformance):
+# Released distribution channel for this repository's four packages (Fuaran.Compute.DataFrame,
+# Fuaran.Compute.ColumnOps, Fuaran.Compute.PipelineQuery, Fuaran.Compute.Conformance):
 # nuget.org — the public, no-auth-restore channel. Bump <Version> in Directory.Build.props, commit,
 # then tag vX.Y.Z and push the tag to trigger this workflow. A branch push reaches no job here.
 # Re-runs of the same tag are idempotent (--skip-duplicate).
@@ -10,6 +10,13 @@ name: publish-packages
 # (Fuaran-Core/fuaran-core-compute, workflow publish-packages.yml) must be registered by the package
 # owner. Until it is, the run fails at the NuGet/login step — which reads like an authentication
 # problem and is the missing registration.
+#
+# THE IDS CHANGED AT 0.36.0 (Phase 322, DECISIONS.md D4). Through 0.34.0 these packages published as
+# Fuaran.Core.DataFrame, Fuaran.Core.Column.Ops and Fuaran.Core.DataFrame.Conformance; nothing here
+# packs those ids any more, and they are not republished. A nuget.org Trusted Publishing policy is
+# scoped to package ids, so the policy must be extended to the four Fuaran.Compute.* ids before the
+# first v* tag under them: a failed NuGet/login (or a push refused for those ids) on that tag is the
+# missing registration, not an authentication fault.
 on:
   push:
     tags: ['v*']

@@ -1,0 +1,84 @@
+# Fuaran.Compute.PipelineQuery — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Compute.PipelineQuery..ctor(Fuaran.Core.Query, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>)
+field Fuaran.Compute.ParamRead+Tags.List : System.Int32 (literal)
+field Fuaran.Compute.ParamRead+Tags.Scalar : System.Int32 (literal)
+field Fuaran.Compute.PipelineQueryError+Tags.ParamReadAs : System.Int32 (literal)
+field Fuaran.Compute.PipelineQueryError+Tags.ParamReadAsScalarAndList : System.Int32 (literal)
+field Fuaran.Compute.PipelineQueryError+Tags.ParamUndeclared : System.Int32 (literal)
+field Fuaran.Compute.PipelineQueryError+Tags.ParamUnread : System.Int32 (literal)
+field Fuaran.Compute.PipelineQueryError+Tags.QueryRefused : System.Int32 (literal)
+field Fuaran.Compute.PipelineQueryError+Tags.ResultColumn : System.Int32 (literal)
+field Fuaran.Compute.PipelineQueryError+Tags.ResultSchemaOpen : System.Int32 (literal)
+field Fuaran.Compute.PipelineQueryError+Tags.SourceUndeclared : System.Int32 (literal)
+field Fuaran.Compute.ResultDisagreement+Tags.Duplicated : System.Int32 (literal)
+field Fuaran.Compute.ResultDisagreement+Tags.NotProduced : System.Int32 (literal)
+field Fuaran.Compute.ResultDisagreement+Tags.OutOfOrder : System.Int32 (literal)
+field Fuaran.Compute.ResultDisagreement+Tags.TypeDiffers : System.Int32 (literal)
+field Fuaran.Compute.ResultDisagreement+Tags.TypeUndecidable : System.Int32 (literal)
+field Fuaran.Compute.ResultDisagreement+Tags.Undeclared : System.Int32 (literal)
+method Fuaran.Compute.PipelineQueryCodec.decode(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineQuery, System.String>
+method Fuaran.Compute.PipelineQueryCodec.decodeJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineQuery, System.String>
+method Fuaran.Compute.PipelineQueryCodec.encode(Fuaran.Compute.PipelineQuery) : System.String
+method Fuaran.Compute.PipelineQueryCodec.encodeJson(Fuaran.Compute.PipelineQuery) : Fuaran.Core.JVal
+method Fuaran.Compute.PipelineQueryModule.check(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Compute.PipelineQueryError>
+method Fuaran.Compute.PipelineQueryModule.checkParams(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Compute.PipelineQueryError>
+method Fuaran.Compute.PipelineQueryModule.checkResult(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Compute.PipelineQueryError>
+method Fuaran.Compute.PipelineQueryModule.namedSources(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.PipelineQueryModule.paramReads(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ParamRead>>
+method Fuaran.Compute.PipelineQueryModule.resultKnowledge(Fuaran.Compute.PipelineQuery) : Fuaran.Compute.SchemaKnowledge
+method Fuaran.Compute.PipelineQueryModule.sources(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>>
+method Fuaran.Compute.PipelineQueryModule.substitute(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.Cell>>, Fuaran.Compute.PipelineQuery) : Fuaran.Compute.PipelineQuery
+method Fuaran.Compute.PipelineQueryRegistryModule.declarations(Fuaran.Compute.PipelineQueryRegistry) : Fuaran.Core.QueryRegistry
+method Fuaran.Compute.PipelineQueryRegistryModule.dispatch(Fuaran.Compute.PipelineQueryRegistry, System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.Cell>>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.PipelineQuery, Fuaran.Core.Deferred`1<Fuaran.Core.QueryResult>>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Deferred`1<Fuaran.Core.QueryResult>, Fuaran.Core.QueryError>
+method Fuaran.Compute.PipelineQueryRegistryModule.enumerate(Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PipelineQuery>
+method Fuaran.Compute.PipelineQueryRegistryModule.register(Fuaran.Compute.PipelineQuery, Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineQueryRegistry, Fuaran.Compute.PipelineQueryError>
+method Fuaran.Compute.PipelineQueryRegistryModule.tryFind(System.String, Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.PipelineQuery>
+property Fuaran.Compute.PipelineQueryRegistryModule.empty : Fuaran.Compute.PipelineQueryRegistry { get }
+record-field Fuaran.Compute.PipelineQuery.Pipeline #1 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+record-field Fuaran.Compute.PipelineQuery.Query #0 : Fuaran.Core.Query
+record-field Fuaran.Compute.PipelineQuery.Sources #2 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>
+type Fuaran.Compute.ParamRead (union)
+type Fuaran.Compute.ParamRead+List (type)
+type Fuaran.Compute.ParamRead+Scalar (type)
+type Fuaran.Compute.ParamRead+Tags (type)
+type Fuaran.Compute.PipelineQuery (record)
+type Fuaran.Compute.PipelineQueryCodec (module)
+type Fuaran.Compute.PipelineQueryError (union)
+type Fuaran.Compute.PipelineQueryError+ParamReadAs (type)
+type Fuaran.Compute.PipelineQueryError+ParamReadAsScalarAndList (type)
+type Fuaran.Compute.PipelineQueryError+ParamUndeclared (type)
+type Fuaran.Compute.PipelineQueryError+ParamUnread (type)
+type Fuaran.Compute.PipelineQueryError+QueryRefused (type)
+type Fuaran.Compute.PipelineQueryError+ResultColumn (type)
+type Fuaran.Compute.PipelineQueryError+ResultSchemaOpen (type)
+type Fuaran.Compute.PipelineQueryError+SourceUndeclared (type)
+type Fuaran.Compute.PipelineQueryError+Tags (type)
+type Fuaran.Compute.PipelineQueryModule (module)
+type Fuaran.Compute.PipelineQueryRegistry (record)
+type Fuaran.Compute.PipelineQueryRegistryModule (module)
+type Fuaran.Compute.ResultDisagreement (union)
+type Fuaran.Compute.ResultDisagreement+OutOfOrder (type)
+type Fuaran.Compute.ResultDisagreement+Tags (type)
+type Fuaran.Compute.ResultDisagreement+TypeDiffers (type)
+type Fuaran.Compute.ResultDisagreement+TypeUndecidable (type)
+union-case Fuaran.Compute.ParamRead.NewList #1(readAs: Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>)
+union-case Fuaran.Compute.ParamRead.NewScalar #0(readAs: Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>)
+union-case Fuaran.Compute.PipelineQueryError.NewParamReadAs #5(name: System.String, declared: Fuaran.Core.ColumnType, readAs: Fuaran.Core.ColumnType)
+union-case Fuaran.Compute.PipelineQueryError.NewParamReadAsScalarAndList #6(name: System.String)
+union-case Fuaran.Compute.PipelineQueryError.NewParamUndeclared #4(name: System.String, declared: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Compute.PipelineQueryError.NewParamUnread #7(name: System.String)
+union-case Fuaran.Compute.PipelineQueryError.NewQueryRefused #0(Item: Fuaran.Core.QueryError)
+union-case Fuaran.Compute.PipelineQueryError.NewResultColumn #3(column: System.String, disagreement: Fuaran.Compute.ResultDisagreement)
+union-case Fuaran.Compute.PipelineQueryError.NewResultSchemaOpen #2(reason: System.String)
+union-case Fuaran.Compute.PipelineQueryError.NewSourceUndeclared #1(name: System.String, declared: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Compute.ResultDisagreement.Duplicated #2()
+union-case Fuaran.Compute.ResultDisagreement.NewOutOfOrder #3(declaredAt: System.Int32, producedAt: System.Int32)
+union-case Fuaran.Compute.ResultDisagreement.NewTypeDiffers #4(declared: Fuaran.Core.ColumnType, produced: Fuaran.Core.ColumnType)
+union-case Fuaran.Compute.ResultDisagreement.NewTypeUndecidable #5(declared: Fuaran.Core.ColumnType)
+union-case Fuaran.Compute.ResultDisagreement.NotProduced #0()
+union-case Fuaran.Compute.ResultDisagreement.Undeclared #1()

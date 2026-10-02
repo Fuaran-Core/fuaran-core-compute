@@ -1,9 +1,9 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/Fuaran.Core.DataFrame/Fuaran.Core.DataFrame.fsproj" />
-    <Project Path="src/Fuaran.Core.Column.Ops/Fuaran.Core.Column.Ops.fsproj" />
-    <Project Path="src/Fuaran.Core.DataFrame.Conformance/Fuaran.Core.DataFrame.Conformance.fsproj" />
-    <Project Path="src/Fuaran.Core.DataFrame.PipelineQuery/Fuaran.Core.DataFrame.PipelineQuery.fsproj" />
+    <Project Path="src/Fuaran.Compute.DataFrame/Fuaran.Compute.DataFrame.fsproj" />
+    <Project Path="src/Fuaran.Compute.ColumnOps/Fuaran.Compute.ColumnOps.fsproj" />
+    <Project Path="src/Fuaran.Compute.Conformance/Fuaran.Compute.Conformance.fsproj" />
+    <Project Path="src/Fuaran.Compute.PipelineQuery/Fuaran.Compute.PipelineQuery.fsproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Fuaran.Core.Compute.Tests/Fuaran.Core.Compute.Tests.fsproj" />

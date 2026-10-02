@@ -1,4 +1,6 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // Phase 257 — this package's share of the law-family roster.
 //
@@ -193,7 +195,7 @@ module DataFrameFamilies =
 
     /// This package's share, for a reader composing it with the kit's `Families.roster`.
     let roster: Roster =
-        { Package = "Fuaran.Core.DataFrame.Conformance"
+        { Package = "Fuaran.Compute.Conformance"
           Families = families
           RefusalAudit = refusalAudit
           Census = census }

@@ -1,7 +1,8 @@
-module Fuaran.Core.Tests.DataFrameTests
+module Fuaran.Compute.Tests.DataFrameTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---- helpers ----
 
@@ -3122,7 +3123,7 @@ let tokenEqualityTests =
                   ||| System.Reflection.BindingFlags.NonPublic
 
               let cellKey =
-                  match typeof<JoinKind>.Assembly.GetType "Fuaran.Core.DataFrame+CellKey" with
+                  match typeof<JoinKind>.Assembly.GetType "Fuaran.Compute.DataFrame+CellKey" with
                   | null -> failtest "the internal CellKey module was not found"
                   | t -> t
 

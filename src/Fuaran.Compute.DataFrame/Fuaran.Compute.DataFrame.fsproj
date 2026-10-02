@@ -3,8 +3,8 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>true</IsPackable>
-    <PackageId>Fuaran.Core.DataFrame</PackageId>
-    <Description>Fuaran.Core.DataFrame — the declarative-compute layer over Fuaran.Core.Column: a serializable dataframe-transform algebra (Transform + ColExpr, full v1 verb set — filter/project/derive/groupBy/join/window/pivot/unpivot/sort/distinct/limit/union), a pure reference evaluator with pinned null/coercion/order/float semantics (the cross-host parity contract), and a canonical wire codec. transformLaws (in Fuaran.Core.Conformance) certifies any host evaluator byte-identical to the reference. Also carries the typed delta representation for the column layer (TableDelta: rows added/changed/removed addressed by a caller-supplied identity witness, column invalidation, and full-refresh as the top element) with an associative composition and a canonical wire codec, and the incremental evaluation seam over it: a pipeline evaluated against a delta rather than from scratch, with per-step incrementality declared as data (propagate / maintain-state / typed fall-back), a measured recompute footprint, and certified equality with the reference evaluator for every (base, delta) pair. FSharp.Core only, Fable-clean.</Description>
+    <PackageId>Fuaran.Compute.DataFrame</PackageId>
+    <Description>Fuaran.Compute.DataFrame — the declarative-compute layer over Fuaran.Core.Column: a serializable dataframe-transform algebra (Transform + ColExpr, full v1 verb set — filter/project/derive/groupBy/join/window/pivot/unpivot/sort/distinct/limit/union), a pure reference evaluator with pinned null/coercion/order/float semantics (the cross-host parity contract), and a canonical wire codec. transformLaws (in Fuaran.Compute.Conformance) certifies any host evaluator byte-identical to the reference. Also carries the typed delta representation for the column layer (TableDelta: rows added/changed/removed addressed by a caller-supplied identity witness, column invalidation, and full-refresh as the top element) with an associative composition and a canonical wire codec, and the incremental evaluation seam over it: a pipeline evaluated against a delta rather than from scratch, with per-step incrementality declared as data (propagate / maintain-state / typed fall-back), a measured recompute footprint, and certified equality with the reference evaluator for every (base, delta) pair. FSharp.Core only, Fable-clean.</Description>
   </PropertyGroup>
   <ItemGroup>
     <!-- Phase 267 — the dense columnar frame: the typed vectors, masks and selection the evaluator
@@ -35,7 +35,7 @@
     <!-- Phase 268 - the columnar op algebra edits a prepared source chunk by chunk, through the
          rope behind the opaque Prepared; that rope is a working form, not a contract, so the one
          sibling package that edits it is the second assembly that may see it. -->
-    <InternalsVisibleTo Include="Fuaran.Core.Column.Ops" />
+    <InternalsVisibleTo Include="Fuaran.Compute.ColumnOps" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Fuaran.Core.Column" />

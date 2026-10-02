@@ -1,7 +1,9 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Core.DataFrame — the evaluator's dense columnar frame (Phase 267).
+//  Fuaran.Compute.DataFrame — the evaluator's dense columnar frame (Phase 267).
 //
 //  The evaluator's working form between the `Table` it is handed and the
 //  `Table` it returns. Internal to this assembly: `Table` stays the boundary

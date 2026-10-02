@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.DecimalVectorTests
+module Fuaran.Compute.Tests.DecimalVectorTests
 
 // ---------------------------------------------------------------------------
 //  Phase 280 — the scaled-integer decimal vector behind the `Table` boundary. A decimal column
@@ -12,6 +12,7 @@ module Fuaran.Core.Tests.DecimalVectorTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 let private decs (cells: Cell list) : Vec =
     Vec.pack DecimalType (List.toArray cells)

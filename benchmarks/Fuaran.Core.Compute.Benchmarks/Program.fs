@@ -24,7 +24,7 @@ let private checkAll () =
             let full = Corpus.scalingFull inputs |> Corpus.orFail "full evaluation"
             let refreshed = Corpus.scalingRefresh inputs |> Corpus.orFail "refresh"
 
-            if Fuaran.Core.Incremental.result refreshed <> full then
+            if Fuaran.Compute.Incremental.result refreshed <> full then
                 failwithf "the refresh of %s at %d rows disagrees with the full evaluation" name n
 
             printfn "%s %d rows: the refresh agrees with the full evaluation" name n

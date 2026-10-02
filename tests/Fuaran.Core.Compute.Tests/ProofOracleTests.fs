@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.ProofOracleTests
+module Fuaran.Compute.Tests.ProofOracleTests
 
 // The F* oracles as hosts: each extracted model (`proofs/oracle/<Model>.fs`, generated from
 // `proofs/<Model>.fst` by F*'s own F# code generator) run BESIDE the production code it models,
@@ -26,6 +26,7 @@ module ModelCol = ColumnOps
 module ModelPipe = Pipeline
 
 open Fuaran.Core
+open Fuaran.Compute
 
 let private inv = System.Globalization.CultureInfo.InvariantCulture
 
@@ -712,7 +713,7 @@ let private colDiffDifferential (seed: int) (trials: int) : ColDiffTally =
 
 // ------------------------------------------------------------------------------------------
 // Phase 154 — the COUNTED PIPELINE DRIVER; Phase 234 — its EXPRESSION EVALUATOR made concrete.
-// `proofs/Pipeline.fst` models `Fuaran.Core.DataFrame`'s closed `ColExpr` and `Transform`
+// `proofs/Pipeline.fst` models `Fuaran.Compute.DataFrame`'s closed `ColExpr` and `Transform`
 // algebra, the private `evalExpr` with its four inner loops, `evalFilter`, `evalDerive`,
 // `evalStep`'s dispatch and `evalPipelineWithInEnvCounted`'s fold with its cost model, clause
 // for clause, over TWO parameters: the CELL PRIMITIVES (`prims` — `arith` / `comparison` /

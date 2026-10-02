@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.IncrementalRefreshCostTests
+module Fuaran.Compute.Tests.IncrementalRefreshCostTests
 
 // ---------------------------------------------------------------------------
 //  Phase 208 — what a restricted refresh PAYS FOR, counted rather than timed,
@@ -25,6 +25,7 @@ module Fuaran.Core.Tests.IncrementalRefreshCostTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 let private ok =
     function
@@ -368,7 +369,7 @@ let refreshCostTests =
               //  212's new corpus shapes found it; this phase fixed it.
               //
               //  IT SHIPPED. Measured at Phase 215 against the RELEASED packages themselves — a
-              //  probe pinned to one published `Fuaran.Core.DataFrame` at a time —
+              //  probe pinned to one published `Fuaran.Compute.DataFrame` at a time —
               //  `window(rank) > sort(rk)` disagrees with that same package's reference evaluator on
               //  every release from `0.19.0` (the first that admits a partition-global window)
               //  through `0.28.0`, and agrees on `0.16.0` and `0.17.0`, which predate the merged

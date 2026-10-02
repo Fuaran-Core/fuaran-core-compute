@@ -1,7 +1,8 @@
-module Fuaran.Core.Tests.IncrementalGroupByTests
+module Fuaran.Compute.Tests.IncrementalGroupByTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 // Phase 202 — the steps AFTER a maintained group-by.

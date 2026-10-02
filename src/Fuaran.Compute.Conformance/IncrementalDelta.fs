@@ -1,4 +1,6 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
 //  The incremental-evaluation equivalence family (Phase 99).

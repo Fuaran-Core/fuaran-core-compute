@@ -10,7 +10,7 @@
 /// question for a seam, not a line to add to a project file.
 ///
 /// Phase 281 is the one such question answered so far: the registered pipeline query pairs the
-/// substrate's `Query` declaration with a pipeline, so `Fuaran.Core.DataFrame.PipelineQuery` (and
+/// substrate's `Query` declaration with a pipeline, so `Fuaran.Compute.PipelineQuery` (and
 /// the families' package, through its law family) takes `Fuaran.Core.Query` and, with it,
 /// `Fuaran.Core.Function`. The widening is held PER PROJECT (`allowedFor`), so the dataframe layer
 /// itself still stands on the four.
@@ -24,7 +24,7 @@
 ///     construct actually uses, so an `open` that resolved against an assembly arriving TRANSITIVELY
 ///     (the kit brings most of the substrate with it) shows up here even though no project file names
 ///     it.
-module Fuaran.Core.Tests.ComputeBoundaryTests
+module Fuaran.Compute.Tests.ComputeBoundaryTests
 
 open System
 open System.IO
@@ -37,10 +37,10 @@ open Expecto
 /// pipeline query.
 let compute: Set<string> =
     set
-        [ "Fuaran.Core.DataFrame"
-          "Fuaran.Core.Column.Ops"
-          "Fuaran.Core.DataFrame.Conformance"
-          "Fuaran.Core.DataFrame.PipelineQuery" ]
+        [ "Fuaran.Compute.DataFrame"
+          "Fuaran.Compute.ColumnOps"
+          "Fuaran.Compute.Conformance"
+          "Fuaran.Compute.PipelineQuery" ]
 
 /// The substrate packages the compute strand stands on — and nothing above them.
 let allowedSubstrate: Set<string> =
@@ -58,9 +58,7 @@ let allowedSubstrate: Set<string> =
 let allowedFor: Map<string, Set<string>> =
     let query = set [ "Fuaran.Core.Query"; "Fuaran.Core.Function" ]
 
-    Map.ofList
-        [ "Fuaran.Core.DataFrame.PipelineQuery", query
-          "Fuaran.Core.DataFrame.Conformance", query ]
+    Map.ofList [ "Fuaran.Compute.PipelineQuery", query; "Fuaran.Compute.Conformance", query ]
 
 let private allowedSubstrateOf (project: string) : Set<string> =
     match Map.tryFind project allowedFor with
@@ -170,70 +168,68 @@ let tests =
           <| fun _ ->
               let clean =
                   Map.ofList
-                      [ "Fuaran.Core.DataFrame", ([ "FSharp.Core"; "Fuaran.Core.Column"; "Fuaran.Core.Wire" ], [])
-                        "Fuaran.Core.Column.Ops", ([ "Fuaran.Core.OpStream" ], [ "Fuaran.Core.DataFrame" ]) ]
+                      [ "Fuaran.Compute.DataFrame", ([ "FSharp.Core"; "Fuaran.Core.Column"; "Fuaran.Core.Wire" ], [])
+                        "Fuaran.Compute.ColumnOps", ([ "Fuaran.Core.OpStream" ], [ "Fuaran.Compute.DataFrame" ]) ]
 
               Expect.isEmpty (violations clean) "a clean graph breaks nothing"
 
               let above =
                   clean
-                  |> Map.add "Fuaran.Core.DataFrame" ([ "Fuaran.Core.Column"; "Fuaran.Core.Propagation" ], [])
+                  |> Map.add "Fuaran.Compute.DataFrame" ([ "Fuaran.Core.Column"; "Fuaran.Core.Propagation" ], [])
 
               Expect.equal
                   (violations above)
-                  [ "Fuaran.Core.DataFrame", "package Fuaran.Core.Propagation" ]
+                  [ "Fuaran.Compute.DataFrame", "package Fuaran.Core.Propagation" ]
                   "a substrate package above the four is a violation"
 
               let privatePackage =
                   clean
-                  |> Map.add "Fuaran.Core.DataFrame" ([ "Fuaran.Core.Column"; "Acme.Internal" ], [])
+                  |> Map.add "Fuaran.Compute.DataFrame" ([ "Fuaran.Core.Column"; "Acme.Internal" ], [])
 
               Expect.equal
                   (violations privatePackage)
-                  [ "Fuaran.Core.DataFrame", "package Acme.Internal" ]
+                  [ "Fuaran.Compute.DataFrame", "package Acme.Internal" ]
                   "a package outside the allowed set is a violation, whatever it is"
 
               let byProject =
-                  clean |> Map.add "Fuaran.Core.DataFrame" ([], [ "Fuaran.Core.Column" ])
+                  clean |> Map.add "Fuaran.Compute.DataFrame" ([], [ "Fuaran.Core.Column" ])
 
               Expect.equal
                   (violations byProject)
-                  [ "Fuaran.Core.DataFrame", "project Fuaran.Core.Column" ]
+                  [ "Fuaran.Compute.DataFrame", "project Fuaran.Core.Column" ]
                   "the substrate taken by PROJECT is a violation — it is taken by package"
 
               // Phase 281: the widening is per project. The pipeline query may take Query; the
               // dataframe layer may not.
               let pipelineQuery =
                   clean
-                  |> Map.add
-                      "Fuaran.Core.DataFrame.PipelineQuery"
-                      ([ "Fuaran.Core.Query" ], [ "Fuaran.Core.DataFrame" ])
+                  |> Map.add "Fuaran.Compute.PipelineQuery" ([ "Fuaran.Core.Query" ], [ "Fuaran.Compute.DataFrame" ])
 
               Expect.isEmpty (violations pipelineQuery) "the pipeline query takes the substrate's Query"
 
               let queryInDataFrame =
                   clean
-                  |> Map.add "Fuaran.Core.DataFrame" ([ "Fuaran.Core.Column"; "Fuaran.Core.Query" ], [])
+                  |> Map.add "Fuaran.Compute.DataFrame" ([ "Fuaran.Core.Column"; "Fuaran.Core.Query" ], [])
 
               Expect.equal
                   (violations queryInDataFrame)
-                  [ "Fuaran.Core.DataFrame", "package Fuaran.Core.Query" ]
+                  [ "Fuaran.Compute.DataFrame", "package Fuaran.Core.Query" ]
                   "the dataframe layer taking Query is a violation"
 
           testCase "the assembly rule goes red on a transitive substrate assembly and stays quiet on the rest"
           <| fun _ ->
               let refs =
                   Map.ofList
-                      [ "Fuaran.Core.DataFrame.Conformance",
+                      [ "Fuaran.Compute.Conformance",
                         [ "System.Runtime"
                           "FSharp.Core"
                           "Fuaran.Core.Conformance"
-                          "Fuaran.Core.DataFrame"
+                          "Fuaran.Compute.DataFrame"
                           "Fuaran.Core.Tree" ] ]
 
               Expect.equal
                   (assemblyViolations refs)
-                  [ "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Tree" ]
+                  [ "Fuaran.Compute.Conformance", "Fuaran.Core.Tree" ]
                   "an assembly the kit brings transitively is a violation once compiled code uses it"
 
           testCase "every project under src/ takes the substrate by package, and only the four"
@@ -254,7 +250,7 @@ let tests =
                       (render found))
 
               // Not vacuous: the reader does find the packages a project names.
-              let dataFramePackages = projects["Fuaran.Core.DataFrame"] |> fst
+              let dataFramePackages = projects["Fuaran.Compute.DataFrame"] |> fst
               Expect.contains dataFramePackages "Fuaran.Core.Column" "DataFrame's package references name Column"
 
           testCase "no built compute assembly references a substrate assembly above the four"
@@ -276,8 +272,8 @@ let tests =
 
               // Not vacuous: each reads the substrate it is built over.
               for name, below in
-                  [ "Fuaran.Core.DataFrame", "Fuaran.Core.Column"
-                    "Fuaran.Core.Column.Ops", "Fuaran.Core.OpStream"
-                    "Fuaran.Core.DataFrame.Conformance", "Fuaran.Core.Conformance"
-                    "Fuaran.Core.DataFrame.PipelineQuery", "Fuaran.Core.Query" ] do
+                  [ "Fuaran.Compute.DataFrame", "Fuaran.Core.Column"
+                    "Fuaran.Compute.ColumnOps", "Fuaran.Core.OpStream"
+                    "Fuaran.Compute.Conformance", "Fuaran.Core.Conformance"
+                    "Fuaran.Compute.PipelineQuery", "Fuaran.Core.Query" ] do
                   Expect.contains refs[name] below (sprintf "%s references %s" name below) ]

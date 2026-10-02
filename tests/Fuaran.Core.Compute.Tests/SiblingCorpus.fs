@@ -1,9 +1,10 @@
-module Fuaran.Core.Tests.SiblingCorpus
+module Fuaran.Compute.Tests.SiblingCorpus
 
 open System
 open System.Diagnostics
 open System.IO
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 // Where the shared wire-format conformance corpus is, and what happens when it

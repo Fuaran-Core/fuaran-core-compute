@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.PipelineQueryTests
+module Fuaran.Compute.Tests.PipelineQueryTests
 
 // ---------------------------------------------------------------------------
 //  Phase 281 — the registered pipeline query, case by case: what registration admits and refuses
@@ -9,6 +9,7 @@ module Fuaran.Core.Tests.PipelineQueryTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 let private param name ty required : QueryParam =
     { Name = name

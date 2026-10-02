@@ -1,4 +1,6 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
 //  Plan (Phase 269) — the planner over a `Transform` pipeline: fusion, projection

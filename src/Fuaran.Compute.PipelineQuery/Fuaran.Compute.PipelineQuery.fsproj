@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Compute.PipelineQuery</PackageId>
+    <Description>Fuaran.Compute.PipelineQuery — a registered pipeline query: a Fuaran.Core.Query declaration paired with the Transform pipeline that is its body, over the declaration's source and the schemas it declares for the named sources the pipeline reads. A registry on the substrate's default-deny pattern (register, enumerate, dispatch; a duplicate and an unregistered id are the substrate's own DuplicateQuery and NoSuchQuery) that admits a pair only when the pipeline's static output schema (SchemaWalk) is closed and IS the declared result schema, and when the parameters the pipeline reads and the parameters the declaration declares agree in both directions and by type. Dispatch validates the arguments through Query.validateParams, substitutes them into the pipeline and answers in the substrate's Deferred envelope; a canonical wire codec for the pair. It evaluates nothing: a host evaluates the bound pipeline with the evaluator it already has. FSharp.Core only, Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="PipelineQuery.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The declaration half is the substrate's `Query` (and, through it, `Deferred` from
+         Fuaran.Core.Function); the body half is this repository's `Transform`. The substrate
+         references neither this package nor the dataframe layer, and the boundary tests on both
+         sides hold that. -->
+    <PackageReference Include="Fuaran.Core.Query" />
+    <PackageReference Include="Fuaran.Core.Column" />
+    <PackageReference Include="Fuaran.Core.Wire" />
+    <ProjectReference Include="..\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

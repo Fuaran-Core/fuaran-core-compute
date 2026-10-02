@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.ScalingTests
+module Fuaran.Compute.Tests.ScalingTests
 
 // ---------------------------------------------------------------------------
 //  Phase 206 — the wall-clock scaling gate, beside the footprint laws.
@@ -55,6 +55,7 @@ module Fuaran.Core.Tests.ScalingTests
 open System.Diagnostics
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 let private ok =
     function

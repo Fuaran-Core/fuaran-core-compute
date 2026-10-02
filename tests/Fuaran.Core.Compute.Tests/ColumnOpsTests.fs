@@ -1,7 +1,8 @@
-module Fuaran.Core.Tests.ColumnOpsTests
+module Fuaran.Compute.Tests.ColumnOpsTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---- fixtures ----
 

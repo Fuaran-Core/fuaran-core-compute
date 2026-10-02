@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.WitnessTakingFamiliesTests
+module Fuaran.Compute.Tests.WitnessTakingFamiliesTests
 
 // Phase 246 — the witness-taking law families, at the columnar pair this repository ships
 // (`columnarOpLawsWith`, `incrementalLawsWith`). Each takes the DOMAIN'S generator rather than the
@@ -13,6 +13,7 @@ module Fuaran.Core.Tests.WitnessTakingFamiliesTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 //  the columnar pair at a caller's generator

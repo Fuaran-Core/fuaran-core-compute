@@ -6,6 +6,7 @@ module Fuaran.Core.Compute.Benchmarks.Suites
 open BenchmarkDotNet.Attributes
 open BenchmarkDotNet.Configs
 open Fuaran.Core
+open Fuaran.Compute
 
 /// The sheet: each node's evaluator arm beside the hand arm, which is the category's baseline, so
 /// the `Ratio` column reads "times slower than the hand arm".

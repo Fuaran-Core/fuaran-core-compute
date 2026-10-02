@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.DecimalStrandTests
+module Fuaran.Compute.Tests.DecimalStrandTests
 
 // ---------------------------------------------------------------------------
 // Phase 321 — the decimal across the strand beyond the evaluator.
@@ -13,6 +13,7 @@ module Fuaran.Core.Tests.DecimalStrandTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 let private ok =
     function

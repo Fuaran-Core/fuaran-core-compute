@@ -1,7 +1,8 @@
-module Fuaran.Core.Tests.IncrementalTests
+module Fuaran.Compute.Tests.IncrementalTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 //  Phase 99 — the incremental `Transform` evaluation seam.

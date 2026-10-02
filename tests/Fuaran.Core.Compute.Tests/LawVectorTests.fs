@@ -1,9 +1,10 @@
-module Fuaran.Core.Tests.LawVectorTests
+module Fuaran.Compute.Tests.LawVectorTests
 
 open System
 open System.IO
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 //  The exported `transformLaws` reference vectors, checked from both ends.

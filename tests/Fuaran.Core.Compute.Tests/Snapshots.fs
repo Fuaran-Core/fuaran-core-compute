@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.Snapshots
+module Fuaran.Compute.Tests.Snapshots
 
 // The repository root, found the one way every leg that reads a committed file finds it: climb from
 // the working directory and from the test binary to the directory holding `Fuaran.Core.Compute.slnx`.

@@ -1,11 +1,13 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Core.DataFrame.Conformance (Phase 257) — the law families over the
+//  Fuaran.Compute.Conformance (Phase 257) — the law families over the
 //  dataframe layer: the transform-parity, columnar op-algebra, incremental,
 //  param, static-schema and pinned-clock families, and the `GroupBy` half of
 //  aggregate parity. They moved here from `Fuaran.Core.Conformance` so that no
-//  spine assembly references `Fuaran.Core.DataFrame` or `Fuaran.Core.Column.Ops`
+//  spine assembly references `Fuaran.Compute.DataFrame` or `Fuaran.Compute.ColumnOps`
 //  (DECISIONS.md D66, D68). The rule is mechanical: a family that reads either
 //  assembly ships from this package; everything else stays in the kit.
 //
@@ -22,7 +24,7 @@ namespace Fuaran.Core
 module DataFrameConformance =
 
     /// The dataframe-transform parity laws (Phase 29) — the teeth on a host evaluator's agreement
-    /// with the `Fuaran.Core.DataFrame` reference. A domain supplies its own evaluator `under`
+    /// with the `Fuaran.Compute.DataFrame` reference. A domain supplies its own evaluator `under`
     /// (signature-identical to `DataFrame.evalPipeline`) and a generator of `(table, pipeline)`
     /// samples; the kit certifies, over a seed-replayable sample, that for every case the evaluator
     /// agrees with the reference **byte-for-byte**:

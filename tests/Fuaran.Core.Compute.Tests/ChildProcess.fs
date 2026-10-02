@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.ChildProcess
+module Fuaran.Compute.Tests.ChildProcess
 
 open System.Diagnostics
 open System.Text

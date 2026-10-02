@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.PublicSurfaceTests
+module Fuaran.Compute.Tests.PublicSurfaceTests
 
 // ---------------------------------------------------------------------------
 // Phase 183 — a committed public-surface baseline per package, and the CLASS of a move
@@ -1027,6 +1027,37 @@ let private git (root: string) (arguments: string) : Result<string, string> =
 /// Semantic ordering over `vX.Y.Z` tags. A tag this does not parse is dropped rather than
 /// sorted lexically — `v0.9.0` above `v0.26.0` would name the wrong baseline to compare
 /// against, and a wrong comparison is worse than none.
+/// The id each package shipped under before it took its own (Phase 322, DECISIONS.md D4): through
+/// `0.34.0` the four packages carried the substrate's `Fuaran.Core.*` prefix. A tag cut before the
+/// rename holds each baseline under the OLD id, so a since-tag comparison that looked only under the
+/// new one would read every package as a "first snapshot" — hiding the rename itself (every public
+/// type changed namespace, which is breaking) and everything the predecessor moved since that tag.
+let internal predecessorIds: Map<string, string> =
+    Map.ofList
+        [ "Fuaran.Compute.DataFrame", "Fuaran.Core.DataFrame"
+          "Fuaran.Compute.ColumnOps", "Fuaran.Core.Column.Ops"
+          "Fuaran.Compute.PipelineQuery", "Fuaran.Core.DataFrame.PipelineQuery"
+          "Fuaran.Compute.Conformance", "Fuaran.Core.DataFrame.Conformance" ]
+
+/// A package's committed baseline under `dir` AS OF `tag`, read through `show` (a `git show
+/// <tag>:<path>`): under its own id first and, when the tag holds none, under its predecessor id.
+/// `Ok (the id the tag held it under, the text)`.
+let internal baselineAtTag
+    (show: string -> Result<string, string>)
+    (tag: string)
+    (dir: string)
+    (id: string)
+    : Result<string * string, string> =
+    let read (pid: string) =
+        show (sprintf "%s:%s/%s.txt" tag dir pid) |> Result.map (fun text -> pid, text)
+
+    match read id with
+    | Ok found -> Ok found
+    | Error why ->
+        match Map.tryFind id predecessorIds with
+        | Some old -> read old
+        | None -> Error why
+
 let internal newestVersionTag (tagLines: string list) : string option =
     tagLines
     |> List.map _.Trim()
@@ -1217,10 +1248,17 @@ let tests =
                               read <- read + 1
                               let current = baselineTokens (File.ReadAllText path)
 
-                              match git root (sprintf "show %s:api/%s.txt" tag id) with
+                              match baselineAtTag (fun at -> git root ("show " + at)) tag "api" id with
                               | Error _ ->
                                   printfn "  %-28s first snapshot — %s carries no baseline for this package" id tag
-                              | Ok text ->
+                              | Ok(heldAs, text) ->
+                                  if heldAs <> id then
+                                      printfn
+                                          "  %-28s (read against %s's baseline under its predecessor id %s)"
+                                          id
+                                          tag
+                                          heldAs
+
                                   // A tag cut before Phase 237 carries nameless union cases. Read
                                   // against it, today's named baseline would report every carrying
                                   // case as a `retype` that no consumer ever saw. So the comparison
@@ -1507,7 +1545,7 @@ let tests =
                   (headline moves |> Option.map isBreaking |> Option.defaultValue false)
                   "and it is BREAKING: a consumer constructing or matching the case by field name stops compiling"
 
-              let case = "Fuaran.Core.Tests.PublicSurfaceTests+ProbeFields+Shape.NewHeld"
+              let case = "Fuaran.Compute.Tests.PublicSurfaceTests+ProbeFields+Shape.NewHeld"
 
               Expect.equal
                   (moves |> List.collect fieldRenames)
@@ -1793,4 +1831,41 @@ let tests =
                   "a tag this does not parse is dropped rather than ordered by accident"
 
               Expect.isNone (newestVersionTag [ "nightly"; "release/2" ]) "a clone with no `vX.Y.Z` tag yields none"
+          }
+
+          test "a since-tag read follows a renamed package to its predecessor id, and only then" {
+              // Phase 322: a tag cut before the rename holds the baseline under the old id. Each
+              // direction goes red on its own: reading only the new id reports a first snapshot,
+              // and preferring the predecessor would compare against the wrong file once a tag
+              // carries the new id.
+              let tree (files: string list) =
+                  fun (at: string) ->
+                      if List.contains at files then
+                          Ok("text of " + at)
+                      else
+                          Error "absent"
+
+              Expect.equal
+                  (baselineAtTag (tree [ "v1:api/Fuaran.Core.DataFrame.txt" ]) "v1" "api" "Fuaran.Compute.DataFrame")
+                  (Ok("Fuaran.Core.DataFrame", "text of v1:api/Fuaran.Core.DataFrame.txt"))
+                  "a tag holding only the old id is read under the old id"
+
+              Expect.equal
+                  (baselineAtTag
+                      (tree
+                          [ "v2:api/wire/Fuaran.Compute.ColumnOps.txt"
+                            "v2:api/wire/Fuaran.Core.Column.Ops.txt" ])
+                      "v2"
+                      "api/wire"
+                      "Fuaran.Compute.ColumnOps")
+                  (Ok("Fuaran.Compute.ColumnOps", "text of v2:api/wire/Fuaran.Compute.ColumnOps.txt"))
+                  "a tag holding the new id is read under the new id"
+
+              Expect.isError
+                  (baselineAtTag (tree []) "v1" "api" "Fuaran.Compute.PipelineQuery")
+                  "a package the tag holds under neither id is a first snapshot"
+
+              Expect.isError
+                  (baselineAtTag (tree [ "v1:api/Fuaran.Core.Probe.txt" ]) "v1" "api" "Fuaran.Compute.Probe")
+                  "an id with no declared predecessor is never guessed at"
           } ]

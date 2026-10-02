@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.OwnedConformance
+module Fuaran.Compute.Tests.OwnedConformance
 
 open System
 open System.IO

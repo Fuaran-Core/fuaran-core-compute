@@ -1,7 +1,8 @@
-module Fuaran.Core.Tests.IncrementalTopNTests
+module Fuaran.Compute.Tests.IncrementalTopNTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 // ---------------------------------------------------------------------------
 //  Phase 207 — a `Limit` admitted to the incremental seam.

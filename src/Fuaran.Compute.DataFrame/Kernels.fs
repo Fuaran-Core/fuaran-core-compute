@@ -1,7 +1,9 @@
-namespace Fuaran.Core
+namespace Fuaran.Compute
+
+open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Core.DataFrame — the evaluator's host kernels (Phase 270).
+//  Fuaran.Compute.DataFrame — the evaluator's host kernels (Phase 270).
 //
 //  The few loops over the frame's typed vectors where the .NET host can be
 //  helped and Fable cannot: a comparison of a typed column against a constant

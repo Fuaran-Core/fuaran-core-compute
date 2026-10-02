@@ -22,10 +22,10 @@ if (-not (Test-Path $Feed)) { New-Item -ItemType Directory -Force $Feed | Out-Nu
 $Feed = (Resolve-Path $Feed).Path
 
 $projects = @(
-    'src/Fuaran.Core.DataFrame/Fuaran.Core.DataFrame.fsproj'
-    'src/Fuaran.Core.Column.Ops/Fuaran.Core.Column.Ops.fsproj'
-    'src/Fuaran.Core.DataFrame.PipelineQuery/Fuaran.Core.DataFrame.PipelineQuery.fsproj'
-    'src/Fuaran.Core.DataFrame.Conformance/Fuaran.Core.DataFrame.Conformance.fsproj'
+    'src/Fuaran.Compute.DataFrame/Fuaran.Compute.DataFrame.fsproj'
+    'src/Fuaran.Compute.ColumnOps/Fuaran.Compute.ColumnOps.fsproj'
+    'src/Fuaran.Compute.PipelineQuery/Fuaran.Compute.PipelineQuery.fsproj'
+    'src/Fuaran.Compute.Conformance/Fuaran.Compute.Conformance.fsproj'
 )
 
 foreach ($project in $projects) {

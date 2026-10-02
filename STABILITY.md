@@ -46,11 +46,64 @@ CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
 It rewrites EVERY drifted baseline, not only the one you were looking at: stage the baselines you
 meant to move by name.
 
-## 0.35.0 — DRAFT
+## 0.36.0 — DRAFT
 
-Opened by Phase 268, which makes a prepared source a persistent VERSION — chunked columns that
-successive edits share — and adds the op algebra and the refresh over it. The four packages ship at
-this version together; `0.34.0` is tagged, so the additions advance the slot rather than ride it.
+The first version under the packages' own ids (Phase 322, `DECISIONS.md` D4). The slot was opened as
+`0.35.0` by Phase 268, which makes a prepared source a persistent VERSION — chunked columns that
+successive edits share — and adds the op algebra and the refresh over it; `0.34.0` is tagged, so
+those additions advanced the slot rather than ride it. Phase 322's rename is a change of a higher
+class than anything the `0.35.0` draft carried as its own, so it ADVANCED the draft to `0.36.0`
+rather than reclassing it: **`0.35.0` was never released under its own number, under either set of
+ids**, and every entry it carried is folded in below. The four packages ship at this version
+together.
+
+**The entries after the first name each package by the id it carried when the change was made.**
+Read them through the mapping in the first entry: every one of them ships under the new id at this
+version, and `Fuaran.Core.DataFrame.PipelineQuery` (Phase 281) was never published under that id at
+all — its first release is `Fuaran.Compute.PipelineQuery` `0.36.0`.
+
+### The packages take their own ids: `Fuaran.Compute.*` package ids and the `Fuaran.Compute` namespace (Phase 322, `DECISIONS.md` D4) — BREAKING, `removal`
+
+**What changed.** Every package this repository produces is renamed, and every public type and module
+moves from the `Fuaran.Core` namespace to `Fuaran.Compute`. The module names inside — `DataFrame`,
+`ColumnOps`, `Transform`, `Incremental`, `Delta`, `Plan`, `RowIdentity`, `DataFrameConformance`,
+`PipelineQuery` and the rest — and every member, type shape and wire byte are unchanged.
+
+| Old id (last published) | New id (first published) |
+|---|---|
+| `Fuaran.Core.DataFrame` (`0.34.0`) | `Fuaran.Compute.DataFrame` (`0.36.0`) |
+| `Fuaran.Core.Column.Ops` (`0.34.0`) | `Fuaran.Compute.ColumnOps` (`0.36.0`) |
+| `Fuaran.Core.DataFrame.Conformance` (`0.34.0`) | `Fuaran.Compute.Conformance` (`0.36.0`) |
+| `Fuaran.Core.DataFrame.PipelineQuery` (never published) | `Fuaran.Compute.PipelineQuery` (`0.36.0`) |
+
+**The old ids stop at `0.34.0`.** Nothing in this repository packs them any more, they are not
+republished, and no deprecation package is published under them: nuget.org keeps `0.34.0` (and every
+earlier version) restorable for a consumer that has not moved. A consumer that raises its pin past
+`0.34.0` must move to the new ids — there is no `0.36.0` under the old ones.
+
+**Why it is breaking, measured rather than asserted.** The `Public surface` family reads each new
+id's baseline against `v0.34.0`'s baseline under the id it replaced (the predecessor map in
+`PublicSurfaceTests.fs`) and classes all three published packages `removal`: every externally
+visible type left `Fuaran.Core` for `Fuaran.Compute`. The wire record is UNCHANGED by the rename —
+the canonical bytes name no CLR type, and each new `api/wire/` baseline's body is byte-identical to
+its predecessor's — so the `breaking` its header states since `v0.34.0` is the decimal's (Phases 277
+and 321, below), carried across the rename rather than lost to a first snapshot.
+
+**What a consumer changes.**
+
+- Each `PackageReference` / `PackageVersion` naming an old id names its new id, at `0.36.0`.
+- Each source file that reaches a compute type adds `open Fuaran.Compute` beside its
+  `open Fuaran.Core`; the substrate's types (`Table`, `Cell`, `ColumnType`, `AggFn`, the law kit's
+  `LawResult`) stay in `Fuaran.Core`. A fully qualified `Fuaran.Core.DataFrame.evalPipeline` becomes
+  `Fuaran.Compute.DataFrame.evalPipeline`.
+- The pre-split `Conformance.<family>` spellings still resolve for a file that opens both
+  namespaces (the forwarding module is now `Fuaran.Compute.Conformance`); a fully qualified
+  `Fuaran.Core.Conformance.<family>` spelling of a dataframe family does not.
+
+**The projects, not only the ids, moved:** `src/Fuaran.Compute.DataFrame/`, `src/Fuaran.Compute.ColumnOps/`,
+`src/Fuaran.Compute.PipelineQuery/` and `src/Fuaran.Compute.Conformance/`. The solution, the test,
+benchmark and proof-oracle projects keep the repository's name (`Fuaran.Core.Compute.*`): the
+repository is not renamed, and none of those projects ships.
 
 - **Additive — a new package, `Fuaran.Core.DataFrame.PipelineQuery`: the registered pipeline query
   (Phase 281).** `PipelineQuery` (`Query`, `Pipeline`, `Sources`) pairs the substrate's `Query`

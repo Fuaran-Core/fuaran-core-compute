@@ -20,9 +20,10 @@
 ///
 /// FSharp.Core and the dataframe package only, Fable-clean: the generator draws from a
 /// multiplicative congruential generator computed in float64, exact on both hosts.
-module Fuaran.Core.Tests.DecimalVectorLaw
+module Fuaran.Compute.Tests.DecimalVectorLaw
 
 open Fuaran.Core
+open Fuaran.Compute
 
 /// A deterministic generator: `next s` is the Park-Miller step, every product below 2^53.
 type private Rng(seed: int) =

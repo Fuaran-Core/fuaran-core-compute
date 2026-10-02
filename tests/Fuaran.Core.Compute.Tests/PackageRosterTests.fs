@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.PackageRosterTests
+module Fuaran.Compute.Tests.PackageRosterTests
 
 // ---------------------------------------------------------------------------
 // Phase 199 — the package roster is DERIVED, and STABILITY.md's header is held to

@@ -16,10 +16,14 @@
          its pin can never meet one version number with two contracts behind it (DECISIONS.md D1).
          0.33.0 is tagged, so Phase 267's additive surface (a prepared source, the public typer)
          advanced the slot to 0.34.0; 0.34.0 is tagged, so Phase 268's additive surface (the ops
-         and the refresh over a prepared version) advanced it to 0.35.0. It is a DRAFT slot until
-         it is tagged: STABILITY.md heads it "0.35.0 — DRAFT", and an additive change rides it
-         while a breaking one advances it. -->
-    <Version>0.35.0</Version>
+         and the refresh over a prepared version) advanced it to 0.35.0, a draft that was never
+         tagged. Phase 322 renamed the packages to their own ids (Fuaran.Compute.DataFrame,
+         .ColumnOps, .PipelineQuery, .Conformance; DECISIONS.md D4), a BREAKING change, so it
+         ADVANCED the draft to 0.36.0 rather than riding it: the first version under the new ids is
+         a fresh contract, and 0.35.0 is released under no id. It is a DRAFT slot until it is
+         tagged: STABILITY.md heads it "0.36.0 — DRAFT", and an additive change rides it while a
+         breaking one advances it. -->
+    <Version>0.36.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

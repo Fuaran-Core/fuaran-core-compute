@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.PropagationCompositionTests
+module Fuaran.Compute.Tests.PropagationCompositionTests
 
 // Phase 250 — propagation composes with incremental, carried here by Phase 261. A downstream
 // spreadsheet-shaped consumer's measurement (Phase 250) built a sheet over `Column.Ops`,
@@ -23,6 +23,7 @@ module Fuaran.Core.Tests.PropagationCompositionTests
 
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 /// The string id witness the sheet is walked with (the substrate suite's reference witness).
 let private idw: IdWitness<string> =

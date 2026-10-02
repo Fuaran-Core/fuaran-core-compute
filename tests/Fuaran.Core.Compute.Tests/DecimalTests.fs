@@ -1,4 +1,4 @@
-module Fuaran.Core.Tests.DecimalTests
+module Fuaran.Compute.Tests.DecimalTests
 
 // ---------------------------------------------------------------------------
 //  Phase 277 — decimal arithmetic in the transform evaluator. Exact where the operation is closed
@@ -11,6 +11,7 @@ module Fuaran.Core.Tests.DecimalTests
 open System.Numerics
 open Expecto
 open Fuaran.Core
+open Fuaran.Compute
 
 let private dec (text: string) : Cell =
     match Cell.decimal text with

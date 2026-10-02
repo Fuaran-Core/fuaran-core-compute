@@ -22,6 +22,7 @@ module Fuaran.Core.Compute.Benchmarks.Corpus
 
 open System.Collections.Generic
 open Fuaran.Core
+open Fuaran.Compute
 
 /// Unwrap an evaluator result OUTSIDE a timed region; an error is a broken corpus, never a figure.
 let orFail (what: string) (r: Result<'T, 'E>) : 'T =

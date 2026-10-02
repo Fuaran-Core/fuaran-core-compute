@@ -130,7 +130,7 @@ let private table (title: string) (lines: (string * int * string) list) =
 let private typedTable () =
     // The decimal-vector law first, on this host: a decimal figure is only a figure about the right
     // answer once the vector path has answered the text path's bytes here.
-    let failures, compared = Fuaran.Core.Tests.DecimalVectorLaw.checkAll 1 400
+    let failures, compared = Fuaran.Compute.Tests.DecimalVectorLaw.checkAll 1 400
 
     if compared = 0 || not (List.isEmpty failures) then
         failwith (
@@ -156,7 +156,7 @@ let private typedTable () =
                               (fun (input, pipeline) -> Corpus.checkTyped verb ty n input pipeline)
                               [ verb + ", " + Corpus.typedName ty,
                                 Evaluator,
-                                (fun (input, pipeline) () -> box (Fuaran.Core.DataFrame.evalPipeline pipeline input)) ]
+                                (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                               n ]
 
 [<EntryPoint>]
@@ -201,7 +201,7 @@ let main argv =
                                   let full = Corpus.scalingFull inputs |> Corpus.orFail "full evaluation"
                                   let refreshed = Corpus.scalingRefresh inputs |> Corpus.orFail "refresh"
 
-                                  if Fuaran.Core.Incremental.result refreshed <> full then
+                                  if Fuaran.Compute.Incremental.result refreshed <> full then
                                       failwithf
                                           "benchmark corpus: the refresh of %s at %d rows disagrees with the full evaluation"
                                           name
@@ -219,7 +219,7 @@ let main argv =
                           (fun (input, pipeline) -> Corpus.checkShape name input pipeline)
                           [ name,
                             Evaluator,
-                            (fun (input, pipeline) () -> box (Fuaran.Core.DataFrame.evalPipeline pipeline input)) ]
+                            (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                           n ]
 
     typedTable ()

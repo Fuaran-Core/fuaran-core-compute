@@ -1,4 +1,4 @@
-# Wire-surface baseline for Fuaran.Core.DataFrame (Phase 214) — GENERATED, do not edit.
+# Wire-surface baseline for Fuaran.Compute.DataFrame (Phase 214) — GENERATED, do not edit.
 # The canonical bytes of a document set reaching every member and discriminator this package emits:
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
