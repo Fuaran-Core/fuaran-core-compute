@@ -2453,21 +2453,159 @@ module DataFrame =
     /// public on the `0.34.0` draft).
     let typeOf (cols: Schema) (e: ColExpr) : ColumnType option = Typing.toOption (typing cols e)
 
-    /// The column type a `Derive` of `e` produces, where the expression alone decides it.
-    ///
-    /// The evaluator types a derived column from its present cells' types joined (Phase 321; the
-    /// first present cell's before it) and falls back to `StringType` when there is none
-    /// (`inferCellType`), so a static answer is sound only where
-    /// the two agree on every frame: an expression whose present values are all strings, or that
-    /// has none, is `StringType` over a full frame and over an empty one alike. Any other static
-    /// type is that type over a frame with a present cell and `StringType` over an empty or
-    /// all-null one — which no schema can decide, so it stays `None`.
+    // ---- the type of a derived column (Phase 338, `DECISIONS.md` D5) ----
+    //
+    // ONE rule, read by the reference evaluator's `Derive` and `Unpivot`, the incremental seam's
+    // walk and its chunked path, `SchemaWalk`, the planner and a registered query's check, so no two
+    // of them can disagree about a column's type:
+    //
+    //  - where the typer decides the column (`Of ty`), `ty` IS its type on every frame — full,
+    //    empty or all-null alike. Every present cell is of `ty` or widens into it by
+    //    `ColumnType.widens` (an `Int` in a float or decimal column); the cell is stored as it was
+    //    produced, never converted (D2's rule for an edit, applied here);
+    //  - where the typer knows no present value can occur (`Absent`), the type is `StringType`,
+    //    which is what an all-null column has always been typed;
+    //  - where the typer cannot decide (`Unknown`: a `Param`, a `Now`, a column the schema does not
+    //    carry, or a join of two types the exact typer keeps apart, D3), the CELLS decide, by
+    //    Phase 321's widening join, `StringType` when none is present;
+    //  - a `Float` beside a `Decimal` in one column is REFUSED by name, never widened: statically
+    //    where the expression's own arms carry both (`mixesFloatDecimal`), and as a whole-column
+    //    refusal where only the cells show it.
+
+    /// How a derived column is typed (Phase 338).
+    type internal DerivedTyping =
+        /// The schema decides the type: the same on every frame.
+        | Decided of ColumnType
+        /// The cells decide it: Phase 321's widening join of the present cells' types.
+        | ByCells
+        /// A float beside a decimal, visible in the expression's own arms: refused on every frame.
+        | Refused
+
+    /// Does an arm the derived column's value is drawn from — through `Case` and `Coalesce`, the two
+    /// nodes whose answer IS one of their operands' — carry the decided type `ty`?
+    let rec private armsHave (ty: ColumnType) (cols: Schema) (e: ColExpr) : bool =
+        match e with
+        | Coalesce xs -> xs |> List.exists (armsHave ty cols)
+        | Case(cases, els) -> armsHave ty cols els || cases |> List.exists (fun (_, t) -> armsHave ty cols t)
+        | Col _
+        | Lit _
+        | Param _
+        | Now _
+        | Binary _
+        | Not _
+        | Cast _
+        | ApplyFn _
+        | InList _
+        | IsNull _
+        | InParam _
+        | Quotient _
+        | Rounded _ -> typing cols e = Of ty
+
+    /// A float arm beside a decimal arm in one derived column (Phase 338, carried from 321): the
+    /// static half of the refusal. Every such expression is `Unknown` to the typer, because the
+    /// exact join of `Of FloatType` and `Of DecimalType` is `Unknown` and `Unknown` absorbs.
+    let internal mixesFloatDecimal (cols: Schema) (e: ColExpr) : bool =
+        armsHave FloatType cols e && armsHave DecimalType cols e
+
+    /// The one rule over a typing and the types its arms are known to carry.
+    let private derivedTypingOf (mixes: bool) (t: Typing) : DerivedTyping =
+        if mixes then
+            Refused
+        else
+            match t with
+            | Of ty -> Decided ty
+            | Absent -> Decided StringType
+            | Unknown -> ByCells
+
+    /// How a `Derive` of `e` over `cols` types its column (Phase 338).
+    let internal derivedTyping (cols: Schema) (e: ColExpr) : DerivedTyping =
+        derivedTypingOf (mixesFloatDecimal cols e) (typing cols e)
+
+    /// How an `Unpivot`'s value column is typed over the value columns' declared types (Phase 338):
+    /// the same rule, the value columns being its arms. Their join is Phase 321's widening join of
+    /// the TYPES the schema declares — the join the cells would reach, read where the schema states
+    /// it — because no totality verdict reads an unpivot's type as an exactness claim (D3 is about
+    /// the expression typer). So an int and a float value column melt into a float column on every
+    /// frame; no value column at all is `StringType`; a float beside a decimal is refused; and a
+    /// pair no widening relates (a string beside an int) is the one case the cells decide.
+    let internal unpivotTyping (types: ColumnType list) : DerivedTyping =
+        if List.contains FloatType types && List.contains DecimalType types then
+            Refused
+        else
+            let join (acc: ColumnType option option) (t: ColumnType) =
+                match acc with
+                | None -> Some(Some t)
+                | Some(Some a) -> Some(joinColumnType a t)
+                | Some None -> Some None
+
+            match List.fold join None types with
+            | None -> Decided StringType
+            | Some(Some ty) -> Decided ty
+            | Some None -> ByCells
+
+    /// The column type a `Derive` of `e` produces wherever the schema decides it (Phase 338): the
+    /// typer's own `typeOf` for every decided expression, `StringType` for one with no present
+    /// value, and `None` exactly where the cells decide or the derive is refused.
     let internal derivedColumnType (cols: Schema) (e: ColExpr) : ColumnType option =
-        match typing cols e with
-        | Absent
-        | Of StringType -> Some StringType
-        | Of _
-        | Unknown -> None
+        match derivedTyping cols e with
+        | Decided ty -> Some ty
+        | ByCells
+        | Refused -> None
+
+    /// The refusal a column holding a float beside a decimal meets (Phase 338), naming the column
+    /// and the `Cast` that resolves it. The text is the model's (`proofs/Pipeline.fst`), byte for byte.
+    let internal floatBesideDecimal (column: string) : EvalError =
+        TypeError(
+            "derived column '"
+            + column
+            + "' joins a float and a decimal: cast one to the other's type first - Cast(decimal, ...) "
+            + "to keep the digits exact, Cast(float, ...) to compute approximately"
+        )
+
+    /// The cells' half of the rule (Phase 338): Phase 321's widening join over the present cells
+    /// an index range reads, `StringType` when none is present, and the named refusal where the
+    /// cells hold a float beside a decimal.
+    let internal typeFromCells (column: string) (count: int) (cellAt: int -> Cell) : Result<ColumnType, EvalError> =
+        let mutable acc: ColumnType option = None
+        let mutable sawFloat = false
+        let mutable sawDecimal = false
+
+        for i in 0 .. count - 1 do
+            match Cell.typeOf (cellAt i) with
+            | None -> ()
+            | Some t ->
+                match t with
+                | FloatType -> sawFloat <- true
+                | DecimalType -> sawDecimal <- true
+                | IntType
+                | BoolType
+                | StringType
+                | DateType
+                | TimestampType -> ()
+
+                acc <-
+                    match acc with
+                    | None -> Some t
+                    | Some a -> Some(widenColumnType a t)
+
+        if sawFloat && sawDecimal then
+            Error(floatBesideDecimal column)
+        else
+            Ok(acc |> Option.defaultValue StringType)
+
+    /// A derived column's type under its typing (Phase 338): the decided type, or the cells' answer.
+    /// A `Refused` typing is answered before any row is evaluated, so it reaches here only from a
+    /// caller that skipped that check, and is refused the same way.
+    let internal columnTypeBy
+        (dt: DerivedTyping)
+        (column: string)
+        (count: int)
+        (cellAt: int -> Cell)
+        : Result<ColumnType, EvalError> =
+        match dt with
+        | Decided ty -> Ok ty
+        | ByCells -> typeFromCells column count cellAt
+        | Refused -> Error(floatBesideDecimal column)
 
     // ---- the planner (Phase 269) ----
     //
@@ -2746,7 +2884,15 @@ module DataFrame =
         let isTotal (cols: Schema) (t: Transform) : bool =
             match t with
             | Filter p -> exprTotal cols p
-            | Derive(_, e) -> exprTotal cols e
+            // Phase 338: a derive whose column the CELLS type can refuse a float beside a decimal
+            // over the whole column, and one refused statically always does, so only a decided
+            // derive is total.
+            | Derive(_, e) ->
+                exprTotal cols e
+                && (match derivedTyping cols e with
+                    | Decided _ -> true
+                    | ByCells
+                    | Refused -> false)
             | Sort by -> by |> List.forall (fun (c, _) -> not (Slot.isParam c))
             | Limit(n, offset) -> not (Slot.isParam n) && not (Slot.isParam offset)
             | Project pairs -> pairs |> List.forall (fun (src, _) -> Option.isSome (colType cols src))
@@ -2786,8 +2932,8 @@ module DataFrame =
             | Except _ -> None
 
         /// The planner's own schema knowledge: every column by name, its type where the typer
-        /// decides it — a `Derive`'s column is present with a type only the data decides, unless
-        /// its expression's present values are all strings (`derivedColumnType`).
+        /// decides it — a `Derive`'s column carries its decided type (`derivedColumnType`, Phase
+        /// 338), and is present with no type where only its cells decide it.
         type private Known = (string * ColumnType option) list
 
         let private typed (k: Known) : Schema =
@@ -2886,22 +3032,22 @@ module DataFrame =
                     // Ahead of a derive the filter drops rows the derive no longer evaluates: the
                     // derive must have no error to lose on them. It must not read the derived
                     // column, and every column it reads must exist without it, or its own
-                    // refusal would name a different schema. And the derived column's TYPE is
-                    // inferred from the cells the derive produced (`inferType`): over fewer rows
-                    // it can differ, unless the typer already decides it — an expression whose
-                    // present values are all strings, or none — which is the one static answer
-                    // `derivedColumnType` gives.
+                    // refusal would name a different schema. And the derived column's TYPE must
+                    // not read the cells the derive produced: a decided derive's is the same over
+                    // any subset of the rows (Phase 338), and only one the cells type can differ.
                     if not (exprTotal cols e) then
                         Some "the derive's expression may error on a row the filter would drop"
                     elif exprCols pred |> List.contains name then
                         Some "the filter reads the derived column"
                     elif not (exprCols pred |> List.forall (has k)) then
                         Some "the filter reads a column the schema before the derive does not carry"
-                    elif derivedColumnType cols e <> Some StringType then
-                        Some
-                            "the derived column's type is inferred from its cells, which a filter ahead of it would change"
                     else
-                        None
+                        match derivedTyping cols e with
+                        | Decided _ -> None
+                        | ByCells ->
+                            Some
+                                "the derived column's type is decided by its cells, which a filter ahead of it would change"
+                        | Refused -> Some "the derive joins a float and a decimal, which it refuses on every frame"
                 | _ -> Some "the step ahead is not a sort or a derive"
 
         let private classOf (prev: Transform) : RewriteClass option =
@@ -4298,19 +4444,21 @@ module DataFrame =
     let private sameShape () : 'a =
         invalidOp "a step's compiled trees disagree on their root's kind"
 
-    let private evalDerive
+    /// `evalDerive` past the static refusal.
+    let private evalDerivedColumn
         (k: KernelSet)
         (env: Map<string, Cell>)
         (f: Frame)
         (name: string)
         (expr: ColExpr)
+        (dt: DerivedTyping)
         : Result<Frame, EvalError> =
         // Compiled once per morsel (Phase 266; Phase 270's morsels), run once per logical row, in
         // logical order within the morsel, stopping at the first row that records an error; the
         // first morsel that met one answers it, which is the first error in row order. A typed
         // root is written straight into its carrier at the row's physical position — morsels
-        // write disjoint positions — and the boxed root's cells are packed under the type they
-        // infer. The new vector is the frame's physical length, present exactly at the rows the
+        // write disjoint positions — and the boxed root's cells are packed under the column's
+        // type. The new vector is the frame's physical length, present exactly at the rows the
         // frame holds, and every other vector is shared.
         let resolved = resolveExpr env f.Cols expr
         let first = compileExpr f resolved
@@ -4341,13 +4489,26 @@ module DataFrame =
 
             Array.tryPick id errors
 
-        // The derived column's type is its present cells' types joined (`inferCellType`; a typed
-        // vector holds one type, so the join is that type), `StringType` when there is none: an
-        // all-null typed vector types as the reference types it.
+        // A column with no present cell (Phase 338): a decided column keeps its type, packed empty
+        // under it; one the cells type is `StringType`, as it always was.
+        let nonepresent () : ColumnType * Vec =
+            let ty =
+                match dt with
+                | Decided ty -> ty
+                | ByCells
+                | Refused -> StringType
+
+            ty, Vec.pack ty (Array.create count Null)
+
+        // A typed vector holds one type, so the cells' join is that type and cannot refuse. Where
+        // the column is decided, the decided type is the column's; a typed root of another type
+        // would be the typer and the compiler disagreeing — its cells are kept as produced, boxed
+        // under the decided type, and the derive-typing law (`Conformance.deriveTypingLaws`) is
+        // what goes red on it.
         let typed
             (read: CompiledExpr -> int -> 'a)
             (mk: 'a[] -> bool[] -> Vec)
-            (ty: ColumnType)
+            (nodeTy: ColumnType)
             : Result<ColumnType * Vec, EvalError> =
             let vals: 'a[] = Array.zeroCreate count
             let mask: bool[] = Array.zeroCreate count
@@ -4368,10 +4529,16 @@ module DataFrame =
             match failed with
             | Some e -> Error e
             | None ->
-                if Vec.anyPresent mask phys then
-                    Ok(ty, mk vals mask)
+                if not (Vec.anyPresent mask phys) then
+                    Ok(nonepresent ())
                 else
-                    Ok(StringType, Strs(StringType, Array.zeroCreate count, mask))
+                    match dt with
+                    | Decided ty when ty <> nodeTy ->
+                        let v = mk vals mask
+                        Ok(ty, Cells(Array.init count (Vec.cellAt v)))
+                    | Decided _
+                    | ByCells
+                    | Refused -> Ok(nodeTy, mk vals mask)
 
         let derived =
             match first.Node with
@@ -4407,7 +4574,7 @@ module DataFrame =
                         | _ -> sameShape ())
                     (fun v m -> Strs(sty, v, m))
                     sty
-            | NNull -> Ok(StringType, Strs(StringType, Array.zeroCreate count, Array.zeroCreate count))
+            | NNull -> Ok(nonepresent ())
             | NCell _ ->
                 let cells: Cell[] = Array.zeroCreate n
 
@@ -4429,10 +4596,24 @@ module DataFrame =
                 match failed with
                 | Some e -> Error e
                 | None ->
-                    let ty = inferTypeAt cells.Length (fun i -> cells[i])
-                    Ok(ty, Vec.packAt ty count (fun i -> phys[i]) cells)
+                    columnTypeBy dt name cells.Length (fun i -> cells[i])
+                    |> Result.map (fun ty -> ty, Vec.packAt ty count (fun i -> phys[i]) cells)
 
         derived |> Result.map (fun (ty, vec) -> Frame.withColumn f name ty vec)
+
+    let private evalDerive
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (name: string)
+        (expr: ColExpr)
+        : Result<Frame, EvalError> =
+        // The column's typing (Phase 338) is read off the schema before any row: a derive refused
+        // statically is refused on every frame, an empty one included, and a decided one carries
+        // its type whatever rows the frame holds.
+        match derivedTyping f.Cols expr with
+        | Refused -> Error(floatBesideDecimal name)
+        | dt -> evalDerivedColumn k env f name expr dt
 
     /// Phase 323 — the GroupBy aggregates STREAMED: one pass over the rows, one accumulator per group
     /// slot per aggregate, results written straight into typed output vectors. It replaced, for
@@ -5887,21 +6068,34 @@ module DataFrame =
         resolve [] idVars
         |> Result.bind (fun idIdx ->
             resolve [] valueVars
-            |> Result.map (fun valIdx ->
+            |> Result.bind (fun valIdx ->
                 let idCols = idVars |> List.map (fun n -> n, colType f.Cols n |> Option.get)
 
-                let valType =
-                    valueVars |> List.tryPick (colType f.Cols) |> Option.defaultValue StringType
+                // The value column is typed by the one derived-column rule (Phase 338), the value
+                // columns being its arms: their declared types' join where the schema decides it —
+                // over an empty frame too — and the melted cells only where it does not.
+                let dt =
+                    unpivotTyping (valueVars |> List.map (fun n -> colType f.Cols n |> Option.get))
 
-                let cols = idCols @ [ "variable", StringType; "value", valType ]
-                let out = ResizeArray<Cell[]>()
+                match dt with
+                | Refused -> Error(floatBesideDecimal "value")
+                | _ ->
+                    let out = ResizeArray<Cell[]>()
 
-                for row in Frame.rowsOf f do
-                    let idCells = idIdx |> List.map (fun i -> row[i]) |> List.toArray
+                    for row in Frame.rowsOf f do
+                        let idCells = idIdx |> List.map (fun i -> row[i]) |> List.toArray
 
-                    List.iter2 (fun name vi -> out.Add(Array.append idCells [| Str name; row[vi] |])) valueVars valIdx
+                        List.iter2
+                            (fun name vi -> out.Add(Array.append idCells [| Str name; row[vi] |]))
+                            valueVars
+                            valIdx
 
-                Frame.ofRows cols (out.ToArray())))
+                    let rows = out.ToArray()
+                    let valueAt = List.length idCols + 1
+
+                    columnTypeBy dt "value" rows.Length (fun i -> rows[i][valueAt])
+                    |> Result.map (fun valType ->
+                        Frame.ofRows (idCols @ [ "variable", StringType; "value", valType ]) rows)))
 
     // ---- pipeline driver ----
 
@@ -6771,13 +6965,12 @@ module SchemaWalk =
                       Type = typeOf source input })
             )
 
-        // The name is declared; the type is inferred from the cells the expression produced, so it
-        // is data-dependent — except where the expression alone decides it (Phase 266): a column
-        // whose present cells can only be strings, or that has none, is `StringType` on every
-        // frame, because that is also the evaluator's fall-back for a column with no present cell.
-        // Any other static type would be wrong on an empty or all-null frame, so it stays unknown.
-        // The typer reads the columns whose types are known; one the walk cannot type reads as
-        // absent, which types the expression as undecidable rather than as anything false.
+        // The name is declared; the type is the one the evaluator gives the column (Phase 338): the
+        // typer's decided type on every frame, `StringType` for an expression with no present
+        // value, and unknown exactly where the cells decide it — a `Param`, a `Now`, a column the
+        // walk cannot type, a join of two types the exact typer keeps apart — or the derive is
+        // refused. The typer reads the columns whose types are known; one the walk cannot type
+        // reads as absent, which types the expression as undecidable rather than as anything false.
         | Derive(name, expr) ->
             let known =
                 columns input
@@ -6827,11 +7020,18 @@ module SchemaWalk =
                       Type = Some StringType }
                     { Name = "value"
                       Type =
-                        // The evaluator types the melted column from the first value column it can
-                        // resolve, and falls back to `String` when there is no value column at all.
-                        match valueVars with
-                        | [] -> Some StringType
-                        | _ -> valueVars |> List.tryPick (fun name -> typeOf name input) } ]
+                        // The evaluator's rule over the value columns' declared types (Phase 338):
+                        // decided where every value column's type is known and they join, unknown
+                        // where one is not known or only the cells decide.
+                        let types = valueVars |> List.map (fun name -> typeOf name input)
+
+                        if types |> List.forall Option.isSome then
+                            match DataFrame.unpivotTyping (types |> List.choose id) with
+                            | DataFrame.Decided ty -> Some ty
+                            | DataFrame.ByCells
+                            | DataFrame.Refused -> None
+                        else
+                            None } ]
             )
 
         | Join(source, _, how) ->

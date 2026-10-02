@@ -55,7 +55,10 @@ module PipelineQueryConformance =
     ///
     ///  - **agreement** — the reference pair is admitted, and a pair whose walk is open, or whose
     ///    result column is not produced, undeclared, duplicated, out of order, of another type or of
-    ///    a type only the data decides, is refused with exactly that disagreement, naming the column;
+    ///    a type only the data decides (a derive reading a `Param` or a `Now`), is refused with
+    ///    exactly that disagreement, naming the column; and (Phase 338) a pair whose result adds an
+    ///    `int`, a `float`, a `decimal` or a `bool` derive registers, the evaluator giving that
+    ///    column the declared type over the drawn table and over an empty frame alike;
     ///  - **parameters, both directions** — a read of an undeclared parameter, a read at another
     ///    type, a read as both a scalar and a list, and a declared parameter never read are each
     ///    refused by name; and the census `paramReads` names exactly `Transform.paramsOf`;
@@ -192,14 +195,63 @@ module PipelineQueryConformance =
                 (ResultColumn("x", ResultDisagreement.TypeDiffers(FloatType, IntType)))
                 (withResult [ "x", FloatType; "y", StringType ])
 
+            // Phase 338: a derive reading a `Param` or a `Now` is the data-decided remainder, refused
+            // by that name; the derive typed by its expression registers below.
             expectRefused
                 agreement
-                "a column whose type only the data decides"
+                "a column whose type only the data decides (a param)"
                 (ResultColumn("x", ResultDisagreement.TypeUndecidable IntType))
                 { pq with
-                    Pipeline =
-                        pq.Pipeline
-                        @ [ Derive("x", ColExpr.Binary(Add, ColExpr.Col "x", ColExpr.Lit(Int 1))) ] }
+                    Pipeline = pq.Pipeline @ [ Derive("x", ColExpr.Param "min") ] }
+
+            expectRefused
+                agreement
+                "a column whose type only the data decides (the clock)"
+                (ResultColumn("x", ResultDisagreement.TypeUndecidable DateType))
+                { pq with
+                    Pipeline = pq.Pipeline @ [ Derive("x", ColExpr.Now NowGrain.Date) ]
+                    Query =
+                        { q with
+                            ResultSchema = [ "x", DateType; "y", StringType ] } }
+
+            // ---- Phase 338: a derived result column registers at the type its expression decides ----
+            let derivedPair (ty: ColumnType) (e: ColExpr) : PipelineQuery =
+                { pq with
+                    Pipeline = pq.Pipeline @ [ Derive("d", e) ]
+                    Query =
+                        { q with
+                            ResultSchema = q.ResultSchema @ [ "d", ty ] } }
+
+            let decimalLit = Cell.decimal "1.25" |> Option.defaultValue Null |> ColExpr.Lit
+
+            for ty, e in
+                [ IntType, ColExpr.Binary(Add, ColExpr.Col "x", ColExpr.Lit(Int 1))
+                  FloatType, ColExpr.Binary(Div, ColExpr.Col "x", ColExpr.Lit(Int 2))
+                  DecimalType, ColExpr.Binary(Mul, ColExpr.Col "x", decimalLit)
+                  BoolType, ColExpr.Binary(Gt, ColExpr.Col "x", ColExpr.Lit(Int 0)) ] do
+                let registering = derivedPair ty e
+
+                record agreement (PipelineQuery.check registering = Ok()) (fun () ->
+                    sprintf "a %s derive was refused: %A" (ColumnType.tag ty) (PipelineQuery.check registering))
+
+                // ... and the evaluator agrees, over this iteration's table AND over an empty frame:
+                // the derived column carries the declared type on both.
+                let project = Project [ "a", "x"; "b", "y" ]
+
+                for label, pipeline in
+                    [ "the drawn table", [ project; Derive("d", e) ]
+                      "an empty frame", [ Filter(ColExpr.Lit(Bool false)); project; Derive("d", e) ] ] do
+                    match DataFrame.evalPipeline pipeline table with
+                    | Ok out ->
+                        record agreement (List.contains ("d", ty) out.Schema) (fun () ->
+                            sprintf
+                                "a %s derive over %s evaluated to the schema %A"
+                                (ColumnType.tag ty)
+                                label
+                                out.Schema)
+                    | Error err ->
+                        record agreement false (fun () ->
+                            sprintf "a %s derive over %s was refused: %A" (ColumnType.tag ty) label err)
 
             // ---- parameters, both directions ----
             let withParams ps =

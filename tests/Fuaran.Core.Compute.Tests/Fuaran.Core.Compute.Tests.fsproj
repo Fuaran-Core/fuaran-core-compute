@@ -31,6 +31,7 @@
     <Compile Include="DecimalStrandTests.fs" />
     <!-- Phase 281: the registered pipeline query. -->
     <Compile Include="PipelineQueryTests.fs" />
+    <Compile Include="DeriveTypingTests.fs" />
     <Compile Include="IncrementalGroupByTests.fs" />
     <Compile Include="IncrementalRefreshCostTests.fs" />
     <!-- Phase 250's composition, carried from the substrate's suite by Phase 261: deltaOf,

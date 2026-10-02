@@ -248,7 +248,7 @@ let planTests =
               Expect.stringContains d.Declined[0].Reason "may error" "the rule"
               agree declined sample
 
-          testCase "a filter moves ahead of a derive only when the derive is total, unread, and string-typed"
+          testCase "a filter moves ahead of a derive only when the derive is total, unread, and decided"
           <| fun _ ->
               let admitted = [ strDerive; totalPred ]
               let r = Plan.explain schema admitted
@@ -263,19 +263,17 @@ let planTests =
               let reads = [ strDerive; Filter(Binary(Eq, Col "u", Lit(Str "X"))) ]
               Expect.equal (Plan.rewrite schema reads) reads "the filter reads the derived column"
 
-              // THE PREMISE THE PHASE FOUND FALSE, pinned: a total derive whose type the evaluator
-              // infers from its cells is NOT safe to filter ahead of. Over the sample, `f * 2` is a
-              // float column; over the two rows `i > 0` keeps... it still is, but over a table
-              // whose surviving rows are all null it would be a string column, and the planner
-              // cannot know which table it will meet. The rule declines by TYPE, so this pins the
-              // decline and the reason rather than a table that happens to expose it.
+              // Phase 338: a total derive the typer DECIDES is admitted whatever its type. Phase 269
+              // declined `f * 2` here because the evaluator typed the column from its cells, so a
+              // table whose surviving rows are all null made it `string` after the filter and
+              // `float` before. The column is now `float` on every frame, so the two orders agree on
+              // exactly the table that used to expose the difference.
               let typed = [ floatDerive; totalPred ]
-              let d = Plan.explain schema typed
-              Expect.equal d.Planned typed "declined"
-              Expect.stringContains d.Declined[0].Reason "inferred from its cells" "the rule"
+              let r = Plan.explain schema typed
+              Expect.equal r.Planned [ totalPred; floatDerive ] "moved"
+              Expect.equal (classes r) [ RewriteClass.FilterBeforeDerive ] "reported"
+              agree typed sample
 
-              // And the table that exposes it, for the record: every surviving row's derived cell
-              // is null, so the derived column is `string` after the filter and `float` before.
               let nullsSurvive =
                   table [ Some 1, None, Some "a", Some true; Some -1, Some 2.0, Some "b", Some false ]
 
@@ -284,8 +282,21 @@ let planTests =
               let reordered =
                   ok (DataFrame.evalPipelineAsWritten [ totalPred; floatDerive ] nullsSurvive)
 
-              Expect.notEqual written.Schema reordered.Schema "the reorder would change the schema"
+              Expect.equal written.Schema reordered.Schema "the reorder no longer changes the schema"
+              Expect.equal written reordered "nor anything else"
               agree typed nullsSurvive
+
+              // ... and a derive only its CELLS type is still declined, by that reason: a `Case` of
+              // an int and a float, which the exact typer keeps apart (D3).
+              let mixedArms =
+                  [ Derive("g", Case([ Binary(Gt, Col "i", Lit(Int 0)), Lit(Int 1) ], Lit(Float 2.5)))
+                    totalPred ]
+
+              let d = Plan.explain schema mixedArms
+              Expect.equal d.Planned mixedArms "declined"
+              Expect.stringContains d.Declined[0].Reason "decided by its cells" "the rule"
+              Expect.isFalse (Plan.isTotal schema mixedArms[0]) "and the verdict does not call it total"
+              agree mixedArms sample
 
           testCase "a filter bubbles past several steps, and stops at the first the rule declines"
           <| fun _ ->

@@ -27,6 +27,7 @@ method Fuaran.Compute.DataFrameConformance.plannerLaws(System.Int32, System.Int3
 method Fuaran.Compute.DataFrameConformance.schemaWalkLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
 method Fuaran.Compute.DataFrameConformance.slotParamLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
 method Fuaran.Compute.DataFrameConformance.transformLaws(Microsoft.FSharp.Core.FSharpFunc`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.ConfRng+T, System.Tuple`2<System.Tuple`2<Fuaran.Core.Table, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>>, Fuaran.Core.ConfRng+T>>, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
+method Fuaran.Compute.DeriveTypingConformance.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
 method Fuaran.Compute.IncrementalDelta.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
 method Fuaran.Compute.IncrementalDelta.lawsWith(System.Int32, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
 method Fuaran.Compute.IncrementalDelta.report(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.IncrementalSample>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
@@ -53,6 +54,7 @@ record-field Fuaran.Compute.IncrementalSample.Strategy #3 : Fuaran.Compute.Incre
 type Fuaran.Compute.Conformance (module)
 type Fuaran.Compute.DataFrameConformance (module)
 type Fuaran.Compute.DataFrameFamilies (module)
+type Fuaran.Compute.DeriveTypingConformance (module)
 type Fuaran.Compute.IncrementalDelta (module)
 type Fuaran.Compute.IncrementalSample (record)
 type Fuaran.Compute.PipelineQueryConformance (module)

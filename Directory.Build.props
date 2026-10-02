@@ -22,8 +22,9 @@
          ADVANCED the draft to 0.36.0 rather than riding it: the first version under the new ids is
          a fresh contract, and 0.35.0 is released under no id. It is a DRAFT slot until it is
          tagged: STABILITY.md heads it "0.36.0 — DRAFT", and an additive change rides it while a
-         breaking one advances it. -->
-    <Version>0.36.0</Version>
+         breaking one advances it. 0.36.0 is tagged, so Phase 338's breaking change (a derived
+         column typed by its expression) advanced the slot to 0.37.0, a DRAFT until it is tagged. -->
+    <Version>0.37.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

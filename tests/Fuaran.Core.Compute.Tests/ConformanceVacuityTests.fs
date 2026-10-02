@@ -42,6 +42,8 @@ let private runs =
     lazy
         ([ // Phase 281 — the registered pipeline query, at the size its own suite runs it.
            run "PipelineQueryConformance.laws" 100 (PipelineQueryConformance.laws 2810 100)
+           // Phase 338 — the derived-column typing rule.
+           run "DeriveTypingConformance.laws" 200 (DeriveTypingConformance.laws 3380 200)
            run
                "Conformance.transformLaws"
                LawVectorExport.iterations

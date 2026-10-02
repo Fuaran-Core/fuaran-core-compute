@@ -1164,7 +1164,7 @@ let tests =
                       [ "dept"; "name"; "salary"; "bonus" ]
                       (sprintf "%A leaves the column set alone" step)
 
-          testCase "Phase 112 — Derive names the column and refuses to guess its type"
+          testCase "Phase 112 — Derive names the column, and (Phase 338) states the type its expression decides"
           <| fun _ ->
               let added =
                   SchemaWalk.ofPipeline people.Schema [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ]
@@ -1176,10 +1176,15 @@ let tests =
 
               Expect.equal
                   (SchemaWalk.typeOf "raise" added)
-                  None
-                  "the type is inferred from the cells, so the walk cannot state it"
+                  (Some IntType)
+                  "the typer decides an int add, so the walk states it"
 
-              Expect.isTrue (SchemaWalk.has "raise" added) "the column is KNOWN to exist — only its type is not"
+              Expect.equal
+                  (SchemaWalk.typeOf "p" (SchemaWalk.ofPipeline people.Schema [ Derive("p", Param "k") ]))
+                  None
+                  "a param's cell is the arguments', so the walk cannot state it"
+
+              Expect.isTrue (SchemaWalk.has "raise" added) "the column is KNOWN to exist, and so is its type"
 
               // Onto an existing name the evaluator retypes IN PLACE, position kept.
               let inPlace = SchemaWalk.ofPipeline people.Schema [ Derive("salary", Lit(Int 1)) ]
@@ -1189,7 +1194,7 @@ let tests =
                   [ "dept"; "name"; "salary"; "bonus" ]
                   "an existing name is retyped, not appended"
 
-              Expect.equal (SchemaWalk.typeOf "salary" inPlace) None "and its declared type is given up"
+              Expect.equal (SchemaWalk.typeOf "salary" inPlace) (Some IntType) "and retyped to the literal's type"
 
               let evaluated =
                   run [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ] |> okTable
@@ -3504,7 +3509,12 @@ let compiledExprLaws =
                       DataFrame.evalPipelineInEnv typedEnv [ Derive("out", e) ] (oneRowTable row)
                       |> Result.map (fun t -> List.head (cellsOf "out" t))
 
-                  if not (sameOutcome expected derived) then
+                  // Phase 338: an expression whose own arms put a float beside a decimal is refused
+                  // by name as a DERIVE on every frame, whatever this row's cell is.
+                  if DataFrame.mixesFloatDecimal typedSchema e then
+                      if derived <> Error(DataFrame.floatBesideDecimal "out") then
+                          failtestf "Derive %A was not refused statically on expr=%A row=%A" derived e row
+                  elif not (sameOutcome expected derived) then
                       failtestf "Derive %A differs from the reference %A on expr=%A row=%A" derived expected e row
 
                   let filtered =
@@ -3749,23 +3759,26 @@ let exprTypingTests =
               for label, e, expected in cases do
                   Expect.equal (DataFrame.typeOf typedSchema e) expected label
 
-          testCase "a Derive's column type is decided exactly where inferCellType's fall-back and the static type agree"
+          testCase "a Derive's column type is the typer's wherever it decides (Phase 338)"
           <| fun _ ->
               let cases: (string * ColExpr * ColumnType option) list =
                   [ "strings", ApplyFn(Concat, [ Col "s"; Lit(Str "!") ]), Some StringType
                     "null literal", Lit Null, Some StringType
                     "a name the schema lacks", Col "nope", None
-                    "ints", Binary(Add, Col "i", Lit(Int 1)), None
-                    "bools", Binary(Gt, Col "i", Lit(Int 1)), None
+                    "ints", Binary(Add, Col "i", Lit(Int 1)), Some IntType
+                    "bools", Binary(Gt, Col "i", Lit(Int 1)), Some BoolType
                     "cast to string", Cast(StringType, Col "i"), Some StringType
-                    "cast to int", Cast(IntType, Col "s"), None
+                    "cast to int", Cast(IntType, Col "s"), Some IntType
+                    "an int beside a float, which the exact typer keeps apart",
+                    Case([ Binary(Gt, Col "i", Lit(Int 1)), Lit(Int 1) ], Lit(Float 2.5)),
+                    None
                     "param", Param "p", None ]
 
               for label, e, expected in cases do
                   Expect.equal (DataFrame.derivedColumnType typedSchema e) expected label
 
           testCase
-              "SchemaWalk types a string-valued Derive, keeps None elsewhere, and agrees with evaluation on empty and full frames"
+              "SchemaWalk types every decided Derive, keeps None where the cells decide, and agrees with evaluation on empty and full frames"
           <| fun _ ->
               let walk (pipeline: Transform list) =
                   SchemaWalk.ofPipeline people.Schema pipeline
@@ -3777,8 +3790,8 @@ let exprTypingTests =
 
               Expect.equal
                   (SchemaWalk.typeOf "raise" (walk [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ]))
-                  None
-                  "an integer derive stays undecided: an empty frame would type it String"
+                  (Some IntType)
+                  "an integer derive is an int on every frame, an empty one included (Phase 338)"
 
               Expect.equal
                   (SchemaWalk.typeOf "salary" (walk [ Derive("salary", Cast(StringType, Col "salary")) ]))
@@ -3807,13 +3820,13 @@ let exprTypingTests =
                   (Some StringType)
                   "a string function of it is a string whenever it is a value"
 
-              // The claim holds where it is made: an emptied frame and a full one both give String.
-              for pipeline in
-                  [ [ Filter(Lit(Bool false)); Derive("tag", ApplyFn(Upper, [ Col "dept" ])) ]
-                    [ Derive("tag", ApplyFn(Upper, [ Col "dept" ])) ] ] do
-                  let evaluated = run pipeline |> okTable
-                  let actual = evaluated.Schema |> List.find (fun (n, _) -> n = "tag") |> snd
-                  Expect.equal (SchemaWalk.typeOf "tag" (walk pipeline)) (Some actual) "walk and evaluator agree" ]
+              // The claim holds where it is made: an emptied frame and a full one give the walk's type.
+              for e in [ ApplyFn(Upper, [ Col "dept" ]); Binary(Add, Col "salary", Lit(Int 10)) ] do
+                  for pipeline in [ [ Filter(Lit(Bool false)); Derive("tag", e) ]; [ Derive("tag", e) ] ] do
+                      let evaluated = run pipeline |> okTable
+                      let actual = evaluated.Schema |> List.find (fun (n, _) -> n = "tag") |> snd
+
+                      Expect.equal (SchemaWalk.typeOf "tag" (walk pipeline)) (Some actual) "walk and evaluator agree" ]
 
 // ---------------------------------------------------------------------------
 //  Phase 267 — the dense columnar frame and the prepared source.
@@ -4288,8 +4301,8 @@ let frameTests =
 
               Expect.equal
                   (schemaOf [ Derive("d", Binary(Add, Col "i", Col "j")) ])
-                  [ "i", IntType; "j", IntType; "d", StringType ]
-                  "an integer kernel that answers null on every row types as String, as `inferCellType` does"
+                  [ "i", IntType; "j", IntType; "d", IntType ]
+                  "an integer kernel that answers null on every row is still an int column (Phase 338)"
 
               Expect.equal
                   (schemaOf [ Derive("d", Binary(Add, Col "i", Lit(Int 1))) ])

@@ -296,18 +296,43 @@ let derivedTypeTests =
 
               Expect.equal (cellsOf "s" summed) [ dec "1.2" ] "1 + 0.1 + 0.1, exactly"
 
-          testCase "a float beside a decimal keeps the first present type (no widening relates them)"
+          testCase "a float beside a decimal is refused by name, never widened (Phase 338, carried from 321)"
           <| fun _ ->
               let floatsFirst = table [ "i", IntType, [ Int 2; Int 1 ] ]
+              let empty = table [ "i", IntType, [] ]
 
-              let t =
-                  ok (
-                      DataFrame.evalPipeline
-                          [ Derive("x", Case([ Binary(Gt, Col "i", Lit(Int 1)), Lit(Float 0.5) ], Lit(dec "0.5"))) ]
-                          floatsFirst
-                  )
+              let mix =
+                  Derive("x", Case([ Binary(Gt, Col "i", Lit(Int 1)), Lit(Float 0.5) ], Lit(dec "0.5")))
 
-              Expect.equal (typeOfCol "x" t) FloatType "the earlier type stands, as before Phase 321"
+              // The arms carry both families: refused statically, over an empty frame too.
+              for t in [ floatsFirst; empty ] do
+                  match DataFrame.evalPipeline [ mix ] t with
+                  | Error(TypeError msg) ->
+                      Expect.stringContains msg "derived column 'x' joins a float and a decimal" "named"
+                  | other -> failtestf "expected the static refusal, got %A" other
+
+              // Only the cells show it: refused where they hold both, typed where they hold one.
+              let byParams =
+                  Derive("x", Case([ Binary(Gt, Col "i", Lit(Int 1)), Param "f" ], Param "d"))
+
+              let env = Map.ofList [ "f", Float 0.5; "d", dec "0.5" ]
+
+              match DataFrame.evalPipelineInEnv env [ byParams ] floatsFirst with
+              | Error(TypeError msg) -> Expect.stringContains msg "joins a float and a decimal" "named"
+              | other -> failtestf "expected the cells' refusal, got %A" other
+
+              let onlyFloats = table [ "i", IntType, [ Int 2; Int 3 ] ]
+              let t = ok (DataFrame.evalPipelineInEnv env [ byParams ] onlyFloats)
+              Expect.equal (typeOfCol "x" t) FloatType "one family present: the cells type it"
+
+              // And the verdict declines both shapes.
+              Expect.isFalse (Plan.isTotal [ "i", IntType ] mix) "the static mix is not total"
+
+              Expect.isFalse
+                  (Plan.isTotal
+                      [ "i", IntType ]
+                      (Derive("x", Case([ Binary(Gt, Col "i", Lit(Int 1)), Lit(Float 0.5) ], Lit(Int 1)))))
+                  "a cells-typed derive is not total"
 
           testCase "the incremental walk types a derived column by the same join"
           <| fun _ ->

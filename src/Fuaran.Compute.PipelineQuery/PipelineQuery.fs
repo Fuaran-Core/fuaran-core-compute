@@ -70,11 +70,15 @@ type ResultDisagreement =
     | OutOfOrder of declaredAt: int * producedAt: int
     /// Produced at a type other than the declared one.
     | TypeDiffers of declared: ColumnType * produced: ColumnType
-    /// Produced at a type only the DATA decides. The evaluator types a derived column from its
-    /// first present cell and falls back to `StringType` over an empty or all-null frame, so a
-    /// `Derive` of anything but a string answers the declared type over some frames and `StringType`
-    /// over others; no declaration can agree with that on every frame. `Project` or `GroupBy` over
-    /// a declared-type column, or a string-typed derivation, is what can.
+    /// Produced at a type only the DATA decides. Since Phase 338 a derived column is typed by its
+    /// expression wherever the typer decides it, on every frame, so an `int`, `float`, `decimal`,
+    /// `bool` or string derive states its type and registers. What remains here is the
+    /// genuinely data-decided column: a derive reading a `Param` (its cell is the arguments'), a
+    /// `Now` (the clock's), or a column the walk cannot type (an open schema's); a derive joining
+    /// two types the exact typer keeps apart, such as a `Case` of an `int` and a `float` (the cells
+    /// decide, by the widening join); and a derive the evaluator refuses on every frame because its
+    /// arms put a `float` beside a `decimal`, which has no type to declare. `Project` or `GroupBy`
+    /// over a declared-type column, or a decided derivation, is what can agree.
     | TypeUndecidable of declared: ColumnType
 
 /// Why a pipeline query was refused at registration (Phase 281). Total, and each refusal names what
@@ -294,7 +298,9 @@ module PipelineQuery =
     /// declared, the walk closed, the same names (none twice), in the same order, at the same types.
     /// The first disagreement is the answer, in that order — an undeclared source, an open walk, a
     /// duplicated name, a declared column not produced, a produced column not declared, a column
-    /// out of order, then a type.
+    /// out of order, then a type. A derived result column is compared at the type the evaluator
+    /// gives it on every frame (Phase 338); `TypeUndecidable` is reserved for the columns only the
+    /// data decides, which its own doc enumerates.
     let checkResult (pq: PipelineQuery) : Result<unit, PipelineQueryError> =
         match namedSources pq |> List.tryFind (fun n -> not (Map.containsKey n pq.Sources)) with
         | Some name -> Error(SourceUndeclared(name, pq.Sources |> Map.toList |> List.map fst))

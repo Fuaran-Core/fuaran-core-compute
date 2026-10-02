@@ -211,7 +211,7 @@ let tests =
 
               Expect.equal (PipelineQuery.check embedded) (Ok()) "the table's own schema is the result"
 
-          testCase "a derived string column has a type the walk decides; any other does not"
+          testCase "a derived column has the type its expression decides; a param or the clock does not (Phase 338)"
           <| fun _ ->
               let derived ty e =
                   pair (query "d" [] (ledger @ [ "label", ty ]) (Ref "ledger")) [ Derive("label", e) ]
@@ -223,8 +223,32 @@ let tests =
 
               Expect.equal
                   (PipelineQuery.check (derived IntType (ColExpr.Cast(IntType, ColExpr.Col "n"))))
+                  (Ok())
+                  "an int derivation is an int over every frame, an empty one included"
+
+              Expect.equal
+                  (PipelineQuery.check (derived FloatType (ColExpr.Cast(IntType, ColExpr.Col "n"))))
+                  (Error(ResultColumn("label", ResultDisagreement.TypeDiffers(FloatType, IntType))))
+                  "a decided derivation declared at another type differs, by name"
+
+              let withParam =
+                  { derived IntType (ColExpr.Param "k") with
+                      Query =
+                          { (derived IntType (ColExpr.Param "k")).Query with
+                              Params =
+                                  [ { Name = "k"
+                                      Type = IntType
+                                      Required = true } ] } }
+
+              Expect.equal
+                  (PipelineQuery.check withParam)
                   (Error(ResultColumn("label", ResultDisagreement.TypeUndecidable IntType)))
-                  "an int derivation is a string over an empty frame"
+                  "a param derivation's type is the argument's, which only the data decides"
+
+              Expect.equal
+                  (PipelineQuery.check (derived DateType (ColExpr.Now NowGrain.Date)))
+                  (Error(ResultColumn("label", ResultDisagreement.TypeUndecidable DateType)))
+                  "a clock derivation's type is the witness's, which only the data decides"
 
           testCase "each position decides the type it reads a parameter at, or decides none"
           <| fun _ ->

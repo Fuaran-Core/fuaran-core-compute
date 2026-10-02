@@ -17,7 +17,8 @@ open Fuaran.Core
 //     (`resolveExpr` once per step, `evalResolved` per row), a recomputed
 //     aggregate through the evaluator's own streams (`DataFrame.GroupAgg`,
 //     Phase 323) or `DataFrame.aggregateCells`, a derived column's type
-//     through `DataFrame.inferCellType`. One implementation, called on fewer
+//     through `DataFrame.derivedTyping` and `DataFrame.columnTypeBy` (Phase
+//     338). One implementation, called on fewer
 //     rows. The conformance family certifies the two results identical for
 //     every (base, delta) pair, so a divergence is a failing law rather than a
 //     wrong number in a consumer.
@@ -1462,36 +1463,43 @@ module Incremental =
                     caches
                     rest)
         | WDerive(name, expr) :: rest ->
-            let resolved = DataFrame.resolveExpr env f.Cols expr
+            // The derived column's typing is the reference's own rule over the same schema
+            // (`DataFrame.derivedTyping`, Phase 338), so refresh and full agree by construction. A
+            // derive refused statically is refused before any row, as the reference refuses it.
+            match DataFrame.derivedTyping f.Cols expr with
+            | DataFrame.Refused -> Error(DataFrame.floatBesideDecimal name)
+            | dt ->
+                let resolved = DataFrame.resolveExpr env f.Cols expr
 
-            evalStep r f evalIdx resolved evaluated
-            |> Result.bind (fun (step, n) ->
-                r.Steps.Add step
+                evalStep r f evalIdx resolved evaluated
+                |> Result.bind (fun (step, n) ->
+                    r.Steps.Add step
 
-                // A derived column's TYPE is a function of the whole column, not of one row: its
-                // present cells' types joined among the rows alive AT THIS STEP in frame order —
-                // `DataFrame.inferCellType`'s fold (Phase 321: the widening join, where it was the
-                // first present cell), over precisely the set the reference evaluator holds here.
-                // Reading it off a cache would type the column differently from the reference the
-                // moment a filter downstream dropped the only typed row.
-                let ty = DataFrame.inferTypeAt f.Order.Length (fun i -> step[f.Order[i]])
+                    // A decided column's TYPE is its typing's, whatever the rows. One the cells
+                    // decide is a function of the whole column, not of one row: its present cells'
+                    // types joined among the rows alive AT THIS STEP in frame order
+                    // (`DataFrame.columnTypeBy`, Phase 321's widening join, refusing a float beside a
+                    // decimal), over precisely the set the reference evaluator holds here. Reading
+                    // it off a cache would type the column differently from the reference the
+                    // moment a filter downstream dropped the only typed row.
+                    DataFrame.columnTypeBy dt name f.Order.Length (fun i -> step[f.Order[i]])
+                    |> Result.bind (fun ty ->
+                        // The step's cells ARE the derived column: live at every slot in `Order`,
+                        // and a slot outside it is never read again this walk.
+                        let f2 =
+                            match colIndex f.Cols name with
+                            | Some i ->
+                                { f with
+                                    Cols = f.Cols |> List.mapi (fun j (n2, t) -> if j = i then n2, ty else n2, t)
+                                    Data = f.Data |> Array.mapi (fun j a -> if j = i then step else a)
+                                    Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o) }
+                            | None ->
+                                { f with
+                                    Cols = f.Cols @ [ name, ty ]
+                                    Data = Array.append f.Data [| step |]
+                                    Origins = Array.append f.Origins [| None |] }
 
-                // The step's cells ARE the derived column: live at every slot in `Order`, and a slot
-                // outside it is never read again this walk.
-                let f2 =
-                    match colIndex f.Cols name with
-                    | Some i ->
-                        { f with
-                            Cols = f.Cols |> List.mapi (fun j (n2, t) -> if j = i then n2, ty else n2, t)
-                            Data = f.Data |> Array.mapi (fun j a -> if j = i then step else a)
-                            Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o) }
-                    | None ->
-                        { f with
-                            Cols = f.Cols @ [ name, ty ]
-                            Data = Array.append f.Data [| step |]
-                            Origins = Array.append f.Origins [| None |] }
-
-                walk resolve env prior r f2 n caches rest)
+                        walk resolve env prior r f2 n caches rest))
 
     /// The frame's rows alive at its end, as a table under its schema — the transpose `tableOf`
     /// would do over row arrays, one column at a time. A column whose array is still the source's
@@ -2854,11 +2862,12 @@ module Incremental =
     // more rows than moved costs nothing and one that names fewer cannot make the answer wrong.
     //
     // What the path must get right that a chunk cannot see on its own: a derived column's TYPE.
-    // The reference types it from the column's first present cell in row order — `StringType`
-    // when there is none — so an all-null chunk of a float column types itself `StringType`
-    // alone. The type is therefore fixed here over the whole rope, after the chunks are in hand,
-    // by the same rule; and a chunk holding no present cell is repacked under the column's kind,
-    // so the rope's view is one typed vector rather than a boxed one.
+    // The reference decides it from the schema where the typer decides it, and from the whole
+    // column's present cells where it does not (Phase 338) — so a chunk types a cells-decided
+    // column by its own cells alone, and a later derive reading that column over the chunk's
+    // schema. The types are therefore fixed here over the whole rope, after the chunks are in
+    // hand, by replaying the same rule; and a chunk holding no present cell is repacked under the
+    // column's kind, so the rope's view is one typed vector rather than a boxed one.
 
     /// The `Derive` steps of a pipeline made only of them, in order; `None` for any other pipeline.
     let private deriveSteps (pipeline: Transform list) : (string * ColExpr) list option =
@@ -2867,16 +2876,28 @@ module Incremental =
             | Derive(name, expr) -> Some(name, expr)
             | _ -> None)
 
-    /// The present cells' types joined over the chunks in row order (`DataFrame.inferCellType`'s
-    /// fold, Phase 321), or `None` where every cell is absent — the reference's typing rule for a
-    /// derived column, read off a rope. A typed chunk holds one type, so it folds as that type once
-    /// (a mask scan that stops at its first present row); a boxed chunk folds cell by cell, in row
-    /// order, because the fold keeps the EARLIER type for a pair no widening relates and so cannot
-    /// combine per-chunk summaries.
-    let private presentType (chunks: Vec[]) : ColumnType option =
+    /// The cells' half of the derived-column rule read off a rope (`DataFrame.typeFromCells`,
+    /// Phase 338): the present cells' types joined over the chunks in row order (Phase 321's
+    /// widening join), `StringType` where every cell is absent, and the named refusal where the
+    /// rope holds a float beside a decimal. A typed chunk holds one type, so it folds as that type
+    /// once (a mask scan that stops at its first present row); a boxed chunk folds cell by cell, in
+    /// row order, because the fold keeps the EARLIER type for a pair no widening relates and so
+    /// cannot combine per-chunk summaries.
+    let private ropeType (column: string) (chunks: Vec[]) : Result<ColumnType, EvalError> =
         let mutable acc: ColumnType option = None
+        let mutable sawFloat = false
+        let mutable sawDecimal = false
 
         let fold (t: ColumnType) =
+            match t with
+            | FloatType -> sawFloat <- true
+            | DecimalType -> sawDecimal <- true
+            | IntType
+            | BoolType
+            | StringType
+            | DateType
+            | TimestampType -> ()
+
             acc <-
                 match acc with
                 | None -> Some t
@@ -2905,7 +2926,10 @@ module Incremental =
                     | Some t -> fold t
                     | None -> ()
 
-        acc
+        if sawFloat && sawDecimal then
+            Error(DataFrame.floatBesideDecimal column)
+        else
+            Ok(acc |> Option.defaultValue StringType)
 
     /// Does the vector hold no present cell at all?
     let private nonePresent (v: Vec) : bool =
@@ -3005,57 +3029,104 @@ module Incremental =
                         |> Result.map (fun f -> f.Cols)
 
             names
-            |> Result.map (fun cols ->
+            |> Result.bind (fun cols ->
                 let derived = steps |> List.map fst |> Set.ofList
                 let priorOut = priorColumns |> Option.map snd
 
-                let outColumns =
-                    cols
-                    |> List.mapi (fun oi (name, tyLocal) ->
-                        let chunks =
-                            Array.init chunkCount (fun k ->
-                                match fresh[k], priorOut with
-                                | Some f, _ -> f.Vecs[oi]
-                                | None, Some po -> po[oi].Chunks[k]
-                                | None, None -> Vec.pack tyLocal [||]) // unreachable: an unshared chunk was evaluated
+                let chunksOf (oi: int) (tyLocal: ColumnType) : Vec[] =
+                    Array.init chunkCount (fun k ->
+                        match fresh[k], priorOut with
+                        | Some f, _ -> f.Vecs[oi]
+                        | None, Some po -> po[oi].Chunks[k]
+                        | None, None -> Vec.pack tyLocal [||]) // unreachable: an unshared chunk was evaluated
 
-                        let ty =
-                            if Set.contains name derived then
-                                presentType chunks |> Option.defaultValue StringType
-                            else
-                                tyLocal
+                // The derived columns' types over the WHOLE rope (Phase 338): the reference's rule
+                // replayed over the rope's schema step by step, because a chunk typed a column the
+                // cells decide by its own cells alone, and a later derive reading that column was
+                // typed over the chunk's schema. A decided column takes its typing's type, one the
+                // cells decide takes the rope's cells (refusing a float beside a decimal). An answer
+                // the rope cannot give — the cells of a column a later step derives again, which the
+                // output no longer holds — is declined, and the caller takes the row path.
+                let lastAt = steps |> List.mapi (fun i (name, _) -> name, i) |> Map.ofList
 
-                        let chunks =
-                            chunks
-                            |> Array.map (fun v ->
-                                if Vec.declaredType v <> Some ty && nonePresent v then
-                                    Vec.pack ty (Array.create (Vec.length v) Null)
+                let rec replay (schema: Schema) (i: int) (acc: Map<string, ColumnType>) rest =
+                    match rest with
+                    | [] -> Ok acc
+                    | (name, e) :: tail ->
+                        let typed =
+                            match DataFrame.derivedTyping schema e with
+                            | DataFrame.Decided ty -> Ok ty
+                            | DataFrame.Refused -> Error(DataFrame.floatBesideDecimal name)
+                            | DataFrame.ByCells ->
+                                match cols |> List.tryFindIndex (fun (n, _) -> n = name) with
+                                | Some oi when lastAt[name] = i -> ropeType name (chunksOf oi (snd cols[oi]))
+                                | _ ->
+                                    Error(
+                                        TypeError(
+                                            "the chunked path cannot type '"
+                                            + name
+                                            + "' over the rope; the row path does"
+                                        )
+                                    )
+
+                        typed
+                        |> Result.bind (fun ty ->
+                            let schema' =
+                                if schema |> List.exists (fun (n, _) -> n = name) then
+                                    schema |> List.map (fun (n, t) -> if n = name then n, ty else n, t)
                                 else
-                                    v)
+                                    schema @ [ name, ty ]
 
-                        // A column the pipeline passes through untouched IS the source's rope —
-                        // the same object, its list memo included — so the output's table hands
-                        // the consumer's own list back for it, as the frame boundary does.
-                        let passThrough =
-                            not (Set.contains name derived)
-                            && oi < w
-                            && fst (List.item oi prepared.Cols) = name
-                            && columns[oi].Chunks.Length = chunkCount
+                            replay schema' (i + 1) (Map.add name ty acc) tail)
 
-                        (name, ty),
-                        (if passThrough then
-                             columns[oi]
-                         else
-                             { Type = ty
-                               Size = size
-                               Length = count
-                               Chunks = chunks
-                               Cells = ref None }))
+                replay prepared.Cols 0 Map.empty steps
+                |> Result.map (fun ropeTypes ->
 
-                let out =
-                    Prepared.ofChunks (outColumns |> List.map fst) count (outColumns |> List.map snd |> List.toArray)
+                    let outColumns =
+                        cols
+                        |> List.mapi (fun oi (name, tyLocal) ->
+                            let chunks = chunksOf oi tyLocal
 
-                out, evaluated, touched)
+                            let ty =
+                                if Set.contains name derived then
+                                    ropeTypes[name]
+                                else
+                                    tyLocal
+
+                            let chunks =
+                                chunks
+                                |> Array.map (fun v ->
+                                    if Vec.declaredType v <> Some ty && nonePresent v then
+                                        Vec.pack ty (Array.create (Vec.length v) Null)
+                                    else
+                                        v)
+
+                            // A column the pipeline passes through untouched IS the source's rope —
+                            // the same object, its list memo included — so the output's table hands
+                            // the consumer's own list back for it, as the frame boundary does.
+                            let passThrough =
+                                not (Set.contains name derived)
+                                && oi < w
+                                && fst (List.item oi prepared.Cols) = name
+                                && columns[oi].Chunks.Length = chunkCount
+
+                            (name, ty),
+                            (if passThrough then
+                                 columns[oi]
+                             else
+                                 { Type = ty
+                                   Size = size
+                                   Length = count
+                                   Chunks = chunks
+                                   Cells = ref None }))
+
+                    let out =
+                        Prepared.ofChunks
+                            (outColumns |> List.map fst)
+                            count
+                            (outColumns |> List.map snd |> List.toArray)
+
+                    out, evaluated, touched))
 
     /// The state the chunked path hands back: the prepared source and its chunked output, no
     /// row caches (the chunks ARE the cache), and the count of chunks it evaluated.

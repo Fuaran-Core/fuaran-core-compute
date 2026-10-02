@@ -19,6 +19,8 @@
     <!-- Phase 281 - the registered pipeline query's law family, in its own module. Before the
          roster, which enumerates it. -->
     <Compile Include="PipelineQueryLaws.fs" />
+    <!-- Phase 338 - the derived-column typing laws, in their own module. Before the roster. -->
+    <Compile Include="DeriveTypingLaws.fs" />
     <!-- This package's share of the family roster. LAST, for the reason Families.fs is last in the
          kit: it enumerates the families above as data and depends on none of them. -->
     <Compile Include="DataFrameFamilies.fs" />
@@ -35,5 +37,11 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Phase 338 - the suite drives `DeriveTypingConformance.lawsWith` over perturbed evaluators,
+         the go-red half of the family; it is internal so the roster's reflection over public law
+         entry points sees one family, not two. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Tests" />
   </ItemGroup>
 </Project>

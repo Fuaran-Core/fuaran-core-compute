@@ -109,18 +109,36 @@ module LawVectorExport =
           "decimal-rounded-float-refused"
           "decimal-quotient-scale-refused" ]
 
-    /// Every shape a vector is rendered for, in the order the iterations take them.
-    let shapeNames = baseShapeNames @ decimalShapeNames
+    /// The typing shapes (Phase 338), one vector each after the decimal ones, over the decimal
+    /// table: a decided derive's column type over an empty frame and over an all-null one (an int
+    /// and a decimal), a `Case` joining an int and a float (the cells decide), an unpivot of an int
+    /// and a float value column over a full and an empty frame, and the float-beside-decimal
+    /// refusal.
+    let private typingShapeNames =
+        [ "typed-derive-empty"
+          "typed-derive-all-null"
+          "typed-case-int-float"
+          "typed-derive-decimal-empty"
+          "typed-derive-decimal-all-null"
+          "typed-unpivot-int-float"
+          "typed-unpivot-empty"
+          "typed-float-decimal-refused" ]
 
-    /// The sample size: the sixteen base draws, then one draw per decimal shape.
-    let iterations = baseIterations + List.length decimalShapeNames
+    /// Every shape after the base draws, in the order the iterations take them.
+    let private drawnShapeNames = decimalShapeNames @ typingShapeNames
+
+    /// Every shape a vector is rendered for, in the order the iterations take them.
+    let shapeNames = baseShapeNames @ drawnShapeNames
+
+    /// The sample size: the sixteen base draws, then one draw per decimal and typing shape.
+    let iterations = baseIterations + List.length drawnShapeNames
 
     /// The shape iteration `i` takes.
     let shapeOf (i: int) : string =
         if i < baseIterations then
             List.item (i % List.length baseShapeNames) baseShapeNames
         else
-            List.item (i - baseIterations) decimalShapeNames
+            List.item (i - baseIterations) drawnShapeNames
 
     let private agg name fn ofCol : Agg = { Name = name; Fn = fn; Of = ofCol }
 
@@ -231,6 +249,15 @@ module LawVectorExport =
             [ Filter(InList(m, [ cents ((137 + offset * 25) % 500 - 200) |> Lit; Lit(Int 2); dec "9.99" ])) ]
         | "decimal-div-refused" -> [ Derive("q", Binary(Div, m, Lit(Int 2))) ]
         | "decimal-float-refused" -> [ Derive("x", Binary(Add, m, Col "w")) ]
+        // ---- Phase 338: the derived column typed by its expression ----
+        | "typed-derive-empty" -> [ Filter(Lit(Bool false)); Derive("t", Binary(Add, Col "v", Lit(Int 1))) ]
+        | "typed-derive-all-null" -> [ Derive("t", Case([ IsNull(Col "g"), Col "v" ], Lit Null)) ]
+        | "typed-case-int-float" -> [ Derive("t", Case([ Binary(Gt, Col "v", Lit(Int 0)), Col "v" ], Col "w")) ]
+        | "typed-derive-decimal-empty" -> [ Filter(Lit(Bool false)); Derive("t", Binary(Mul, m, Col "v")) ]
+        | "typed-derive-decimal-all-null" -> [ Filter(IsNull m); Derive("t", Binary(Add, m, Lit(Int 1))) ]
+        | "typed-unpivot-int-float" -> [ Unpivot([ "g" ], [ "v"; "w" ]) ]
+        | "typed-unpivot-empty" -> [ Filter(Lit(Bool false)); Unpivot([ "g" ], [ "v"; "w" ]) ]
+        | "typed-float-decimal-refused" -> [ Derive("t", Case([ Binary(Gt, Col "v", Lit(Int 0)), Col "w" ], m)) ]
         | "decimal-rounded-float-refused" ->
             [ Derive(
                   "r",
@@ -538,7 +565,11 @@ module LawVectorExport =
         + "evalPipeline (`expected.table` on `ok`, a refusal on `error`), and re-encodes its decode of "
         + "`input.op` to `expected.op`. `delta` vectors carry `input.before`, `input.after` and "
         + "`input.key`; a host diffs the two tables keyed by that column's cell token and encodes the "
-        + "delta to `expected.delta`. `iterations` counts the evalPipeline vectors only."
+        + "delta to `expected.delta`. `iterations` counts the evalPipeline vectors only. From the "
+        + "iteration after the last decimal shape, each takes the next TYPING shape named in its vector "
+        + "id (Phase 338) over the decimal table: a derived or unpivoted column is typed by its "
+        + "expression where the schema decides it, over an empty and an all-null frame alike, and a "
+        + "float beside a decimal in one derived column is refused."
 
     let renderTransformVectors () : string =
         let sb = StringBuilder()

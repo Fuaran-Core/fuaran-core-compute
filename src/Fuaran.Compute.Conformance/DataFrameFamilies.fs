@@ -43,6 +43,11 @@ module DataFrameFamilies =
               "Conformance.aggregateParityLaws"
               NoRefusal
               "an Error only lands in a parity bucket, and the kit draws no type or magnitude that can raise one (its decimals are hundredths far inside the float range)"
+          // Phase 338 — the static and the cells' float-beside-decimal refusals are built each iteration.
+          r
+              "DeriveTypingConformance.laws"
+              Built
+              "the static float-beside-decimal refusal is built over a full and an empty frame each iteration, and the cells' one over the drawn table"
           r "Conformance.columnarOpLaws" Drawn "delegates to columnarOpLawsWith"
           r
               "Conformance.columnarOpLawsWith"
@@ -101,6 +106,9 @@ module DataFrameFamilies =
               [ "invert's refusal population (delegates to columnarOpLawsWith)"
                 "decimal cell" ]
           "Conformance.schemaWalkLaws", Guarded [ "derivation verdict (its own parity vacuity guard)"; "decimal step" ]
+          // Phase 338 — a draw that reached no decided derive, no cells-decided one, no all-null
+          // decided column or no refusal certifies the typing rule over less than it says.
+          "DeriveTypingConformance.laws", Guarded [ "typing" ]
           // `evalFrom` answers every change but a value edit by evaluating in full, so only a value
           // edit can tell the incremental path from the full one.
           "Conformance.incrementalLawsWith", Guarded [ "value edit" ]
@@ -173,6 +181,8 @@ module DataFrameFamilies =
 
         [ // Phase 281 — the registered pipeline query, in its own module.
           f "PipelineQueryConformance" "laws" none (Some SeamNotEveryDomainHas) []
+          // Phase 338 — the derived-column typing rule, in its own module.
+          f "DeriveTypingConformance" "laws" none (Some SeamNotEveryDomainHas) []
           c "transformLaws" none (Some SeamNotEveryDomainHas) []
           // Phase 257 — the `GroupBy` half. The `Column.aggregate` null-skip half stays in the kit
           // as `Conformance.aggregateNullSkipLaws`.
