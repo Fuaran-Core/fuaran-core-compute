@@ -10,7 +10,8 @@ namespace Fuaran.Core
 //  order — the transform law vectors decide that, byte for byte.
 //
 //  One vector per column, typed where the column's cells agree with its
-//  declared type (an `int[]`, a `float[]`, a `bool[]` or a `string[]`, each
+//  declared type (an `int[]`, a `float[]`, a `bool[]`, a `string[]`, or for a
+//  decimal the scaled integers in a `float[]` beside the cells (Phase 280), each
 //  beside a `bool[]` validity mask — a present integer cell costs five bytes
 //  at rest, where a `Cell` in a list cost about fifty-six), and a boxed
 //  `Cell[]` where they do not. A selection vector says which physical rows
@@ -27,12 +28,165 @@ namespace Fuaran.Core
 /// where every present cell agrees with the column's declared type, or the boxed cells where one
 /// does not. The three string-carrying families share one carrier and are told apart by the type
 /// the vector records, so the cell it reads back is the cell that was unpacked.
+///
+/// A decimal column (Phase 280) is `Decs`: the column's cells as they were handed in, beside each
+/// present value as an unscaled integer at ONE scale for the column, carried in a float64 — so a
+/// comparison, an order and a sum are float operations, exact because every value and every partial
+/// sum the kernels keep is an integer of magnitude at most 2^53 - 1. The cells ride along so every
+/// read of a cell is the cell the text path reads, byte for byte, with nothing rendered; only the
+/// kernels read the integers. A column that does not fit (`ScaledDecimal.scaleOf`) stays `Cells`.
 type internal Vec =
     | Ints of int[] * bool[]
     | Floats of float[] * bool[]
     | Bools of bool[] * bool[]
     | Strs of ColumnType * string[] * bool[]
+    | Decs of scaled: float[] * scale: int * cells: Cell[] * mask: bool[]
     | Cells of Cell[]
+
+/// The scaled-integer reading of decimal text the `Decs` vector carries (Phase 280). The grammar
+/// is `DecimalText`'s, `-?[0-9]+(\.[0-9]+)?`; leading integer zeros and trailing fraction zeros
+/// carry no digit, so `"012.50"` reads as 125 at scale 1.
+module internal ScaledDecimal =
+
+    /// The width: a column is carried scaled only when every value has at most this many
+    /// significant digits at the column's scale, so every unscaled value is below 10^15 < 2^53
+    /// and its float64 is exact. Past it — a scale past the width, or a value too large at the
+    /// column's scale — the column takes the text path, by name, and nothing is refused.
+    [<Literal>]
+    let Width = 15
+
+    /// The largest integer a float64 holds with every smaller one: a total or a sum the kernels
+    /// keep in the float carrier stays at or below it in magnitude, or leaves the carrier.
+    let maxExact: float = 9007199254740991.0
+
+    /// 10^k as an exact float64, for k in 0 .. Width.
+    let pow10: float[] = Array.init (Width + 1) (fun k -> pown 10.0 k)
+
+    /// The shape of decimal text `s`: the number of significant integer digits (leading zeros
+    /// dropped) and of fraction digits (trailing zeros dropped), or `None` where `s` is not in the
+    /// grammar. Allocation-free.
+    let shape (s: string) : struct (int * int) voption =
+        let n = s.Length
+        let start = if n > 0 && s[0] = '-' then 1 else 0
+        let mutable i = start
+        let mutable ok = true
+        let mutable point = -1
+
+        while ok && i < n do
+            let c = s[i]
+
+            if c = '.' && point < 0 && i > start && i < n - 1 then
+                point <- i
+            elif c < '0' || c > '9' then
+                ok <- false
+
+            i <- i + 1
+
+        if not ok || n = start then
+            ValueNone
+        else
+            let intEnd = if point < 0 then n else point
+            let mutable lead = start
+
+            while lead < intEnd && s[lead] = '0' do
+                lead <- lead + 1
+
+            let mutable fracEnd = n
+
+            if point >= 0 then
+                while fracEnd > point + 1 && s[fracEnd - 1] = '0' do
+                    fracEnd <- fracEnd - 1
+
+            let fracDigits = if point < 0 then 0 else fracEnd - point - 1
+            ValueSome(struct (intEnd - lead, fracDigits))
+
+    /// The unscaled value of decimal text `s` at `scale`, or `None` where `s` is not in the grammar,
+    /// has more fraction digits than `scale`, or does not fit the width at `scale`.
+    let tryScaled (scale: int) (s: string) : float voption =
+        match shape s with
+        | ValueSome(struct (intDigits, fracDigits)) when
+            scale >= 0
+            && scale <= Width
+            && fracDigits <= scale
+            && intDigits + scale <= Width
+            ->
+            let n = s.Length
+            let negative = s[0] = '-'
+            let mutable u = 0.0
+            let mutable seen = 0
+            let mutable i = if negative then 1 else 0
+            let mutable fraction = false
+
+            // Every digit up to the last significant fraction digit, as one integer; the integer
+            // part's leading zeros add nothing and the fraction's trailing zeros are never reached.
+            while i < n && (not fraction || seen < fracDigits) do
+                let c = s[i]
+
+                if c = '.' then
+                    fraction <- true
+                else
+                    u <- u * 10.0 + float (int c - int '0')
+
+                    if fraction then
+                        seen <- seen + 1
+
+                i <- i + 1
+
+            let v = u * pow10[scale - fracDigits]
+            ValueSome(if negative && v <> 0.0 then -v else v)
+        | _ -> ValueNone
+
+    /// The one scale a column of `cells` is carried at — its largest fraction-digit count — or
+    /// `None` where it cannot be: a present cell that is not a well-formed `Decimal`, or a column
+    /// past the width. `Null` cells are absent and read nothing.
+    let scaleOf (cells: Cell[]) : int option =
+        let mutable ok = true
+        let mutable maxInt = 0
+        let mutable maxFrac = 0
+        let mutable i = 0
+
+        while ok && i < cells.Length do
+            match cells[i] with
+            | Decimal s ->
+                match shape s with
+                | ValueSome(struct (intDigits, fracDigits)) ->
+                    if intDigits > maxInt then
+                        maxInt <- intDigits
+
+                    if fracDigits > maxFrac then
+                        maxFrac <- fracDigits
+                | ValueNone -> ok <- false
+            | Null -> ()
+            | _ -> ok <- false
+
+            i <- i + 1
+
+        if ok && maxInt + maxFrac <= Width then
+            Some maxFrac
+        else
+            None
+
+    /// The canonical decimal text (`DecimalText`) of the unscaled value `u` at `scale`. `u` is an
+    /// integer of magnitude at most `maxExact`.
+    let render (scale: int) (u: float) : string =
+        let digits = string (int64 (abs u))
+
+        let padded =
+            if digits.Length <= scale then
+                String.replicate (scale + 1 - digits.Length) "0" + digits
+            else
+                digits
+
+        let cut = padded.Length - scale
+
+        let text =
+            if scale = 0 then
+                padded
+            else
+                padded.Substring(0, cut) + "." + padded.Substring cut
+
+        let signed = if u < 0.0 then "-" + text else text
+        DecimalText.tryCanonical signed |> Option.defaultValue signed
 
 /// The evaluator's frame: a schema, one vector per schema column (`Vecs` co-indexes with `Cols`),
 /// and the selection — the PHYSICAL row of each LOGICAL row, in logical order — or `None` for the
@@ -59,6 +213,7 @@ module internal Vec =
         | Floats(a, _) -> a.Length
         | Bools(a, _) -> a.Length
         | Strs(_, a, _) -> a.Length
+        | Decs(a, _, _, _) -> a.Length
         | Cells a -> a.Length
 
     /// The declared type a typed vector carries; `None` for the boxed fall-back, whose cells may
@@ -69,6 +224,7 @@ module internal Vec =
         | Floats _ -> Some FloatType
         | Bools _ -> Some BoolType
         | Strs(ty, _, _) -> Some ty
+        | Decs _ -> Some DecimalType
         | Cells _ -> None
 
     /// The cell a string-family column of type `ty` holds for the carrier value `s`.
@@ -90,6 +246,7 @@ module internal Vec =
         | Floats(a, m) -> if m[p] then Float a[p] else Null
         | Bools(a, m) -> if m[p] then Bool a[p] else Null
         | Strs(ty, a, m) -> if m[p] then strCell ty a[p] else Null
+        | Decs(_, _, cells, _) -> cells[p]
         | Cells a -> a[p]
 
     /// Is any selected row present?
@@ -166,9 +323,29 @@ module internal Vec =
                 i <- i + 1
 
             if ok then Bools(vals, mask) else boxed ()
-        // A decimal column has no typed carrier here (Phase 277): it is packed boxed, and every kernel
-        // over it reads cells through the reference arm. Its typed vector is Phase 280's.
-        | DecimalType -> boxed ()
+        // A decimal column (Phase 280): one scan finds the column's scale, then every present value
+        // is read as an unscaled integer beside its cell. A column past the width, or holding any
+        // present cell that is not a well-formed `Decimal`, takes the text path: packed boxed, every
+        // kernel reading its cells through the reference arm.
+        | DecimalType ->
+            match ScaledDecimal.scaleOf cells with
+            | Some scale ->
+                let vals: float[] = Array.zeroCreate count
+                let mask: bool[] = Array.zeroCreate count
+                let out = Array.create count Null
+
+                for i in 0 .. n - 1 do
+                    match cells[i] with
+                    | Decimal s ->
+                        let p = posOf i
+                        // `scaleOf` admitted every present cell at this scale, so this always reads.
+                        vals[p] <- ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0
+                        mask[p] <- true
+                        out[p] <- cells[i]
+                    | _ -> ()
+
+                Decs(vals, scale, out, mask)
+            | None -> boxed ()
         | StringType
         | DateType
         | TimestampType ->
@@ -211,15 +388,27 @@ module internal Vec =
         | Floats(a, m) -> Floats(Array.init n (fun i -> a[phys[i]]), Array.init n (fun i -> m[phys[i]]))
         | Bools(a, m) -> Bools(Array.init n (fun i -> a[phys[i]]), Array.init n (fun i -> m[phys[i]]))
         | Strs(ty, a, m) -> Strs(ty, Array.init n (fun i -> a[phys[i]]), Array.init n (fun i -> m[phys[i]]))
+        | Decs(a, s, c, m) ->
+            Decs(
+                Array.init n (fun i -> a[phys[i]]),
+                s,
+                Array.init n (fun i -> c[phys[i]]),
+                Array.init n (fun i -> m[phys[i]])
+            )
         | Cells a -> Cells(Array.init n (fun i -> a[phys[i]]))
 
-    /// Two DENSE vectors end to end: the same kind when both are typed alike, boxed otherwise.
+    /// Two DENSE vectors end to end: the same kind when both are typed alike, boxed otherwise. Two
+    /// decimal vectors at different scales are packed again from their cells, so the result is the
+    /// vector `pack DecimalType` makes of the joined column.
     let append (a: Vec) (b: Vec) : Vec =
         match a, b with
         | Ints(x, mx), Ints(y, my) -> Ints(Array.append x y, Array.append mx my)
         | Floats(x, mx), Floats(y, my) -> Floats(Array.append x y, Array.append mx my)
         | Bools(x, mx), Bools(y, my) -> Bools(Array.append x y, Array.append mx my)
         | Strs(ta, x, mx), Strs(tb, y, my) when ta = tb -> Strs(ta, Array.append x y, Array.append mx my)
+        | Decs(x, sa, cx, mx), Decs(y, sb, cy, my) when sa = sb ->
+            Decs(Array.append x y, sa, Array.append cx cy, Array.append mx my)
+        | Decs(_, _, cx, _), Decs(_, _, cy, _) -> pack DecimalType (Array.append cx cy)
         | _ ->
             let na = length a
             let nb = length b
@@ -234,6 +423,7 @@ module internal Vec =
         | Floats(a, m) -> Floats(Array.sub a start len, Array.sub m start len)
         | Bools(a, m) -> Bools(Array.sub a start len, Array.sub m start len)
         | Strs(ty, a, m) -> Strs(ty, Array.sub a start len, Array.sub m start len)
+        | Decs(a, s, c, m) -> Decs(Array.sub a start len, s, Array.sub c start len, Array.sub m start len)
         | Cells a -> Cells(Array.sub a start len)
 
     /// Dense vectors end to end, `ty` deciding the empty case: one vector of the shared kind where
@@ -291,6 +481,24 @@ module internal Vec =
                     Strs(t0, Array.concat (Array.map fst parts), Array.concat (Array.map snd parts))
                 else
                     boxed ()
+            | Decs(_, s0, _, _) ->
+                let parts =
+                    vs
+                    |> Array.choose (function
+                        | Decs(a, s, c, m) -> Some(a, s, c, m)
+                        | _ -> None)
+
+                if parts.Length < vs.Length then
+                    boxed ()
+                elif parts |> Array.forall (fun (_, s, _, _) -> s = s0) then
+                    Decs(
+                        Array.concat (parts |> Array.map (fun (a, _, _, _) -> a)),
+                        s0,
+                        Array.concat (parts |> Array.map (fun (_, _, c, _) -> c)),
+                        Array.concat (parts |> Array.map (fun (_, _, _, m) -> m))
+                    )
+                else
+                    pack DecimalType (Array.concat (parts |> Array.map (fun (_, _, c, _) -> c)))
             | Cells _ -> boxed ()
 
     /// The carrier string a string-family column of type `ty` holds for `c`, or `None` where `c`
@@ -338,6 +546,25 @@ module internal Vec =
             m'[i] <- true
             Bools(a', m')
         | Bools(a, m), Null -> Bools(a, masked m)
+        // A decimal vector stays at its scale for a value that fits it; any other cell — a value
+        // past the scale or the width, or a cell of another type — packs the edited column again,
+        // which picks the scale that fits or takes the text path.
+        | Decs(a, s, cells, m), _ ->
+            let edited = Array.copy cells
+            edited[i] <- c
+
+            match c with
+            | Null -> Decs(a, s, edited, masked m)
+            | Decimal text ->
+                match ScaledDecimal.tryScaled s text with
+                | ValueSome x ->
+                    let a' = Array.copy a
+                    let m' = Array.copy m
+                    a'[i] <- x
+                    m'[i] <- true
+                    Decs(a', s, edited, m')
+                | ValueNone -> pack DecimalType edited
+            | _ -> pack DecimalType edited
         | Strs(ty, a, m), Null -> Strs(ty, a, masked m)
         | Strs(ty, a, m), _ ->
             match carrierOf ty c with
@@ -392,6 +619,7 @@ module internal Vec =
                             match carrierOf ty c with
                             | Some s -> m[j] && a[j] = s
                             | None -> false
+                    | Decs(_, _, a, _)
                     | Cells a -> a[j] = cells[offset + j]
 
                 j <- j + 1

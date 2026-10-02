@@ -26,6 +26,8 @@
     <Compile Include="PlanTests.fs" />
     <!-- Phase 277: decimal arithmetic in the evaluator. -->
     <Compile Include="DecimalTests.fs" />
+    <Compile Include="DecimalVectorLaw.fs" />
+    <Compile Include="DecimalVectorTests.fs" />
     <!-- Phase 281: the registered pipeline query. -->
     <Compile Include="PipelineQueryTests.fs" />
     <Compile Include="IncrementalGroupByTests.fs" />

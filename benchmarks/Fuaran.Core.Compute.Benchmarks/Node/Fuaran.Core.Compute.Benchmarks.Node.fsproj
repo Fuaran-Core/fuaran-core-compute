@@ -21,6 +21,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\Corpus.fs" Link="Corpus.fs" />
+    <!-- Phase 280: the decimal-vector law, run on this host before the typed family is timed. -->
+    <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\DecimalVectorLaw.fs" Link="DecimalVectorLaw.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

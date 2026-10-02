@@ -128,6 +128,23 @@ let private table (title: string) (lines: (string * int * string) list) =
 /// The typed family (Phase 280): each verb over the same values carried as a decimal, a float and
 /// an integer, at three sizes.
 let private typedTable () =
+    // The decimal-vector law first, on this host: a decimal figure is only a figure about the right
+    // answer once the vector path has answered the text path's bytes here.
+    let failures, compared = Fuaran.Core.Tests.DecimalVectorLaw.checkAll 1 400
+
+    if compared = 0 || not (List.isEmpty failures) then
+        failwith (
+            "benchmark corpus: the decimal-vector law failed on this host ("
+            + string (List.length failures)
+            + " of "
+            + string compared
+            + "): "
+            + String.concat " | " (List.truncate 3 failures)
+        )
+
+    printfn ""
+    printfn "The decimal-vector law: %d pipelines over 400 seeds, the vector path equal to the text path" compared
+
     table
         "Typed values (Phase 280): decimal beside float and int"
         [ for verb in Corpus.typedVerbs do

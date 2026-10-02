@@ -3802,6 +3802,10 @@ module DataFrame =
                 // A column whose cells disagree with its declared type is typed as declared, as the
                 // schema-only typer types it, and read boxed: every kernel over it checks the tag per
                 // row and hands a disagreeing cell to the reference arm.
+                // A decimal vector (Phase 280) reads its cells, as the boxed vector does: the expression
+                // arms over a decimal are exact text arithmetic, and the scaled integers serve the
+                // filter, sort and sum kernels only.
+                | Decs(_, _, cells, _)
                 | Cells cells -> Of types[i], NCell(fun p -> cells[p])
             | RConst c ->
                 let present (v: 'a) : int -> 'a =
@@ -3817,7 +3821,8 @@ module DataFrame =
                  | Str s -> NStr(StringType, present s)
                  | Date s -> NStr(DateType, present s)
                  | Timestamp s -> NStr(TimestampType, present s)
-                 // No typed carrier for a decimal (Phase 280's): the constant is read boxed.
+                 // A decimal constant is read boxed: expressions over decimals are exact text
+                 // arithmetic, and a filter's comparison of a carried column is the kernel's (Phase 280).
                  | Decimal _ -> NCell(present c)
                  | Null -> NNull)
             | RFail err -> Absent, NCell(fun _ -> fail err)
@@ -4105,15 +4110,30 @@ module DataFrame =
     /// — where the predicate is built from `And` and `Or` over comparisons of a typed numeric
     /// column with a constant (either side), and `None` for any other predicate, which the
     /// compiled path answers. Such a predicate raises no error on any row: a comparison of a
-    /// present int or float with a present number is always decided, and an absent row compares
-    /// null, which a filter drops. `And` keeps the rows both sides keep and `Or` the rows either
-    /// side keeps, which is Kleene logic read at `true`.
+    /// present int, float or carried decimal (Phase 280) with a present number it can read is
+    /// always decided, and an absent row compares null, which a filter drops. `And` keeps the rows
+    /// both sides keep and `Or` the rows either side keeps, which is Kleene logic read at `true`.
     let rec internal filterBits (k: KernelSet) (f: Frame) (e: ResolvedExpr) : uint32[] option =
         let leaf (op: CmpOp) (i: int) (c: Cell) : uint32[] option =
             match f.Vecs[i], c with
             | Ints(vals, mask), Int x -> Some(k.CmpInts op vals mask x f.Count)
             | Floats(vals, mask), Float x -> Some(k.CmpFloats op vals mask x f.Count)
             | Floats(vals, mask), Int x -> Some(k.CmpFloats op vals mask (float x) f.Count)
+            // A decimal vector (Phase 280) against a constant read at the column's scale: both sides
+            // exact integers in the float carrier, so the float comparison is the decimal one. A
+            // constant that does not read at that scale (more fraction digits, past the width) is
+            // the compiled path's, as a decimal against a float always is (it is refused there).
+            | Decs(vals, scale, _, mask), Decimal x ->
+                match ScaledDecimal.tryScaled scale x with
+                | ValueSome kx -> Some(k.CmpFloats op vals mask kx f.Count)
+                | ValueNone -> None
+            | Decs(vals, scale, _, mask), Int x ->
+                let kx = float x * ScaledDecimal.pow10[scale]
+
+                if abs kx <= ScaledDecimal.maxExact then
+                    Some(k.CmpFloats op vals mask kx f.Count)
+                else
+                    None
             | _ -> None
 
         match e with
@@ -4492,13 +4512,18 @@ module DataFrame =
             // The typed carriers, where the vector's carrier agrees with the column's type — every
             // present cell is then admitted as it is, and read without boxing. Anything else (the
             // boxed vector, or a carrier of another type) is read cell by cell and admitted.
-            let ints, floats, mask, kind =
+            //
+            // Kind 4 is a decimal vector (Phase 280): `floats` is then its unscaled integers at
+            // `scale`, read by the decimal `Sum` alone; every other aggregate over it reads cells.
+            let ints, floats, mask, kind, scale =
                 match v with
-                | Ints(a, m) when ty = IntType -> a, [||], m, 1
-                | Floats(a, m) when ty = FloatType -> [||], a, m, 2
-                | Bools(_, m) when ty = BoolType -> [||], [||], m, 3
-                | Strs(t, _, m) when t = ty && (t = StringType || t = DateType || t = TimestampType) -> [||], [||], m, 3
-                | _ -> [||], [||], [||], 0
+                | Ints(a, m) when ty = IntType -> a, [||], m, 1, 0
+                | Floats(a, m) when ty = FloatType -> [||], a, m, 2, 0
+                | Bools(_, m) when ty = BoolType -> [||], [||], m, 3, 0
+                | Strs(t, _, m) when t = ty && (t = StringType || t = DateType || t = TimestampType) ->
+                    [||], [||], m, 3, 0
+                | Decs(a, s, _, m) when ty = DecimalType -> [||], a, m, 4, s
+                | _ -> [||], [||], [||], 0, 0
 
             let keepsLastTie = perturbation <> MaxKeepsFirstTie
             let nanLast = perturbation <> NaNFirst
@@ -4517,7 +4542,7 @@ module DataFrame =
             let longs: int64[] = if mode = MSumInt then Array.zeroCreate groups else [||]
 
             let totals: float[] =
-                if mode = MSumFloat || mode = MMean then
+                if mode = MSumFloat || mode = MMean || (mode = MSumDecimal && kind = 4) then
                     Array.zeroCreate groups
                 else
                     [||]
@@ -4528,8 +4553,14 @@ module DataFrame =
                 else
                     [||]
 
+            // `null` marks a slot no decimal has reached, so it is filled with null explicitly:
+            // Fable's `Array.zeroCreate` fills a string array with "" (a JS string's default), and
+            // under node every decimal total then read as the empty text (Phase 280).
             let decimals: string[] =
-                if mode = MSumDecimal then Array.zeroCreate groups else [||]
+                if mode = MSumDecimal then
+                    Array.create groups null
+                else
+                    [||]
 
             /// The admitted cell at physical row `p` (only ever asked of a row already admitted).
             let cellOf (p: int) : Cell =
@@ -4542,6 +4573,28 @@ module DataFrame =
                 if mode = MMin then c > 0
                 elif keepsLastTie then c <= 0
                 else c < 0
+
+            /// One present value of a decimal vector into slot `g`'s decimal `Sum` (Phase 280). The
+            /// slot's total stays an exact integer in the float carrier while its magnitude is at most
+            /// `maxExact` — an exact sum of two such integers within that bound is computed exactly,
+            /// and one past it computes past it, so the test cannot pass in error. The first addition
+            /// that leaves the bound moves the slot to the text path for good: its total so far and
+            /// every later value are added as `DecimalText`, which has no width.
+            let addScaled (g: int) (x: float) =
+                count[g] <- count[g] + 1
+
+                if isNull decimals[g] then
+                    let t = totals[g] + x
+
+                    if abs t <= ScaledDecimal.maxExact then
+                        totals[g] <- t
+                    else
+                        let before = ScaledDecimal.render scale totals[g]
+                        let value = ScaledDecimal.render scale x
+                        decimals[g] <- DecimalText.add before value |> Option.defaultValue before
+                else
+                    let value = ScaledDecimal.render scale x
+                    decimals[g] <- DecimalText.add decimals[g] value |> Option.defaultValue decimals[g]
 
             /// One admitted present number into a float fold.
             let addFloat (g: int) (f: float) =
@@ -4631,8 +4684,11 @@ module DataFrame =
                             if mask[p] then
                                 longs[g] <- longs[g] + int64 ints[p]
                                 count[g] <- count[g] + 1
+                        | MSumDecimal when kind = 4 ->
+                            if mask[p] then
+                                addScaled g floats[p]
                         | MSumFloat
-                        | MMean ->
+                        | MMean when kind <> 4 ->
                             if mask[p] then
                                 addFloat g (if kind = 1 then float ints[p] else floats[p])
                         | MMin
@@ -4686,6 +4742,12 @@ module DataFrame =
 
                             if not (isFinite f) then
                                 nonFinite[g] <- true
+                elif mode = MSumDecimal && kind = 4 then
+                    for i in 0 .. n - 1 do
+                        let p = phys[i]
+
+                        if mask[p] then
+                            addScaled slotOf[i] floats[p]
                 else
                     for i in 0 .. n - 1 do
                         this.Feed(slotOf[i], phys[i])
@@ -4730,6 +4792,13 @@ module DataFrame =
                                 ValueSome(Float m)
                             else
                                 ValueNone
+                    | MSumDecimal when kind = 4 ->
+                        if count[g] = 0 then
+                            ValueSome Null
+                        elif isNull decimals[g] then
+                            ValueSome(Decimal(ScaledDecimal.render scale totals[g]))
+                        else
+                            ValueSome(Decimal decimals[g])
                     | MSumDecimal -> ValueSome(if isNull decimals[g] then Null else Decimal decimals[g])
                     | _ -> ValueNone
 
@@ -5043,6 +5112,8 @@ module DataFrame =
         | Floats(a, m) -> withNulls m (fun p q -> compareNum a[p] a[q])
         | Bools(a, m) -> withNulls m (fun p q -> compare a[p] a[q])
         | Strs(_, a, m) -> withNulls m (fun p q -> System.String.CompareOrdinal(a[p], a[q]))
+        // Every value of one decimal vector is an exact integer at the column's one scale (Phase 280).
+        | Decs(a, _, _, m) -> withNulls m (fun p q -> compare a[p] a[q])
         | Cells cells ->
             fun p q ->
                 let a = cells[p]

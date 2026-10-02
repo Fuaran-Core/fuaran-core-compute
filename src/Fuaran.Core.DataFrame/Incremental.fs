@@ -2836,6 +2836,7 @@ module Incremental =
             | Floats(_, m) -> if Array.exists id m then Some FloatType else None
             | Bools(_, m) -> if Array.exists id m then Some BoolType else None
             | Strs(ty, _, m) -> if Array.exists id m then Some ty else None
+            | Decs(_, _, _, m) -> if Array.exists id m then Some DecimalType else None
             | Cells a -> a |> Array.tryPick Cell.typeOf)
 
     /// Does the vector hold no present cell at all?
@@ -2844,7 +2845,8 @@ module Incremental =
         | Ints(_, m)
         | Floats(_, m)
         | Bools(_, m)
-        | Strs(_, _, m) -> not (Array.exists id m)
+        | Strs(_, _, m)
+        | Decs(_, _, _, m) -> not (Array.exists id m)
         | Cells a -> a |> Array.forall (fun c -> c = Null)
 
     /// Evaluate the `Derive` steps over a prepared source chunk by chunk, reusing the prior
