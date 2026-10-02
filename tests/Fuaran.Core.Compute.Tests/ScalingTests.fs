@@ -126,9 +126,30 @@ let private ratioBound = 5.0 * sizeRatio
 /// at 1,000 rows, driver run) and 1.55 / 1.56 (`lines` at 20,000, `window CumulSum` at 1,000, Phase
 /// 284's first gate), red on all three attempts in the second case; quiet Release runs read at or
 /// under 1.3. The seam's target is still 1.5. What absorbs machine load belongs to the clock leg, not
-/// to this number: that is the successor phase filed with this ruling. Any further move of this
-/// bound is the operator's act.
+/// to this number (Phase 285's calibration).
+///
+/// Operator ruling 2026-10-02: the condition is `tick <= tickBound * full + tickFloorMs ()`. The
+/// ratio bounds the tick's PER-ROW cost; `tickFloorMs` (below) bounds its PER-CALL cost, which no
+/// optimisation can drive to zero. A ratio alone tends to an allowance of nothing as the full
+/// evaluation gets faster, while a one-row tick always pays a call's worth of fixed work (the diff's
+/// setup, the refresh's step walk), so every speed-up of the evaluator tightened the bound on the
+/// seam until a fixed cost failed it. The ruling came when Phase 327 halved the full evaluation's
+/// boundary cost and the tick, which never crosses that boundary, did not move. The floor is under
+/// three percent of the allowance at 100,000 rows, so the ratio still decides there. Any further
+/// move of either number is the operator's act.
 let private tickBound = 1.6
+
+/// Phase 327 — the per-call floor of the tick condition, in units of the clock leg's calibration
+/// baseline (`Calibration.baselineMs`), so it scales with the machine as the saturation factor does.
+/// Measured, not chosen: the one-row tick of every corpus node and every `Scaling` tick pipeline at
+/// 10 rows, where the per-row work is ten rows' worth and what remains is the call, Release, three
+/// runs on an i7-8650U (baseline 5.2 to 5.7 ms). The worst reading was 0.0157 units (the group tail,
+/// 0.085 ms); the next 0.0140 (`filter > groupBy`, 0.072 ms); every corpus node read at most 0.0110.
+/// At 100 rows the join, the pivot and `window CumulSum` already grow with the row count (0.025 to
+/// 0.043 units, four to six times their 10-row tick), which is per-row cost the ratio bounds, so they
+/// are not the floor. Twice the worst per-call reading, rounded: 0.03. The figures are in
+/// docs/incremental-evaluation.md ("The tick bound gains a per-call floor").
+let private tickFloorFactor = 0.03
 
 /// Phase 272 — how much `Delta.diff` may cost beyond minting both tables' keys through the witness,
 /// which is the floor of any diff by identity (`KeyString` is the only thing that can say what a key
@@ -801,6 +822,11 @@ let clockOutcomes () : ClockOutcome list = List.ofSeq clockOutcomeLog
 /// The calibration baseline as it stands (the leg's entry point forces and prints it at leg start).
 let clockBaselineMs () : float = Calibration.baselineMs ()
 
+/// The tick condition's per-call floor, in ms on this machine: `tickFloorFactor` calibration
+/// baselines (operator ruling 2026-10-02; see `tickBound`).
+let private tickFloorMs () : float =
+    tickFloorFactor * Calibration.baselineMs ()
+
 /// Raised by a clock case that stayed saturated past its budget: NOT an assertion failure, so it is
 /// never read as a timing red, and the entry point turns it into the leg's distinct exit code.
 exception MachineSaturated of string
@@ -1361,7 +1387,8 @@ let clockTests =
 
           // ================= Phase 274 — the table-fed tick, held (272.t3) =================
 
-          clockCase "the table-fed tick costs at most 1.6 times the full evaluation it replaces"
+          clockCase
+              "the table-fed tick costs at most 1.6 times the full evaluation it replaces plus a fixed per-call floor"
           <| fun _ ->
               // What a table-fed caller pays per tick — `Delta.diff` plus the refresh — against the
               // full evaluation of the new source, for a ONE-ROW edit, on the three one-comparison
@@ -1399,32 +1426,36 @@ let clockTests =
 
                       let tickMs = bestMs 5 (fun () -> tick () |> ignore)
                       let fullMs = bestMs 5 (fun () -> DataFrame.evalPipeline p after |> ok |> ignore)
+                      let floorMs = tickFloorMs ()
 
                       printfn
-                          "  [scaling] %-28s diff+refresh %7.2f ms vs full %7.2f ms (x%.2f, bound x%.1f) @ %d"
+                          "  [scaling] %-28s diff+refresh %7.2f ms vs full %7.2f ms (x%.2f, bound x%.1f + floor %.3f ms) @ %d"
                           label
                           tickMs
                           fullMs
                           (tickMs / fullMs)
                           tickBound
+                          floorMs
                           n
 
                       // Phase 285: a calibration reading between cells, so a load that arrives in the
                       // middle of this case's window is seen rather than only its two ends.
                       Calibration.checkpoint ()
 
-                      Expect.isLessThan
+                      Expect.isLessThanOrEqual
                           tickMs
-                          (tickBound * fullMs)
+                          (tickBound * fullMs + floorMs)
                           (sprintf
-                              "%s @ %d: a one-row tick (diff + refresh) must cost at most %.1f times the full evaluation it replaces"
+                              "%s @ %d: a one-row tick (diff + refresh) must cost at most %.1f times the full evaluation it replaces plus the %.3f ms per-call floor"
                               label
                               n
-                              tickBound)
+                              tickBound
+                              floorMs)
 
           // ================= Phase 283 — the tick on every corpus node =================
 
-          clockCase "the table-fed tick on every corpus node costs at most 1.6 times the full evaluation"
+          clockCase
+              "the table-fed tick on every corpus node costs at most 1.6 times the full evaluation plus a fixed per-call floor"
           <| fun _ ->
               // The case above holds the three `Scaling` pipelines; this one holds EVERY Phase 262
               // corpus node (the shapes the doc's tables measure) at 1,000, 20,000 and 100,000 rows,
@@ -1469,26 +1500,28 @@ let clockTests =
 
                       let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
                       let bound = tickBound
+                      let floorMs = tickFloorMs ()
                       let ratio = tickMs / fullMs
 
                       printfn
-                          "  [corpus tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f, bound x%.1f)"
+                          "  [corpus tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f, bound x%.1f + floor %.3f ms)"
                           nd.Name
                           n
                           tickMs
                           fullMs
                           ratio
                           bound
+                          floorMs
 
                       // Phase 285: a calibration reading between cells (see the case above).
                       Calibration.checkpoint ()
 
-                      if ratio >= bound then
-                          failures.Add(sprintf "%s @ %d: x%.2f against x%.1f" nd.Name n ratio bound)
+                      if tickMs > bound * fullMs + floorMs then
+                          failures.Add(sprintf "%s @ %d: x%.2f against x%.1f + %.3f ms" nd.Name n ratio bound floorMs)
 
               Expect.isEmpty
                   failures
-                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces" ]
+                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces plus the per-call floor" ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
 let private countingId (minted: int ref) : RowIdentity<Cell> =
