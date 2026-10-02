@@ -6480,11 +6480,13 @@ module DataFrame =
     /// aggregate-column typing.
     let aggregateType (fn: AggFn) (srcType: ColumnType) : ColumnType = aggType fn srcType
 
-    /// The column type a `Derive`d column takes from its computed cells: the present cells' types
-    /// joined under `ColumnType.widens` in row order (Phase 321; it was the first present cell's
-    /// type), `StringType` when every cell is null. Exposed because the type is a function of the
-    /// WHOLE column, not of one row — the one place a row-local step is not row-local, and an
-    /// incremental evaluator that overlooked it would type a column differently from the reference.
+    /// The column type a `Derive`d column takes from its computed cells WHERE ONLY THE CELLS DECIDE
+    /// IT: the present cells' types joined under `ColumnType.widens` in row order (Phase 321; it was
+    /// the first present cell's type), `StringType` when every cell is null. Since Phase 338 a
+    /// derive the typer decides takes the typer's type on every frame instead (`SchemaWalk` states
+    /// it), and only a derive reading a `Param`, a `Now`, an unknown column or a join the exact
+    /// typer keeps apart is typed by this fold (which, there, also refuses a float beside a
+    /// decimal). Exposed because such a type is a function of the WHOLE column, not of one row.
     let inferCellType (cells: Cell list) : ColumnType = inferType cells
 
     /// The reference `Sort`'s row comparator: the pinned ordering (multi-key, nulls last regardless

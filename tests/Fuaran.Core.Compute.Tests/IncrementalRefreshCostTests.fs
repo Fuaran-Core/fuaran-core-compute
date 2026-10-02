@@ -809,8 +809,8 @@ let chunkedRefreshTests =
           testCase "a derived column's type is the reference's over the whole rope, not a chunk's"
           <| fun _ ->
               // `m` is absent through the first chunk, so `c = a + m` has no present cell there:
-              // evaluated alone, that chunk would type `c` as a string column. The reference types
-              // the column from its first present cell, and so must the rope.
+              // typed by its cells, that chunk would be a string column. The reference types the
+              // column by its expression (Phase 338: an int, on every frame), and so must the rope.
               let n = 3_000
 
               let t =

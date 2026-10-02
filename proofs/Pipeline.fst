@@ -21,8 +21,10 @@
      - the private `evalExpr env cols row e`, every one of its fifteen arms and its four inner
        loops (`Coalesce`'s `go`, `Case`'s `go`, `InList`'s `go sawNull`, `ApplyFn`'s `evalArgs`),
        in the order production evaluates and with every short circuit production takes;
-     - `evalFilter` and `evalDerive` (with `inferType`, `colIndex` and the replace-or-append of a
-       derived column) — the two verbs that reach `evalExpr`, and the only two;
+     - `evalFilter` and `evalDerive` (with the derived column's typing — `derivedTyping` over the
+       static typer, `typeFromCells`' widening join and its float-beside-decimal refusal, Phase
+       338 — `colIndex` and the replace-or-append of a derived column) — the two verbs that reach
+       `evalExpr`, and the only two;
      - `evalStep`'s dispatch: `Filter` and `Derive` to the two above, every other verb to its
        primitive;
      - `evalPipelineWithInEnvCounted`: its local `costOf` — a `Filter` or a `Derive` is charged
@@ -713,6 +715,251 @@ let infer_type (cells:list cell) : Tot column_type =
   | Some ty -> ty
   | None -> StringType
 
+(* ======================================================================================
+   The static typer (Phase 266), moved here and EXTRACTED by Phase 338: `evalDerive` reads it to
+   type the column it derives, so the oracle carries it. Section 12's verdict reads the same
+   definitions.
+   ====================================================================================== *)
+
+(* F#: `Typing` — what the typer knows of an expression's present values. *)
+type typing =
+  | Absent  : typing
+  | Of      : column_type -> typing
+  | Unknown : typing
+
+let join (a b:typing) : Tot typing =
+  match a, b with
+  | Absent, t -> t
+  | t, Absent -> t
+  | Of x, Of y -> if x = y then Of x else Unknown
+  | _ -> Unknown
+
+(* F#: `List.fold join Absent ts` — the left fold, as written. *)
+let rec fold_join (acc:typing) (ts:list typing) : Tot typing (decreases ts) =
+  match ts with
+  | [] -> acc
+  | t :: rest -> fold_join (join acc t) rest
+
+let join_all (ts:list typing) : Tot typing = fold_join Absent ts
+
+let of_cell (c:cell) : Tot typing =
+  match type_of c with
+  | Some ty -> Of ty
+  | None -> Absent
+
+let numeric_t (t:typing) : Tot bool =
+  match t with
+  | Of IntType | Of FloatType -> true
+  | _ -> false
+
+(* Phase 277 — the exact family: a decimal, or an int, which promotes to one losslessly. *)
+let exact_t (t:typing) : Tot bool =
+  match t with
+  | Of IntType | Of DecimalType -> true
+  | _ -> false
+
+(* Two exact operands at least one of which is a decimal: F# `decimalPair`, the typer's and the
+   verdict's. *)
+let decimal_pair (a b:typing) : Tot bool =
+  exact_t a && exact_t b && (a = Of DecimalType || b = Of DecimalType)
+
+let bool_like (t:typing) : Tot bool =
+  match t with
+  | Absent | Of BoolType -> true
+  | _ -> false
+
+let is_str (t:typing) : Tot bool =
+  match t with
+  | Absent | Of StringType -> true
+  | _ -> false
+
+let same_scalar (a b:typing) : Tot bool =
+  match a, b with
+  | Of x, Of y -> x = y
+  | _ -> false
+
+(* F#: `Typing.binary`. *)
+let typing_binary (op:bin_op) (a b:typing) : Tot typing =
+  let null_prop (decide:unit -> typing) : typing =
+    match a, b with
+    | Absent, _ | _, Absent -> Absent
+    | _ -> decide () in
+  match op with
+  | Add | Sub | Mul ->
+    null_prop (fun () ->
+      if a = Of IntType && b = Of IntType then Of IntType
+      else if numeric_t a && numeric_t b then Of FloatType
+      else if decimal_pair a b then Of DecimalType
+      else Unknown)
+  | Div -> null_prop (fun () -> if numeric_t a && numeric_t b then Of FloatType else Unknown)
+  | Mod ->
+    null_prop (fun () ->
+      if a = Of IntType && b = Of IntType then Of IntType
+      else if decimal_pair a b then Of DecimalType
+      else Unknown)
+  | Eq | Ne | Lt | Le | Gt | Ge ->
+    null_prop (fun () ->
+      if (numeric_t a && numeric_t b) || (exact_t a && exact_t b) || same_scalar a b then Of BoolType
+      else Unknown)
+  | And | Or -> if bool_like a && bool_like b then join a b else Unknown
+  | Contains | StartsWith | EndsWith ->
+    null_prop (fun () -> if a = Of StringType && b = Of StringType then Of BoolType else Unknown)
+
+(* F#: `Typing.not'`. *)
+let typing_not (a:typing) : Tot typing =
+  match a with
+  | Absent -> Absent
+  | Of BoolType -> Of BoolType
+  | _ -> Unknown
+
+(* F#: `Typing.cast`. *)
+let typing_cast (ty:column_type) (a:typing) : Tot typing =
+  match a with
+  | Absent -> Absent
+  | _ -> Of ty
+
+(* F#: `Typing.inList`. *)
+let typing_in_list (subject:typing) : Tot typing =
+  match subject with
+  | Absent -> Absent
+  | _ -> Of BoolType
+
+let rec any_absent (ts:list typing) : Tot bool =
+  match ts with
+  | [] -> false
+  | Absent :: _ -> true
+  | _ :: rest -> any_absent rest
+
+(* F#: `Typing.applyFn`, function by function. *)
+let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
+  let unary (decide:typing -> typing) : typing =
+    match ts with
+    | [Absent] -> Absent
+    | [t] -> decide t
+    | _ -> Absent in
+  match fn with
+  | Abs ->
+    unary (fun t ->
+      match t with
+      | Of IntType -> Of IntType
+      | Of FloatType -> Of FloatType
+      | Of DecimalType -> Of DecimalType
+      | _ -> Unknown)
+  | Round | Floor | Ceil -> unary (fun t -> match t with Of DecimalType -> Of DecimalType | _ -> Of FloatType)
+  | Sqrt -> unary (fun _ -> Of FloatType)
+  | Length -> unary (fun _ -> Of IntType)
+  | Lower | Upper | Trim -> unary (fun _ -> Of StringType)
+  | Substr ->
+    (match ts with
+     | [Absent; _; _] -> Absent
+     | [_; _; _] -> Of StringType
+     | _ -> Absent)
+  | DatePart ->
+    (match ts with
+     | [_; Absent] -> Absent
+     | [_; _] -> Of IntType
+     | _ -> Absent)
+  | Concat -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else Of StringType)
+  | Replace -> (match ts with [_; _; _] -> if any_absent ts then Absent else Of StringType | _ -> Absent)
+  | DateDiffDays -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
+  | Least | Greatest -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else join_all ts)
+  | IndexOf -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
+
+(* F#: `Typing.rounded` (Phase 277). *)
+let typing_rounded (a:typing) : Tot typing =
+  match a with
+  | Absent -> Absent
+  | Of IntType | Of DecimalType -> Of DecimalType
+  | _ -> Unknown
+
+(* F#: `Typing.quotient` (Phase 277). *)
+let typing_quotient (a b:typing) : Tot typing =
+  match a, b with
+  | Absent, _ | _, Absent -> Absent
+  | _ -> if exact_t a && exact_t b then Of DecimalType else Unknown
+
+(* F#: `typing cols e` — the static typing over a schema, arm for arm. `colType` is the first
+   column of that name, as `assoc` is. *)
+let rec typing_of (cols:schema) (x:col_expr) : Tot typing (decreases x) =
+  match x with
+  | Col n -> (match assoc n cols with Some ty -> Of ty | None -> Unknown)
+  | Lit c -> of_cell c
+  | Param _ | Now _ -> Unknown
+  | Binary op a b -> typing_binary op (typing_of cols a) (typing_of cols b)
+  | Not a -> typing_not (typing_of cols a)
+  | Coalesce xs -> join_all (typings_of cols xs)
+  | Case cases els -> join_all (typing_of cols els :: typings_thens cols cases)
+  | Cast ty a -> typing_cast ty (typing_of cols a)
+  | ApplyFn fn args -> typing_apply_fn fn (typings_of cols args)
+  | InList a _ -> typing_in_list (typing_of cols a)
+  | IsNull _ -> Of BoolType
+  | InParam a _ -> typing_in_list (typing_of cols a)
+  | Quotient a b _ -> typing_quotient (typing_of cols a) (typing_of cols b)
+  | Rounded a _ -> typing_rounded (typing_of cols a)
+and typings_of (cols:schema) (xs:list col_expr) : Tot (list typing) (decreases xs) =
+  match xs with
+  | [] -> []
+  | x :: rest -> typing_of cols x :: typings_of cols rest
+and typings_thens (cols:schema) (cases:list (col_expr & col_expr)) : Tot (list typing) (decreases cases) =
+  match cases with
+  | [] -> []
+  | (_, t) :: rest -> typing_of cols t :: typings_thens cols rest
+
+
+(* F#: `armsHave ty cols e` (Phase 338) — does an arm the derived column's value is drawn from,
+   through `Case` and `Coalesce`, carry the decided type `ty`? *)
+let rec arms_have (ty:column_type) (cols:schema) (x:col_expr) : Tot bool (decreases x) =
+  match x with
+  | Coalesce xs -> arms_have_list ty cols xs
+  | Case cases els -> arms_have ty cols els || arms_have_thens ty cols cases
+  | _ -> typing_of cols x = Of ty
+and arms_have_list (ty:column_type) (cols:schema) (xs:list col_expr) : Tot bool (decreases xs) =
+  match xs with
+  | [] -> false
+  | x :: rest -> arms_have ty cols x || arms_have_list ty cols rest
+and arms_have_thens (ty:column_type) (cols:schema) (cases:list (col_expr & col_expr))
+  : Tot bool (decreases cases) =
+  match cases with
+  | [] -> false
+  | (_, t) :: rest -> arms_have ty cols t || arms_have_thens ty cols rest
+
+(* F#: `DerivedTyping` (Phase 338) — how a derived column is typed. *)
+type derived_typing =
+  | Decided : column_type -> derived_typing
+  | ByCells : derived_typing
+  | Refused : derived_typing
+
+(* F#: `derivedTyping cols e` — a float arm beside a decimal arm is refused; the typer's decided
+   type is the column's on every frame; `Absent` is `StringType`; `Unknown` is the cells'. *)
+let derived_typing_of (cols:schema) (x:col_expr) : Tot derived_typing =
+  if arms_have FloatType cols x && arms_have DecimalType cols x then Refused
+  else
+    match typing_of cols x with
+    | Of ty -> Decided ty
+    | Absent -> Decided StringType
+    | Unknown -> ByCells
+
+(* F#: `floatBesideDecimal column` — the refusal, its text byte for byte. *)
+let float_beside_decimal (column:string) : Tot eval_error =
+  TypeError ("derived column '" ^ column ^ "' joins a float and a decimal: cast one to the other's type first - Cast(decimal, ...) to keep the digits exact, Cast(float, ...) to compute approximately")
+
+(* Does a present cell of type `ty` occur? *)
+let rec has_type (ty:column_type) (cells:list cell) : Tot bool =
+  match cells with
+  | [] -> false
+  | c :: rest -> type_of c = Some ty || has_type ty rest
+
+(* F#: `columnTypeBy dt column count cellAt` — the decided type, or the cells' widening join
+   refusing a float beside a decimal (`typeFromCells`). *)
+let column_type_by (dt:derived_typing) (column:string) (cells:list cell)
+  : Tot (outcome column_type eval_error) =
+  match dt with
+  | Decided ty -> Ok ty
+  | ByCells ->
+    if has_type FloatType cells && has_type DecimalType cells then Error (float_beside_decimal column)
+    else Ok (infer_type cells)
+  | Refused -> Error (float_beside_decimal column)
+
 (* F#: `f.Cols |> List.mapi (fun j (n, t) -> if j = i then n, ty else n, t)`. *)
 let rec retype_at (i:nat) (ty:column_type) (cols:schema) : Tot schema (decreases cols) =
   match cols with
@@ -754,14 +1001,21 @@ let rec width_append (n:nat) (rows:list (list cell)) (cells:list cell{len cells 
   | [], [] -> ()
   | r :: rt, v :: vt -> len_app r [v]; width_append n rt vt
 
-(* F#: `evalDerive env f name expr` — the expression once per row, the column's type inferred
-   from the cells, then replace the named column in place or append it. *)
+(* F#: `evalDerive env f name expr` — the static refusal before any row (Phase 338), then the
+   expression once per row, the column's type by `derivedTyping` (the decided type, or the cells'),
+   then replace the named column in place or append it. *)
 let eval_derive (pr:prims) (env:param_env) (f:wframe) (name:string) (x:col_expr)
   : Tot (outcome wframe eval_error) =
+  let dt = derived_typing_of f.cols x in
+  match dt with
+  | Refused -> Error (float_beside_decimal name)
+  | _ ->
   match derive_cells pr env f.cols f.rows x with
   | Error err -> Error err
   | Ok cells ->
-    let ty = infer_type cells in
+  match column_type_by dt name cells with
+  | Error err -> Error err
+  | Ok ty ->
     (match index_of name f.cols with
      | Some i ->
        len_retype_at i ty f.cols;
@@ -1284,9 +1538,10 @@ let uncounted_ok_iff (pr:prims) (other:other_fn) (env:param_env) (p:list transfo
    `derive_then_filter` says when that changes nothing: the derive answers `Ok` on every row of
    the frame (the totality the verdict of section 12 decides), the filter reads no column the
    derive writes and every column it reads exists before the derive (so its answer on a row is
-   the same with or without the derived cell, and so is its refusal), and the derived cells are
-   strings or nulls (so the column's inferred type — read off the cells, `infer_type` — is the
-   same over the kept rows as over all of them). Under those three the two orders fold to the
+   the same with or without the derived cell, and so is its refusal), and the derived column's
+   type is DECIDED by the schema (Phase 338: `derived_typing_of` is `Decided`, so the type is the
+   same over the kept rows as over all of them, because it reads no row; Phase 269 had the
+   narrower premise that every derived cell is a string or a null). Under those three the two orders fold to the
    same frame and the same first error, and `reorder_in_context` carries the equality to any
    pipeline the pair sits in, through `go_app`.
 
@@ -1584,27 +1839,6 @@ let agrees_ext (k:ext_kind) (cols:schema) (row:list cell{len row = len cols}) (n
   | ExtReplace i -> agrees_replace cols row i name ty v ns
   | ExtAppend -> agrees_append cols row name ty v ns
 
-(* Every derived cell a string or a null: the one shape whose inferred column type is the same
-   over any subset of the rows (`derivedColumnType` decides it statically, and nothing else). *)
-noextract
-let rec all_str_or_null (cells:list cell) : Tot bool =
-  match cells with
-  | [] -> true
-  | Str _ :: t | Null :: t -> all_str_or_null t
-  | _ -> false
-
-let rec infer_str_or_null_from (acc:option column_type) (cells:list cell)
-  : Lemma (requires all_str_or_null cells /\ (acc == None \/ acc == Some StringType))
-          (ensures (infer_from acc cells == None \/ infer_from acc cells == Some StringType))
-          (decreases cells) =
-  match cells with
-  | [] -> ()
-  | v :: t -> infer_str_or_null_from (step_type acc v) t
-
-let infer_str_or_null (cells:list cell)
-  : Lemma (requires all_str_or_null cells) (ensures infer_type cells == StringType) =
-  infer_str_or_null_from None cells
-
 (* THE ROW LEMMA. Filtering the derived rows answers what filtering the rows answers — the same
    first error, or the kept rows, each extended by the cell the derive gives it; and the derive
    over the kept rows alone answers `Ok`, with cells drawn from the cells over all of them. *)
@@ -1618,7 +1852,7 @@ let rec filter_ext (pr:prims) (env:param_env) (cols:schema) (k:ext_kind) (name:s
                     | Error e, Error e' -> e == e'
                     | Ok rs', Ok rs ->
                       (match derive_cells pr env cols rs x with
-                       | Ok vs' -> rs' == zip_ext k rs vs' /\ (all_str_or_null vs ==> all_str_or_null vs')
+                       | Ok vs' -> rs' == zip_ext k rs vs'
                        | Error _ -> False)
                     | _ -> False))
           (decreases rows) =
@@ -1638,24 +1872,23 @@ let rec filter_ext (pr:prims) (env:param_env) (cols:schema) (k:ext_kind) (name:s
 #push-options "--fuel 4 --ifuel 2 --z3rlimit 120"
 (* The theorem, one extension shape at a time: the derived column replaced in place ... *)
 let derive_then_filter_replace (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr) (i:nat)
-  : Lemma (requires (match derive_cells pr env f.cols f.rows x with
-                     | Ok vs -> all_str_or_null vs
-                     | Error _ -> False)
+  : Lemma (requires Ok? (derive_cells pr env f.cols f.rows x)
+                    /\ Decided? (derived_typing_of f.cols x)
                     /\ closed_not f.cols name (reads p)
                     /\ index_of name f.cols == Some i)
           (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
                    eval_uncounted pr other env [Filter p; Derive name x] f) =
+  let ty = Decided?._0 (derived_typing_of f.cols x) in
   match derive_cells pr env f.cols f.rows x with
   | Ok vs ->
-    infer_str_or_null vs;
-    len_retype_at i StringType f.cols;
+    len_retype_at i ty f.cols;
     width_replace (len f.cols) i f.rows vs;
     zip_replace_is_ext i f.rows vs;
-    let f1 : wframe = { cols = retype_at i StringType f.cols; rows = zip_replace i f.rows vs } in
+    let f1 : wframe = { cols = retype_at i ty f.cols; rows = zip_replace i f.rows vs } in
     assert (eval_derive pr env f name x == Ok f1);
-    assert (ext_cols (ExtReplace i) name StringType f.cols == f1.cols);
+    assert (ext_cols (ExtReplace i) name ty f.cols == f1.cols);
     assert (zip_ext (ExtReplace i) f.rows vs == f1.rows);
-    filter_ext pr env f.cols (ExtReplace i) name StringType p x f.rows vs;
+    filter_ext pr env f.cols (ExtReplace i) name ty p x f.rows vs;
     (match filter_rows pr env f.cols f.rows p with
      | Error e -> assert (filter_rows pr env f1.cols f1.rows p == Error e)
      | Ok rs ->
@@ -1663,11 +1896,10 @@ let derive_then_filter_replace (pr:prims) (other:other_fn) (env:param_env) (f:wf
        assert (eval_step pr other env f (Filter p) == Ok f2);
        (match derive_cells pr env f.cols rs x with
         | Ok vs' ->
-          infer_str_or_null vs';
           zip_replace_is_ext i rs vs';
-          len_retype_at i StringType f.cols;
+          len_retype_at i ty f.cols;
           width_replace (len f.cols) i rs vs';
-          let f3 : wframe = { cols = retype_at i StringType f.cols; rows = zip_replace i rs vs' } in
+          let f3 : wframe = { cols = retype_at i ty f.cols; rows = zip_replace i rs vs' } in
           assert (eval_derive pr env f2 name x == Ok f3);
           assert (filter_rows pr env f1.cols f1.rows p == Ok f3.rows);
           assert (eval_step pr other env f1 (Filter p) == Ok f3)
@@ -1676,24 +1908,23 @@ let derive_then_filter_replace (pr:prims) (other:other_fn) (env:param_env) (f:wf
 
 (* ... and appended. *)
 let derive_then_filter_append (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr)
-  : Lemma (requires (match derive_cells pr env f.cols f.rows x with
-                     | Ok vs -> all_str_or_null vs
-                     | Error _ -> False)
+  : Lemma (requires Ok? (derive_cells pr env f.cols f.rows x)
+                    /\ Decided? (derived_typing_of f.cols x)
                     /\ closed_not f.cols name (reads p)
                     /\ None? (index_of name f.cols))
           (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
                    eval_uncounted pr other env [Filter p; Derive name x] f) =
+  let ty = Decided?._0 (derived_typing_of f.cols x) in
   match derive_cells pr env f.cols f.rows x with
   | Ok vs ->
-    infer_str_or_null vs;
-    len_app f.cols [(name, StringType)];
+    len_app f.cols [(name, ty)];
     width_append (len f.cols) f.rows vs;
     zip_append_is_ext f.rows vs;
-    let f1 : wframe = { cols = app f.cols [(name, StringType)]; rows = zip_append f.rows vs } in
+    let f1 : wframe = { cols = app f.cols [(name, ty)]; rows = zip_append f.rows vs } in
     assert (eval_derive pr env f name x == Ok f1);
-    assert (ext_cols ExtAppend name StringType f.cols == f1.cols);
+    assert (ext_cols ExtAppend name ty f.cols == f1.cols);
     assert (zip_ext ExtAppend f.rows vs == f1.rows);
-    filter_ext pr env f.cols ExtAppend name StringType p x f.rows vs;
+    filter_ext pr env f.cols ExtAppend name ty p x f.rows vs;
     (match filter_rows pr env f.cols f.rows p with
      | Error e -> assert (filter_rows pr env f1.cols f1.rows p == Error e)
      | Ok rs ->
@@ -1701,10 +1932,9 @@ let derive_then_filter_append (pr:prims) (other:other_fn) (env:param_env) (f:wfr
        assert (eval_step pr other env f (Filter p) == Ok f2);
        (match derive_cells pr env f.cols rs x with
         | Ok vs' ->
-          infer_str_or_null vs';
           zip_append_is_ext rs vs';
           width_append (len f.cols) rs vs';
-          let f3 : wframe = { cols = app f.cols [(name, StringType)]; rows = zip_append rs vs' } in
+          let f3 : wframe = { cols = app f.cols [(name, ty)]; rows = zip_append rs vs' } in
           assert (eval_derive pr env f2 name x == Ok f3);
           assert (filter_rows pr env f1.cols f1.rows p == Ok f3.rows);
           assert (eval_step pr other env f1 (Filter p) == Ok f3)
@@ -1712,14 +1942,13 @@ let derive_then_filter_append (pr:prims) (other:other_fn) (env:param_env) (f:wfr
   | Error _ -> ()
 #pop-options
 
-(* THE THEOREM. Over a frame on which the derive answers `Ok` with string-or-null cells, and a
-   filter that reads neither the derived column nor any the frame lacks, the derive then the
-   filter and the filter then the derive fold to the same frame, or the same first error: the
-   derive is removed from every dropped row's path and nothing is lost. *)
+(* THE THEOREM. Over a frame on which the derive answers `Ok`, its column's type decided by the
+   schema, and a filter that reads neither the derived column nor any the frame lacks, the derive
+   then the filter and the filter then the derive fold to the same frame, or the same first error:
+   the derive is removed from every dropped row's path and nothing is lost. *)
 let derive_then_filter (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr)
-  : Lemma (requires (match derive_cells pr env f.cols f.rows x with
-                     | Ok vs -> all_str_or_null vs
-                     | Error _ -> False)
+  : Lemma (requires Ok? (derive_cells pr env f.cols f.rows x)
+                    /\ Decided? (derived_typing_of f.cols x)
                     /\ closed_not f.cols name (reads p))
           (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
                    eval_uncounted pr other env [Filter p; Derive name x] f) =
@@ -1744,9 +1973,8 @@ let reorder_in_context (pr:prims) (other:other_fn) (env:param_env) (pre post:lis
   (name:string) (x p:col_expr)
   : Lemma (requires (match eval_uncounted pr other env pre input with
                      | Ok f ->
-                       (match derive_cells pr env f.cols f.rows x with
-                        | Ok vs -> all_str_or_null vs
-                        | Error _ -> False)
+                       Ok? (derive_cells pr env f.cols f.rows x)
+                       /\ Decided? (derived_typing_of f.cols x)
                        /\ closed_not f.cols name (reads p)
                      | Error _ -> True))
           (ensures eval_uncounted pr other env (app pre (app [Derive name x; Filter p] post)) input ==
@@ -1785,215 +2013,13 @@ let reorder_in_context (pr:prims) (other:other_fn) (env:param_env) (pre post:lis
    is conditional on it, and on nothing else.
 
    The corollary `planner_reorder_sound` ties the two sections: the verdict's `true` on the
-   derive, the typer's `Absent` or `Of StringType` on its expression (the F# `derivedColumnType
-   = Some StringType`), and a filter closed over the schema less the derived name — the three
-   clauses of `Planner.declineReorder`'s admission — are exactly the premises under which the
-   reorder preserves the driver's result.
+   derive (since Phase 338 the expression's verdict AND a decided column type, `Plan.isTotal`'s
+   `Derive` arm), and a filter closed over the schema less the derived name — the clauses of
+   `Planner.declineReorder`'s admission — are exactly the premises under which the reorder
+   preserves the driver's result. `derive_type_rows_free` is Phase 338's acceptance in the model:
+   a decided derive gives its column the same type over any two frames of one schema, an empty
+   or an all-null one included.
    ====================================================================================== *)
-
-(* F#: `Typing` — what the typer knows of an expression's present values. *)
-noextract
-type typing =
-  | Absent  : typing
-  | Of      : column_type -> typing
-  | Unknown : typing
-
-noextract
-let join (a b:typing) : Tot typing =
-  match a, b with
-  | Absent, t -> t
-  | t, Absent -> t
-  | Of x, Of y -> if x = y then Of x else Unknown
-  | _ -> Unknown
-
-(* F#: `List.fold join Absent ts` — the left fold, as written. *)
-noextract
-let rec fold_join (acc:typing) (ts:list typing) : Tot typing (decreases ts) =
-  match ts with
-  | [] -> acc
-  | t :: rest -> fold_join (join acc t) rest
-
-noextract
-let join_all (ts:list typing) : Tot typing = fold_join Absent ts
-
-noextract
-let of_cell (c:cell) : Tot typing =
-  match type_of c with
-  | Some ty -> Of ty
-  | None -> Absent
-
-noextract
-let numeric_t (t:typing) : Tot bool =
-  match t with
-  | Of IntType | Of FloatType -> true
-  | _ -> false
-
-(* Phase 277 — the exact family: a decimal, or an int, which promotes to one losslessly. *)
-noextract
-let exact_t (t:typing) : Tot bool =
-  match t with
-  | Of IntType | Of DecimalType -> true
-  | _ -> false
-
-(* Two exact operands at least one of which is a decimal: F# `decimalPair`, the typer's and the
-   verdict's. *)
-noextract
-let decimal_pair (a b:typing) : Tot bool =
-  exact_t a && exact_t b && (a = Of DecimalType || b = Of DecimalType)
-
-noextract
-let bool_like (t:typing) : Tot bool =
-  match t with
-  | Absent | Of BoolType -> true
-  | _ -> false
-
-noextract
-let is_str (t:typing) : Tot bool =
-  match t with
-  | Absent | Of StringType -> true
-  | _ -> false
-
-noextract
-let same_scalar (a b:typing) : Tot bool =
-  match a, b with
-  | Of x, Of y -> x = y
-  | _ -> false
-
-(* F#: `Typing.binary`. *)
-noextract
-let typing_binary (op:bin_op) (a b:typing) : Tot typing =
-  let null_prop (decide:unit -> typing) : typing =
-    match a, b with
-    | Absent, _ | _, Absent -> Absent
-    | _ -> decide () in
-  match op with
-  | Add | Sub | Mul ->
-    null_prop (fun () ->
-      if a = Of IntType && b = Of IntType then Of IntType
-      else if numeric_t a && numeric_t b then Of FloatType
-      else if decimal_pair a b then Of DecimalType
-      else Unknown)
-  | Div -> null_prop (fun () -> if numeric_t a && numeric_t b then Of FloatType else Unknown)
-  | Mod ->
-    null_prop (fun () ->
-      if a = Of IntType && b = Of IntType then Of IntType
-      else if decimal_pair a b then Of DecimalType
-      else Unknown)
-  | Eq | Ne | Lt | Le | Gt | Ge ->
-    null_prop (fun () ->
-      if (numeric_t a && numeric_t b) || (exact_t a && exact_t b) || same_scalar a b then Of BoolType
-      else Unknown)
-  | And | Or -> if bool_like a && bool_like b then join a b else Unknown
-  | Contains | StartsWith | EndsWith ->
-    null_prop (fun () -> if a = Of StringType && b = Of StringType then Of BoolType else Unknown)
-
-(* F#: `Typing.not'`. *)
-noextract
-let typing_not (a:typing) : Tot typing =
-  match a with
-  | Absent -> Absent
-  | Of BoolType -> Of BoolType
-  | _ -> Unknown
-
-(* F#: `Typing.cast`. *)
-noextract
-let typing_cast (ty:column_type) (a:typing) : Tot typing =
-  match a with
-  | Absent -> Absent
-  | _ -> Of ty
-
-(* F#: `Typing.inList`. *)
-noextract
-let typing_in_list (subject:typing) : Tot typing =
-  match subject with
-  | Absent -> Absent
-  | _ -> Of BoolType
-
-noextract
-let rec any_absent (ts:list typing) : Tot bool =
-  match ts with
-  | [] -> false
-  | Absent :: _ -> true
-  | _ :: rest -> any_absent rest
-
-(* F#: `Typing.applyFn`, function by function. *)
-noextract
-let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
-  let unary (decide:typing -> typing) : typing =
-    match ts with
-    | [Absent] -> Absent
-    | [t] -> decide t
-    | _ -> Absent in
-  match fn with
-  | Abs ->
-    unary (fun t ->
-      match t with
-      | Of IntType -> Of IntType
-      | Of FloatType -> Of FloatType
-      | Of DecimalType -> Of DecimalType
-      | _ -> Unknown)
-  | Round | Floor | Ceil -> unary (fun t -> match t with Of DecimalType -> Of DecimalType | _ -> Of FloatType)
-  | Sqrt -> unary (fun _ -> Of FloatType)
-  | Length -> unary (fun _ -> Of IntType)
-  | Lower | Upper | Trim -> unary (fun _ -> Of StringType)
-  | Substr ->
-    (match ts with
-     | [Absent; _; _] -> Absent
-     | [_; _; _] -> Of StringType
-     | _ -> Absent)
-  | DatePart ->
-    (match ts with
-     | [_; Absent] -> Absent
-     | [_; _] -> Of IntType
-     | _ -> Absent)
-  | Concat -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else Of StringType)
-  | Replace -> (match ts with [_; _; _] -> if any_absent ts then Absent else Of StringType | _ -> Absent)
-  | DateDiffDays -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
-  | Least | Greatest -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else join_all ts)
-  | IndexOf -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
-
-(* F#: `Typing.rounded` (Phase 277). *)
-noextract
-let typing_rounded (a:typing) : Tot typing =
-  match a with
-  | Absent -> Absent
-  | Of IntType | Of DecimalType -> Of DecimalType
-  | _ -> Unknown
-
-(* F#: `Typing.quotient` (Phase 277). *)
-noextract
-let typing_quotient (a b:typing) : Tot typing =
-  match a, b with
-  | Absent, _ | _, Absent -> Absent
-  | _ -> if exact_t a && exact_t b then Of DecimalType else Unknown
-
-(* F#: `typing cols e` — the static typing over a schema, arm for arm. `colType` is the first
-   column of that name, as `assoc` is. *)
-noextract
-let rec typing_of (cols:schema) (x:col_expr) : Tot typing (decreases x) =
-  match x with
-  | Col n -> (match assoc n cols with Some ty -> Of ty | None -> Unknown)
-  | Lit c -> of_cell c
-  | Param _ | Now _ -> Unknown
-  | Binary op a b -> typing_binary op (typing_of cols a) (typing_of cols b)
-  | Not a -> typing_not (typing_of cols a)
-  | Coalesce xs -> join_all (typings_of cols xs)
-  | Case cases els -> join_all (typing_of cols els :: typings_thens cols cases)
-  | Cast ty a -> typing_cast ty (typing_of cols a)
-  | ApplyFn fn args -> typing_apply_fn fn (typings_of cols args)
-  | InList a _ -> typing_in_list (typing_of cols a)
-  | IsNull _ -> Of BoolType
-  | InParam a _ -> typing_in_list (typing_of cols a)
-  | Quotient a b _ -> typing_quotient (typing_of cols a) (typing_of cols b)
-  | Rounded a _ -> typing_rounded (typing_of cols a)
-and typings_of (cols:schema) (xs:list col_expr) : Tot (list typing) (decreases xs) =
-  match xs with
-  | [] -> []
-  | x :: rest -> typing_of cols x :: typings_of cols rest
-and typings_thens (cols:schema) (cases:list (col_expr & col_expr)) : Tot (list typing) (decreases cases) =
-  match cases with
-  | [] -> []
-  | (_, t) :: rest -> typing_of cols t :: typings_thens cols rest
 
 (* A cell fits a typing: `Absent` is the null, `Of ty` the null or a present cell of that type,
    `Unknown` anything. *)
@@ -2452,45 +2478,39 @@ let rec filter_total (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (p:c
      | Error _ -> ())
 
 (* F#: `Plan.isTotal` on the two expression-evaluating verbs: the step answers `Ok` on every
-   typed frame of the schema. *)
+   typed frame of the schema. A derive is total only where its column's type is DECIDED (Phase
+   338): one the cells type may refuse a float beside a decimal, and one refused statically always
+   does. *)
 let step_total (pr:prims) (h:admits pr) (other:other_fn) (env:param_env) (f:wframe) (t:transform)
   : Lemma (requires rows_typed f.cols f.rows
                     /\ (match t with
                         | Filter p -> expr_total f.cols p
-                        | Derive _ x -> expr_total f.cols x
+                        | Derive _ x -> expr_total f.cols x /\ Decided? (derived_typing_of f.cols x)
                         | _ -> False))
           (ensures Ok? (eval_step pr other env f t)) =
   match t with
   | Filter p -> filter_total pr h env f.cols p f.rows
   | Derive _ x -> derive_total pr h env f.cols x f.rows
 
-(* A derive whose expression the typer calls `Absent` or `Of StringType` — the F#
-   `derivedColumnType = Some StringType` — produces strings and nulls, over every typed frame. *)
-let rec derive_str_or_null (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (x:col_expr)
-  (rows:list (list cell){all_width (len cols) rows})
-  : Lemma (requires expr_total cols x /\ rows_typed cols rows
-                    /\ (typing_of cols x == Absent \/ typing_of cols x == Of StringType))
-          (ensures (match derive_cells pr env cols rows x with
-                    | Ok vs -> all_str_or_null vs
-                    | Error _ -> False)) (decreases rows) =
-  match rows with
-  | [] -> ()
-  | r :: rest ->
-    verdict_sound pr h env cols r x;
-    (match eval_expr pr env cols r x with
-     | Ok _ -> derive_str_or_null pr h env cols x rest
-     | Error _ -> ())
+(* Phase 338's acceptance, in the model: a derive whose column type the schema DECIDES gives the
+   column the same type over any two frames of one schema — a full one, an empty one, an all-null
+   one — wherever both answer `Ok`; the type reads no row. *)
+let derive_type_rows_free (pr:prims) (env:param_env) (f g:wframe) (name:string) (x:col_expr)
+  : Lemma (requires f.cols == g.cols /\ Decided? (derived_typing_of f.cols x))
+          (ensures (match eval_derive pr env f name x, eval_derive pr env g name x with
+                    | Ok f', Ok g' -> f'.cols == g'.cols
+                    | _ -> True)) = ()
 
 (* THE COROLLARY. The planner's admission of `Filter p` ahead of `Derive name x` — the derive
-   total by the verdict, its column string-typed by the typer, the filter closed over the schema
-   less the derived name — preserves the driver's result over every typed frame. *)
+   total by the verdict (its expression total and its column type decided), the filter closed over
+   the schema less the derived name — preserves the driver's result over every typed frame. *)
 let planner_reorder_sound (pr:prims) (h:admits pr) (other:other_fn) (env:param_env) (f:wframe)
   (name:string) (x p:col_expr)
   : Lemma (requires expr_total f.cols x
-                    /\ (typing_of f.cols x == Absent \/ typing_of f.cols x == Of StringType)
+                    /\ Decided? (derived_typing_of f.cols x)
                     /\ rows_typed f.cols f.rows
                     /\ closed_not f.cols name (reads p))
           (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
                    eval_uncounted pr other env [Filter p; Derive name x] f) =
-  derive_str_or_null pr h env f.cols x f.rows;
+  derive_total pr h env f.cols x f.rows;
   derive_then_filter pr other env f name x p

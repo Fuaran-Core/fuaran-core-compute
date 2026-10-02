@@ -1,5 +1,57 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-02 — D5: a derived column is typed by its expression; the cells decide only where the typer cannot; a float beside a decimal is refused
+
+**Decided (Phase 338, carrying D3's last paragraph).** One rule types every column the dataframe
+strand derives — a `Derive`'s, and an `Unpivot`'s `value` — and every reader takes it from one
+place (`DataFrame.derivedTyping`, `unpivotTyping`, `columnTypeBy`): the evaluator, the incremental
+seam's walk and its chunked path, `SchemaWalk`, the planner and `PipelineQuery.check`. So refresh
+and full, the walk and the evaluator, cannot disagree about a type by construction.
+
+**1. The rule.** Over the step's schema, before any row:
+
+- the expression's own arms (through `Case` and `Coalesce`, the nodes whose answer IS an operand's)
+  carry a decided `float` and a decided `decimal` → **refused**, on every frame, by name;
+- the typer decides it (`Of ty`) → `ty`, on every frame — an empty one, an all-null one;
+- the typer knows it produces no present value (`Absent`) → `string`, the type an all-null
+  column has always had;
+- the typer cannot decide (`Unknown`) → **the cells decide**: Phase 321's widening join of the
+  present cells' types (D3 rule 2), `string` where none is present, and a refusal over the whole
+  column where the cells hold a `float` beside a `decimal`.
+
+An unpivot reads the same rule with its value columns as the arms, joined by the widening join of
+their DECLARED types: no totality verdict reads an unpivot's type as an exactness claim, so the
+schema decides an `int`/`float` or `int`/`decimal` melt, and only a pair no widening relates (a
+`string` beside an `int`) is left to the cells.
+
+**2. A cell is admitted, never converted.** Under a decided type every present cell is of that type
+or widens into it by `ColumnType.widens` (an `Int` in a `float` or `decimal` column); it is stored as
+produced, as D2 stores an edited cell. A present cell the decided type does not admit would be the
+typer and the evaluator disagreeing: `DeriveTypingConformance.laws` goes red on it (its go-red is in
+the suite), and the evaluator keeps the cell as produced rather than coerce it.
+
+**3. The one data-decided remainder.** A `Param` (its cell is the arguments'), a `Now` (the clock
+witness's), a column the schema in hand does not carry (an open schema's), and a join the EXACT
+typer keeps apart — a `Case` of an `int` and a `float`, a `Coalesce` of a `decimal` and an `int`.
+The last is wider than the phase's shard assumed: it was written expecting the typer to join `int`
+and `float` at `float`, which D3 had declined (the join is an exactness claim the totality verdict
+reads). The rule here does not widen the typer either; those shapes stay the cells', named as such
+in `PipelineQuery`'s `TypeUndecidable`, and the planner declines to move a filter past them.
+
+**4. The verdict follows.** `Plan.isTotal` calls a derive total only where its expression is total
+AND its column is decided: a cells-typed derive can refuse a float beside a decimal over the whole
+column, and a statically refused one always does, so neither may be called total. That is also what
+makes a decided derive of ANY type safe for `FilterBeforeDerive` (its type reads no row), so the
+planner's string-only clause is gone. `proofs/Pipeline.fst` models the rule clause for clause —
+the typer is now extracted, because `eval_derive` reads it — and `verdict_sound`, `step_total`,
+`derive_then_filter` (now over a decided type) and the new `derive_type_rows_free` (a decided
+derive's column has one type over any two frames of a schema) verify.
+
+**Declined: converting a widened cell.** Writing an `Int` into a float column as `Float` would
+make the column's carrier uniform, and would make the type change a VALUE change every host must
+mirror; storing as produced keeps the vectors' cells byte-identical and matches the substrate's own
+admission.
+
 ## 2026-10-02 — D4: the packages take their own ids — `Fuaran.Compute.*` and the `Fuaran.Compute` namespace — opening at `0.36.0`; the `Fuaran.Core.*` ids stop at `0.34.0`
 
 **Decided (Phase 322, superseding D1's first ruling).** D1 kept the ids and namespaces the strand
@@ -105,7 +157,8 @@ kinds then. None of the existing vectors moved under the rulings above.
 **Carried to Phase 338, not built here (operator ruling, 2026-10-02).** Refusing a `Float` beside
 a `Decimal` at a derive, and typing a derive by its expression rather than by its cells, move with
 the rewrite of the totality verdict and `Pipeline.fst` that phase makes; rule 2 above is what this
-phase ships in the meantime.
+phase ships in the meantime. (Built by Phase 338: D5. Rule 2 still types a column only its cells
+decide, and its "earlier type" for a float beside a decimal is replaced there by the refusal.)
 
 ## 2026-10-02 — D2: FS0025 is an error here, and `cellFits` widens exactly as `ColumnType.widens` does
 

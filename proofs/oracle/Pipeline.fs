@@ -2422,6 +2422,755 @@ let infer_type : Prims.list<cell>  ->  column_type = (fun ( cells  :  Prims.list
      StringType
      end))
 
+type typing =
+| Absent
+| Of of column_type
+| Unknown
+
+
+let uu___is_Absent : typing  ->  Prims.bool = (fun ( projectee  :  typing ) -> (match (projectee) with
+| Absent -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_Of : typing  ->  Prims.bool = (fun ( projectee  :  typing ) -> (match (projectee) with
+| Of (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__Of__item___0 : typing  ->  column_type = (fun ( projectee  :  typing ) -> (match (projectee) with
+| Of (_0) -> begin
+     _0
+     end))
+
+
+let uu___is_Unknown : typing  ->  Prims.bool = (fun ( projectee  :  typing ) -> (match (projectee) with
+| Unknown -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let join : typing  ->  typing  ->  typing = (fun ( a  :  typing ) ( b  :  typing ) -> (match (((a), (b))) with
+| (Absent, t) -> begin
+     t
+     end
+| (t, Absent) -> begin
+     t
+     end
+| (Of (x), Of (y)) -> begin
+      
+if (Prims.op_Equals x y) then begin
+     Of (x)
+     end else begin
+     Unknown
+     end
+     end
+| uu___ -> begin
+     Unknown
+     end))
+
+
+let rec fold_join : typing  ->  Prims.list<typing>  ->  typing = (fun ( acc  :  typing ) ( ts  :  Prims.list<typing> ) -> (match (ts) with
+| [] -> begin
+     acc
+     end
+| (t)::rest -> begin
+     (fold_join (join acc t) rest)
+     end))
+
+
+let join_all : Prims.list<typing>  ->  typing = (fun ( ts  :  Prims.list<typing> ) -> (fold_join Absent ts))
+
+
+let of_cell : cell  ->  typing = (fun ( c  :  cell ) -> (match ((type_of c)) with
+| FStar_Pervasives_Native.Some (ty) -> begin
+     Of (ty)
+     end
+| FStar_Pervasives_Native.None -> begin
+     Absent
+     end))
+
+
+let numeric_t : typing  ->  Prims.bool = (fun ( t  :  typing ) -> (match (t) with
+| Of (IntType) -> begin
+     true
+     end
+| Of (FloatType) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let exact_t : typing  ->  Prims.bool = (fun ( t  :  typing ) -> (match (t) with
+| Of (IntType) -> begin
+     true
+     end
+| Of (DecimalType) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let decimal_pair : typing  ->  typing  ->  Prims.bool = (fun ( a  :  typing ) ( b  :  typing ) -> (((exact_t a) && (exact_t b)) && ((Prims.op_Equals a (Of (DecimalType))) || (Prims.op_Equals b (Of (DecimalType))))))
+
+
+let bool_like : typing  ->  Prims.bool = (fun ( t  :  typing ) -> (match (t) with
+| Absent -> begin
+     true
+     end
+| Of (BoolType) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let is_str : typing  ->  Prims.bool = (fun ( t  :  typing ) -> (match (t) with
+| Absent -> begin
+     true
+     end
+| Of (StringType) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let same_scalar : typing  ->  typing  ->  Prims.bool = (fun ( a  :  typing ) ( b  :  typing ) -> (match (((a), (b))) with
+| (Of (x), Of (y)) -> begin
+     (Prims.op_Equals x y)
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let typing_binary : bin_op  ->  typing  ->  typing  ->  typing = (fun ( op  :  bin_op ) ( a  :  typing ) ( b  :  typing ) -> (
+
+let null_prop = (fun ( decide  :  unit  ->  typing ) -> (match (((a), (b))) with
+| (Absent, uu___) -> begin
+     Absent
+     end
+| (uu___, Absent) -> begin
+     Absent
+     end
+| uu___ -> begin
+     (decide ())
+     end))
+in (match (op) with
+| Add -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((Prims.op_Equals a (Of (IntType))) && (Prims.op_Equals b (Of (IntType)))) then begin
+     Of (IntType)
+     end else begin
+      
+if ((numeric_t a) && (numeric_t b)) then begin
+     Of (FloatType)
+     end else begin
+      
+if (decimal_pair a b) then begin
+     Of (DecimalType)
+     end else begin
+     Unknown
+     end
+     end
+     end))
+     end
+| Sub -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((Prims.op_Equals a (Of (IntType))) && (Prims.op_Equals b (Of (IntType)))) then begin
+     Of (IntType)
+     end else begin
+      
+if ((numeric_t a) && (numeric_t b)) then begin
+     Of (FloatType)
+     end else begin
+      
+if (decimal_pair a b) then begin
+     Of (DecimalType)
+     end else begin
+     Unknown
+     end
+     end
+     end))
+     end
+| Mul -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((Prims.op_Equals a (Of (IntType))) && (Prims.op_Equals b (Of (IntType)))) then begin
+     Of (IntType)
+     end else begin
+      
+if ((numeric_t a) && (numeric_t b)) then begin
+     Of (FloatType)
+     end else begin
+      
+if (decimal_pair a b) then begin
+     Of (DecimalType)
+     end else begin
+     Unknown
+     end
+     end
+     end))
+     end
+| Div -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((numeric_t a) && (numeric_t b)) then begin
+     Of (FloatType)
+     end else begin
+     Unknown
+     end))
+     end
+| Mod -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((Prims.op_Equals a (Of (IntType))) && (Prims.op_Equals b (Of (IntType)))) then begin
+     Of (IntType)
+     end else begin
+      
+if (decimal_pair a b) then begin
+     Of (DecimalType)
+     end else begin
+     Unknown
+     end
+     end))
+     end
+| Eq -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((((numeric_t a) && (numeric_t b)) || ((exact_t a) && (exact_t b))) || (same_scalar a b)) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end
+| Ne -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((((numeric_t a) && (numeric_t b)) || ((exact_t a) && (exact_t b))) || (same_scalar a b)) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end
+| Lt -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((((numeric_t a) && (numeric_t b)) || ((exact_t a) && (exact_t b))) || (same_scalar a b)) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end
+| Le -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((((numeric_t a) && (numeric_t b)) || ((exact_t a) && (exact_t b))) || (same_scalar a b)) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end
+| Gt -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((((numeric_t a) && (numeric_t b)) || ((exact_t a) && (exact_t b))) || (same_scalar a b)) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end
+| Ge -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((((numeric_t a) && (numeric_t b)) || ((exact_t a) && (exact_t b))) || (same_scalar a b)) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end
+| And -> begin
+      
+if ((bool_like a) && (bool_like b)) then begin
+     (join a b)
+     end else begin
+     Unknown
+     end
+     end
+| Or -> begin
+      
+if ((bool_like a) && (bool_like b)) then begin
+     (join a b)
+     end else begin
+     Unknown
+     end
+     end
+| Contains -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((Prims.op_Equals a (Of (StringType))) && (Prims.op_Equals b (Of (StringType)))) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end
+| StartsWith -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((Prims.op_Equals a (Of (StringType))) && (Prims.op_Equals b (Of (StringType)))) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end
+| EndsWith -> begin
+     (null_prop (fun ( uu___  :  unit ) ->  
+if ((Prims.op_Equals a (Of (StringType))) && (Prims.op_Equals b (Of (StringType)))) then begin
+     Of (BoolType)
+     end else begin
+     Unknown
+     end))
+     end)))
+
+
+let typing_not : typing  ->  typing = (fun ( a  :  typing ) -> (match (a) with
+| Absent -> begin
+     Absent
+     end
+| Of (BoolType) -> begin
+     Of (BoolType)
+     end
+| uu___ -> begin
+     Unknown
+     end))
+
+
+let typing_cast : column_type  ->  typing  ->  typing = (fun ( ty  :  column_type ) ( a  :  typing ) -> (match (a) with
+| Absent -> begin
+     Absent
+     end
+| uu___ -> begin
+     Of (ty)
+     end))
+
+
+let typing_in_list : typing  ->  typing = (fun ( subject  :  typing ) -> (match (subject) with
+| Absent -> begin
+     Absent
+     end
+| uu___ -> begin
+     Of (BoolType)
+     end))
+
+
+let rec any_absent : Prims.list<typing>  ->  Prims.bool = (fun ( ts  :  Prims.list<typing> ) -> (match (ts) with
+| [] -> begin
+     false
+     end
+| (Absent)::uu___ -> begin
+     true
+     end
+| (uu___)::rest -> begin
+     (any_absent rest)
+     end))
+
+
+let typing_apply_fn : scalar_fn  ->  Prims.list<typing>  ->  typing = (fun ( fn  :  scalar_fn ) ( ts  :  Prims.list<typing> ) -> (
+
+let unary = (fun ( decide  :  typing  ->  typing ) -> (match (ts) with
+| (Absent)::[] -> begin
+     Absent
+     end
+| (t)::[] -> begin
+     (decide t)
+     end
+| uu___ -> begin
+     Absent
+     end))
+in (match (fn) with
+| Abs -> begin
+     (unary (fun ( t  :  typing ) -> (match (t) with
+| Of (IntType) -> begin
+     Of (IntType)
+     end
+| Of (FloatType) -> begin
+     Of (FloatType)
+     end
+| Of (DecimalType) -> begin
+     Of (DecimalType)
+     end
+| uu___ -> begin
+     Unknown
+     end)))
+     end
+| Round -> begin
+     (unary (fun ( t  :  typing ) -> (match (t) with
+| Of (DecimalType) -> begin
+     Of (DecimalType)
+     end
+| uu___ -> begin
+     Of (FloatType)
+     end)))
+     end
+| Floor -> begin
+     (unary (fun ( t  :  typing ) -> (match (t) with
+| Of (DecimalType) -> begin
+     Of (DecimalType)
+     end
+| uu___ -> begin
+     Of (FloatType)
+     end)))
+     end
+| Ceil -> begin
+     (unary (fun ( t  :  typing ) -> (match (t) with
+| Of (DecimalType) -> begin
+     Of (DecimalType)
+     end
+| uu___ -> begin
+     Of (FloatType)
+     end)))
+     end
+| Sqrt -> begin
+     (unary (fun ( uu___  :  typing ) -> Of (FloatType)))
+     end
+| Length -> begin
+     (unary (fun ( uu___  :  typing ) -> Of (IntType)))
+     end
+| Lower -> begin
+     (unary (fun ( uu___  :  typing ) -> Of (StringType)))
+     end
+| Upper -> begin
+     (unary (fun ( uu___  :  typing ) -> Of (StringType)))
+     end
+| Trim -> begin
+     (unary (fun ( uu___  :  typing ) -> Of (StringType)))
+     end
+| Substr -> begin
+     (match (ts) with
+| (Absent)::(uu___)::(uu___1)::[] -> begin
+     Absent
+     end
+| (uu___)::(uu___1)::(uu___2)::[] -> begin
+     Of (StringType)
+     end
+| uu___ -> begin
+     Absent
+     end)
+     end
+| DatePart -> begin
+     (match (ts) with
+| (uu___)::(Absent)::[] -> begin
+     Absent
+     end
+| (uu___)::(uu___1)::[] -> begin
+     Of (IntType)
+     end
+| uu___ -> begin
+     Absent
+     end)
+     end
+| Concat -> begin
+     (match (ts) with
+| [] -> begin
+     Absent
+     end
+| uu___ -> begin
+      
+if (any_absent ts) then begin
+     Absent
+     end else begin
+     Of (StringType)
+     end
+     end)
+     end
+| Replace -> begin
+     (match (ts) with
+| (uu___)::(uu___1)::(uu___2)::[] -> begin
+      
+if (any_absent ts) then begin
+     Absent
+     end else begin
+     Of (StringType)
+     end
+     end
+| uu___ -> begin
+     Absent
+     end)
+     end
+| DateDiffDays -> begin
+     (match (ts) with
+| (uu___)::(uu___1)::[] -> begin
+      
+if (any_absent ts) then begin
+     Absent
+     end else begin
+     Of (IntType)
+     end
+     end
+| uu___ -> begin
+     Absent
+     end)
+     end
+| Least -> begin
+     (match (ts) with
+| [] -> begin
+     Absent
+     end
+| uu___ -> begin
+      
+if (any_absent ts) then begin
+     Absent
+     end else begin
+     (join_all ts)
+     end
+     end)
+     end
+| Greatest -> begin
+     (match (ts) with
+| [] -> begin
+     Absent
+     end
+| uu___ -> begin
+      
+if (any_absent ts) then begin
+     Absent
+     end else begin
+     (join_all ts)
+     end
+     end)
+     end
+| IndexOf -> begin
+     (match (ts) with
+| (uu___)::(uu___1)::[] -> begin
+      
+if (any_absent ts) then begin
+     Absent
+     end else begin
+     Of (IntType)
+     end
+     end
+| uu___ -> begin
+     Absent
+     end)
+     end)))
+
+
+let typing_rounded : typing  ->  typing = (fun ( a  :  typing ) -> (match (a) with
+| Absent -> begin
+     Absent
+     end
+| Of (IntType) -> begin
+     Of (DecimalType)
+     end
+| Of (DecimalType) -> begin
+     Of (DecimalType)
+     end
+| uu___ -> begin
+     Unknown
+     end))
+
+
+let typing_quotient : typing  ->  typing  ->  typing = (fun ( a  :  typing ) ( b  :  typing ) -> (match (((a), (b))) with
+| (Absent, uu___) -> begin
+     Absent
+     end
+| (uu___, Absent) -> begin
+     Absent
+     end
+| uu___ -> begin
+      
+if ((exact_t a) && (exact_t b)) then begin
+     Of (DecimalType)
+     end else begin
+     Unknown
+     end
+     end))
+
+
+let rec typing_of : schema  ->  col_expr  ->  typing = (fun ( cols  :  schema ) ( x  :  col_expr ) -> (match (x) with
+| Col (n) -> begin
+     (match ((assoc n cols)) with
+| FStar_Pervasives_Native.Some (ty) -> begin
+     Of (ty)
+     end
+| FStar_Pervasives_Native.None -> begin
+     Unknown
+     end)
+     end
+| Lit (c) -> begin
+     (of_cell c)
+     end
+| Param (uu___) -> begin
+     Unknown
+     end
+| Now (uu___) -> begin
+     Unknown
+     end
+| Binary (op, a, b) -> begin
+     (typing_binary op (typing_of cols a) (typing_of cols b))
+     end
+| Not (a) -> begin
+     (typing_not (typing_of cols a))
+     end
+| Coalesce (xs) -> begin
+     (join_all (typings_of cols xs))
+     end
+| Case (cases, els) -> begin
+     (join_all (((typing_of cols els))::(typings_thens cols cases)))
+     end
+| Cast (ty, a) -> begin
+     (typing_cast ty (typing_of cols a))
+     end
+| ApplyFn (fn, args) -> begin
+     (typing_apply_fn fn (typings_of cols args))
+     end
+| InList (a, uu___) -> begin
+     (typing_in_list (typing_of cols a))
+     end
+| IsNull (uu___) -> begin
+     Of (BoolType)
+     end
+| InParam (a, uu___) -> begin
+     (typing_in_list (typing_of cols a))
+     end
+| Quotient (a, b, uu___) -> begin
+     (typing_quotient (typing_of cols a) (typing_of cols b))
+     end
+| Rounded (a, uu___) -> begin
+     (typing_rounded (typing_of cols a))
+     end))
+and typings_of : schema  ->  Prims.list<col_expr>  ->  Prims.list<typing> = (fun ( cols  :  schema ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
+| [] -> begin
+     []
+     end
+| (x)::rest -> begin
+     ((typing_of cols x))::(typings_of cols rest)
+     end))
+and typings_thens : schema  ->  Prims.list<(col_expr * col_expr)>  ->  Prims.list<typing> = (fun ( cols  :  schema ) ( cases  :  Prims.list<(col_expr * col_expr)> ) -> (match (cases) with
+| [] -> begin
+     []
+     end
+| ((uu___, t))::rest -> begin
+     ((typing_of cols t))::(typings_thens cols rest)
+     end))
+
+
+let rec arms_have : column_type  ->  schema  ->  col_expr  ->  Prims.bool = (fun ( ty  :  column_type ) ( cols  :  schema ) ( x  :  col_expr ) -> (match (x) with
+| Coalesce (xs) -> begin
+     (arms_have_list ty cols xs)
+     end
+| Case (cases, els) -> begin
+     ((arms_have ty cols els) || (arms_have_thens ty cols cases))
+     end
+| uu___ -> begin
+     (Prims.op_Equals (typing_of cols x) (Of (ty)))
+     end))
+and arms_have_list : column_type  ->  schema  ->  Prims.list<col_expr>  ->  Prims.bool = (fun ( ty  :  column_type ) ( cols  :  schema ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
+| [] -> begin
+     false
+     end
+| (x)::rest -> begin
+     ((arms_have ty cols x) || (arms_have_list ty cols rest))
+     end))
+and arms_have_thens : column_type  ->  schema  ->  Prims.list<(col_expr * col_expr)>  ->  Prims.bool = (fun ( ty  :  column_type ) ( cols  :  schema ) ( cases  :  Prims.list<(col_expr * col_expr)> ) -> (match (cases) with
+| [] -> begin
+     false
+     end
+| ((uu___, t))::rest -> begin
+     ((arms_have ty cols t) || (arms_have_thens ty cols rest))
+     end))
+
+type derived_typing =
+| Decided of column_type
+| ByCells
+| Refused
+
+
+let uu___is_Decided : derived_typing  ->  Prims.bool = (fun ( projectee  :  derived_typing ) -> (match (projectee) with
+| Decided (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__Decided__item___0 : derived_typing  ->  column_type = (fun ( projectee  :  derived_typing ) -> (match (projectee) with
+| Decided (_0) -> begin
+     _0
+     end))
+
+
+let uu___is_ByCells : derived_typing  ->  Prims.bool = (fun ( projectee  :  derived_typing ) -> (match (projectee) with
+| ByCells -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_Refused : derived_typing  ->  Prims.bool = (fun ( projectee  :  derived_typing ) -> (match (projectee) with
+| Refused -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let derived_typing_of : schema  ->  col_expr  ->  derived_typing = (fun ( cols  :  schema ) ( x  :  col_expr ) ->  
+if ((arms_have FloatType cols x) && (arms_have DecimalType cols x)) then begin
+     Refused
+     end else begin
+     (match ((typing_of cols x)) with
+| Of (ty) -> begin
+     Decided (ty)
+     end
+| Absent -> begin
+     Decided (StringType)
+     end
+| Unknown -> begin
+     ByCells
+     end)
+     end)
+
+
+let float_beside_decimal : Prims.string  ->  eval_error = (fun ( column  :  Prims.string ) -> TypeError ((Prims.strcat "derived column \'" (Prims.strcat column "\' joins a float and a decimal: cast one to the other\'s type first - Cast(decimal, ...) to keep the digits exact, Cast(float, ...) to compute approximately"))))
+
+
+let rec has_type : column_type  ->  Prims.list<cell>  ->  Prims.bool = (fun ( ty  :  column_type ) ( cells  :  Prims.list<cell> ) -> (match (cells) with
+| [] -> begin
+     false
+     end
+| (c)::rest -> begin
+     ((Prims.op_Equals (type_of c) (FStar_Pervasives_Native.Some (ty))) || (has_type ty rest))
+     end))
+
+
+let column_type_by : derived_typing  ->  Prims.string  ->  Prims.list<cell>  ->  outcome<column_type, eval_error> = (fun ( dt  :  derived_typing ) ( column  :  Prims.string ) ( cells  :  Prims.list<cell> ) -> (match (dt) with
+| Decided (ty) -> begin
+     Ok (ty)
+     end
+| ByCells -> begin
+      
+if ((has_type FloatType cells) && (has_type DecimalType cells)) then begin
+     Error ((float_beside_decimal column))
+     end else begin
+     Ok ((infer_type cells))
+     end
+     end
+| Refused -> begin
+     Error ((float_beside_decimal column))
+     end))
+
 
 let rec retype_at : Prims.nat  ->  column_type  ->  schema  ->  schema = (fun ( i  :  Prims.nat ) ( ty  :  column_type ) ( cols  :  schema ) -> (match (cols) with
 | [] -> begin
@@ -2455,22 +3204,34 @@ let rec zip_append : Prims.list<Prims.list<cell>>  ->  Prims.list<cell>  ->  Pri
      end))
 
 
-let eval_derive : prims  ->  param_env  ->  wframe  ->  Prims.string  ->  col_expr  ->  outcome<wframe, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( f  :  wframe ) ( name  :  Prims.string ) ( x  :  col_expr ) -> (match ((derive_cells pr env f.cols f.rows x)) with
+let eval_derive : prims  ->  param_env  ->  wframe  ->  Prims.string  ->  col_expr  ->  outcome<wframe, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( f  :  wframe ) ( name  :  Prims.string ) ( x  :  col_expr ) -> (
+
+let dt = (derived_typing_of f.cols x)
+in (match (dt) with
+| Refused -> begin
+     Error ((float_beside_decimal name))
+     end
+| uu___ -> begin
+     (match ((derive_cells pr env f.cols f.rows x)) with
 | Error (err) -> begin
      Error (err)
      end
 | Ok (cells) -> begin
-     (
-
-let ty = (infer_type cells)
-in (match ((index_of name f.cols)) with
+     (match ((column_type_by dt name cells)) with
+| Error (err) -> begin
+     Error (err)
+     end
+| Ok (ty) -> begin
+     (match ((index_of name f.cols)) with
 | FStar_Pervasives_Native.Some (i) -> begin
      Ok ({cols = (retype_at i ty f.cols); rows = (zip_replace i f.rows cells)})
      end
 | FStar_Pervasives_Native.None -> begin
      Ok ({cols = (app f.cols ((((name), (ty)))::[])); rows = (zip_append f.rows cells)})
-     end))
-     end))
+     end)
+     end)
+     end)
+     end)))
 
 
 type other_fn = wframe  ->  transform  ->  outcome<wframe, eval_error>
