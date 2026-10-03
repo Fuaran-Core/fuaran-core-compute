@@ -5999,27 +5999,30 @@ module DataFrame =
     /// family in the float carrier, strings, dates and timestamps ordinal, and a boxed vector
     /// through `compareCells` with an incomparable pair ordered equal.
     let private keyComparer (v: Vec) (dir: SortDir) : int -> int -> int =
-        let signed (c: int) : int = if dir = Asc then c else -c
+        // The direction read once, not per comparison: under JavaScript a union's `=` is a
+        // structural comparison call (Phase 326).
+        let asc = (dir = Asc)
+        let signed (c: int) : int = if asc then c else -c
 
         let withNulls (mask: bool[]) (cmp: int -> int -> int) : int -> int -> int =
             fun p q ->
-                match mask[p], mask[q] with
+                match Raw.at p mask, Raw.at q mask with
                 | true, true -> signed (cmp p q)
                 | true, false -> -1 // null sorts last
                 | false, true -> 1
                 | false, false -> 0
 
         match v with
-        | Ints(a, m) -> withNulls m (fun p q -> compare a[p] a[q])
-        | Floats(a, m) -> withNulls m (fun p q -> compareNum a[p] a[q])
-        | Bools(a, m) -> withNulls m (fun p q -> compare a[p] a[q])
-        | Strs(_, a, m) -> withNulls m (fun p q -> System.String.CompareOrdinal(a[p], a[q]))
+        | Ints(a, m) -> withNulls m (fun p q -> compare (Raw.at p a) (Raw.at q a))
+        | Floats(a, m) -> withNulls m (fun p q -> compareNum (Raw.at p a) (Raw.at q a))
+        | Bools(a, m) -> withNulls m (fun p q -> compare (Raw.at p a) (Raw.at q a))
+        | Strs(_, a, m) -> withNulls m (fun p q -> System.String.CompareOrdinal(Raw.at p a, Raw.at q a))
         // Every value of one decimal vector is an exact integer at the column's one scale (Phase 280).
-        | Decs(a, _, _, m) -> withNulls m (fun p q -> compare a[p] a[q])
+        | Decs(a, _, _, m) -> withNulls m (fun p q -> compare (Raw.at p a) (Raw.at q a))
         | Cells cells ->
             fun p q ->
-                let a = cells[p]
-                let b = cells[q]
+                let a = Raw.at p cells
+                let b = Raw.at q cells
 
                 match Cell.isNull a, Cell.isNull b with
                 | true, true -> 0
@@ -6424,8 +6427,8 @@ module DataFrame =
         let cmps = keys |> Array.map (fun (v, dir) -> keyComparer v dir)
 
         fun a b ->
-            let pa = phys[a]
-            let pb = phys[b]
+            let pa = Raw.at a phys
+            let pb = Raw.at b phys
             let mutable c = 0
             let mutable k = 0
 
@@ -6856,8 +6859,8 @@ module DataFrame =
             let cmps = keyVecs |> Array.map (fun (v, dir) -> keyComparer v dir)
 
             let cmp (a: int) (b: int) : int =
-                let pa = phys[a]
-                let pb = phys[b]
+                let pa = Raw.at a phys
+                let pb = Raw.at b phys
                 let mutable c = 0
                 let mutable k = 0
 
