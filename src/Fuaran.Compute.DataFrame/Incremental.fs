@@ -331,6 +331,44 @@ type RecomputeFootprint =
         Recompute: Recompute
     }
 
+/// Phase 333 — the cells a prefix-fold `Window` step wrote, in the carrier its scan wrote them in: a
+/// float running total unboxed beside its presence, a row number unboxed, anything else as cells.
+/// Unboxed because a run is as long as its frame, and a frame-long array of freshly boxed cells is the
+/// costliest thing a step can build (Phase 324 measured it; so did this phase, at twice the cost of
+/// the run it records).
+type internal RunColumn =
+    | RunFloats of float[] * bool[]
+    | RunInts of int[]
+    | RunCells of Cell[]
+
+/// Phase 333 — what a PREFIX-FOLD `Window` step (`DataFrame.windowIsPrefixFold`: the row number, the
+/// running total, the running extremes) records for the next refresh: the ordering it scanned and the
+/// cell it wrote at each position, in the slot numbering of the frame it ran over (source slots in the
+/// prefix, group slots in the tail, as a sort's orders are). A refresh reuses a partition's run up to
+/// its earliest changed position and resumes the reference's own scan there, seeded with the cell at
+/// the position before it.
+type internal WindowRun =
+    {
+        /// The frame's schema at the step: a run is reused only over the same one, since it decides
+        /// the column the function reads, its type and the type of the cell it writes.
+        Cols: Schema
+        /// The slots alive at the step, in the order they ARRIVED — what says a cached ordering is
+        /// still valid, exactly as a sort's arrival order does (ties are broken by arrival).
+        Arrival: int[]
+        /// The slots in window order, partition after partition.
+        Perm: int[]
+        /// Where each partition's run starts in `Perm`, then `Perm.Length`.
+        Bounds: int[]
+        /// Each partition's key cells (its first row's), as the frame held them.
+        Keys: Cell[][]
+        /// The window cell the step wrote at each `Perm` position.
+        Out: RunColumn
+        /// The appended column as the step handed it on, where its frame held every slot in slot
+        /// order (its cells in slot order); empty otherwise. A refresh in place shares its cells for
+        /// the rows it reuses rather than boxing them again.
+        Column: Cell list
+    }
+
 /// The state an incremental evaluation carries between refreshes: the result, and the caches that
 /// let the next delta be answered without revisiting the unchanged rows.
 ///
@@ -455,6 +493,10 @@ type IncrementalEval =
             /// Phase 323 — the group table's rows (key cells, then aggregate cells) as the
             /// maintained `GroupBy` last computed them, aligned with `GroupOrder`; empty otherwise.
             GroupRows: Cell[][]
+            /// Phase 333 — per prefix-fold `Window` step (indexed by its ordinal among the pipeline's
+            /// windows), the run the step last made: what lets the next refresh recompute only each
+            /// touched partition's suffix (`WindowRun`). Empty where no walk ran.
+            WindowRuns: Map<int, WindowRun>
             /// Phase 355 — on a state DECODED from its wire form, the canonical hash of the pipeline
             /// it was built for (`IncrementalCodec.pipelineHash`); empty on a state built in this
             /// process. A decoded pipeline is the codec's normal form of the one that was encoded,
@@ -705,10 +747,20 @@ module internal StateWire =
     // it cannot (`NaN`, the infinities, and `-0`, which the canonical float layout folds into `0`).
     // `{}` is a slot that holds no cell at all: a row that never reached the step.
 
-    let private floatJson (f: float) : JVal =
+    let floatJson (f: float) : JVal =
         match JVal.nonFiniteToken f with
         | Some tok -> JStr tok
         | None -> if f = 0.0 && 1.0 / f < 0.0 then JStr "-0" else JFloat f
+
+    let floatOfJson (el: JVal) : Result<float, ColumnError> =
+        match el with
+        | JFloat f -> Ok f
+        | JInt i -> Ok(float i)
+        | JStr "NaN" -> Ok nan
+        | JStr "Infinity" -> Ok infinity
+        | JStr "-Infinity" -> Ok(-infinity)
+        | JStr "-0" -> Ok(-0.0)
+        | _ -> Error(MalformedShape("incremental state: not a float (" + JVal.kindName el + ")"))
 
     let cellJson (c: Cell) : JVal =
         if isNull (box c) then
@@ -747,9 +799,12 @@ module internal StateWire =
     /// A table exactly as it is held: the schema, then the columns in the table's own order, each
     /// with its own name, type and cells. Nothing is matched to the schema or padded, so a table
     /// the evaluator reads through its total padding rule comes back the same table.
+    let schemaJson (schema: Schema) : JVal =
+        JArr(schema |> List.map (fun (n, ty) -> JArr [ JStr n; JStr(ColumnType.tag ty) ]))
+
     let tableJson (t: Table) : JVal =
         JObj
-            [ "schema", JArr(t.Schema |> List.map (fun (n, ty) -> JArr [ JStr n; JStr(ColumnType.tag ty) ]))
+            [ "schema", schemaJson t.Schema
               "columns",
               JArr(
                   t.Columns
@@ -1097,7 +1152,8 @@ module Incremental =
         | WProject of (string * string) list
         | WDerive of string * ColExpr
         | WSort of int * (string * SortDir) list
-        | WWindow of WindowSpec
+        /// Phase 333 — with its ordinal among the pipeline's windows, which keys its `WindowRun`.
+        | WWindow of int * WindowSpec
         | WJoin of int * DataSource * (string * string) list * bool
         /// Phase 207 — a `Limit`, carrying its already-resolved count and offset. It keys no cache
         /// and takes no ordinal: the window it keeps is read off the frame the walk is holding, so
@@ -1155,7 +1211,8 @@ module Incremental =
                 match by |> mapM (fun (c, d) -> Slot.tryLit c |> Option.map (fun n -> n, d)) with
                 | None -> None
                 | Some resolved -> go (WSort(sorts, resolved) :: acc) (sorts + 1) joins rest
-            | Window spec :: rest -> go (WWindow spec :: acc) sorts joins rest
+            // Phase 333 — numbered below, in walk order across the prefix and the tail.
+            | Window spec :: rest -> go (WWindow(0, spec) :: acc) sorts joins rest
             // Phase 207 — same shape as the `Sort` case above and for the same reason: an
             // unresolved slot param has no static window, so the walk refuses the pipeline outright
             // and the seam falls back to the reference evaluator, which is where the `UnboundParam`
@@ -1168,7 +1225,23 @@ module Incremental =
             | Join(src, on, Anti) :: rest -> go (WJoin(joins, src, on, false) :: acc) sorts (joins + 1) rest
             | _ -> None
 
+        // Phase 333 — each window's ordinal, continuing from the prefix into the tail for the reason
+        // the sort and join ordinals do (above): it keys the window's `WindowRun`.
+        let mutable windows = 0
+
+        let number (steps: PrefixStep list) =
+            steps
+            |> List.map (fun step ->
+                match step with
+                | WWindow(_, spec) ->
+                    windows <- windows + 1
+                    WWindow(windows - 1, spec)
+                | other -> other)
+
         go [] 0 0 pipeline
+        |> Option.map (fun (prefix, final) ->
+            let prefix = number prefix
+            prefix, final |> Option.map (fun (keys, aggs, tail) -> keys, aggs, number tail))
 
     /// Phase 274 — the frame the walk holds, COLUMN-major. It was a list of per-row `Work` records
     /// until `0.35.0`: every step rebuilt one record per row, a `Derive` copied every row's array to
@@ -1229,6 +1302,9 @@ module Incremental =
             /// listed here are `Stable`, and these are the changed slots, ascending. A step may then
             /// start from the prior step's cells and evaluate only these.
             InPlace: int[]
+            /// Phase 333 — `0` always, but in the laws: `1` starts a resumed prefix-fold window ONE
+            /// POSITION LATE (`windowResume`), the perturbation that shows the suffix law can fail.
+            SeedShift: int
         }
 
     /// The value the prior evaluation computed at evaluating step `evalIdx` for the row now at slot
@@ -1393,6 +1469,42 @@ module Incremental =
         Array.blit xs lo out k (xs.Length - lo)
         out
 
+    /// A prior slot's row, now, where it is still `Stable`; `-1` otherwise. `cur` is `currentOf r`, or
+    /// `null` where every prior slot is its own slot now (in place, Phase 323).
+    let private stableNowOf (r: WalkRows) (cur: int[]) (p: int) : int =
+        let s =
+            if isNull cur then p
+            elif p >= 0 && p < cur.Length then cur[p]
+            else -1
+
+        if s >= 0 && r.Stable[s] then s else -1
+
+    /// Did the `Stable` rows arrive at a step in the SAME relative order as last time — the stable rows
+    /// of the prior arrival `prevArrival`, read in step with those of the arrival now: equal
+    /// sequences, compared without building either. The condition under which an ordering a step
+    /// cached may be reused (a `Sort`'s, Phase 215; a prefix-fold `Window`'s, Phase 333): a stable sort
+    /// breaks ties by arrival position, so a reordering among reused rows moves the answer while
+    /// naming no row at all. A stable row present on one side and absent on the other reads as a
+    /// difference.
+    let private arrivedAsBefore (r: WalkRows) (cur: int[]) (prevArrival: int[]) (arrival: int[]) : bool =
+        let mutable i = 0
+        let mutable j = 0
+        let mutable same = true
+
+        while same && (i < prevArrival.Length || j < arrival.Length) do
+            if i < prevArrival.Length && stableNowOf r cur prevArrival[i] < 0 then
+                i <- i + 1
+            elif j < arrival.Length && not r.Stable[arrival[j]] then
+                j <- j + 1
+            elif i < prevArrival.Length && j < arrival.Length then
+                same <- stableNowOf r cur prevArrival[i] = arrival[j]
+                i <- i + 1
+                j <- j + 1
+            else
+                same <- false
+
+        same
+
     /// The per-step state the walk reads from the prior evaluation and writes for the next one,
     /// carried as one value rather than as a parameter per admitted step. It is the shape of every
     /// state-keeping step's cache: keyed by that step's ordinal in the pipeline, valid only while
@@ -1402,11 +1514,13 @@ module Incremental =
     /// over (source slots in the prefix, group slots in the tail); `WalkRows.Prior` translates them.
     type private WalkCaches =
         { SortOrders: Map<int, int[] * int[]>
-          JoinKeys: Map<int, Cell list list> }
+          JoinKeys: Map<int, Cell list list>
+          WindowRuns: Map<int, WindowRun> }
 
     let private noCaches: WalkCaches =
         { SortOrders = Map.empty
-          JoinKeys = Map.empty }
+          JoinKeys = Map.empty
+          WindowRuns = Map.empty }
 
     /// One evaluating step's pass over the rows alive at it: the cached cell where `cachedAt` allows
     /// it, a fresh evaluation through the reference's own `DataFrame.evalResolved` otherwise (the
@@ -1488,6 +1602,436 @@ module Incremental =
         | Some e -> Error e
         | None -> Ok(step, n)
 
+    /// Phase 333 — the cell a run holds at `j`: what `DataFrame.windowCellAt` gives for the same entry.
+    let private runCellAt (c: RunColumn) (j: int) : Cell =
+        match c with
+        | RunFloats(a, m) -> if m[j] then Float a[j] else Null
+        | RunInts a -> Int a[j]
+        | RunCells a -> a[j]
+
+    /// An empty run column of `n` entries, in `like`'s carrier.
+    let private runLike (like: RunColumn) (n: int) : RunColumn =
+        match like with
+        | RunFloats _ -> RunFloats(Array.zeroCreate n, Array.zeroCreate n)
+        | RunInts _ -> RunInts(Array.zeroCreate n)
+        | RunCells _ -> RunCells(Array.zeroCreate n)
+
+    /// Write the cell `c` at `j`; `false` where the carrier cannot hold it.
+    let private runSet (dst: RunColumn) (j: int) (c: Cell) : bool =
+        match dst, c with
+        | RunFloats(a, m), Float x ->
+            a[j] <- x
+            m[j] <- true
+            true
+        | RunFloats(_, m), Null ->
+            m[j] <- false
+            true
+        | RunInts a, Int x ->
+            a[j] <- x
+            true
+        | RunCells a, _ ->
+            a[j] <- c
+            true
+        | _ -> false
+
+    /// Copy `len` entries from `src` at `si` to `dst` at `di`; `false` where the carrier cannot hold
+    /// one.
+    let private runBlit (src: RunColumn) (si: int) (dst: RunColumn) (di: int) (len: int) : bool =
+        match src, dst with
+        | RunFloats(a, m), RunFloats(b, n) ->
+            Array.blit a si b di len
+            Array.blit m si n di len
+            true
+        | RunInts a, RunInts b ->
+            Array.blit a si b di len
+            true
+        | RunCells a, RunCells b ->
+            Array.blit a si b di len
+            true
+        | _ ->
+            let mutable fits = true
+
+            for j in 0 .. len - 1 do
+                fits <- runSet dst (di + j) (runCellAt src (si + j)) && fits
+
+            fits
+
+    /// Copy entry `i` of a scanned window column to `dst` at `j`; `false` where the carrier cannot
+    /// hold it.
+    let private runPut (src: DataFrame.WindowColumn) (i: int) (dst: RunColumn) (j: int) : bool =
+        match src, dst with
+        | DataFrame.WFloats(a, m), RunFloats(b, n) ->
+            b[j] <- a[i]
+            n[j] <- m[i]
+            true
+        | DataFrame.WInts a, RunInts b ->
+            b[j] <- a[i]
+            true
+        | _ -> runSet dst j (DataFrame.windowCellAt src i)
+
+    /// Phase 333 — the run a prefix-fold `Window` step made over the frame `f` (its rows in `f.Order`,
+    /// logical row `k` the slot `f.Order[k]`), from the ordering it scanned and the column it wrote by
+    /// logical row: what `windowResume` reads on the next refresh.
+    let private windowRunOf
+        (f: WalkFrame)
+        (spec: WindowSpec)
+        (wo: DataFrame.WindowOrder)
+        (appended: DataFrame.WindowColumn)
+        : WindowRun =
+        let order = f.Order
+        let perm = wo.Perm
+        let partIdx = DataFrame.windowPartitionIdx f.Cols spec
+        let bounds = ResizeArray<int>()
+        let keys = ResizeArray<Cell[]>()
+
+        for j in 0 .. perm.Length - 1 do
+            if j = 0 || wo.Slot[perm[j]] <> wo.Slot[perm[j - 1]] then
+                bounds.Add j
+                let s = order[perm[j]]
+                keys.Add(partIdx |> Array.map (fun c -> (column f c)[s]))
+
+        bounds.Add perm.Length
+
+        let out =
+            match appended with
+            | DataFrame.WFloats(a, m) -> RunFloats(perm |> Array.map (fun k -> a[k]), perm |> Array.map (fun k -> m[k]))
+            | DataFrame.WInts a -> RunInts(perm |> Array.map (fun k -> a[k]))
+            | DataFrame.WCells a -> RunCells(perm |> Array.map (fun k -> a[k]))
+
+        { Cols = f.Cols
+          Arrival = order
+          Perm = perm |> Array.map (fun k -> order[k])
+          Bounds = bounds.ToArray()
+          Keys = keys.ToArray()
+          Out = out
+          Column = [] }
+
+    /// Phase 333 — a prefix-fold `Window` step answered from the run it made last time (`run`, over
+    /// the same schema), or `None` where that run cannot be reused — the stable rows arrived in a
+    /// different order, or a seed does not fit — and the step recomputes wholesale.
+    ///
+    /// A prefix fold's value at a row is a function of the rows at or before it in its partition's
+    /// window order (`DataFrame.windowIsPrefixFold`). So each partition's new sequence is its prior run
+    /// with the rows that are no longer `Stable` taken out and the moved rows merged back in under the
+    /// reference's comparator (the `Sort` step's merge, ties by arrival); and up to the EARLIEST
+    /// position at which that sequence differs from the prior run — the first row taken out, or the
+    /// first row merged in, whichever is earlier — every row is the prior run's row with the prior
+    /// run's prefix ahead of it, so its cell is the prior run's cell. From that position on, the
+    /// reference's own scan (`DataFrame.windowColumnOver`) recomputes the suffix, seeded with the cell
+    /// at the position before it, which is the scan's running state there. A row whose position moved
+    /// (an order-key or a partition-key update) is not `Stable`, so it is taken out where it was and
+    /// merged in where it is: a change at both positions, in both partitions. A partition no prior row
+    /// was in is computed whole; one the delta emptied is gone.
+    ///
+    /// The unchanged prefix of a run is COPIED, slot and cell, never re-derived: what a refresh pays
+    /// beyond the suffix's scan is a pass over the slots, and an append-only tick's suffix is the rows
+    /// it appended.
+    ///
+    /// Returns the column's type, its cell at each position of `f.Order`, the slots whose `Stable`
+    /// survives the step (the rows ahead of their partition's earliest change), and the new run.
+    let private windowResume
+        (r: WalkRows)
+        (f: WalkFrame)
+        (vecOf: int -> Vec)
+        (run: WindowRun)
+        (spec: WindowSpec)
+        : Result<ColumnType * (int -> Cell) * bool[] * WindowRun * (Cell list * int[] * int) option, EvalError> option =
+        let arrival = f.Order
+        // In place (Phase 323), every slot holds the row the prior evaluation held there and only
+        // row-local steps ran ahead of this one, so the stable rows arrived in slot order both times:
+        // the prior slot IS the slot, and the arrival test is true by construction.
+        let inPlace = not (isNull r.InPlace)
+        let cur = if inPlace then null else currentOf r
+
+        if not inPlace && not (arrivedAsBefore r cur run.Arrival arrival) then
+            None
+        else
+            let width = r.Stable.Length
+
+            // Every slot alive in slot order: a slot's arrival position is the slot itself.
+            let identity = inPlace && arrival.Length = width
+
+            // The rows no longer `Stable`, in arrival order: in place, the changed rows the step still
+            // holds (the order is ascending there, every step ahead of this one being row-local).
+            let moved =
+                if inPlace then
+                    r.InPlace |> Array.filter (reaches arrival)
+                else
+                    arrival |> Array.filter (fun s -> not r.Stable[s])
+
+            // A slot's arrival position: the window's tie-break, and where the walk packed its row.
+            let posOf =
+                lazy
+                    (let a: int[] = Array.create width -1
+
+                     for k in 0 .. arrival.Length - 1 do
+                         a[arrival[k]] <- k
+
+                     a)
+
+            let posAt (s: int) = if identity then s else posOf.Value[s]
+
+            // The reference's comparator over the order keys, ties by arrival — the `Sort` step's.
+            let keys = DataFrame.resolveSortKeys f.Cols spec.OrderBy
+            let ra: Cell[] = Array.zeroCreate f.Data.Length
+            let rb: Cell[] = Array.zeroCreate f.Data.Length
+
+            let before (a: int) (b: int) =
+                for (i, _) in keys do
+                    let col = column f i
+                    ra[i] <- col[a]
+                    rb[i] <- col[b]
+
+                let c = DataFrame.compareResolved keys ra rb
+                if c <> 0 then c else compare (posAt a) (posAt b)
+
+            let partIdx = DataFrame.windowPartitionIdx f.Cols spec
+            let runs = run.Bounds.Length - 1
+
+            // The moved rows by the prior run of their partition, and the partitions no prior run was
+            // in, in arrival order. A partition is its key cells' TOKEN, the relation the window's own
+            // partitioning reads (`DataFrame.keySlots`).
+            let movedIn = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+            let fresh = ResizeArray<Cell[] * ResizeArray<int>>()
+
+            let addTo (g: int) (s: int) =
+                match movedIn.TryGetValue g with
+                | true, xs -> xs.Add s
+                | _ ->
+                    let xs = ResizeArray<int>()
+                    xs.Add s
+                    movedIn[g] <- xs
+
+            let addFresh (cells: Cell[]) (s: int) =
+                let xs = ResizeArray<int>()
+                xs.Add s
+                fresh.Add(cells, xs)
+
+            if moved.Length > 0 then
+                if partIdx.Length = 0 then
+                    for s in moved do
+                        if runs > 0 then addTo 0 s
+                        elif fresh.Count = 0 then addFresh [||] s
+                        else (snd fresh[0]).Add s
+                else
+                    let runOf = System.Collections.Generic.Dictionary<string, int>(runs)
+
+                    for g in 0 .. runs - 1 do
+                        runOf[DataFrame.rowTokenStringOfArray run.Keys[g]] <- g
+
+                    let freshOf = System.Collections.Generic.Dictionary<string, int>()
+
+                    for s in moved do
+                        let cells = partIdx |> Array.map (fun c -> (column f c)[s])
+                        let token = DataFrame.rowTokenStringOfArray cells
+
+                        match runOf.TryGetValue token with
+                        | true, g -> addTo g s
+                        | _ ->
+                            match freshOf.TryGetValue token with
+                            | true, i -> (snd fresh[i]).Add s
+                            | _ ->
+                                freshOf[token] <- fresh.Count
+                                addFresh cells s
+
+            let perm: int[] = Array.zeroCreate arrival.Length
+            let out = runLike run.Out arrival.Length
+            let mutable w = 0
+            let bounds = ResizeArray<int>()
+            let partKeys = ResizeArray<Cell[]>()
+            let keep: bool[] = Array.zeroCreate width
+            // The suffixes the scan recomputes, each a segment of `perm` — where it starts and ends,
+            // and its seed — and how many rows they hold together.
+            let segStart = ResizeArray<int>()
+            let segEnd = ResizeArray<int>()
+            let seeds = ResizeArray<Cell>()
+            let mutable m = 0
+            // Every seed fits, and every cell fits the run's carrier.
+            let mutable fits = true
+
+            // One partition's new run: `prefix` rows copied from the prior run at `[from0, from0 +
+            // prefix)`, slot and cell; then the prior run's stable rows from there to `restEnd`, with
+            // the moved rows `movedRows` (in window order) merged in — the rest, whose cells the scan
+            // recomputes, seeded with the copied prefix's last cell.
+            let place (keyCells: Cell[]) (from0: int) (prefix: int) (restEnd: int) (movedRows: int[]) =
+                let start = w
+                bounds.Add start
+                partKeys.Add keyCells
+
+                if prefix > 0 then
+                    fits <- runBlit run.Out from0 out w prefix && fits
+
+                    if inPlace then
+                        Array.blit run.Perm from0 perm w prefix
+                    else
+                        for j in 0 .. prefix - 1 do
+                            perm[w + j] <- cur[run.Perm[from0 + j]]
+
+                    for j in w .. w + prefix - 1 do
+                        keep[perm[j]] <- true
+
+                    w <- w + prefix
+
+                let restFrom = w
+
+                for j in from0 + prefix .. restEnd - 1 do
+                    let s = stableNowOf r cur run.Perm[j]
+
+                    if s >= 0 then
+                        perm[w] <- s
+                        w <- w + 1
+
+                // The moved rows merged into the stable rows just written, from the back: each finds
+                // its place by bisection, and the stable rows after it shift up once.
+                if movedRows.Length > 0 then
+                    let mutable i = w - 1
+                    let mutable d = w + movedRows.Length - 1
+
+                    for j in movedRows.Length - 1 .. -1 .. 0 do
+                        let y = movedRows[j]
+                        let mutable lo = restFrom
+                        let mutable hi = i + 1
+
+                        while lo < hi do
+                            let mid = lo + (hi - lo) / 2
+
+                            if before perm[mid] y < 0 then lo <- mid + 1 else hi <- mid
+
+                        let mutable k = i
+
+                        while k >= lo do
+                            perm[d] <- perm[k]
+                            d <- d - 1
+                            k <- k - 1
+
+                        perm[d] <- y
+                        d <- d - 1
+                        i <- lo - 1
+
+                    w <- w + movedRows.Length
+
+                if w = start then
+                    // Every row of the partition was taken out: it is gone.
+                    bounds.RemoveAt(bounds.Count - 1)
+                    partKeys.RemoveAt(partKeys.Count - 1)
+                elif w > restFrom then
+                    let seed =
+                        if prefix > 0 then
+                            runCellAt run.Out (from0 + prefix - 1)
+                        else
+                            Unchecked.defaultof<Cell>
+
+                    if prefix > 0 && not (DataFrame.windowSeedFits f.Cols spec seed) then
+                        fits <- false
+
+                    // The perturbation (`SeedShift`): the earliest changed row takes the seed unchanged
+                    // and the scan resumes one position late.
+                    let from =
+                        if r.SeedShift > 0 then
+                            fits <- runSet out restFrom (if prefix > 0 then seed else Null) && fits
+                            restFrom + 1
+                        else
+                            restFrom
+
+                    if from < w then
+                        segStart.Add from
+                        segEnd.Add w
+                        seeds.Add seed
+                        m <- m + (w - from)
+
+            for g in 0 .. runs - 1 do
+                let b0 = run.Bounds[g]
+                let b1 = run.Bounds[g + 1]
+
+                // The run's stable prefix: `[b0, jr)`, where `jr` is the first row taken out.
+                let mutable jr = b0
+
+                while jr < b1 && stableNowOf r cur run.Perm[jr] >= 0 do
+                    jr <- jr + 1
+
+                match movedIn.TryGetValue g with
+                | true, xs ->
+                    let movedRows = xs.ToArray() |> Array.sortWith before
+                    // Where the first moved row goes among the stable prefix: the prefix rows that go
+                    // out before it, by bisection (the prefix is in window order under `before`).
+                    let y = movedRows[0]
+                    let mutable a = b0
+                    let mutable b = jr
+
+                    while a < b do
+                        let mid = a + (b - a) / 2
+                        let s = if inPlace then run.Perm[mid] else cur[run.Perm[mid]]
+
+                        if before s y < 0 then a <- mid + 1 else b <- mid
+
+                    place run.Keys[g] b0 (a - b0) b1 movedRows
+                | _ -> place run.Keys[g] b0 (jr - b0) b1 [||]
+
+            for keyCells, rows in fresh do
+                place keyCells 0 0 0 (rows.ToArray() |> Array.sortWith before)
+
+            if not fits then
+                None
+            else
+                // The suffixes, through the reference's scan: each segment one partition of the
+                // ordering handed in, in sequence, read from the column the walk packs for the step.
+                let at: int[] = Array.zeroCreate m
+                let slotOf: int[] = Array.zeroCreate m
+                let phys: int[] = Array.zeroCreate m
+                let mutable i = 0
+
+                for g in 0 .. segStart.Count - 1 do
+                    for p in segStart[g] .. segEnd[g] - 1 do
+                        at[i] <- p
+                        slotOf[i] <- g
+                        phys[i] <- posAt perm[p]
+                        i <- i + 1
+
+                let wo: DataFrame.WindowOrder =
+                    { Slot = slotOf
+                      Partitions = seeds.Count
+                      Perm = Array.init m id
+                      Codes = ValueNone
+                      Same = fun _ _ -> false }
+
+                match DataFrame.windowColumnOver f.Cols vecOf phys spec wo (seeds.ToArray()) with
+                | Error e -> Some(Error e)
+                | Ok(ty, scanned) ->
+                    for i in 0 .. m - 1 do
+                        fits <- runPut scanned i out at[i] && fits
+
+                    if not fits then
+                        None
+                    else
+                        bounds.Add w
+
+                        let next =
+                            { Cols = f.Cols
+                              Arrival = arrival
+                              Perm = perm
+                              Bounds = bounds.ToArray()
+                              Keys = partKeys.ToArray()
+                              Out = out
+                              Column = [] }
+
+                        // The cell at each position of the step's frame, through each slot's place in
+                        // `perm`.
+                        let placeOf: int[] = Array.zeroCreate width
+
+                        for p in 0 .. w - 1 do
+                            placeOf[perm[p]] <- p
+
+                        // The prior column, where the prior step held every slot in slot order (a run
+                        // records its column only then): its cell at prior slot `r.Prior[s]` is this
+                        // column's for the rows `keep` names.
+                        let prior =
+                            if List.isEmpty run.Column then
+                                None
+                            else
+                                Some(run.Column, r.Prior, run.Arrival.Length)
+
+                        Some(Ok(ty, (fun k -> runCellAt out placeOf[arrival[k]]), keep, next, prior))
+
     /// Walk the propagating prefix, threading the frame. Dead rows leave `Order` and take no further
     /// part — exactly as in the reference evaluator, which has already dropped them — while what
     /// they reached stays recorded in `Steps`, so their cached prefix survives for the next refresh.
@@ -1558,31 +2102,9 @@ module Incremental =
                 | None -> None
                 | Some(prevArrival, prevOrder) ->
                     let cur = currentOf r
+                    let stableNow = stableNowOf r cur
 
-                    // A prior slot's row, now, where it is still stable; -1 otherwise.
-                    let stableNow (p: int) =
-                        let s = if p >= 0 && p < cur.Length then cur[p] else -1
-                        if s >= 0 && r.Stable[s] then s else -1
-
-                    // The stable rows' prior arrival, read in step with their arrival now: equal
-                    // sequences, compared without building either.
-                    let mutable i = 0
-                    let mutable j = 0
-                    let mutable same = true
-
-                    while same && (i < prevArrival.Length || j < arrival.Length) do
-                        if i < prevArrival.Length && stableNow prevArrival[i] < 0 then
-                            i <- i + 1
-                        elif j < arrival.Length && not r.Stable[arrival[j]] then
-                            j <- j + 1
-                        elif i < prevArrival.Length && j < arrival.Length then
-                            same <- stableNow prevArrival[i] = arrival[j]
-                            i <- i + 1
-                            j <- j + 1
-                        else
-                            same <- false
-
-                    if same then
+                    if arrivedAsBefore r cur prevArrival arrival then
                         let kept = ResizeArray<int>(prevOrder.Length)
 
                         for p in prevOrder do
@@ -1627,7 +2149,13 @@ module Incremental =
         // the scan are the frame path's own. The other columns are SHARED, array and origin, as a
         // `Derive` shares them: no array is written after the step that made it, and a column the
         // window does not read is never unpacked.
-        | WWindow spec :: rest ->
+        //
+        // Phase 333 — a PREFIX FOLD (`DataFrame.windowIsPrefixFold`: the row number, the running
+        // total, the running extremes) records the run it made (`WindowRun`), and the next refresh
+        // resumes it (`windowResume`): each partition reuses its prior run up to its earliest changed
+        // position and the reference's own scan continues it from there, seeded with the cell at the
+        // position before. Every other window function is recomputed wholesale, as before.
+        | WWindow(windowIdx, spec) :: rest ->
             let order = f.Order
             let types = f.Cols |> List.map snd |> List.toArray
             let packed = System.Collections.Generic.Dictionary<int, Vec>()
@@ -1666,8 +2194,40 @@ module Incremental =
                     packed[ci] <- v
                     v
 
-            DataFrame.windowColumnOf DataFrame.Ordering.Exact f.Cols vecOf (Array.init order.Length id) spec
-            |> Result.bind (fun (ty, appended) ->
+            let prefixFold = DataFrame.windowIsPrefixFold spec.Fn
+
+            // The step's outcome: the column's type, its cell at each position of `order`, the slots
+            // whose `Stable` survives the step (`null`: none does), and the run to record.
+            let outcome
+                : Result<
+                      ColumnType * (int -> Cell) * bool[] * WindowRun option * (Cell list * int[] * int) option,
+                      EvalError
+                   > =
+                let resumed =
+                    if not prefixFold then
+                        None
+                    else
+                        match Map.tryFind windowIdx prior.WindowRuns with
+                        | Some run when run.Cols = f.Cols -> windowResume r f vecOf run spec
+                        | _ -> None
+
+                match resumed with
+                | Some result ->
+                    result
+                    |> Result.map (fun (ty, cellAt, keep, run, prior) -> ty, cellAt, keep, Some run, prior)
+                | None when prefixFold ->
+                    let logical = Array.init order.Length id
+                    let wo = DataFrame.windowOrderOf DataFrame.Ordering.Exact f.Cols vecOf logical spec
+
+                    DataFrame.windowColumnOver f.Cols vecOf logical spec wo null
+                    |> Result.map (fun (ty, appended) ->
+                        ty, DataFrame.windowCellAt appended, null, Some(windowRunOf f spec wo appended), None)
+                | None ->
+                    DataFrame.windowColumnOf DataFrame.Ordering.Exact f.Cols vecOf (Array.init order.Length id) spec
+                    |> Result.map (fun (ty, appended) -> ty, DataFrame.windowCellAt appended, null, None, None)
+
+            outcome
+            |> Result.bind (fun (ty, cellAt, keep, run, reusable) ->
                 let cols2 = f.Cols @ [ spec.As, ty ]
 
                 // Every slot alive in slot order: the appended column is built as the cell LIST the
@@ -1678,23 +2238,64 @@ module Incremental =
                 // an old-generation object to a young one.
                 let data2, origins2 =
                     if identity.Value then
-                        let mutable cells = []
+                        // A resumed prefix fold (Phase 333) shares the prior column's cells for the rows
+                        // it kept where every one of them sits at its prior slot and the prior column is
+                        // as long as this one (in place): one pass over the prior list, and no cell boxed
+                        // again for a kept row.
+                        let shared =
+                            match reusable with
+                            | Some(priorCells, priorOf, priorCount) when priorCount = order.Length ->
+                                let mutable inPlace = true
+                                let mutable k = 0
 
-                        for k in order.Length - 1 .. -1 .. 0 do
-                            cells <- DataFrame.windowCellAt appended k :: cells
+                                while inPlace && k < order.Length do
+                                    inPlace <- not keep[k] || priorOf[k] = k
+                                    k <- k + 1
+
+                                if inPlace then Some priorCells else None
+                            | _ -> None
+
+                        let cells =
+                            match shared with
+                            | Some priorCells -> priorCells |> List.mapi (fun k c -> if keep[k] then c else cellAt k)
+                            | None ->
+                                let mutable cells = []
+
+                                for k in order.Length - 1 .. -1 .. 0 do
+                                    cells <- cellAt k :: cells
+
+                                cells
 
                         Array.append f.Data [| null |], Array.append f.Origins [| Some cells |]
                     else
                         let last: Cell[] = Array.zeroCreate r.Stable.Length
 
                         for k in 0 .. order.Length - 1 do
-                            last[order[k]] <- DataFrame.windowCellAt appended k
+                            last[order[k]] <- cellAt k
 
                         Array.append f.Data [| last |], Array.append f.Origins [| None |]
 
                 // `Stable` is cleared for EVERY slot, dead ones too: the appended column is a
-                // function of the whole frame (see `WalkRows`).
-                Array.fill r.Stable 0 r.Stable.Length false
+                // function of the whole frame (see `WalkRows`). A resumed prefix fold (Phase 333)
+                // keeps it for the rows ahead of each partition's earliest change and nowhere else:
+                // their window cell is the prior one, so every cell they carry onward is.
+                if isNull keep then
+                    Array.fill r.Stable 0 r.Stable.Length false
+                else
+                    for s in 0 .. r.Stable.Length - 1 do
+                        r.Stable[s] <- r.Stable[s] && keep[s]
+
+                let caches =
+                    match run with
+                    | Some run ->
+                        let run =
+                            match origins2[origins2.Length - 1] with
+                            | Some cells -> { run with Column = cells }
+                            | None -> run
+
+                        { caches with
+                            WindowRuns = Map.add windowIdx run caches.WindowRuns }
+                    | None -> caches
 
                 walk
                     resolve
@@ -2770,6 +3371,7 @@ module Incremental =
         (named: Set<string> option)
         (inPlace: int[] option)
         (recomputeOf: int -> int -> Recompute)
+        (seedShift: int)
         : Result<IncrementalEval, EvalError> =
         let rowCount = tokens.Length
 
@@ -2881,13 +3483,15 @@ module Incremental =
               PriorSteps = priorSteps
               PriorCount = priorTokens.Length
               Steps = ResizeArray<Cell[]>()
-              InPlace = inPlaceRows }
+              InPlace = inPlaceRows
+              SeedShift = seedShift }
 
         let priorCaches =
             match prior with
             | Some s ->
                 { SortOrders = s.SortOrders
-                  JoinKeys = s.JoinKeys }
+                  JoinKeys = s.JoinKeys
+                  WindowRuns = s.WindowRuns }
             | None -> noCaches
 
         let priorSource, priorExact =
@@ -2930,6 +3534,7 @@ module Incremental =
                       ChunksTouched = None
                       SourceExact = sourceExact
                       GroupRows = [||]
+                      WindowRuns = caches.WindowRuns
                       PipelineKey = ""
                       Stale = None }
             | Some(keys, aggs, tail) ->
@@ -2981,6 +3586,7 @@ module Incremental =
                           ChunksTouched = None
                           SourceExact = sourceExact
                           GroupRows = List.toArray g.Rows
+                          WindowRuns = caches'.WindowRuns
                           PipelineKey = ""
                           Stale = None }
 
@@ -3033,7 +3639,8 @@ module Incremental =
                               PriorSteps = priorTail
                               PriorCount = priorOrder.Length
                               Steps = ResizeArray<Cell[]>()
-                              InPlace = null }
+                              InPlace = null
+                              SeedShift = seedShift }
 
                         let rowArrays = List.toArray g.Rows
                         let width = List.length g.Cols
@@ -3073,10 +3680,16 @@ module Incremental =
         (prepared: Prepared option)
         (recompute: int -> Recompute)
         : Result<IncrementalEval, EvalError> =
-        // Over the prepared frame where there is one (Phase 267), the `Table` boundary otherwise.
-        (match prepared with
-         | Some p -> DataFrame.evalPreparedCounted resolve env pipeline p
-         | None -> DataFrame.evalPipelineWithInEnvCounted resolve env pipeline source)
+        // Over the prepared frame where there is one (Phase 267), the `Table` boundary otherwise —
+        // prepared here exactly as `evalPipelineWithInEnvCounted` prepares it, so the source's row
+        // count is the one the boundary already took rather than a second walk of its first column
+        // (Phase 333: a declined refresh costs the evaluation it falls back to).
+        let boundary =
+            match prepared with
+            | Some p -> p
+            | None -> DataFrame.prepare source
+
+        DataFrame.evalPreparedCounted resolve env pipeline boundary
         |> Result.map (fun (output, evaluated) ->
             { Plan = p
               Pipeline = pipeline
@@ -3094,7 +3707,7 @@ module Incremental =
               SortOrders = Map.empty
               JoinKeys = Map.empty
               Footprint =
-                { SourceRows = Table.rowCount source
+                { SourceRows = boundary.Count
                   ResultRows = Table.rowCount output
                   Recompute = recompute evaluated }
               GroupOrder = [||]
@@ -3103,6 +3716,7 @@ module Incremental =
               ChunksTouched = None
               SourceExact = [||]
               GroupRows = [||]
+              WindowRuns = Map.empty
               PipelineKey = ""
               Stale = None })
 
@@ -3129,6 +3743,7 @@ module Incremental =
         (inPlace: int[] option)
         (recomputeOf: int -> int -> Recompute)
         (onDeclined: FallBackReason -> int -> Recompute)
+        (seedShift: int)
         : Result<IncrementalEval, EvalError> =
         // Phase 269 — the seam runs the PLANNED pipeline: classified, split and evaluated in the
         // form `Plan.rewrite` gives it over the source's schema. The state records both forms —
@@ -3187,7 +3802,8 @@ module Incremental =
                      prior
                      named
                      inPlace
-                     recomputeOf)
+                     recomputeOf
+                     seedShift)
         |> Result.map (fun s ->
             { s with
                 Pipeline = written
@@ -3213,8 +3829,20 @@ module Incremental =
         (pipeline: Transform list)
         (source: Table)
         : Result<IncrementalEval, EvalError> =
-        run resolve env idw pipeline source None None None None None (fun evaluated _ -> Primed evaluated) (fun _ n ->
-            Primed n)
+        run
+            resolve
+            env
+            idw
+            pipeline
+            source
+            None
+            None
+            None
+            None
+            None
+            (fun evaluated _ -> Primed evaluated)
+            (fun _ n -> Primed n)
+            0
 
     // ---- Phase 268 — the chunked path ----
     //
@@ -3536,6 +4164,7 @@ module Incremental =
           ChunksTouched = Some touched
           SourceExact = [||]
           GroupRows = [||]
+          WindowRuns = Map.empty
           PipelineKey = ""
           Stale = None }
 
@@ -3570,6 +4199,7 @@ module Incremental =
                 None
                 (fun evaluated _ -> Primed evaluated)
                 (fun _ n -> Primed n)
+                0
 
         match deriveSteps pipeline with
         | None -> rowPath ()
@@ -3585,6 +4215,16 @@ module Incremental =
         match state.Prepared with
         | Some p -> p.Cols
         | None -> state.Source.Value.Schema
+
+    /// Phase 333 — is the refresh's pipeline the state's: the same object, or an equal one. The
+    /// identity test first, because structural equality has no such shortcut of its own: it walks the
+    /// whole pipeline, an EMBEDDED relation cell by cell, and a caller holding one pipeline across
+    /// ticks paid that walk on every one (6.4 ms of a 100,000-row join's refresh, measured; a third of
+    /// a 1,000-row one's). The answer is the one `=` gives, in either case.
+    let private samePipeline (a: Transform list) (b: Transform list) : bool = obj.ReferenceEquals(a, b) || a = b
+
+    /// `samePipeline` for the env.
+    let private sameEnv (a: Map<string, Cell>) (b: Map<string, Cell>) : bool = obj.ReferenceEquals(a, b) || a = b
 
     /// Is `pipeline` a different pipeline from the one the state was built for? Structural equality
     /// answers for a state built in this process. A decoded state (Phase 355) holds the codec's
@@ -3610,13 +4250,14 @@ module Incremental =
         (delta: TableDelta)
         (source: Table)
         (given: Prepared option)
+        (seedShift: int)
         : Result<IncrementalEval, EvalError> =
         let stale =
             if state.Stale.IsSome then
                 state.Stale
             elif pipelineMoved pipeline state then
                 Some PipelineChanged
-            elif env <> state.Env then
+            elif not (sameEnv env state.Env) then
                 Some EnvChanged
             elif idw.Scheme <> state.Scheme then
                 Some(RowIdentityUnusable(SchemeMismatch(state.Scheme, idw.Scheme)))
@@ -3678,6 +4319,7 @@ module Incremental =
                 None
                 (fun evaluated _ -> FullRecompute(evaluated, r))
                 (fun declined n -> FullRecompute(n, declined))
+                seedShift
         | None ->
             // A quiet delta over a source that is byte-identical to the one the state was evaluated
             // against is the one case where the prior result can be handed back untouched. The
@@ -3734,6 +4376,7 @@ module Incremental =
                         | RowLocalThenGroups -> GroupsRecomputed(evaluated, groups)
                         | _ -> RowsRecomputed evaluated)
                     (fun declined n -> FullRecompute(n, declined))
+                    seedShift
 
     /// Advance a state against a delta describing the change from the state's source to `source`.
     /// The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every
@@ -3751,7 +4394,21 @@ module Incremental =
         (delta: TableDelta)
         (source: Table)
         : Result<IncrementalEval, EvalError> =
-        refreshWith resolve env idw pipeline state delta source None
+        refreshWith resolve env idw pipeline state delta source None 0
+
+    /// Phase 333 — `refresh` with every resumed prefix-fold window started ONE POSITION LATE: the
+    /// perturbation the suffix laws (`IncrementalWindowTests`) go red against, so a law that holds is
+    /// shown not to hold vacuously. Never a consumer's call.
+    let internal refreshSeedShifted
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (idw: RowIdentity<'Id>)
+        (pipeline: Transform list)
+        (state: IncrementalEval)
+        (delta: TableDelta)
+        (source: Table)
+        : Result<IncrementalEval, EvalError> =
+        refreshWith resolve env idw pipeline state delta source None 1
 
     /// `refresh` against a prepared version of the source (Phase 268) — the shape a consumer that
     /// edits through `ColumnOps.applyPrepared` holds. The result equals `refresh` over
@@ -3776,7 +4433,7 @@ module Incremental =
         (prepared: Prepared)
         : Result<IncrementalEval, EvalError> =
         let rowPath () =
-            refreshWith resolve env idw pipeline state delta (Prepared.table prepared) (Some prepared)
+            refreshWith resolve env idw pipeline state delta (Prepared.table prepared) (Some prepared) 0
 
         match deriveSteps pipeline with
         | None -> rowPath ()
@@ -3790,7 +4447,7 @@ module Incremental =
                     state.Stale
                 elif pipelineMoved pipeline state then
                     Some PipelineChanged
-                elif env <> state.Env then
+                elif not (sameEnv env state.Env) then
                     Some EnvChanged
                 elif idw.Scheme <> state.Scheme then
                     Some(RowIdentityUnusable(SchemeMismatch(state.Scheme, idw.Scheme)))
@@ -3934,7 +4591,7 @@ module Incremental =
 /// **What the encoding carries** is everything a refresh reads: the pipeline and its planned form
 /// (the classification is a pure function of the planned form and is recomputed, so no encoding
 /// can carry a plan that disagrees with its pipeline), the env, the identity scheme, the source,
-/// the result, the row and group caches, and the footprint. Cells are written EXACTLY (their own
+/// the result, the row, group, order, relation and window caches, and the footprint. Cells are written EXACTLY (their own
 /// case, their own text, the sign of a zero), because a cached cell stands in for an evaluation.
 /// The prepared and chunked working forms are not carried: their sharing is by object identity,
 /// which no wire holds, so a decoded state answers `refreshPrepared` over a pipeline of derives as
@@ -4039,6 +4696,28 @@ module IncrementalCodec =
         | FullRecompute(n, reason) ->
             Canon.typed "fullRecompute" [ "rowsEvaluated", JInt n; "reason", reasonJson reason ]
 
+    /// A prefix-fold window's run: its frame's schema, its orderings, each partition's key cells
+    /// and the cells it wrote, in the carrier it wrote them in (a float run keeps its floats exact,
+    /// as a cell does).
+    let private windowRunMembers (run: WindowRun) : (string * JVal) list =
+        let out =
+            match run.Out with
+            | RunFloats(values, present) ->
+                Canon.typed
+                    "floats"
+                    [ "values", JArr(values |> Array.map StateWire.floatJson |> List.ofArray)
+                      "present", JArr(present |> Array.map JBool |> List.ofArray) ]
+            | RunInts values -> Canon.typed "ints" [ "values", ints values ]
+            | RunCells values -> Canon.typed "cells" [ "values", cells values ]
+
+        [ "cols", StateWire.schemaJson run.Cols
+          "arrival", ints run.Arrival
+          "perm", ints run.Perm
+          "bounds", ints run.Bounds
+          "keys", JArr(run.Keys |> Array.map cells |> List.ofArray)
+          "out", out
+          "column", cellList run.Column ]
+
     /// The state's members but its source, which `encodeWith` renders on its own (its text is
     /// also what the key's fingerprint is taken over).
     ///
@@ -4106,7 +4785,13 @@ module IncrementalCodec =
            "groupOrder", strs s.GroupOrder
            "tailCells", JArr(s.TailCells |> Array.map cells |> List.ofArray)
            "sourceExact", JArr(s.SourceExact |> Array.map JBool |> List.ofArray)
-           "groupRows", JArr(s.GroupRows |> Array.map cells |> List.ofArray) ]
+           "groupRows", JArr(s.GroupRows |> Array.map cells |> List.ofArray)
+           "windowRuns",
+           JArr(
+               s.WindowRuns
+               |> Map.toList
+               |> List.map (fun (step, run) -> JObj(("step", JInt step) :: windowRunMembers run))
+           ) ]
          @ chunks)
 
     /// A JSON object's canonical text from its members' canonical texts: the members in Ordinal
@@ -4281,16 +4966,17 @@ module IncrementalCodec =
             | Some ty -> Ok ty
             | None -> Error(UnknownType(tag, ColumnType.allTags)))
 
+    let private schemaOf (el: JVal) : Result<Schema, ColumnError> =
+        el
+        |> items (fun entry ->
+            match entry with
+            | JArr [ JStr name; ty ] -> typeOf ty |> Result.map (fun t -> name, t)
+            | _ -> Error(MalformedShape "incremental state: a schema entry is [name, type]"))
+        |> Result.map List.ofArray
+
     let private tableOf (el: JVal) : Result<Table, ColumnError> =
         res {
-            let! schema =
-                el
-                |> at
-                    "schema"
-                    (items (fun entry ->
-                        match entry with
-                        | JArr [ JStr name; ty ] -> typeOf ty |> Result.map (fun t -> name, t)
-                        | _ -> Error(MalformedShape "incremental state: a schema entry is [name, type]")))
+            let! schema = el |> at "schema" schemaOf
 
             let! columns =
                 el
@@ -4309,7 +4995,7 @@ module IncrementalCodec =
                         }))
 
             return
-                { Schema = List.ofArray schema
+                { Schema = schema
                   Columns = List.ofArray columns }
         }
 
@@ -4442,6 +5128,47 @@ module IncrementalCodec =
             | other -> return! Error(UnknownType(other, recomputeTags))
         }
 
+    let private windowRunOf (el: JVal) : Result<int * WindowRun, ColumnError> =
+        res {
+            let! step = el |> at "step" intOf
+            let! cols = el |> at "cols" schemaOf
+            let! arrival = el |> at "arrival" (items intOf)
+            let! perm = el |> at "perm" (items intOf)
+            let! bounds = el |> at "bounds" (items intOf)
+            let! keys = el |> at "keys" (items (cellsOf false))
+            let! column = el |> at "column" cellListOf
+
+            let! out =
+                el
+                |> at "out" (fun o ->
+                    res {
+                        let! tag = o |> at "$type" strOf
+
+                        match tag with
+                        | "floats" ->
+                            let! values = o |> at "values" (items StateWire.floatOfJson)
+                            let! present = o |> at "present" (items boolOf)
+                            return RunFloats(values, present)
+                        | "ints" ->
+                            let! values = o |> at "values" (items intOf)
+                            return RunInts values
+                        | "cells" ->
+                            let! values = o |> at "values" (cellsOf true)
+                            return RunCells values
+                        | other -> return! Error(UnknownType(other, [ "floats"; "ints"; "cells" ]))
+                    })
+
+            return
+                step,
+                { Cols = cols
+                  Arrival = arrival
+                  Perm = perm
+                  Bounds = bounds
+                  Keys = keys
+                  Out = out
+                  Column = column }
+        }
+
     /// The alignments the walk indexes by. A state the encoder wrote holds them all; an encoding
     /// that does not is refused here rather than met as an out-of-range read inside a refresh.
     let private misaligned (s: IncrementalEval) : string option =
@@ -4474,6 +5201,24 @@ module IncrementalCodec =
             )
         then
             Some "a cached sort order names a slot the state does not hold"
+        elif
+            not (
+                s.WindowRuns
+                |> Map.forall (fun _ run ->
+                    let written =
+                        match run.Out with
+                        | RunFloats(values, present) ->
+                            values.Length = run.Perm.Length && present.Length = run.Perm.Length
+                        | RunInts values -> values.Length = run.Perm.Length
+                        | RunCells values -> not (isNull (box values)) && values.Length = run.Perm.Length
+
+                    written
+                    && within slots run.Arrival
+                    && within slots run.Perm
+                    && run.Bounds |> Array.forall (fun b -> b >= 0 && b <= run.Perm.Length))
+            )
+        then
+            Some "a cached window run is not aligned with the frame it was made over"
         elif
             s.SourceExact.Length <> 0
             && s.SourceExact.Length <> List.length s.Source.Value.Schema
@@ -4586,6 +5331,7 @@ module IncrementalCodec =
             let! tailCells = st |> at "tailCells" (items (cellsOf true))
             let! sourceExact = st |> at "sourceExact" (items boolOf)
             let! groupRows = st |> at "groupRows" (items (cellsOf false))
+            let! windowRuns = st |> at "windowRuns" (items windowRunOf)
 
             let! chunksTouched =
                 match tryField "chunksTouched" st with
@@ -4639,6 +5385,7 @@ module IncrementalCodec =
                   ChunksTouched = chunksTouched
                   SourceExact = sourceExact
                   GroupRows = groupRows
+                  WindowRuns = Map.ofArray windowRuns
                   PipelineKey = key.Pipeline
                   Stale = None }
 
@@ -4663,6 +5410,7 @@ module IncrementalCodec =
                         TailCells = [||]
                         SourceExact = [||]
                         GroupRows = [||]
+                        WindowRuns = Map.empty
                         Stale = Some DeltaIsFullRefresh }
         }
 

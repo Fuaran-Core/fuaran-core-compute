@@ -287,6 +287,47 @@ let tests =
                    |> Result.map (fun s -> Incremental.result s, Incremental.footprint s))
                   "a refresh over a table from either state"
 
+          testCase "a running window's run round-trips, so the decoded state resumes it"
+          <| fun _ ->
+              // A prefix-fold window records the run it made so the next refresh recomputes only
+              // each touched partition's suffix. The run is a cache like any other: it is on the
+              // wire, exactly, and the decoded state encodes to the same bytes.
+              let running =
+                  [ Window
+                        { PartitionBy = [ "b" ]
+                          OrderBy = [ "a", Asc ]
+                          Fn = CumulSum
+                          Of = "a"
+                          As = "run" } ]
+
+              let state = ok (Incremental.primeOn idw running baseTable)
+              let text = ok (IncrementalCodec.encode state)
+              Expect.isFalse (text.Contains "\"windowRuns\":[]") "the state holds a run, so the claim is not vacuous"
+              let decoded = ok (IncrementalCodec.decode text)
+              Expect.equal (IncrementalCodec.encode decoded) (Ok text) "the run comes back as it was written"
+
+              let after =
+                  table (
+                      baseRows
+                      |> List.map (fun (i, a, b) -> if i = "r3" then i, Int 40, b else i, a, b)
+                  )
+
+              let delta = ok (Delta.diff idw baseTable after)
+              let original = ok (Incremental.refreshOn idw running state delta after)
+              let resumed = ok (Incremental.refreshOn idw running decoded delta after)
+              Expect.equal (Incremental.result resumed) (Incremental.result original) "the same table"
+              Expect.equal (Incremental.footprint resumed) (Incremental.footprint original) "the same footprint"
+
+              Expect.equal
+                  (Ok(Incremental.result resumed))
+                  (DataFrame.evalPipeline running after)
+                  "the reference's table"
+
+              Expect.equal
+                  (IncrementalCodec.encode resumed)
+                  (IncrementalCodec.encode original)
+                  "and the state the resumed refresh built is the state the original built, run included"
+
           // ================= the key =================
 
           testCase "a pipeline is recognised by its canonical wire string, not by the value built"

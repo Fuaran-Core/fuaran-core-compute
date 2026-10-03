@@ -90,7 +90,7 @@ paid a full evaluation every run. `Fuaran.Compute.DataFrame` gains a module and 
 
 - **`IncrementalCodec.encode` / `decode`** — the canonical wire string for a state and its reader.
   The encoding carries everything a refresh reads: the pipeline and its planned form, the env, the
-  identity scheme, the source, the result, the row, group, order and relation caches and the
+  identity scheme, the source, the result, the row, group, order, relation and window caches and the
   footprint. Cells are written exactly (their own case, their own text, the sign of a zero), where
   the column codec returns a table to a normal form, because a cached cell stands in for an
   evaluation. The classification is recomputed from the planned form rather than carried.

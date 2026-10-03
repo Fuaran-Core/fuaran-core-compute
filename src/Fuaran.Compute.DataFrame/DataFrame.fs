@@ -4544,14 +4544,33 @@ module DataFrame =
         : Result<Frame, EvalError> =
         let resolved = resolveExpr env f.Cols pred
 
-        match filterBits k f resolved with
-        | Some bits ->
+        // Phase 333 — a selection naming a row past the vectors is REFUSED, by name. The comparison
+        // kernels read a bitmap over the vectors, where such an entry reads as an unset bit and was
+        // silently DROPPED; the compiled path refused it with the runtime's index message. Both
+        // hosts now refuse it here, before either path, with one message.
+        let past =
+            match f.Sel with
+            | Some sel -> sel |> Array.tryFind (fun p -> p < 0 || p >= f.Count)
+            | None -> None
+
+        match past, filterBits k f resolved with
+        | Some p, _ ->
+            Error(
+                TypeError(
+                    "the frame's selection names row "
+                    + string p
+                    + ", past its "
+                    + string f.Count
+                    + "-row vectors"
+                )
+            )
+        | None, Some bits ->
             // The comparison kernels (Phase 270): the predicate's rows as a bitmap over the whole
             // vector, read back in the frame's logical order.
             match f.Sel with
             | None -> Ok(Frame.select f (k.Selection bits))
             | Some sel -> Ok(Frame.select f (sel |> Array.filter (Kernels.isSet bits)))
-        | None ->
+        | None, None ->
             // Compiled once per morsel (Phase 266; Phase 270's morsels), run once per logical row
             // in logical order within it; a typed boolean root is read unboxed. Each morsel keeps
             // its rows, and the morsels' rows in morsel order become the frame's selection; the
@@ -6946,12 +6965,52 @@ module DataFrame =
             Floats(vals, mask)
         | WCells cells -> Vec.packAt ty count (fun i -> phys[i]) cells
 
+    /// Phase 333 — is the window function's value at a row a FOLD over its partition's prefix in
+    /// window order: a function of the rows at or before it alone, carried from one row to the next
+    /// by a single running state that the function's own output at a row IS. The row number (a
+    /// count), the running total and the running extremes are; the ranks are not (a tie reads the
+    /// previous row's order key, which the output does not carry), `NTile` is not (a bucket reads the
+    /// partition's LENGTH), `Lead` is not (it reads the row after), and the lag and the rolling pair
+    /// read a fixed neighbourhood of preceding values, which the output at the preceding row does not
+    /// carry either. A prefix fold is what the incremental seam may recompute from the earliest
+    /// changed position of a partition, seeded with the output at the position before it.
+    let internal windowIsPrefixFold (fn: WindowFn) : bool =
+        match fn with
+        | RowNumber
+        | CumulSum
+        | CumulMax
+        | CumulMin -> true
+        | Rank
+        | DenseRank
+        | CompetitionRank
+        | NTile _
+        | Lag
+        | Lead
+        | RollingMean
+        | RollingSum -> false
+
+    /// Does a running total over `spec.Of` stay EXACT (Phase 277): is the source a decimal column?
+    let private windowSourceIsDecimal (cols: Schema) (spec: WindowSpec) : bool = colType cols spec.Of = Some DecimalType
+
+    /// Phase 333 — is `seed` a running state a prefix fold's scan can resume from: the cell the
+    /// function's own scan writes at a row, which is the only place a seed may be read from. A row
+    /// number is an `Int`, a float running total a `Float`, an exact one a `Decimal`; a running
+    /// extreme is whatever cell it carries forward, `Null` (no value yet) included.
+    let internal windowSeedFits (cols: Schema) (spec: WindowSpec) (seed: Cell) : bool =
+        match spec.Fn, seed with
+        | RowNumber, Int _ -> true
+        | CumulSum, Decimal _ -> windowSourceIsDecimal cols spec
+        | CumulSum, Float _ -> not (windowSourceIsDecimal cols spec)
+        | CumulMax, _
+        | CumulMin, _ -> true
+        | _ -> false
+
     /// The `Window` step's appended column (Phase 324): its type, and one value per LOGICAL row of
     /// the rows `phys` reads, over the vectors `vecOf` names by schema index. The frame form packs it
     /// back at the physical rows; the public row form (`windowStep`) and the incremental seam's
     /// window step pack the columns they read and place the cell on each row. Each partition is one
     /// run of the window ordering's permutation, scanned in sequence.
-    let internal windowColumnOf
+    let rec internal windowColumnOf
         (perturbation: Ordering.Perturbation)
         (cols: Schema)
         (vecOf: int -> Vec)
@@ -6961,15 +7020,59 @@ module DataFrame =
         match spec.Fn, colIndex cols spec.Of with
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
+        | _ -> windowColumnOver cols vecOf phys spec (windowOrderOf perturbation cols vecOf phys spec) null
+
+    /// The schema indexes of a window's PARTITION columns, a name the schema does not carry dropped
+    /// (the window partitions by the columns it can find, as it always has).
+    and internal windowPartitionIdx (cols: Schema) (spec: WindowSpec) : int[] =
+        spec.PartitionBy |> List.choose (colIndex cols) |> List.toArray
+
+    /// The schema index of the column a window reads, where the schema carries it.
+    and internal windowOfIdx (cols: Schema) (spec: WindowSpec) : int option = colIndex cols spec.Of
+
+    /// The window ordering of `spec` over the rows `phys` reads (`windowOrder`), with its partition
+    /// and order columns resolved under `cols` — the ordering `windowColumnOf` scans.
+    and internal windowOrderOf
+        (perturbation: Ordering.Perturbation)
+        (cols: Schema)
+        (vecOf: int -> Vec)
+        (phys: int[])
+        (spec: WindowSpec)
+        : WindowOrder =
+        // The ORDER keys resolved once for the step (Phase 263), not once per comparison.
+        windowOrder perturbation vecOf phys (windowPartitionIdx cols spec) (resolveSortKeys cols spec.OrderBy)
+
+    /// The scan of `windowColumnOf` over an ordering already computed (Phase 333): each partition —
+    /// a run of `wo.Perm` sharing a `wo.Slot` — scanned in sequence, and every output landing at its
+    /// row's logical position. `seeds` is `null` for the whole evaluation; otherwise it holds, per
+    /// partition slot, the running state a PREFIX FOLD (`windowIsPrefixFold`) resumes from — the
+    /// output the same scan wrote at the row before the run's first row — or `null` for a run that
+    /// starts its partition. That is how the incremental seam recomputes a partition's SUFFIX: the
+    /// rows it hands in are the suffix alone, and the scan that continues them is this one, so a
+    /// resumed run is the full run's continuation by construction rather than by a second
+    /// implementation of each fold. A seed is read only by a prefix fold, and must fit
+    /// (`windowSeedFits`).
+    and internal windowColumnOver
+        (cols: Schema)
+        (vecOf: int -> Vec)
+        (phys: int[])
+        (spec: WindowSpec)
+        (wo: WindowOrder)
+        (seeds: Cell[])
+        : Result<ColumnType * WindowColumn, EvalError> =
+        match spec.Fn, colIndex cols spec.Of with
+        | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
+        | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
         | _, ofIdx ->
             let n = phys.Length
             // A running total over a decimal column stays exact (Phase 277).
-            let sourceIsDecimal = colType cols spec.Of = Some DecimalType
-            let partIdx = spec.PartitionBy |> List.choose (colIndex cols) |> List.toArray
-            // The ORDER keys resolved once for the step (Phase 263), not once per comparison.
-            let orderKeys = resolveSortKeys cols spec.OrderBy
-            let wo = windowOrder perturbation vecOf phys partIdx orderKeys
+            let sourceIsDecimal = windowSourceIsDecimal cols spec
             let perm = wo.Perm
+
+            // The running state partition slot `g`'s run resumes from, or `null` where it starts the
+            // partition (`windowColumnOver`).
+            let seedOf (g: int) : Cell =
+                if isNull seeds then Unchecked.defaultof<Cell> else seeds[g]
 
             // The output sink the function's type calls for; the other two stay `null`.
             let intOut =
@@ -7045,14 +7148,25 @@ module DataFrame =
                             | Some x -> ValueSome x
                             | None -> ValueNone
 
-            // One partition: the permutation's run `[s, e)`.
-            let partition (s: int) (e: int) =
+            // One partition: the permutation's run `[s, e)`, of partition slot `g`. A prefix fold's
+            // running state starts at its seed where the run resumes one (`windowColumnOver`).
+            let partition (g: int) (s: int) (e: int) =
                 let len = e - s
+                let seed = seedOf g
+                let fresh = isNull (box seed)
 
                 match spec.Fn with
                 | RowNumber ->
+                    let start =
+                        if fresh then
+                            0
+                        else
+                            match seed with
+                            | Int r -> r
+                            | _ -> 0
+
                     for k in 0 .. len - 1 do
-                        ints[perm[s + k]] <- k + 1
+                        ints[perm[s + k]] <- start + k + 1
                 // Dense-ish rank by the order key: ties (equal order keys) share a rank.
                 | Rank
                 | DenseRank ->
@@ -7098,7 +7212,13 @@ module DataFrame =
                 // Phase 277: over a decimal column the running total is EXACT and a decimal, as
                 // `Sum` over one is (Core `DECISIONS.md` D72 K7) — never a float in silence.
                 | CumulSum when sourceIsDecimal ->
-                    let mutable acc = DecimalText.zero
+                    let mutable acc =
+                        if fresh then
+                            DecimalText.zero
+                        else
+                            match seed with
+                            | Decimal t -> t
+                            | _ -> DecimalText.zero
 
                     for k in 0 .. len - 1 do
                         let i = Raw.at (s + k) perm
@@ -7111,7 +7231,13 @@ module DataFrame =
                 // The running float total, left to right from 0.0 in window order.
                 // A typed source is read straight from its carrier, one array read per row.
                 | CumulSum ->
-                    let mutable acc = 0.0
+                    let mutable acc =
+                        if fresh then
+                            0.0
+                        else
+                            match seed with
+                            | Float x -> x
+                            | _ -> 0.0
 
                     match ofVec with
                     | Some(Ints(a, m)) ->
@@ -7187,7 +7313,7 @@ module DataFrame =
                 // forward, so a leading run of nulls is `Null` (never a seeded 0).
                 | CumulMax
                 | CumulMin ->
-                    let mutable acc = Null
+                    let mutable acc = if fresh then Null else seed
 
                     for k in 0 .. len - 1 do
                         let i = Raw.at (s + k) perm
@@ -7215,7 +7341,7 @@ module DataFrame =
                 while e < n && wo.Slot[perm[e]] = g do
                     e <- e + 1
 
-                partition s e
+                partition g s e
                 s <- e
 
             let ty =
