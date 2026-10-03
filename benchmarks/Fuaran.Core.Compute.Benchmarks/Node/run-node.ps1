@@ -18,6 +18,7 @@
 
     pwsh ./run-node.ps1 -FableFrom <dir with a fable tool manifest>
     pwsh ./run-node.ps1 -FableFrom <dir> -Runs 5 -KeepOutput
+    pwsh ./run-node.ps1 -FableFrom <dir> -Runs 3 -Only state
 
   Exit 0 = the harness compiled, every corpus agreement held, and the tables printed.
 #>
@@ -28,6 +29,8 @@ param(
     [string] $FableFrom,
     # Measured runs per case, after two warm-up runs.
     [int] $Runs = 10,
+    # A family to run alone: 'typed' or 'state'. Empty runs the timing tables.
+    [string] $Only = '',
     # Keep the emitted JavaScript for inspection.
     [switch] $KeepOutput
 )
@@ -70,7 +73,7 @@ try {
     if (-not (Test-Path -LiteralPath $entry)) { throw "no emitted entry point at $entry" }
 
     Write-Host "node $(& $node.Source --version), $Runs measured runs per case"
-    & $node.Source $entry $Runs
+    if ($Only) { & $node.Source $entry $Runs $Only } else { & $node.Source $entry $Runs }
     if ($LASTEXITCODE -ne 0) { throw "the node run of the harness failed (exit $LASTEXITCODE)" }
 }
 finally {

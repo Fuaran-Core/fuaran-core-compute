@@ -27,6 +27,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
+    <!-- Phase 355: the state-codec laws, run on this host before the state's wire form is measured. -->
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

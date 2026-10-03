@@ -7,7 +7,8 @@
 /// Usage: `node Program.js [runs]` once compiled (see run-node.ps1), or
 /// `dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks/Node -- [runs]`.
 /// `runs` is the number of measured samples per case (default 10), after two warm-up calls; a second
-/// argument `typed` times only the typed family (`node Program.js 10 typed`).
+/// argument `typed` times only the typed family (`node Program.js 10 typed`), and `state` measures only the
+/// incremental state's wire form (`node Program.js 3 state`).
 module Fuaran.Core.Compute.Benchmarks.Node.Program
 
 open System
@@ -159,6 +160,141 @@ let private typedTable () =
                                 (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                               n ]
 
+/// The sizes the state's wire form is measured at (Phase 355).
+let private stateSizes = [ 1_000; 100_000; 1_000_000 ]
+
+/// The largest size this host is asked for. Under node the million-row case exhausts the default
+/// heap while the encoding is assembled, which ends the process rather than raising, so it is
+/// reported in its row without being attempted.
+let private stateCeiling =
+#if FABLE_COMPILER
+    100_000
+#else
+    1_000_000
+#endif
+
+/// The best of `runs` single calls, in milliseconds. A single call, not a calibrated batch: at a
+/// million rows one call is seconds, and the figure wanted is what one run of a job pays.
+let private bestMs (runs: int) (f: unit -> 'T) : float =
+    let mutable best = Double.PositiveInfinity
+
+    for _ in 1..runs do
+        let start = nowMs ()
+        f () |> ignore
+        let took = nowMs () - start
+
+        if took < best then
+            best <- took
+
+    best
+
+/// The incremental state's wire form (Phase 355): the state-codec laws on this host first, then,
+/// per Scaling pipeline and size, the encoded state against the source it was built over and what
+/// encoding, decoding and resuming cost beside a full evaluation.
+let private stateTable () =
+    for seed in [ 1; 7; 99 ] do
+        for r in Fuaran.Compute.IncrementalDelta.stateLaws seed 60 do
+            if not r.Passed then
+                failwith (
+                    "benchmark corpus: the state-codec law failed on this host (seed "
+                    + string seed
+                    + "): "
+                    + r.Law
+                    + (match r.Counterexample with
+                       | Some c -> " | " + c
+                       | None -> "")
+                )
+
+    printfn ""
+    printfn "The state-codec laws: green over 3 seeds of 60 draws on this host"
+    printfn ""
+    printfn "### The incremental state's wire form (Phase 355)"
+    printfn ""
+
+    printfn
+        "| Pipeline | Rows | Source (chars) | State (chars) | x source | Detached (chars) | x source | Encode (ms) | Decode (ms) | Decode over source (ms) | Diff + refresh (ms) | Full evaluation (ms) |"
+
+    printfn "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+
+    let idw = Corpus.scalingIdentity
+    let runs = runsRef.Value
+
+    for name, pipeline in Corpus.scalingPipelines do
+        for n in stateSizes do
+            if n > stateCeiling then
+                printfn "| %s | %s | not measured: past this host's default heap |" name (rows n)
+            else
+
+                try
+                    let before = Corpus.scalingTable n
+                    let after = Corpus.editOne before
+
+                    let state =
+                        Fuaran.Compute.Incremental.primeOn idw pipeline before |> Corpus.orFail "prime"
+
+                    let source = Fuaran.Core.ColumnCodec.encode (Fuaran.Core.Embedded before)
+
+                    let carrying =
+                        Fuaran.Compute.IncrementalCodec.encode state |> Corpus.orFail "encode"
+
+                    let detached =
+                        Fuaran.Compute.IncrementalCodec.encodeDetached state
+                        |> Corpus.orFail "encodeDetached"
+
+                    let decoded =
+                        Fuaran.Compute.IncrementalCodec.decode carrying |> Corpus.orFail "decode"
+
+                    // What a second process does: measure the change against the decoded state's own
+                    // source, then refresh from the decoded state.
+                    let resume (s: Fuaran.Compute.IncrementalEval) =
+                        let delta =
+                            Fuaran.Compute.Delta.diff idw (Fuaran.Compute.Incremental.source s) after
+                            |> Corpus.orFail "diff"
+
+                        Fuaran.Compute.Incremental.refreshOn idw pipeline s delta after
+                        |> Corpus.orFail "refresh"
+
+                    let original = resume state
+                    let resumed = resume decoded
+
+                    let over =
+                        Fuaran.Compute.IncrementalCodec.decodeOver before detached
+                        |> Corpus.orFail "decodeOver"
+                        |> resume
+
+                    for what, s in [ "decoded", resumed; "decoded over its source", over ] do
+                        if
+                            Fuaran.Compute.Incremental.result s
+                            <> Fuaran.Compute.Incremental.result original
+                            || Fuaran.Compute.Incremental.footprint s
+                               <> Fuaran.Compute.Incremental.footprint original
+                        then
+                            failwithf
+                                "benchmark corpus: the refresh from the %s state of %s at %d rows disagrees with the original's"
+                                what
+                                name
+                                n
+
+                    let per (chars: int) =
+                        sprintf "%.2f" (float chars / float source.Length)
+
+                    printfn
+                        "| %s | %s | %s | %s | %s | %s | %s | %.1f | %.1f | %.1f | %.1f | %.1f |"
+                        name
+                        (rows n)
+                        (rows source.Length)
+                        (rows carrying.Length)
+                        (per carrying.Length)
+                        (rows detached.Length)
+                        (per detached.Length)
+                        (bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.encode state))
+                        (bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.decode carrying))
+                        (bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.decodeOver before detached))
+                        (bestMs runs (fun () -> resume decoded))
+                        (bestMs runs (fun () -> Fuaran.Compute.DataFrame.evalPipeline pipeline after))
+                with e when not (e.Message.StartsWith "benchmark corpus:") ->
+                    printfn "| %s | %s | %s |" name (rows n) (notMeasured e)
+
 [<EntryPoint>]
 let main argv =
     let runs =
@@ -173,8 +309,10 @@ let main argv =
 
     // `typed` as the second argument times the typed family alone (Phase 280).
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
+    // `state` measures the incremental state's wire form alone (Phase 355).
+    let onlyState = argv.Length > 1 && argv.[1] = "state"
 
-    if not onlyTyped then
+    if not onlyTyped && not onlyState then
         table
             "Sheet"
             [ for n in Corpus.sheetSizes do
@@ -222,5 +360,6 @@ let main argv =
                             (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                           n ]
 
-    typedTable ()
+    if onlyState then stateTable () else typedTable ()
+
     0
