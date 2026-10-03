@@ -70,7 +70,12 @@ module DataFrameFamilies =
           r
               "IncrementalDelta.lawsWith"
               Drawn
-              "declined pipelines are picked from a fixed menu by the kit's roll; guarded on refresh class" ]
+              "declined pipelines are picked from a fixed menu by the kit's roll; guarded on refresh class"
+          // Phase 355 - every refusal the state codec makes is built each iteration.
+          r
+              "IncrementalDelta.stateLaws"
+              Built
+              "each iteration truncates and alters an encoding, reads a detached one without its source, and decodes one over a foreign source" ]
 
     /// The adequacy-census rows for the families above — `SampleAdequacy.census`'s vocabulary,
     /// moved verbatim except `aggregateParityLaws`, which now compares parity alone.
@@ -90,6 +95,9 @@ module DataFrameFamilies =
           // Phase 321 — and the decimal column read by a maintained step.
           "IncrementalDelta.lawsWith",
           Guarded [ "refresh class"; "cross-row column read"; "decimal column"; "source rows" ]
+          // Phase 355 - a draw that never resumed a restricted refresh, never round-tripped a state a
+          // refresh built or never met a foreign source certifies the state codec over less than it says.
+          "IncrementalDelta.stateLaws", Guarded [ "state class" ]
           "IncrementalDelta.laws",
           Guarded
               [ "refresh class"
@@ -201,7 +209,9 @@ module DataFrameFamilies =
           c "plannerLaws" none (Some SeamNotEveryDomainHas) []
 
           f "IncrementalDelta" "laws" none (Some SeamNotEveryDomainHas) []
-          f "IncrementalDelta" "lawsWith" none (Some SeamNotEveryDomainHas) [] ]
+          f "IncrementalDelta" "lawsWith" none (Some SeamNotEveryDomainHas) []
+          // Phase 355 - the state's wire form.
+          f "IncrementalDelta" "stateLaws" none (Some SeamNotEveryDomainHas) [] ]
 
     /// This package's share, for a reader composing it with the kit's `Families.roster`.
     let roster: Roster =

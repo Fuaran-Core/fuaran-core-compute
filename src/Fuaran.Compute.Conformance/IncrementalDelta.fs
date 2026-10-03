@@ -789,14 +789,14 @@ module IncrementalDelta =
 
     // ---- generation ----
 
-    /// Generate the samples for a seed, drawing tables of one to `rowBound` rows.
-    ///
-    /// The bound is a parameter for one reason: it is the exact lever Phase 115 had to move (from 5
-    /// to 9, because most tables held ONE row and no tie between a named and an unnamed row ever
-    /// arose), so the go-red proof for this family's span demand is to narrow it again and watch the
-    /// guard fail. A probe that lives in the suite is a proof; a probe that lived in one session's
-    /// memory is a claim. `samples` pins the shipped bound.
-    let samplesWith (rowBound: int) (seed: int) (iterations: int) : IncrementalSample list =
+    /// The draws behind every sample: the base table, the edited one and the edit's tag, the
+    /// pipeline, the delta, and the delta's kind. `samplesWith` and `stateLaws` both read them, so
+    /// the two quantify over one corpus.
+    let private drawsWith
+        (rowBound: int)
+        (seed: int)
+        (iterations: int)
+        : (int * Table * Table * string * Transform list * TableDelta * int) list =
         let mutable rng = ConfRng.ofSeed seed
 
         [ for i in 0 .. iterations - 1 do
@@ -822,7 +822,17 @@ module IncrementalDelta =
               let before = mkTable rows
               let after, edit = editOf ek rows i
               let pipeline = pipelineOf pk
-              let delta = deltaOf dk before after
+              yield i, before, after, edit, pipeline, deltaOf dk before after, dk ]
+
+    /// Generate the samples for a seed, drawing tables of one to `rowBound` rows.
+    ///
+    /// The bound is a parameter for one reason: it is the exact lever Phase 115 had to move (from 5
+    /// to 9, because most tables held ONE row and no tie between a named and an unnamed row ever
+    /// arose), so the go-red proof for this family's span demand is to narrow it again and watch the
+    /// guard fail. A probe that lives in the suite is a proof; a probe that lived in one session's
+    /// memory is a claim. `samples` pins the shipped bound.
+    let samplesWith (rowBound: int) (seed: int) (iterations: int) : IncrementalSample list =
+        [ for (i, before, after, edit, pipeline, delta, _) in drawsWith rowBound seed iterations do
               let p = Incremental.plan pipeline
 
               let reference = DataFrame.evalPipeline pipeline after
@@ -1275,3 +1285,253 @@ module IncrementalDelta =
 
     /// The incremental-evaluation equivalence laws at the shipped table-width bound.
     let laws (seed: int) (iterations: int) : LawResult list = lawsWith 9 seed iterations
+
+    // ---- Phase 355 — the state across a process boundary ----
+    //
+    // `IncrementalCodec` gives the state a wire form, so a consumer that runs in fresh processes
+    // resumes from the state the last run stored. That is a claim of the same kind as the seam's
+    // own: an equality, for every pair the corpus draws, between a refresh from the decoded state
+    // and a refresh from the state that never left memory — in the cells and in the footprint,
+    // because a decoded state that quietly evaluated everything would pass an equality over cells
+    // alone. The family reads the draws `samplesWith` reads, so the two quantify over one corpus,
+    // and it carries the claim one step further than a single (base, delta) pair can: the state a
+    // REFRESH built holds the group, order and relation caches a prime never fills, so that state
+    // is round-tripped and refreshed again.
+    //
+    // It also holds the two ways out. A key that does not match is a full evaluation that says so,
+    // and an encoding that is damaged is refused: truncated at seven points and altered at eight,
+    // each iteration, every one of which must decode to an error and none to a state.
+
+    /// What one state-codec iteration reached — the classes the family's adequacy demand reads.
+    type private StateReach = { Classes: string list }
+
+    let private stateDemands: AdequacyDemand<StateReach> list =
+        [ ReachesEvery(
+              "state class",
+              [ "declined"
+                "row-restricted"
+                "group-restricted"
+                "refresh-built state"
+                "foreign source" ],
+              fun s -> s.Classes
+          ) ]
+
+    /// The state-codec laws (Phase 355), over the draws the equivalence family reads:
+    ///  - **a decoded state reads as the state that was encoded** — `result`, `footprint`,
+    ///    `source`, `strategy`, `plan'` and the key answer alike, and it re-encodes to the same
+    ///    bytes;
+    ///  - **a refresh from a decoded state equals a refresh from the original** — the same table
+    ///    or the same error, and the same footprint — from an encoding that carries its source and
+    ///    from a detached one decoded over it;
+    ///  - **a state a refresh built survives the round trip** — the next refresh from it equals
+    ///    the next refresh from the original;
+    ///  - **a key mismatch is a full evaluation that says so** — another pipeline evaluates in
+    ///    full from the decoded state exactly as from the original, and a state decoded over a
+    ///    source it was not built for evaluates in full and reports it;
+    ///  - **a damaged encoding is refused** — truncated or altered, it decodes to an error; and a
+    ///    detached encoding is refused without its source;
+    /// and the family's adequacy demand: every class those laws branch on was reached.
+    let stateLaws (seed: int) (iterations: int) : LawResult list =
+        let mutable reads = None
+        let mutable refresh = None
+        let mutable detached = None
+        let mutable sequence = None
+        let mutable pipelineKey = None
+        let mutable sourceKey = None
+        let mutable damage = None
+        let reached = ResizeArray<StateReach>()
+
+        let answer (r: Result<IncrementalEval, EvalError>) =
+            r |> Result.map (fun s -> Incremental.result s, Incremental.footprint s)
+
+        let refused (r: Result<IncrementalEval, ColumnError>) =
+            match r with
+            | Error _ -> true
+            | Ok _ -> false
+
+        let isFull (r: Result<IncrementalEval, EvalError>) =
+            match r with
+            | Ok s ->
+                (match (Incremental.footprint s).Recompute with
+                 | FullRecompute _ -> true
+                 | _ -> false)
+            | Error _ -> true
+
+        for (i, before, after, edit, pipeline, delta, dk) in drawsWith 9 seed iterations do
+            let cite (what: string) =
+                Some("seed=" + string seed + " iter=" + string i + " edit=" + edit + ": " + what)
+
+            match Incremental.primeOn idw pipeline before with
+            | Error _ -> ()
+            | Ok primed ->
+                let original = Incremental.refreshOn idw pipeline primed delta after
+                let classes = ResizeArray<string>()
+
+                match Incremental.strategy primed with
+                | ReferenceOnly _ -> classes.Add "declined"
+                | _ -> ()
+
+                match IncrementalCodec.encode primed with
+                | Error e ->
+                    if reads.IsNone then
+                        reads <- cite ("encode refused a primed state: " + ColumnCodec.errorString e)
+                | Ok text ->
+                    match IncrementalCodec.decode text with
+                    | Error e ->
+                        if reads.IsNone then
+                            reads <- cite ("decode refused its own encoding: " + ColumnCodec.errorString e)
+                    | Ok decoded ->
+                        let readsAlike =
+                            Incremental.result decoded = Incremental.result primed
+                            && Incremental.footprint decoded = Incremental.footprint primed
+                            && Incremental.source decoded = Incremental.source primed
+                            && Incremental.strategy decoded = Incremental.strategy primed
+                            && Incremental.plan' decoded = Incremental.plan' primed
+                            && IncrementalCodec.keyOf decoded = IncrementalCodec.keyOf primed
+                            && IncrementalCodec.encode decoded = Ok text
+
+                        if not readsAlike && reads.IsNone then
+                            reads <- cite "a decoded state does not read as the state that was encoded"
+
+                        let resumed = Incremental.refreshOn idw pipeline decoded delta after
+
+                        if answer resumed <> answer original && refresh.IsNone then
+                            refresh <- cite "a refresh from the decoded state <> a refresh from the original"
+
+                        match resumed with
+                        | Ok s ->
+                            (match (Incremental.footprint s).Recompute with
+                             | RowsRecomputed _ -> classes.Add "row-restricted"
+                             | GroupsRecomputed _ -> classes.Add "group-restricted"
+                             | _ -> ())
+                        | Error _ -> ()
+
+                        // Another pipeline: a full evaluation, from either state alike.
+                        let other = Filter(Lit(Bool true)) :: pipeline
+                        let otherResumed = Incremental.refreshOn idw other decoded delta after
+
+                        if
+                            (answer otherResumed
+                             <> answer (Incremental.refreshOn idw other primed delta after)
+                             || not (isFull otherResumed))
+                            && pipelineKey.IsNone
+                        then
+                            pipelineKey <-
+                                cite
+                                    "another pipeline over the decoded state did not evaluate in full as the original does"
+
+                        // Damage: truncated at seven points, altered at eight.
+                        let truncated =
+                            text.Substring(0, text.Length - 1)
+                            :: [ for k in 1..6 -> text.Substring(0, text.Length * k / 7) ]
+
+                        let altered =
+                            [ for k in 0..7 ->
+                                  let at = text.Length * (2 * k + 1) / 16
+                                  let c = if text[at] = 'a' then "b" else "a"
+                                  text.Substring(0, at) + c + text.Substring(at + 1) ]
+
+                        if
+                            not (truncated @ altered |> List.forall (IncrementalCodec.decode >> refused))
+                            && damage.IsNone
+                        then
+                            damage <- cite "a truncated or altered encoding decoded to a state"
+
+                    // The state a refresh built, round-tripped and refreshed back to the base.
+                    match original with
+                    | Error _ -> ()
+                    | Ok next ->
+                        let back = deltaOf dk after before
+                        let expected = Incremental.refreshOn idw pipeline next back before
+
+                        match IncrementalCodec.encode next |> Result.bind IncrementalCodec.decode with
+                        | Error e ->
+                            if sequence.IsNone then
+                                sequence <- cite ("a refreshed state did not round-trip: " + ColumnCodec.errorString e)
+                        | Ok next' ->
+                            classes.Add "refresh-built state"
+
+                            if
+                                answer (Incremental.refreshOn idw pipeline next' back before) <> answer expected
+                                && sequence.IsNone
+                            then
+                                sequence <-
+                                    cite
+                                        "the next refresh from a round-tripped refreshed state <> the next from the original"
+
+                // The detached form: no source on the wire, the consumer supplies it.
+                match IncrementalCodec.encodeDetached primed with
+                | Error e ->
+                    if detached.IsNone then
+                        detached <- cite ("encodeDetached refused a primed state: " + ColumnCodec.errorString e)
+                | Ok text ->
+                    if not (refused (IncrementalCodec.decode text)) && damage.IsNone then
+                        damage <- cite "a detached encoding decoded without its source"
+
+                    match IncrementalCodec.decodeOver before text with
+                    | Error e ->
+                        if detached.IsNone then
+                            detached <-
+                                cite (
+                                    "decodeOver refused a detached encoding over its source: "
+                                    + ColumnCodec.errorString e
+                                )
+                    | Ok decoded ->
+                        if
+                            answer (Incremental.refreshOn idw pipeline decoded delta after)
+                            <> answer original
+                            && detached.IsNone
+                        then
+                            detached <-
+                                cite "a refresh from the state decoded over its source <> a refresh from the original"
+
+                    // A source the state was not built for: a full evaluation that says so.
+                    if
+                        IncrementalCodec.sourceFingerprint after
+                        <> IncrementalCodec.sourceFingerprint before
+                    then
+                        match IncrementalCodec.decodeOver after text with
+                        | Error e ->
+                            if sourceKey.IsNone then
+                                sourceKey <-
+                                    cite ("decodeOver refused a foreign source outright: " + ColumnCodec.errorString e)
+                        | Ok foreign ->
+                            classes.Add "foreign source"
+                            let run = Incremental.refreshOn idw pipeline foreign delta after
+
+                            let saysSo =
+                                match run with
+                                | Error _ -> true
+                                | Ok s ->
+                                    match (Incremental.footprint s).Recompute, Incremental.strategy s with
+                                    | FullRecompute(_, DeltaIsFullRefresh), _ -> true
+                                    | FullRecompute _, ReferenceOnly _ -> true
+                                    | _ -> false
+
+                            if
+                                (Result.map Incremental.result run <> Result.map Incremental.result original
+                                 || not saysSo)
+                                && sourceKey.IsNone
+                            then
+                                sourceKey <-
+                                    cite "a state decoded over a foreign source did not evaluate in full and say so"
+
+                reached.Add { Classes = List.ofSeq classes }
+
+        let law (name: string) (finding: string option) : LawResult =
+            { Law = name
+              Passed = finding.IsNone
+              Counterexample = finding }
+
+        [ law "a decoded state reads as the state that was encoded, and re-encodes to the same bytes" reads
+          law
+              "a refresh from a decoded state equals a refresh from the original, cell for cell and in footprint"
+              refresh
+          law "a refresh from a state decoded over its source equals a refresh from the original" detached
+          law "a state a refresh built survives the round trip: the next refresh from it equals the original's" sequence
+          law
+              "a pipeline that is not the state's evaluates in full, from the decoded state as from the original"
+              pipelineKey
+          law "a state decoded over a source it was not built for evaluates in full and says so" sourceKey
+          law "a truncated or altered encoding is refused, and a detached one is refused without its source" damage ]
+        @ SampleAdequacy.check "IncrementalDelta.stateLaws" seed stateDemands (List.ofSeq reached)

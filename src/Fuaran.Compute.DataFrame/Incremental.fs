@@ -455,7 +455,319 @@ type IncrementalEval =
             /// Phase 323 — the group table's rows (key cells, then aggregate cells) as the
             /// maintained `GroupBy` last computed them, aligned with `GroupOrder`; empty otherwise.
             GroupRows: Cell[][]
+            /// Phase 355 — on a state DECODED from its wire form, the canonical hash of the pipeline
+            /// it was built for (`IncrementalCodec.pipelineHash`); empty on a state built in this
+            /// process. A decoded pipeline is the codec's normal form of the one that was encoded,
+            /// so a refresh over a decoded state compares the hash where structural equality fails.
+            PipelineKey: string
+            /// Phase 355 — set on a state decoded over a source that is not the one it was built
+            /// for (`IncrementalCodec.decodeOver`): the reason its next refresh evaluates in full.
+            /// Such a state carries no caches. `None` everywhere else.
+            Stale: FallBackReason option
         }
+
+/// Phase 355 — the key an encoded incremental state is stored under: the pipeline it was built for
+/// and the source it last saw, each as a SHA-256 digest of its canonical encoding. A state answers
+/// a delta only where both match; a mismatch on either is a full evaluation.
+type IncrementalStateKey =
+    {
+        /// `IncrementalCodec.pipelineHash` of the pipeline the state was built for.
+        Pipeline: string
+        /// `IncrementalCodec.sourceFingerprint` of the source the state was last evaluated against.
+        Source: string
+    }
+
+/// Phase 355 — the pieces of the state's wire form that the seam itself reads: the digest, the
+/// exact cell and table encodings, and the two halves of the key. Internal; `IncrementalCodec`
+/// below is the public face.
+module internal StateWire =
+
+    // A DELIBERATE COPY of SHA-256 (FIPS 180-4), kept because this package references only the
+    // column and wire packages and the substrate's digest lives above both. It hashes the UTF-8
+    // bytes of a string, an unpaired surrogate as U+FFFD, and must stay VALUE-IDENTICAL to the
+    // substrate's `Hash.sha256Hex`: the suite compares the two over a corpus that crosses the block
+    // boundary. `uint32` only, every add masked: an unmasked sum passes 2^53 under a float-backed
+    // host in the second block and the digest diverges there. Streamed a block at a time, so a
+    // large encoding is never held a second time as bytes.
+
+    let private k: uint32[] =
+        [| 0x428a2f98u
+           0x71374491u
+           0xb5c0fbcfu
+           0xe9b5dba5u
+           0x3956c25bu
+           0x59f111f1u
+           0x923f82a4u
+           0xab1c5ed5u
+           0xd807aa98u
+           0x12835b01u
+           0x243185beu
+           0x550c7dc3u
+           0x72be5d74u
+           0x80deb1feu
+           0x9bdc06a7u
+           0xc19bf174u
+           0xe49b69c1u
+           0xefbe4786u
+           0x0fc19dc6u
+           0x240ca1ccu
+           0x2de92c6fu
+           0x4a7484aau
+           0x5cb0a9dcu
+           0x76f988dau
+           0x983e5152u
+           0xa831c66du
+           0xb00327c8u
+           0xbf597fc7u
+           0xc6e00bf3u
+           0xd5a79147u
+           0x06ca6351u
+           0x14292967u
+           0x27b70a85u
+           0x2e1b2138u
+           0x4d2c6dfcu
+           0x53380d13u
+           0x650a7354u
+           0x766a0abbu
+           0x81c2c92eu
+           0x92722c85u
+           0xa2bfe8a1u
+           0xa81a664bu
+           0xc24b8b70u
+           0xc76c51a3u
+           0xd192e819u
+           0xd6990624u
+           0xf40e3585u
+           0x106aa070u
+           0x19a4c116u
+           0x1e376c08u
+           0x2748774cu
+           0x34b0bcb5u
+           0x391c0cb3u
+           0x4ed8aa4au
+           0x5b9cca4fu
+           0x682e6ff3u
+           0x748f82eeu
+           0x78a5636fu
+           0x84c87814u
+           0x8cc70208u
+           0x90befffau
+           0xa4506cebu
+           0xbef9a3f7u
+           0xc67178f2u |]
+
+    let private rotr (x: uint32) (n: int) : uint32 = (x >>> n) ||| (x <<< (32 - n))
+
+    let inline private (.+.) (x: uint32) (y: uint32) : uint32 = (x + y) &&& 0xFFFFFFFFu
+
+    let private hexChars = "0123456789abcdef"
+
+    /// Lowercase-hex SHA-256 over the UTF-8 bytes of `s`.
+    let sha256Hex (s: string) : string =
+        let h =
+            [| 0x6a09e667u
+               0xbb67ae85u
+               0x3c6ef372u
+               0xa54ff53au
+               0x510e527fu
+               0x9b05688cu
+               0x1f83d9abu
+               0x5be0cd19u |]
+
+        let w = Array.zeroCreate<uint32> 64
+        let block = Array.zeroCreate<uint32> 64
+        // [| bytes in the current block; bytes pushed in all |]
+        let counts = [| 0; 0 |]
+
+        let compress () =
+            for t in 0..15 do
+                w[t] <-
+                    (block[t * 4] <<< 24)
+                    ||| (block[t * 4 + 1] <<< 16)
+                    ||| (block[t * 4 + 2] <<< 8)
+                    ||| block[t * 4 + 3]
+
+            for t in 16..63 do
+                let s0 = (rotr w[t - 15] 7) ^^^ (rotr w[t - 15] 18) ^^^ (w[t - 15] >>> 3)
+                let s1 = (rotr w[t - 2] 17) ^^^ (rotr w[t - 2] 19) ^^^ (w[t - 2] >>> 10)
+                w[t] <- w[t - 16] .+. s0 .+. w[t - 7] .+. s1
+
+            let mutable a = h[0]
+            let mutable b = h[1]
+            let mutable c = h[2]
+            let mutable d = h[3]
+            let mutable e = h[4]
+            let mutable f = h[5]
+            let mutable g = h[6]
+            let mutable hh = h[7]
+
+            for t in 0..63 do
+                let s1 = (rotr e 6) ^^^ (rotr e 11) ^^^ (rotr e 25)
+                let ch = (e &&& f) ^^^ ((~~~e) &&& g)
+                let temp1 = hh .+. s1 .+. ch .+. k[t] .+. w[t]
+                let s0 = (rotr a 2) ^^^ (rotr a 13) ^^^ (rotr a 22)
+                let maj = (a &&& b) ^^^ (a &&& c) ^^^ (b &&& c)
+                let temp2 = s0 .+. maj
+                hh <- g
+                g <- f
+                f <- e
+                e <- d .+. temp1
+                d <- c
+                c <- b
+                b <- a
+                a <- temp1 .+. temp2
+
+            h[0] <- h[0] .+. a
+            h[1] <- h[1] .+. b
+            h[2] <- h[2] .+. c
+            h[3] <- h[3] .+. d
+            h[4] <- h[4] .+. e
+            h[5] <- h[5] .+. f
+            h[6] <- h[6] .+. g
+            h[7] <- h[7] .+. hh
+            counts[0] <- 0
+
+        let push (b: int) =
+            block[counts[0]] <- uint32 b
+            counts[0] <- counts[0] + 1
+            counts[1] <- counts[1] + 1
+
+            if counts[0] = 64 then
+                compress ()
+
+        let mutable i = 0
+
+        while i < s.Length do
+            let c = int s[i]
+
+            let pairs =
+                c >= 0xD800
+                && c <= 0xDBFF
+                && i + 1 < s.Length
+                && (let lo = int s[i + 1] in lo >= 0xDC00 && lo <= 0xDFFF)
+
+            if c < 0x80 then
+                push c
+            elif c < 0x800 then
+                push (0xC0 ||| (c >>> 6))
+                push (0x80 ||| (c &&& 0x3F))
+            elif pairs then
+                let lo = int s[i + 1]
+                let cp = 0x10000 + ((c - 0xD800) <<< 10) + (lo - 0xDC00)
+                push (0xF0 ||| (cp >>> 18))
+                push (0x80 ||| ((cp >>> 12) &&& 0x3F))
+                push (0x80 ||| ((cp >>> 6) &&& 0x3F))
+                push (0x80 ||| (cp &&& 0x3F))
+                i <- i + 1
+            elif c >= 0xD800 && c <= 0xDFFF then
+                push 0xEF
+                push 0xBF
+                push 0xBD
+            else
+                push (0xE0 ||| (c >>> 12))
+                push (0x80 ||| ((c >>> 6) &&& 0x3F))
+                push (0x80 ||| (c &&& 0x3F))
+
+            i <- i + 1
+
+        // Padding: 0x80, zeros to 56 mod 64, then the bit length as two big-endian `uint32` halves.
+        let byteLen = counts[1]
+        push 0x80
+
+        while counts[0] <> 56 do
+            push 0
+
+        let lo = uint32 byteLen <<< 3
+        let hi = uint32 byteLen >>> 29
+
+        for shift in [ 24; 16; 8; 0 ] do
+            push (int ((hi >>> shift) &&& 0xFFu))
+
+        for shift in [ 24; 16; 8; 0 ] do
+            push (int ((lo >>> shift) &&& 0xFFu))
+
+        let sb = System.Text.StringBuilder()
+
+        for v in h do
+            for shift in [ 28; 24; 20; 16; 12; 8; 4; 0 ] do
+                sb.Append(hexChars[int ((v >>> shift) &&& 0xFu)]) |> ignore
+
+        sb.ToString()
+
+    // ---- the exact cell and table encodings ----
+    //
+    // The column codec round-trips a table to a NORMAL FORM (an int in a float column comes back a
+    // float, decimal text comes back canonical), which is right for a table on the wire and wrong
+    // for a cache: a cached cell is reused in place of an evaluation, so it has to come back as
+    // the cell that was computed. Every cell is therefore written under its own case: an int, a
+    // bool and a string as the bare JSON value, the absent cell as `[]`, and the other four as a
+    // one-member object naming the case. A float is finite JSON where it can be and a token where
+    // it cannot (`NaN`, the infinities, and `-0`, which the canonical float layout folds into `0`).
+    // `{}` is a slot that holds no cell at all: a row that never reached the step.
+
+    let private floatJson (f: float) : JVal =
+        match JVal.nonFiniteToken f with
+        | Some tok -> JStr tok
+        | None -> if f = 0.0 && 1.0 / f < 0.0 then JStr "-0" else JFloat f
+
+    let cellJson (c: Cell) : JVal =
+        if isNull (box c) then
+            JObj []
+        else
+            match c with
+            | Null -> JArr []
+            | Int i -> JInt i
+            | Bool b -> JBool b
+            | Str s -> JStr s
+            | Float f -> JObj [ "f", floatJson f ]
+            | Date s -> JObj [ "d", JStr s ]
+            | Timestamp s -> JObj [ "t", JStr s ]
+            | Decimal s -> JObj [ "m", JStr s ]
+
+    /// Decode one cell. `unreached` says whether `{}` (no cell) is admitted here: it is in a step's
+    /// cached cells and nowhere else.
+    let cellOfJson (unreached: bool) (el: JVal) : Result<Cell, ColumnError> =
+        match el with
+        | JArr [] -> Ok Null
+        | JInt i -> Ok(Int i)
+        | JBool b -> Ok(Bool b)
+        | JStr s -> Ok(Str s)
+        | JObj [] when unreached -> Ok(Unchecked.defaultof<Cell>)
+        | JObj [ "f", JFloat f ] -> Ok(Float f)
+        | JObj [ "f", JInt i ] -> Ok(Float(float i))
+        | JObj [ "f", JStr "NaN" ] -> Ok(Float nan)
+        | JObj [ "f", JStr "Infinity" ] -> Ok(Float infinity)
+        | JObj [ "f", JStr "-Infinity" ] -> Ok(Float(-infinity))
+        | JObj [ "f", JStr "-0" ] -> Ok(Float(-0.0))
+        | JObj [ "d", JStr s ] -> Ok(Date s)
+        | JObj [ "t", JStr s ] -> Ok(Timestamp s)
+        | JObj [ "m", JStr s ] -> Ok(Decimal s)
+        | _ -> Error(MalformedShape("incremental state: not a cell (" + JVal.kindName el + ")"))
+
+    /// A table exactly as it is held: the schema, then the columns in the table's own order, each
+    /// with its own name, type and cells. Nothing is matched to the schema or padded, so a table
+    /// the evaluator reads through its total padding rule comes back the same table.
+    let tableJson (t: Table) : JVal =
+        JObj
+            [ "schema", JArr(t.Schema |> List.map (fun (n, ty) -> JArr [ JStr n; JStr(ColumnType.tag ty) ]))
+              "columns",
+              JArr(
+                  t.Columns
+                  |> List.map (fun c ->
+                      JObj
+                          [ "name", JStr c.Name
+                            "type", JStr(ColumnType.tag c.Type)
+                            "cells", JArr(c.Cells |> List.map cellJson) ])
+              ) ]
+
+    /// The canonical hash of a pipeline: SHA-256 of its canonical wire string.
+    let pipelineHash (pipeline: Transform list) : string =
+        sha256Hex (DataFrameCodec.encodePipeline pipeline)
+
+    /// The fingerprint of a source: SHA-256 of its exact canonical encoding. Two tables share one
+    /// exactly when they hold the same schema, the same columns in the same order and the same
+    /// cells under the same cases.
+    let sourceFingerprint (t: Table) : string = sha256Hex (Canon.render (tableJson t))
 
 /// The incremental evaluation seam: classify a pipeline, prime a state over a source, then refresh
 /// that state against a delta. Every result equals `DataFrame.evalPipelineWithInEnv` over the same
@@ -2617,7 +2929,9 @@ module Incremental =
                       ChunkedOutput = None
                       ChunksTouched = None
                       SourceExact = sourceExact
-                      GroupRows = [||] }
+                      GroupRows = [||]
+                      PipelineKey = ""
+                      Stale = None }
             | Some(keys, aggs, tail) ->
                 let priorGroups =
                     match prior with
@@ -2666,7 +2980,9 @@ module Incremental =
                           ChunkedOutput = None
                           ChunksTouched = None
                           SourceExact = sourceExact
-                          GroupRows = List.toArray g.Rows }
+                          GroupRows = List.toArray g.Rows
+                          PipelineKey = ""
+                          Stale = None }
 
                     if List.isEmpty tail then
                         // The pipeline every pre-202 state was built for. Taken as its own branch
@@ -2786,7 +3102,9 @@ module Incremental =
               ChunkedOutput = None
               ChunksTouched = None
               SourceExact = [||]
-              GroupRows = [||] })
+              GroupRows = [||]
+              PipelineKey = ""
+              Stale = None })
 
     /// The shared entry: run the incremental path when the shape and the witness allow it, and the
     /// reference path otherwise. `named` is `None` for "every row".
@@ -3217,7 +3535,9 @@ module Incremental =
           ChunkedOutput = Some out
           ChunksTouched = Some touched
           SourceExact = [||]
-          GroupRows = [||] }
+          GroupRows = [||]
+          PipelineKey = ""
+          Stale = None }
 
     /// `prime` over a source prepared once (`DataFrame.prepare`; Phase 267): the state `prime`
     /// builds over the prepared table — equal to it in every field a consumer can read — with the
@@ -3266,6 +3586,18 @@ module Incremental =
         | Some p -> p.Cols
         | None -> state.Source.Value.Schema
 
+    /// Is `pipeline` a different pipeline from the one the state was built for? Structural equality
+    /// answers for a state built in this process. A decoded state (Phase 355) holds the codec's
+    /// normal form of its pipeline, which is neither the value that was encoded nor, necessarily,
+    /// the value a consumer builds again (a decimal literal comes back canonical, an embedded
+    /// table in schema order), so there the canonical hash decides and nothing else does: the
+    /// pipeline's canonical wire string is its identity.
+    let private pipelineMoved (pipeline: Transform list) (state: IncrementalEval) : bool =
+        if state.PipelineKey = "" then
+            pipeline <> state.Pipeline
+        else
+            StateWire.pipelineHash pipeline <> state.PipelineKey
+
     /// The refresh over a table, with the source's prepared form where the caller holds one
     /// (`refreshPrepared` over a pipeline the chunked path does not admit) — the shared body of
     /// `refresh` and `refreshPrepared`.
@@ -3280,7 +3612,9 @@ module Incremental =
         (given: Prepared option)
         : Result<IncrementalEval, EvalError> =
         let stale =
-            if pipeline <> state.Pipeline then
+            if state.Stale.IsSome then
+                state.Stale
+            elif pipelineMoved pipeline state then
                 Some PipelineChanged
             elif env <> state.Env then
                 Some EnvChanged
@@ -3452,7 +3786,9 @@ module Incremental =
             // the state cannot key, is NOT one of them here: what moved is read off the chunks,
             // and a delta saying "everything may have" costs only what actually did.
             let stale =
-                if pipeline <> state.Pipeline then
+                if state.Stale.IsSome then
+                    state.Stale
+                elif pipelineMoved pipeline state then
                     Some PipelineChanged
                 elif env <> state.Env then
                     Some EnvChanged
@@ -3590,3 +3926,834 @@ module Incremental =
         : Result<IncrementalEval, EvalError> =
         prime resolve env idw pipeline before
         |> Result.bind (fun state -> refresh resolve env idw pipeline state delta after)
+
+/// Phase 355 — the canonical wire codec for an incremental state, so the state outlives the
+/// process that built it: encode it after a run, store it, and decode it at the start of the next
+/// run in any process, on any host.
+///
+/// **What the encoding carries** is everything a refresh reads: the pipeline and its planned form
+/// (the classification is a pure function of the planned form and is recomputed, so no encoding
+/// can carry a plan that disagrees with its pipeline), the env, the identity scheme, the source,
+/// the result, the row and group caches, and the footprint. Cells are written EXACTLY (their own
+/// case, their own text, the sign of a zero), because a cached cell stands in for an evaluation.
+/// The prepared and chunked working forms are not carried: their sharing is by object identity,
+/// which no wire holds, so a decoded state answers `refreshPrepared` over a pipeline of derives as
+/// any state another path built does — every chunk once, then by identity again.
+///
+/// **The key** (`IncrementalStateKey`) is the pipeline's canonical hash and the source's
+/// fingerprint. A refresh over a decoded state compares the pipeline by that hash, and
+/// `decodeOver` compares the source a consumer supplies by that fingerprint; a mismatch on either
+/// is a full evaluation with the reason in the footprint (`PipelineChanged` for the pipeline;
+/// `DeltaIsFullRefresh` for the source, because a state built over another table can vouch for no
+/// row of this one, which is what the top delta says). A stale or foreign state can make a run
+/// slower and cannot make it wrong.
+///
+/// **A damaged encoding is refused.** The document carries a SHA-256 digest of its canonical body
+/// and decode recomputes it, so a truncated or altered encoding is a `ColumnError`, never a state.
+/// The digest detects damage, not forgery: the caches are the encoder's word about its own
+/// evaluation, exactly as a state held in memory is, so an encoding is stored state and not an
+/// untrusted input.
+///
+/// Rendered through `Canon`, so the bytes are identical on every host. Fable-clean.
+module IncrementalCodec =
+
+    /// The canonical hash of a pipeline: SHA-256 (lowercase hex) of its canonical wire string
+    /// (`DataFrameCodec.encodePipeline`). Two pipelines with one wire string have one hash, and
+    /// are one pipeline to a decoded state.
+    let pipelineHash (pipeline: Transform list) : string = StateWire.pipelineHash pipeline
+
+    /// The fingerprint of a source: SHA-256 (lowercase hex) of its exact canonical encoding — the
+    /// schema, the columns in the table's own order, and every cell under its own case. It reads
+    /// the whole table; a host with a cheaper change signal uses that to decide WHETHER to load
+    /// a state, and this to decide whether the state may answer.
+    let sourceFingerprint (source: Table) : string = StateWire.sourceFingerprint source
+
+    /// The key a state is stored under: the hash of its pipeline and the fingerprint of the source
+    /// it was last evaluated against.
+    let keyOf (state: IncrementalEval) : IncrementalStateKey =
+        { Pipeline =
+            if state.PipelineKey <> "" then
+                state.PipelineKey
+            else
+                StateWire.pipelineHash state.Pipeline
+          Source = StateWire.sourceFingerprint state.Source.Value }
+
+    // ---- encode ----
+
+    /// The slot of a reference the state holds no value in.
+    let private absent: JVal = JObj []
+
+    let private strs (xs: string[]) : JVal =
+        JArr(xs |> Array.map JStr |> List.ofArray)
+
+    let private ints (xs: int[]) : JVal =
+        JArr(xs |> Array.map JInt |> List.ofArray)
+
+    let private cells (xs: Cell[]) : JVal =
+        if isNull (box xs) then
+            absent
+        else
+            JArr(xs |> Array.map StateWire.cellJson |> List.ofArray)
+
+    let private cellList (xs: Cell list) : JVal =
+        if isNull (box xs) then
+            absent
+        else
+            JArr(xs |> List.map StateWire.cellJson)
+
+    let private defectJson (d: DeltaDefect) : JVal =
+        match d with
+        | EmptyScheme -> Canon.typed "emptyScheme" []
+        | EmptyRowKey -> Canon.typed "emptyRowKey" []
+        | NegativeOrdinal i -> Canon.typed "negativeOrdinal" [ "index", JInt i ]
+        | DuplicateRow r -> Canon.typed "duplicateRow" [ "row", JStr r ]
+        | MixedAddressing(s, r) -> Canon.typed "mixedAddressing" [ "scheme", JStr s; "row", JStr r ]
+        | EmptyColumnName -> Canon.typed "emptyColumnName" []
+        | DuplicateInvalidatedColumn n -> Canon.typed "duplicateInvalidatedColumn" [ "name", JStr n ]
+        | SchemeMismatch(l, r) -> Canon.typed "schemeMismatch" [ "left", JStr l; "right", JStr r ]
+        | MissingIdentity(s, i) -> Canon.typed "missingIdentity" [ "scheme", JStr s; "index", JInt i ]
+        | DuplicateIdentity(s, k) -> Canon.typed "duplicateIdentity" [ "scheme", JStr s; "key", JStr k ]
+
+    let private reasonJson (r: FallBackReason) : JVal =
+        match r with
+        | StepNotRowLocal v -> Canon.typed "stepNotRowLocal" [ "verb", JStr v ]
+        | AggregateStepNotLast v -> Canon.typed "aggregateStepNotLast" [ "verb", JStr v ]
+        | DeltaIsFullRefresh -> Canon.typed "deltaIsFullRefresh" []
+        | OrdinalAddressing -> Canon.typed "ordinalAddressing" []
+        | SourceSchemaMoved -> Canon.typed "sourceSchemaMoved" []
+        | EnvChanged -> Canon.typed "envChanged" []
+        | PipelineChanged -> Canon.typed "pipelineChanged" []
+        | RowIdentityUnusable d -> Canon.typed "rowIdentityUnusable" [ "defect", defectJson d ]
+        | UnresolvedSlotParam(v, p) -> Canon.typed "unresolvedSlotParam" [ "verb", JStr v; "param", JStr p ]
+        | WindowFrameUnbounded fn -> Canon.typed "windowFrameUnbounded" [ "fn", JStr fn ]
+        | JoinNotRowPreserving kind -> Canon.typed "joinNotRowPreserving" [ "kind", JStr kind ]
+        | AggregateStepRepeated v -> Canon.typed "aggregateStepRepeated" [ "verb", JStr v ]
+
+    let private recomputeJson (r: Recompute) : JVal =
+        match r with
+        | Primed n -> Canon.typed "primed" [ "rowsEvaluated", JInt n ]
+        | ReusedPrior -> Canon.typed "reusedPrior" []
+        | RowsRecomputed n -> Canon.typed "rowsRecomputed" [ "rowsEvaluated", JInt n ]
+        | GroupsRecomputed(n, g) ->
+            Canon.typed "groupsRecomputed" [ "rowsEvaluated", JInt n; "groupsRecomputed", JInt g ]
+        | FullRecompute(n, reason) ->
+            Canon.typed "fullRecompute" [ "rowsEvaluated", JInt n; "reason", reasonJson reason ]
+
+    /// The state's members but its source, which `encodeWith` renders on its own (its text is
+    /// also what the key's fingerprint is taken over).
+    ///
+    /// A group's members are row tokens the state already holds in `tokens`, so each is written
+    /// as its index there; a member that is not a row of the source is written as itself.
+    let private stateMembers (s: IncrementalEval) : (string * JVal) list =
+        let chunks =
+            match s.ChunksTouched with
+            | Some n -> [ "chunksTouched", JInt n ]
+            | None -> []
+
+        let slotOf = System.Collections.Generic.Dictionary<string, int>()
+
+        if s.GroupMembers.Length > 0 then
+            for i in 0 .. s.Tokens.Length - 1 do
+                slotOf[s.Tokens[i]] <- i
+
+        let memberJson (token: string) : JVal =
+            match slotOf.TryGetValue token with
+            | true, i -> JInt i
+            | _ -> JStr token
+
+        ([ "scheme", JStr s.Scheme
+           "pipeline", JArr(s.Pipeline |> List.map DataFrameCodec.encodeTransform)
+           "planned", JArr(s.Planned |> List.map DataFrameCodec.encodeTransform)
+           "env",
+           JArr(
+               s.Env
+               |> Map.toList
+               |> List.map (fun (name, c) -> JArr [ JStr name; StateWire.cellJson c ])
+           )
+           "output", StateWire.tableJson s.Output.Value
+           "tokens", strs s.Tokens
+           "stepCells", JArr(s.StepCells |> Array.map cells |> List.ofArray)
+           "rowGroups", ints s.RowGroups
+           "groupMembers",
+           JArr(
+               s.GroupMembers
+               |> Array.map (fun m ->
+                   if isNull (box m) then
+                       absent
+                   else
+                       JArr(m |> List.map memberJson))
+               |> List.ofArray
+           )
+           "groupAggs", JArr(s.GroupAggs |> Array.map cellList |> List.ofArray)
+           "sortOrders",
+           JArr(
+               s.SortOrders
+               |> Map.toList
+               |> List.map (fun (step, (arrived, produced)) ->
+                   JObj [ "step", JInt step; "arrived", ints arrived; "produced", ints produced ])
+           )
+           "joinKeys",
+           JArr(
+               s.JoinKeys
+               |> Map.toList
+               |> List.map (fun (step, keys) -> JObj [ "step", JInt step; "keys", JArr(keys |> List.map cellList) ])
+           )
+           "footprint",
+           JObj
+               [ "sourceRows", JInt s.Footprint.SourceRows
+                 "resultRows", JInt s.Footprint.ResultRows
+                 "recompute", recomputeJson s.Footprint.Recompute ]
+           "groupOrder", strs s.GroupOrder
+           "tailCells", JArr(s.TailCells |> Array.map cells |> List.ofArray)
+           "sourceExact", JArr(s.SourceExact |> Array.map JBool |> List.ofArray)
+           "groupRows", JArr(s.GroupRows |> Array.map cells |> List.ofArray) ]
+         @ chunks)
+
+    /// A JSON object's canonical text from its members' canonical texts: the members in Ordinal
+    /// order of their names, which are plain ASCII words here and need no escape. What
+    /// `Canon.render` writes for the same object, assembled so a large member is rendered once.
+    let private objectText (members: (string * string) list) : string =
+        let sb = System.Text.StringBuilder()
+        sb.Append('{') |> ignore
+
+        members
+        |> List.sortWith (fun (a, _) (b, _) -> System.String.CompareOrdinal(a, b))
+        |> List.iteri (fun i (name, text) ->
+            if i > 0 then
+                sb.Append(',') |> ignore
+
+            sb.Append('"').Append(name).Append("\":").Append(text) |> ignore)
+
+        sb.Append('}').ToString()
+
+    /// The wire format's version. A reader refuses any other.
+    let private version = 1
+
+    let private documentTag = "incrementalState"
+
+    // The document is one fixed frame around its body: `{"$type":"incrementalState","body":`, the
+    // body's canonical text, `,"digest":"`, the 64 hex digits of the body's SHA-256, and `"}`.
+    let private documentPrefix = "{\"$type\":\"" + documentTag + "\",\"body\":"
+    let private digestPrefix = ",\"digest\":\""
+    let private documentSuffix = "\"}"
+    let private digestLength = 64
+
+    let private encodeWith (detached: bool) (s: IncrementalEval) : Result<string, ColumnError> =
+        if s.Stale.IsSome then
+            Error(
+                Malformed
+                    "incremental state: this state was decoded over a source it was not built for and holds no caches; refresh it before encoding it"
+            )
+        else
+            let render (name: string, v: JVal) : Result<string * string, ColumnError> =
+                match Canon.tryRender v with
+                | Ok text -> Ok(name, text)
+                | Error m -> Error(Malformed("incremental state: " + name + ": " + m))
+
+            let rec renderAll (acc: (string * string) list) (members: (string * JVal) list) =
+                match members with
+                | [] -> Ok(List.rev acc)
+                | m :: rest ->
+                    match render m with
+                    | Ok text -> renderAll (text :: acc) rest
+                    | Error e -> Error e
+
+            // The source is rendered once: its text is the fingerprint's pre-image and, where the
+            // encoding carries it, the member itself.
+            render ("source", StateWire.tableJson s.Source.Value)
+            |> Result.bind (fun (_, sourceText) ->
+                renderAll [] (stateMembers s)
+                |> Result.map (fun members ->
+                    let pipelineKey =
+                        if s.PipelineKey <> "" then
+                            s.PipelineKey
+                        else
+                            StateWire.pipelineHash s.Pipeline
+
+                    let key =
+                        objectText
+                            [ "pipeline", "\"" + pipelineKey + "\""
+                              "source", "\"" + StateWire.sha256Hex sourceText + "\"" ]
+
+                    let state =
+                        objectText (
+                            if detached then
+                                members
+                            else
+                                ("source", sourceText) :: members
+                        )
+
+                    let body = objectText [ "version", string version; "key", key; "state", state ]
+
+                    // The document's three members in Ordinal order around the body's own text, so
+                    // the digest is over the bytes that are stored.
+                    documentPrefix + body + digestPrefix + StateWire.sha256Hex body + documentSuffix))
+
+    /// The canonical wire string for a state, CARRYING its source: self-contained, so `decode`
+    /// needs nothing else. Refuses, as a `Malformed`, a state holding a string that is not
+    /// well-formed UTF-16 (which has no canonical rendering of its own), and a state `decodeOver`
+    /// returned over a source it was not built for.
+    let encode (state: IncrementalEval) : Result<string, ColumnError> = encodeWith false state
+
+    /// `encode` WITHOUT the source: the encoding carries the source's fingerprint in its key and
+    /// the consumer, which holds the source anyway, supplies it again to `decodeOver`. Smaller by
+    /// the source's own size.
+    let encodeDetached (state: IncrementalEval) : Result<string, ColumnError> = encodeWith true state
+
+    // ---- decode ----
+
+    type private ResultBuilder() =
+        member _.Bind(m: Result<'a, ColumnError>, f: 'a -> Result<'b, ColumnError>) : Result<'b, ColumnError> =
+            Result.bind f m
+
+        member _.Return(v: 'a) : Result<'a, ColumnError> = Ok v
+        member _.ReturnFrom(m: Result<'a, ColumnError>) : Result<'a, ColumnError> = m
+
+    let private res = ResultBuilder()
+
+    let private tryField (name: string) (el: JVal) : JVal option =
+        match el with
+        | JObj fields -> fields |> List.tryFind (fun (n, _) -> n = name) |> Option.map snd
+        | _ -> None
+
+    let private field (name: string) (el: JVal) : Result<JVal, ColumnError> =
+        match el with
+        | JObj _ ->
+            match tryField name el with
+            | Some v -> Ok v
+            | None -> Error(MissingField name)
+        | _ -> Error(MalformedShape("incremental state: expected an object carrying '" + name + "'"))
+
+    let private strOf (el: JVal) : Result<string, ColumnError> =
+        match el with
+        | JStr s -> Ok s
+        | _ -> Error(MalformedShape "incremental state: expected a string")
+
+    let private intOf (el: JVal) : Result<int, ColumnError> =
+        match el with
+        | JInt i -> Ok i
+        | _ -> Error(MalformedShape "incremental state: expected an int")
+
+    let private boolOf (el: JVal) : Result<bool, ColumnError> =
+        match el with
+        | JBool b -> Ok b
+        | _ -> Error(MalformedShape "incremental state: expected a bool")
+
+    /// Every item through `f`, into an array, stopping at the first refusal. A loop, so a
+    /// million-item array costs no stack.
+    let private items (f: JVal -> Result<'b, ColumnError>) (el: JVal) : Result<'b[], ColumnError> =
+        match el with
+        | JArr xs ->
+            let out = ResizeArray<'b>()
+            let mutable failed = None
+            let mutable rest = xs
+
+            while failed.IsNone && not (List.isEmpty rest) do
+                match f (List.head rest) with
+                | Ok v -> out.Add v
+                | Error e -> failed <- Some e
+
+                rest <- List.tail rest
+
+            match failed with
+            | Some e -> Error e
+            | None -> Ok(out.ToArray())
+        | _ -> Error(MalformedShape "incremental state: expected an array")
+
+    let private at (name: string) (f: JVal -> Result<'b, ColumnError>) (el: JVal) : Result<'b, ColumnError> =
+        field name el |> Result.bind f
+
+    /// An array of cells, or the absent slot as the null reference it was encoded from.
+    let private cellsOf (unreached: bool) (el: JVal) : Result<Cell[], ColumnError> =
+        match el with
+        | JObj [] -> Ok(Unchecked.defaultof<Cell[]>)
+        | _ -> items (StateWire.cellOfJson unreached) el
+
+    let private cellListOf (el: JVal) : Result<Cell list, ColumnError> =
+        match el with
+        | JObj [] -> Ok(Unchecked.defaultof<Cell list>)
+        | _ -> items (StateWire.cellOfJson false) el |> Result.map List.ofArray
+
+    let private typeOf (el: JVal) : Result<ColumnType, ColumnError> =
+        strOf el
+        |> Result.bind (fun tag ->
+            match ColumnType.ofTag tag with
+            | Some ty -> Ok ty
+            | None -> Error(UnknownType(tag, ColumnType.allTags)))
+
+    let private tableOf (el: JVal) : Result<Table, ColumnError> =
+        res {
+            let! schema =
+                el
+                |> at
+                    "schema"
+                    (items (fun entry ->
+                        match entry with
+                        | JArr [ JStr name; ty ] -> typeOf ty |> Result.map (fun t -> name, t)
+                        | _ -> Error(MalformedShape "incremental state: a schema entry is [name, type]")))
+
+            let! columns =
+                el
+                |> at
+                    "columns"
+                    (items (fun c ->
+                        res {
+                            let! name = c |> at "name" strOf
+                            let! ty = c |> at "type" typeOf
+                            let! cs = c |> at "cells" (items (StateWire.cellOfJson false))
+
+                            return
+                                { Name = name
+                                  Type = ty
+                                  Cells = List.ofArray cs }
+                        }))
+
+            return
+                { Schema = List.ofArray schema
+                  Columns = List.ofArray columns }
+        }
+
+    let private tagged (el: JVal) : Result<string, ColumnError> = el |> at "$type" strOf
+
+    let private defectTags =
+        [ "emptyScheme"
+          "emptyRowKey"
+          "negativeOrdinal"
+          "duplicateRow"
+          "mixedAddressing"
+          "emptyColumnName"
+          "duplicateInvalidatedColumn"
+          "schemeMismatch"
+          "missingIdentity"
+          "duplicateIdentity" ]
+
+    let private defectOf (el: JVal) : Result<DeltaDefect, ColumnError> =
+        res {
+            let! tag = tagged el
+
+            match tag with
+            | "emptyScheme" -> return EmptyScheme
+            | "emptyRowKey" -> return EmptyRowKey
+            | "negativeOrdinal" ->
+                let! i = el |> at "index" intOf
+                return NegativeOrdinal i
+            | "duplicateRow" ->
+                let! r = el |> at "row" strOf
+                return DuplicateRow r
+            | "mixedAddressing" ->
+                let! s = el |> at "scheme" strOf
+                let! r = el |> at "row" strOf
+                return MixedAddressing(s, r)
+            | "emptyColumnName" -> return EmptyColumnName
+            | "duplicateInvalidatedColumn" ->
+                let! n = el |> at "name" strOf
+                return DuplicateInvalidatedColumn n
+            | "schemeMismatch" ->
+                let! l = el |> at "left" strOf
+                let! r = el |> at "right" strOf
+                return SchemeMismatch(l, r)
+            | "missingIdentity" ->
+                let! s = el |> at "scheme" strOf
+                let! i = el |> at "index" intOf
+                return MissingIdentity(s, i)
+            | "duplicateIdentity" ->
+                let! s = el |> at "scheme" strOf
+                let! k = el |> at "key" strOf
+                return DuplicateIdentity(s, k)
+            | other -> return! Error(UnknownType(other, defectTags))
+        }
+
+    let private reasonTags =
+        [ "stepNotRowLocal"
+          "aggregateStepNotLast"
+          "deltaIsFullRefresh"
+          "ordinalAddressing"
+          "sourceSchemaMoved"
+          "envChanged"
+          "pipelineChanged"
+          "rowIdentityUnusable"
+          "unresolvedSlotParam"
+          "windowFrameUnbounded"
+          "joinNotRowPreserving"
+          "aggregateStepRepeated" ]
+
+    let private reasonOf (el: JVal) : Result<FallBackReason, ColumnError> =
+        res {
+            let! tag = tagged el
+
+            match tag with
+            | "stepNotRowLocal" ->
+                let! v = el |> at "verb" strOf
+                return StepNotRowLocal v
+            | "aggregateStepNotLast" ->
+                let! v = el |> at "verb" strOf
+                return AggregateStepNotLast v
+            | "deltaIsFullRefresh" -> return DeltaIsFullRefresh
+            | "ordinalAddressing" -> return OrdinalAddressing
+            | "sourceSchemaMoved" -> return SourceSchemaMoved
+            | "envChanged" -> return EnvChanged
+            | "pipelineChanged" -> return PipelineChanged
+            | "rowIdentityUnusable" ->
+                let! d = el |> at "defect" defectOf
+                return RowIdentityUnusable d
+            | "unresolvedSlotParam" ->
+                let! v = el |> at "verb" strOf
+                let! p = el |> at "param" strOf
+                return UnresolvedSlotParam(v, p)
+            | "windowFrameUnbounded" ->
+                let! fn = el |> at "fn" strOf
+                return WindowFrameUnbounded fn
+            | "joinNotRowPreserving" ->
+                let! kind = el |> at "kind" strOf
+                return JoinNotRowPreserving kind
+            | "aggregateStepRepeated" ->
+                let! v = el |> at "verb" strOf
+                return AggregateStepRepeated v
+            | other -> return! Error(UnknownType(other, reasonTags))
+        }
+
+    let private recomputeTags =
+        [ "primed"
+          "reusedPrior"
+          "rowsRecomputed"
+          "groupsRecomputed"
+          "fullRecompute" ]
+
+    let private recomputeOf (el: JVal) : Result<Recompute, ColumnError> =
+        res {
+            let! tag = tagged el
+
+            match tag with
+            | "reusedPrior" -> return ReusedPrior
+            | "primed" ->
+                let! n = el |> at "rowsEvaluated" intOf
+                return Primed n
+            | "rowsRecomputed" ->
+                let! n = el |> at "rowsEvaluated" intOf
+                return RowsRecomputed n
+            | "groupsRecomputed" ->
+                let! n = el |> at "rowsEvaluated" intOf
+                let! g = el |> at "groupsRecomputed" intOf
+                return GroupsRecomputed(n, g)
+            | "fullRecompute" ->
+                let! n = el |> at "rowsEvaluated" intOf
+                let! reason = el |> at "reason" reasonOf
+                return FullRecompute(n, reason)
+            | other -> return! Error(UnknownType(other, recomputeTags))
+        }
+
+    /// The alignments the walk indexes by. A state the encoder wrote holds them all; an encoding
+    /// that does not is refused here rather than met as an out-of-range read inside a refresh.
+    let private misaligned (s: IncrementalEval) : string option =
+        let rows = s.Tokens.Length
+        let groups = s.GroupOrder.Length
+        let slots = max rows groups
+        let absentOr (n: int) (a: 'a[]) = isNull (box a) || a.Length = n
+
+        let within (bound: int) (xs: int[]) =
+            xs |> Array.forall (fun i -> i >= 0 && i < bound)
+
+        if not (s.StepCells |> Array.forall (absentOr rows)) then
+            Some "a step's cached cells are not aligned with the row tokens"
+        elif not (s.TailCells |> Array.forall (absentOr groups)) then
+            Some "a tail step's cached cells are not aligned with the group order"
+        elif s.RowGroups.Length <> 0 && s.RowGroups.Length <> rows then
+            Some "the row-to-group index is not aligned with the row tokens"
+        elif not (s.RowGroups |> Array.forall (fun g -> g >= -1 && g < groups)) then
+            Some "the row-to-group index names a group the group order does not hold"
+        elif
+            s.GroupMembers.Length <> groups
+            || s.GroupAggs.Length <> groups
+            || s.GroupRows.Length <> groups
+        then
+            Some "the group caches are not aligned with the group order"
+        elif
+            not (
+                s.SortOrders
+                |> Map.forall (fun _ (arrived, produced) -> within slots arrived && within slots produced)
+            )
+        then
+            Some "a cached sort order names a slot the state does not hold"
+        elif
+            s.SourceExact.Length <> 0
+            && s.SourceExact.Length <> List.length s.Source.Value.Schema
+        then
+            Some "the source-column record is not aligned with the source's schema"
+        elif
+            rows > 0
+            && s.SourceExact.Length <> 0
+            && (List.zip s.Source.Value.Schema (List.ofArray s.SourceExact)
+                |> List.exists (fun ((name, _), exact) ->
+                    exact
+                    && (match Table.tryColumn name s.Source.Value with
+                        | Some c -> List.length c.Cells <> rows
+                        | None -> true)))
+        then
+            Some "the source-column record claims a column the source does not hold in full"
+        else
+            None
+
+    let private stateOf
+        (supplied: Table option)
+        (key: IncrementalStateKey)
+        (st: JVal)
+        : Result<IncrementalEval, ColumnError> =
+        res {
+            let! scheme = st |> at "scheme" strOf
+            let! pipeline = st |> at "pipeline" DataFrameCodec.decodePipelineJson
+            let! planned = st |> at "planned" DataFrameCodec.decodePipelineJson
+
+            let! env =
+                st
+                |> at
+                    "env"
+                    (items (fun entry ->
+                        match entry with
+                        | JArr [ JStr name; c ] -> StateWire.cellOfJson false c |> Result.map (fun v -> name, v)
+                        | _ -> Error(MalformedShape "incremental state: an env entry is [name, cell]")))
+
+            let! output = st |> at "output" tableOf
+
+            let! carried =
+                match tryField "source" st with
+                | Some t -> tableOf t |> Result.map Some
+                | None -> Ok None
+
+            let! tokens = st |> at "tokens" (items strOf)
+            let! stepCells = st |> at "stepCells" (items (cellsOf true))
+            let! rowGroups = st |> at "rowGroups" (items intOf)
+
+            let! groupMembers =
+                st
+                |> at
+                    "groupMembers"
+                    (items (fun m ->
+                        match m with
+                        | JObj [] -> Ok(Unchecked.defaultof<string list>)
+                        | _ ->
+                            m
+                            |> items (fun token ->
+                                match token with
+                                | JStr s -> Ok s
+                                | JInt i when i >= 0 && i < tokens.Length -> Ok tokens[i]
+                                | _ ->
+                                    Error(
+                                        MalformedShape
+                                            "incremental state: a group member is a row token or the index of one"
+                                    ))
+                            |> Result.map List.ofArray))
+
+            let! groupAggs = st |> at "groupAggs" (items cellListOf)
+
+            let! sortOrders =
+                st
+                |> at
+                    "sortOrders"
+                    (items (fun o ->
+                        res {
+                            let! step = o |> at "step" intOf
+                            let! arrived = o |> at "arrived" (items intOf)
+                            let! produced = o |> at "produced" (items intOf)
+                            return step, (arrived, produced)
+                        }))
+
+            let! joinKeys =
+                st
+                |> at
+                    "joinKeys"
+                    (items (fun j ->
+                        res {
+                            let! step = j |> at "step" intOf
+                            let! keys = j |> at "keys" (items cellListOf)
+                            return step, List.ofArray keys
+                        }))
+
+            let! footprint =
+                st
+                |> at "footprint" (fun f ->
+                    res {
+                        let! sourceRows = f |> at "sourceRows" intOf
+                        let! resultRows = f |> at "resultRows" intOf
+                        let! recompute = f |> at "recompute" recomputeOf
+
+                        return
+                            { SourceRows = sourceRows
+                              ResultRows = resultRows
+                              Recompute = recompute }
+                    })
+
+            let! groupOrder = st |> at "groupOrder" (items strOf)
+            let! tailCells = st |> at "tailCells" (items (cellsOf true))
+            let! sourceExact = st |> at "sourceExact" (items boolOf)
+            let! groupRows = st |> at "groupRows" (items (cellsOf false))
+
+            let! chunksTouched =
+                match tryField "chunksTouched" st with
+                | Some n -> intOf n |> Result.map Some
+                | None -> Ok None
+
+            // The stored hash is what a refresh compares against, so it has to be the hash of the
+            // pipeline stored beside it — of its wire form as carried, which is the string that was
+            // hashed (the decoded value is that form's normal form and may encode differently).
+            let! carriedPipeline = field "pipeline" st
+
+            let! _ =
+                if StateWire.sha256Hex (Canon.render carriedPipeline) = key.Pipeline then
+                    Ok()
+                else
+                    Error(
+                        Malformed
+                            "incremental state: the key's pipeline hash is not the hash of the pipeline it carries"
+                    )
+
+            let! source, vouched =
+                match supplied, carried with
+                | Some t, _ -> Ok(t, StateWire.sourceFingerprint t = key.Source)
+                | None, Some t -> Ok(t, true)
+                | None, None ->
+                    Error(
+                        Malformed
+                            "incremental state: this encoding is detached (it carries its source's fingerprint and not the source); decode it with decodeOver"
+                    )
+
+            let state =
+                { Plan = Incremental.plan planned
+                  Pipeline = pipeline
+                  Planned = planned
+                  Env = Map.ofArray env
+                  Scheme = scheme
+                  Source = Prepared.ready source
+                  Prepared = None
+                  Output = Prepared.ready output
+                  Tokens = tokens
+                  StepCells = stepCells
+                  RowGroups = rowGroups
+                  GroupMembers = groupMembers
+                  GroupAggs = groupAggs
+                  SortOrders = Map.ofArray sortOrders
+                  JoinKeys = Map.ofArray joinKeys
+                  Footprint = footprint
+                  GroupOrder = groupOrder
+                  TailCells = tailCells
+                  ChunkedOutput = None
+                  ChunksTouched = chunksTouched
+                  SourceExact = sourceExact
+                  GroupRows = groupRows
+                  PipelineKey = key.Pipeline
+                  Stale = None }
+
+            if vouched then
+                match misaligned state with
+                | Some what -> return! Error(Malformed("incremental state: " + what))
+                | None -> return state
+            else
+                // Built over another table: no cache describes a row of this one. The state keeps
+                // the result it was encoded with, holds no caches, and its next refresh evaluates
+                // in full.
+                return
+                    { state with
+                        Tokens = [||]
+                        StepCells = [||]
+                        RowGroups = [||]
+                        GroupMembers = [||]
+                        GroupAggs = [||]
+                        SortOrders = Map.empty
+                        JoinKeys = Map.empty
+                        GroupOrder = [||]
+                        TailCells = [||]
+                        SourceExact = [||]
+                        GroupRows = [||]
+                        Stale = Some DeltaIsFullRefresh }
+        }
+
+    /// The body's text and its digest, where `text` is the frame `encodeWith` writes.
+    let private framed (text: string) : (string * string) option =
+        let tail = digestPrefix.Length + digestLength + documentSuffix.Length
+        let n = text.Length
+
+        if
+            n >= documentPrefix.Length + tail
+            && text.Substring(0, documentPrefix.Length) = documentPrefix
+            && text.Substring(n - tail, digestPrefix.Length) = digestPrefix
+            && text.Substring(n - documentSuffix.Length) = documentSuffix
+        then
+            Some(
+                text.Substring(documentPrefix.Length, n - documentPrefix.Length - tail),
+                text.Substring(n - documentSuffix.Length - digestLength, digestLength)
+            )
+        else
+            None
+
+    let private decodeWith (supplied: Table option) (text: string) : Result<IncrementalEval, ColumnError> =
+        match framed text with
+        | None ->
+            // Not the frame. Say which kind of not: not JSON at all, another document, or this
+            // document in a spelling the encoder does not write.
+            match Json.parseDetailed text with
+            | Error e -> Error(NotJson e)
+            | Ok doc ->
+                tagged doc
+                |> Result.bind (fun tag ->
+                    if tag <> documentTag then
+                        Error(UnknownType(tag, [ documentTag ]))
+                    else
+                        Error(
+                            Malformed
+                                "incremental state: the document is not in the canonical form the encoder writes; the encoding is damaged"
+                        ))
+        | Some(bodyText, digest) ->
+            // The digest is over the stored bytes, so it is checked before anything is parsed.
+            if StateWire.sha256Hex bodyText <> digest then
+                Error(Malformed "incremental state: the digest is not the digest of the body; the encoding is damaged")
+            else
+                match Json.parseDetailed bodyText with
+                | Error e -> Error(NotJson e)
+                | Ok body ->
+                    res {
+                        let! v = body |> at "version" intOf
+
+                        let! _ =
+                            if v = version then
+                                Ok()
+                            else
+                                Error(
+                                    Malformed(
+                                        "incremental state: version "
+                                        + string v
+                                        + " is not one this reader holds (it reads version "
+                                        + string version
+                                        + ")"
+                                    )
+                                )
+
+                        let! key =
+                            body
+                            |> at "key" (fun k ->
+                                res {
+                                    let! p = k |> at "pipeline" strOf
+                                    let! s = k |> at "source" strOf
+                                    return { Pipeline = p; Source = s }
+                                })
+
+                        let! st = field "state" body
+                        return! stateOf supplied key st
+                    }
+
+    /// Decode a state from an encoding that CARRIES its source (`encode`). The state reads as the
+    /// one that was encoded — `Incremental.result`, `footprint`, `source`, `strategy` and `plan'`
+    /// answer alike — and a refresh from it equals a refresh from the original, cell for cell and
+    /// in footprint. A damaged or truncated encoding, one of another version, and a detached one
+    /// (which needs `decodeOver`) are each refused.
+    let decode (text: string) : Result<IncrementalEval, ColumnError> = decodeWith None text
+
+    /// Decode a state over the source the consumer holds — the reading of a detached encoding
+    /// (`encodeDetached`), and of a carrying one where the consumer wants its own table object to
+    /// be the state's source. `source` is the table the state was last evaluated against: the
+    /// `before` the next delta describes the change from.
+    ///
+    /// The source is held to the key. Where its fingerprint is the key's, the state is the one
+    /// that was encoded, over this table. Where it is not, the state was built over another table
+    /// and can vouch for no row of this one: the decode still succeeds, the state holds no caches
+    /// (`Incremental.result` remains the result it was encoded with, which is not a result over
+    /// this table), and its next refresh evaluates in full and reports `DeltaIsFullRefresh`.
+    let decodeOver (source: Table) (text: string) : Result<IncrementalEval, ColumnError> = decodeWith (Some source) text

@@ -1598,6 +1598,88 @@ x1.21 above it, and the worst node was `window CumulSum` at x1.38 to x1.49.
 
 The figures, .NET and node, are in `benchmarks/results/2026-10-02-i7-8650u-phase-327.md`.
 
+## Across a process boundary (Phase 355)
+
+A state lives as long as the process that built it. A consumer that runs in fresh processes (a
+scheduled job, a serverless invocation, a host restarted between runs) encodes the state after a run
+and decodes it at the start of the next:
+
+```fsharp
+// at the end of a run
+let stored = IncrementalCodec.encode state |> ok          // the canonical wire string
+let key = IncrementalCodec.keyOf state                    // { Pipeline; Source }: what to store it under
+
+// at the start of the next run, in any process, on either host
+let state = IncrementalCodec.decode stored |> ok
+let delta = Delta.diff idw (Incremental.source state) source' |> Result.defaultValue FullRefresh
+let next = Incremental.refreshOn idw pipeline state delta source'
+```
+
+`Incremental.refreshOn` from the decoded state returns what it returns from the original: the same
+table and the same footprint, for every pipeline, source and delta the incremental family draws, and
+for the state a refresh built as well as the one a prime did (`IncrementalDelta.stateLaws`).
+
+**What the encoding carries.** Everything a refresh reads: the pipeline and its planned form, the
+env, the identity scheme, the source, the result, the row, group, order and relation caches, and the
+footprint. Cells are written exactly, under their own case and with their own text, because a cached
+cell stands in for an evaluation; the column codec, which returns a table to a normal form, is not
+used. The prepared and chunked working forms are not carried, since their sharing is by object
+identity: a decoded state answers `refreshPrepared` over a pipeline of derives by evaluating every
+chunk once, as any state another path built does.
+
+**Without the source.** A consumer that holds the source anyway (it is a table in its own store)
+keeps it off the wire:
+
+```fsharp
+let stored = IncrementalCodec.encodeDetached state |> ok
+// next run: `source` is the table the state was last evaluated against
+let state = IncrementalCodec.decodeOver source stored |> ok
+```
+
+**The key.** `IncrementalStateKey` is the SHA-256 of the pipeline's canonical wire string and of the
+source's exact encoding, and it decides whether a state may answer:
+
+- A refresh over a decoded state compares the pipeline **by its hash**. A decoded state holds the
+  codec's normal form of its pipeline, which is not always the value a consumer builds (an embedded
+  relation's int in a float column comes back a float), so two pipelines with one wire string are one
+  pipeline to it, and a pipeline with any other wire string is a full evaluation reporting
+  `PipelineChanged`.
+- `decodeOver` holds the table it is given to the fingerprint. Over a table that is not the one the
+  state was built for, the decode still succeeds, the state holds no caches, and its next refresh
+  evaluates in full and reports `DeltaIsFullRefresh`: a state built over another table can vouch for
+  no row of this one, which is what the top delta says. Such a state is not one to store, and
+  `encode` refuses it; the state the refresh returns is an ordinary one.
+
+A stale or foreign state makes a run slower and does not make it wrong.
+
+**A damaged encoding is refused.** The document is a fixed frame around its body, with the body's
+SHA-256 beside it; `decode` checks the digest over the stored bytes before it parses anything. A
+truncated or altered encoding, another version, and a detached encoding read without its source each
+decode to a `ColumnError`. The digest detects damage and not forgery: the caches are the encoder's
+word about its own evaluation, exactly as a state held in memory is, so an encoding is the consumer's
+own stored state and not an input to accept from a party it does not trust.
+
+### What it costs, measured, and when it pays
+
+`benchmarks/results/2026-10-03-i7-8650u-phase-355.md` measures the three Scaling pipelines at 1,000,
+100,000 and 1,000,000 rows on .NET:
+
+- **Size.** An encoding that carries its source is 1.11 to 1.29 times the source's own column wire;
+  a detached one is 0.62 to 0.74 times it. The state is linear in the source: row tokens, one cached
+  cell per row per evaluating step, and the row-to-group index.
+- **Time.** At 1,000,000 rows, encoding takes 7.0 to 8.4 s and decoding 11.8 to 12.6 s (6.4 to 7.3 s
+  over a supplied source), which is the JSON read of 28 to 57 million characters. A full evaluation
+  of the same pipelines takes 0.09 to 0.38 s.
+
+**So on these shapes the wire form does not pay: reading the state back costs 30 to 130 times the
+evaluation it saves.** The state's saving is the per-row evaluation a refresh skips, and these
+pipelines evaluate one comparison per row. Decoding costs about 12 microseconds per source row (7
+detached); a full evaluation here costs 0.1 to 0.4. Resuming from an encoded state pays where an
+evaluation costs more per row than the read does: an expensive expression, a relation resolved from
+elsewhere, a source that is itself costly to obtain in full. Measure your own pipeline before storing
+a state for it, and compare against `DataFrame.evalPipeline` over the new source, which needs no
+state at all.
+
 ## What it does not do
 
 - **It does not maintain a delta on the OUTPUT.** A refresh returns the new table, not a description
@@ -1607,8 +1689,11 @@ The figures, .NET and node, are in `benchmarks/results/2026-10-02-i7-8650u-phase
   it, so the prior result stands" is `DataFrame.evalFrom`'s job (the coarse `Change` vocabulary), and
   `Delta.toChange` bridges to it. The two compose: ask `evalFrom` whether the change matters at all,
   and this seam how much of it to recompute.
-- **It does not persist.** `IncrementalEval` is in-memory state a consumer holds between refreshes.
-  Losing it costs one full evaluation, never a wrong answer.
+- **It does not persist on its own.** `IncrementalEval` is in-memory state a consumer holds between
+  refreshes; losing it costs one full evaluation, never a wrong answer. A consumer that wants it to
+  outlive the process encodes it (`IncrementalCodec`, "Across a process boundary" above), and should
+  read the measurement there first: on a cheap pipeline, reading the state back costs more than the
+  evaluation it saves.
 - **It does not publish its caches.** From `0.27.0` the state's representation is private and a
   consumer reads it through `Incremental.result` (the table), `Incremental.footprint` (what producing
   it cost), `Incremental.strategy` and `Incremental.plan'` (how the next refresh will be answered),
@@ -1616,8 +1701,9 @@ The figures, .NET and node, are in `benchmarks/results/2026-10-02-i7-8650u-phase
   `Incremental.pipelineOf` (the pipeline it was built for). The caches were never something to build
   or edit — a hand-built state whose caches disagree with its source is a lie the evaluator cannot
   detect — and publishing their shape made every change to HOW they are keyed a breaking change,
-  which is what kept a refresh paying for the whole table for three phases running. There is no wire
-  form and nothing to migrate: a state is in-memory and is rebuilt by one `prime`.
+  which is what kept a refresh paying for the whole table for three phases running. The wire form
+  (`IncrementalCodec`, Phase 355) is versioned and opaque in the same way: it is read only by
+  `decode`, and its shape is free to move behind its version number.
 
 ## A row-local step reading a cross-row column — the census (Phase 212)
 

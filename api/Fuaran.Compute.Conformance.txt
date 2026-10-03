@@ -33,6 +33,7 @@ method Fuaran.Compute.IncrementalDelta.lawsWith(System.Int32, System.Int32, Syst
 method Fuaran.Compute.IncrementalDelta.report(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.IncrementalSample>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.IncrementalDelta.samples(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.IncrementalSample>
 method Fuaran.Compute.IncrementalDelta.samplesWith(System.Int32, System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.IncrementalSample>
+method Fuaran.Compute.IncrementalDelta.stateLaws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
 method Fuaran.Compute.PipelineQueryConformance.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.LawResult>
 property Fuaran.Compute.Conformance.columnarOpStreamGen : Fuaran.Core.StreamGen`2<Fuaran.Compute.ColumnOp, Fuaran.Core.Table> { get }
 property Fuaran.Compute.DataFrameConformance.columnarOpStreamGen : Fuaran.Core.StreamGen`2<Fuaran.Compute.ColumnOp, Fuaran.Core.Table> { get }

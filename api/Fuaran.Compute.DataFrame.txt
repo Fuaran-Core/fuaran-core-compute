@@ -7,6 +7,7 @@
 ctor Fuaran.Compute.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
 ctor Fuaran.Compute.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>)
 ctor Fuaran.Compute.IncrementalPlan..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>, Fuaran.Compute.IncrementalStrategy)
+ctor Fuaran.Compute.IncrementalStateKey..ctor(System.String, System.String)
 ctor Fuaran.Compute.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, System.String, System.String, Fuaran.Core.AggFn)
 ctor Fuaran.Compute.PlanDeclined..ctor(Fuaran.Compute.RewriteClass, System.Int32, System.String)
 ctor Fuaran.Compute.PlanReport..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanRewrite>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanDeclined>)
@@ -270,6 +271,13 @@ method Fuaran.Compute.Incremental.rowsEvaluated(Fuaran.Compute.RecomputeFootprin
 method Fuaran.Compute.Incremental.source(Fuaran.Compute.IncrementalEval) : Fuaran.Core.Table
 method Fuaran.Compute.Incremental.strategy(Fuaran.Compute.IncrementalEval) : Fuaran.Compute.IncrementalStrategy
 method Fuaran.Compute.Incremental.windowFnName(Fuaran.Compute.WindowFn) : System.String
+method Fuaran.Compute.IncrementalCodec.decode(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Core.ColumnError>
+method Fuaran.Compute.IncrementalCodec.decodeOver(Fuaran.Core.Table, System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.IncrementalEval, Fuaran.Core.ColumnError>
+method Fuaran.Compute.IncrementalCodec.encode(Fuaran.Compute.IncrementalEval) : Microsoft.FSharp.Core.FSharpResult`2<System.String, Fuaran.Core.ColumnError>
+method Fuaran.Compute.IncrementalCodec.encodeDetached(Fuaran.Compute.IncrementalEval) : Microsoft.FSharp.Core.FSharpResult`2<System.String, Fuaran.Core.ColumnError>
+method Fuaran.Compute.IncrementalCodec.keyOf(Fuaran.Compute.IncrementalEval) : Fuaran.Compute.IncrementalStateKey
+method Fuaran.Compute.IncrementalCodec.pipelineHash(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : System.String
+method Fuaran.Compute.IncrementalCodec.sourceFingerprint(Fuaran.Core.Table) : System.String
 method Fuaran.Compute.NowGrainModule.ofTag(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.NowGrain>
 method Fuaran.Compute.NowGrainModule.tag(Fuaran.Compute.NowGrain) : System.String
 method Fuaran.Compute.Plan.explain(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.PlanReport
@@ -313,6 +321,8 @@ record-field Fuaran.Compute.ColumnKnowledge.Name #0 : System.String
 record-field Fuaran.Compute.ColumnKnowledge.Type #1 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
 record-field Fuaran.Compute.IncrementalPlan.Steps #0 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>
 record-field Fuaran.Compute.IncrementalPlan.Strategy #1 : Fuaran.Compute.IncrementalStrategy
+record-field Fuaran.Compute.IncrementalStateKey.Pipeline #0 : System.String
+record-field Fuaran.Compute.IncrementalStateKey.Source #1 : System.String
 record-field Fuaran.Compute.PivotSpec.Agg #3 : Fuaran.Core.AggFn
 record-field Fuaran.Compute.PivotSpec.Index #0 : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 record-field Fuaran.Compute.PivotSpec.On #1 : System.String
@@ -403,8 +413,10 @@ type Fuaran.Compute.FallBackReason+Tags (type)
 type Fuaran.Compute.FallBackReason+UnresolvedSlotParam (type)
 type Fuaran.Compute.FallBackReason+WindowFrameUnbounded (type)
 type Fuaran.Compute.Incremental (module)
+type Fuaran.Compute.IncrementalCodec (module)
 type Fuaran.Compute.IncrementalEval (record)
 type Fuaran.Compute.IncrementalPlan (record)
+type Fuaran.Compute.IncrementalStateKey (record)
 type Fuaran.Compute.IncrementalStrategy (union)
 type Fuaran.Compute.IncrementalStrategy+ReferenceOnly (type)
 type Fuaran.Compute.IncrementalStrategy+Tags (type)

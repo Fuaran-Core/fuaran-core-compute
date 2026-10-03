@@ -31,7 +31,7 @@ were renamed, and the mapping, is D4.
 | **`Fuaran.Compute.DataFrame`** | the declarative-compute layer: a serializable `Transform` / `ColExpr` algebra (the verb set below), a pure reference evaluator with pinned null, coercion, ordering and float semantics (the cross-host parity contract), a canonical wire codec, the change-relevance `evalFrom`, the typed row delta (`TableDelta`, `Delta.diff`, an associative composition) and the incremental evaluator (`Incremental.plan` / `prime` / `refresh`) | `Fuaran.Core.Column`, `Fuaran.Core.Wire` |
 | **`Fuaran.Compute.ColumnOps`** | the columnar op algebra: a `ColumnOp` union (`SetCell` / `SetColumn` / `InsertColumn` / `RemoveColumn` / `AppendRows` / `ApplyTransform`) with a total `apply` / `canApply`, a partial `invert` (undo/redo), a structural `Diff`, a wire codec and a `StreamWitness` — so table edits ride `Fuaran.Core.OpStream` — plus `deltaOf` and `changedColumns`, the bridges into incremental evaluation | `DataFrame`, `Fuaran.Core.OpStream` |
 | **`Fuaran.Compute.PipelineQuery`** | the registered pipeline query: a substrate `Query` declaration paired with the `Transform` pipeline that is its body (`PipelineQuery`), a registry on the substrate's default-deny pattern that admits a pair only when the pipeline's static output schema is closed and IS the declared result schema and its parameter reads agree with the declared parameters both ways and by type (`PipelineQueryRegistry.register` / `enumerate` / `dispatch`, reusing the substrate's `DuplicateQuery` / `NoSuchQuery` and its `Deferred` dispatch), and a canonical wire codec | `DataFrame`, `Fuaran.Core.Query` |
-| **`Fuaran.Compute.Conformance`** | the law families over the packages above, beside the substrate's law kit they extend: `transformLaws` (host-evaluator parity against the reference), `aggregateParityLaws`, `columnarOpLaws` / `columnarOpLawsWith`, `incrementalLaws` / `incrementalLawsWith`, `IncrementalDelta.laws` / `lawsWith`, `paramLaws`, `schemaWalkLaws`, `nowLaws`, `slotParamLaws` — in module `DataFrameConformance` — and `PipelineQueryConformance.laws` | `Fuaran.Core.Conformance` |
+| **`Fuaran.Compute.Conformance`** | the law families over the packages above, beside the substrate's law kit they extend: `transformLaws` (host-evaluator parity against the reference), `aggregateParityLaws`, `columnarOpLaws` / `columnarOpLawsWith`, `incrementalLaws` / `incrementalLawsWith`, `IncrementalDelta.laws` / `lawsWith` / `stateLaws`, `paramLaws`, `schemaWalkLaws`, `nowLaws`, `slotParamLaws` — in module `DataFrameConformance` — and `PipelineQueryConformance.laws` | `Fuaran.Core.Conformance` |
 
 Dependency order: `DataFrame` → `ColumnOps` → `PipelineQuery` → `Conformance`. **This table is a derived roster, not a hand-kept list**: the suite holds its rows equal
 to the packable projects under `src/`.
@@ -78,6 +78,11 @@ let next = Incremental.refreshOn idw pipeline state (Delta.diff idw table table'
 internal path ran — that equality is the contract; the saving is the implementation detail.
 `Incremental.plan pipeline` says, before anything runs, whether a refresh will be restricted.
 [`docs/incremental-evaluation.md`](docs/incremental-evaluation.md) is the full on-ramp.
+
+A state outlives its process through `IncrementalCodec.encode` / `decode` (a canonical wire string,
+keyed by the pipeline's hash and the source's fingerprint; a refresh from the decoded state equals a
+refresh from the original). Read the measurement in the on-ramp before storing one: on a cheap
+pipeline, reading the state back costs more than the evaluation it saves.
 
 A consumer that evaluates many pipelines over one source — a sheet, a dashboard — prepares the
 source once and pays the `Table` boundary once (`0.34.0`):

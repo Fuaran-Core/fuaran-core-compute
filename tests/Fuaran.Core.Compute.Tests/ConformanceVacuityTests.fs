@@ -76,7 +76,9 @@ let private runs =
            run "IncrementalDelta.laws" 60 (IncrementalDelta.laws 7 60)
            // The SHIPPED row bound (9) and the sample size its own suite sweeps at. A narrower
            // bound is the family's documented go-red, not a census run.
-           run "IncrementalDelta.lawsWith" 100 (IncrementalDelta.lawsWith 9 7 100) ]
+           run "IncrementalDelta.lawsWith" 100 (IncrementalDelta.lawsWith 9 7 100)
+           // Phase 355 - the state's wire form, at the size its own suite runs it.
+           run "IncrementalDelta.stateLaws" 60 (IncrementalDelta.stateLaws 7 60) ]
         : Run list)
 
 
