@@ -87,7 +87,37 @@ match (Incremental.plan pipeline).Strategy with
   window evaluates no expression, so it is charged none either way, and a row's output moves when
   another row in its partition moves. As with a sort, the saving is that the steps *before* it stop
   re-evaluating every row; a `rank` refresh still sorts its partitions, and that work is not on the
-  `rowsEvaluated` scale.
+  `rowsEvaluated` scale. Since Phase 324 the step packs only the columns the window reads (a column
+  still its source list packs straight from the list), takes the in-place refresh like a sort (the
+  rows ahead of it read in place, the steps after it the general way), and builds its column as the
+  result's cell list rather than storing it into a slot array first.
+
+  **The running windows resume from their earliest change (Phase 333).** Phase 120's argument for the
+  bounded frames was that the column is recomputed over the walked frame, so a frame's size is not
+  what admits it. A **prefix fold** — `rowNumber`, `cumulSum`, `cumulMax`, `cumulMin`
+  (`DataFrame.windowIsPrefixFold`) — admits more than that: its value at a row is a function of the
+  rows **at or before** it in its partition's window order, carried row to row by one running state,
+  and that state at a row **is** the function's output there. So a delta changes such a column only
+  at or after the earliest position, in each partition, where the partition's sequence differs from
+  last time — the first row taken out, or the first row merged in. Every row ahead of that position is
+  the same row with the same prefix ahead of it, so its cell is the prior cell; from it on, the
+  reference's own scan continues, seeded with the cell at the position before. The step records its
+  run (the ordering it scanned and the cell at each position) and a refresh resumes it: each touched
+  partition's prior run copied up to its earliest change, the moved rows merged back in under the
+  reference comparator (ties by arrival, the sort's merge), and the suffix scanned by
+  `DataFrame.windowColumnOver` — the scan a full evaluation runs, handed a seed, never a second
+  implementation of a fold. A row whose POSITION moved (an order-key or partition-key update) is not
+  `Stable`, so it is taken out where it was and merged in where it is: a change at both positions, in
+  both partitions. A partition no prior row was in is scanned whole; one a delta emptied is gone. The
+  seed contract includes Phase 277's: an exact decimal running total resumes from its `Decimal`, and a
+  null carries the total (or the extreme) forward exactly as the full scan does. The run is reused
+  only where the full scan's ordering would be the cached one — the same schema at the step, and the
+  stable rows arrived in the same relative order (the sort's condition) — and recomputed wholesale
+  otherwise; the rows ahead of each partition's change keep `Stable` through the step, the rest lose
+  it. The other window functions are recomputed wholesale, by type, because their output at the
+  preceding row does not carry what the next row reads: the three ranks read the previous row's
+  ORDER KEY, `ntile` the partition's LENGTH, `lead` the row AFTER, and `lag`, `rollingMean` and
+  `rollingSum` a run of preceding VALUES.
 - **`FilterByRelation`** — a `Join` whose kind is **filtering** (`semi`, `anti`). It keeps or drops
   each row on whether it matches the joined relation and emits the row it kept unchanged, so a delta
   propagates through it exactly as through a `Filter`. The cached verdict for a row the delta did not
@@ -112,6 +142,14 @@ match (Incremental.plan pipeline).Strategy with
   removing a case from a published union breaks every consumer that matches on it and a stored
   footprint still has to read: `WindowFrameUnbounded` (every window function is admitted) and
   `AggregateStepNotLast` (a group-by is admitted at any position).
+
+  A declined refresh costs the evaluation it falls back to and nothing more (Phase 333). It used to
+  cost more: the refresh compared its pipeline with the state's structurally before anything else,
+  and structural equality has no identity shortcut, so a pipeline carrying an EMBEDDED relation was
+  compared cell by cell on every tick — 6.4 ms of a 100,000-row inner join's refresh, and a third of
+  a 1,000-row one's. The comparison now takes the identity first (`samePipeline`, `sameEnv`); a
+  caller passing an equal pipeline in a new object still pays the structural walk, and gets the same
+  answer.
 
 Adoption is therefore per pipeline, not per application: a declined pipeline costs exactly what it
 costs today, and can sit beside an adopted one.
@@ -1598,6 +1636,28 @@ x1.21 above it, and the worst node was `window CumulSum` at x1.38 to x1.49.
 
 The figures, .NET and node, are in `benchmarks/results/2026-10-02-i7-8650u-phase-327.md`.
 
+### The running windows resume, and a declined tick is the diff plus one evaluation (Phase 333)
+
+Phase 285 found `window CumulSum` the worst corpus node on every Release leg, 1.42 to 1.99 times the
+full evaluation. Its column was recomputed wholesale on every tick (every window has been admitted
+since `0.19.0`; none is declined), so its tick was the diff, plus the whole window step, plus the
+seam's bookkeeping. The prefix folds now resume (see `RecomputeFrame` above), and on the Release
+clock leg the node reads x1.23 / x0.98 / x1.05 at 1,000 / 20,000 / 100,000 rows, inside the family's
+spread, with the bound unchanged. Per thread cycle, the one-partition corpus refresh costs 0.64 to
+0.68 of the full evaluation at 100,000 rows (0.88 to 0.89 before), and a five-partition one 0.35 to
+0.60; at 20,000 rows the corpus edit is at parity with the wholesale step. What a resumed refresh
+still pays per row is the copy of the run and the result's cell list; in place, no kept row's cell is
+boxed again. An appended row is scanned and boxed alone, but an append is not in place, so the step
+maps the frame's slots and the seam keys every row before any step runs: the append TICK is the
+seam's insert path, measured in the results file, not the window's.
+
+A declined pipeline's refresh read up to 1.6 times its evaluation on Phase 325's join (45.9 ms against
+28.4 at 100,000 rows). The cause was the refresh's first act, comparing its pipeline with the state's
+structurally: an embedded relation was walked cell by cell on every tick (6.4 ms at 100,000 rows, a
+third of a 1,000-row evaluation). With the identity taken first, the join, the pivot and a projected
+distinct refresh at their evaluation's cost within the instrument's noise, at every size. The figures,
+both trees, are in `benchmarks/results/2026-10-03-i7-8650u-phase-333.md`.
+
 ## What it does not do
 
 - **It does not maintain a delta on the OUTPUT.** A refresh returns the new table, not a description
@@ -1807,7 +1867,7 @@ at all.
 | `cachedAt` (read by `evalStep`; `cellAt` before Phase 274) | the cell an evaluating step (`Filter` predicate, `Derive` expression) computed for this row | `Stable` | the cell is a function of the row's cells; a window moves them without the delta naming the row. **Fixed by Phase 208** — it read `not Affected` to `0.26.0`. |
 | `walk`, `WJoin` arm (`verdictOf` before Phase 274) | the cached `Semi`/`Anti` verdict | `Stable` **and** the right relation unmoved | the verdict is a function of the row's key cells *and* of the relation, and the delta describes neither the second nor a window's effect on the first. **Fixed by Phase 208.** |
 | `walk`, `WSort` arm — the reusable set | this row's cached POSITION in the merged order | `Stable` | a cached order is a cached answer: it is a function of every row's sort-key cells, which a window moves. **Fixed by Phase 215** — it read `not Affected` to `0.28.0`. |
-| `walk`, `WWindow` arm | nothing — it CLEARS `Stable`, for live rows and dead ones alike | — | it is the producer the other rows are about. A dead row's cells are not recomputed, so its cache is cleared rather than refreshed: the conservative reading, and the only one available. |
+| `walk`, `WWindow` arm | nothing — it CLEARS `Stable`, for live rows and dead ones alike — except a resumed prefix fold (Phase 333, `windowResume`), which reuses its prior RUN and keeps `Stable` for the rows ahead of each partition's earliest change | the run: `Stable` **and** the stable rows arrived in the same relative order **and** the same schema at the step; `Stable` kept: the row is ahead of its partition's earliest change | it is the producer the other rows are about. A dead row's cells are not recomputed, so its cache is cleared rather than refreshed: the conservative reading. A prefix fold's cell at a row ahead of its partition's earliest change is the prior cell (the same row, the same prefix), so every cell such a row carries onward is the prior one; past that position the fold moves, and `Stable` goes. The run's cached ORDER is reused on the sort's condition, for the sort's reason: ties are broken by arrival. |
 | `runIncremental`'s row-cache write-back (until Phase 274) | the prior `Cached` list **as a list**, in place of rebuilding it from `Fresh` | `Stable` **and** the two lists the same length | an IDENTITY claim rather than a reuse of a computation. Gone since Phase 274: each evaluating step writes its own cell array once, so there is no per-row list to reuse. |
 | `groupStep` — the carried group (its token until Phase 274, its index since) | this row's group identity from the prior evaluation | `Stable` **and** `Prior >= 0` | the token is a pure function of the key cells. A row the prior evaluation did not reach mints as before, so a carried token is never the only derivation. |
 | `groupStep` — `cellsFor`'s `allStable` | a group's cached aggregate cells | every member `Stable`, **and** the ordered member list unchanged, **and** a cached aggregate to reuse | an aggregate is a function of its members' cells, so one unstable member is enough to invalidate it; the ordered-member test is what makes a pure reordering — which `Delta.diff` reports as quiet — not reusable. |
