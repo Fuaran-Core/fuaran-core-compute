@@ -9,7 +9,13 @@
         "Fuaran/Fuaran-UI/wire-format-fixtures/laws/transform-laws.json"
       ],
       "check": "fingerprint",
-      "regen": "cd Fuaran/Fuaran-Core-Compute; dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-laws ../Fuaran-UI/wire-format-fixtures"
+      "regen": "cd Fuaran/Fuaran-Core-Compute; dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-laws ../Fuaran-UI/wire-format-fixtures",
+      "lag": {
+        "owner": "fuaran#2001",
+        "reason": "Held at its published 0.35.0 stamp (DECISIONS.md D6): the one host that reads the family cannot yet evaluate the decimal, rounding, derive-typing, columnOp and delta vectors, so the copy lands in the same change-set as that host's port rather than ahead of it.",
+        "decidedBy": "fuaran-core#356, applying fuaran#2001's landing rule (the corpus lands with the first host that reads the new vectors)",
+        "declared": "2026-10-03"
+      }
     },
     {
       "source": "proofs/fstar-pin.json",

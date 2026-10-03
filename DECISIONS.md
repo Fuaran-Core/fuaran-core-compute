@@ -1,5 +1,55 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-03 — D6: the corpus copy of the transform laws is held at its published stamp until it lands with the first host that reads the new vectors
+
+**Decided (fuaran-core#356), measured rather than assumed.** The shared wire-format corpus carries a
+declared copy of `conformance/laws/transform-laws.json` (D1 (6)). That copy is stale: `kitVersion`
+0.35.0, 16 `evalPipeline` vectors, in the pre-rename names. The copy is NOT re-published on its own.
+It lands in the same change-set as the first host that reads the new vectors, which is fuaran#2001
+(the host twins learn the exact decimal and the rounding vocabulary). Until then the record in
+[`copies.json`](copies.json) carries a `lag` naming that phase, so the workspace copy registry
+reports a lag with an owner rather than an unowned stale copy.
+
+**1. What was measured (2026-10-03).** Emitted from a detached checkout of the `v0.37.0` tag, the
+file is byte-identical to the one committed at that tag: 60 vectors, of which 47 are `evalPipeline`
+(16 drawn shapes, the decimal shapes from iteration 16, the derive-typing shapes from D5), 9 are
+`columnOp` and 4 are `delta`. The released 0.37.0 file and this repository's 0.38.0 draft differ in
+the `kitVersion` stamp alone. Run against that file, the one host that certifies against the family
+(fuaran-ts, `packages/ops/test/transformLaws.test.ts`) passed 15 vectors, failed 21 and could not
+decode the pipeline of 26:
+
+- it has no `decimal` column type, so every decimal source is refused at decode;
+- it has no `quotient`/`rounded` expressions and no `intersect`, `except` or `countDistinct`, so
+  those pipelines do not decode;
+- it has no `ColumnOp` or delta codec, so the `columnOp` and `delta` cases cannot be run at all;
+- two vectors that predate the decimal (`transform-5-div-by-zero`, `transform-13-div-by-zero`) now
+  expect D5's typing of an all-null derived column, a numeric column of nulls rather than a string
+  one, and the host still produces the old answer.
+
+So the work the host needs is the decimal strand itself (D72 of the substrate, carried here by
+Phases 276, 277, 321 and 338), not two new case kinds. fuaran#2001 already owns that port for all
+four language hosts, and its own first task is this re-emit.
+
+**2. Why the copy is not published ahead of the host.** Publishing the copy alone turns a public
+host's gate red for a change that host did not make, 21 failures at once. Marking the vectors the
+host cannot evaluate as skipped would make that gate green while certifying none of them. Neither
+is acceptable, so the copy waits for the host.
+
+**3. Who reads the family today.** fuaran-ts only. fuaran-go, fuaran-py and fuaran-rs each carry an
+evaluator twin but no transform-laws leg (fuaran#2001 adds one to each). The .NET host evaluates
+with this repository's packages, so it has no twin to certify. The bundled corpus snapshots in
+fuaran-ts and fuaran-py do not carry `laws/`, so a laws-only corpus commit changes neither payload.
+
+**4. Not decided here: release stamp or draft stamp.** fuaran-core#356 asked for the copy to be
+emitted at a released version, never an untagged draft, and the measurement in (1) was taken that
+way. D1 (6) and `version-derives.json` say a version cut re-emits the copy with the stamp, and the
+copy registry compares the copy with this repository's committed file. Those two rules disagree
+whenever a draft is ahead of the last release, as `0.38.0` is ahead of `v0.37.0` today. Then a copy
+emitted at the release differs from `conformance/` in the stamp alone. This suite's freshness leg
+reports that as `STAMP ONLY`, and the registry reports it as stale. The vectors are identical either
+way. Which stamp the published copy follows is left to fuaran#2001's landing, and is recorded here
+so that the choice is made deliberately.
+
 ## 2026-10-02 — D5: a derived column is typed by its expression; the cells decide only where the typer cannot; a float beside a decimal is refused
 
 **Decided (Phase 338, carrying D3's last paragraph).** One rule types every column the dataframe
