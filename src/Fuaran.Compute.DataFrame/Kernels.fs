@@ -51,6 +51,13 @@ open Fuaran.Core
 //  instead. Morsel size, swept twice: at 10,000 rows 4,096 leads 8,192
 //  (three morsels against two); at 100,000 rows 8,192 is best or tied; at a
 //  million rows the two sittings disagree. `MorselRows` is unchanged.
+//  Native x64, 4 cores (benchmarks/results/2026-10-03-i7-8650u-phase-341.md)
+//  agrees on every verdict: kernels 3.4 to 5.3 times; morsel `Filter` and
+//  `Derive` 2.5 and 1.9 times at a million rows, 1.4 times at 100,000; the
+//  merge `GroupBy` 1.63 times faster at ten keys and a million rows, 3.7 to
+//  6.2 times slower at one key per ten rows. One reading differs: at 100,000
+//  rows the `Derive` runs best at 32,768 (four morsels, one per core), so the
+//  best morsel size follows the core count too.
 //
 //  Not built: vectorised integer Sum / Count / Min / Max. Every reduction
 //  this evaluator makes is an aggregate over one GROUP's members — scattered
