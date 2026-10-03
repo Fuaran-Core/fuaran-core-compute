@@ -24,6 +24,7 @@
   <ItemGroup>
     <Compile Include="Corpus.fs" />
     <Compile Include="Benchmarks.fs" />
+    <Compile Include="Layer6.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

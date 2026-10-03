@@ -36,6 +36,21 @@ open Fuaran.Core
 //  this evaluator is dominated by boxing the aggregated column, not by the
 //  probe, so threads bought nothing at the sizes measured.
 //
+//  Re-measured natively (Phase 341). Phase 270's figures above came from the
+//  x64 build under emulation on an Arm64 machine. On the native Arm64 JIT
+//  (benchmarks/results/2026-10-03-snapdragon-x1e80100-phase-341.md):
+//  the comparison kernels and the morsel `Filter` hold (4.2 to 5.5 times,
+//  and 2.9 times at 100,000 and 1,000,000 rows). The morsel `Derive`,
+//  "within noise" at a million rows under emulation, pays 2.4 and 3.1 times
+//  at 100,000 and 1,000,000 rows. The parallel `GroupBy` above, rebuilt over
+//  Phase 323's streamed aggregates, is 1.6 times FASTER at ten keys and a
+//  million rows (3.85 against 6.15 ms) and 3.0 to 6.4 times slower at one
+//  key per ten rows. Boxing no longer dominates the step. At high cardinality
+//  the merge of per-morsel tables is the cost, and the merge reassociates a
+//  float `Sum`. It stays out; Phase 344 partitions by group instead. At
+//  10,000 rows a 4,096-row morsel led 8,192 (three morsels against two).
+//  `MorselRows` is unchanged.
+//
 //  Not built: vectorised integer Sum / Count / Min / Max. Every reduction
 //  this evaluator makes is an aggregate over one GROUP's members — scattered
 //  physical rows, gathered into the cell list `Column.aggregate` reads — so no

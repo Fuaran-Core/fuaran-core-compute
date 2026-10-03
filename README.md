@@ -209,7 +209,13 @@ benchmark. The verify gate builds it and never runs it; run it by hand, in Relea
 dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks -- --check        # assert the corpus, time nothing
 dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks -- --filter '*'   # every benchmark
 dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks -- --filter '*Sheet*'
+dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks -- --filter '*Layer6*'  # the host kernels, portable against native
 ```
+
+The harness refuses to run when its process architecture is not the machine's, for example the x64
+`dotnet` on an Arm64 machine: an emulated JIT is not a valid instrument for the kernels. The `Layer6`
+morsel suite records the compiled `Kernels.MorselRows`. To sweep it, rebuild with the constant
+changed, run `--filter '*Layer6.Morsels*'`, and restore it.
 
 The node leg times the same corpus through the Fable-compiled sources. It needs `node` and a Fable
 toolchain, which this repository does not carry: point `-FableFrom` at a directory whose dotnet tool

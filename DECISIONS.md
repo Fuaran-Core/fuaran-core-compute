@@ -1,5 +1,57 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-03 — D7: the host-kernel verdicts are taken on a native JIT; Phase 270's are restated on Arm64, and two of them move
+
+**Decided (fuaran-core#341), on measurement.** Phase 270 shipped the host kernels and removed an
+order-preserving parallel `GroupBy`. Every timing behind it came from the x64 build running under
+emulation on an Arm64 machine. Emulation penalises the intrinsics and the thread scheduling that were
+being judged. The benchmark harness now refuses a run whose process architecture is not the
+machine's (`Program.main`), and Layer 6 has committed suites (`benchmarks/.../Layer6.fs`). The Arm64
+figures are in [`benchmarks/results/2026-10-03-snapdragon-x1e80100-phase-341.md`](benchmarks/results/2026-10-03-snapdragon-x1e80100-phase-341.md).
+The x64 figures are taken natively on the i7-8650U and recorded in that machine's file.
+
+**1. Held: the comparison and bitmap kernels.** 270: 1M rows 37.84 to 1.447 ms (one comparison) and
+34.49 to 1.901 ms (two under `And`). Native Arm64, portable over native: `cmp` 4.36 to 0.82 ms (5.3x),
+`cmp-and` 6.69 to 1.22 ms (5.5x), and 4.2x to 5.1x at 10,000 and 100,000 rows. The ratio is smaller
+because the portable loop is no longer emulated, not because the kernel is weaker.
+
+**2. Held: the morsel-parallel compiled `Filter`.** 270: 1M rows 55.2 to 10.3 ms. Native: 15.2 to
+5.29 ms (2.9x), with 2.9x at 100,000 rows and none at 10,000 (two morsels).
+
+**3. Overturned: the morsel `Derive`.** 270 found it at parity at 1M rows (36.9 to 38.2 ms, "within
+noise"). Native: 22.5 to 7.37 ms (3.1x), and 2.4x at 100,000 rows. The morsel runner pays for both
+row-local verbs.
+
+**4. Held at the sizes 270 judged, qualified below them: `MorselRows` = 8,192.** At 100,000 and
+1,000,000 rows, 8,192 is best or within the sweep's noise of it. At 10,000 rows 4,096 leads (compiled
+`Filter` 0.081 against 0.127 ms, `Derive` 0.109 against 0.191 ms), because it makes three morsels
+where 8,192 makes two. The constant does not move in this phase. A smaller morsel, or a row threshold
+below which morsels are not split, is open to the phases that build on this record (343, 344).
+
+**5. Overturned in its reason, held in its decision: the parallel `GroupBy`.** 270: parity at 10 keys
+(14.1 against 13.8 ms at 100k, 388 against 408 ms at 1M), and 2.3x and 1.8x slower at one key per
+ten rows. Its stated cause was that "a grouping over this evaluator is dominated by boxing the
+aggregated column". Phase 323 removed that boxing. Rebuilt from 270's description over the streamed
+aggregates and measured natively, the per-morsel-tables-merged-on-first-seen shape is:
+
+- **1.6x faster** at 10 keys and 1M rows (3.85 against 6.15 ms);
+- at parity at 100,000 rows;
+- **3.0x and 6.4x slower** at one key per ten rows (93.3 against 30.6 ms, 9.38 against 1.47 ms),
+  allocating 177 MB against 20 MB.
+
+So threads now buy something, but this shape spends it on merging tables that hold nearly every row.
+It also reassociates a float `Sum`, which moves wire bytes. It stays unshipped. What carries forward
+to Phase 344 is the shape the numbers point to: partition by group, so each thread owns whole groups,
+folds them in row order, and no per-morsel table is ever merged.
+
+**6. Held: vectorised integer reductions are not built.** It was never a timing. Every aggregate
+still folds scattered physical rows into per-slot accumulators (`GroupAgg.Stream.FeedAll`), so no step
+reduces a contiguous typed range.
+
+**Supporting change.** The benchmark assembly is the third that may see the dataframe package's
+internals (`InternalsVisibleTo`), so the harness can run both members of the kernel pair through
+`evalPreparedCountedWith` / `evalStepWith`. It is never packed, and no public surface moves.
+
 ## 2026-10-03 — D6: the corpus copy of the transform laws is held at its published stamp until it lands with the first host that reads the new vectors
 
 **Decided (fuaran-core#356), measured rather than assumed.** The shared wire-format corpus carries a

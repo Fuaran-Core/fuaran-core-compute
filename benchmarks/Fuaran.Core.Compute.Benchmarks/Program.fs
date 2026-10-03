@@ -6,6 +6,7 @@ module Fuaran.Core.Compute.Benchmarks.Program
 
 open System
 open System.IO
+open System.Runtime.InteropServices
 open BenchmarkDotNet.Columns
 open BenchmarkDotNet.Configs
 open BenchmarkDotNet.Jobs
@@ -40,9 +41,31 @@ let private checkAll () =
                 Corpus.checkTyped verb ty n (Corpus.typedTable ty n) (Corpus.typedPipeline verb ty n)
                 printfn "%s over %s, %d rows: as expected" verb (Corpus.typedName ty) n
 
+/// Phase 341 — the instrument check. Phase 270's verdicts were taken with the x64 build under
+/// emulation on an Arm64 machine, which penalises exactly the intrinsics and the thread scheduling
+/// being judged. A process whose architecture is not the machine's is refused, so every figure this
+/// harness produces comes from the native JIT.
+let private nativeOrRefuse () : bool =
+    let proc = RuntimeInformation.ProcessArchitecture
+    let os = RuntimeInformation.OSArchitecture
+
+    if proc <> os then
+        eprintfn
+            "refused: this process is %O on a %O machine (an emulated runtime); run the %O dotnet so the figures are native"
+            proc
+            os
+            os
+
+        false
+    else
+        printfn "instrument: %O process on a %O machine, %s" proc os RuntimeInformation.FrameworkDescription
+        true
+
 [<EntryPoint>]
 let main argv =
-    if argv = [| "--check" |] then
+    if not (nativeOrRefuse ()) then
+        2
+    elif argv = [| "--check" |] then
         checkAll ()
         0
     else

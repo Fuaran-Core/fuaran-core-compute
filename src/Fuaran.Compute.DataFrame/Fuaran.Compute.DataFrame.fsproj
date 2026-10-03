@@ -36,6 +36,10 @@
          rope behind the opaque Prepared; that rope is a working form, not a contract, so the one
          sibling package that edits it is the second assembly that may see it. -->
     <InternalsVisibleTo Include="Fuaran.Compute.ColumnOps" />
+    <!-- Phase 341 - the benchmark harness times both members of the host-kernel pair (Phase 270)
+         through the evaluator's internal entry points, on one host, over one prepared source. Never
+         packed or shipped; no public surface moves. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Benchmarks" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Fuaran.Core.Column" />
