@@ -1721,24 +1721,39 @@ own stored state and not an input to accept from a party it does not trust.
 
 ### What it costs, measured, and when it pays
 
-`benchmarks/results/2026-10-03-i7-8650u-phase-355.md` measures the three Scaling pipelines at 1,000,
-100,000 and 1,000,000 rows on .NET:
+**The form (Phase 357).** The state's large members are written as typed runs rather than one JSON
+value per cell: a column or a cache is one string of packed values naming the one case its cells
+hold (a mask marks the absent cell and the slot no row reached), row and group tokens write their
+shared prefix once, indexes are packed ints, and row-shaped caches are a run per position. A run
+whose cells are of more than one case (an int in a float column) is written a value a cell. The
+document's version says which form it is, and a reader refuses any other: version 2 is this form, and
+Phase 355's version 1 was never released.
 
-- **Size.** An encoding that carries its source is 1.11 to 1.29 times the source's own column wire;
-  a detached one is 0.62 to 0.74 times it. The state is linear in the source: row tokens, one cached
-  cell per row per evaluating step, and the row-to-group index.
-- **Time.** At 1,000,000 rows, encoding takes 7.0 to 8.4 s and decoding 11.8 to 12.6 s (6.4 to 7.3 s
-  over a supplied source), which is the JSON read of 28 to 57 million characters. A full evaluation
-  of the same pipelines takes 0.09 to 0.38 s.
+`benchmarks/results/2026-10-03-i7-8650u-phase-357.md` measures the three Scaling pipelines at 1,000,
+100,000 and 1,000,000 rows, on .NET and under node, beside Phase 355's figures
+(`2026-10-03-i7-8650u-phase-355.md`):
 
-**So on these shapes the wire form does not pay: reading the state back costs 30 to 130 times the
-evaluation it saves.** The state's saving is the per-row evaluation a refresh skips, and these
-pipelines evaluate one comparison per row. Decoding costs about 12 microseconds per source row (7
-detached); a full evaluation here costs 0.1 to 0.4. Resuming from an encoded state pays where an
-evaluation costs more per row than the read does: an expensive expression, a relation resolved from
-elsewhere, a source that is itself costly to obtain in full. Measure your own pipeline before storing
-a state for it, and compare against `DataFrame.evalPipeline` over the new source, which needs no
-state at all.
+- **Size.** An encoding that carries its source is 0.82 to 1.02 times the source's own column wire;
+  a detached one is 0.38 to 0.51 times it. The state is still linear in the source: row tokens, one
+  cached cell per row per evaluating step, and the row-to-group index.
+- **Time on .NET.** At 1,000,000 rows, decoding takes 3.4 to 4.8 s (2.0 to 2.1 s over a supplied
+  source) where the per-cell form took 11.8 to 12.6 s (6.4 to 7.3 s), and encoding 1.8 to 2.7 s
+  where it took 7.0 to 8.4. Measured side by side under one load, the decode is three to three and a
+  half times cheaper. What remains is building the state itself: the source alone is four million
+  cells in four lists, which is why a detached decode costs half as much. A full evaluation of the
+  same pipelines takes 0.14 to 0.45 s.
+- **Time under node.** Unchanged at 100,000 rows (a decode 6.8 to 8.4 s): its cost there is not the
+  per-cell values, and Phase 358 profiles what it is.
+
+**So on these shapes the wire form still does not pay, by a narrower margin.** The state's saving is
+the per-row evaluation a refresh skips, and these pipelines evaluate one comparison per row.
+Resuming (the decode, then the diff and the refresh) costs about 2.5 microseconds per source row
+over a supplied source, and about 5 carrying it, at 1,000,000 rows on .NET; a full evaluation here
+costs 0.1 to 0.5. Resuming from an encoded state pays where an evaluation costs more per row than
+that: an expensive expression, a relation resolved from elsewhere, a source that is itself costly to
+obtain in full. Prefer the detached form where the source is held anyway. Measure your own pipeline
+before storing a state for it, and compare against `DataFrame.evalPipeline` over the new source,
+which needs no state at all.
 
 ## What it does not do
 

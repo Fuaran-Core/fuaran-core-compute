@@ -127,14 +127,30 @@ path built does: every chunk once, then by identity again.
 No existing function's answer moves. A state built in this process compares its pipeline
 structurally, as before.
 
-**Measured** (`benchmarks/results/2026-10-03-i7-8650u-phase-355.md`), over the three Scaling
-pipelines at 1,000, 100,000 and 1,000,000 rows: an encoding that carries its source is 1.11 to 1.29
-times the source's own column wire, a detached one 0.62 to 0.74 times it, and the bytes are the same
-length on .NET and under node. **On these shapes resuming does not beat a full evaluation.** At
-1,000,000 rows on .NET an encode takes 7.0 to 8.4 s and a decode 11.8 to 12.6 s (6.4 to 7.3 s
-detached), against 0.09 to 0.38 s for the full evaluation; the pipelines evaluate one comparison per
-row, and reading the state back costs about 12 microseconds per row. The wire form pays where an
-evaluation costs more per row than that read. node does not reach 1,000,000 rows on its default heap.
+**The wire's form is packed (Phase 357).** The state's large members are typed runs rather than
+one JSON value per cell: a column or a cache is one string of packed values naming the one case its
+cells hold, with a mask for the absent cell and for the slot a row never reached; tokens carry their
+shared prefix once; indexes are packed ints; row-shaped caches are a run per position. A run of more
+than one case is written a value a cell, so every cell still comes back under its own case and with
+its own text. The document is **version 2** and the reader refuses version 1, the per-cell form this
+entry first shipped: the slot is an untagged draft, so that form was never released and is replaced
+rather than kept beside the new one. The source's fingerprint is taken over the packed encoding, so
+its value is not the one the per-cell form gave; no released value moves. On .NET the digest is the
+platform's SHA-256, value-identical to the managed copy that remains the Fable path. No public
+signature moves.
+
+**Measured** (`benchmarks/results/2026-10-03-i7-8650u-phase-357.md`, beside
+`2026-10-03-i7-8650u-phase-355.md`), over the three Scaling pipelines at 1,000, 100,000 and 1,000,000
+rows: an encoding that carries its source is 0.82 to 1.02 times the source's own column wire, a
+detached one 0.38 to 0.51 times it, and the bytes are the same length on .NET and under node. At
+1,000,000 rows on .NET a decode takes 3.4 to 4.8 s (2.0 to 2.1 s detached), where the per-cell form
+took 11.8 to 12.6 s (6.4 to 7.3 s), and an encode 1.8 to 2.7 s where it took 7.0 to 8.4; side by
+side under one load the decode is three to three and a half times cheaper. Under node a decode at
+100,000 rows is unchanged. **On these shapes resuming still does not beat a full evaluation**:
+resuming costs about 2.5 microseconds per row over a supplied source and about 5 carrying it, against
+0.14 to 0.45 s for the full evaluation of a million rows; the pipelines evaluate one comparison per
+row. The wire form pays where an evaluation costs more per row than that. node does not reach
+1,000,000 rows on its default heap.
 
 **What a consumer does.** Nothing. One that runs in fresh processes, over a pipeline whose evaluation
 is dearer than the read above, encodes the state after a run, stores it under `keyOf`, and at the
