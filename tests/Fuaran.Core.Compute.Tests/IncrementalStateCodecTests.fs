@@ -97,7 +97,26 @@ let tests =
                     low + lone
                     "x" + lone + "y" + low ]
 
+              // Since Phase 357 the digest on .NET is the platform's; the managed copy is the Fable
+              // path, and it is held to the substrate here too, so both hosts compute one digest.
               for s in corpus do
+                  Expect.equal (StateWire.sha256Hex s) (Hash.sha256Hex s) (sprintf "a %d-unit string" s.Length)
+
+                  Expect.equal
+                      (StateWire.sha256HexPortable s)
+                      (Hash.sha256Hex s)
+                      (sprintf "the managed copy, a %d-unit string" s.Length)
+
+              // The platform digest is fed in chunks of 65,536 units: a pair split across a chunk
+              // boundary, and a lone surrogate on either side of one.
+              let at = 65_535
+              let pad = String.replicate at "a"
+
+              for s in
+                  [ pad + "😀" + "b"
+                    pad + lone + "b"
+                    pad + "a" + low
+                    String.replicate (3 * 65_536 + 7) "é" ] do
                   Expect.equal (StateWire.sha256Hex s) (Hash.sha256Hex s) (sprintf "a %d-unit string" s.Length)
 
           // ================= exact cells =================
@@ -156,6 +175,133 @@ let tests =
                   (through (Unchecked.defaultof<Cell>))
                   "the no-cell slot is not a cell outside a step's cache"
 
+          testCase "a run comes back cell for cell, under its case and with its text"
+          <| fun _ ->
+              // Phase 357 — a state's large members are runs: one string of packed values, a mask
+              // where a slot is not a value, and the per-cell form where the cells are of more than
+              // one case. Each run below goes through the canonical text and the parser, and is held
+              // to the run it was by its re-encoding (which also says whether a NaN came back a NaN
+              // and a zero kept its sign: their tokens differ where structural equality cannot).
+              let unreached = Unchecked.defaultof<Cell>
+
+              let runs: (string * Cell[]) list =
+                  [ "empty", [||]
+                    "ints",
+                    [| Int 0
+                       Int -7
+                       Int System.Int32.MaxValue
+                       Int System.Int32.MinValue
+                       Int 10 |]
+                    "floats",
+                    [| Float 1.5
+                       Float 3.0
+                       Float 1e300
+                       Float 5e-324
+                       Float(-0.0)
+                       Float 0.0
+                       Float nan
+                       Float infinity
+                       Float(-infinity) |]
+                    "bools", [| Bool true; Bool false; Null; Bool true |]
+                    "strings", [| Str ""; Str "a \"quoted\" \u0001 é 😀"; Str "12:34,5"; Str "\\"; Null |]
+                    "dates", [| Date "2026-10-03"; Null; Date "1999-01-01" |]
+                    "timestamps", [| Timestamp "2026-10-03T07:28:39Z" |]
+                    "decimals", [| Decimal "12.50"; Decimal "12.5"; Decimal "-0.000" |]
+                    "nulls", [| Null; Null |]
+                    "unreached", [| Int 1; unreached; Null; Int 2 |]
+                    "all unreached", [| unreached; unreached |]
+                    "an int in a float column", [| Int 3; Float 2.5; Null; Float(-0.0); unreached |] ]
+
+              for name, run in runs do
+                  let wire = Canon.render (StateWire.runJson run)
+
+                  let back =
+                      ok (Json.parseDetailed wire |> Result.mapError NotJson) |> StateWire.runOf true
+
+                  match back with
+                  | Ok cells ->
+                      Expect.equal cells.Length run.Length (sprintf "%s: as many slots" name)
+
+                      for k in 0 .. run.Length - 1 do
+                          Expect.equal (isNull (box cells[k])) (isNull (box run[k])) (sprintf "%s: slot %d" name k)
+
+                      Expect.equal (Canon.render (StateWire.runJson cells)) wire (sprintf "%s: the same run" name)
+                  | Error e -> failtestf "%s through %s: %A" name wire e
+
+              // The tag says which carrier a homogeneous run took; the mixed one keeps a value a cell.
+              let tagOf (cells: Cell[]) =
+                  match StateWire.runJson cells with
+                  | JObj fields -> fields |> List.tryPick (fun (n, v) -> if n = "$type" then Some v else None)
+                  | _ -> None
+
+              Expect.equal (tagOf [| Float 1.0; Null |]) (Some(JStr "floats")) "a float column is a float run"
+              Expect.equal (tagOf [| Int 3; Float 2.5 |]) (Some(JStr "cells")) "an int among floats is per cell"
+
+              (match
+                  Canon.render (StateWire.runJson [| Float(-0.0); Float nan |])
+                  |> Json.parseDetailed
+                  |> Result.mapError NotJson
+                  |> Result.bind (StateWire.runOf false)
+               with
+               | Ok [| Float z; Float n |] ->
+                   Expect.isTrue (isNegativeZero z) "the negative zero keeps its sign"
+                   Expect.isTrue (System.Double.IsNaN n) "a NaN comes back a NaN"
+               | other -> failtestf "a float run came back %A" other)
+
+              // A slot that holds no cell is admitted only where a step's cache is read.
+              Expect.isError
+                  (Canon.render (StateWire.runJson [| Int 1; unreached |])
+                   |> Json.parseDetailed
+                   |> Result.mapError NotJson
+                   |> Result.bind (StateWire.runOf false))
+                  "the no-cell slot is not a cell outside a step's cache"
+
+              // Ragged rows, a row the state holds no array for, and a position whose case differs
+              // from its neighbour's: a matrix keeps each row as it was.
+              let rows: Cell[][] =
+                  [| [| Str "g1"; Int 4; Float(-0.0) |]
+                     null
+                     [| Str "g2" |]
+                     [||]
+                     [| Str "g3"; Decimal "1.10"; Null |] |]
+
+              let wire = Canon.render (StateWire.matrixJson rows)
+
+              match
+                  Json.parseDetailed wire
+                  |> Result.mapError NotJson
+                  |> Result.bind StateWire.matrixOf
+              with
+              | Ok back ->
+                  Expect.equal (Canon.render (StateWire.matrixJson back)) wire "the same matrix"
+                  Expect.isNull back[1] "the missing row stays missing"
+                  Expect.equal back[2] [| Str "g2" |] "a short row stays short"
+              | Error e -> failtestf "a matrix through %s: %A" wire e
+
+          testCase "a damaged run is refused rather than read short"
+          <| fun _ ->
+              let read (text: string) =
+                  Json.parseDetailed text
+                  |> Result.mapError NotJson
+                  |> Result.bind (StateWire.runOf true)
+
+              for text in
+                  [ "{\"$type\":\"ints\",\"n\":3,\"values\":\"1,2\"}"
+                    "{\"$type\":\"ints\",\"n\":2,\"values\":\"1,02\"}"
+                    "{\"$type\":\"ints\",\"n\":1,\"values\":\"-0\"}"
+                    "{\"$type\":\"ints\",\"n\":1,\"values\":\"2147483648\"}"
+                    "{\"$type\":\"ints\",\"n\":2,\"values\":\"1,,\"}"
+                    "{\"$type\":\"floats\",\"n\":1,\"values\":\"1e400\"}"
+                    "{\"$type\":\"floats\",\"n\":1,\"values\":\"nan\"}"
+                    "{\"$type\":\"bools\",\"n\":2,\"values\":\"tx\"}"
+                    "{\"$type\":\"strings\",\"n\":1,\"values\":\"5:ab\"}"
+                    "{\"$type\":\"strings\",\"n\":1,\"values\":\"2:abc\"}"
+                    "{\"$type\":\"strings\",\"n\":2,\"mask\":\"vx\",\"values\":\"1:a\"}"
+                    "{\"$type\":\"strings\",\"n\":2,\"mask\":\"v\",\"values\":\"1:a\"}"
+                    "{\"$type\":\"nulls\",\"n\":1,\"values\":\"\"}"
+                    "{\"$type\":\"texts\",\"n\":0,\"values\":\"\"}" ] do
+                  Expect.isError (read text) text
+
           testCase "a source the column codec would normalise comes back as it was held"
           <| fun _ ->
               // An int in a float column, decimal text that is not canonical, a column shorter than
@@ -189,6 +335,40 @@ let tests =
                                   else
                                       c) })
                   "an int and the float it widens to are two cells, so two fingerprints"
+
+          testCase "a state holding a signed zero, a NaN and an unreached slot encodes again to its own bytes"
+          <| fun _ ->
+              // The cells structural equality cannot hold, inside a whole state: the source's float
+              // column and the cached cells of the derive after a filter, which the filter's dropped
+              // rows never reached.
+              let source: Table =
+                  { Schema = [ "id", StringType; "a", IntType; "f", FloatType ]
+                    Columns =
+                      [ Column.create "id" StringType [ Str "r0"; Str "r1"; Str "r2"; Str "r3" ]
+                        Column.create "a" IntType [ Int 1; Int 5; Int 0; Int 7 ]
+                        Column.create "f" FloatType [ Float(-0.0); Float nan; Int 2; Float infinity ] ] }
+
+              let p =
+                  [ Filter(Binary(Gt, Col "a", Lit(Int 0)))
+                    Derive("g", Binary(Mul, Col "f", Lit(Float -1.0))) ]
+
+              let state = ok (Incremental.primeOn idw p source)
+              let text = ok (IncrementalCodec.encode state)
+              Expect.stringContains text "-0" "the negative zero is on the wire under its own token"
+              Expect.stringContains text "NaN" "and so is the NaN"
+              Expect.stringContains text "\"mask\":" "a slot that is not a value is masked"
+              let decoded = ok (IncrementalCodec.decode text)
+              Expect.equal (IncrementalCodec.encode decoded) (Ok text) "the decoded state is the state that was encoded"
+
+              match Incremental.source decoded |> Table.tryColumn "f" with
+              | Some c ->
+                  match c.Cells with
+                  | [ Float z; Float n; Int 2; Float i ] ->
+                      Expect.isTrue (isNegativeZero z) "the negative zero keeps its sign"
+                      Expect.isTrue (System.Double.IsNaN n) "the NaN is a NaN"
+                      Expect.equal i infinity "the infinity is an infinity"
+                  | other -> failtestf "the float column came back %A" other
+              | None -> failtest "the float column came back"
 
           // ================= the round trip =================
 
@@ -506,11 +686,11 @@ let tests =
                | Error(UnknownType("rowSet", [ "incrementalState" ])) -> ()
                | other -> failtestf "another document: %A" other)
 
-              // One digit of one cached cell: still JSON, still the right shape, no longer the body
-              // the digest was taken over.
-              let at = text.IndexOf "\"tokens\":[\"k:s:r0\""
-              Expect.isGreaterThan at 0 "the token array is where the test expects it"
-              let altered = text.Replace("\"tokens\":[\"k:s:r0\"", "\"tokens\":[\"k:s:r9\"")
+              // One character of the row tokens' shared prefix: still JSON, still the right shape, no
+              // longer the body the digest was taken over.
+              let at = text.IndexOf "\"prefix\":\"k:s:r\""
+              Expect.isGreaterThan at 0 "the row tokens' prefix is where the test expects it"
+              let altered = text.Replace("\"prefix\":\"k:s:r\"", "\"prefix\":\"k:s:q\"")
 
               (match IncrementalCodec.decode altered with
                | Error(Malformed m) -> Expect.stringContains m "damaged" "the refusal says what it found"
@@ -519,19 +699,24 @@ let tests =
               // Another version, with a digest that is honestly its own.
               let body = text.Substring(text.IndexOf "\"body\":" + 7)
               let body = body.Substring(0, body.LastIndexOf ",\"digest\":")
-              let future = body.Replace("\"version\":1}", "\"version\":2}")
-              Expect.notEqual future body "the version member is where the test expects it"
 
-              let reissued =
+              let reissue (v: int) =
+                  let other = body.Replace("\"version\":2}", "\"version\":" + string v + "}")
+                  Expect.notEqual other body "the version member is where the test expects it"
+
                   "{\"$type\":\"incrementalState\",\"body\":"
-                  + future
+                  + other
                   + ",\"digest\":\""
-                  + Hash.sha256Hex future
+                  + Hash.sha256Hex other
                   + "\"}"
 
-              (match IncrementalCodec.decode reissued with
-               | Error(Malformed m) -> Expect.stringContains m "version 2" "the refusal names the version"
-               | other -> failtestf "a version this reader does not hold: %A" other)
+              // A later version, and the earlier one: Phase 355's per-cell form (version 1) was
+              // never released, was replaced by the packed form (version 2), and is not read.
+              for v in [ 3; 1 ] do
+                  match IncrementalCodec.decode (reissue v) with
+                  | Error(Malformed m) ->
+                      Expect.stringContains m (sprintf "version %d" v) "the refusal names the version"
+                  | other -> failtestf "a version this reader does not hold: %A" other
 
           testCase "a state holding an ill-formed string is refused at encode"
           <| fun _ ->

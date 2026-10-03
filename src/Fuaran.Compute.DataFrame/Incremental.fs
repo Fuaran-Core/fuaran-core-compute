@@ -604,8 +604,9 @@ module internal StateWire =
 
     let private hexChars = "0123456789abcdef"
 
-    /// Lowercase-hex SHA-256 over the UTF-8 bytes of `s`.
-    let sha256Hex (s: string) : string =
+    /// Lowercase-hex SHA-256 over the UTF-8 bytes of `s`: the managed copy, which is the digest
+    /// under Fable and which the suite holds to the substrate's on .NET as well.
+    let sha256HexPortable (s: string) : string =
         let h =
             [| 0x6a09e667u
                0xbb67ae85u
@@ -736,6 +737,42 @@ module internal StateWire =
 
         sb.ToString()
 
+    /// Lowercase-hex SHA-256 over the UTF-8 bytes of `s`, VALUE-IDENTICAL on every host. On .NET it
+    /// is the platform's SHA-256 over the platform's UTF-8 encoder (Phase 357: the managed copy ran
+    /// at about 30 ns a character there, a sixth of a decode); the encoder replaces an unpaired
+    /// surrogate with U+FFFD exactly as the copy does, and is fed a chunk at a time so a large
+    /// encoding is still never held a second time as bytes. Under Fable it is the copy above.
+    let sha256Hex (s: string) : string =
+#if FABLE_COMPILER
+        sha256HexPortable s
+#else
+        use hash =
+            System.Security.Cryptography.IncrementalHash.CreateHash(
+                System.Security.Cryptography.HashAlgorithmName.SHA256
+            )
+
+        let encoder = System.Text.UTF8Encoding(false).GetEncoder()
+        let chunk = 1 <<< 16
+        // Three bytes a unit at most, and four more for a surrogate the previous chunk held back.
+        let bytes = Array.zeroCreate<byte> (chunk * 3 + 4)
+        let mutable i = 0
+
+        while i < s.Length do
+            let len = min chunk (s.Length - i)
+
+            let n =
+                encoder.GetBytes(
+                    System.MemoryExtensions.AsSpan(s, i, len),
+                    System.Span<byte>(bytes),
+                    (i + len = s.Length)
+                )
+
+            hash.AppendData(bytes, 0, n)
+            i <- i + len
+
+        System.Convert.ToHexStringLower(hash.GetHashAndReset())
+#endif
+
     // ---- the exact cell and table encodings ----
     //
     // The column codec round-trips a table to a NORMAL FORM (an int in a float column comes back a
@@ -751,16 +788,6 @@ module internal StateWire =
         match JVal.nonFiniteToken f with
         | Some tok -> JStr tok
         | None -> if f = 0.0 && 1.0 / f < 0.0 then JStr "-0" else JFloat f
-
-    let floatOfJson (el: JVal) : Result<float, ColumnError> =
-        match el with
-        | JFloat f -> Ok f
-        | JInt i -> Ok(float i)
-        | JStr "NaN" -> Ok nan
-        | JStr "Infinity" -> Ok infinity
-        | JStr "-Infinity" -> Ok(-infinity)
-        | JStr "-0" -> Ok(-0.0)
-        | _ -> Error(MalformedShape("incremental state: not a float (" + JVal.kindName el + ")"))
 
     let cellJson (c: Cell) : JVal =
         if isNull (box c) then
@@ -796,9 +823,610 @@ module internal StateWire =
         | JObj [ "m", JStr s ] -> Ok(Decimal s)
         | _ -> Error(MalformedShape("incremental state: not a cell (" + JVal.kindName el + ")"))
 
+    // ---- the packed runs (Phase 357) ----
+    //
+    // A state's large members are written as RUNS: one JSON string carrying many values, so that a
+    // reader allocates one `JVal` per run rather than one per cell, and the substrate's parser reads
+    // a run as one string. Still canonical text, and the same text on every host: ints in decimal,
+    // floats in the canonical layout, strings with their length in UTF-16 units before them.
+    //
+    // - ints: `1,-2,3`, comma-separated, no leading zero, no `-0`.
+    // - floats: the canonical layout of each, comma-separated, with the tokens `NaN`, `Infinity`,
+    //   `-Infinity` and `-0` where the layout has none of its own.
+    // - bools: one character each, `t` or `f`.
+    // - strings: `<length>:<text>` each, back to back. The length counts UTF-16 units, which both
+    //   hosts count alike. A string that is not well-formed UTF-16 stays visible to the guarded
+    //   render: a length's digits or its colon stand between any two strings, so no lone surrogate
+    //   is paired by its neighbour.
+    //
+    // A cell run (`runJson`) names the one case its cells hold — `ints`, `floats`, `bools`,
+    // `strings`, `dates`, `timestamps`, `decimals`, or `nulls` where none is a value — with `n` the
+    // slot count, `values` the packed values in order and, where any slot is not a value, `mask`:
+    // one character a slot, `v` a value, `n` the absent cell, `u` a slot that holds no cell (a row
+    // that never reached the step). A run whose cells are of more than one case (an int in a float
+    // column) is written as `cells`: one JSON value per cell, the per-cell form below.
+
+    /// Append `i` in decimal to `sb`: the digits `string i` writes, without a string per value.
+    let private appendInt (sb: System.Text.StringBuilder) (i: int) =
+        // Worked in the negative range, which holds every int, `Int32.MinValue` included: `p` is
+        // the largest power of ten not above the magnitude, then one digit per power, highest first.
+        let mutable v = if i < 0 then i else -i
+
+        if i < 0 then
+            sb.Append('-') |> ignore
+
+        let mutable p = 1
+
+        while v / 10 <= -p do
+            p <- p * 10
+
+        while p > 0 do
+            let d = -(v / p)
+            sb.Append(char (int '0' + d)) |> ignore
+            v <- v + d * p
+            p <- p / 10
+
+    let private refused (what: string) : Result<'a, ColumnError> =
+        Error(MalformedShape("incremental state: " + what))
+
+    /// A reader over one run's text: the position it has reached, and the first refusal.
+    type private Cursor(text: string) =
+        let mutable pos = 0
+        member _.Text = text
+        member _.Pos = pos
+        member _.AtEnd = pos >= text.Length
+        member _.Peek = text[pos]
+        member _.Advance(n: int) = pos <- pos + n
+
+    /// One int at the cursor, held to `-?(0|[1-9][0-9]*)` and the int range.
+    let private readInt (c: Cursor) : int option =
+        let text = c.Text
+        let n = text.Length
+        let mutable p = c.Pos
+        let negative = p < n && text[p] = '-'
+
+        if negative then
+            p <- p + 1
+
+        let first = p
+        // Accumulated negatively, so `Int32.MinValue` is read without overflow.
+        let mutable acc = 0
+        let mutable ok = true
+
+        while ok && p < n && text[p] >= '0' && text[p] <= '9' do
+            let d = int text[p] - int '0'
+
+            if acc < -214748364 || (acc = -214748364 && d > 8) then
+                ok <- false
+            else
+                acc <- acc * 10 - d
+                p <- p + 1
+
+        let digits = p - first
+
+        if
+            not ok
+            || digits = 0
+            || (digits > 1 && text[first] = '0')
+            || (negative && acc = 0)
+            || (not negative && acc = System.Int32.MinValue)
+        then
+            None
+        else
+            c.Advance(p - c.Pos)
+            Some(if negative then acc else -acc)
+
+    /// The ints of an `ints` text, `count` of them (or as many as it holds, where `count` is -1).
+    let private readInts (count: int) (text: string) : Result<int[], ColumnError> =
+        let held =
+            if text.Length = 0 then
+                0
+            else
+                let mutable commas = 0
+
+                for k in 0 .. text.Length - 1 do
+                    if text[k] = ',' then
+                        commas <- commas + 1
+
+                commas + 1
+
+        if count >= 0 && held <> count then
+            refused ("a run holds " + string held + " ints where its count says " + string count)
+        else
+            let out = Array.zeroCreate<int> held
+            let c = Cursor text
+            let mutable failed = false
+            let mutable k = 0
+
+            while not failed && k < held do
+                if k > 0 then
+                    if not c.AtEnd && c.Peek = ',' then
+                        c.Advance 1
+                    else
+                        failed <- true
+
+                if not failed then
+                    match readInt c with
+                    | Some v -> out[k] <- v
+                    | None -> failed <- true
+
+                k <- k + 1
+
+            if failed || not c.AtEnd then
+                refused "a run of ints is not ints separated by commas"
+            else
+                Ok out
+
+    let intsText (xs: int[]) : string =
+        let sb = System.Text.StringBuilder()
+
+        for k in 0 .. xs.Length - 1 do
+            if k > 0 then
+                sb.Append(',') |> ignore
+
+            appendInt sb xs[k]
+
+        sb.ToString()
+
+    let intsOf (text: string) : Result<int[], ColumnError> = readInts -1 text
+
+    /// A float's token in a run: the canonical layout, or the token the layout has none for.
+    let private floatToken (f: float) : string =
+        match JVal.nonFiniteToken f with
+        | Some tok -> tok
+        | None ->
+            if f = 0.0 && 1.0 / f < 0.0 then
+                "-0"
+            else
+                Canon.canonicalFloat f
+
+    let private floatOfToken (tok: string) : float option =
+        match tok with
+        | "NaN" -> Some nan
+        | "Infinity" -> Some infinity
+        | "-Infinity" -> Some(-infinity)
+        | "-0" -> Some(-0.0)
+        | _ when Json.isJsonNumber tok ->
+            match
+                System.Double.TryParse(
+                    tok,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture
+                )
+            with
+            | true, v when not (System.Double.IsNaN v || System.Double.IsInfinity v) -> Some v
+            | _ -> None
+        | _ -> None
+
+    let floatsText (xs: float[]) : string =
+        let sb = System.Text.StringBuilder()
+
+        for k in 0 .. xs.Length - 1 do
+            if k > 0 then
+                sb.Append(',') |> ignore
+
+            sb.Append(floatToken xs[k]) |> ignore
+
+        sb.ToString()
+
+    /// The floats of a `floats` text, `count` of them.
+    let private readFloats (count: int) (text: string) : Result<float[], ColumnError> =
+        let toks = if text.Length = 0 then [||] else text.Split([| ',' |])
+
+        if toks.Length <> count then
+            refused (
+                "a run holds "
+                + string toks.Length
+                + " floats where its count says "
+                + string count
+            )
+        else
+            let out = Array.zeroCreate<float> count
+            let mutable failed = false
+            let mutable k = 0
+
+            while not failed && k < count do
+                match floatOfToken toks[k] with
+                | Some f -> out[k] <- f
+                | None -> failed <- true
+
+                k <- k + 1
+
+            if failed then
+                refused "a run of floats holds a token that is not a float"
+            else
+                Ok out
+
+    let floatsOf (count: int) (text: string) : Result<float[], ColumnError> = readFloats count text
+
+    let boolsText (xs: bool[]) : string =
+        let chars = Array.zeroCreate<char> xs.Length
+
+        for k in 0 .. xs.Length - 1 do
+            chars[k] <- if xs[k] then 't' else 'f'
+
+        System.String(chars)
+
+    let boolsOf (text: string) : Result<bool[], ColumnError> =
+        let out = Array.zeroCreate<bool> text.Length
+        let mutable failed = false
+
+        for k in 0 .. text.Length - 1 do
+            match text[k] with
+            | 't' -> out[k] <- true
+            | 'f' -> out[k] <- false
+            | _ -> failed <- true
+
+        if failed then
+            refused "a run of bools holds a character that is neither t nor f"
+        else
+            Ok out
+
+    let private appendString (sb: System.Text.StringBuilder) (s: string) =
+        appendInt sb s.Length
+        sb.Append(':').Append(s) |> ignore
+
+    /// The strings of a `strings` text, `count` of them, each with `prefix` before it.
+    let private readStrings (prefix: string) (count: int) (text: string) : Result<string[], ColumnError> =
+        let out = Array.zeroCreate<string> count
+        let c = Cursor text
+        let mutable failed = false
+        let mutable k = 0
+
+        while not failed && k < count do
+            match readInt c with
+            | Some len when len >= 0 && not c.AtEnd && c.Peek = ':' && c.Pos + 1 + len <= text.Length ->
+                let s = text.Substring(c.Pos + 1, len)
+                out[k] <- if prefix.Length = 0 then s else prefix + s
+                c.Advance(1 + len)
+            | _ -> failed <- true
+
+            k <- k + 1
+
+        if failed || not c.AtEnd then
+            refused "a run of strings is not as many length-prefixed strings as its count says"
+        else
+            Ok out
+
+    /// The longest prefix every string shares, never ending inside a surrogate pair.
+    let private commonPrefix (xs: string[]) : string =
+        if xs.Length = 0 then
+            ""
+        else
+            let first = xs[0]
+            let mutable len = first.Length
+
+            for k in 1 .. xs.Length - 1 do
+                let s = xs[k]
+                let mutable j = 0
+
+                while j < len && j < s.Length && s[j] = first[j] do
+                    j <- j + 1
+
+                len <- j
+
+            if len > 0 && int first[len - 1] >= 0xD800 && int first[len - 1] <= 0xDBFF then
+                len <- len - 1
+
+            first.Substring(0, len)
+
+    /// An array of strings (the row tokens, the group tokens): the prefix they all share written
+    /// once, then each string's remainder.
+    let stringsJson (xs: string[]) : JVal =
+        let prefix = commonPrefix xs
+        let sb = System.Text.StringBuilder()
+
+        for s in xs do
+            appendString sb (s.Substring prefix.Length)
+
+        JObj [ "n", JInt xs.Length; "prefix", JStr prefix; "values", JStr(sb.ToString()) ]
+
+    /// A member of a JSON object, or the refusal naming it.
+    let private memberOf (name: string) (el: JVal) : Result<JVal, ColumnError> =
+        match el with
+        | JObj fields ->
+            match fields |> List.tryFind (fun (n, _) -> n = name) with
+            | Some(_, v) -> Ok v
+            | None -> Error(MissingField name)
+        | _ -> refused ("expected an object carrying '" + name + "'")
+
+    let private textOf (name: string) (el: JVal) : Result<string, ColumnError> =
+        match memberOf name el with
+        | Ok(JStr s) -> Ok s
+        | Ok _ -> refused ("'" + name + "' is not a string")
+        | Error e -> Error e
+
+    let private countOf (el: JVal) : Result<int, ColumnError> =
+        match memberOf "n" el with
+        | Ok(JInt n) when n >= 0 -> Ok n
+        | Ok _ -> refused "a run's count is not a count"
+        | Error e -> Error e
+
+    let stringsOf (el: JVal) : Result<string[], ColumnError> =
+        countOf el
+        |> Result.bind (fun n ->
+            textOf "prefix" el
+            |> Result.bind (fun prefix -> textOf "values" el |> Result.bind (readStrings prefix n)))
+
+    /// The case a cell is under, as the run tag that holds it; `nulls` for the absent cell.
+    let private caseTag (c: Cell) : string =
+        match c with
+        | Null -> "nulls"
+        | Int _ -> "ints"
+        | Float _ -> "floats"
+        | Bool _ -> "bools"
+        | Str _ -> "strings"
+        | Date _ -> "dates"
+        | Timestamp _ -> "timestamps"
+        | Decimal _ -> "decimals"
+
+    let private runTags =
+        [ "ints"
+          "floats"
+          "bools"
+          "strings"
+          "dates"
+          "timestamps"
+          "decimals"
+          "nulls"
+          "cells" ]
+
+    /// A run of cells. `{}`-free: a null reference in `xs` is a slot that holds no cell.
+    let runJson (xs: Cell[]) : JVal =
+        let mutable tag = "nulls"
+        let mutable mixed = false
+        let mutable masked = false
+
+        for c in xs do
+            if isNull (box c) then
+                masked <- true
+            else
+                match c with
+                | Null -> masked <- true
+                | _ ->
+                    let t = caseTag c
+
+                    if tag = "nulls" then
+                        tag <- t
+                    elif tag <> t then
+                        mixed <- true
+
+        if mixed then
+            Canon.typed "cells" [ "values", JArr(xs |> Array.map cellJson |> List.ofArray) ]
+        else
+            let sb = System.Text.StringBuilder()
+            let mutable first = true
+
+            for c in xs do
+                if not (isNull (box c)) then
+                    match c with
+                    | Null -> ()
+                    | Int i ->
+                        if not first then
+                            sb.Append(',') |> ignore
+
+                        appendInt sb i
+                        first <- false
+                    | Float f ->
+                        if not first then
+                            sb.Append(',') |> ignore
+
+                        sb.Append(floatToken f) |> ignore
+                        first <- false
+                    | Bool b -> sb.Append(if b then 't' else 'f') |> ignore
+                    | Str s
+                    | Date s
+                    | Timestamp s
+                    | Decimal s -> appendString sb s
+
+            let mask =
+                if masked then
+                    let chars = Array.zeroCreate<char> xs.Length
+
+                    for k in 0 .. xs.Length - 1 do
+                        let c = xs[k]
+
+                        chars[k] <-
+                            if isNull (box c) then
+                                'u'
+                            else
+                                match c with
+                                | Null -> 'n'
+                                | _ -> 'v'
+
+                    [ "mask", JStr(System.String(chars)) ]
+                else
+                    []
+
+            Canon.typed tag ([ "n", JInt xs.Length; "values", JStr(sb.ToString()) ] @ mask)
+
+    /// Read a run of cells. `unreached` says whether a slot that holds no cell is admitted here: it
+    /// is in a step's cached cells and a window's cell run, and nowhere else.
+    let runOf (unreached: bool) (el: JVal) : Result<Cell[], ColumnError> =
+        match memberOf "$type" el with
+        | Error e -> Error e
+        | Ok(JStr "cells") ->
+            match memberOf "values" el with
+            | Ok(JArr xs) ->
+                let out = Array.zeroCreate<Cell> (List.length xs)
+                let mutable failed = None
+                let mutable rest = xs
+                let mutable k = 0
+
+                while failed.IsNone && not (List.isEmpty rest) do
+                    match cellOfJson unreached (List.head rest) with
+                    | Ok c -> out[k] <- c
+                    | Error e -> failed <- Some e
+
+                    rest <- List.tail rest
+                    k <- k + 1
+
+                match failed with
+                | Some e -> Error e
+                | None -> Ok out
+            | Ok _ -> refused "a run of cells holds its values as an array"
+            | Error e -> Error e
+        | Ok(JStr tag) when List.contains tag runTags ->
+            match countOf el, textOf "values" el with
+            | Error e, _
+            | _, Error e -> Error e
+            | Ok n, Ok text ->
+                // Which slots hold a value, and how many.
+                let maskResult =
+                    match memberOf "mask" el with
+                    | Error(MissingField _) -> Ok None
+                    | Error e -> Error e
+                    | Ok(JStr m) ->
+                        if m.Length <> n then
+                            refused "a run's mask is not one character a slot"
+                        else
+                            let mutable ok = true
+
+                            for k in 0 .. m.Length - 1 do
+                                match m[k] with
+                                | 'v'
+                                | 'n' -> ()
+                                | 'u' when unreached -> ()
+                                | _ -> ok <- false
+
+                            if ok then
+                                Ok(Some m)
+                            else
+                                refused "a run's mask holds a slot this member does not admit"
+                    | Ok _ -> refused "a run's mask is not a string"
+
+                match maskResult with
+                | Error e -> Error e
+                | Ok mask ->
+                    let values =
+                        match mask with
+                        | None -> n
+                        | Some m ->
+                            let mutable v = 0
+
+                            for k in 0 .. m.Length - 1 do
+                                if m[k] = 'v' then
+                                    v <- v + 1
+
+                            v
+
+                    let decoded: Result<Cell[], ColumnError> =
+                        match tag with
+                        | "ints" -> readInts values text |> Result.map (Array.map Int)
+                        | "floats" -> readFloats values text |> Result.map (Array.map Float)
+                        | "bools" ->
+                            if text.Length <> values then
+                                refused "a run of bools is not one character a value"
+                            else
+                                boolsOf text |> Result.map (Array.map Bool)
+                        | "strings" -> readStrings "" values text |> Result.map (Array.map Str)
+                        | "dates" -> readStrings "" values text |> Result.map (Array.map Date)
+                        | "timestamps" -> readStrings "" values text |> Result.map (Array.map Timestamp)
+                        | "decimals" -> readStrings "" values text |> Result.map (Array.map Decimal)
+                        | _ ->
+                            if values = 0 && text.Length = 0 then
+                                Ok [||]
+                            else
+                                refused "a run of absent cells holds a value"
+
+                    match decoded, mask with
+                    | Error e, _ -> Error e
+                    | Ok cells, None -> Ok cells
+                    | Ok cells, Some m ->
+                        let out = Array.zeroCreate<Cell> n
+                        let mutable v = 0
+
+                        for k in 0 .. n - 1 do
+                            match m[k] with
+                            | 'v' ->
+                                out[k] <- cells[v]
+                                v <- v + 1
+                            | 'n' -> out[k] <- Null
+                            | _ -> ()
+
+                        Ok out
+        | Ok(JStr tag) -> Error(UnknownType(tag, runTags))
+        | Ok _ -> refused "a run's tag is not a string"
+
+    /// Rows of cells (a group's key and aggregate cells, a relation's key cells): each row's length
+    /// (`-1` for a row the state holds no array for), then one run per position, holding that
+    /// position's cell of every row long enough to have one. Column by column, because a position
+    /// holds one case down the rows where a row holds several across them.
+    let matrixJson (rows: Cell[][]) : JVal =
+        let lengths = rows |> Array.map (fun r -> if isNull (box r) then -1 else r.Length)
+
+        let width = if lengths.Length = 0 then 0 else Array.max lengths
+
+        JObj
+            [ "lengths", JStr(intsText lengths)
+              "columns",
+              JArr(
+                  [ for j in 0 .. width - 1 ->
+                        runJson (
+                            rows
+                            |> Array.choose (fun r -> if isNull (box r) || r.Length <= j then None else Some r[j])
+                        ) ]
+              ) ]
+
+    let matrixOf (el: JVal) : Result<Cell[][], ColumnError> =
+        match textOf "lengths" el |> Result.bind intsOf, memberOf "columns" el with
+        | Error e, _
+        | _, Error e -> Error e
+        | Ok _, Ok(JObj _ | JStr _ | JInt _ | JFloat _ | JBool _) -> refused "a matrix's columns are not an array"
+        | Ok lengths, Ok cols ->
+            let columns =
+                match cols with
+                | JArr xs -> xs
+                | _ -> []
+
+            let width = if lengths.Length = 0 then 0 else Array.max lengths
+
+            if lengths |> Array.exists (fun l -> l < -1) then
+                refused "a matrix row's length is not a length"
+            elif List.length columns <> width then
+                refused "a matrix holds a run for each position up to its widest row"
+            else
+                let rows =
+                    lengths
+                    |> Array.map (fun l ->
+                        if l < 0 then
+                            Unchecked.defaultof<Cell[]>
+                        else
+                            Array.zeroCreate<Cell> l)
+
+                let mutable failed = None
+                let mutable j = 0
+
+                for col in columns do
+                    if failed.IsNone then
+                        match runOf false col with
+                        | Error e -> failed <- Some e
+                        | Ok cells ->
+                            let mutable v = 0
+
+                            for r in rows do
+                                if not (isNull (box r)) && r.Length > j then
+                                    if v < cells.Length then
+                                        r[j] <- cells[v]
+
+                                    v <- v + 1
+
+                            if v <> cells.Length then
+                                failed <-
+                                    Some(
+                                        MalformedShape
+                                            "incremental state: a matrix column holds another count of cells than its rows have positions"
+                                    )
+
+                    j <- j + 1
+
+                match failed with
+                | Some e -> Error e
+                | None -> Ok rows
+
     /// A table exactly as it is held: the schema, then the columns in the table's own order, each
-    /// with its own name, type and cells. Nothing is matched to the schema or padded, so a table
-    /// the evaluator reads through its total padding rule comes back the same table.
+    /// with its own name, type and cells as a run. Nothing is matched to the schema or padded, so a
+    /// table the evaluator reads through its total padding rule comes back the same table.
     let schemaJson (schema: Schema) : JVal =
         JArr(schema |> List.map (fun (n, ty) -> JArr [ JStr n; JStr(ColumnType.tag ty) ]))
 
@@ -812,12 +1440,19 @@ module internal StateWire =
                       JObj
                           [ "name", JStr c.Name
                             "type", JStr(ColumnType.tag c.Type)
-                            "cells", JArr(c.Cells |> List.map cellJson) ])
+                            "cells", runJson (Array.ofList c.Cells) ])
               ) ]
 
     /// The canonical hash of a pipeline: SHA-256 of its canonical wire string.
     let pipelineHash (pipeline: Transform list) : string =
         sha256Hex (DataFrameCodec.encodePipeline pipeline)
+
+    /// The canonical text of a table's exact encoding, or the refusal of a string it holds that is
+    /// not well-formed UTF-16.
+    let tableText (t: Table) : Result<string, ColumnError> =
+        match Canon.tryRender (tableJson t) with
+        | Ok text -> Ok text
+        | Error m -> Error(Malformed("incremental state: source: " + m))
 
     /// The fingerprint of a source: SHA-256 of its exact canonical encoding. Two tables share one
     /// exactly when they hold the same schema, the same columns in the same order and the same
@@ -4640,23 +5275,28 @@ module IncrementalCodec =
     /// The slot of a reference the state holds no value in.
     let private absent: JVal = JObj []
 
-    let private strs (xs: string[]) : JVal =
-        JArr(xs |> Array.map JStr |> List.ofArray)
+    let private ints (xs: int[]) : JVal = JStr(StateWire.intsText xs)
 
-    let private ints (xs: int[]) : JVal =
-        JArr(xs |> Array.map JInt |> List.ofArray)
-
+    /// A run of cells, or the absent slot for an array the state does not hold.
     let private cells (xs: Cell[]) : JVal =
-        if isNull (box xs) then
-            absent
-        else
-            JArr(xs |> Array.map StateWire.cellJson |> List.ofArray)
+        if isNull (box xs) then absent else StateWire.runJson xs
 
     let private cellList (xs: Cell list) : JVal =
         if isNull (box xs) then
             absent
         else
-            JArr(xs |> List.map StateWire.cellJson)
+            StateWire.runJson (Array.ofList xs)
+
+    /// Rows held as lists (a group's aggregate cells, a relation's key cells) as a matrix.
+    let private listRows (rows: Cell list[]) : JVal =
+        StateWire.matrixJson (
+            rows
+            |> Array.map (fun r ->
+                if isNull (box r) then
+                    Unchecked.defaultof<Cell[]>
+                else
+                    Array.ofList r)
+        )
 
     let private defectJson (d: DeltaDefect) : JVal =
         match d with
@@ -4705,8 +5345,8 @@ module IncrementalCodec =
             | RunFloats(values, present) ->
                 Canon.typed
                     "floats"
-                    [ "values", JArr(values |> Array.map StateWire.floatJson |> List.ofArray)
-                      "present", JArr(present |> Array.map JBool |> List.ofArray) ]
+                    [ "values", JStr(StateWire.floatsText values)
+                      "present", JStr(StateWire.boolsText present) ]
             | RunInts values -> Canon.typed "ints" [ "values", ints values ]
             | RunCells values -> Canon.typed "cells" [ "values", cells values ]
 
@@ -4714,31 +5354,59 @@ module IncrementalCodec =
           "arrival", ints run.Arrival
           "perm", ints run.Perm
           "bounds", ints run.Bounds
-          "keys", JArr(run.Keys |> Array.map cells |> List.ofArray)
+          "keys", StateWire.matrixJson run.Keys
           "out", out
           "column", cellList run.Column ]
+
+    /// The groups' member lists: each group's member count (`-1` for a group the state holds no
+    /// list for), then every member in order as its index in `tokens`, where it is one of the
+    /// source's rows, or `-1` for one that is not, which is then the next of `literals`.
+    let private groupMembersJson (tokens: string[]) (groups: string list[]) : JVal =
+        let slotOf = System.Collections.Generic.Dictionary<string, int>()
+
+        if groups.Length > 0 then
+            for i in 0 .. tokens.Length - 1 do
+                slotOf[tokens[i]] <- i
+
+        let counts = Array.zeroCreate<int> groups.Length
+        let members = ResizeArray<int>()
+        let literals = ResizeArray<string>()
+
+        for g in 0 .. groups.Length - 1 do
+            let m = groups[g]
+
+            if isNull (box m) then
+                counts[g] <- -1
+            else
+                let mutable count = 0
+
+                for token in m do
+                    match slotOf.TryGetValue token with
+                    | true, i -> members.Add i
+                    | _ ->
+                        members.Add -1
+                        literals.Add token
+
+                    count <- count + 1
+
+                counts[g] <- count
+
+        JObj
+            [ "counts", ints counts
+              "members", ints (members.ToArray())
+              "literals", StateWire.stringsJson (literals.ToArray()) ]
 
     /// The state's members but its source, which `encodeWith` renders on its own (its text is
     /// also what the key's fingerprint is taken over).
     ///
-    /// A group's members are row tokens the state already holds in `tokens`, so each is written
-    /// as its index there; a member that is not a row of the source is written as itself.
+    /// Every large member is a run (Phase 357): the row tokens and the group tokens as packed
+    /// strings, each step's cached cells as a run aligned with them, the indexes as packed ints,
+    /// and the row-shaped caches as matrices.
     let private stateMembers (s: IncrementalEval) : (string * JVal) list =
         let chunks =
             match s.ChunksTouched with
             | Some n -> [ "chunksTouched", JInt n ]
             | None -> []
-
-        let slotOf = System.Collections.Generic.Dictionary<string, int>()
-
-        if s.GroupMembers.Length > 0 then
-            for i in 0 .. s.Tokens.Length - 1 do
-                slotOf[s.Tokens[i]] <- i
-
-        let memberJson (token: string) : JVal =
-            match slotOf.TryGetValue token with
-            | true, i -> JInt i
-            | _ -> JStr token
 
         ([ "scheme", JStr s.Scheme
            "pipeline", JArr(s.Pipeline |> List.map DataFrameCodec.encodeTransform)
@@ -4750,20 +5418,11 @@ module IncrementalCodec =
                |> List.map (fun (name, c) -> JArr [ JStr name; StateWire.cellJson c ])
            )
            "output", StateWire.tableJson s.Output.Value
-           "tokens", strs s.Tokens
+           "tokens", StateWire.stringsJson s.Tokens
            "stepCells", JArr(s.StepCells |> Array.map cells |> List.ofArray)
            "rowGroups", ints s.RowGroups
-           "groupMembers",
-           JArr(
-               s.GroupMembers
-               |> Array.map (fun m ->
-                   if isNull (box m) then
-                       absent
-                   else
-                       JArr(m |> List.map memberJson))
-               |> List.ofArray
-           )
-           "groupAggs", JArr(s.GroupAggs |> Array.map cellList |> List.ofArray)
+           "groupMembers", groupMembersJson s.Tokens s.GroupMembers
+           "groupAggs", listRows s.GroupAggs
            "sortOrders",
            JArr(
                s.SortOrders
@@ -4775,17 +5434,17 @@ module IncrementalCodec =
            JArr(
                s.JoinKeys
                |> Map.toList
-               |> List.map (fun (step, keys) -> JObj [ "step", JInt step; "keys", JArr(keys |> List.map cellList) ])
+               |> List.map (fun (step, keys) -> JObj [ "step", JInt step; "keys", listRows (Array.ofList keys) ])
            )
            "footprint",
            JObj
                [ "sourceRows", JInt s.Footprint.SourceRows
                  "resultRows", JInt s.Footprint.ResultRows
                  "recompute", recomputeJson s.Footprint.Recompute ]
-           "groupOrder", strs s.GroupOrder
+           "groupOrder", StateWire.stringsJson s.GroupOrder
            "tailCells", JArr(s.TailCells |> Array.map cells |> List.ofArray)
-           "sourceExact", JArr(s.SourceExact |> Array.map JBool |> List.ofArray)
-           "groupRows", JArr(s.GroupRows |> Array.map cells |> List.ofArray)
+           "sourceExact", JStr(StateWire.boolsText s.SourceExact)
+           "groupRows", StateWire.matrixJson s.GroupRows
            "windowRuns",
            JArr(
                s.WindowRuns
@@ -4811,8 +5470,9 @@ module IncrementalCodec =
 
         sb.Append('}').ToString()
 
-    /// The wire format's version. A reader refuses any other.
-    let private version = 1
+    /// The wire format's version. A reader refuses any other. Version 2 (Phase 357) is the packed
+    /// form; version 1, one JSON value per cell, was never released and is not read.
+    let private version = 2
 
     let private documentTag = "incrementalState"
 
@@ -4845,8 +5505,8 @@ module IncrementalCodec =
 
             // The source is rendered once: its text is the fingerprint's pre-image and, where the
             // encoding carries it, the member itself.
-            render ("source", StateWire.tableJson s.Source.Value)
-            |> Result.bind (fun (_, sourceText) ->
+            StateWire.tableText s.Source.Value
+            |> Result.bind (fun sourceText ->
                 renderAll [] (stateMembers s)
                 |> Result.map (fun members ->
                     let pipelineKey =
@@ -4919,11 +5579,6 @@ module IncrementalCodec =
         | JInt i -> Ok i
         | _ -> Error(MalformedShape "incremental state: expected an int")
 
-    let private boolOf (el: JVal) : Result<bool, ColumnError> =
-        match el with
-        | JBool b -> Ok b
-        | _ -> Error(MalformedShape "incremental state: expected a bool")
-
     /// Every item through `f`, into an array, stopping at the first refusal. A loop, so a
     /// million-item array costs no stack.
     let private items (f: JVal -> Result<'b, ColumnError>) (el: JVal) : Result<'b[], ColumnError> =
@@ -4948,16 +5603,32 @@ module IncrementalCodec =
     let private at (name: string) (f: JVal -> Result<'b, ColumnError>) (el: JVal) : Result<'b, ColumnError> =
         field name el |> Result.bind f
 
-    /// An array of cells, or the absent slot as the null reference it was encoded from.
+    /// A run of cells, or the absent slot as the null reference it was encoded from.
     let private cellsOf (unreached: bool) (el: JVal) : Result<Cell[], ColumnError> =
         match el with
         | JObj [] -> Ok(Unchecked.defaultof<Cell[]>)
-        | _ -> items (StateWire.cellOfJson unreached) el
+        | _ -> StateWire.runOf unreached el
 
     let private cellListOf (el: JVal) : Result<Cell list, ColumnError> =
         match el with
         | JObj [] -> Ok(Unchecked.defaultof<Cell list>)
-        | _ -> items (StateWire.cellOfJson false) el |> Result.map List.ofArray
+        | _ -> StateWire.runOf false el |> Result.map List.ofArray
+
+    let private intsOf (el: JVal) : Result<int[], ColumnError> =
+        match el with
+        | JStr text -> StateWire.intsOf text
+        | _ -> Error(MalformedShape "incremental state: expected a run of ints")
+
+    /// Matrix rows back as lists, a row the state held no list for as the null reference.
+    let private listRowsOf (el: JVal) : Result<Cell list[], ColumnError> =
+        StateWire.matrixOf el
+        |> Result.map (
+            Array.map (fun r ->
+                if isNull (box r) then
+                    Unchecked.defaultof<Cell list>
+                else
+                    List.ofArray r)
+        )
 
     let private typeOf (el: JVal) : Result<ColumnType, ColumnError> =
         strOf el
@@ -4986,7 +5657,7 @@ module IncrementalCodec =
                         res {
                             let! name = c |> at "name" strOf
                             let! ty = c |> at "type" typeOf
-                            let! cs = c |> at "cells" (items (StateWire.cellOfJson false))
+                            let! cs = c |> at "cells" (StateWire.runOf false)
 
                             return
                                 { Name = name
@@ -5132,10 +5803,10 @@ module IncrementalCodec =
         res {
             let! step = el |> at "step" intOf
             let! cols = el |> at "cols" schemaOf
-            let! arrival = el |> at "arrival" (items intOf)
-            let! perm = el |> at "perm" (items intOf)
-            let! bounds = el |> at "bounds" (items intOf)
-            let! keys = el |> at "keys" (items (cellsOf false))
+            let! arrival = el |> at "arrival" intsOf
+            let! perm = el |> at "perm" intsOf
+            let! bounds = el |> at "bounds" intsOf
+            let! keys = el |> at "keys" StateWire.matrixOf
             let! column = el |> at "column" cellListOf
 
             let! out =
@@ -5146,11 +5817,13 @@ module IncrementalCodec =
 
                         match tag with
                         | "floats" ->
-                            let! values = o |> at "values" (items StateWire.floatOfJson)
-                            let! present = o |> at "present" (items boolOf)
+                            let! present = o |> at "present" (strOf >> Result.bind StateWire.boolsOf)
+
+                            let! values = o |> at "values" (strOf >> Result.bind (StateWire.floatsOf present.Length))
+
                             return RunFloats(values, present)
                         | "ints" ->
-                            let! values = o |> at "values" (items intOf)
+                            let! values = o |> at "values" intsOf
                             return RunInts values
                         | "cells" ->
                             let! values = o |> at "values" (cellsOf true)
@@ -5238,6 +5911,51 @@ module IncrementalCodec =
         else
             None
 
+    /// The groups' member lists from `groupMembersJson`'s counts, members and literals.
+    let private groupMembersOf (tokens: string[]) (g: JVal) : Result<string list[], ColumnError> =
+        let build (counts: int[]) (members: int[]) (literals: string[]) =
+            let out = Array.zeroCreate<string list> counts.Length
+            let mutable next = 0
+            let mutable literal = 0
+            let mutable failed = false
+
+            for c in 0 .. counts.Length - 1 do
+                let count = counts[c]
+
+                if failed || count < -1 || next + max count 0 > members.Length then
+                    failed <- true
+                elif count >= 0 then
+                    let group = Array.zeroCreate<string> count
+
+                    for k in 0 .. count - 1 do
+                        let i = members[next + k]
+
+                        if i >= 0 && i < tokens.Length then
+                            group[k] <- tokens[i]
+                        elif i = -1 && literal < literals.Length then
+                            group[k] <- literals[literal]
+                            literal <- literal + 1
+                        else
+                            failed <- true
+
+                    out[c] <- List.ofArray group
+                    next <- next + count
+
+            if failed || next <> members.Length || literal <> literals.Length then
+                Error(
+                    MalformedShape
+                        "incremental state: a group member is a row token's index or the next of the literals, as many as the counts say"
+                )
+            else
+                Ok out
+
+        res {
+            let! counts = g |> at "counts" intsOf
+            let! members = g |> at "members" intsOf
+            let! literals = g |> at "literals" StateWire.stringsOf
+            return! build counts members literals
+        }
+
     let private stateOf
         (supplied: Table option)
         (key: IncrementalStateKey)
@@ -5264,31 +5982,13 @@ module IncrementalCodec =
                 | Some t -> tableOf t |> Result.map Some
                 | None -> Ok None
 
-            let! tokens = st |> at "tokens" (items strOf)
+            let! tokens = st |> at "tokens" StateWire.stringsOf
             let! stepCells = st |> at "stepCells" (items (cellsOf true))
-            let! rowGroups = st |> at "rowGroups" (items intOf)
+            let! rowGroups = st |> at "rowGroups" intsOf
 
-            let! groupMembers =
-                st
-                |> at
-                    "groupMembers"
-                    (items (fun m ->
-                        match m with
-                        | JObj [] -> Ok(Unchecked.defaultof<string list>)
-                        | _ ->
-                            m
-                            |> items (fun token ->
-                                match token with
-                                | JStr s -> Ok s
-                                | JInt i when i >= 0 && i < tokens.Length -> Ok tokens[i]
-                                | _ ->
-                                    Error(
-                                        MalformedShape
-                                            "incremental state: a group member is a row token or the index of one"
-                                    ))
-                            |> Result.map List.ofArray))
+            let! groupMembers = st |> at "groupMembers" (groupMembersOf tokens)
 
-            let! groupAggs = st |> at "groupAggs" (items cellListOf)
+            let! groupAggs = st |> at "groupAggs" listRowsOf
 
             let! sortOrders =
                 st
@@ -5297,8 +5997,8 @@ module IncrementalCodec =
                     (items (fun o ->
                         res {
                             let! step = o |> at "step" intOf
-                            let! arrived = o |> at "arrived" (items intOf)
-                            let! produced = o |> at "produced" (items intOf)
+                            let! arrived = o |> at "arrived" intsOf
+                            let! produced = o |> at "produced" intsOf
                             return step, (arrived, produced)
                         }))
 
@@ -5309,7 +6009,7 @@ module IncrementalCodec =
                     (items (fun j ->
                         res {
                             let! step = j |> at "step" intOf
-                            let! keys = j |> at "keys" (items cellListOf)
+                            let! keys = j |> at "keys" listRowsOf
                             return step, List.ofArray keys
                         }))
 
@@ -5327,10 +6027,10 @@ module IncrementalCodec =
                               Recompute = recompute }
                     })
 
-            let! groupOrder = st |> at "groupOrder" (items strOf)
+            let! groupOrder = st |> at "groupOrder" StateWire.stringsOf
             let! tailCells = st |> at "tailCells" (items (cellsOf true))
-            let! sourceExact = st |> at "sourceExact" (items boolOf)
-            let! groupRows = st |> at "groupRows" (items (cellsOf false))
+            let! sourceExact = st |> at "sourceExact" (strOf >> Result.bind StateWire.boolsOf)
+            let! groupRows = st |> at "groupRows" StateWire.matrixOf
             let! windowRuns = st |> at "windowRuns" (items windowRunOf)
 
             let! chunksTouched =

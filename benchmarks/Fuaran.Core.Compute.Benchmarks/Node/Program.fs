@@ -211,10 +211,13 @@ let private stateTable () =
     printfn "### The incremental state's wire form (Phase 355)"
     printfn ""
 
+    // Phase 357 adds the per-row reading: what resuming costs a row (the decode, or the decode over
+    // a supplied source, plus the diff and refresh), beside what the full evaluation costs one.
+    // Resuming beats the full evaluation exactly where the second figure is the larger.
     printfn
-        "| Pipeline | Rows | Source (chars) | State (chars) | x source | Detached (chars) | x source | Encode (ms) | Decode (ms) | Decode over source (ms) | Diff + refresh (ms) | Full evaluation (ms) |"
+        "| Pipeline | Rows | Source (chars) | State (chars) | x source | Detached (chars) | x source | Encode (ms) | Decode (ms) | Decode over source (ms) | Diff + refresh (ms) | Full evaluation (ms) | Resume (us/row) | Resume detached (us/row) | Full (us/row) |"
 
-    printfn "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+    printfn "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
 
     let idw = Corpus.scalingIdentity
     let runs = runsRef.Value
@@ -278,8 +281,23 @@ let private stateTable () =
                     let per (chars: int) =
                         sprintf "%.2f" (float chars / float source.Length)
 
+                    let encodeMs = bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.encode state)
+
+                    let decodeMs =
+                        bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.decode carrying)
+
+                    let overMs =
+                        bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.decodeOver before detached)
+
+                    let resumeMs = bestMs runs (fun () -> resume decoded)
+
+                    let fullMs =
+                        bestMs runs (fun () -> Fuaran.Compute.DataFrame.evalPipeline pipeline after)
+
+                    let perRow (ms: float) = ms * 1000.0 / float n
+
                     printfn
-                        "| %s | %s | %s | %s | %s | %s | %s | %.1f | %.1f | %.1f | %.1f | %.1f |"
+                        "| %s | %s | %s | %s | %s | %s | %s | %.1f | %.1f | %.1f | %.1f | %.1f | %.2f | %.2f | %.2f |"
                         name
                         (rows n)
                         (rows source.Length)
@@ -287,11 +305,14 @@ let private stateTable () =
                         (per carrying.Length)
                         (rows detached.Length)
                         (per detached.Length)
-                        (bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.encode state))
-                        (bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.decode carrying))
-                        (bestMs runs (fun () -> Fuaran.Compute.IncrementalCodec.decodeOver before detached))
-                        (bestMs runs (fun () -> resume decoded))
-                        (bestMs runs (fun () -> Fuaran.Compute.DataFrame.evalPipeline pipeline after))
+                        encodeMs
+                        decodeMs
+                        overMs
+                        resumeMs
+                        fullMs
+                        (perRow (decodeMs + resumeMs))
+                        (perRow (overMs + resumeMs))
+                        (perRow fullMs)
                 with e when not (e.Message.StartsWith "benchmark corpus:") ->
                     printfn "| %s | %s | %s |" name (rows n) (notMeasured e)
 
