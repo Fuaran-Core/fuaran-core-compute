@@ -1410,7 +1410,7 @@ module Incremental =
         (vecOf: int -> Vec)
         (run: WindowRun)
         (spec: WindowSpec)
-        : Result<ColumnType * (int -> Cell) * bool[] * WindowRun * Cell list option, EvalError> option =
+        : Result<ColumnType * (int -> Cell) * bool[] * WindowRun * (Cell list * int[] * int) option, EvalError> option =
         let arrival = f.Order
         // In place (Phase 323), every slot holds the row the prior evaluation held there and only
         // row-local steps ran ahead of this one, so the stable rows arrived in slot order both times:
@@ -1696,13 +1696,14 @@ module Incremental =
                         for p in 0 .. w - 1 do
                             placeOf[perm[p]] <- p
 
-                        // In place over every slot, both times: the prior column's cells are this column's
-                        // for the rows `keep` names, position for position.
+                        // The prior column, where the prior step held every slot in slot order (a run
+                        // records its column only then): its cell at prior slot `r.Prior[s]` is this
+                        // column's for the rows `keep` names.
                         let prior =
-                            if identity && run.Arrival.Length = width && not (List.isEmpty run.Column) then
-                                Some run.Column
-                            else
+                            if List.isEmpty run.Column then
                                 None
+                            else
+                                Some(run.Column, r.Prior, run.Arrival.Length)
 
                         Some(Ok(ty, (fun k -> runCellAt out placeOf[arrival[k]]), keep, next, prior))
 
@@ -1872,7 +1873,11 @@ module Incremental =
 
             // The step's outcome: the column's type, its cell at each position of `order`, the slots
             // whose `Stable` survives the step (`null`: none does), and the run to record.
-            let outcome: Result<ColumnType * (int -> Cell) * bool[] * WindowRun option * Cell list option, EvalError> =
+            let outcome
+                : Result<
+                      ColumnType * (int -> Cell) * bool[] * WindowRun option * (Cell list * int[] * int) option,
+                      EvalError
+                   > =
                 let resumed =
                     if not prefixFold then
                         None
@@ -1908,8 +1913,25 @@ module Incremental =
                 // an old-generation object to a young one.
                 let data2, origins2 =
                     if identity.Value then
-                        let cells =
+                        // A resumed prefix fold (Phase 333) shares the prior column's cells for the rows
+                        // it kept where every one of them sits at its prior slot and the prior column is
+                        // as long as this one (in place): one pass over the prior list, and no cell boxed
+                        // again for a kept row.
+                        let shared =
                             match reusable with
+                            | Some(priorCells, priorOf, priorCount) when priorCount = order.Length ->
+                                let mutable inPlace = true
+                                let mutable k = 0
+
+                                while inPlace && k < order.Length do
+                                    inPlace <- not keep[k] || priorOf[k] = k
+                                    k <- k + 1
+
+                                if inPlace then Some priorCells else None
+                            | _ -> None
+
+                        let cells =
+                            match shared with
                             | Some priorCells -> priorCells |> List.mapi (fun k c -> if keep[k] then c else cellAt k)
                             | None ->
                                 let mutable cells = []
@@ -3329,10 +3351,16 @@ module Incremental =
         (prepared: Prepared option)
         (recompute: int -> Recompute)
         : Result<IncrementalEval, EvalError> =
-        // Over the prepared frame where there is one (Phase 267), the `Table` boundary otherwise.
-        (match prepared with
-         | Some p -> DataFrame.evalPreparedCounted resolve env pipeline p
-         | None -> DataFrame.evalPipelineWithInEnvCounted resolve env pipeline source)
+        // Over the prepared frame where there is one (Phase 267), the `Table` boundary otherwise —
+        // prepared here exactly as `evalPipelineWithInEnvCounted` prepares it, so the source's row
+        // count is the one the boundary already took rather than a second walk of its first column
+        // (Phase 333: a declined refresh costs the evaluation it falls back to).
+        let boundary =
+            match prepared with
+            | Some p -> p
+            | None -> DataFrame.prepare source
+
+        DataFrame.evalPreparedCounted resolve env pipeline boundary
         |> Result.map (fun (output, evaluated) ->
             { Plan = p
               Pipeline = pipeline
@@ -3350,7 +3378,7 @@ module Incremental =
               SortOrders = Map.empty
               JoinKeys = Map.empty
               Footprint =
-                { SourceRows = Table.rowCount source
+                { SourceRows = boundary.Count
                   ResultRows = Table.rowCount output
                   Recompute = recompute evaluated }
               GroupOrder = [||]
