@@ -50,6 +50,23 @@ reports that as `STAMP ONLY`, and the registry reports it as stale. The vectors 
 way. Which stamp the published copy follows is left to fuaran#2001's landing, and is recorded here
 so that the choice is made deliberately.
 
+**4 decided (2026-10-03, operator ruling): the published copy follows the RELEASE stamp.** The shared
+corpus is public, and the hosts that certify against it should certify against a contract a consumer
+can actually restore; an untagged draft's stamp names a version nobody can obtain. So:
+
+- the copy is re-emitted when a version is **released** (tagged and published), not when a draft is
+  cut, and carries that release's `kitVersion`;
+- a copy whose stamp is this repository's **latest release** and whose vectors match is **fresh**, even
+  while a draft is ahead of that release; the copy registry and this suite's freshness leg are to read
+  it that way, rather than comparing with the committed draft file;
+- the declared derivation in `version-derives.json` moves from the cut to the release accordingly, once
+  the workspace copy registry and version tooling support it.
+
+Until that support ships, a release-stamped copy still reads `STAMP ONLY` here and stale in the
+registry; the `lag` in `copies.json` covers the present gap, owned by fuaran#2001.
+The lag is kept deliberately (operator, 2026-10-03): it turns an unowned stale record into an honest one
+with an owner.
+
 ## 2026-10-02 — D5: a derived column is typed by its expression; the cells decide only where the typer cannot; a float beside a decimal is refused
 
 **Decided (Phase 338, carrying D3's last paragraph).** One rule types every column the dataframe
