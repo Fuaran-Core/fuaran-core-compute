@@ -4026,6 +4026,23 @@ let frameTests =
                   spanMessage
                   "filter over the short vectors"
 
+              // Phase 333: a filter over a selection naming a row past the vectors is refused BY NAME,
+              // on the comparison kernels' path (a typed comparison with a constant) and on the
+              // compiled one alike. The kernels read the entry as an unset bit and DROPPED it: the
+              // filter answered the two rows it could see. The message is plain concatenation, so
+              // node prints the same line (the Phase 333 results file).
+              for path, predicate in
+                  [ "kernel", Binary(Gt, Col "v", Lit(Int 0))
+                    "compiled", Binary(Ge, Col "k", Lit(Str "a")) ] do
+                  match DataFrame.evalStep DataFrame.noResolve Map.empty badSel (Filter predicate) with
+                  | Error e ->
+                      Expect.equal
+                          (DataFrame.errorString e)
+                          "type error: the frame's selection names row 7, past its 3-row vectors"
+                          (path + ": a filter over the selection is refused by name")
+                  | Ok f ->
+                      failtestf "%s: a filter over a selection past the vectors answered %A" path (Frame.toTable f)
+
           // Phase 326: the JavaScript host's slot table stands where `Dictionary` stands on .NET for
           // the token slots, the row hasher and the order codes. Held here to `Dictionary` over keys
           // whose hash collides on purpose (probing and growth both exercised), and to the caller's
