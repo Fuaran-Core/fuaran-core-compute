@@ -19,14 +19,21 @@ because the portable loop is no longer emulated, not because the kernel is weake
 5.29 ms (2.9x), with 2.9x at 100,000 rows and none at 10,000 (two morsels).
 
 **3. Overturned: the morsel `Derive`.** 270 found it at parity at 1M rows (36.9 to 38.2 ms, "within
-noise"). Native: 22.5 to 7.37 ms (3.1x), and 2.4x at 100,000 rows. The morsel runner pays for both
-row-local verbs.
+noise"). Native: 22.5 to 7.37 ms (3.1x), and 2.4x at 100,000 rows. On a quiet machine it is 2.7x at
+both sizes (21.1 to 7.93 ms, 1.94 to 0.717 ms). The morsel runner pays for both row-local verbs.
 
-**4. Held at the sizes 270 judged, qualified below them: `MorselRows` = 8,192.** At 100,000 and
-1,000,000 rows, 8,192 is best or within the sweep's noise of it. At 10,000 rows 4,096 leads (compiled
-`Filter` 0.081 against 0.127 ms, `Derive` 0.109 against 0.191 ms), because it makes three morsels
-where 8,192 makes two. The constant does not move in this phase. A smaller morsel, or a row threshold
-below which morsels are not split, is open to the phases that build on this record (343, 344).
+**4. Held at 100,000 rows, qualified below, unsettled above: `MorselRows` = 8,192.** Swept twice,
+once with the machine busy and once quiet, all four sizes per sitting. Both sittings agree on two
+points:
+
+- at 10,000 rows 4,096 leads (quiet: compiled `Filter` 0.078 against 0.123 ms, `Derive` 0.112
+  against 0.167 ms), because it makes three morsels where 8,192 makes two;
+- at 100,000 rows 8,192 is best or tied, and 4,096 loses 9% and 24%.
+
+At 1,000,000 rows the compiled `Filter` is within 6% at every size. The `Derive` favoured 8,192 in the
+busy sitting and 16,384 by about 20% in the quiet one, so nothing is decided there. No single constant
+wins at every size. The constant does not move in this phase. A morsel size that depends on the row
+count (finer for small inputs) is open to the phases that build on this record (343, 344).
 
 **5. Overturned in its reason, held in its decision: the parallel `GroupBy`.** 270: parity at 10 keys
 (14.1 against 13.8 ms at 100k, 388 against 408 ms at 1M), and 2.3x and 1.8x slower at one key per
@@ -34,9 +41,10 @@ ten rows. Its stated cause was that "a grouping over this evaluator is dominated
 aggregated column". Phase 323 removed that boxing. Rebuilt from 270's description over the streamed
 aggregates and measured natively, the per-morsel-tables-merged-on-first-seen shape is:
 
-- **1.6x faster** at 10 keys and 1M rows (3.85 against 6.15 ms);
-- at parity at 100,000 rows;
-- **3.0x and 6.4x slower** at one key per ten rows (93.3 against 30.6 ms, 9.38 against 1.47 ms),
+- **1.55x faster** at 10 keys and 1M rows (quiet: 3.94 against 6.10 ms; busy: 3.85 against 6.15);
+- at parity at 100,000 rows (1.06x slower quiet);
+- **4.0x and 7.2x slower** at one key per ten rows (quiet: 92.7 against 23.0 ms at 1M, 8.63 against
+  1.20 ms at 100k; the busy sitting read 3.0x and 6.4x, because load slowed the sequential arm),
   allocating 177 MB against 20 MB.
 
 So threads now buy something, but this shape spends it on merging tables that hold nearly every row.

@@ -27,7 +27,7 @@ let internal kernelSet (name: string) : KernelSet =
     | "native" -> Kernels.native
     | _ -> failwithf "benchmark corpus: no kernel member named '%s'" name
 
-/// The sizes 270 measured, and the smaller size the estate's sheets live at.
+/// The sizes 270 measured, and 10,000 rows, the size of a typical spreadsheet-shaped input.
 let sizes = [ 10_000; 100_000; 1_000_000 ]
 
 let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column = Column.create name ty cells

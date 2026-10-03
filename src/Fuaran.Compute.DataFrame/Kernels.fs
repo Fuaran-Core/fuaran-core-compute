@@ -41,15 +41,16 @@ open Fuaran.Core
 //  (benchmarks/results/2026-10-03-snapdragon-x1e80100-phase-341.md):
 //  the comparison kernels and the morsel `Filter` hold (4.2 to 5.5 times,
 //  and 2.9 times at 100,000 and 1,000,000 rows). The morsel `Derive`,
-//  "within noise" at a million rows under emulation, pays 2.4 and 3.1 times
-//  at 100,000 and 1,000,000 rows. The parallel `GroupBy` above, rebuilt over
-//  Phase 323's streamed aggregates, is 1.6 times FASTER at ten keys and a
-//  million rows (3.85 against 6.15 ms) and 3.0 to 6.4 times slower at one
-//  key per ten rows. Boxing no longer dominates the step. At high cardinality
-//  the merge of per-morsel tables is the cost, and the merge reassociates a
-//  float `Sum`. It stays out; Phase 344 partitions by group instead. At
-//  10,000 rows a 4,096-row morsel led 8,192 (three morsels against two).
-//  `MorselRows` is unchanged.
+//  "within noise" at a million rows under emulation, pays 2.7 times at
+//  100,000 and 1,000,000 rows (quiet machine). The parallel `GroupBy` above,
+//  rebuilt over Phase 323's streamed aggregates, is 1.55 times FASTER at ten
+//  keys and a million rows (3.94 against 6.10 ms) and 4.0 to 7.2 times slower
+//  at one key per ten rows. Boxing no longer dominates the step. At high
+//  cardinality the merge of per-morsel tables is the cost, and the merge
+//  reassociates a float `Sum`. It stays out; Phase 344 partitions by group
+//  instead. Morsel size, swept twice: at 10,000 rows 4,096 leads 8,192
+//  (three morsels against two); at 100,000 rows 8,192 is best or tied; at a
+//  million rows the two sittings disagree. `MorselRows` is unchanged.
 //
 //  Not built: vectorised integer Sum / Count / Min / Max. Every reduction
 //  this evaluator makes is an aggregate over one GROUP's members — scattered
