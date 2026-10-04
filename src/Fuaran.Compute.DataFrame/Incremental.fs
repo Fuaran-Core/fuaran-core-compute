@@ -604,8 +604,82 @@ module internal StateWire =
 
     let private hexChars = "0123456789abcdef"
 
+#if FABLE_COMPILER
+    /// The UTF-16 unit at `i`, as an int (Phase 358): `charCodeAt`, where Fable compiles `s[i]` to
+    /// a one-character string first and reads its code from that.
+    [<Fable.Core.Emit("$0.charCodeAt($1)")>]
+    let private unitAt (s: string) (i: int) : int = Fable.Core.Util.jsNative
+#else
+    /// The UTF-16 unit at `i`, as an int.
+    let inline private unitAt (s: string) (i: int) : int = int s[i]
+#endif
+
+    /// One compression of the 64 bytes of `buf` from `off` into the state `h`, through the
+    /// schedule `w`. Every index is proved by the caller: `w` is 64 long, `h` 8, `k` 64, and
+    /// `off + 64` is at most `buf.Length`, so the accessors are the unchecked `Raw.get` / `Raw.set`.
+    let private compress (h: uint32[]) (w: uint32[]) (buf: byte[]) (off: int) : unit =
+        for t in 0..15 do
+            let o = off + t * 4
+
+            Raw.set
+                w
+                t
+                ((uint32 (Raw.get o buf) <<< 24)
+                 ||| (uint32 (Raw.get (o + 1) buf) <<< 16)
+                 ||| (uint32 (Raw.get (o + 2) buf) <<< 8)
+                 ||| uint32 (Raw.get (o + 3) buf))
+
+        for t in 16..63 do
+            let x = Raw.get (t - 15) w
+            let y = Raw.get (t - 2) w
+            let s0 = (rotr x 7) ^^^ (rotr x 18) ^^^ (x >>> 3)
+            let s1 = (rotr y 17) ^^^ (rotr y 19) ^^^ (y >>> 10)
+            Raw.set w t (Raw.get (t - 16) w .+. s0 .+. Raw.get (t - 7) w .+. s1)
+
+        let mutable a = Raw.get 0 h
+        let mutable b = Raw.get 1 h
+        let mutable c = Raw.get 2 h
+        let mutable d = Raw.get 3 h
+        let mutable e = Raw.get 4 h
+        let mutable f = Raw.get 5 h
+        let mutable g = Raw.get 6 h
+        let mutable hh = Raw.get 7 h
+
+        for t in 0..63 do
+            let s1 = (rotr e 6) ^^^ (rotr e 11) ^^^ (rotr e 25)
+            let ch = (e &&& f) ^^^ ((~~~e) &&& g)
+            let temp1 = hh .+. s1 .+. ch .+. Raw.get t k .+. Raw.get t w
+            let s0 = (rotr a 2) ^^^ (rotr a 13) ^^^ (rotr a 22)
+            let maj = (a &&& b) ^^^ (a &&& c) ^^^ (b &&& c)
+            let temp2 = s0 .+. maj
+            hh <- g
+            g <- f
+            f <- e
+            e <- d .+. temp1
+            d <- c
+            c <- b
+            b <- a
+            a <- temp1 .+. temp2
+
+        Raw.set h 0 (Raw.get 0 h .+. a)
+        Raw.set h 1 (Raw.get 1 h .+. b)
+        Raw.set h 2 (Raw.get 2 h .+. c)
+        Raw.set h 3 (Raw.get 3 h .+. d)
+        Raw.set h 4 (Raw.get 4 h .+. e)
+        Raw.set h 5 (Raw.get 5 h .+. f)
+        Raw.set h 6 (Raw.get 6 h .+. g)
+        Raw.set h 7 (Raw.get 7 h .+. hh)
+
+    /// The bytes the UTF-8 walk writes before it compresses the whole blocks among them.
+    let private chunkBytes = 1 <<< 14
+
     /// Lowercase-hex SHA-256 over the UTF-8 bytes of `s`: the managed copy, which is the digest
     /// under Fable and which the suite holds to the substrate's on .NET as well.
+    ///
+    /// Phase 358: the UTF-8 walk writes a chunk of bytes into one byte buffer (a typed array under
+    /// Fable), then compresses the chunk's whole blocks in one pass, so no closure is called per byte
+    /// and no index goes through Fable's shared bounds-checked helper. The bytes hashed, and so the
+    /// digest, are the ones the per-byte form hashed.
     let sha256HexPortable (s: string) : string =
         let h =
             [| 0x6a09e667u
@@ -618,124 +692,97 @@ module internal StateWire =
                0x5be0cd19u |]
 
         let w = Array.zeroCreate<uint32> 64
-        let block = Array.zeroCreate<uint32> 64
-        // [| bytes in the current block; bytes pushed in all |]
-        let counts = [| 0; 0 |]
+        // A unit writes at most four bytes past the fill line, and the padding at most 72 more.
+        let buf = Array.zeroCreate<byte> (chunkBytes + 128)
+        let mutable fill = 0
+        // The bytes compressed so far: whole blocks only.
+        let mutable hashed = 0
 
-        let compress () =
-            for t in 0..15 do
-                w[t] <-
-                    (block[t * 4] <<< 24)
-                    ||| (block[t * 4 + 1] <<< 16)
-                    ||| (block[t * 4 + 2] <<< 8)
-                    ||| block[t * 4 + 3]
+        // Compress the whole blocks of `buf[0 .. fill - 1]` and carry the rest to the front.
+        let flush () =
+            let whole = fill - (fill % 64)
+            let mutable off = 0
 
-            for t in 16..63 do
-                let s0 = (rotr w[t - 15] 7) ^^^ (rotr w[t - 15] 18) ^^^ (w[t - 15] >>> 3)
-                let s1 = (rotr w[t - 2] 17) ^^^ (rotr w[t - 2] 19) ^^^ (w[t - 2] >>> 10)
-                w[t] <- w[t - 16] .+. s0 .+. w[t - 7] .+. s1
+            while off < whole do
+                compress h w buf off
+                off <- off + 64
 
-            let mutable a = h[0]
-            let mutable b = h[1]
-            let mutable c = h[2]
-            let mutable d = h[3]
-            let mutable e = h[4]
-            let mutable f = h[5]
-            let mutable g = h[6]
-            let mutable hh = h[7]
+            for j in 0 .. fill - whole - 1 do
+                Raw.set buf j (Raw.get (whole + j) buf)
 
-            for t in 0..63 do
-                let s1 = (rotr e 6) ^^^ (rotr e 11) ^^^ (rotr e 25)
-                let ch = (e &&& f) ^^^ ((~~~e) &&& g)
-                let temp1 = hh .+. s1 .+. ch .+. k[t] .+. w[t]
-                let s0 = (rotr a 2) ^^^ (rotr a 13) ^^^ (rotr a 22)
-                let maj = (a &&& b) ^^^ (a &&& c) ^^^ (b &&& c)
-                let temp2 = s0 .+. maj
-                hh <- g
-                g <- f
-                f <- e
-                e <- d .+. temp1
-                d <- c
-                c <- b
-                b <- a
-                a <- temp1 .+. temp2
+            hashed <- hashed + whole
+            fill <- fill - whole
 
-            h[0] <- h[0] .+. a
-            h[1] <- h[1] .+. b
-            h[2] <- h[2] .+. c
-            h[3] <- h[3] .+. d
-            h[4] <- h[4] .+. e
-            h[5] <- h[5] .+. f
-            h[6] <- h[6] .+. g
-            h[7] <- h[7] .+. hh
-            counts[0] <- 0
-
-        let push (b: int) =
-            block[counts[0]] <- uint32 b
-            counts[0] <- counts[0] + 1
-            counts[1] <- counts[1] + 1
-
-            if counts[0] = 64 then
-                compress ()
-
+        let n = s.Length
         let mutable i = 0
 
-        while i < s.Length do
-            let c = int s[i]
-
-            let pairs =
-                c >= 0xD800
-                && c <= 0xDBFF
-                && i + 1 < s.Length
-                && (let lo = int s[i + 1] in lo >= 0xDC00 && lo <= 0xDFFF)
+        while i < n do
+            let c = unitAt s i
 
             if c < 0x80 then
-                push c
+                Raw.set buf fill (byte c)
+                fill <- fill + 1
             elif c < 0x800 then
-                push (0xC0 ||| (c >>> 6))
-                push (0x80 ||| (c &&& 0x3F))
-            elif pairs then
-                let lo = int s[i + 1]
-                let cp = 0x10000 + ((c - 0xD800) <<< 10) + (lo - 0xDC00)
-                push (0xF0 ||| (cp >>> 18))
-                push (0x80 ||| ((cp >>> 12) &&& 0x3F))
-                push (0x80 ||| ((cp >>> 6) &&& 0x3F))
-                push (0x80 ||| (cp &&& 0x3F))
+                Raw.set buf fill (byte (0xC0 ||| (c >>> 6)))
+                Raw.set buf (fill + 1) (byte (0x80 ||| (c &&& 0x3F)))
+                fill <- fill + 2
+            elif
+                c >= 0xD800
+                && c <= 0xDBFF
+                && i + 1 < n
+                && (let lo = unitAt s (i + 1) in lo >= 0xDC00 && lo <= 0xDFFF)
+            then
+                let cp = 0x10000 + ((c - 0xD800) <<< 10) + (unitAt s (i + 1) - 0xDC00)
+                Raw.set buf fill (byte (0xF0 ||| (cp >>> 18)))
+                Raw.set buf (fill + 1) (byte (0x80 ||| ((cp >>> 12) &&& 0x3F)))
+                Raw.set buf (fill + 2) (byte (0x80 ||| ((cp >>> 6) &&& 0x3F)))
+                Raw.set buf (fill + 3) (byte (0x80 ||| (cp &&& 0x3F)))
+                fill <- fill + 4
                 i <- i + 1
             elif c >= 0xD800 && c <= 0xDFFF then
-                push 0xEF
-                push 0xBF
-                push 0xBD
+                Raw.set buf fill 0xEFuy
+                Raw.set buf (fill + 1) 0xBFuy
+                Raw.set buf (fill + 2) 0xBDuy
+                fill <- fill + 3
             else
-                push (0xE0 ||| (c >>> 12))
-                push (0x80 ||| ((c >>> 6) &&& 0x3F))
-                push (0x80 ||| (c &&& 0x3F))
+                Raw.set buf fill (byte (0xE0 ||| (c >>> 12)))
+                Raw.set buf (fill + 1) (byte (0x80 ||| ((c >>> 6) &&& 0x3F)))
+                Raw.set buf (fill + 2) (byte (0x80 ||| (c &&& 0x3F)))
+                fill <- fill + 3
+
+            if fill >= chunkBytes then
+                flush ()
 
             i <- i + 1
 
         // Padding: 0x80, zeros to 56 mod 64, then the bit length as two big-endian `uint32` halves.
-        let byteLen = counts[1]
-        push 0x80
+        let byteLen = hashed + fill
+        Raw.set buf fill 0x80uy
+        fill <- fill + 1
 
-        while counts[0] <> 56 do
-            push 0
+        while fill % 64 <> 56 do
+            Raw.set buf fill 0uy
+            fill <- fill + 1
 
         let lo = uint32 byteLen <<< 3
         let hi = uint32 byteLen >>> 29
 
-        for shift in [ 24; 16; 8; 0 ] do
-            push (int ((hi >>> shift) &&& 0xFFu))
+        for j in 0..3 do
+            Raw.set buf (fill + j) (byte ((hi >>> (24 - 8 * j)) &&& 0xFFu))
+            Raw.set buf (fill + 4 + j) (byte ((lo >>> (24 - 8 * j)) &&& 0xFFu))
 
-        for shift in [ 24; 16; 8; 0 ] do
-            push (int ((lo >>> shift) &&& 0xFFu))
+        fill <- fill + 8
+        flush ()
 
-        let sb = System.Text.StringBuilder()
+        let hex = Array.zeroCreate<char> 64
 
-        for v in h do
-            for shift in [ 28; 24; 20; 16; 12; 8; 4; 0 ] do
-                sb.Append(hexChars[int ((v >>> shift) &&& 0xFu)]) |> ignore
+        for j in 0..7 do
+            let v = Raw.get j h
 
-        sb.ToString()
+            for q in 0..7 do
+                Raw.set hex (j * 8 + q) hexChars[int ((v >>> (28 - 4 * q)) &&& 0xFu)]
+
+        System.String(hex)
 
     /// Lowercase-hex SHA-256 over the UTF-8 bytes of `s`, VALUE-IDENTICAL on every host. On .NET it
     /// is the platform's SHA-256 over the platform's UTF-8 encoder (Phase 357: the managed copy ran
@@ -846,6 +893,12 @@ module internal StateWire =
     // that never reached the step). A run whose cells are of more than one case (an int in a float
     // column) is written as `cells`: one JSON value per cell, the per-cell form below.
 
+#if FABLE_COMPILER
+    /// Append `i` in decimal to `sb`: `string i`, one piece (Phase 358). Fable's builder keeps every
+    /// append as a piece and joins them once, so the digit-a-piece form below cost a piece per
+    /// digit there, where here the engine writes the digits itself.
+    let private appendInt (sb: System.Text.StringBuilder) (i: int) = sb.Append(string i) |> ignore
+#else
     /// Append `i` in decimal to `sb`: the digits `string i` writes, without a string per value.
     let private appendInt (sb: System.Text.StringBuilder) (i: int) =
         // Worked in the negative range, which holds every int, `Int32.MinValue` included: `p` is
@@ -865,6 +918,7 @@ module internal StateWire =
             sb.Append(char (int '0' + d)) |> ignore
             v <- v + d * p
             p <- p / 10
+#endif
 
     let private refused (what: string) : Result<'a, ColumnError> =
         Error(MalformedShape("incremental state: " + what))
@@ -947,7 +1001,8 @@ module internal StateWire =
 
                 if not failed then
                     match readInt c with
-                    | Some v -> out[k] <- v
+                    // `k < held`, the array's length: the unchecked write (Phase 358).
+                    | Some v -> Raw.set out k v
                     | None -> failed <- true
 
                 k <- k + 1
@@ -958,6 +1013,11 @@ module internal StateWire =
                 Ok out
 
     let intsText (xs: int[]) : string =
+#if FABLE_COMPILER
+        // Phase 358: the engine's own join over the typed array, which writes each int as `string`
+        // writes it; one string, where the builder below holds a piece per value and per comma.
+        System.String.Join(",", xs)
+#else
         let sb = System.Text.StringBuilder()
 
         for k in 0 .. xs.Length - 1 do
@@ -967,6 +1027,7 @@ module internal StateWire =
             appendInt sb xs[k]
 
         sb.ToString()
+#endif
 
     let intsOf (text: string) : Result<int[], ColumnError> = readInts -1 text
 

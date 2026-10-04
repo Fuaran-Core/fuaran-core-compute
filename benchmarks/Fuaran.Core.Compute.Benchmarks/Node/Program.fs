@@ -8,7 +8,8 @@
 /// `dotnet run -c Release --project benchmarks/Fuaran.Core.Compute.Benchmarks/Node -- [runs]`.
 /// `runs` is the number of measured samples per case (default 10), after two warm-up calls; a second
 /// argument `typed` times only the typed family (`node Program.js 10 typed`), and `state` measures only the
-/// incremental state's wire form (`node Program.js 3 state`).
+/// incremental state's wire form (`node Program.js 3 state`), with an optional third argument, the
+/// largest size it measures on this host (`node Program.js 3 state 1000000`).
 module Fuaran.Core.Compute.Benchmarks.Node.Program
 
 open System
@@ -163,15 +164,86 @@ let private typedTable () =
 /// The sizes the state's wire form is measured at (Phase 355).
 let private stateSizes = [ 1_000; 100_000; 1_000_000 ]
 
-/// The largest size this host is asked for. Under node the million-row case exhausts the default
-/// heap while the encoding is assembled, which ends the process rather than raising, so it is
-/// reported in its row without being attempted.
+/// The largest size this host is asked for, unless the third argument names another
+/// (`node Program.js 3 state 1000000`). Under node the million-row case can exhaust the default heap,
+/// which ends the process rather than raising, so by default it is reported in its row without being
+/// attempted. Phase 358 measured what it needs: one encode at 1,000,000 rows completes in a 1,280 MB
+/// heap beside the 833 MB its table and state hold, one decode in 2,048 MB (its result is 817 MB of
+/// that), and this harness, which holds a row's states, encodings and refreshes at once, in
+/// 3,072 MB and not in 2,048. A host whose default heap is smaller than that keeps the ceiling; one
+/// with more (node's default on a machine with enough memory is about 4 GB) can pass `1000000`.
 let private stateCeiling =
+    ref (
 #if FABLE_COMPILER
-    100_000
+        100_000
 #else
-    1_000_000
+        1_000_000
 #endif
+    )
+
+/// The frame `IncrementalCodec` writes around a body: the body's canonical text, then the 64 hex
+/// digits of its SHA-256, then the close.
+let private framePrefix = "{\"$type\":\"incrementalState\",\"body\":"
+
+let private frameDigest = ",\"digest\":\""
+
+let private frameSuffix = "\"}"
+
+/// The body of an encoding, and the digest it carries.
+let private bodyAndDigest (text: string) : string * string =
+    let tail = frameDigest.Length + 64 + frameSuffix.Length
+
+    text.Substring(framePrefix.Length, text.Length - framePrefix.Length - tail),
+    text.Substring(text.Length - frameSuffix.Length - 64, 64)
+
+/// The digest under this host, held to the substrate's `Hash.sha256Hex` before anything is timed
+/// (Phase 358): the suite's corpus, which crosses the block boundary and holds every UTF-8 width and
+/// both lone surrogates, plus strings that cross the managed copy's 16,384-byte chunk. The package's
+/// digest is internal, so it is reached through `decode`, which checks it before it parses: a frame
+/// around `s` carrying the substrate's digest of `s` must pass that check, and one carrying the
+/// digest of another string must fail it, so the probe is seen to be able to fail.
+let private digestCorpus () =
+    let lone = string (char 0xD800)
+    let low = string (char 0xDC00)
+
+    let corpus =
+        [ ""
+          "abc"
+          "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+          String.replicate 55 "a"
+          String.replicate 56 "a"
+          String.replicate 63 "a"
+          String.replicate 64 "a"
+          String.replicate 65 "a"
+          String.replicate 1000 "a"
+          String.replicate 100000 "ab"
+          "é — ✓ 😀 \u0001\u0010"
+          String.replicate 21 "😀é"
+          lone
+          low + lone
+          "x" + lone + "y" + low
+          String.replicate 16_383 "a" + "😀"
+          String.replicate 16_382 "a" + lone + "b"
+          String.replicate 16_383 "a" + "é" + "b"
+          String.replicate 10_000 "😀é✓"
+          String.replicate 65_535 "a" + "😀" + "b"
+          String.replicate (3 * 65_536 + 7) "é" ]
+
+    let damaged (body: string) (digest: string) =
+        match Fuaran.Compute.IncrementalCodec.decode (framePrefix + body + frameDigest + digest + frameSuffix) with
+        | Error(Fuaran.Core.ColumnError.Malformed m) -> m.Contains "the digest is not the digest of the body"
+        | _ -> false
+
+    for s in corpus do
+        if damaged s (Fuaran.Core.Hash.sha256Hex s) then
+            failwithf
+                "benchmark corpus: the package's digest of a %d-unit string is not the substrate's on this host"
+                s.Length
+
+        if not (damaged s (Fuaran.Core.Hash.sha256Hex (s + "x"))) then
+            failwithf "benchmark corpus: a wrong digest over a %d-unit string was not refused" s.Length
+
+    List.length corpus
 
 /// The best of `runs` single calls, in milliseconds. A single call, not a calibrated batch: at a
 /// million rows one call is seconds, and the figure wanted is what one run of a job pays.
@@ -207,6 +279,13 @@ let private stateTable () =
 
     printfn ""
     printfn "The state-codec laws: green over 3 seeds of 60 draws on this host"
+
+    let digests = digestCorpus ()
+
+    printfn
+        "The digest: the substrate's over the %d strings of the suite's corpus on this host, and over every encoding below"
+        digests
+
     printfn ""
     printfn "### The incremental state's wire form (Phase 355)"
     printfn ""
@@ -215,17 +294,20 @@ let private stateTable () =
     // a supplied source, plus the diff and refresh), beside what the full evaluation costs one.
     // Resuming beats the full evaluation exactly where the second figure is the larger.
     printfn
-        "| Pipeline | Rows | Source (chars) | State (chars) | x source | Detached (chars) | x source | Encode (ms) | Decode (ms) | Decode over source (ms) | Diff + refresh (ms) | Full evaluation (ms) | Resume (us/row) | Resume detached (us/row) | Full (us/row) |"
+        "| Pipeline | Rows | Source (chars) | State (chars) | x source | Detached (chars) | x source | Encode (ms) | Decode (ms) | Decode over source (ms) | Diff + refresh (ms) | Full evaluation (ms) | Resume (us/row) | Resume detached (us/row) | Full (us/row) | Digest (carrying / detached) |"
 
-    printfn "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+    printfn "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
 
     let idw = Corpus.scalingIdentity
     let runs = runsRef.Value
 
     for name, pipeline in Corpus.scalingPipelines do
         for n in stateSizes do
-            if n > stateCeiling then
-                printfn "| %s | %s | not measured: past this host's default heap |" name (rows n)
+            if n > stateCeiling.Value then
+                printfn
+                    "| %s | %s | not measured: past this harness's ceiling on this host (Phase 358: it needs a 3 GB heap) |"
+                    name
+                    (rows n)
             else
 
                 try
@@ -243,6 +325,23 @@ let private stateTable () =
                     let detached =
                         Fuaran.Compute.IncrementalCodec.encodeDetached state
                         |> Corpus.orFail "encodeDetached"
+
+                    // Phase 358: each encoding's digest is the substrate's digest of its body, and the
+                    // table prints the digests' first twelve digits, so the .NET and node runs of this
+                    // program show the encodings are the same bytes on both hosts.
+                    let digestOf (what: string) (text: string) =
+                        let body, digest = bodyAndDigest text
+
+                        if Fuaran.Core.Hash.sha256Hex body <> digest then
+                            failwithf
+                                "benchmark corpus: the %s encoding of %s at %d rows carries a digest that is not the substrate's"
+                                what
+                                name
+                                n
+
+                        digest.Substring(0, 12)
+
+                    let digests = digestOf "carrying" carrying + " / " + digestOf "detached" detached
 
                     let decoded =
                         Fuaran.Compute.IncrementalCodec.decode carrying |> Corpus.orFail "decode"
@@ -297,7 +396,7 @@ let private stateTable () =
                     let perRow (ms: float) = ms * 1000.0 / float n
 
                     printfn
-                        "| %s | %s | %s | %s | %s | %s | %s | %.1f | %.1f | %.1f | %.1f | %.1f | %.2f | %.2f | %.2f |"
+                        "| %s | %s | %s | %s | %s | %s | %s | %.1f | %.1f | %.1f | %.1f | %.1f | %.2f | %.2f | %.2f | %s |"
                         name
                         (rows n)
                         (rows source.Length)
@@ -313,6 +412,7 @@ let private stateTable () =
                         (perRow (decodeMs + resumeMs))
                         (perRow (overMs + resumeMs))
                         (perRow fullMs)
+                        digests
                 with e when not (e.Message.StartsWith "benchmark corpus:") ->
                     printfn "| %s | %s | %s |" name (rows n) (notMeasured e)
 
@@ -332,6 +432,10 @@ let main argv =
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
     let onlyState = argv.Length > 1 && argv.[1] = "state"
+
+    // A third argument after `state` is the largest size to measure on this host (Phase 358).
+    if onlyState && argv.Length > 2 then
+        stateCeiling.Value <- int argv.[2]
 
     if not onlyTyped && not onlyState then
         table
