@@ -6572,67 +6572,87 @@ module DataFrame =
             // (`Ordering`'s codes tie exactly where this comparator does), so a top-n that would
             // gain from codes — a window reaching most of the frame is the full sort already —
             // can take them without a change of answer.
-            //
-            // Phase 344 measured the heap a range of rows at a time across threads (each range's
-            // heap on its own thread, the candidates sorted under the same order): 2.8 to 4.4 times
-            // at 100,000 and 1,000,000 rows. It is not shipped: the full evaluation it speeds up is
-            // what the incremental tick is held against (the corpus tick bound, `ScalingTests`), and
-            // the `filter > sort > limit` tick read 1.75 to 2.04 times the parallel evaluation at
-            // 100,000 rows. Whether that bound yields is the operator's call (`DECISIONS.md`, D8).
             let cmp: int -> int -> int = comparatorOrder phys (sortKeyVecs f by)
 
-            // A max-heap of the `window` least positions seen so far: its root is the greatest of
-            // them, and a position that sorts before the root replaces it.
-            let heap: int[] = Array.zeroCreate window
+            // The `window` least positions of the range `lo .. hi - 1` (all of them, if it is
+            // shorter), as a max-heap: its root is the greatest of them, and a position that sorts
+            // before the root replaces it.
+            let leastOf (lo: int) (hi: int) : int[] =
+                let size = min window (hi - lo)
+                let heap: int[] = Array.zeroCreate size
 
-            let siftDown (start: int) =
-                let mutable i = start
-                let mutable go = true
+                let siftDown (start: int) =
+                    let mutable i = start
+                    let mutable go = true
 
-                while go do
-                    let l = 2 * i + 1
-                    let r = l + 1
-                    let mutable largest = i
+                    while go do
+                        let l = 2 * i + 1
+                        let r = l + 1
+                        let mutable largest = i
 
-                    if l < window && cmp heap[l] heap[largest] > 0 then
-                        largest <- l
+                        if l < size && cmp heap[l] heap[largest] > 0 then
+                            largest <- l
 
-                    if r < window && cmp heap[r] heap[largest] > 0 then
-                        largest <- r
+                        if r < size && cmp heap[r] heap[largest] > 0 then
+                            largest <- r
 
-                    if largest = i then
-                        go <- false
-                    else
+                        if largest = i then
+                            go <- false
+                        else
+                            let t = heap[i]
+                            heap[i] <- heap[largest]
+                            heap[largest] <- t
+                            i <- largest
+
+                let siftUp (start: int) =
+                    let mutable i = start
+
+                    while i > 0 && cmp heap[i] heap[(i - 1) / 2] > 0 do
+                        let p = (i - 1) / 2
                         let t = heap[i]
-                        heap[i] <- heap[largest]
-                        heap[largest] <- t
-                        i <- largest
+                        heap[i] <- heap[p]
+                        heap[p] <- t
+                        i <- p
 
-            let siftUp (start: int) =
-                let mutable i = start
+                for i in 0 .. size - 1 do
+                    heap[i] <- lo + i
+                    siftUp i
 
-                while i > 0 && cmp heap[i] heap[(i - 1) / 2] > 0 do
-                    let p = (i - 1) / 2
-                    let t = heap[i]
-                    heap[i] <- heap[p]
-                    heap[p] <- t
-                    i <- p
+                for i in lo + size .. hi - 1 do
+                    if cmp i heap[0] < 0 then
+                        heap[0] <- i
+                        siftDown 0
 
-            for i in 0 .. window - 1 do
-                heap[i] <- i
-                siftUp i
+                heap
 
-            for i in window .. len - 1 do
-                if cmp i heap[0] < 0 then
-                    heap[0] <- i
-                    siftDown 0
+            // Phase 344 — on a kernel set that answers more than one partition, each partition is a
+            // range of the positions with a heap of its own, on its own thread. Every one of the
+            // `window` least positions is among the least of its own range, so the ranges' heaps
+            // together hold them, and the one sort below under the total order picks them out:
+            // the answer is the sequential heap's whatever the ranges.
+            let parts = k.Partitions len
+
+            let candidates =
+                if parts <= 1 then
+                    leastOf 0 len
+                else
+                    let bounds =
+                        Array.init (parts + 1) (fun j -> int (int64 len * int64 j / int64 parts))
+
+                    let heaps: int[][] = Array.zeroCreate parts
+
+                    k.RunMorsels parts (fun j ->
+                        heaps[j] <- leastOf bounds[j] bounds[j + 1]
+                        true)
+
+                    Array.concat heaps
 
             // A plain list for the final sort, as `evalSort` uses: a typed array's comparator sort
             // is the slow path under Fable.
-            let order = ResizeArray<int>(window)
+            let order = ResizeArray<int>(candidates.Length)
 
-            for i in 0 .. window - 1 do
-                order.Add heap[i]
+            for i in 0 .. candidates.Length - 1 do
+                order.Add candidates[i]
 
             order.Sort(System.Comparison cmp)
             Frame.select f (Array.init taken (fun j -> phys[order[skipped + j]]))

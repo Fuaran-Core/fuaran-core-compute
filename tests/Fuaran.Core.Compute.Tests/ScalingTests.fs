@@ -138,6 +138,9 @@ let private ratioBound = 5.0 * sizeRatio
 /// boundary cost and the tick, which never crosses that boundary, did not move. The floor is under
 /// three percent of the allowance at 100,000 rows, so the ratio still decides there. Any further
 /// move of either number is the operator's act.
+///
+/// Operator ruling 2026-10-04 (Phase 371): `full` is the evaluation at ONE thread (`oneThread`,
+/// below), so the bound compares like with like; neither number moved.
 let private tickBound = 1.6
 
 /// Phase 327 — the per-call floor of the tick condition, in units of the clock leg's calibration
@@ -845,6 +848,28 @@ let clockBaselineMs () : float = Calibration.baselineMs ()
 let private tickFloorMs () : float =
     tickFloorFactor * Calibration.baselineMs ()
 
+/// Phase 371 — the kernels the full evaluation runs on when a tick is held against it: the native
+/// member at ONE thread. Its comparisons and selection are the native member's vectors, so the
+/// arithmetic is the host's; its morsels run in order on the caller's thread (the portable runner),
+/// and it never partitions (`nativeFrom` at a threshold no frame reaches), so the sort, the top-n
+/// and the window run their sequential paths. Same answers as every member; the suite holds them so.
+///
+/// Operator ruling 2026-10-04 (Phase 344's deferred task, `DECISIONS.md` D8 item 3, option A): the
+/// tick bound compares the incremental tick with the evaluation it replaces AT ONE THREAD. What the
+/// bound has always protected is that maintaining a result is not dearer than recomputing it on the
+/// same footing; once the full evaluation ran its sort, top-n and filter morsels across the
+/// machine's cores the ratio measured the core count rather than the seam (the parallel top-n read 1.74 to 2.04 against 1.6 in Phase 344 and was held back for it).
+/// `tickBound` and `tickFloorMs` did not move.
+let private oneThread: KernelSet =
+    { Kernels.nativeFrom System.Int32.MaxValue with
+        RunMorsels = Kernels.Portable.runMorsels }
+
+/// The full evaluation a tick is held against (Phase 371): the planned evaluator, boundary in and
+/// out included as `evalPipelineInEnv` pays it, on `oneThread`.
+let private fullAtOneThread (env: Map<string, Cell>) (p: Transform list) (t: Table) : Result<Table, EvalError> =
+    DataFrame.evalPreparedCountedWith oneThread DataFrame.noResolve env p (DataFrame.prepare t)
+    |> Result.map fst
+
 /// Raised by a clock case that stayed saturated past its budget: NOT an assertion failure, so it is
 /// never read as a timing red, and the entry point turns it into the leg's distinct exit code.
 exception MachineSaturated of string
@@ -1423,6 +1448,10 @@ let clockTests =
               // Phase 321 re-measures the bar with DECIMAL keys: the identity, the grouping key and
               // the summed measure decimal (`buildDecimal`), on the two group-by shapes, held to the
               // same bound — no separate allowance for a decimal key.
+              //
+              // Phase 371 (operator ruling 2026-10-04): the full evaluation runs at ONE thread
+              // (`oneThread`), the tick unchanged — like with like, so the ratio measures the seam
+              // and not the core count. The bound and the floor did not move.
               for n in [ small; large; 100_000 ] do
                   for label, p, mk in
                       [ "tick: filter > groupBy", pipeline, build
@@ -1448,8 +1477,14 @@ let clockTests =
                           (DataFrame.evalPipeline p after)
                           "the tick answers what the reference answers"
 
+                      // Phase 371: the full evaluation at one thread (`oneThread`), answering the same.
+                      Expect.equal
+                          (fullAtOneThread Map.empty p after)
+                          (DataFrame.evalPipeline p after)
+                          "the one-thread full evaluation answers what the reference answers"
+
                       let tickMs = bestMs 5 (fun () -> tick () |> ignore)
-                      let fullMs = bestMs 5 (fun () -> DataFrame.evalPipeline p after |> ok |> ignore)
+                      let fullMs = bestMs 5 (fun () -> fullAtOneThread Map.empty p after |> ok |> ignore)
                       let floorMs = tickFloorMs ()
 
                       printfn
@@ -1497,6 +1532,12 @@ let clockTests =
               // every node is held to `tickBound`. Do not reinstate or raise a bound to pass this case;
               // a reading above it is an operator decision, reported with the figures.
               //
+              // Phase 371 (operator ruling 2026-10-04, `DECISIONS.md` D8 item 3): the full evaluation
+              // runs at ONE thread (`oneThread`), the tick unchanged. Phase 344's parallel top-n took
+              // `filter > sort > limit` at 100,000 rows to 1.74 to 2.04 here against a parallel full
+              // evaluation; the ruling kept the bound at 1.6 and made the comparison like with like,
+              // so the ratio measures the seam and not the core count.
+              //
               // Every cell is measured and printed before any is asserted, so a red attempt still
               // leaves the whole table in the log.
               let failures = System.Collections.Generic.List<string>()
@@ -1519,8 +1560,16 @@ let clockTests =
                           (DataFrame.evalPipelineInEnv nd.Env p after)
                           (sprintf "%s @ %d: the tick answers what the reference answers" nd.Name n)
 
-                      let fullMs =
-                          batchedMs 5 (fun () -> DataFrame.evalPipelineInEnv nd.Env p after |> ok |> ignore)
+                      // Phase 371: the full evaluation at one thread (`oneThread`), answering the same.
+                      Expect.equal
+                          (fullAtOneThread nd.Env p after)
+                          (DataFrame.evalPipelineInEnv nd.Env p after)
+                          (sprintf
+                              "%s @ %d: the one-thread full evaluation answers what the reference answers"
+                              nd.Name
+                              n)
+
+                      let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
 
                       let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
                       let bound = tickBound

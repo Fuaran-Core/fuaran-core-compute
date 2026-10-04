@@ -58,7 +58,7 @@ phase's eight-range figures as the measured price of that rule.
 **The ruling** is recorded here when the operator takes it; on a yes the breaking `STABILITY.md`
 entry names every aggregate above, on a no this entry and the figures are the phase.
 
-## 2026-10-04 — D8: the sort and the window run across threads; the top-n, the grouping by key and the ranged join probe were measured and not kept
+## 2026-10-04 — D8: the sort, the window and (since fuaran-core#371) the top-n run across threads; the grouping by key and the ranged join probe were measured and not kept
 
 **Decided (fuaran-core#344), on measurement.** Native x64 only (i7-9700, 8 cores); the figures are
 in [`benchmarks/results/2026-10-04-i7-9700-phase-344.md`](benchmarks/results/2026-10-04-i7-9700-phase-344.md).
@@ -95,6 +95,23 @@ and forbids raising the bound to pass it, so the kernel waits on that decision: 
 is restated against the sequential evaluation (what the incremental seam replaces on every host),
 or the tick gains threads of its own. The sort and the window, which the same case also times,
 stayed within the bound (1.27 and 0.97 at 100,000 rows).
+
+**Item 3 closed (fuaran-core#371) — operator ruling 2026-10-04, option A: the bound is restated
+against the evaluation at one thread, it stays 1.6, and the parallel top-n ships.** What the tick
+bound protects is that maintaining a result incrementally is not dearer than recomputing it on the
+same footing; once the full evaluation ran on every core, the ratio measured the core count, not
+the seam. Both tick clock cases (`ScalingTests`, Phases 274 and
+283) now time the full evaluation on `oneThread` — the native member's vector kernels, its morsels
+run in order on the caller's thread, never partitioned — and hold it equal to the reference answer
+before timing it; the tick arm, `tickBound` (1.6) and `tickFloorMs` are unchanged. The ranged heap
+from `fb25f9a` is back in the evaluator as it was, and the cross-member law that holds it ("over
+frames thousands of rows long, ...") was checked to go red with one range's heap dropped. Figures
+(Release, i7-9700, `benchmarks/results/2026-10-04-i7-9700-phase-371.md`): the corpus case's
+`filter > sort > limit` cell at 100,000 rows read 1.54, 1.50 and 1.33 quiet and 1.31 under four
+CPU burners against the parallel evaluation, and 0.63, 0.67 and 0.67 quiet and 0.66 loaded against
+the one-thread evaluation; the worst cell of either case after the change was 1.36 (`inner join` at
+1,000 rows, loaded). The top-n re-measured: 2.96 and 2.67 times at 100,000 rows, 4.33 and 3.78 at a
+million (ten keys and one key per ten rows).
 
 **4. Not kept: the join probe over ranges of left rows.** No consistent gain at either size (one
 sitting, the machine under load): the probe is a small part of the join, whose cost is emitting

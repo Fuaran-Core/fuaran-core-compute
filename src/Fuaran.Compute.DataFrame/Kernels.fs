@@ -73,18 +73,17 @@ open Fuaran.Core
 //  and `SortPositions` (a merge sort: runs sorted on the pool, merged
 //  pairwise). Kept, because they pay: the sort and the window's ordering
 //  through the parallel sorts (2.0 times at 100,000 rows, 2.2 times at a
-//  million, 4.7 times where the keys do not pack), and the window's
-//  partitions scanned across threads, each partition's fold one sequential
-//  scan (with the sort, 1.6 to 3.9 times). Measured and NOT kept: the
-//  grouping BY KEY, each thread owning whole groups and folding them in row
-//  order — 1.59 and 1.16 times faster at a million rows, but 1.5 to 2.1
-//  times slower at 100,000 and allocating 2.3 to 2.8 times as much; the
-//  join probe over ranges of left rows, which bought nothing (the probe is
-//  not the join's cost); and the top-n a range of rows at a time, 2.8 to 4.4
-//  times faster but held back by the incremental tick's bound against the
-//  full evaluation (`DECISIONS.md`, D8). The grouping's prototype lives in
-//  the benchmark harness. A float fold is never split across threads by any
-//  kernel here: a partition's fold is the sequential one.
+//  million, 4.7 times where the keys do not pack); the top-n a range of
+//  rows at a time, each range's heap on its own thread (2.8 to 4.4 times);
+//  the window's partitions scanned across threads, each partition's fold
+//  one sequential scan (with the sort, 1.6 to 3.9 times). Measured and NOT
+//  kept: the grouping BY KEY, each thread owning whole groups and folding
+//  them in row order — 1.59 and 1.16 times faster at a million rows, but
+//  1.5 to 2.1 times slower at 100,000 and allocating 2.3 to 2.8 times as
+//  much — and the join probe over ranges of left rows, which bought nothing
+//  (the probe is not the join's cost). The grouping's prototype lives in the
+//  benchmark harness. A float fold is never split across threads by any
+//  kernel here: a partition's or a range's fold is the sequential one.
 // ============================================================================
 
 #if !FABLE_COMPILER
@@ -128,10 +127,10 @@ type internal KernelSet =
         /// native member (which may run morsels concurrently) runs them all — a caller reads the
         /// first error in morsel order, which is the first error in row order either way.
         RunMorsels: int -> (int -> bool) -> unit
-        /// `Partitions n` — how many ranges a verb over `n` rows splits its work into (Phase 344):
-        /// the runs of a parallel sort, the chunks of whole partitions a window scans. The portable
-        /// member answers `1`, and a verb at one range runs its sequential path, the one it ran
-        /// before ranges existed; a verb at more runs each range through `RunMorsels`.
+        /// `Partitions n` — how many partitions a keyed verb over `n` rows runs in (Phase 344). The
+        /// portable member answers `1`, and a verb at one partition runs its sequential path, the
+        /// one it ran before partitions existed. A verb at more runs each partition through
+        /// `RunMorsels`, one partition a morsel.
         Partitions: int -> int
         /// `SortFinite keys` sorts, in place and ascending, an array of finite, non-negative and
         /// DISTINCT floats (Phase 344) — the packed sort keys `Ordering` builds, whose last digit is
@@ -577,7 +576,7 @@ module internal Kernels =
                 (fun s d lo mid hi -> mergeRuns (fun (x: int) y -> cmp x y < 0) s d lo mid hi)
                 positions
 
-    /// The rows from which the native member sorts in parallel and
+    /// The rows from which the native member sorts in parallel, takes the top-n by ranges and
     /// scans a window's partitions across threads (Phase 344): four morsels. Set from Phase 341's
     /// figures — the morsel runner bought nothing at 10,000 rows (two morsels) and paid at 100,000
     /// on both architectures — and not swept between them; every kept verb pays at 100,000 rows.
