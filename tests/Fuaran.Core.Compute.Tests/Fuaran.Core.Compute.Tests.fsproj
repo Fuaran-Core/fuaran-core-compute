@@ -15,6 +15,10 @@
     <!-- The law-family roster share this repository ships; early, because the roster, census
          and vacuity checks below read it. -->
     <Compile Include="KitRoster.fs" />
+    <!-- Phase 342: the transform vectors' declared sample, and the prepared-result law over it. Both
+         Fable-clean; the node benchmark harness compiles them too. -->
+    <Compile Include="TransformVectorSample.fs" />
+    <Compile Include="PreparedResultLaw.fs" />
     <Compile Include="DataFrameTests.fs" />
     <Compile Include="ColumnOpsTests.fs" />
     <Compile Include="DeltaTests.fs" />

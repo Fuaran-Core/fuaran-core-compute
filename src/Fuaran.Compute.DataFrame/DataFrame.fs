@@ -7682,7 +7682,9 @@ module DataFrame =
     /// row-local verbs run through (Phase 270); `fused` says whether a `Sort` followed by a `Limit`
     /// runs as the stable top-n kernel (Phase 269) or as the two steps written. The pipeline is
     /// folded AS GIVEN: the planning is the callers' (`evalPreparedCountedWith`, which every entry
-    /// point reaches, plans; `evalPreparedCountedAsWritten` does not).
+    /// point reaches, plans; `evalPreparedCountedAsWritten` does not). It answers the FRAME the fold
+    /// ended on (Phase 342): the boundary out is the caller's — `Frame.toTable` for every entry point
+    /// that answers a `Table`, `Prepared.ofFrame` for `evalToPrepared`, which keeps it.
     let private evalPreparedCountedFolding
         (k: KernelSet)
         (fused: bool)
@@ -7690,7 +7692,7 @@ module DataFrame =
         (env: Map<string, Cell>)
         (pipeline: Transform list)
         (prepared: Prepared)
-        : Result<Table * int, EvalError> =
+        : Result<Frame * int, EvalError> =
         let costOf (f: Frame) (step: Transform) =
             match step with
             | Filter _
@@ -7699,7 +7701,7 @@ module DataFrame =
 
         let rec go f evaluated =
             function
-            | [] -> Ok(Frame.toTable f, evaluated)
+            | [] -> Ok(f, evaluated)
             // Phase 269 — the fusion the planner names as `TopN`: a `Sort` followed by a `Limit`
             // runs as the stable top-n kernel. The slots resolve through the same resolvers, in the
             // order the two steps would have resolved them, so the first error is the same one.
@@ -7729,6 +7731,19 @@ module DataFrame =
     /// the reference's, errors included (`Conformance.plannerLaws`), and the count is the planned
     /// walk's, which is the honest one. Internal so the suite can run both members of the kernel
     /// pair on one host and hold their answers equal; every entry point passes `Kernels.host`.
+    /// This one answers the frame the planned fold ended on (Phase 342); `evalPreparedCountedWith`
+    /// is it with the boundary out paid.
+    let private evalPreparedFrameCountedWith
+        (k: KernelSet)
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<Frame * int, EvalError> =
+        let frame = prepared.Frame.Value
+        evalPreparedCountedFolding k true resolve env (Planner.rewrite frame.Cols pipeline) prepared
+
+    /// `evalPreparedFrameCountedWith` with the boundary out paid: the answer as a `Table`.
     let internal evalPreparedCountedWith
         (k: KernelSet)
         (resolve: string -> Result<Table, EvalError>)
@@ -7736,8 +7751,8 @@ module DataFrame =
         (pipeline: Transform list)
         (prepared: Prepared)
         : Result<Table * int, EvalError> =
-        let frame = prepared.Frame.Value
-        evalPreparedCountedFolding k true resolve env (Planner.rewrite frame.Cols pipeline) prepared
+        evalPreparedFrameCountedWith k resolve env pipeline prepared
+        |> Result.map (fun (f, n) -> Frame.toTable f, n)
 
     /// `evalPreparedCountedWith` through the host kernels.
     let internal evalPreparedCounted
@@ -7760,6 +7775,7 @@ module DataFrame =
         (prepared: Prepared)
         : Result<Table * int, EvalError> =
         evalPreparedCountedFolding Kernels.host false resolve env pipeline prepared
+        |> Result.map (fun (f, n) -> Frame.toTable f, n)
 
     /// Prepare a table once for many evaluations (Phase 267): the `Table` boundary — one typed
     /// unpack per column — paid here rather than by every pipeline that reads the source. The table
@@ -7784,6 +7800,24 @@ module DataFrame =
         (prepared: Prepared)
         : Result<Table, EvalError> =
         evalPreparedCounted resolve env pipeline prepared |> Result.map fst
+
+    /// The reference evaluator over a prepared source, answering a prepared source (Phase 342):
+    /// `evalPrepared` with the boundary out NOT paid. The same resolver, env, pipeline and source,
+    /// the same errors, and a result whose table — the very cells `evalPrepared` answers — is built
+    /// only if `toTable` is called. So a consumer that feeds one pipeline's answer to the next (a
+    /// sheet's nodes, chained dashboard bindings) hands the result straight back to `evalPrepared`,
+    /// `evalToPrepared`, the `ColumnOps` forms or `Incremental.primePrepared`, and pays the `Table`
+    /// boundary once at each end of the chain rather than out and back in at every hop. Where the
+    /// final step left a selection (a `Filter`, a `Sort`, a `Limit`), the result is gathered dense
+    /// first, so it holds its own rows and no more.
+    let evalToPrepared
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Result<Prepared, EvalError> =
+        evalPreparedFrameCountedWith Kernels.host resolve env pipeline prepared
+        |> Result.map (fst >> Prepared.ofFrame)
 
     /// The reference evaluator, parameterised (Phase 77), reporting alongside its answer how many
     /// ROW EVALUATIONS AT STEPS producing that answer cost (Phase 117).

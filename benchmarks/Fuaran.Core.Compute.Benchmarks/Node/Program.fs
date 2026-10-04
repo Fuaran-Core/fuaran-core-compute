@@ -9,7 +9,8 @@
 /// `runs` is the number of measured samples per case (default 10), after two warm-up calls; a second
 /// argument `typed` times only the typed family (`node Program.js 10 typed`), and `state` measures only the
 /// incremental state's wire form (`node Program.js 3 state`), with an optional third argument, the
-/// largest size it measures on this host (`node Program.js 3 state 1000000`).
+/// largest size it measures on this host (`node Program.js 3 state 1000000`), and `chain` runs only the
+/// prepared-result law and the chain (`node Program.js 10 chain`, Phase 342).
 module Fuaran.Core.Compute.Benchmarks.Node.Program
 
 open System
@@ -160,6 +161,35 @@ let private typedTable () =
                                 Evaluator,
                                 (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                               n ]
+
+/// The chain (Phase 342): the prepared-result law on this host first, then the three pipelines in
+/// sequence over `orders`, through the `Table` boundary at every hop and kept prepared between hops.
+let private chainTable () =
+    let failures, compared = Fuaran.Compute.Tests.PreparedResultLaw.check ()
+
+    if compared = 0 || not (List.isEmpty failures) then
+        failwith (
+            "benchmark corpus: the prepared-result law failed on this host ("
+            + string (List.length failures)
+            + " of "
+            + string compared
+            + "): "
+            + String.concat " | " (List.truncate 3 failures)
+        )
+
+    printfn ""
+    printfn "The prepared-result law: %d comparisons over the transform vectors' sample, all equal" compared
+
+    table
+        "Chain (Phase 342): three pipelines over orders, Table-chained against prepared-chained"
+        [ for n in Corpus.sheetSizes do
+              yield!
+                  measured
+                      (fun () -> Corpus.ordersTable (Corpus.ordersArrays n))
+                      Corpus.checkChain
+                      [ "chain: Table-chained", Evaluator, (fun o () -> box (Corpus.chainViaTables o))
+                        "chain: prepared-chained", Evaluator, (fun o () -> box (Corpus.chainViaPrepared o)) ]
+                      n ]
 
 /// The sizes the state's wire form is measured at (Phase 355).
 let private stateSizes = [ 1_000; 100_000; 1_000_000 ]
@@ -432,12 +462,16 @@ let main argv =
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
     let onlyState = argv.Length > 1 && argv.[1] = "state"
+    // `chain` runs the prepared-result law and times the chain alone (Phase 342).
+    let onlyChain = argv.Length > 1 && argv.[1] = "chain"
 
     // A third argument after `state` is the largest size to measure on this host (Phase 358).
     if onlyState && argv.Length > 2 then
         stateCeiling.Value <- int argv.[2]
 
-    if not onlyTyped && not onlyState then
+    if onlyChain then
+        chainTable ()
+    elif not onlyTyped && not onlyState then
         table
             "Sheet"
             [ for n in Corpus.sheetSizes do
@@ -452,6 +486,8 @@ let main argv =
                             "byRegion: hand arm", HandArm, (fun (a, _) () -> box (Corpus.handByRegion a))
                             "byRegion: evaluator", Evaluator, (fun (_, o) () -> box (Corpus.evalByRegion o)) ]
                           n ]
+
+        chainTable ()
 
         table
             "Scaling pipelines"
@@ -485,6 +521,8 @@ let main argv =
                             (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                           n ]
 
-    if onlyState then stateTable () else typedTable ()
+    if onlyChain then ()
+    elif onlyState then stateTable ()
+    else typedTable ()
 
     0

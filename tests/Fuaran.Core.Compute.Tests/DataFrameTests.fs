@@ -4572,6 +4572,159 @@ let private jsonText (name: string) (el: JVal) : string option =
     | Some(JStr s) -> Some s
     | _ -> None
 
+/// Phase 342 — an evaluation whose result stays prepared: `DataFrame.evalToPrepared` held to
+/// `evalPrepared` and to the chain through the `Table` boundary.
+[<Tests>]
+let preparedResultTests =
+    testList
+        "an evaluation kept prepared (Phase 342)"
+        [ testCase
+              "an evaluation kept prepared answers evalPrepared's table and errors over the transform vectors' sample, and serves as the next pipeline's source (the law the node harness runs too)"
+          <| fun _ ->
+              let failures, compared = PreparedResultLaw.check ()
+              Expect.isEmpty failures (sprintf "the prepared-result law: %A" (List.truncate 5 failures))
+              let n = TransformVectorSample.iterations
+              // Every vector, then every vector's kept result fed every pipeline twice over.
+              Expect.isGreaterThan compared (n * 10) "the law compared the sample, not a handful"
+
+          testCase
+              "over the committed transform law vectors, toTable of the kept result is the vector's answer and a refusal is evalPrepared's refusal"
+          <| fun _ ->
+              let path =
+                  System.IO.Path.Combine(OwnedConformance.root (), "laws", "transform-laws.json")
+
+              let doc =
+                  match Json.parse (System.IO.File.ReadAllText path) with
+                  | Ok d -> d
+                  | Error m -> failtestf "the vector file did not parse: %s" m
+
+              let vectors =
+                  match jsonMember "vectors" doc with
+                  | Some(JArr items) -> items |> List.filter (fun v -> jsonText "case" v = Some "evalPipeline")
+                  | _ -> failtest "the vector file carries no vectors"
+
+              Expect.equal vectors.Length TransformVectorSample.iterations "one evalPipeline vector per iteration"
+              let mutable refused = 0
+
+              for v in vectors do
+                  let id = jsonText "id" v |> Option.defaultValue "?"
+                  let input = jsonMember "input" v |> Option.get
+                  let expected = jsonMember "expected" v |> Option.get
+
+                  let pipeline =
+                      match DataFrameCodec.decodePipeline (jsonText "pipeline" input |> Option.get) with
+                      | Ok p -> p
+                      | Error e -> failtestf "%s: the pipeline did not decode (%s)" id (ColumnCodec.errorString e)
+
+                  let source =
+                      match ColumnCodec.decode (jsonText "source" input |> Option.get) with
+                      | Ok(Embedded t) -> DataFrame.prepare t
+                      | other -> failtestf "%s: the source is not an embedded table (%A)" id other
+
+                  let reference = DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline source
+                  let kept = DataFrame.evalToPrepared DataFrame.noResolve Map.empty pipeline source
+
+                  match jsonText "verdict" expected, reference, kept with
+                  | Some "ok", Ok _, Ok p ->
+                      Expect.equal
+                          (ColumnCodec.encode (Embedded(DataFrame.toTable p)))
+                          (jsonText "table" expected |> Option.get)
+                          (sprintf "%s: toTable of the kept result is the vector's answer, byte for byte" id)
+                  | Some "error", Error a, Error b ->
+                      refused <- refused + 1
+                      Expect.equal b a (sprintf "%s: the kept evaluation refuses with evalPrepared's error" id)
+                  | verdict, r, k ->
+                      failtestf "%s: the vector says %A; evalPrepared %A; evalToPrepared %A" id verdict r k
+
+              Expect.isGreaterThan refused 0 "the sample carries refusals, so the error clause was exercised"
+
+          testCase
+              "a chain of three pipelines kept prepared between hops answers what the chain through the Table boundary answers, and a kept result takes column ops as a prepared table does"
+          <| fun _ ->
+              let rng = System.Random 3420
+
+              let ev p src =
+                  DataFrame.evalPrepared DataFrame.noResolve typedEnv p src
+
+              let keep p src =
+                  DataFrame.evalToPrepared DataFrame.noResolve typedEnv p src
+
+              let mutable chains = 0
+              let mutable selected = 0
+
+              for _ in 1..300 do
+                  let table = frameTable rng (rng.Next 9) (rng.Next 3 = 0)
+                  let p1, p2, p3 = genPipeline rng, genPipeline rng, genPipeline rng
+
+                  // Through the boundary at every hop: Table out, Table in.
+                  let viaTables =
+                      DataFrame.evalPipelineWithInEnv DataFrame.noResolve typedEnv p1 table
+                      |> Result.bind (DataFrame.evalPipelineWithInEnv DataFrame.noResolve typedEnv p2)
+                      |> Result.bind (DataFrame.evalPipelineWithInEnv DataFrame.noResolve typedEnv p3)
+
+                  // Kept prepared between hops: the boundary once in, once out.
+                  let viaPrepared =
+                      keep p1 (DataFrame.prepare table)
+                      |> Result.bind (keep p2)
+                      |> Result.bind (ev p3)
+
+                  Expect.equal (tokenised viaPrepared) (tokenised viaTables) (sprintf "%A > %A > %A" p1 p2 p3)
+                  chains <- chains + 1
+
+                  match keep p1 (DataFrame.prepare table) with
+                  | Ok kept ->
+                      if
+                          p1
+                          |> List.exists (function
+                              | Filter _
+                              | Sort _
+                              | Limit _ -> true
+                              | _ -> false)
+                      then
+                          selected <- selected + 1
+
+                      let back = DataFrame.toTable kept
+                      Expect.isTrue (obj.ReferenceEquals(back, DataFrame.toTable kept)) "the table is built once"
+
+                      match back.Schema with
+                      | (name, _) :: _ when Table.rowCount back > 0 ->
+                          let op = SetCell(name, 0, Null)
+
+                          // Compared as wire: the generated cells carry NaN, which no structural
+                          // equality holds equal to itself.
+                          let wire (p: Prepared) =
+                              ColumnCodec.encode (Embedded(DataFrame.toTable p))
+
+                          Expect.equal
+                              (ColumnOps.applyPrepared op kept |> Result.map wire)
+                              (ColumnOps.applyPrepared op (DataFrame.prepare back) |> Result.map wire)
+                              "a column op over the kept result is the op over its table prepared"
+                      | _ -> ()
+                  | Error _ -> ()
+
+              Expect.equal chains 300 "every chain compared"
+              Expect.isGreaterThan selected 30 "kept results whose last steps left a selection were reached"
+
+          testCase "a kept result over no columns stands for the empty table, as its table prepared afresh does"
+          <| fun _ ->
+              let t: Table =
+                  { Schema = [ "a", IntType ]
+                    Columns = [ col "a" IntType [ Int 1; Int 2; Int 3 ] ] }
+
+              let none = [ Project [] ]
+              let follow = [ Derive("x", Lit(Int 1)) ]
+
+              match DataFrame.evalToPrepared DataFrame.noResolve Map.empty none (DataFrame.prepare t) with
+              | Ok kept ->
+                  let back = DataFrame.toTable kept
+
+                  Expect.equal
+                      (tokenised (DataFrame.evalPrepared DataFrame.noResolve Map.empty follow kept))
+                      (tokenised (DataFrame.evalPipeline follow back))
+                      "a follow-on over the kept result answers as over its table"
+              | Error e ->
+                  Expect.isTrue (Result.isError (DataFrame.evalPipeline none t)) (sprintf "refused alike: %A" e) ]
+
 [<Tests>]
 let kernelTests =
     testList

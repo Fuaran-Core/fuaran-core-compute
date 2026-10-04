@@ -23,6 +23,10 @@
     <Compile Include="..\Corpus.fs" Link="Corpus.fs" />
     <!-- Phase 280: the decimal-vector law, run on this host before the typed family is timed. -->
     <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\DecimalVectorLaw.fs" Link="DecimalVectorLaw.fs" />
+    <!-- Phase 342: the prepared-result law over the transform vectors' sample, run on this host
+         before the chain is timed. -->
+    <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\TransformVectorSample.fs" Link="TransformVectorSample.fs" />
+    <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\PreparedResultLaw.fs" Link="PreparedResultLaw.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

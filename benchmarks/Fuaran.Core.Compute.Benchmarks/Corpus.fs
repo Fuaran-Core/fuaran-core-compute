@@ -6,7 +6,9 @@
 /// Fable maps (arrays, `Dictionary`, `ResizeArray`), and integer arithmetic that stays well inside
 /// int32 so the generators produce the same tables under node as on .NET.
 ///
-/// Four groups, one table per shape in the results:
+/// Five groups, one table per shape in the results (the CHAIN, Phase 342, after the sheet: its three
+/// pipelines in sequence over the sheet's `orders`, through the `Table` boundary at every hop and
+/// kept prepared between hops):
 ///
 ///   * the SHEET — a spreadsheet-shaped workload: an `orders` table, a `targets` table and a scalar
 ///     `threshold`, with two nodes (`lines` and `byRegion`) at 1,000 / 10,000 / 100,000 rows, and a
@@ -182,6 +184,52 @@ let checkSheet (a: OrdersArrays) (orders: Table) : unit =
     expectCells "byRegion.region" [ for v in handGroups.Region -> Str v ] (cellsOf "region" byRegion)
     expectCells "byRegion.total" [ for v in handGroups.Total -> Float v ] (cellsOf "total" byRegion)
     expectCells "byRegion.n" [ for v in handGroups.N -> Int v ] (cellsOf "n" byRegion)
+
+// ---- the chain (Phase 342) -------------------------------------------------------------------
+
+/// The chain's three pipelines, each reading the one before's answer, as a sheet whose nodes feed
+/// each other does: `lines` (every row, two derived columns), then the big lines with a net amount
+/// (a filter, so the answer leaves a selection), then the tax beside the net, projected to four
+/// columns. The last answer is about two fifths of the rows.
+let chainPipelines: Transform list list =
+    [ linesPipeline
+      [ Filter(Col "big"); Derive("net", Binary(Mul, Col "amount", Lit(Float 0.8))) ]
+      [ Derive("tax", Binary(Sub, Col "amount", Col "net"))
+        Project [ "id", "id"; "region", "region"; "net", "net"; "tax", "tax" ] ] ]
+
+/// The chain through the `Table` boundary at every hop: each pipeline's answer built as a `Table`
+/// and unpacked again by the next.
+let chainViaTables (orders: Table) : Result<Table, EvalError> =
+    chainPipelines
+    |> List.fold (fun acc p -> acc |> Result.bind (DataFrame.evalPipelineInEnv sheetEnv p)) (Ok orders)
+
+/// The chain kept prepared between hops (`DataFrame.evalToPrepared`): the boundary paid once in,
+/// by `prepare`, and once out, by the last pipeline's `evalPrepared`.
+let chainViaPrepared (orders: Table) : Result<Table, EvalError> =
+    let rec go acc pipelines =
+        match pipelines with
+        | [] -> Ok(DataFrame.toTable acc)
+        | [ last ] -> DataFrame.evalPrepared DataFrame.noResolve sheetEnv last acc
+        | p :: rest ->
+            DataFrame.evalToPrepared DataFrame.noResolve sheetEnv p acc
+            |> Result.bind (fun next -> go next rest)
+
+    go (DataFrame.prepare orders) chainPipelines
+
+/// The two arms answer the same table, as canonical wire, and the answer is not empty; asserted
+/// before anything is timed.
+let checkChain (orders: Table) : unit =
+    let viaTables = chainViaTables orders |> orFail "the Table-chained arm"
+    let viaPrepared = chainViaPrepared orders |> orFail "the prepared-chained arm"
+
+    if
+        ColumnCodec.encode (Embedded viaTables)
+        <> ColumnCodec.encode (Embedded viaPrepared)
+    then
+        failwith "benchmark corpus: the prepared-chained arm and the Table-chained arm disagree"
+
+    if Table.rowCount viaTables = 0 && Table.rowCount orders > 0 then
+        failwith "benchmark corpus: the chain answered no rows"
 
 // ---- the Scaling pipelines -------------------------------------------------------------------
 
