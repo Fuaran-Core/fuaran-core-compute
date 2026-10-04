@@ -5877,16 +5877,42 @@ module DataFrame =
     /// their cells are token-equal (`CellKey`'s relation, through the typed row hasher `RowHash`).
     /// The grouping `GroupBy` records (Phase 323) and the partition a `Window` computes over
     /// (Phase 324): one definition, so a window's partitions are the groups a `GroupBy` over the
-    /// same keys forms. A slot's key cells are its first row's.
-    let private keySlots (keyVecs: Vec[]) (phys: int[]) : int[] * ResizeArray<Cell[]> =
+    /// same keys forms. A slot's key cells are its first row's: the second answer is each slot's
+    /// first PHYSICAL row (Phase 344), from which `keyColumn` reads the keys without boxing them.
+    let private keySlots (keyVecs: Vec[]) (phys: int[]) : int[] * int[] =
         let slotOf, first = RowHash.slots keyVecs phys
-        let groupKeys = ResizeArray<Cell[]>(first.Count)
+        slotOf, Array.init first.Count (fun s -> phys[first[s]])
 
-        for i in first do
-            let p = phys[i]
-            groupKeys.Add(keyVecs |> Array.map (fun v -> Vec.cellAt v p))
+    /// The key column of declared type `ty` read from the vector `v` at the physical rows `rows` —
+    /// exactly the vector `Vec.pack ty` packs from the cells there (Phase 344). Phase 344 measured
+    /// the boxed form as most of a grouping at one key per ten rows: 20 of 32 ms at a million rows,
+    /// a `Cell[]` per group and a boxed cell per key. Where the carrier is the type's own, the
+    /// values are read straight across, a missing one left at the carrier's default as `pack`
+    /// leaves it; any other pairing is packed from its cells as before.
+    let private keyColumn (ty: ColumnType) (v: Vec) (rows: int[]) : Vec =
+        let n = rows.Length
 
-        slotOf, groupKeys
+        let inline across (a: 'T[]) (m: bool[]) : 'T[] * bool[] =
+            let vals: 'T[] = Array.zeroCreate n
+            let mask: bool[] = Array.zeroCreate n
+
+            for i in 0 .. n - 1 do
+                let p = Raw.get i rows
+
+                if Raw.at p m then
+                    Raw.set vals i (Raw.at p a)
+                    Raw.set mask i true
+
+            vals, mask
+
+        match v, ty with
+        | Ints(a, m), IntType -> Ints(across a m)
+        | Floats(a, m), FloatType -> Floats(across a m)
+        | Bools(a, m), BoolType -> Bools(across a m)
+        | Strs(t, a, m), _ when t = ty ->
+            let vals, mask = across a m
+            Strs(t, vals, mask)
+        | _ -> Vec.pack ty (rows |> Array.map (Vec.cellAt v))
 
     /// One column of a group's members — physical rows, in member order — as the cell list an
     /// aggregate reads: built from the back, so it is one pass and one cons per member, and read
@@ -5927,9 +5953,13 @@ module DataFrame =
             // logical order, into per-slot accumulators. A group's member list is built only if an
             // aggregate defers to `Column.aggregate`, and then for every group at once, from
             // `slotOf`, in the same member order.
+            //
+            // Phase 344 — nor are the key cells boxed any more: each group's key is read from its
+            // first physical row straight into the key column (`keyColumn`). A grouping BY KEY
+            // across threads was built and measured here, and removed: see `Kernels.fs`.
             let keyVecs = idxs |> Array.map (fun ci -> f.Vecs[ci])
             let phys = Frame.physical f
-            let slotOf, groupKeys = keySlots keyVecs phys
+            let slotOf, firstPhys = keySlots keyVecs phys
 
             // resolve each agg's source column + type
             let resolveAgg (a: Agg) =
@@ -5953,7 +5983,7 @@ module DataFrame =
                 // stops the loop; only a deferred group-aggregate can fail, and it fails exactly as
                 // `Column.aggregate` over its members does.
                 let aggArr = List.toArray resolvedAggs
-                let groups = groupKeys.Count
+                let groups = firstPhys.Length
 
                 let streams =
                     aggArr
@@ -6001,8 +6031,7 @@ module DataFrame =
                 | Some e -> Error e
                 | None ->
                     let keyOut =
-                        keyCols
-                        |> List.mapi (fun j (_, ty) -> Vec.pack ty (Array.init groups (fun g -> groupKeys[g][j])))
+                        keyCols |> List.mapi (fun j (_, ty) -> keyColumn ty keyVecs[j] firstPhys)
 
                     let cols = keyCols @ aggCols
 
@@ -6401,8 +6430,11 @@ module DataFrame =
 
                 if c <> 0 then c else compare (tie o a) (tie o b)
 
-        /// The logical rows in the order's sequence.
-        let permutation (o: Order) : int[] =
+        /// The logical rows in the order's sequence, sorted through the kernel set `k` (Phase 344):
+        /// the packed keys by its `SortFinite`, the unpacked rows by its `SortPositions` under
+        /// `compareRows`. Either way the keys are distinct under a total order, so every correct
+        /// sort answers alike, and the portable member's sorts are the engine's own.
+        let permutationWith (k: KernelSet) (o: Order) : int[] =
             let n = o.N
 
             if not (isNull o.Packed) then
@@ -6422,21 +6454,21 @@ module DataFrame =
                     // The packed keys are finite and non-negative, so the engine's own numeric sort orders
                     // them exactly as `Array.sortInPlace` does (Phase 326: under JavaScript that is a
                     // comparator sort).
-                    Raw.sortFinite sorted
+                    k.SortFinite sorted
 
                 let fn = float n
                 // The position is the packed key's last digit, and `tie` is its own inverse.
                 sorted |> Array.map (fun k -> tie o (int (k % fn)))
             else
-                // A plain list of positions, not an `int[]`: under Fable a typed array's sort with
-                // a comparator is the slow path in the JavaScript engines.
-                let order = ResizeArray<int>(n)
+                // The positions under the total order; the portable member sorts them as a plain
+                // list, the slow path under Fable being a typed array's comparator sort.
+                let order = Array.init n id
+                k.SortPositions order (compareRows o)
+                order
 
-                for i in 0 .. n - 1 do
-                    order.Add i
-
-                order.Sort(System.Comparison(compareRows o))
-                order.ToArray()
+        /// The logical rows in the order's sequence, through the portable member's sorts — the
+        /// engine's own.
+        let permutation (o: Order) : int[] = permutationWith Kernels.portable o
 
     /// A sort's keys over the logical rows `phys` reads, as the comparator over LOGICAL positions the
     /// pinned order is (`keyComparer`, key by key), ties broken by position — the path a boxed key
@@ -6464,7 +6496,7 @@ module DataFrame =
         |> List.map (fun (ci, dir) -> f.Vecs[ci], dir)
         |> List.toArray
 
-    let private evalSort (f: Frame) (by: (string * SortDir) list) : Frame =
+    let private evalSort (k: KernelSet) (f: Frame) (by: (string * SortDir) list) : Frame =
         // A permutation of the selection (Phase 267): the logical positions sorted under the keys,
         // ties broken by position — which is exactly the stable sort over the frame order the
         // reference's `List.sortWith` is, stated as a total order so the algorithm cannot matter.
@@ -6476,7 +6508,7 @@ module DataFrame =
         match Ordering.codesAll keys phys with
         | ValueSome codes ->
             let perm =
-                Ordering.permutation (Ordering.build Ordering.Exact null 0 codes phys.Length)
+                Ordering.permutationWith k (Ordering.build Ordering.Exact null 0 codes phys.Length)
 
             Frame.select f (perm |> Array.map (fun i -> phys[i]))
         | ValueNone ->
@@ -6517,7 +6549,7 @@ module DataFrame =
     /// sorted, are exactly the first `offset + n` of the full sort, whatever algorithm finds them:
     /// a bounded heap of that size takes one pass over the rows and a sort of the heap. A window
     /// that reaches the end of the frame is the full sort, which is then the cheaper of the two.
-    let private evalTopN (f: Frame) (by: (string * SortDir) list) (n: int) (offset: int) : Frame =
+    let private evalTopN (k: KernelSet) (f: Frame) (by: (string * SortDir) list) (n: int) (offset: int) : Frame =
         let phys = Frame.physical f
         let len = phys.Length
         let skipped = min (max 0 offset) len
@@ -6527,7 +6559,7 @@ module DataFrame =
         if window = 0 then
             Frame.select f [||]
         elif window >= len then
-            evalLimit (evalSort f by) n offset
+            evalLimit (evalSort k f by) n offset
         else
             // The total order over LOGICAL positions `evalSort` sorts under, as the comparator.
             //
@@ -6542,58 +6574,85 @@ module DataFrame =
             // can take them without a change of answer.
             let cmp: int -> int -> int = comparatorOrder phys (sortKeyVecs f by)
 
-            // A max-heap of the `window` least positions seen so far: its root is the greatest of
-            // them, and a position that sorts before the root replaces it.
-            let heap: int[] = Array.zeroCreate window
+            // The `window` least positions of the range `lo .. hi - 1` (all of them, if it is
+            // shorter), as a max-heap: its root is the greatest of them, and a position that sorts
+            // before the root replaces it.
+            let leastOf (lo: int) (hi: int) : int[] =
+                let size = min window (hi - lo)
+                let heap: int[] = Array.zeroCreate size
 
-            let siftDown (start: int) =
-                let mutable i = start
-                let mutable go = true
+                let siftDown (start: int) =
+                    let mutable i = start
+                    let mutable go = true
 
-                while go do
-                    let l = 2 * i + 1
-                    let r = l + 1
-                    let mutable largest = i
+                    while go do
+                        let l = 2 * i + 1
+                        let r = l + 1
+                        let mutable largest = i
 
-                    if l < window && cmp heap[l] heap[largest] > 0 then
-                        largest <- l
+                        if l < size && cmp heap[l] heap[largest] > 0 then
+                            largest <- l
 
-                    if r < window && cmp heap[r] heap[largest] > 0 then
-                        largest <- r
+                        if r < size && cmp heap[r] heap[largest] > 0 then
+                            largest <- r
 
-                    if largest = i then
-                        go <- false
-                    else
+                        if largest = i then
+                            go <- false
+                        else
+                            let t = heap[i]
+                            heap[i] <- heap[largest]
+                            heap[largest] <- t
+                            i <- largest
+
+                let siftUp (start: int) =
+                    let mutable i = start
+
+                    while i > 0 && cmp heap[i] heap[(i - 1) / 2] > 0 do
+                        let p = (i - 1) / 2
                         let t = heap[i]
-                        heap[i] <- heap[largest]
-                        heap[largest] <- t
-                        i <- largest
+                        heap[i] <- heap[p]
+                        heap[p] <- t
+                        i <- p
 
-            let siftUp (start: int) =
-                let mutable i = start
+                for i in 0 .. size - 1 do
+                    heap[i] <- lo + i
+                    siftUp i
 
-                while i > 0 && cmp heap[i] heap[(i - 1) / 2] > 0 do
-                    let p = (i - 1) / 2
-                    let t = heap[i]
-                    heap[i] <- heap[p]
-                    heap[p] <- t
-                    i <- p
+                for i in lo + size .. hi - 1 do
+                    if cmp i heap[0] < 0 then
+                        heap[0] <- i
+                        siftDown 0
 
-            for i in 0 .. window - 1 do
-                heap[i] <- i
-                siftUp i
+                heap
 
-            for i in window .. len - 1 do
-                if cmp i heap[0] < 0 then
-                    heap[0] <- i
-                    siftDown 0
+            // Phase 344 — on a kernel set that answers more than one partition, each partition is a
+            // range of the positions with a heap of its own, on its own thread. Every one of the
+            // `window` least positions is among the least of its own range, so the ranges' heaps
+            // together hold them, and the one sort below under the total order picks them out:
+            // the answer is the sequential heap's whatever the ranges.
+            let parts = k.Partitions len
+
+            let candidates =
+                if parts <= 1 then
+                    leastOf 0 len
+                else
+                    let bounds =
+                        Array.init (parts + 1) (fun j -> int (int64 len * int64 j / int64 parts))
+
+                    let heaps: int[][] = Array.zeroCreate parts
+
+                    k.RunMorsels parts (fun j ->
+                        heaps[j] <- leastOf bounds[j] bounds[j + 1]
+                        true)
+
+                    Array.concat heaps
 
             // A plain list for the final sort, as `evalSort` uses: a typed array's comparator sort
             // is the slow path under Fable.
-            let order = ResizeArray<int>(window)
+            let order = ResizeArray<int>(candidates.Length)
 
-            for i in 0 .. window - 1 do
-                order.Add heap[i]
+            for i in 0 .. candidates.Length - 1 do
+                order.Add candidates[i]
 
             order.Sort(System.Comparison cmp)
             Frame.select f (Array.init taken (fun j -> phys[order[skipped + j]]))
@@ -6851,9 +6910,11 @@ module DataFrame =
         }
 
     /// The window ordering of the logical rows `phys` reads, over the vectors `vecOf` names by
-    /// schema index, with the partition and order columns already resolved. `perturbation` is the
-    /// laws' (Phase 324); the evaluator passes `Ordering.Exact`.
-    let internal windowOrder
+    /// schema index, with the partition and order columns already resolved, its permutation sorted
+    /// through the kernel set `k` (Phase 344). `perturbation` is the laws' (Phase 324); the
+    /// evaluator passes `Ordering.Exact`.
+    let internal windowOrderWith
+        (k: KernelSet)
         (perturbation: Ordering.Perturbation)
         (vecOf: int -> Vec)
         (phys: int[])
@@ -6862,7 +6923,7 @@ module DataFrame =
         : WindowOrder =
         let n = phys.Length
         let slotOf, slotKeys = keySlots (partIdx |> Array.map vecOf) phys
-        let partitions = slotKeys.Count
+        let partitions = slotKeys.Length
         let keyVecs = orderKeys |> List.map (fun (ci, dir) -> vecOf ci, dir) |> List.toArray
 
         match Ordering.codesAll keyVecs phys with
@@ -6871,7 +6932,7 @@ module DataFrame =
 
             { Slot = slotOf
               Partitions = partitions
-              Perm = Ordering.permutation order
+              Perm = Ordering.permutationWith k order
               Codes = ValueSome codes
               Same = Ordering.sameCodes codes }
         | ValueNone ->
@@ -6915,6 +6976,16 @@ module DataFrame =
               Perm = perm
               Codes = ValueNone
               Same = fun a b -> cmp a b = 0 }
+
+    /// `windowOrderWith` through the portable member's sorts — the engine's own.
+    let internal windowOrder
+        (perturbation: Ordering.Perturbation)
+        (vecOf: int -> Vec)
+        (phys: int[])
+        (partIdx: int[])
+        (orderKeys: (int * SortDir) list)
+        : WindowOrder =
+        windowOrderWith Kernels.portable perturbation vecOf phys partIdx orderKeys
 
     /// A `Window` step's appended column, one value per LOGICAL row (Phase 324): typed where the
     /// function's output is — the positional and ranking family an `int`, a float running total or
@@ -7010,7 +7081,8 @@ module DataFrame =
     /// back at the physical rows; the public row form (`windowStep`) and the incremental seam's
     /// window step pack the columns they read and place the cell on each row. Each partition is one
     /// run of the window ordering's permutation, scanned in sequence.
-    let rec internal windowColumnOf
+    let rec internal windowColumnOfWith
+        (k: KernelSet)
         (perturbation: Ordering.Perturbation)
         (cols: Schema)
         (vecOf: int -> Vec)
@@ -7020,7 +7092,7 @@ module DataFrame =
         match spec.Fn, colIndex cols spec.Of with
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
-        | _ -> windowColumnOver cols vecOf phys spec (windowOrderOf perturbation cols vecOf phys spec) null
+        | _ -> windowColumnOverWith k cols vecOf phys spec (windowOrderOfWith k perturbation cols vecOf phys spec) null
 
     /// The schema indexes of a window's PARTITION columns, a name the schema does not carry dropped
     /// (the window partitions by the columns it can find, as it always has).
@@ -7032,7 +7104,8 @@ module DataFrame =
 
     /// The window ordering of `spec` over the rows `phys` reads (`windowOrder`), with its partition
     /// and order columns resolved under `cols` — the ordering `windowColumnOf` scans.
-    and internal windowOrderOf
+    and internal windowOrderOfWith
+        (k: KernelSet)
         (perturbation: Ordering.Perturbation)
         (cols: Schema)
         (vecOf: int -> Vec)
@@ -7040,7 +7113,7 @@ module DataFrame =
         (spec: WindowSpec)
         : WindowOrder =
         // The ORDER keys resolved once for the step (Phase 263), not once per comparison.
-        windowOrder perturbation vecOf phys (windowPartitionIdx cols spec) (resolveSortKeys cols spec.OrderBy)
+        windowOrderWith k perturbation vecOf phys (windowPartitionIdx cols spec) (resolveSortKeys cols spec.OrderBy)
 
     /// The scan of `windowColumnOf` over an ordering already computed (Phase 333): each partition —
     /// a run of `wo.Perm` sharing a `wo.Slot` — scanned in sequence, and every output landing at its
@@ -7052,7 +7125,8 @@ module DataFrame =
     /// resumed run is the full run's continuation by construction rather than by a second
     /// implementation of each fold. A seed is read only by a prefix fold, and must fit
     /// (`windowSeedFits`).
-    and internal windowColumnOver
+    and internal windowColumnOverWith
+        (k: KernelSet)
         (cols: Schema)
         (vecOf: int -> Vec)
         (phys: int[])
@@ -7330,19 +7404,52 @@ module DataFrame =
 
                         out[i] <- acc
 
-            // The partitions are the permutation's runs of one slot, scanned in sequence; each
-            // output lands at its row's logical position, so the visiting order reaches nothing.
-            let mutable s = 0
+            // The partitions are the permutation's runs of one slot; each output lands at its row's
+            // logical position, so the visiting order reaches nothing. Phase 344 — on a kernel set
+            // that answers more than one partition, the runs are cut into that many chunks of whole
+            // runs, about as many rows each, scanned on the kernel set's runner: every partition's
+            // fold is still one sequential scan, and no two chunks write a row in common.
+            let parts = k.Partitions n
 
-            while s < n do
-                let g = wo.Slot[perm[s]]
-                let mutable e = s + 1
+            if parts <= 1 then
+                let mutable s = 0
 
-                while e < n && wo.Slot[perm[e]] = g do
-                    e <- e + 1
+                while s < n do
+                    let g = wo.Slot[perm[s]]
+                    let mutable e = s + 1
 
-                partition g s e
-                s <- e
+                    while e < n && wo.Slot[perm[e]] = g do
+                        e <- e + 1
+
+                    partition g s e
+                    s <- e
+            else
+                let starts = ResizeArray<int>()
+                let chunkAt = ResizeArray<int>()
+                let mutable s = 0
+
+                while s < n do
+                    // A chunk opens at the first run starting past its share of the rows.
+                    if int64 s >= int64 chunkAt.Count * int64 n / int64 parts then
+                        chunkAt.Add starts.Count
+
+                    starts.Add s
+                    let g = wo.Slot[perm[s]]
+                    let mutable e = s + 1
+
+                    while e < n && wo.Slot[perm[e]] = g do
+                        e <- e + 1
+
+                    s <- e
+
+                starts.Add n
+                chunkAt.Add(starts.Count - 1)
+
+                k.RunMorsels (chunkAt.Count - 1) (fun c ->
+                    for r in chunkAt[c] .. chunkAt[c + 1] - 1 do
+                        partition wo.Slot[perm[starts[r]]] starts[r] starts[r + 1]
+
+                    true)
 
             let ty =
                 match spec.Fn with
@@ -7369,6 +7476,38 @@ module DataFrame =
 
             Ok(ty, column)
 
+    /// `windowColumnOverWith` through the portable member — the scan in sequence, as the
+    /// incremental seam's suffix recompute runs it.
+    let internal windowColumnOver
+        (cols: Schema)
+        (vecOf: int -> Vec)
+        (phys: int[])
+        (spec: WindowSpec)
+        (wo: WindowOrder)
+        (seeds: Cell[])
+        : Result<ColumnType * WindowColumn, EvalError> =
+        windowColumnOverWith Kernels.portable cols vecOf phys spec wo seeds
+
+    /// `windowColumnOfWith` through the portable member's sorts — the engine's own.
+    let internal windowColumnOf
+        (perturbation: Ordering.Perturbation)
+        (cols: Schema)
+        (vecOf: int -> Vec)
+        (phys: int[])
+        (spec: WindowSpec)
+        : Result<ColumnType * WindowColumn, EvalError> =
+        windowColumnOfWith Kernels.portable perturbation cols vecOf phys spec
+
+    /// `windowOrderOfWith` through the portable member's sorts — the engine's own.
+    let internal windowOrderOf
+        (perturbation: Ordering.Perturbation)
+        (cols: Schema)
+        (vecOf: int -> Vec)
+        (phys: int[])
+        (spec: WindowSpec)
+        : WindowOrder =
+        windowOrderOfWith Kernels.portable perturbation cols vecOf phys spec
+
     /// The window column over full-width rows under `cols` (the public row form, `windowStep`): each
     /// column the step reads packed once under its declared type — a column holding a
     /// cell outside its type packs boxed, and is ordered by the pinned comparator as before — and
@@ -7387,13 +7526,13 @@ module DataFrame =
 
         windowColumnOf Ordering.Exact cols vecOf (Array.init rows.Length id) spec
 
-    let private evalWindow (f: Frame) (spec: WindowSpec) : Result<Frame, EvalError> =
+    let private evalWindow (k: KernelSet) (f: Frame) (spec: WindowSpec) : Result<Frame, EvalError> =
         // The window read from the vectors through the selection (Phase 324); the one new column
         // placed back at its physical positions and APPENDED (a `Window` always appends, where a
         // `Derive` upserts); every other vector shared.
         let phys = Frame.physical f
 
-        windowColumnOf Ordering.Exact f.Cols (fun ci -> f.Vecs[ci]) phys spec
+        windowColumnOfWith k Ordering.Exact f.Cols (fun ci -> f.Vecs[ci]) phys spec
         |> Result.map (fun (ty, column) -> Frame.appendColumn f spec.As ty (windowVecAt ty f.Count phys column))
 
     let private evalPivot (f: Frame) (spec: PivotSpec) : Result<Frame, EvalError> =
@@ -7637,14 +7776,14 @@ module DataFrame =
             by
             |> List.map (fun (c, d) -> resolveStrSlot env "sort key column" c |> Result.map (fun c -> c, d))
             |> sequenceR
-            |> Result.map (evalSort f)
+            |> Result.map (evalSort k f)
         | Distinct -> Ok(evalDistinct f)
         | Limit(n, offset) ->
             resolveIntSlot env "limit n" n
             |> Result.bind (fun n ->
                 resolveIntSlot env "limit offset" offset
                 |> Result.map (fun offset -> evalLimit f n offset))
-        | Window spec -> evalWindow f spec
+        | Window spec -> evalWindow k f spec
         | Pivot spec -> evalPivot f spec
         | Unpivot(idVars, valueVars) -> evalUnpivot f idVars valueVars
         | Join(right, on, how) ->
@@ -7714,7 +7853,7 @@ module DataFrame =
                     resolveIntSlot env "limit n" n
                     |> Result.bind (fun n ->
                         resolveIntSlot env "limit offset" offset
-                        |> Result.bind (fun offset -> go (evalTopN f keys n offset) evaluated rest)))
+                        |> Result.bind (fun offset -> go (evalTopN k f keys n offset) evaluated rest)))
             | step :: rest ->
                 let cost = costOf f step
 

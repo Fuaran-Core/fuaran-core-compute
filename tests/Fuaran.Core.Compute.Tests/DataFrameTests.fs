@@ -4869,6 +4869,11 @@ let kernelTests =
                   let native = evalWith Kernels.native Map.empty pipeline table
                   Expect.equal (wireOf native) (wireOf portable) (sprintf "%s: the two members agree" id)
 
+                  Expect.equal
+                      (wireOf (evalWith (Kernels.nativeFrom 2) Map.empty pipeline table))
+                      (wireOf portable)
+                      (sprintf "%s: the native member partitioning from two rows agrees" id)
+
                   match jsonText "verdict" expected, portable with
                   | Some "ok", Ok t ->
                       Expect.equal
@@ -4886,6 +4891,12 @@ let kernelTests =
                   let portable = evalWith Kernels.portable typedEnv pipeline table
                   let native = evalWith Kernels.native typedEnv pipeline table
                   Expect.equal (wireOf native) (wireOf portable) (sprintf "the members agree over %A" pipeline)
+
+
+                  Expect.equal
+                      (wireOf (evalWith (Kernels.nativeFrom 2) typedEnv pipeline table))
+                      (wireOf portable)
+                      (sprintf "the native member partitioning from two rows agrees over %A" pipeline)
 
                   Expect.equal
                       (wireOf native)
@@ -5033,6 +5044,145 @@ let kernelTests =
                               "the sum is the sequential fold, to the last bit"
                       | other -> failtestf "one sum expected, got %A" other
                   | Error e -> failtestf "evaluation failed: %s" (DataFrame.errorString e) ]
+
+// ---------------------------------------------------------------------------
+//  Phase 344 — the gathering verbs across threads. The native member sorts
+//  in parallel (a merge sort over the packed keys, or over the positions under
+//  the total order), takes the top-n a range of rows at a time, scans a
+//  window's partitions on the thread pool and probes the join a range of left
+//  rows at a time. Each is held equal to the portable member byte for byte,
+//  with the threshold lowered so that small frames take the parallel paths.
+// ---------------------------------------------------------------------------
+
+/// The native member partitioning from every size the laws need: from two rows, so the
+/// generated frames take the parallel paths, and as shipped.
+let private parallelMembers: (string * KernelSet) list =
+    [ "native from 2 rows", Kernels.nativeFrom 2
+      "native from 1 row", Kernels.nativeFrom 1
+      "native", Kernels.native ]
+
+[<Tests>]
+let parallelKernelTests =
+    testList
+        "Kernels across threads"
+        [ testCase "the parallel sorts answer the portable sorts, over packed keys and under a total order"
+          <| fun _ ->
+              let rng = System.Random 344
+
+              for n in [ 0; 1; 2; 3; 7; 64; 1000; 5003 ] do
+                  // Distinct finite non-negative keys, as `Ordering` packs them: a key, then the position.
+                  let keys = Array.init n (fun i -> float (rng.Next 50) * float n + float i)
+                  let expected = Array.sort keys
+
+                  for name, k in parallelMembers do
+                      let mine = Array.copy keys
+                      k.SortFinite mine
+                      Expect.equal mine expected (sprintf "%s sorts %d packed keys" name n)
+
+                  // A tie-heavy key under the total order that breaks ties by position.
+                  let key = Array.init n (fun _ -> rng.Next 4)
+
+                  let cmp (a: int) (b: int) =
+                      let c = compare key[a] key[b]
+                      if c <> 0 then c else compare a b
+
+                  let expectedPositions = Array.init n id
+                  Kernels.portable.SortPositions expectedPositions cmp
+
+                  Expect.equal
+                      expectedPositions
+                      (Array.init n id |> Array.sortWith cmp)
+                      "the portable member sorts the positions under the order"
+
+                  for name, k in parallelMembers do
+                      let mine = Array.init n id
+                      k.SortPositions mine cmp
+                      Expect.equal mine expectedPositions (sprintf "%s sorts %d positions" name n)
+
+          testCase "partitions: the portable member answers one, the native one below its threshold"
+          <| fun _ ->
+              for n in [ 0; 1; 100; Kernels.PartitionRows - 1; Kernels.PartitionRows; 10_000_000 ] do
+                  Expect.equal (Kernels.portable.Partitions n) 1 "the portable member is one partition"
+
+              Expect.equal (Kernels.native.Partitions(Kernels.PartitionRows - 1)) 1 "below the threshold, one"
+              Expect.isGreaterThan (Kernels.native.Partitions Kernels.PartitionRows) 1 "from it, more"
+              Expect.isLessThanOrEqual (Kernels.native.Partitions 10_000_000) 64 "never more than 64"
+
+          testCase
+              "over frames thousands of rows long, the sorts, the top-n, the windows and the join answer byte-identically on every member"
+          <| fun _ ->
+              let rng = System.Random 3440
+              let mutable compared = 0
+
+              for trial in 1..3 do
+                  let n = 2000 + rng.Next 3000
+                  let table = conformingTable rng n
+
+                  // A right table keyed by a few of the left's strings, some repeated, and one null.
+                  let right =
+                      let keys = [ for _ in 1..12 -> conformingCell rng StringType ] @ [ Null ]
+
+                      tbl
+                          [ "rs", StringType; "rv", IntType ]
+                          [ col "rs" StringType (keys @ keys)
+                            col "rv" IntType [ for i in 1 .. 2 * keys.Length -> Int i ] ]
+
+                  // Wide keys whose ranges cannot pack with the position (four of about `n` values
+                  // each), led by a key of three values: the positions sorted under the total order.
+                  let wide =
+                      tbl
+                          [ "v", IntType; "u", IntType; "w", FloatType; "x", IntType ]
+                          [ col "v" IntType [ for _ in 1..n -> if rng.Next 9 = 0 then Null else Int(rng.Next 3) ]
+                            col "u" IntType [ for _ in 1..n -> Int(rng.Next(0, n / 2)) ]
+                            col "w" FloatType [ for _ in 1..n -> Float(float (rng.Next(0, n)) / 8.0) ]
+                            col "x" IntType [ for _ in 1..n -> Int(rng.Next()) ] ]
+
+                  let wideOrder = [ "v", Asc; "u", Desc; "w", Asc; "x", Asc ]
+
+                  let windowOf part order fn over =
+                      Window
+                          { PartitionBy = part
+                            OrderBy = order
+                            Fn = fn
+                            Of = over
+                            As = "out" }
+
+                  let cases: (Table * Transform list) list =
+                      [ // Tie-heavy sorts: bool keys, packed with the position.
+                        table, [ Transform.sortBy [ "b", Asc; "c", Desc ] ]
+                        table, [ Transform.sortBy [ "s", Desc; "f", Asc ] ]
+                        wide, [ Transform.sortBy wideOrder ]
+                        // The top-n: a window inside the frame, and one reaching its end.
+                        table, [ Transform.sortBy [ "b", Asc; "i", Desc ]; Transform.limit 25 3 ]
+                        wide, [ Transform.sortBy wideOrder; Transform.limit 40 0 ]
+                        table, [ Transform.sortBy [ "c", Asc ]; Transform.limit (n - 5) 2 ]
+                        // Windows over few partitions and over many, with folds whose bytes a
+                        // reassociated running total would move.
+                        table, [ windowOf [ "b" ] [ "i", Asc ] CumulSum "f" ]
+                        table, [ windowOf [ "s" ] [ "f", Desc ] Rank "f" ]
+                        table, [ windowOf [ "c"; "b" ] [ "g", Asc; "j", Desc ] CompetitionRank "f" ]
+                        table, [ windowOf [ "t" ] [ "i", Asc ] RollingMean "g" ]
+                        table, [ windowOf [] [ "f", Asc ] CumulSum "g" ]
+                        wide, [ windowOf [ "v" ] [ "u", Desc; "w", Asc; "x", Asc ] CumulSum "w" ]
+                        // The grouping, whose float aggregates are left-to-right folds.
+                        table, [ GroupBy([ "s" ], floatAggs "f") ]
+                        table, [ Filter(kernelPred rng 2); GroupBy([ "b"; "t" ], floatAggs "g") ] ]
+                      // The join: the four combining kinds and the two filtering ones.
+                      @ [ for how in [ Inner; Left; Right; Outer; Semi; Anti ] ->
+                              table, [ Join(Embedded right, [ "s", "rs" ], how) ] ]
+
+                  for source, pipeline in cases do
+                      let portable = wireOf (evalWith Kernels.portable typedEnv pipeline source)
+
+                      for name, k in parallelMembers do
+                          Expect.equal
+                              (wireOf (evalWith k typedEnv pipeline source))
+                              portable
+                              (sprintf "trial %d, %d rows: %s agrees over %A" trial n name pipeline)
+
+                      compared <- compared + 1
+
+              Expect.equal compared (3 * 20) "every case compared" ]
 
 // ---------------------------------------------------------------------------
 //  Phase 327 — the in-place refresh over a sort or a limit. A one-cell edit

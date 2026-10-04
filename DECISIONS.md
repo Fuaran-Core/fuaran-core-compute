@@ -1,5 +1,47 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-04 — D8: the sort, the top-n and the window run across threads; the grouping by key and the ranged join probe were measured and not kept
+
+**Decided (fuaran-core#344), on measurement.** Native x64 only (i7-9700, 8 cores); the figures are
+in [`benchmarks/results/2026-10-04-i7-9700-phase-344.md`](benchmarks/results/2026-10-04-i7-9700-phase-344.md).
+The Arm64 leg was not run.
+
+**1. Kept: three kernels in the pair.** `Partitions` (how many ranges a verb runs: one on the
+portable member, one below `PartitionRows` = 32,768 on the native), `SortFinite` and `SortPositions`
+(a merge sort, runs sorted on the pool and merged pairwise). The sort keys are distinct under a
+total order — the packed keys end in the position, and the unpacked comparison ends in it — so any
+correct sort answers the same array, and the portable member's sorts are the engine's own. Through
+them: the sort, 2.0 times at 100,000 rows and 2.2 at a million, 4.7 where the keys do not pack; the
+top-n a range of rows at a time, each range's heap on its own thread, its candidates sorted under
+the same total order (2.8 to 4.4 times); the window's ordering through the sorts and its partitions
+scanned in chunks of whole partitions across threads (1.6 to 3.9 times). No fold is ever split: a
+window partition's running total is one sequential scan, so no float byte moves.
+
+**2. Not kept: the grouping by key across threads.** D7 item 5 pointed here: partition by group so
+that each thread owns whole groups and no table is merged. Built in the evaluator and measured, it
+is 1.59 times faster at ten keys and a million rows and 1.16 at one key per ten rows, but 1.46 and
+2.09 times SLOWER at 100,000 rows and slower still at 10,000, and it allocates 2.3 to 2.8 times as
+much. Run on one thread it costs 22 ns a row against the sequential grouping's 10: each partition
+reads its rows scattered across the whole vector, and the hashing and placing passes are work the
+sequential path never does. A grouping that pays only above some size between 100,000 and a million
+rows needs that crossover measured before a threshold can be set, so it is not shipped on a guess;
+the prototype stays in the harness (`Partitioned.GroupByKey`) for whoever measures it.
+
+**3. Not kept: the join probe over ranges of left rows.** No consistent gain at either size (one
+sitting, the machine under load): the probe is a small part of the join, whose cost is emitting
+the matched pairs and gathering every output column.
+
+**4. The shard's premise, checked: "boxing no longer dominates the grouping" held only at low
+cardinality.** At one key per ten rows the grouping spent most of its time boxing the KEY cells
+(a `Cell[]` per group, packed back into a vector): 20 of 32 ms at a million rows. The key column is
+now read from each group's first row straight into the output vector (`DataFrame.keyColumn`), on
+both members: 14.6 ms at a million rows, 1.23 ms at 100,000 (from 2.21). The window's partitioning
+paid the same boxing for nothing and no longer does.
+
+**Supporting change.** `windowOrder`, `windowOrderOf`, `windowColumnOf` and `windowColumnOver` keep
+their signatures and run the portable member (the incremental seam's callers); the evaluator calls
+their `...With` forms with the host kernels.
+
 ## 2026-10-03 — D7: the host-kernel verdicts are taken on a native JIT; Phase 270's are restated on Arm64 and x64, and two of them move
 
 **Decided (fuaran-core#341), on measurement.** Phase 270 shipped the host kernels and removed an
