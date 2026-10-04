@@ -1742,8 +1742,19 @@ Phase 355's version 1 was never released.
   half times cheaper. What remains is building the state itself: the source alone is four million
   cells in four lists, which is why a detached decode costs half as much. A full evaluation of the
   same pipelines takes 0.14 to 0.45 s.
-- **Time under node.** Unchanged at 100,000 rows (a decode 6.8 to 8.4 s): its cost there is not the
-  per-cell values, and Phase 358 profiles what it is.
+- **Time under node.** Unchanged by the form at 100,000 rows (a decode 6.8 to 8.4 s): its cost there
+  was not the per-cell values. **Phase 358** profiled it (`2026-10-04-i7-9700-phase-358.md`, a
+  different machine, so read it against 357's code re-measured there): 90 per cent of both an encode
+  and a decode was the package's managed SHA-256, which is the digest under Fable, paying a closure
+  per byte and a bounds-checked helper per index. Rewritten over a byte buffer it is about 60 times
+  faster and still the substrate's digest on both hosts, and at 100,000 rows an encode under node
+  takes 0.32 to 0.35 s (from 3.8 to 4.0) and a decode 0.33 s (from 2.6 to 2.8): 4.6 to 6.5 times the
+  .NET encode, 2.1 to 2.5 times its decode, where they were 55 to 75 and 17 to 22. The encodings are
+  the same bytes on both hosts. At 1,000,000 rows an encode takes about 5.7 s and a decode 4.4 to
+  4.9 s; one encode needs a 1.3 GB heap beside the 0.8 GB its state holds, one decode 2 GB, and the
+  benchmark harness, which holds every state of a row at once, 3 GB. What remains under node is the
+  substrate's JSON layer (rendering and parsing the encoding's strings a character at a time), half
+  of each call, and building the state.
 
 **So on these shapes the wire form still does not pay, by a narrower margin.** The state's saving is
 the per-row evaluation a refresh skips, and these pipelines evaluate one comparison per row.

@@ -95,10 +95,17 @@ let tests =
                     String.replicate 21 "😀é"
                     lone
                     low + lone
-                    "x" + lone + "y" + low ]
+                    "x" + lone + "y" + low
+                    // Phase 358: the managed copy writes 16,384 bytes before it compresses them, so a
+                    // multi-byte unit split across that line, and a run of them past it.
+                    String.replicate 16_383 "a" + "😀"
+                    String.replicate 16_382 "a" + lone + "b"
+                    String.replicate 16_383 "a" + "é" + "b"
+                    String.replicate 10_000 "😀é✓" ]
 
               // Since Phase 357 the digest on .NET is the platform's; the managed copy is the Fable
-              // path, and it is held to the substrate here too, so both hosts compute one digest.
+              // path, and it is held to the substrate here too, so both hosts compute one digest. The
+              // node harness holds the copy to the substrate under node over this corpus (Phase 358).
               for s in corpus do
                   Expect.equal (StateWire.sha256Hex s) (Hash.sha256Hex s) (sprintf "a %d-unit string" s.Length)
 
