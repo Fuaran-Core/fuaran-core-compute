@@ -1,5 +1,63 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-04 — D9: whether float `Sum` becomes exactly rounded is the operator's ruling; the evidence it asked for is recorded here, and the ruling is OPEN
+
+**Measured (fuaran-core#345), not yet decided.** Phase 345 opens with an operator ruling — whether the
+float `Sum`, and through it `Mean`, `StdDev`, `CumulSum`, `RollingSum` and `RollingMean`, moves from
+the left-to-right fold (D3; `Kernels.fs` header) to an exactly-rounded sum, whose answer is the double
+nearest the true sum and so cannot depend on the order or the partitioning of the additions. A
+dispatched session cannot take that ruling (the side's doctrine escalates it), so this entry records
+what the ruling needs and stops. Nothing in the evaluator moved. The figures are in
+[`benchmarks/results/2026-10-04-i7-9700-phase-345.md`](benchmarks/results/2026-10-04-i7-9700-phase-345.md),
+with the harness beside them; native x64 (i7-9700) and node only — the Arm64 leg was not run.
+
+**1. The cost, single-threaded.** The fold costs 1.3 ns a value on both hosts. CPython's `math.fsum`
+algorithm (Shewchuk's partials, correctly rounded collapse) costs 3.4 to 3.9 times the fold where
+every partial sum is exact (whole quarters — the benchmark corpus's shape), 5.5 to 8 times at
+ordinary dynamic range (uniform in `[0, 1)`) and 25 to 34 times at wide range (mixed signs across
+sixteen decades), on .NET and node alike; the multiple is set by the live partial count (1, 2, 7 to
+9), which the input's spread of magnitudes decides, not `n`. Against D7's whole streamed `GroupBy`
+(3.94 ms, a million rows, ten keys) that is 7 ms more at ordinary range (a 2.8x slower step) and 42 ms
+at wide range. Split into eight ranges on the pool it is 1.9x the fold at a million ordinary values,
+below the fold where the inputs are exact, 8.5x at wide range.
+
+**2. The invariance and the cross-host bytes hold.** On every input the exact sum of five shuffles,
+of 3 / 5 / 8 / 64 / 1,000-way partitions (each range's partials fed through the same algorithm) and of
+the eight-thread run has the sequential exact sum's bit pattern (45 checks); the shuffled fold differs
+from the in-order fold on every non-exact input. `.NET`, node and CPython's own `math.fsum` return the
+same 64 bits on all nine inputs. The parallel member the shard asks for is therefore sound by
+construction: partials are a range's exact sum, and merging partial lists is the same algorithm.
+
+**3. No transform law vector changes bytes.** The corpus's three float summations (`mean` over `w` in
+`transform-3` and `transform-11`) are over one or two exactly-summable members; the `sum`s are int or
+decimal. The fold and the exact sum agree on every vector, so the corpus cannot distinguish them — a
+yes needs new vectors with inexact members (three or more `0.1`-class values) before any host is held
+to the new sum.
+
+**4. The twins, corrected from the shard.** Per D6, `fuaran-ts` is the only host running the
+transform laws, and it still lacks the decimal strand (fuaran#2001) that blocks the corpus copy today;
+`fuaran-rs` and `fuaran-go` carry evaluator twins with no laws leg; `fuaran-py` has no twin (and has
+`math.fsum`). The algorithm is ~40 lines per language (`bench.mjs` is the TypeScript body).
+
+**5. What a yes touches — wider than this repository.** The one aggregate semantics is
+`Column.aggregate` in `fuaran-core` (`src/Fuaran.Core.Column/Column.fs`, `Sum` / `Mean` / `StdDev`
+over `total` and `kept`), consumed here as a package: the exact sum lands THERE first, under a Core
+cut, before this evaluator's streamed `MSumFloat` / `MMean` slots, the window's `CumulSum` seed and
+running total and the rolling sums (`DataFrame.fs`) and the incremental seam's rescan rule
+(`Incremental.fs`: "a float `Sum` is never maintained") can follow. Three consequences worth the
+operator's eye: a `CumulSum` continued from a prior run must seed from the prior PARTIALS, not the
+rounded float, or the continuation's bits differ from a fresh run's; Phase 306's finite-input overflow
+refusal meets the algorithm's own intermediate overflow (CPython raises there); and an exactly-rounded
+`Sum` becomes MAINTAINABLE under a delta (adding a member and adding a removed member's negation are
+both exact over the partials), which the seam today rescans.
+
+**6. What a no keeps.** D3's order, every byte today's vectors pin, the fold's cost, and the rule in
+the `Kernels.fs` header that no float reduction is ever split — with D8's grouping-by-key and this
+phase's eight-range figures as the measured price of that rule.
+
+**The ruling** is recorded here when the operator takes it; on a yes the breaking `STABILITY.md`
+entry names every aggregate above, on a no this entry and the figures are the phase.
+
 ## 2026-10-04 — D8: the sort and the window run across threads; the top-n, the grouping by key and the ranged join probe were measured and not kept
 
 **Decided (fuaran-core#344), on measurement.** Native x64 only (i7-9700, 8 cores); the figures are
