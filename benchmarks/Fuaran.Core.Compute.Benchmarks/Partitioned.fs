@@ -1,15 +1,15 @@
 /// Phase 344: the gathering verbs through both members of the kernel pair — the sort's parallel
-/// merge sort, the top-n a range of rows at a time, and the window's partitions scanned across
-/// threads — and the grouping BY KEY across threads that was built and not kept, against the
-/// shipped sequential grouping. At 10,000, 100,000 and 1,000,000 rows, at ten keys and at one key
-/// per ten rows (`benchmarks/results/2026-10-04-i7-9700-phase-344.md`).
+/// merge sort and the window's partitions scanned across threads — and the grouping BY KEY across
+/// threads that was built and not kept, against the shipped sequential grouping. At 10,000, 100,000
+/// and 1,000,000 rows, at ten keys and at one key per ten rows
+/// (`benchmarks/results/2026-10-04-i7-9700-phase-344.md`).
 ///
 /// .NET only. Each verb runs one step through `DataFrame.evalStepWith` over a frame prepared once,
-/// so the figure is the step's; the top-n runs `Sort` then `Limit 10` through the planned driver,
-/// which fuses the pair. Every setup holds the member's answer equal to the portable member's, and
-/// the step's output size to what the corpus says it must be, before anything is timed. The join
-/// probe over ranges of left rows was measured from the evaluator and removed; its figures are in
-/// the results file and `DECISIONS.md` (D8).
+/// so the figure is the step's. Every setup holds the member's answer equal to the portable
+/// member's, and the step's output size to what the corpus says it must be, before anything is
+/// timed. The top-n a range of rows at a time and the join probe over ranges of left rows were
+/// measured from the evaluator and are not shipped; their figures are in the results file and
+/// `DECISIONS.md` (D8).
 module Fuaran.Core.Compute.Benchmarks.Partitioned
 
 open BenchmarkDotNet.Attributes
@@ -44,7 +44,6 @@ let step (verb: string) (_card: int) : Transform list =
     | "group-by" ->
         [ GroupBy([ "k" ], [ { Name = "total"; Fn = Sum; Of = "v" }; { Name = "n"; Fn = Count; Of = "v" } ]) ]
     | "sort" -> [ Transform.sortBy [ "k", Asc; "s", Asc ] ]
-    | "top-n" -> [ Transform.sortBy [ "k", Asc; "s", Asc ]; Transform.limit 10 0 ]
     | "window" ->
         [ Window
               { PartitionBy = [ "k" ]
@@ -58,7 +57,6 @@ let step (verb: string) (_card: int) : Transform list =
 let expectedRows (verb: string) (n: int) (card: int) : int =
     match verb with
     | "group-by" -> card
-    | "top-n" -> 10
     | _ -> n
 
 let internal kernelSet (name: string) : KernelSet =
@@ -67,14 +65,9 @@ let internal kernelSet (name: string) : KernelSet =
     | "native" -> Kernels.native
     | _ -> failwithf "benchmark corpus: no kernel member named '%s'" name
 
-/// One verb through one member: the step's frame (the top-n's through the planned driver).
+/// One verb through one member: the step's frame.
 let internal run (k: KernelSet) (verb: string) (pipeline: Transform list) (prepared: Prepared) : int =
     match verb, pipeline with
-    | "top-n", _ ->
-        DataFrame.evalPreparedCountedWith k DataFrame.noResolve Map.empty pipeline prepared
-        |> Corpus.orFail verb
-        |> fst
-        |> Table.rowCount
     | _, [ t ] ->
         (DataFrame.evalStepWith k DataFrame.noResolve Map.empty prepared.Frame.Value t
          |> Corpus.orFail verb)
@@ -130,8 +123,6 @@ type Verb(verb: string) =
 type Sort() =
     inherit Verb("sort")
 
-type TopN() =
-    inherit Verb("top-n")
 
 type Window() =
     inherit Verb("window")

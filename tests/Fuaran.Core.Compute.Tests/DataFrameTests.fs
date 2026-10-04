@@ -5048,10 +5048,10 @@ let kernelTests =
 // ---------------------------------------------------------------------------
 //  Phase 344 — the gathering verbs across threads. The native member sorts
 //  in parallel (a merge sort over the packed keys, or over the positions under
-//  the total order), takes the top-n a range of rows at a time, scans a
-//  window's partitions on the thread pool and probes the join a range of left
-//  rows at a time. Each is held equal to the portable member byte for byte,
-//  with the threshold lowered so that small frames take the parallel paths.
+//  the total order) and scans a window's partitions on the thread pool. Each
+//  is held equal to the portable member byte for byte, with the threshold
+//  lowered so that small frames take the parallel paths; the top-n, the join
+//  and the grouping, which stayed sequential, are held alongside.
 // ---------------------------------------------------------------------------
 
 /// The native member partitioning from every size the laws need: from two rows, so the
