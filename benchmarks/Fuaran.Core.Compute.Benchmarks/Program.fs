@@ -18,6 +18,8 @@ let private checkAll () =
         let a = Corpus.ordersArrays n
         Corpus.checkSheet a (Corpus.ordersTable a)
         printfn "sheet %d rows: the hand arm agrees with the evaluator" n
+        Corpus.checkChain (Corpus.ordersTable a)
+        printfn "chain %d rows: the prepared-chained arm agrees with the Table-chained arm" n
 
     for name, pipeline in Corpus.scalingPipelines do
         for n in Corpus.scalingSizes do

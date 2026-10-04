@@ -1382,6 +1382,50 @@ module internal Prepared =
           Count = count
           Columns = ready columns }
 
+    /// An evaluation's result kept prepared (Phase 342): the frame the evaluator ended on, as the
+    /// version it stands for, with the table built from it only the first time something reads it.
+    /// A frame carrying a selection is gathered dense first — one typed gather per column, no cell
+    /// boxed — so the version holds exactly its own rows (a `Limit` of ten over a large source keeps
+    /// ten rows alive, not the source's vectors) and reads like any other prepared source: identity
+    /// selection, `Count` its row count, the rope cut from its vectors on first demand. A vector the
+    /// frame still holds untouched from a boundary keeps its origin list, so the table read back
+    /// hands that list out rather than boxing the column again. A frame with no columns stands for
+    /// the empty table, which has no rows, so its version has none either — as `ofTable` of that
+    /// table would.
+    let ofFrame (f: Frame) : Prepared =
+        let dense =
+            match f.Sel with
+            | _ when f.Vecs.Length = 0 ->
+                { Cols = f.Cols
+                  Vecs = [||]
+                  Origins = [||]
+                  Sel = None
+                  Count = 0 }
+            | None -> f
+            | Some s ->
+                { Cols = f.Cols
+                  Vecs = f.Vecs |> Array.map (fun v -> Vec.gather v s)
+                  Origins = Array.create f.Vecs.Length None
+                  Sel = None
+                  Count = s.Length }
+
+        let types = dense.Cols |> List.map snd |> List.toArray
+
+        { Source = lazy (Frame.toTable dense)
+          Frame = ready dense
+          Cols = dense.Cols
+          Count = dense.Count
+          Columns =
+            lazy
+                (Array.mapi
+                    (fun ci v ->
+                        let rope = Chunked.ofVec types[ci] Chunked.rows v
+
+                        match dense.Origins[ci] with
+                        | Some cells -> Chunked.withCells cells rope
+                        | None -> rope)
+                    dense.Vecs) }
+
     /// The rope, cut if it has not been yet.
     let columns (p: Prepared) : Chunked[] = p.Columns.Value
 

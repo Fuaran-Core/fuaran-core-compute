@@ -19,6 +19,7 @@
     pwsh ./run-node.ps1 -FableFrom <dir with a fable tool manifest>
     pwsh ./run-node.ps1 -FableFrom <dir> -Runs 5 -KeepOutput
     pwsh ./run-node.ps1 -FableFrom <dir> -Runs 3 -Only state
+    pwsh ./run-node.ps1 -FableFrom <dir> -Runs 10 -Only chain
 
   Exit 0 = the harness compiled, every corpus agreement held, and the tables printed.
 #>
@@ -29,7 +30,7 @@ param(
     [string] $FableFrom,
     # Measured runs per case, after two warm-up runs.
     [int] $Runs = 10,
-    # A family to run alone: 'typed' or 'state'. Empty runs the timing tables.
+    # A family to run alone: 'typed', 'state' or 'chain' (Phase 342). Empty runs the timing tables.
     [string] $Only = '',
     # Keep the emitted JavaScript for inspection.
     [switch] $KeepOutput

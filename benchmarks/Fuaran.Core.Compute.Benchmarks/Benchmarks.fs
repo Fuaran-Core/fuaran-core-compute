@@ -41,6 +41,29 @@ type Sheet() =
     [<Benchmark; BenchmarkCategory("byRegion")>]
     member _.ByRegionEvaluator() = Corpus.evalByRegion orders
 
+/// The chain (Phase 342): three pipelines in sequence over `orders`, through the `Table` boundary at
+/// every hop (the category's baseline) and kept prepared between hops, so the `Ratio` column reads
+/// "the prepared chain's share of the Table chain's time".
+[<MemoryDiagnoser>]
+type Chain() =
+    let mutable orders = Unchecked.defaultof<Table>
+
+    static member Sizes = Corpus.sheetSizes
+
+    [<ParamsSource("Sizes")>]
+    member val Rows = 0 with get, set
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        orders <- Corpus.ordersTable (Corpus.ordersArrays this.Rows)
+        Corpus.checkChain orders
+
+    [<Benchmark(Baseline = true)>]
+    member _.TableChained() = Corpus.chainViaTables orders
+
+    [<Benchmark>]
+    member _.PreparedChained() = Corpus.chainViaPrepared orders
+
 /// The three Scaling pipelines: the full evaluation of the edited table and the restricted refresh
 /// over its one-row delta. The priming and the diff are setup, as they are in the suite's own
 /// refresh-versus-full cases.

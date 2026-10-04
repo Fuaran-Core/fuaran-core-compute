@@ -97,6 +97,20 @@ let state = Incremental.primeOnPrepared idw pipelineA prepared                  
 `Prepared` is opaque; `evalPrepared` takes the resolver, env and pipeline exactly as
 `DataFrame.evalPipelineWithInEnv` does, and answers the same cells and the same errors.
 
+A consumer that feeds one pipeline's answer to the next — a sheet's nodes, chained dashboard
+bindings — keeps each answer prepared with `DataFrame.evalToPrepared` (`0.38.0`), so the chain pays
+the boundary once in and once out rather than at every hop:
+
+```fsharp
+let first = DataFrame.evalToPrepared DataFrame.noResolve Map.empty pipelineA prepared // Result<Prepared, EvalError>
+let last = first |> Result.bind (DataFrame.evalPrepared DataFrame.noResolve Map.empty pipelineB)
+let table = first |> Result.map DataFrame.toTable // built on demand; = the evalPrepared answer
+```
+
+`evalToPrepared` refuses exactly when `evalPrepared` does, and `toTable` of its answer is
+`evalPrepared`'s table. Three pipelines over 100,000 rows, chained this way, take 0.38 of the
+Table-chained time on .NET and 0.58 under node.
+
 ## What incremental evaluation costs — measured, and where full evaluation wins
 
 The incremental evaluator is **certified**: its agreement with the reference evaluator is a
