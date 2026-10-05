@@ -403,4 +403,55 @@ let incrementalWindowTests =
                   (sameResult
                       (refreshed Incremental.refreshSeedShifted pipeline before after)
                       (DataFrame.evalPipeline pipeline after))
-                  "a seed one position late is wrong" ]
+                  "a seed one position late is wrong"
+
+          testCase
+              "an append, alone or beside an edit, resumes from the appended rows through the append diff (Phase 359)"
+          <| fun _ ->
+              // The append classes above already run through `Delta.diff`'s append path (the state's
+              // prime keyed the prior source); this holds that they DO, so the laws above are laws of
+              // that path, and adds the append made beside a mid-partition edit in one delta.
+              let mutable appendsTaken = 0
+              let mutable perturbedRed = 0
+
+              for seed in 1..draws do
+                  let rng = System.Random(359 * seed)
+                  let flavour = [| IntValues; MixedValues; DecimalValues |][rng.Next 3]
+                  let n = 1 + rng.Next 30
+                  let rows = [ for i in 0 .. n - 1 -> rowOf flavour rng i ]
+
+                  let edited =
+                      if rng.Next 2 = 0 then
+                          applyDelta flavour rng MidPartitionUpdate n rows
+                      else
+                          rows
+
+                  let after' = applyDelta flavour rng Append n edited
+                  let pipeline = pipelineOf rng
+                  let before = tableOf flavour rows
+                  let after = tableOf flavour after'
+                  let state = ok (Incremental.prime DataFrame.noResolve Map.empty idw pipeline before)
+                  let delta = ok (Delta.diff idw before after)
+
+                  if (KeyedIndexes.appendOf delta after).IsSome then
+                      appendsTaken <- appendsTaken + 1
+
+                  let expected = DataFrame.evalPipeline pipeline after
+
+                  let actual =
+                      Incremental.refresh DataFrame.noResolve Map.empty idw pipeline state delta after
+                      |> Result.map Incremental.result
+
+                  Expect.isTrue
+                      (sameResult actual expected)
+                      (sprintf "seed %d: the refresh equals the full evaluation to the bit" seed)
+
+                  let shifted =
+                      Incremental.refreshSeedShifted DataFrame.noResolve Map.empty idw pipeline state delta after
+                      |> Result.map Incremental.result
+
+                  if not (sameResult shifted expected) then
+                      perturbedRed <- perturbedRed + 1
+
+              Expect.equal appendsTaken draws "every draw's delta is the append diff's"
+              Expect.isGreaterThan perturbedRed 0 "the perturbed seed turns the law red on some draw" ]

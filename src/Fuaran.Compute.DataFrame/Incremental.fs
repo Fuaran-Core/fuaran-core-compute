@@ -1958,10 +1958,17 @@ module Incremental =
     /// `Order` is still every slot in slot order, IS the consumer's list, and handing it back costs
     /// nothing. No array in a frame is ever written after the step that made it; a step that changes
     /// a column makes a new array.
+    ///
+    /// Phase 359 — `Tails` co-indexes with `Origins` too: where a refresh answers an APPEND, the
+    /// cells of the source list from slot `TailFrom` on (the rows appended), as an array, so an
+    /// appended row's cell is read at once rather than by walking the whole list to it — and a column
+    /// no step unpacks is never unpacked for it. `null` everywhere else.
     type private WalkFrame =
         { Cols: Schema
           Data: Cell[][]
           Origins: Cell list option[]
+          Tails: Cell[] option[]
+          TailFrom: int
           Order: int[] }
 
     /// Phase 274 — the per-slot facts the walk reads beside the frame, and the cells it records. The
@@ -1997,6 +2004,11 @@ module Incremental =
             /// slot (the delta found every row in place and no prefix step reorders), the slots not
             /// listed here are `Stable`, and these are the changed slots, ascending. A step may then
             /// start from the prior step's cells and evaluate only these.
+            ///
+            /// Phase 359 — or an APPEND: every slot below `PriorCount` holds the row the prior
+            /// evaluation held there, the slots from `PriorCount` on are the appended rows, and the
+            /// listed slots are the changed prefix slots and then every appended slot. A step starts
+            /// from the prior step's cells, grown by the tail, and evaluates only these.
             InPlace: int[]
             /// Phase 333 — `0` always, but in the laws: `1` starts a resumed prefix-fold window ONE
             /// POSITION LATE (`windowResume`), the perturbation that shows the suffix law can fail.
@@ -2100,6 +2112,14 @@ module Incremental =
 
         if not (isNull a) then
             a[s]
+        else if
+            // Phase 359 — an appended slot is read from the tail's cells, not walked to from the head.
+            not (isNull f.Tails)
+            && s >= f.TailFrom
+            && c < f.Tails.Length
+            && f.Tails[c].IsSome
+        then
+            f.Tails[c].Value[s - f.TailFrom]
         else
             let mutable rest = f.Origins[c].Value
             let mutable i = 0
@@ -2243,19 +2263,35 @@ module Incremental =
         // changed row the walk no longer reaches is cleared, as the full walk would leave it. The
         // changed rows are read cell by cell from the source's lists when they are few, so a column
         // the step reads is not unpacked whole to read one row of it.
+        //
+        // Phase 359 — on an append the prior cells cover the prior slots and the step grows by the
+        // tail, whose slots are listed in `InPlace` and evaluated with the changed ones.
         let inPlace =
             not (isNull r.InPlace)
             && evalIdx < r.PriorSteps.Length
-            && r.PriorSteps[evalIdx].Length = r.Stable.Length
+            && r.PriorSteps[evalIdx].Length = r.PriorCount
+            && r.PriorCount <= r.Stable.Length
 
         let step: Cell[] =
-            if inPlace then
+            if not inPlace then
+                Array.zeroCreate r.Stable.Length
+            elif r.PriorCount = r.Stable.Length then
                 Array.copy r.PriorSteps[evalIdx]
             else
-                Array.zeroCreate r.Stable.Length
+                let grown: Cell[] = Array.zeroCreate r.Stable.Length
+                Array.blit r.PriorSteps[evalIdx] 0 grown 0 r.PriorCount
+                grown
 
         if inPlace then
-            let sparse = r.InPlace.Length <= sparseRowLimit
+            // Phase 359 — appended slots read their own cells (`WalkFrame.Tails`), so only the changed
+            // prefix rows count against the sparse reading's limit.
+            let prefixChanged =
+                if r.PriorCount = r.Stable.Length then
+                    r.InPlace.Length
+                else
+                    r.InPlace |> Array.sumBy (fun s -> if s < r.PriorCount then 1 else 0)
+
+            let sparse = prefixChanged <= sparseRowLimit
             let mutable j = 0
 
             while failed.IsNone && j < r.InPlace.Length do
@@ -2938,22 +2974,34 @@ module Incremental =
                         // it kept where every one of them sits at its prior slot and the prior column is
                         // as long as this one (in place): one pass over the prior list, and no cell boxed
                         // again for a kept row.
+                        //
+                        // Phase 359 — or over an append: the prior column covers the prior rows, each at
+                        // its prior slot, and the appended rows (never kept) follow it.
                         let shared =
                             match reusable with
-                            | Some(priorCells, priorOf, priorCount) when priorCount = order.Length ->
+                            | Some(priorCells, priorOf, priorCount) when priorCount <= order.Length ->
                                 let mutable inPlace = true
                                 let mutable k = 0
 
                                 while inPlace && k < order.Length do
-                                    inPlace <- not keep[k] || priorOf[k] = k
+                                    inPlace <- not keep[k] || (k < priorCount && priorOf[k] = k)
                                     k <- k + 1
 
-                                if inPlace then Some priorCells else None
+                                if inPlace then Some(priorCells, priorCount) else None
                             | _ -> None
 
                         let cells =
                             match shared with
-                            | Some priorCells -> priorCells |> List.mapi (fun k c -> if keep[k] then c else cellAt k)
+                            | Some(priorCells, priorCount) when priorCount = order.Length ->
+                                priorCells |> List.mapi (fun k c -> if keep[k] then c else cellAt k)
+                            | Some(priorCells, priorCount) ->
+                                let mutable tail = []
+
+                                for k in order.Length - 1 .. -1 .. priorCount do
+                                    tail <- cellAt k :: tail
+
+                                let head = priorCells |> List.mapi (fun k c -> if keep[k] then c else cellAt k)
+                                head @ tail
                             | None ->
                                 let mutable cells = []
 
@@ -3001,6 +3049,12 @@ module Incremental =
                     { Cols = cols2
                       Data = data2
                       Origins = origins2
+                      Tails =
+                        if isNull f.Tails then
+                            null
+                        else
+                            Array.append f.Tails [| None |]
+                      TailFrom = f.TailFrom
                       Order = f.Order }
                     evaluated
                     caches
@@ -3116,7 +3170,12 @@ module Incremental =
                     { f with
                         Cols = resolved |> List.map (fun (o, ty, _) -> o, ty)
                         Data = idx |> Array.map (fun i -> f.Data[i])
-                        Origins = idx |> Array.map (fun i -> f.Origins[i]) }
+                        Origins = idx |> Array.map (fun i -> f.Origins[i])
+                        Tails =
+                            if isNull f.Tails then
+                                null
+                            else
+                                idx |> Array.map (fun i -> f.Tails[i]) }
                     evaluated
                     caches
                     rest)
@@ -3150,12 +3209,22 @@ module Incremental =
                                 { f with
                                     Cols = f.Cols |> List.mapi (fun j (n2, t) -> if j = i then n2, ty else n2, t)
                                     Data = f.Data |> Array.mapi (fun j a -> if j = i then step else a)
-                                    Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o) }
+                                    Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o)
+                                    Tails =
+                                        if isNull f.Tails then
+                                            null
+                                        else
+                                            f.Tails |> Array.mapi (fun j o -> if j = i then None else o) }
                             | None ->
                                 { f with
                                     Cols = f.Cols @ [ name, ty ]
                                     Data = Array.append f.Data [| step |]
-                                    Origins = Array.append f.Origins [| None |] }
+                                    Origins = Array.append f.Origins [| None |]
+                                    Tails =
+                                        if isNull f.Tails then
+                                            null
+                                        else
+                                            Array.append f.Tails [| None |] }
 
                         walk resolve env prior r f2 n caches rest))
 
@@ -3545,12 +3614,24 @@ module Incremental =
             let mutable rest = f.Origins[c].Value
             let mutable at = 0
 
-            for j in 0 .. slots.Count - 1 do
-                while at < slots[j] do
-                    rest <- rest.Tail
-                    at <- at + 1
+            // Phase 359 — appended slots (ascending, so last) are read from the tail's cells.
+            let tail =
+                if not (isNull f.Tails) && c < f.Tails.Length then
+                    f.Tails[c]
+                else
+                    None
 
-                out[j] <- rest.Head
+            for j in 0 .. slots.Count - 1 do
+                let s = slots[j]
+
+                if tail.IsSome && s >= f.TailFrom then
+                    out[j] <- tail.Value[s - f.TailFrom]
+                else
+                    while at < s do
+                        rest <- rest.Tail
+                        at <- at + 1
+
+                    out[j] <- rest.Head
 
         out
 
@@ -3578,6 +3659,14 @@ module Incremental =
     /// list, which names the position). Anything it cannot
     /// read, or a cell `Column.aggregate` would refuse, is recomputed. A float `Sum` is never
     /// maintained: its bits are the left fold over the members in order, so it is rescanned.
+    ///
+    /// Phase 359 — over an APPEND too: the prior rows keep their groups under the same conditions,
+    /// and each appended row the walk reaches joins the group its key cells name, at the end of its
+    /// member list (every appended slot follows every prior one, and member order is slot order), or
+    /// opens a new group after every prior group, in the order the appended rows first name them —
+    /// the first-appearance order the reference keeps. The groups an appended row joined are touched
+    /// like a changed row's (a `Count` or int `Sum` gains its cell); a new group is computed over its
+    /// appended members. Finding a group costs a lookup over the prior groups, built once per refresh.
     let private groupStepInPlace
         (f: WalkFrame)
         (r: WalkRows)
@@ -3603,7 +3692,8 @@ module Incremental =
         if
             isNull r.InPlace
             || groupCount = 0
-            || prior.RowGroups.Length <> r.Stable.Length
+            || prior.RowGroups.Length <> r.PriorCount
+            || r.PriorCount > r.Stable.Length
             || prior.Members.Length <> groupCount
             || prior.Aggs.Length <> groupCount
             || prior.Rows.Length <> groupCount
@@ -3617,47 +3707,97 @@ module Incremental =
             let probe: Cell[] = Array.zeroCreate idxs.Length
             let dirty: bool[] = Array.zeroCreate groupCount
             let changedIn = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+            // Phase 359 — the appended rows each group gains (an existing group's or a new one's), in
+            // slot order, which is their member order: every appended slot follows every prior one.
+            let addedIn = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+            let rowGroups: int[] = Array.zeroCreate r.Stable.Length
+            Array.blit prior.RowGroups 0 rowGroups 0 r.PriorCount
+            let newOrder = ResizeArray<string>()
+            let newKeys = ResizeArray<Cell[]>()
+            // The prior groups by token, built on the first appended row the walk reaches.
+            let mutable groupOf: System.Collections.Generic.Dictionary<string, int> = null
             let mutable applies = true
             let mutable j = 0
 
+            let addTo (d: System.Collections.Generic.Dictionary<int, ResizeArray<int>>) (g: int) (s: int) =
+                match d.TryGetValue g with
+                | true, xs -> xs.Add s
+                | _ ->
+                    let xs = ResizeArray<int>()
+                    xs.Add s
+                    d[g] <- xs
+
             while applies && j < r.InPlace.Length do
                 let s = r.InPlace[j]
-                let pg = prior.RowGroups[s]
-                let reached = reaches f.Order s
 
-                if reached <> (pg >= 0) then
-                    applies <- false
-                elif pg >= 0 then
-                    for k in 0 .. idxs.Length - 1 do
-                        probe[k] <- cellAtSlot f idxs[k] s
+                if s >= r.PriorCount then
+                    // An appended row: it joins the group its key cells name — a prior group, or a new
+                    // one opened after every prior group, in the order the appended rows first name them,
+                    // which is first-appearance order — or no group where the walk dropped it.
+                    if reaches f.Order s then
+                        for k in 0 .. idxs.Length - 1 do
+                            probe[k] <- cellAtSlot f idxs[k] s
 
-                    let opener =
-                        match prior.Members[pg] with
-                        | t :: _ -> System.String.Equals(t, r.Tokens[s])
-                        | [] -> true
+                        let token = DataFrame.rowTokenStringOfArray probe
 
-                    if
-                        opener
-                        || not (System.String.Equals(DataFrame.rowTokenStringOfArray probe, prior.Order[pg]))
-                    then
-                        applies <- false
+                        if isNull groupOf then
+                            let d = System.Collections.Generic.Dictionary<string, int>(groupCount)
+
+                            for h in 0 .. groupCount - 1 do
+                                d[prior.Order[h]] <- h
+
+                            groupOf <- d
+
+                        let g =
+                            match groupOf.TryGetValue token with
+                            | true, g -> g
+                            | _ ->
+                                let g = groupCount + newOrder.Count
+                                groupOf[token] <- g
+                                newOrder.Add token
+                                newKeys.Add(Array.copy probe)
+                                g
+
+                        if g < groupCount then
+                            dirty[g] <- true
+
+                        rowGroups[s] <- g
+                        addTo addedIn g s
                     else
-                        dirty[pg] <- true
+                        rowGroups[s] <- -1
+                else
+                    let pg = prior.RowGroups[s]
+                    let reached = reaches f.Order s
 
-                        match changedIn.TryGetValue pg with
-                        | true, xs -> xs.Add s
-                        | _ ->
-                            let xs = ResizeArray<int>()
-                            xs.Add s
-                            changedIn[pg] <- xs
+                    if reached <> (pg >= 0) then
+                        applies <- false
+                    elif pg >= 0 then
+                        for k in 0 .. idxs.Length - 1 do
+                            probe[k] <- cellAtSlot f idxs[k] s
+
+                        let opener =
+                            match prior.Members[pg] with
+                            | t :: _ -> System.String.Equals(t, r.Tokens[s])
+                            | [] -> true
+
+                        if
+                            opener
+                            || not (System.String.Equals(DataFrame.rowTokenStringOfArray probe, prior.Order[pg]))
+                        then
+                            applies <- false
+                        else
+                            dirty[pg] <- true
+                            addTo changedIn pg s
 
                 j <- j + 1
 
             if not applies then
                 None
             else
+                let total = groupCount + newOrder.Count
+
                 // The dirty groups' member slots, in member order: the walk's order is ascending in
-                // place, and the partition is the prior one.
+                // place, and the partition is the prior one, grown by the appended rows.
                 //
                 // Built on the first aggregate that is rescanned rather than maintained (Phase 323): a
                 // refresh whose every aggregate is maintained reads no member list at all.
@@ -3665,22 +3805,26 @@ module Incremental =
                     null
 
                 let slotsFor (g: int) : ResizeArray<int> =
-                    if isNull slotsOf then
-                        let d = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+                    if g >= groupCount then
+                        // A new group's members are its appended rows alone.
+                        addedIn[g]
+                    else
+                        if isNull slotsOf then
+                            let d = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
 
-                        for h in 0 .. groupCount - 1 do
-                            if dirty[h] then
-                                d[h] <- ResizeArray<int>()
+                            for h in 0 .. groupCount - 1 do
+                                if dirty[h] then
+                                    d[h] <- ResizeArray<int>()
 
-                        for s in f.Order do
-                            let h = prior.RowGroups[s]
+                            for s in f.Order do
+                                let h = rowGroups[s]
 
-                            if h >= 0 && dirty[h] then
-                                d[h].Add s
+                                if h >= 0 && h < groupCount && dirty[h] then
+                                    d[h].Add s
 
-                        slotsOf <- d
+                            slotsOf <- d
 
-                    slotsOf[g]
+                        slotsOf[g]
 
                 let nk = idxs.Length
 
@@ -3735,8 +3879,24 @@ module Incremental =
                     else
                         ValueNone
 
-                // A maintained `Count` or int `Sum` (see above), or `ValueNone` to recompute.
-                let maintained (fn: AggFn) (ty: ColumnType) (c: int) (priorCell: Cell) (changed: ResizeArray<int>) =
+                let noRows = ResizeArray<int>()
+
+                let rowsIn (d: System.Collections.Generic.Dictionary<int, ResizeArray<int>>) (g: int) =
+                    match d.TryGetValue g with
+                    | true, xs -> xs
+                    | _ -> noRows
+
+                // A maintained `Count` or int `Sum` (see above), or `ValueNone` to recompute. A changed
+                // member contributes its cell now less its prior one; an appended member (Phase 359),
+                // which contributed nothing before, its cell now.
+                let maintained
+                    (fn: AggFn)
+                    (ty: ColumnType)
+                    (c: int)
+                    (priorCell: Cell)
+                    (changed: ResizeArray<int>)
+                    (added: ResizeArray<int>)
+                    =
                     if not (fn = Count || (fn = Sum && ty = IntType)) then
                         ValueNone
                     else
@@ -3745,28 +3905,43 @@ module Incremental =
                         let mutable delta = 0L
                         let mutable i = 0
 
+                        let present (x: Cell) =
+                            match x with
+                            | Null -> 0L
+                            | _ -> 1L
+
+                        let addNow (now: Cell) =
+                            if fn = Count then
+                                delta <- delta + present now
+                            else
+                                match now with
+                                | Int x -> delta <- delta + int64 x
+                                | _ -> allNewInt <- false
+
                         while ok && i < changed.Count do
                             let s = changed[i]
 
                             match priorCellAt c s, DataFrame.GroupAgg.admitted ty (cellAtSlot f c s) with
                             | ValueSome before, ValueSome now ->
                                 if fn = Count then
-                                    let present (x: Cell) =
-                                        match x with
-                                        | Null -> 0L
-                                        | _ -> 1L
-
-                                    delta <- delta + present now - present before
+                                    delta <- delta - present before
                                 else
                                     match before with
                                     | Int x -> delta <- delta - int64 x
                                     | Null -> ()
                                     | _ -> ok <- false
 
-                                    match now with
-                                    | Int x -> delta <- delta + int64 x
-                                    | _ -> allNewInt <- false
+                                addNow now
                             | _ -> ok <- false
+
+                            i <- i + 1
+
+                        i <- 0
+
+                        while ok && i < added.Count do
+                            match DataFrame.GroupAgg.admitted ty (cellAtSlot f c added[i]) with
+                            | ValueSome now -> addNow now
+                            | ValueNone -> ok <- false
 
                             i <- i + 1
 
@@ -3795,20 +3970,25 @@ module Incremental =
                                     ValueNone
                             | ValueNone -> ValueNone
 
-                let members = Array.copy prior.Members
-                let aggCells = Array.copy prior.Aggs
-                let rows = Array.copy prior.Rows
-                let recomputedAt: bool[] = Array.zeroCreate groupCount
+                let members: string list[] = Array.zeroCreate total
+                let aggCells: Cell list[] = Array.zeroCreate total
+                let rows: Cell[][] = Array.zeroCreate total
+                Array.blit prior.Members 0 members 0 groupCount
+                Array.blit prior.Aggs 0 aggCells 0 groupCount
+                Array.blit prior.Rows 0 rows 0 groupCount
+                let recomputedAt: bool[] = Array.zeroCreate total
                 let mutable recomputed = 0
                 let mutable failed = None
                 let mutable g = 0
 
-                while failed.IsNone && g < groupCount do
-                    if dirty[g] then
+                while failed.IsNone && g < total do
+                    let fresh = g >= groupCount
+
+                    if fresh || dirty[g] then
                         recomputed <- recomputed + 1
                         recomputedAt[g] <- true
                         let vals: Cell[] = Array.zeroCreate aggArr.Length
-                        let priorVals = List.toArray prior.Aggs[g]
+                        let priorVals = if fresh then [||] else List.toArray prior.Aggs[g]
                         let read = System.Collections.Generic.Dictionary<int, Cell[]>()
                         let mutable k = 0
 
@@ -3817,7 +3997,7 @@ module Incremental =
 
                             match
                                 (if k < priorVals.Length then
-                                     maintained a.Fn ty ci priorVals[k] changedIn[g]
+                                     maintained a.Fn ty ci priorVals[k] (rowsIn changedIn g) (rowsIn addedIn g)
                                  else
                                      ValueNone)
                             with
@@ -3848,7 +4028,18 @@ module Incremental =
 
                         if failed.IsNone then
                             aggCells[g] <- List.ofArray vals
-                            rows[g] <- Array.append (Array.sub prior.Rows[g] 0 nk) vals
+
+                            let added = rowsIn addedIn g
+                            let addedTokens = [ for s in added -> r.Tokens[s] ]
+
+                            if fresh then
+                                members[g] <- addedTokens
+                                rows[g] <- Array.append newKeys[g - groupCount] vals
+                            else
+                                if added.Count > 0 then
+                                    members[g] <- prior.Members[g] @ addedTokens
+
+                                rows[g] <- Array.append (Array.sub prior.Rows[g] 0 nk) vals
 
                     g <- g + 1
 
@@ -3866,8 +4057,16 @@ module Incremental =
                         Ok
                             { Cols = keyCols @ aggCols
                               Rows = List.ofArray rows
-                              Order = prior.Order
-                              RowGroups = prior.RowGroups
+                              Order =
+                                if newOrder.Count = 0 then
+                                    prior.Order
+                                else
+                                    Array.append prior.Order (newOrder.ToArray())
+                              RowGroups =
+                                if r.PriorCount = r.Stable.Length then
+                                    prior.RowGroups
+                                else
+                                    rowGroups
                               Members = members
                               Aggs = aggCells
                               Recomputed = recomputed
@@ -4012,11 +4211,33 @@ module Incremental =
 
     // ---- evaluation ----
 
+    /// Phase 359 — where a refresh's source rows sit against the rows its state was evaluated over,
+    /// when `Delta.diff` established it: every row IN PLACE (Phase 323: the same count, the same key
+    /// at every index), or an APPEND (the prior rows at their own indices, new rows after them).
+    /// `Changed` is the slots that are not `Stable`, ascending: the prefix rows whose content moved,
+    /// then, on an append, every appended slot. `PriorCount` is the prior row count (the source's own
+    /// in place). On an append, per schema column, `Tails` is the source list from `PriorCount` on and
+    /// `Exact` says the list is exactly the source's row count long (`null` both, in place).
+    type private InPlaceReading =
+        { Changed: int[]
+          PriorCount: int
+          Tails: Cell list[]
+          Exact: bool[] }
+
     /// The source's columns as the walk's frame: one array per schema column, padded with `Null`
     /// exactly as `RowAccess.columns` pads (a name the table does not carry, or a column shorter
     /// than the table, reads `Null` — the total `Column.cell` policy), and beside each the source's
     /// own list where the array is that list unpadded.
-    let private frameOf (t: Table) (n: int) (priorSource: Table) (priorExact: bool[]) : WalkFrame =
+    ///
+    /// Phase 359 — on an append (`appended`), a column the diff counted exactly `n` long is not
+    /// counted again, and its tail rides beside it (`WalkFrame.Tails`).
+    let private frameOf
+        (t: Table)
+        (n: int)
+        (priorSource: Table)
+        (priorExact: bool[])
+        (appended: InPlaceReading option)
+        : WalkFrame =
         // Phase 323 — a column whose cell list IS the list of the prior source's column of that name
         // (an in-place refresh: the edit did not touch it) has the length the prior frame found, so
         // it is not walked again to count it. `priorSource` is `null` everywhere else; where it is
@@ -4030,12 +4251,17 @@ module Incremental =
                 | Some pc -> System.Object.ReferenceEquals(pc.Cells, c.Cells)
                 | None -> false)
 
+        let counted (ci: int) =
+            match appended with
+            | Some a when not (isNull a.Exact) && ci < a.Exact.Length -> a.Exact[ci]
+            | _ -> false
+
         let unpacked =
             t.Schema
             |> List.mapi (fun ci (name, _) ->
                 match Table.tryColumn name t with
                 | Some c ->
-                    if unchanged ci name c || List.length c.Cells = n then
+                    if counted ci || unchanged ci name c || List.length c.Cells = n then
                         null, Some c.Cells
                     else
                         let a = List.toArray c.Cells
@@ -4043,9 +4269,23 @@ module Incremental =
                 | None -> Array.create n Null, None)
             |> List.toArray
 
+        let tails, tailFrom =
+            match appended with
+            | Some a when not (isNull a.Tails) ->
+                unpacked
+                |> Array.mapi (fun ci (_, origin) ->
+                    if origin.IsSome && counted ci && ci < a.Tails.Length then
+                        Some(List.toArray a.Tails[ci])
+                    else
+                        None),
+                a.PriorCount
+            | _ -> null, 0
+
         { Cols = t.Schema
           Data = unpacked |> Array.map fst
           Origins = unpacked |> Array.map snd
+          Tails = tails
+          TailFrom = tailFrom
           Order = Array.init n id }
 
     /// Run the incremental path over `source`, re-evaluating the rows in `named` (`None` = all).
@@ -4065,7 +4305,7 @@ module Incremental =
         (tokens: string[])
         (prior: IncrementalEval option)
         (named: Set<string> option)
-        (inPlace: int[] option)
+        (inPlace: InPlaceReading option)
         (recomputeOf: int -> int -> Recompute)
         (seedShift: int)
         : Result<IncrementalEval, EvalError> =
@@ -4083,6 +4323,9 @@ module Incremental =
         // Phase 324 — a `Window` reads as a sort does: it moves no row, the walk clears the in-place
         // reading at it, and it recomputes its column over the whole frame (clearing `Stable`), so
         // only the frame's build and the row-local steps ahead of it read in place.
+        //
+        // Phase 359 — an APPEND reads the same way, under the same conditions: the prior rows sit at
+        // their prior slots, and the appended slots are listed with the changed ones (`InPlaceReading`).
         let inPlaceRows =
             let rowLocal =
                 function
@@ -4099,12 +4342,16 @@ module Incremental =
                 | step -> rowLocal step
 
             match inPlace, prior, named with
-            | Some changed, Some s, Some _ when
-                obj.ReferenceEquals(tokens, s.Tokens)
+            | Some reading, Some s, Some _ when
+                reading.PriorCount = s.Tokens.Length
+                && (if reading.PriorCount = rowCount then
+                        obj.ReferenceEquals(tokens, s.Tokens)
+                    else
+                        reading.PriorCount < rowCount)
                 && (prefix |> List.forall rowLocal
                     || (Option.isNone final && prefix |> List.forall ordering))
                 ->
-                changed
+                reading.Changed
             | _ -> null
 
         let priorTokens =
@@ -4144,10 +4391,18 @@ module Incremental =
 
         // Phase 323 — in place, every row's prior slot is its slot and every row but the changed
         // ones is stable: what the loop below computes, by construction rather than by lookup.
+        //
+        // Phase 359 — on an append, the appended slots have no prior slot (`-1`), as a row the prior
+        // evaluation never held, and are not stable.
         if not (isNull inPlaceRows) then
+            let held = priorTokens.Length
+
             for i in 0 .. rowCount - 1 do
-                priorOf[i] <- i
-                stable[i] <- true
+                if i < held then
+                    priorOf[i] <- i
+                    stable[i] <- true
+                else
+                    priorOf[i] <- -1
 
             for c in inPlaceRows do
                 stable[c] <- false
@@ -4195,7 +4450,19 @@ module Incremental =
             | Some s when not (isNull inPlaceRows) -> s.Source.Value, s.SourceExact
             | _ -> Unchecked.defaultof<Table>, [||]
 
-        let frame0 = frameOf source rowCount priorSource priorExact
+        // Phase 359 — an append's frame reads the diff's counts, never the prior source's: the prior
+        // held fewer rows than this one, so its column lengths say nothing about this frame's.
+        let appended =
+            match inPlace with
+            | Some reading when not (isNull inPlaceRows) && reading.PriorCount < rowCount -> inPlace
+            | _ -> None
+
+        let frame0 =
+            if appended.IsSome then
+                frameOf source rowCount Unchecked.defaultof<Table> [||] appended
+            else
+                frameOf source rowCount priorSource priorExact None
+
         let sourceExact = frame0.Origins |> Array.map Option.isSome
 
         walk resolve env priorCaches rows frame0 0 noCaches prefix
@@ -4345,6 +4612,8 @@ module Incremental =
                             { Cols = g.Cols
                               Data = Array.init width (fun c -> rowArrays |> Array.map (fun row -> row[c]))
                               Origins = Array.create width None
+                              Tails = null
+                              TailFrom = 0
                               Order = Array.init groupCount id }
 
                         // The SAME walk as the prefix, one frame along: its invariant is that the
@@ -4436,7 +4705,7 @@ module Incremental =
         (prior: IncrementalEval option)
         (named: Set<string> option)
         (known: KeyedIndex option)
-        (inPlace: int[] option)
+        (inPlace: InPlaceReading option)
         (recomputeOf: int -> int -> Recompute)
         (onDeclined: FallBackReason -> int -> Recompute)
         (seedShift: int)
@@ -4473,9 +4742,22 @@ module Incremental =
              //
              // Phase 323 — in place (see `refreshWith`), the source's tokens ARE the prior's, row for
              // row: `tokensOfKnown` would return each prior instance, so the array is shared.
+             //
+             // Phase 359 — on an append they are the prior's, then the appended rows' tokens, minted
+             // from the keys the diff minted for the tail alone.
              let tokens =
                  match inPlace, known with
-                 | Some _, Some k when priorTokens.Length = k.Keys.Length -> Ok priorTokens
+                 | Some reading, Some k when
+                     priorTokens.Length = reading.PriorCount && k.Keys.Length >= priorTokens.Length
+                     ->
+                     if k.Keys.Length = priorTokens.Length then
+                         Ok priorTokens
+                     else
+                         let held = priorTokens.Length
+
+                         Array.init (k.Keys.Length - held) (fun t -> Delta.refToken (ByKey k.Keys[held + t]))
+                         |> Array.append priorTokens
+                         |> Ok
                  | _, Some k -> Ok(tokensOfKnown k priorTokens)
                  | _, None -> tokensOf idw priorTokens source
 
@@ -4987,6 +5269,9 @@ module Incremental =
         // refresh may then pay for the changed rows rather than for the table (`runIncremental`).
         // Anything else — another `before`, a hand-built delta, a moved, added or removed row —
         // takes the general walk.
+        //
+        // Phase 359 — or an APPEND against that table (the prior rows at their own indices, rows
+        // appended after them): the refresh then pays for the appended rows and the changed ones.
         let inPlace =
             match KeyedIndexes.inPlaceOf delta source with
             | Some(from, changed) when
@@ -4994,8 +5279,29 @@ module Incremental =
                 && obj.ReferenceEquals(from, state.Source.Value)
                 && state.Tokens.Length > 0
                 ->
-                Some changed
-            | _ -> None
+                Some
+                    { Changed = changed
+                      PriorCount = state.Tokens.Length
+                      Tails = null
+                      Exact = null }
+            | _ ->
+                match KeyedIndexes.appendOf delta source, known with
+                | Some a, Some k when
+                    state.Source.IsValueCreated
+                    && obj.ReferenceEquals(a.From, state.Source.Value)
+                    && a.PriorCount > 0
+                    && state.Tokens.Length = a.PriorCount
+                    && k.Keys.Length > a.PriorCount
+                    ->
+                    Some
+                        { Changed =
+                            Array.append
+                                a.Changed
+                                (Array.init (k.Keys.Length - a.PriorCount) (fun t -> a.PriorCount + t))
+                          PriorCount = a.PriorCount
+                          Tails = a.Tails
+                          Exact = a.Exact }
+                | _ -> None
 
         match stale with
         | Some r ->

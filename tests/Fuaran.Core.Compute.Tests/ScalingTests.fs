@@ -1784,3 +1784,325 @@ let scalingTests =
                       allocRatio
                       diffFloorAllocBound
                       "the diff must allocate the keying of both tables and a constant factor more, not a token string per cell" ]
+
+// ---------------------------------------------------------------------------
+//  Phase 359 — an append-only tick costs the appended rows.
+// ---------------------------------------------------------------------------
+
+/// `t` with `k` rows APPENDED the way `ColumnOps.AppendRows` appends them: every column's list is
+/// `before @ extra`, so the prefix's cells are the very cells of `t`, in new lists. The appended rows
+/// are row `n` onwards of `nd.Mk (n + k)`, except in the identity column, which takes keys no row of
+/// `t` holds (the corpus's integer ids are below `n`, its string ids `r<i>`).
+let private appendTo (nd: CorpusNode) (k: int) (t: Table) : Table =
+    let n = Table.rowCount t
+    let big = nd.Mk(n + k)
+
+    { t with
+        Columns =
+            t.Columns
+            |> List.map (fun c ->
+                let extra =
+                    if c.Name = nd.IdCol then
+                        [ for j in 0 .. k - 1 ->
+                              match List.head c.Cells with
+                              | Int _ -> Int(10_000_000 + n + j)
+                              | _ -> Str("z" + string (n + j)) ]
+                    else
+                        (Table.tryColumn c.Name big).Value.Cells |> List.skip n
+
+                { c with Cells = c.Cells @ extra }) }
+
+/// The keyed diff's answer for `w`: the same witness with neither of its declarations (a copy is a
+/// new record, so it carries no `KeyColumns` and no key equality), which takes neither the append
+/// path nor the typed pairing — the reference every faster path is held to.
+let private keyedOnly (w: RowIdentity<'Id>) : RowIdentity<'Id> = { w with Scheme = w.Scheme }
+
+/// The appends a law draws: one row, a few, and as many as the table holds.
+let private appendSizes (n: int) = [ 1; 7; n ]
+
+[<Tests>]
+let appendTests =
+    testList
+        "Append (Phase 359)"
+        [ testCase "an append tick keys the appended rows alone: the diff mints the tail's keys, the refresh none"
+          <| fun _ ->
+              let minted = ref 0
+              // `countingId` is a COPY of `idw`, so it declares nothing; declare its key column, as
+              // `byColumn` does, so the diff may take the append path for it.
+              let w = KeyColumns.declare [ "id" ] (countingId minted)
+              let node = corpusNodes |> List.find (fun nd -> nd.Name = "filter > groupBy")
+
+              for n in [ 1_000; 20_000 ] do
+                  let before = build n
+                  let mutable prior = before
+                  let mutable s = ok (Incremental.primeOn w pipeline before)
+
+                  for k in [ 1; 9; 1 ] do
+                      let after = appendTo node k prior
+                      minted.Value <- 0
+                      let d = ok (Delta.diff w prior after)
+
+                      Expect.equal minted.Value k (sprintf "the diff mints the %d appended keys alone @ %d" k n)
+
+                      Expect.equal
+                          d
+                          (ok (Delta.diff (keyedOnly w) prior after))
+                          "the append diff answers what the keyed diff answers"
+
+                      minted.Value <- 0
+                      s <- ok (Incremental.refreshOn w pipeline s d after)
+
+                      Expect.equal minted.Value 0 "the refresh mints no key: the delta carried every one"
+
+                      Expect.equal
+                          (Ok(Incremental.result s))
+                          (DataFrame.evalPipeline pipeline after)
+                          "the refresh answers what the reference answers"
+
+                      match (Incremental.footprint s).Recompute with
+                      | GroupsRecomputed(rows, _) -> Expect.equal rows k "the refresh evaluates the appended rows alone"
+                      | other -> failtestf "expected a restricted refresh, got %A" other
+
+                      prior <- after
+
+          testCase "append ticks of 1, k and n rows over every corpus pipeline answer the full evaluation, chained"
+          <| fun _ ->
+              for nd in corpusNodes do
+                  for n in [ 40; 300 ] do
+                      for k in appendSizes n do
+                          let w = RowIdentity.byColumn nd.IdCol
+                          let p = nd.Pipe n
+                          let t0 = nd.Mk n
+                          let mutable prior = t0
+                          let mutable state = ok (Incremental.prime DataFrame.noResolve nd.Env w p t0)
+
+                          // Three ticks in a row: each refresh starts from the state the last one left.
+                          for tick in 1..3 do
+                              let after = appendTo nd k prior
+                              let d = ok (Delta.diff w prior after)
+
+                              Expect.equal
+                                  d
+                                  (ok (Delta.diff (keyedOnly w) prior after))
+                                  (sprintf "%s @ %d +%d tick %d: the append diff is the keyed diff" nd.Name n k tick)
+
+                              state <- ok (Incremental.refresh DataFrame.noResolve nd.Env w p state d after)
+
+                              Expect.equal
+                                  (Ok(Incremental.result state))
+                                  (DataFrame.evalPipelineInEnv nd.Env p after)
+                                  (sprintf "%s @ %d +%d tick %d: refresh equals full" nd.Name n k tick)
+
+                              prior <- after
+
+          testCase
+              "an append beside an edit or a key change answers the full evaluation, and is red against a perturbed prefix check"
+          <| fun _ ->
+              let mutable redDeltas = 0
+              let mutable redRefreshes = 0
+              let mutable visible = 0
+
+              for nd in corpusNodes do
+                  for seed in 0..5 do
+                      let rng = System.Random(seed * 7919 + nd.Name.Length)
+                      let n = 30 + rng.Next 60
+                      let w = RowIdentity.byColumn nd.IdCol
+                      let p = nd.Pipe n
+                      let before = nd.Mk n
+                      let state = ok (Incremental.prime DataFrame.noResolve nd.Env w p before)
+                      let row = rng.Next n
+                      let appended = appendTo nd (1 + rng.Next 5) before
+
+                      // An edit of one prefix row beside the append, and a prefix row whose KEY moved.
+                      let edited = setCell nd.EditCol row nd.EditTo appended
+
+                      let rekeyed =
+                          let moved =
+                              match List.head (Table.tryColumn nd.IdCol before).Value.Cells with
+                              | Int _ -> Int(-1 - row)
+                              | _ -> Str("moved" + string row)
+
+                          setCell nd.IdCol row moved appended
+
+                      for label, after in [ "edit", edited; "key change", rekeyed ] do
+                          let d = ok (Delta.diff w before after)
+
+                          Expect.equal
+                              d
+                              (ok (Delta.diff (keyedOnly w) before after))
+                              (sprintf "%s seed %d, %s: the diff is the keyed diff" nd.Name seed label)
+
+                          let full = DataFrame.evalPipelineInEnv nd.Env p after
+
+                          Expect.equal
+                              (Incremental.refresh DataFrame.noResolve nd.Env w p state d after
+                               |> Result.map Incremental.result)
+                              full
+                              (sprintf "%s seed %d, %s: refresh equals full" nd.Name seed label)
+
+                          // The perturbation takes the prefix as unchanged without reading a cell of it.
+                          // Over a fresh table object: `after` is keyed now, and a keyed `after` takes
+                          // the keyed diff whichever path was asked for.
+                          let after = { after with Columns = after.Columns }
+                          let perturbed = ok (Delta.diffTrustingPrefix w before after)
+
+                          if perturbed <> d then
+                              redDeltas <- redDeltas + 1
+
+                          // Where an EDIT reaches the answer, and the pipeline is not declined (a
+                          // declined refresh re-evaluates whatever the delta says), the refresh fed the
+                          // perturbed delta must answer wrongly: it reuses what it computed from the old
+                          // cell. (A key change can reach the answer only through the key column's own
+                          // list, which a refresh hands back as it is, so it is held at the delta.)
+                          if
+                              label = "edit"
+                              && full <> DataFrame.evalPipelineInEnv nd.Env p appended
+                              && Incremental.isIncremental (Incremental.plan p)
+                          then
+                              visible <- visible + 1
+
+                              let answered =
+                                  Incremental.refresh DataFrame.noResolve nd.Env w p state perturbed after
+                                  |> Result.map Incremental.result
+
+                              if answered <> full then
+                                  redRefreshes <- redRefreshes + 1
+
+              // Every key change, and every edit but one that writes the value the cell already held,
+              // is a change the perturbed delta misses.
+              Expect.isGreaterThan redDeltas 100 "the perturbed prefix check gives a wrong delta"
+              Expect.isGreaterThan visible 20 "the drawn edits reach the answer of an admitted pipeline"
+
+              Expect.equal
+                  redRefreshes
+                  visible
+                  "a refresh fed the perturbed delta answers wrongly wherever the change reaches the answer"
+
+          testCase
+              "the append diff over drawn tables: the keyed diff's delta, refusal and payload, for one key column and two"
+          <| fun _ ->
+              let pool =
+                  [| Null
+                     Int 1
+                     Int 2
+                     Float 0.0
+                     Float -0.0
+                     Float nan
+                     Decimal "1.50"
+                     Decimal "1.5" |]
+
+              let mutable appendsTaken = 0
+
+              for seed in 0..1499 do
+                  let rng = System.Random(seed)
+                  let n = rng.Next 10
+                  let k = 1 + rng.Next 4
+                  let idOf i = Str(sprintf "k%d" i)
+                  let ids = [ for i in 0 .. n - 1 -> idOf i ]
+                  let k2 = [ for i in 0 .. n - 1 -> Int(i % 3) ]
+                  let vs = [ for _ in 1..n -> pool[rng.Next pool.Length] ]
+
+                  // The tail's keys: fresh, or now and then repeating a prefix key or an earlier tail
+                  // key, or missing — the keyed diff's refusals.
+                  let tailIds =
+                      [ for j in 0 .. k - 1 ->
+                            match rng.Next 16 with
+                            | 0 when n > 0 -> idOf (rng.Next n)
+                            | 1 when j > 0 -> idOf (n + rng.Next j)
+                            | 2 -> Null
+                            | _ -> idOf (n + j) ]
+
+                  // The prefix's other cells: unchanged, or (one draw in three) one of them redrawn,
+                  // from a pool where 0.0 / -0.0 and 1.50 / 1.5 are distinct contents.
+                  let vs' =
+                      if n > 0 && rng.Next 3 = 0 then
+                          let i = rng.Next n
+                          vs |> List.mapi (fun j v -> if j = i then pool[rng.Next pool.Length] else v)
+                      else
+                          vs
+
+                  let mk (idCells: Cell list) (k2Cells: Cell list) (v: Cell list) : Table =
+                      { Schema = [ "id", StringType; "k2", IntType; "v", FloatType ]
+                        Columns =
+                          [ Column.create "id" StringType idCells
+                            Column.create "k2" IntType k2Cells
+                            Column.create "v" FloatType v ] }
+
+                  let before = mk ids k2 vs
+
+                  let after =
+                      mk
+                          (ids @ tailIds)
+                          (k2 @ [ for j in 0 .. k - 1 -> Int((n + j) % 3) ])
+                          (vs' @ [ for _ in 1..k -> pool[rng.Next pool.Length] ])
+
+                  let check (label: string) (w: RowIdentity<'Id>) =
+                      // The before side keyed first, as a tick's is (the previous tick's `after`, or the
+                      // source the state evaluated): the append path requires it.
+                      Delta.diff w before before |> ok |> ignore
+                      let fast = Delta.diff w before after
+                      let keyed = Delta.diff (keyedOnly w) before after
+
+                      Expect.equal fast keyed (sprintf "%s, seed %d: the keyed diff's answer" label seed)
+
+                      match fast with
+                      | Ok d when (KeyedIndexes.appendOf d after).IsSome -> appendsTaken <- appendsTaken + 1
+                      | _ -> ()
+
+                  check "one key column" (RowIdentity.byColumn "id")
+                  check "two key columns" (RowIdentity.byColumns [ "id"; "k2" ])
+
+              Expect.isGreaterThan appendsTaken 1000 "the draws reach the append path, not only its refusals"
+
+          testCase
+              "a long run of appends, a branch at every tick, and refused ticks: each answer the keyed diff's, at every depth of the key chain"
+          <| fun _ ->
+              let w = RowIdentity.byColumn "id"
+              let rng = System.Random 359
+
+              let mk (ids: Cell list) : Table =
+                  { Schema = [ "id", IntType ]
+                    Columns = [ Column.create "id" IntType ids ] }
+
+              let mutable before = mk [ for i in 0..49 -> Int i ]
+              let mutable next = 50
+              let mutable refused = 0
+              let mutable taken = 0
+
+              Delta.diff w before before |> ok |> ignore
+
+              for tick in 1..200 do
+                  let k = 1 + rng.Next(if tick % 50 = 0 then 300 else 4)
+                  let ids = (Table.tryColumn "id" before).Value.Cells
+                  let fresh = [ for j in 0 .. k - 1 -> Int(next + j) ]
+
+                  // One tick in seven repeats a key the table already holds, from any depth of it.
+                  let tail =
+                      if tick % 7 = 0 then
+                          fresh @ [ Int(rng.Next next) ]
+                      else
+                          fresh
+
+                  let after = mk (ids @ tail)
+                  let fast = Delta.diff w before after
+                  Expect.equal fast (Delta.diff (keyedOnly w) before after) (sprintf "tick %d" tick)
+
+                  // A branch: a second append to the same table, answered independently of the first.
+                  let branch = mk (ids @ [ Int(next + 1_000_000) ])
+
+                  Expect.equal
+                      (Delta.diff w before branch)
+                      (Delta.diff (keyedOnly w) before branch)
+                      (sprintf "tick %d, the branch" tick)
+
+                  match fast with
+                  | Ok d ->
+                      if (KeyedIndexes.appendOf d after).IsSome then
+                          taken <- taken + 1
+
+                      before <- after
+                      next <- next + k
+                  | Error _ -> refused <- refused + 1
+
+              Expect.isGreaterThan refused 20 "the run reaches the duplicate refusal at many depths"
+              Expect.isGreaterThan taken 150 "and takes the append path on every other tick" ]

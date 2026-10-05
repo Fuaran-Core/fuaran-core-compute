@@ -453,15 +453,87 @@ module RowIdentity =
 /// the witness record that minted them. `Delta.diff` reads them back only for that very witness,
 /// which is what makes the unboxing safe: one record has one `'Id`. Absent where nothing has keyed
 /// the table by id yet; the diff then asks the witness for them.
+/// Phase 359 — a table's key → row lookup that an APPEND extends without rebuilding: a base index
+/// and a few layers above it, each a hash table of some appended rows' keys. Immutable once built,
+/// so a table's chain is safe to read from any thread and from any later tick, and two appends to
+/// one table (a branch) each extend their own copy of the layer array rather than one shared index.
+///
+/// The layers are kept geometric — a new layer is merged into the one beneath it while it is at
+/// least as large — so there are O(log n) of them and each key is copied O(log n) times over the
+/// table's life; the base is rebuilt only when the layers above it have grown as large as it. An
+/// append of `k` rows therefore costs O(k log n) amortised, never the O(n) of indexing the whole
+/// table again. It answers the one question an append asks: is this tail key a key of the table?
+[<Sealed; AllowNullLiteral>]
+type internal KeyChain
+    (
+        baseIndex: System.Collections.Generic.Dictionary<string, int>,
+        layers: System.Collections.Generic.Dictionary<string, int>[]
+    ) =
+
+    /// The row holding key `k`, or `-1`.
+    member _.TryFind(k: string) : int =
+        let mutable found = -1
+        let mutable i = layers.Length - 1
+
+        while found < 0 && i >= 0 do
+            match layers[i].TryGetValue k with
+            | true, j -> found <- j
+            | _ -> ()
+
+            i <- i - 1
+
+        if found >= 0 then
+            found
+        else
+            match baseIndex.TryGetValue k with
+            | true, j -> j
+            | _ -> -1
+
+    /// This chain with `tail` (keys → rows, none of them in the chain) above it.
+    member _.Extend(tail: System.Collections.Generic.Dictionary<string, int>) : KeyChain =
+        let merge
+            (a: System.Collections.Generic.Dictionary<string, int>)
+            (b: System.Collections.Generic.Dictionary<string, int>)
+            =
+            let d = System.Collections.Generic.Dictionary<string, int>(a.Count + b.Count)
+
+            for kv in a do
+                d[kv.Key] <- kv.Value
+
+            for kv in b do
+                d[kv.Key] <- kv.Value
+
+            d
+
+        let stack = ResizeArray<System.Collections.Generic.Dictionary<string, int>>(layers)
+        let mutable top = tail
+
+        while stack.Count > 0 && top.Count >= stack[stack.Count - 1].Count do
+            top <- merge stack[stack.Count - 1] top
+            stack.RemoveAt(stack.Count - 1)
+
+        if stack.Count = 0 && top.Count >= baseIndex.Count then
+            KeyChain(merge baseIndex top, [||])
+        else
+            stack.Add top
+            KeyChain(baseIndex, stack.ToArray())
+
 [<Sealed; AllowNullLiteral>]
 type internal KeyedIndex(scheme: string, keys: string[], built: System.Collections.Generic.Dictionary<string, int>) =
     let mutable index = built
     // One reference, written in one assignment, so a reader never pairs one writer's ids with
     // another writer's witness.
     let mutable typedIds: (obj * obj) option = None
+    let mutable chain: KeyChain = null
 
     member _.Scheme = scheme
     member _.Keys = keys
+
+    /// Phase 359 — the append-extensible lookup over these keys, where an append built one; `null`
+    /// otherwise. Set once, by the diff that minted this index, before the index is published.
+    member _.Chain
+        with get () = chain
+        and set (c: KeyChain) = chain <- c
 
     /// The typed ids, when they were recorded by the witness object `by`; `null` otherwise.
     member _.IdsFor(by: obj) : obj =
@@ -483,6 +555,20 @@ type internal KeyedIndex(scheme: string, keys: string[], built: System.Collectio
             index <- d
 
         index
+
+/// Phase 359 — what `Delta.diff` established about an APPEND, for the incremental seam: the new
+/// table holds every row of `From` at the row's own index under the same key, and its rows from
+/// `PriorCount` on are new. `Changed` lists the prefix rows whose content moved, ascending (empty for
+/// a pure append). Per schema column, in schema order: `Tails` is the new table's cell list from row
+/// `PriorCount` on (the very suffix of its list, shared, never copied), and `Exact` says that list is
+/// exactly the new table's row count long — the walk that found the append counted it, so the seam
+/// does not count it again.
+type internal AppendRecord =
+    { From: Table
+      PriorCount: int
+      Changed: int[]
+      Tails: Cell list[]
+      Exact: bool[] }
 
 /// Phase 273 — where a table's keys and a diff's keys are remembered, so a tick mints each row's key
 /// once rather than three times (the diff keyed both tables, then the refresh keyed the new one
@@ -548,6 +634,24 @@ module internal KeyedIndexes =
         | RowSet r ->
             match inPlaceByDelta.TryGetValue r with
             | true, (from, into, changed) when obj.ReferenceEquals(into, source) -> Some(from, changed)
+            | _ -> None
+
+    let private appendByDelta =
+        System.Runtime.CompilerServices.ConditionalWeakTable<RowSetDelta, Table * AppendRecord>()
+
+    /// Phase 359 — record that `Delta.diff` found `into` to be `from` with rows APPENDED: every row
+    /// of `from` at its own index in `into` under the same key, and the rows past them new.
+    let attachAppend (d: RowSetDelta) (into: Table) (record: AppendRecord) : unit =
+        appendByDelta.AddOrUpdate(d, (into, record))
+
+    /// The append record of a delta `Delta.diff` produced INTO `source` (by object identity); `None`
+    /// for any other delta.
+    let appendOf (d: TableDelta) (source: Table) : AppendRecord option =
+        match d with
+        | FullRefresh -> None
+        | RowSet r ->
+            match appendByDelta.TryGetValue r with
+            | true, (into, record) when obj.ReferenceEquals(into, source) -> Some record
             | _ -> None
 
 /// The delta algebra: construction, validation, composition, and the projections a consumer reads.
@@ -878,47 +982,237 @@ module Delta =
         | Decimal x, Decimal y -> System.String.Equals(x, y)
         | _ -> DataFrame.CellKey.equals a b
 
-    /// The delta from `before` to `after`, addressed by the witness's identity.
+    /// Phase 359 — the diff of an APPEND, keying the appended rows alone: `Some` with the answer the
+    /// keyed diff gives, where `after` is `before` with rows appended; `None` to take the keyed diff.
     ///
-    /// A schema difference is `FullRefresh` — the column set moved, so a row-addressed answer would
-    /// be describing two different shapes as if they were one. Otherwise every key is classified by
-    /// presence, and a key present in both is `RowChanged` iff its cells differ under the pinned
-    /// canonical token (the same rule `Distinct` / `Intersect` compare rows by, so a float that
-    /// groups equal also diffs equal, on every host).
+    /// It applies to a witness that declares its key columns (`KeyColumns`) and a `before` already
+    /// keyed under its scheme (the previous tick's `after`, or the source the incremental state last
+    /// evaluated), when each key column of `after` holds `before`'s key cells, row for row, ahead of
+    /// more rows. Then every row of `before` sits at its own index in `after` under its own key —
+    /// complete and unique because `before`'s keys were — and only the rows past them need a key. So:
     ///
-    /// **Dense since Phase 272.** The answer is the one the row-token form gave, and the suite holds
-    /// the two equal over drawn tables; what moved is what it costs. That form keyed both tables
-    /// through a persistent `Set` and two `Map`s over the key strings, and decided "changed" by
-    /// building a length-prefixed token STRING for every row of both tables — every cell of both
-    /// tables minted into a string, for a comparison whose answer was almost always "equal". At
-    /// 100,000 rows it cost up to 36 times the full evaluation of the pipeline it fed (see
-    /// docs/incremental-evaluation.md, "What it costs on the clock"). Now:
+    ///  * each column's two lists are walked in step once over the prefix, a cell compared by
+    ///    reference first and by `sameContent` only where the references differ (an append copies the
+    ///    list's cells, not the cells): a key column whose prefix differs is not an append, and the
+    ///    keyed diff answers; any other column marks the rows whose content moved, `RowChanged`, as
+    ///    the keyed diff's content pass would;
+    ///  * the walk leaves each list at its first appended cell, and the witness keys the TAIL alone,
+    ///    over a table of the key columns' suffixes — a declared witness's key is a function of its
+    ///    key columns' cells at that row (`KeyColumns`), so row `t` of the tail is row `PriorCount + t`;
+    ///  * a tail key is checked against `before`'s keys through the chain an append extends
+    ///    (`KeyChain`), and against the tail's own, in row order, so a missing or repeated key is the
+    ///    keyed diff's refusal for the same row with the same payload.
     ///
-    ///  * each table's key strings are minted ONCE into an array (the witness's `KeyString` is the
-    ///    only thing that can say what a key is, so this is the floor), and the `before` keys are
-    ///    indexed in one hash table, which is also the uniqueness check;
-    ///  * a row whose key sits at the SAME index in both tables — the overwhelmingly common case, an
-    ///    edit in place — is paired by one string comparison, never a lookup; only a row that moved
-    ///    is looked up;
-    ///  * "changed" is decided cell by cell under `CellKey.equals`, which is `cellToken` equality
-    ///    without the token (a law in the suite pins the two equal), column by column over the
-    ///    in-place pairs, and a column whose cell list is the SAME object in both tables — a column
-    ///    the edit did not touch — is not read at all for them, because equal positions of one list
-    ///    hold one cell.
+    /// The walk over every column's prefix is the floor here: an append rebuilds each column's list
+    /// (a cons list cannot share a prefix), so a diff that is to report an edit made beside the
+    /// append must read every prefix cell, and reads each once. What it no longer pays is a key per
+    /// row, a hash per row, or an index of `before`.
     ///
-    /// **Paired by the typed id since Phase 283**, for a witness that declares a key equality
-    /// (`KeyEqualities`; the reference witnesses do). The new table's rows are paired with the prior's
-    /// by `'Id` under that equality, and the key string is rendered only for a row the delta carries
-    /// (an added row) or for a refusal's payload: a paired row reuses the prior source's own string.
-    /// So the floor above, one key string per row of each table, is now one per row of a table
-    /// nothing has keyed and one per added row after that. The declared equality agrees with the key
-    /// strings exactly, so the answer, the refusals and their payloads are the string path's; a
-    /// witness with no declaration takes the string path unchanged.
-    ///
-    /// The refusals are the old ones in the old order: every `before` defect before any `after`
-    /// defect, and within a table the first row, in row order, that has no key or repeats an
-    /// earlier row's key.
-    let diff (idw: RowIdentity<'Id>) (before: Table) (after: Table) : Result<TableDelta, DeltaDefect> =
+    /// `trustPrefix` is the PERTURBATION the append laws go red against (`diffTrustingPrefix`): it
+    /// takes the prefix as unchanged without comparing a cell of it. Never a consumer's call.
+    let private appendDiff
+        (trustPrefix: bool)
+        (idw: RowIdentity<'Id>)
+        (before: Table)
+        (after: Table)
+        : Result<TableDelta, DeltaDefect> option =
+        match KeyColumns.tryOf idw, KeyedIndexes.tryOf idw.Scheme before with
+        | Some keyCols, Some bKnown when
+            not keyCols.IsEmpty
+            && (KeyedIndexes.tryOf idw.Scheme after).IsNone
+            && not after.Columns.IsEmpty
+            // The same key lists in both tables: an edit in place (Phase 323's case), never an append.
+            && not (
+                keyCols
+                |> List.forall (fun c ->
+                    match Table.tryColumn c before, Table.tryColumn c after with
+                    | Some b, Some a -> obj.ReferenceEquals(b.Cells, a.Cells)
+                    | _ -> false)
+            )
+            ->
+            let nb = bKnown.Keys.Length
+            let names = before.Schema |> List.map fst |> List.toArray
+            let isKey = names |> Array.map (fun n -> List.contains n keyCols)
+
+            let listOf (t: Table) (name: string) : Cell list =
+                match Table.tryColumn name t with
+                | Some c -> c.Cells
+                | None -> []
+
+            let tails: Cell list[] = Array.create names.Length []
+            let lengths: int[] = Array.zeroCreate names.Length
+            let changed: bool[] = Array.zeroCreate nb
+
+            // One column's two lists in step over the prefix (a list shorter than the prefix reads
+            // `Null` past its end, the keyed diff's padding). `false` where a KEY column's prefix
+            // differs; otherwise the content changes are marked, and the column's tail and length
+            // recorded.
+            let walk (ci: int) : bool =
+                let mutable b = listOf before names[ci]
+                let mutable a = listOf after names[ci]
+                let mutable same = true
+                let mutable taken = 0
+                let mutable i = 0
+
+                while same && i < nb do
+                    let bc =
+                        match b with
+                        | x :: rest ->
+                            b <- rest
+                            x
+                        | [] -> Null
+
+                    let ac =
+                        match a with
+                        | x :: rest ->
+                            a <- rest
+                            taken <- taken + 1
+                            x
+                        | [] -> Null
+
+                    if not (trustPrefix || obj.ReferenceEquals(bc, ac) || sameContent bc ac) then
+                        if isKey[ci] then same <- false else changed[i] <- true
+
+                    i <- i + 1
+
+                if same then
+                    tails[ci] <- a
+                    lengths[ci] <- taken + List.length a
+
+                same
+
+            // The key columns first: a prefix that is not `before`'s keys ends the walk there.
+            let keysHold =
+                let mutable holds = true
+                let mutable ci = 0
+
+                while holds && ci < names.Length do
+                    if isKey[ci] then
+                        holds <- walk ci
+
+                    ci <- ci + 1
+
+                holds
+                && keyCols |> List.forall (fun c -> Array.contains c names)
+                && (let kc = Array.findIndex (fun n -> n = List.head keyCols) names
+                    lengths[kc] > nb)
+
+            if not keysHold then
+                None
+            else
+                for ci in 0 .. names.Length - 1 do
+                    if not isKey[ci] then
+                        walk ci |> ignore
+
+                // `Table.rowCount`'s reading: the length of the first column the table holds.
+                let na =
+                    match Array.tryFindIndex (fun n -> n = after.Columns.Head.Name) names with
+                    | Some ci -> lengths[ci]
+                    | None -> -1
+
+                if na <= nb then
+                    None
+                else
+                    let tailCount = na - nb
+
+                    let tailTable: Table =
+                        { Schema = after.Schema
+                          Columns =
+                            keyCols
+                            |> List.choose (fun c ->
+                                Table.tryColumn c after
+                                |> Option.map (fun col ->
+                                    { col with
+                                        Cells = tails[Array.findIndex (fun n -> n = c) names] })) }
+
+                    let keyT = idw.KeyOf tailTable
+
+                    let chain =
+                        if isNull bKnown.Chain then
+                            KeyChain(bKnown.Index, [||])
+                        else
+                            bKnown.Chain
+
+                    // The prior ids, where this very witness recorded them (Phase 283): then the new
+                    // table's ids are those and the tail's, and its next diff pairs by id at once.
+                    let owner = box idw
+
+                    let bIds: 'Id[] option =
+                        match KeyEqualities.tryOf idw with
+                        | Some _ ->
+                            match bKnown.IdsFor owner with
+                            | null -> None
+                            | ids -> Some(unbox<'Id[]> ids)
+                        | None -> None
+
+                    let tailIds: 'Id[] = Array.zeroCreate (if bIds.IsSome then tailCount else 0)
+                    let tailKeys: string[] = Array.zeroCreate tailCount
+                    let tailIndex = System.Collections.Generic.Dictionary<string, int>(tailCount)
+                    let mutable defect = None
+                    let mutable t = 0
+
+                    while defect.IsNone && t < tailCount do
+                        match keyT t with
+                        | None -> defect <- Some(MissingIdentity(idw.Scheme, nb + t))
+                        | Some id ->
+                            let k = idw.KeyString id
+
+                            if tailIndex.ContainsKey k || chain.TryFind k >= 0 then
+                                defect <- Some(DuplicateIdentity(idw.Scheme, k))
+                            else
+                                tailIndex[k] <- nb + t
+                                tailKeys[t] <- k
+
+                                if bIds.IsSome then
+                                    tailIds[t] <- id
+
+                        t <- t + 1
+
+                    match defect with
+                    | Some d -> Some(Error d)
+                    | None ->
+                        let bKeys = bKnown.Keys
+                        let rows = System.Collections.Generic.List<RowRef * RowChange>()
+                        let changedRows = ResizeArray<int>()
+
+                        for r in 0 .. nb - 1 do
+                            if changed[r] then
+                                changedRows.Add r
+                                rows.Add((ByKey bKeys[r], RowChanged))
+
+                        for t in 0 .. tailCount - 1 do
+                            rows.Add((ByKey tailKeys[t], RowAdded))
+
+                        let aKnown = KeyedIndex(idw.Scheme, Array.append bKeys tailKeys, null)
+                        aKnown.Chain <- chain.Extend tailIndex
+
+                        match bIds with
+                        | Some ids -> aKnown.SetIds(owner, box (Array.append ids tailIds))
+                        | None -> ()
+
+                        KeyedIndexes.remember after aKnown
+
+                        let delta =
+                            { Scheme = idw.Scheme
+                              Rows = sortRows (List.ofSeq rows)
+                              InvalidatedColumns = [] }
+
+                        KeyedIndexes.attach delta after aKnown
+
+                        KeyedIndexes.attachAppend
+                            delta
+                            after
+                            { From = before
+                              PriorCount = nb
+                              Changed = changedRows.ToArray()
+                              Tails = tails
+                              Exact = lengths |> Array.map (fun l -> l = na) }
+
+                        Some(Ok(RowSet delta))
+        | _ -> None
+
+    /// The keyed diff of two tables of one schema: every case `appendDiff` does not take. See `diff`.
+    let private keyedDiff (idw: RowIdentity<'Id>) (before: Table) (after: Table) : Result<TableDelta, DeltaDefect> =
         if before.Schema <> after.Schema then
             Ok FullRefresh
         else
@@ -1336,6 +1630,75 @@ module Delta =
                                    yield r |]
 
                 Ok(RowSet delta)
+
+    /// The delta from `before` to `after`, addressed by the witness's identity.
+    ///
+    /// A schema difference is `FullRefresh` — the column set moved, so a row-addressed answer would
+    /// be describing two different shapes as if they were one. Otherwise every key is classified by
+    /// presence, and a key present in both is `RowChanged` iff its cells differ under the pinned
+    /// canonical token (the same rule `Distinct` / `Intersect` compare rows by, so a float that
+    /// groups equal also diffs equal, on every host).
+    ///
+    /// **Dense since Phase 272.** The answer is the one the row-token form gave, and the suite holds
+    /// the two equal over drawn tables; what moved is what it costs. That form keyed both tables
+    /// through a persistent `Set` and two `Map`s over the key strings, and decided "changed" by
+    /// building a length-prefixed token STRING for every row of both tables — every cell of both
+    /// tables minted into a string, for a comparison whose answer was almost always "equal". At
+    /// 100,000 rows it cost up to 36 times the full evaluation of the pipeline it fed (see
+    /// docs/incremental-evaluation.md, "What it costs on the clock"). Now:
+    ///
+    ///  * each table's key strings are minted ONCE into an array (the witness's `KeyString` is the
+    ///    only thing that can say what a key is, so this is the floor), and the `before` keys are
+    ///    indexed in one hash table, which is also the uniqueness check;
+    ///  * a row whose key sits at the SAME index in both tables — the overwhelmingly common case, an
+    ///    edit in place — is paired by one string comparison, never a lookup; only a row that moved
+    ///    is looked up;
+    ///  * "changed" is decided cell by cell under `CellKey.equals`, which is `cellToken` equality
+    ///    without the token (a law in the suite pins the two equal), column by column over the
+    ///    in-place pairs, and a column whose cell list is the SAME object in both tables — a column
+    ///    the edit did not touch — is not read at all for them, because equal positions of one list
+    ///    hold one cell.
+    ///
+    /// **Paired by the typed id since Phase 283**, for a witness that declares a key equality
+    /// (`KeyEqualities`; the reference witnesses do). The new table's rows are paired with the prior's
+    /// by `'Id` under that equality, and the key string is rendered only for a row the delta carries
+    /// (an added row) or for a refusal's payload: a paired row reuses the prior source's own string.
+    /// So the floor above, one key string per row of each table, is now one per row of a table
+    /// nothing has keyed and one per added row after that. The declared equality agrees with the key
+    /// strings exactly, so the answer, the refusals and their payloads are the string path's; a
+    /// witness with no declaration takes the string path unchanged.
+    ///
+    /// The refusals are the old ones in the old order: every `before` defect before any `after`
+    /// defect, and within a table the first row, in row order, that has no key or repeats an
+    /// earlier row's key.
+    ///
+    /// **An append keys the appended rows alone since Phase 359** (`appendDiff`): where the witness
+    /// declares its key columns, `before` is keyed already and `after` is `before` with rows appended,
+    /// the prefix is recognised by reading each column's cells once, by reference, and only the tail
+    /// is keyed. The answer is the keyed diff's, refusals and payloads included; the suite holds the
+    /// two equal over drawn appends.
+    let diff (idw: RowIdentity<'Id>) (before: Table) (after: Table) : Result<TableDelta, DeltaDefect> =
+        if before.Schema <> after.Schema then
+            Ok FullRefresh
+        else
+            match appendDiff false idw before after with
+            | Some result -> result
+            | None -> keyedDiff idw before after
+
+    /// Phase 359 — `diff` with the append path's prefix check PERTURBED: an append's prefix is taken
+    /// as unchanged without comparing a cell of it. What the append laws go red against, so a law that
+    /// holds is shown not to hold vacuously. Never a consumer's call.
+    let internal diffTrustingPrefix
+        (idw: RowIdentity<'Id>)
+        (before: Table)
+        (after: Table)
+        : Result<TableDelta, DeltaDefect> =
+        if before.Schema <> after.Schema then
+            Ok FullRefresh
+        else
+            match appendDiff true idw before after with
+            | Some result -> result
+            | None -> keyedDiff idw before after
 
     /// The delta from `before` to `after` for a source with NO identity — rows compared by position,
     /// under the reserved `ordinal` scheme. This is the deliberate fallback, not a default: a
