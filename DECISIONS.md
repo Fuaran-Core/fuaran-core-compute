@@ -1,5 +1,64 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-05 — D10: whether the browser host takes a worker path that needs cross-origin isolation is the operator's ruling; the evidence it asked for is recorded here, and the ruling is OPEN
+
+**Measured (fuaran-core#346), not yet decided.** Phase 346 opens with an operator ruling — whether
+the browser host gets a Web Worker morsel runner over `SharedArrayBuffer`, which exists only on a
+page served with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy:
+require-corp`, and if so whether that is opt-in per host (the sequential member when the page is not
+isolated) or required. A dispatched session cannot take that ruling (the side's doctrine escalates it),
+so this entry records what the ruling needs and stops. Nothing in the evaluator moved. The figures are
+in [`benchmarks/results/2026-10-05-i7-9700-phase-346.md`](benchmarks/results/2026-10-05-i7-9700-phase-346.md),
+with the harness beside them; native x64 (i7-9700), node v25.9.0 and Edge 154 only.
+
+**1. What threads buy, at best.** The prototype runs the two morsel steps Layer 6 times (`a + b > 500`
+and the sheet's two `Derive`s) as hand loops over typed arrays already in shared memory, on a warm
+pool, the caller draining morsels beside the workers; every pooled answer was byte-identical to the
+sequential one (72 of 72). At 10,000 rows nothing is bought. At 100,000 and 1,000,000 rows, eight
+threads run the steps 2.8 to 6.3 times faster under node and 3.6 to 4.8 times faster in Edge when the
+caller is a dedicated worker; with the caller on the page's thread Edge reaches only 2.5 to 3.1 times,
+and eight threads are slower than four in three of its four large cells.
+
+**2. The sequential member is the larger lever.** The shipped evaluator under Fable on node runs the
+same two steps at 251 and 419 ms a million rows — 42 to 50 times the prototype's single-threaded loop
+over the same arrays (5.98 and 8.31 ms), and 39 to 44 times the .NET evaluator. Eight workers could
+divide that by at most eight; the per-row machinery of the compiled tree under Fable (closures, the
+error and null slots, the kept-row list, the boxed root) is a factor of forty, with no deployment
+constraint attached to removing any of it.
+
+**3. The costs a worker path adds.** A pool of the prototype's loops starts in 11 to 42 ms; a worker
+that compiles a step from data must import the evaluator, which takes 144 ms for one worker and 284 ms
+for seven under node. If the frame's vectors are not already in shared memory, copying a million rows
+of inputs in costs 0.8 to 3.0 ms and a `Derive`'s outputs out 2.3 to 3.4 ms — 60 per cent of the pooled
+`filter` and three times the pooled `derive`. Reading through shared buffers costs the sequential step
+between 1 per cent less and 7 per cent more.
+
+**4. The shard's premises, checked.** (a) Under Fable `int[]` and `float[]` are typed arrays, but every
+validity mask and `Bools` vector is a plain `Array`, and `Strs` / `Decs` / `Cells` hold strings and
+objects: only int and float VALUES could be shared today. (b) The runner cannot be "the JavaScript member
+of the kernel pair": `RunMorsels`'s body is a closure over the frame, the compiled tree and the caller's
+result arrays, which cannot cross into a worker, and the pair is synchronous, while the page's thread
+refuses `Atomics.wait` (`TypeError`, measured) — so a synchronous member could wait only with the whole
+evaluator running in a dedicated worker, and on the page's thread only an asynchronous evaluation entry
+point could. (c) Without the two headers `SharedArrayBuffer` is undefined, so the opt-in shape's
+fallback is exactly today's sequential member.
+
+**5. What a yes touches.** Not `Kernels.fs` alone: a step-as-data seam the worker compiles from (the
+pipeline is already data; the frame is not), frame vectors allocated in shared memory under Fable with
+masks as byte arrays, the result hand-back, and either an evaluator hosted in a dedicated worker (the
+host's job, in `fuaran-live` and every consumer that embeds the engine) or an asynchronous evaluation
+entry point on the JavaScript host. Opt-in per host is the only shape that keeps a non-isolated page
+working, because such a page has no shared memory at all. Every consumer that opts in takes COOP/COEP,
+which constrains the cross-origin content it can embed. The laws are cheap: row-local morsels writing
+disjoint rows concatenated in morsel order are byte-identical by construction, and were measured so.
+
+**6. What a no keeps.** The browser host runs the sequential member on one thread, no page needs
+isolation headers, and the measured order of levers stands: the Fable per-row cost (item 2) before
+threads.
+
+**The ruling** is recorded here when the operator takes it; on a no this entry and the figures are
+the phase, and on a yes the runner is a successor phase sized by item 5.
+
 ## 2026-10-04 — D9: whether float `Sum` becomes exactly rounded is the operator's ruling; the operator ruled NO (2026-10-05): the fold stays the default
 
 **Measured (fuaran-core#345); ruled NO on 2026-10-05 (below).** Phase 345 opens with an operator ruling — whether the

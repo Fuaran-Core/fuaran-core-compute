@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Phase 346 worker prototype</title>
+<pre id="out">running</pre>
+<script type="module">
+// Phase 346 prototype — the browser legs. ?mode=probe reports what the page may do; ?mode=main
+// measures on the page's thread (waiting through Atomics.waitAsync); ?mode=host measures inside a
+// dedicated worker (waiting through Atomics.wait). Every leg posts its lines to /result.
+import { probe, spawn, terminate } from "./pool-web.mjs";
+
+const mode = new URLSearchParams(location.search).get("mode") || "probe";
+const threads = (new URLSearchParams(location.search).get("threads") || "1,2,4,8").split(",").map(Number);
+const workerCounts = threads.map((t) => t - 1);
+const post = (lines) => fetch("/result?mode=" + mode, { method: "POST", body: lines.join("\n") });
+
+async function run() {
+  const lines = [JSON.stringify({ probe: "page", ...probe() })];
+  try {
+    if (mode === "main") {
+      const { measure, asyncWait } = await import("./bench-core.mjs");
+      await measure({ host: "browser/main", spawn, wait: asyncWait, terminate, workerCounts, log: (l) => lines.push(l) });
+    } else if (mode === "host") {
+      const host = new Worker(new URL("./host-web.mjs", import.meta.url), { type: "module" });
+      const got = await new Promise((res) => { host.onmessage = (e) => res(e.data); host.postMessage({ workerCounts }); });
+      lines.push(...got);
+      host.terminate();
+    }
+  } catch (err) {
+    lines.push(JSON.stringify({ error: String(err && err.stack || err) }));
+  }
+  document.getElementById("out").textContent = lines.join("\n");
+  await post(lines);
+}
+run();
+</script>
