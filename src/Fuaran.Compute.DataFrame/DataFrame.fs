@@ -7958,6 +7958,51 @@ module DataFrame =
         evalPreparedFrameCountedWith Kernels.host resolve env pipeline prepared
         |> Result.map (fst >> Prepared.ofFrame)
 
+    /// `evalManyToPrepared` through the kernel set `k` (Phase 343). Internal so the suite can run
+    /// the batch through every member, and through a native member that runs alongside at any
+    /// work, and hold the answers equal; the entry point passes `Kernels.host`.
+    let internal evalManyToPreparedWith
+        (k: KernelSet)
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipelines: Transform list list)
+        (prepared: Prepared)
+        : Result<Prepared, EvalError> list =
+        let batch = Array.ofList pipelines
+        let n = batch.Length
+        // The boundary in, paid once on the caller's thread before any pipeline runs, so the
+        // pipelines share one frame rather than wait on one another for it.
+        let rows = Frame.rows prepared.Frame.Value
+        let work = int (min (int64 System.Int32.MaxValue) (int64 n * int64 rows))
+        let results: Result<Prepared, EvalError>[] = Array.zeroCreate n
+
+        k.RunPipelines n work (fun alongside i ->
+            let set = if alongside then Kernels.oneThread else k
+
+            results[i] <-
+                evalPreparedFrameCountedWith set resolve env batch[i] prepared
+                |> Result.map (fst >> Prepared.ofFrame))
+
+        List.ofArray results
+
+    /// Independent pipelines over ONE prepared source, each answered as `evalToPrepared` answers it
+    /// (Phase 343): the results in list order, every one equal to `evalToPrepared resolve env p
+    /// prepared` for its pipeline `p`, refusals included and each pipeline's own. A dashboard's
+    /// bindings and a sheet's same-level nodes are this shape: each is a pure function of the
+    /// shared, immutable source, so on .NET the batch runs on the thread pool once there is enough
+    /// work between them (1,000 rows, pipelines times source rows), and the answers are the sequential answers
+    /// whatever the schedule. A pipeline running alongside others fans out no morsels or partitions
+    /// of its own, so the batch occupies at most one thread per logical processor. Under Fable the
+    /// pipelines run one after another. `resolve` may be called from several threads at once on
+    /// .NET; it must be safe to, as a lookup in an immutable map is.
+    let evalManyToPrepared
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipelines: Transform list list)
+        (prepared: Prepared)
+        : Result<Prepared, EvalError> list =
+        evalManyToPreparedWith Kernels.host resolve env pipelines prepared
+
     /// The reference evaluator, parameterised (Phase 77), reporting alongside its answer how many
     /// ROW EVALUATIONS AT STEPS producing that answer cost (Phase 117).
     ///

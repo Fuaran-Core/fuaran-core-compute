@@ -84,6 +84,15 @@ open Fuaran.Core
 //  (the probe is not the join's cost). The grouping's prototype lives in the
 //  benchmark harness. A float fold is never split across threads by any
 //  kernel here: a partition's or a range's fold is the sequential one.
+//
+//  Independent pipelines alongside one another (Phase 343; native x64,
+//  8 cores, benchmarks/results/2026-10-05-i7-9700-phase-343.md). A batch of
+//  pipelines over one prepared source runs on the pool from `PipelineRows`
+//  rows of work, one pipeline a thread, at most one per logical processor,
+//  each through `oneThread` so nothing nested fans out. 1.5 to 3.0 times
+//  faster at 1,000 rows, 2.0 to 3.7 times from 10,000. Letting each pipeline
+//  run its own morsels inside the batch (nested) bought nothing measurable
+//  over the bound at any size, so the bound costs nothing.
 // ============================================================================
 
 #if !FABLE_COMPILER
@@ -141,6 +150,15 @@ type internal KernelSet =
         /// their keys do not pack, whose last term is the position — so every correct sort answers
         /// the same array.
         SortPositions: int[] -> (int -> int -> int) -> unit
+        /// `RunPipelines n work body` runs `body alongside i` exactly once for each `i` in
+        /// `0 .. n - 1` (Phase 343): the `n` independent pipelines of one batch over one prepared
+        /// source, `work` the rows they read between them. `alongside` says whether pipeline `i`
+        /// runs beside others on the thread pool; a pipeline that does evaluates through
+        /// `Kernels.oneThread`, so it fans out nothing of its own. The portable member runs them in
+        /// order on the caller's thread, never alongside. The native member does too at one
+        /// pipeline or below `PipelineRows` of work, and above it runs them on the pool, at most
+        /// one per logical processor at once.
+        RunPipelines: int -> int -> (bool -> int -> unit) -> unit
     }
 
 module internal Kernels =
@@ -282,6 +300,10 @@ module internal Kernels =
             for i in 0 .. positions.Length - 1 do
                 positions[i] <- order[i]
 
+        let runPipelines (n: int) (_: int) (body: bool -> int -> unit) : unit =
+            for i in 0 .. n - 1 do
+                body false i
+
     /// The portable member as a kernel set.
     let portable: KernelSet =
         { CmpInts = Portable.cmpInts
@@ -292,7 +314,8 @@ module internal Kernels =
           RunMorsels = Portable.runMorsels
           Partitions = Portable.partitions
           SortFinite = Portable.sortFinite
-          SortPositions = Portable.sortPositions }
+          SortPositions = Portable.sortPositions
+          RunPipelines = Portable.runPipelines }
 
 #if !FABLE_COMPILER
     /// The native member: 128-bit vectors (the width both x64 and Arm64 accelerate) sixteen rows
@@ -576,12 +599,36 @@ module internal Kernels =
                 (fun s d lo mid hi -> mergeRuns (fun (x: int) y -> cmp x y < 0) s d lo mid hi)
                 positions
 
+        /// The independent pipelines of one batch (Phase 343): in order on the caller's thread at
+        /// one pipeline or below `minWork` rows of work between them, else on the thread pool, at
+        /// most one per logical processor at once, each told it runs alongside the others.
+        let runPipelinesAt (minWork: int) (n: int) (work: int) (body: bool -> int -> unit) : unit =
+            if n <= 1 || work < minWork then
+                for i in 0 .. n - 1 do
+                    body false i
+            else
+                let options =
+                    ParallelOptions(MaxDegreeOfParallelism = max 1 Environment.ProcessorCount)
+
+                Parallel.For(0, n, options, (fun i -> body true i)) |> ignore
+
     /// The rows from which the native member sorts in parallel, takes the top-n by ranges and
     /// scans a window's partitions across threads (Phase 344): four morsels. Set from Phase 341's
     /// figures — the morsel runner bought nothing at 10,000 rows (two morsels) and paid at 100,000
     /// on both architectures — and not swept between them; every kept verb pays at 100,000 rows.
     [<Literal>]
     let PartitionRows = 32768
+
+    /// The rows of work — pipelines times source rows — from which the native member runs a batch of
+    /// two or more independent pipelines on the thread pool (Phase 343). Set by measurement on the
+    /// native x64 JIT (`benchmarks/results/2026-10-05-i7-9700-phase-343.md`): from 1,000 rows of
+    /// work every batch measured ran 1.18 times faster or more alongside (two pipelines over 500
+    /// rows 1.21 times, four over 250 rows 1.18 times, rising to 2.0 to 3.7 times from 10,000
+    /// rows); below it the readings ran from 0.96 to 1.32 times with a few microseconds at stake.
+    /// Not `PartitionRows`: Phase 341's figures price splitting ONE step, whose pieces are then
+    /// gathered, and a batch splits nothing, so its pieces pay from far less work.
+    [<Literal>]
+    let PipelineRows = 1000
 
     /// The native member, partitioning from `minRows` rows — `native` at `PartitionRows`; the suite
     /// takes a low threshold so that small frames run the partitioned paths.
@@ -594,14 +641,32 @@ module internal Kernels =
           RunMorsels = Native.runMorsels
           Partitions = Native.partitionsAt minRows
           SortFinite = Native.sortFiniteAt minRows
-          SortPositions = Native.sortPositionsAt minRows }
+          SortPositions = Native.sortPositionsAt minRows
+          RunPipelines = Native.runPipelinesAt PipelineRows }
 
     /// The native member as a kernel set.
     let native: KernelSet = nativeFrom PartitionRows
 
+    /// The native member at ONE thread: its comparisons and selection are the native vectors, its
+    /// morsels run in order on the caller's thread (the portable runner), it never partitions, so
+    /// the sort, the top-n and the window run their sequential paths, and a batch of pipelines runs
+    /// in order. The set a pipeline running alongside others evaluates through (Phase 343), which
+    /// is the nesting bound: a batch on the pool occupies at most one thread per logical processor,
+    /// and no pipeline in it fans out further. Same answers as every member; the suite holds them
+    /// so.
+    let oneThread: KernelSet =
+        { nativeFrom Int32.MaxValue with
+            RunMorsels = Portable.runMorsels
+            Partitions = Portable.partitions
+            RunPipelines = Portable.runPipelines }
+
     /// The member the evaluator runs on this host — chosen when the package is compiled.
     let host: KernelSet = native
 #else
+    /// The set a pipeline running alongside others evaluates through (Phase 343). Nothing runs
+    /// alongside anything under Fable, where every member is the portable one.
+    let oneThread: KernelSet = portable
+
     /// The member the evaluator runs on this host — chosen when the package is compiled.
     let host: KernelSet = portable
 #endif

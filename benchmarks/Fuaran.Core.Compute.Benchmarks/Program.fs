@@ -43,6 +43,13 @@ let private checkAll () =
                 Corpus.checkTyped verb ty n (Corpus.typedTable ty n) (Corpus.typedPipeline verb ty n)
                 printfn "%s over %s, %d rows: as expected" verb (Corpus.typedName ty) n
 
+    for arm in Concurrent.Batch.Arms do
+        for n in Concurrent.Batch.Counts do
+            for rows in Concurrent.Batch.Sizes do
+                Concurrent.check arm n rows
+
+        printfn "batch, %s: every count and size agrees with evalToPrepared" arm
+
 /// Phase 341 — the instrument check. Phase 270's verdicts were taken with the x64 build under
 /// emulation on an Arm64 machine, which penalises exactly the intrinsics and the thread scheduling
 /// being judged. A process whose architecture is not the machine's is refused, so every figure this

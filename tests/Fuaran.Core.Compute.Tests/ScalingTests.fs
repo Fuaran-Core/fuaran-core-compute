@@ -860,9 +860,9 @@ let private tickFloorMs () : float =
 /// same footing; once the full evaluation ran its sort, top-n and filter morsels across the
 /// machine's cores the ratio measured the core count rather than the seam (the parallel top-n read 1.74 to 2.04 against 1.6 in Phase 344 and was held back for it).
 /// `tickBound` and `tickFloorMs` did not move.
-let private oneThread: KernelSet =
-    { Kernels.nativeFrom System.Int32.MaxValue with
-        RunMorsels = Kernels.Portable.runMorsels }
+/// Since Phase 343 the set is the package's own `Kernels.oneThread`, which a pipeline running
+/// alongside others in a batch evaluates through.
+let private oneThread: KernelSet = Kernels.oneThread
 
 /// The full evaluation a tick is held against (Phase 371): the planned evaluator, boundary in and
 /// out included as `evalPipelineInEnv` pays it, on `oneThread`.

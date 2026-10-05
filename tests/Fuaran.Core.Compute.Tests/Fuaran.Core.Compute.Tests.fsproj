@@ -20,6 +20,7 @@
     <Compile Include="TransformVectorSample.fs" />
     <Compile Include="PreparedResultLaw.fs" />
     <Compile Include="DataFrameTests.fs" />
+    <Compile Include="ConcurrentPipelinesTests.fs" />
     <Compile Include="ColumnOpsTests.fs" />
     <Compile Include="DeltaTests.fs" />
     <Compile Include="IncrementalTests.fs" />
