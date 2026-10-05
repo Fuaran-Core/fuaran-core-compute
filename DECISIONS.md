@@ -1,8 +1,8 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-10-04 — D9: whether float `Sum` becomes exactly rounded is the operator's ruling; the evidence it asked for is recorded here, and the ruling is OPEN
+## 2026-10-04 — D9: whether float `Sum` becomes exactly rounded is the operator's ruling; the operator ruled NO (2026-10-05): the fold stays the default
 
-**Measured (fuaran-core#345), not yet decided.** Phase 345 opens with an operator ruling — whether the
+**Measured (fuaran-core#345); ruled NO on 2026-10-05 (below).** Phase 345 opens with an operator ruling — whether the
 float `Sum`, and through it `Mean`, `StdDev`, `CumulSum`, `RollingSum` and `RollingMean`, moves from
 the left-to-right fold (D3; `Kernels.fs` header) to an exactly-rounded sum, whose answer is the double
 nearest the true sum and so cannot depend on the order or the partitioning of the additions. A
@@ -55,8 +55,13 @@ both exact over the partials), which the seam today rescans.
 the `Kernels.fs` header that no float reduction is ever split — with D8's grouping-by-key and this
 phase's eight-range figures as the measured price of that rule.
 
-**The ruling** is recorded here when the operator takes it; on a yes the breaking `STABILITY.md`
-entry names every aggregate above, on a no this entry and the figures are the phase.
+**The ruling — NO, taken by the operator on 2026-10-05.** The float `Sum` and every aggregate above
+stay on D3's left-to-right fold; item 6 is what is kept, and no float reduction is split. The cost in
+item 1 (a 2.8x slower `GroupBy` step at ordinary range, more at wide range) and the breaking change
+in every non-exact answer are not paid for a property nothing today needs. An OPT-IN exactly-rounded
+sum (a distinct aggregate beside `Sum`, landing in `Column.aggregate` first per item 5) is left to a
+later Suggest-features candidate, not filed here. This entry and the figures are the phase; no
+`STABILITY.md` entry is owed.
 
 ## 2026-10-04 — D8: the sort, the window and (since fuaran-core#371) the top-n run across threads; the grouping by key and the ranged join probe were measured and not kept
 
