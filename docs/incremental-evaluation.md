@@ -934,12 +934,13 @@ time. It printed figures and moved to the leg only so that the main suite ran no
 | a join / a pivot / a group-by over n keys / a distinct is linear | complexity; guard quadratic scans | CLOCK — same | leg |
 | the table-fed tick at most 1.6× the full evaluation plus a fixed per-call floor (Phase 274; floor Phase 327; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, per row and per call | CLOCK; its countable part is the Phase 274 row below | leg |
 | the table-fed tick on every Phase 262 corpus node at most 1.6× the full evaluation plus a fixed per-call floor (Phase 283; floor Phase 327; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, per row and per call, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
+| the APPEND tick on every Phase 262 corpus node at most 1.6× the full evaluation plus a fixed per-call floor (Phase 359; one row appended; 1,000 / 20,000 / 100,000 rows) | time: an append costs no more than re-running, on every corpus shape | CLOCK; its countable part is the Phase 359 count (k keys minted for k rows appended) | leg |
 | `Delta.diff` costs what keying costs (1,000 and 20,000 rows) | work: the keying and a constant | COUNTABLE — keys minted, bytes allocated | main suite |
 | `Filter > Sort > Limit 10`: the fused pair against the full sort (`PlanTests`) | work: the top-n does less than the sort | COUNTABLE — bytes allocated | main suite |
 | the top-N step is a single pass (Phase 207) | work | already counted (visits) | main suite |
 | a one-row refresh allocates a bounded few words per source row (Phase 274) | work: the bookkeeping per row | COUNTABLE — bytes allocated | main suite |
 
-Fourteen cases in the leg (fifteen since Phase 283 added the corpus tick case). The rest of the premise needed correcting too. The seam's counters see
+Fourteen cases in the leg (fifteen since Phase 283 added the corpus tick case, sixteen since Phase 359 added the append tick case). The rest of the premise needed correcting too. The seam's counters see
 the work a refresh does: rows evaluated, chunks touched (Phase 268's regression, an untouched chunk
 evaluated again, is already a count in `IncrementalRefreshCostTests`), and keys minted. None of them
 sees a walk inside the evaluator or the diff, and allocation does not either, because walking a list
@@ -1649,7 +1650,8 @@ spread, with the bound unchanged. Per thread cycle, the one-partition corpus ref
 still pays per row is the copy of the run and the result's cell list; in place, no kept row's cell is
 boxed again. An appended row is scanned and boxed alone, but an append is not in place, so the step
 maps the frame's slots and the seam keys every row before any step runs: the append TICK is the
-seam's insert path, measured in the results file, not the window's.
+seam's insert path, measured in the results file, not the window's. (Phase 359 took that cost out: "An append costs
+the appended rows", below.)
 
 A declined pipeline's refresh read up to 1.6 times its evaluation on Phase 325's join (45.9 ms against
 28.4 at 100,000 rows). The cause was the refresh's first act, comparing its pipeline with the state's
@@ -1657,6 +1659,89 @@ structurally: an embedded relation was walked cell by cell on every tick (6.4 ms
 third of a 1,000-row evaluation). With the identity taken first, the join, the pivot and a projected
 distinct refresh at their evaluation's cost within the instrument's noise, at every size. The figures,
 both trees, are in `benchmarks/results/2026-10-03-i7-8650u-phase-333.md`.
+
+### An append costs the appended rows (Phase 359)
+
+**The verdict first.** Phase 333 found the append tick dominated by two passes over every row: the
+diff keyed both tables to discover the old rows were where they had been, and the seam re-keyed the
+new one and re-walked every step's bookkeeping. Both are gone. On the same machine, against the
+pre-phase tree, a one-`Project` pipeline's one-row append tick at 100,000 rows fell from 5.3 of its
+own evaluations to 1.15, and across the corpus nodes at 1,000 to 100,000 rows from x0.6-x5.8 to
+x0.2-x1.6 (at 100,000 rows `filter > groupBy` 4.8 to 0.8, `group-by high-card` 3.4 to 0.7, `window
+CumulSum` 1.1 to 0.4). The Release clock leg
+gained the case that holds it (below), green with `tickBound` and the floor unchanged.
+
+**The premise, checked: an append tick cannot be O(appended rows) on this representation.** A
+`Table`'s columns are cons lists, and an append (`ColumnOps.AppendRows`, `cells @ extra`) builds a new
+list for every column: a list shares its suffix, never its prefix. So the new table shares no list
+with the old one, and a diff that is to report an edit made beside the append must read every prefix
+cell of every column. Reading each once, by reference, is this phase's floor, and it is what a
+one-`Project` evaluation costs too (both walk the table's lists): at 100,000 rows the diff reads 2.6
+ms where that evaluation reads 2.6 ms. The REFRESH is what became O(appended rows) beyond a few
+array passes: 0.4 ms of that tick, about a seventh of one evaluation. The acceptance's "a small
+fraction of one evaluation" holds for the refresh and not for the table-fed tick, whose diff is the
+representation's floor; the measured tick is 1.15 evaluations.
+
+**The diff.** A witness that declares its key columns (`byColumn`, `byColumns`), a `before` already
+keyed under its scheme (a tick's always is: the previous tick's `after`, or the source the state
+evaluated), and an `after` whose key columns hold `before`'s key cells row for row ahead of more rows:
+then every old row sits at its own index under its own key, and only the tail needs one.
+`Delta.diff` walks each column's two lists in step once over the prefix, comparing a cell by
+reference first (an append keeps the cells) and by `sameContent` only where the references differ. A
+key column whose prefix differs is not an append, and the keyed diff answers; any other column marks
+the rows whose content moved, which the delta reports as `RowChanged`. The walk leaves each list at
+its first appended cell, the witness keys the tail alone, and a tail key is checked against the old
+keys through a chain of hash tables the append extends (`KeyChain`: a base and geometric layers,
+immutable, so each key is copied O(log n) times over a table's life) rather than through an index of
+the whole table. The answer is the keyed diff's, refusals and payloads included.
+
+**The seam.** The diff records the append beside the delta (the prior row count, the changed prefix
+rows, each column's tail and whether it is exactly the table's length), and a refresh against the
+very table its state was evaluated over reads it as Phase 323's in-place reading grown by a tail:
+
+- the tokens are the prior's, then the tail's, minted from the keys the diff minted;
+- every prior slot keeps its prior cells and its stability; a `Filter` or `Derive` step starts from
+  the prior step's cells grown by the tail and evaluates the appended rows (and any changed ones)
+  alone, reading an appended row's cells from the tail rather than unpacking the column;
+- a maintained `GroupBy` adds each appended row to the group its key cells name, at the end of the
+  member list, or opens a new group after every prior one in first-appearance order; the touched
+  groups are recomputed as an edit's are (a `Count` and an int `Sum` maintained, a float `Sum`
+  rescanned over the group's members, so its bits stay the left fold);
+- a prefix-fold window resumes per Phase 333, the appended rows merged in as moved rows, and its
+  column extends the prior column rather than being rebuilt;
+- a `Sort`, a `Limit` and a `Window` clear the reading for the steps after them, as they do for an
+  edit; a declined pipeline (a join, a pivot, a distinct) re-evaluates.
+
+What the refresh still pays per row is a few array passes (the step arrays grown, the slot arrays
+initialised) and the result's cell lists where a step made a new column, which the full evaluation
+builds too. A touched group's rescanned float `Sum` is the group's size: an append of 100 rows
+reaching all five of `byRegion`'s groups rescans every member (1.7 evaluations at 100,000 rows,
+against 5.3 on the pre-phase tree); one row reaches one group (0.8 to 0.9).
+
+**The laws** (`ScalingTests`, "Append (Phase 359)"; `IncrementalWindowTests`): append ticks of 1, 7
+and n rows over every corpus pipeline, three in a row, each delta equal to the keyed diff's and each
+refresh equal to the full evaluation; an append beside an edit, and beside a prefix key change; drawn
+tables whose cells include both zeros, NaN and two spellings of one decimal, with every refusal (a
+tail key repeating a prefix key or an earlier tail key, a missing key), for one key column and two;
+a 200-tick run of appends with a branch at every tick and refused ticks, so every depth of the key
+chain is reached; and the window laws' appends, alone and beside an edit, held to take the append
+path. Against `Delta.diffTrustingPrefix`, which takes the prefix as unchanged without reading it, the
+delta is wrong on every drawn change and every admitted refresh whose answer the edit reaches answers
+wrongly. A count holds the cost's shape: an append of k rows mints k keys in the diff and none in the
+refresh. A Fable-compiled run of the law under node agrees with .NET draw for draw.
+
+**On the clock.** A sixteenth clock case holds the append tick on every corpus node at 1,000, 20,000
+and 100,000 rows to the tick condition (`tick <= 1.6 x full + 0.03 x baseline`, the full evaluation at
+one thread). On the phase's tree it read x0.24 to x1.37, the declined join the highest; the
+pre-phase tree's append ticks read up to x5.8 on the same instrument's probe, so the case is red
+there. The figures, both trees, are in `benchmarks/results/2026-10-05-i7-9700-phase-359.md`.
+
+**Not covered.** A consumer that hands the seam a delta it built itself (from `ColumnOps`, say) rather
+than one `Delta.diff` produced carries no append record, and its refresh re-keys as before. Recognising
+the append there would cost the same walk of every column (the seam must still learn each list's
+length and tail), so it buys the key minting and nothing of the floor; the representation's route to an
+O(appended) tick is the chunked prepared form (Phase 268), whose versions share their unchanged chunks
+by identity.
 
 ## Across a process boundary (Phase 355)
 

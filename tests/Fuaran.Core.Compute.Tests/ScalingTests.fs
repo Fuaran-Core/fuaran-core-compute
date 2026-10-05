@@ -639,6 +639,29 @@ let private setCell (colName: string) (row: int) (v: Cell) (t: Table) : Table =
                     { c with
                         Cells = c.Cells |> List.mapi (fun i x -> if i = row then v else x) }) }
 
+/// Phase 359 — `t` with `k` rows APPENDED the way `ColumnOps.AppendRows` appends them: every column's list is
+/// `before @ extra`, so the prefix's cells are the very cells of `t`, in new lists. The appended rows
+/// are row `n` onwards of `nd.Mk (n + k)`, except in the identity column, which takes keys no row of
+/// `t` holds (the corpus's integer ids are below `n`, its string ids `r<i>`).
+let private appendTo (nd: CorpusNode) (k: int) (t: Table) : Table =
+    let n = Table.rowCount t
+    let big = nd.Mk(n + k)
+
+    { t with
+        Columns =
+            t.Columns
+            |> List.map (fun c ->
+                let extra =
+                    if c.Name = nd.IdCol then
+                        [ for j in 0 .. k - 1 ->
+                              match List.head c.Cells with
+                              | Int _ -> Int(10_000_000 + n + j)
+                              | _ -> Str("z" + string (n + j)) ]
+                    else
+                        (Table.tryColumn c.Name big).Value.Cells |> List.skip n
+
+                { c with Cells = c.Cells @ extra }) }
+
 /// Best of `runs` BATCHED samples, in ms per call: each sample repeats `f` until it spans at least
 /// 20 ms, so a 1,000-row node whose one call takes a tenth of a millisecond is timed over a window
 /// the clock can resolve rather than over one call's jitter. The ratio is taken within one run, as
@@ -697,7 +720,7 @@ let private batchedMs (runs: int) (f: unit -> unit) : float =
 /// ("The gate measures work, not the machine"). A literal, deliberately, and pinned against the list
 /// by a main-suite case: the leg's run count is checked against THIS number, so a case dropped from
 /// the list without the inventory moving is red in both places.
-let clockInventory = 15
+let clockInventory = 16
 
 let mutable private clockRuns = 0
 
@@ -1594,7 +1617,68 @@ let clockTests =
 
               Expect.isEmpty
                   failures
-                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces plus the per-call floor" ]
+                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces plus the per-call floor"
+
+          // ================= Phase 359 — the append tick on every corpus node =================
+
+          clockCase
+              "an append tick on every corpus node costs at most 1.6 times the full evaluation plus a fixed per-call floor"
+          <| fun _ ->
+              // The case above with the commonest delta a live table makes in place of the edit: ONE
+              // ROW APPENDED, the way `ColumnOps.AppendRows` appends it (every column's list is the
+              // prior list with the row on its end). Same nodes, sizes, instrument and condition.
+              //
+              // Before Phase 359 an append was not in place, so the diff keyed every row of the new
+              // table and the seam re-keyed it and re-walked every step's bookkeeping: a one-`Project`
+              // pipeline's append tick cost 8 to 18 of its own evaluations (Phase 333's results file).
+              // Now the diff reads each column's prefix once, by reference, and keys the appended row
+              // alone, and the refresh evaluates it alone; the figures are in
+              // docs/incremental-evaluation.md, "An append costs the appended rows".
+              let failures = System.Collections.Generic.List<string>()
+
+              for nd in corpusNodes do
+                  for n in [ small; large; 100_000 ] do
+                      let w = RowIdentity.byColumn nd.IdCol
+                      let before = nd.Mk n
+                      let after = appendTo nd 1 before
+                      let p = nd.Pipe n
+                      let state = ok (Incremental.prime DataFrame.noResolve nd.Env w p before)
+
+                      let tick () =
+                          let a = { after with Columns = after.Columns }
+                          let d = ok (Delta.diff w before a)
+                          ok (Incremental.refresh DataFrame.noResolve nd.Env w p state d a)
+
+                      Expect.equal
+                          (Ok(Incremental.result (tick ())))
+                          (DataFrame.evalPipelineInEnv nd.Env p after)
+                          (sprintf "%s @ %d: the append tick answers what the reference answers" nd.Name n)
+
+                      let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
+                      let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
+                      let floorMs = tickFloorMs ()
+                      let ratio = tickMs / fullMs
+
+                      printfn
+                          "  [append tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f, bound x%.1f + floor %.3f ms)"
+                          nd.Name
+                          n
+                          tickMs
+                          fullMs
+                          ratio
+                          tickBound
+                          floorMs
+
+                      Calibration.checkpoint ()
+
+                      if tickMs > tickBound * fullMs + floorMs then
+                          failures.Add(
+                              sprintf "%s @ %d: x%.2f against x%.1f + %.3f ms" nd.Name n ratio tickBound floorMs
+                          )
+
+              Expect.isEmpty
+                  failures
+                  "every corpus node's one-row APPEND tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces plus the per-call floor" ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
 let private countingId (minted: int ref) : RowIdentity<Cell> =
@@ -1788,29 +1872,6 @@ let scalingTests =
 // ---------------------------------------------------------------------------
 //  Phase 359 — an append-only tick costs the appended rows.
 // ---------------------------------------------------------------------------
-
-/// `t` with `k` rows APPENDED the way `ColumnOps.AppendRows` appends them: every column's list is
-/// `before @ extra`, so the prefix's cells are the very cells of `t`, in new lists. The appended rows
-/// are row `n` onwards of `nd.Mk (n + k)`, except in the identity column, which takes keys no row of
-/// `t` holds (the corpus's integer ids are below `n`, its string ids `r<i>`).
-let private appendTo (nd: CorpusNode) (k: int) (t: Table) : Table =
-    let n = Table.rowCount t
-    let big = nd.Mk(n + k)
-
-    { t with
-        Columns =
-            t.Columns
-            |> List.map (fun c ->
-                let extra =
-                    if c.Name = nd.IdCol then
-                        [ for j in 0 .. k - 1 ->
-                              match List.head c.Cells with
-                              | Int _ -> Int(10_000_000 + n + j)
-                              | _ -> Str("z" + string (n + j)) ]
-                    else
-                        (Table.tryColumn c.Name big).Value.Cells |> List.skip n
-
-                { c with Cells = c.Cells @ extra }) }
 
 /// The keyed diff's answer for `w`: the same witness with neither of its declarations (a copy is a
 /// new record, so it carries no `KeyColumns` and no key equality), which takes neither the append
