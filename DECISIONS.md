@@ -44,7 +44,7 @@ it moves — the substrate floor rides with the rename, and an old id carried tr
 package survives a consumer's own pin move — are added to `0.36.0`'s "What a consumer changes" in
 `STABILITY.md`.
 
-## 2026-10-05 — D10: whether the browser host takes a worker path that needs cross-origin isolation is the operator's ruling; the evidence it asked for is recorded here, and the ruling is OPEN
+## 2026-10-05 — D10: whether the browser host takes a worker path that needs cross-origin isolation is the operator's ruling; the operator ruled YES (2026-10-05): an opt-in worker path, fuaran-core#375
 
 **Measured (fuaran-core#346), not yet decided.** Phase 346 opens with an operator ruling — whether
 the browser host gets a Web Worker morsel runner over `SharedArrayBuffer`, which exists only on a
@@ -100,8 +100,11 @@ disjoint rows concatenated in morsel order are byte-identical by construction, a
 isolation headers, and the measured order of levers stands: the Fable per-row cost (item 2) before
 threads.
 
-**The ruling** is recorded here when the operator takes it; on a no this entry and the figures are
-the phase, and on a yes the runner is a successor phase sized by item 5.
+**The ruling (2026-10-05): YES.** The operator ruled to build the worker interface. The shape is opt-in per
+host, the only one item 5 found that keeps a non-isolated page working: a host that does not opt in, or a page
+without COOP/COEP, keeps the sequential member byte for byte. The runner is the successor phase
+fuaran-core#375, sized by item 5: the step as data, frame vectors in shared memory, and an asynchronous
+evaluation entry point. Item 2's per-row lever under Fable stands beside it and is not displaced by it.
 
 ## 2026-10-04 — D9: whether float `Sum` becomes exactly rounded is the operator's ruling; the operator ruled NO (2026-10-05): the fold stays the default
 
