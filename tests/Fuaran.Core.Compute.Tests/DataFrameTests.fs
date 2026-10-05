@@ -2219,6 +2219,219 @@ let streamedAggregateLaws =
 
               Expect.isGreaterThan errors 100 "the drawn tables reach the refusals, and the first one is the oracle's" ]
 
+/// The pivot as it aggregated before Phase 353, re-derived from the column layer: index groups by
+/// token in first-appearance order, the on-values distinct and ordered by their canonical string,
+/// and each (group, on-value) pair `Column.aggregate` over the group's rows whose on-cell matches
+/// the on-value by `cellEq` (the numeric family as floats, every NaN one value, `Null` matching
+/// nothing; a string ordinally), in frame order. The first refusal in group order, then column
+/// order, is the answer.
+let private pivotOracle (t: Table) (index: string list) (on: string) (values: string) (fn: AggFn) =
+    let colCells name =
+        (Table.tryColumn name t |> Option.get).Cells |> List.toArray
+
+    let ty = t.Schema |> List.find (fun (n, _) -> n = values) |> snd
+    let idxCols = index |> List.map colCells
+    let onCells = colCells on
+    let valCells = colCells values
+    let n = Table.rowCount t
+
+    let cellEq (a: Cell) (b: Cell) : bool =
+        let num c =
+            match c with
+            | Int i -> Some(float i)
+            | Float f -> Some f
+            | _ -> None
+
+        match a, b with
+        | Null, _
+        | _, Null -> false
+        | _ ->
+            match num a, num b with
+            | Some x, Some y -> (System.Double.IsNaN x && System.Double.IsNaN y) || x = y
+            | _ -> a = b
+
+    let onValues =
+        onCells
+        |> Array.filter (fun c -> not (Cell.isNull c))
+        |> List.ofArray
+        |> List.distinct
+        |> List.sortBy DataFrame.cellString
+
+    let order = ResizeArray<string list>()
+    let firstRow = System.Collections.Generic.Dictionary<string list, int>()
+    let members = System.Collections.Generic.Dictionary<string list, ResizeArray<int>>()
+
+    for i in 0 .. n - 1 do
+        let k = idxCols |> List.map (fun cs -> Cell.token cs[i])
+
+        if not (members.ContainsKey k) then
+            order.Add k
+            firstRow[k] <- i
+            members[k] <- ResizeArray()
+
+        members[k].Add i
+
+    let pairCells (k: string list) (ov: Cell) : Cell list =
+        [ for i in members[k] do
+              if cellEq onCells[i] ov then
+                  yield valCells[i] ]
+
+    let results =
+        [ for k in order -> onValues |> List.map (fun ov -> DataFrame.aggregateCells fn ty (pairCells k ov)) ]
+
+    let firstError =
+        results
+        |> List.tryPick (
+            List.tryPick (fun r ->
+                match r with
+                | Error e -> Some e
+                | Ok _ -> None)
+        )
+
+    match firstError with
+    | Some e -> Error(DataFrame.errorString e)
+    | None ->
+        Ok(
+            [ for kn, cs in List.zip index idxCols -> kn, [ for k in order -> cs[firstRow[k]] ] ]
+            @ [ for j, ov in List.indexed onValues ->
+                    DataFrame.cellString ov,
+                    [ for r in results ->
+                          match r[j] with
+                          | Ok c -> c
+                          | Error _ -> Null ] ]
+        )
+
+[<Tests>]
+let pivotStreamLaws =
+    testList
+        "DataFrame — the pivot's streamed pairs equal Column.aggregate per pair (Phase 353)"
+        [ testCase "the whole Pivot step equals the per-pair oracle over drawn tables, on-values and aggregates"
+          <| fun _ ->
+              let failures = ResizeArray<string>()
+              let mutable errors = 0
+              let mutable answers = 0
+              let mutable presentCells = 0
+
+              for seed in 0..2999 do
+                  let c = drawCase seed
+                  let rng = System.Random(seed + 9_000_000)
+                  let n = c.Cells.Length
+
+                  let g =
+                      [ for i in 0 .. n - 1 ->
+                            if rng.Next 9 = 0 then
+                                Null
+                            else
+                                Str(string ("xyzw"[c.GroupOf[i]])) ]
+
+                  let h = [ for _ in 0 .. n - 1 -> if rng.Next 6 = 0 then Null else Int(rng.Next 2) ]
+
+                  // The on column over two carriers: numbers whose `cellEq` merges what the token
+                  // keeps apart (`Int 1` and `Float 1.0`, `-0` and `0`, every NaN), and strings.
+                  let numericOn = rng.Next 2 = 0
+
+                  let o =
+                      [ for _ in 0 .. n - 1 ->
+                            if numericOn then
+                                match rng.Next 8 with
+                                | 0 -> Null
+                                | 1 -> Int 1
+                                | 2 -> Float 1.0
+                                | 3 -> Float nan
+                                | 4 -> Float -0.0
+                                | 5 -> Float 0.0
+                                | 6 -> Float 2.5
+                                | _ -> Int 7
+                            else
+                                match rng.Next 5 with
+                                | 0 -> Null
+                                | 1 -> Str "p"
+                                | 2 -> Str "q"
+                                | 3 -> Str ""
+                                | _ -> Str "P" ]
+
+                  let oTy = if numericOn then FloatType else StringType
+
+                  let t =
+                      tbl
+                          [ "g", StringType; "h", IntType; "o", oTy; "v", c.Ty ]
+                          [ col "g" StringType g
+                            col "h" IntType h
+                            col "o" oTy o
+                            col "v" c.Ty (List.ofArray c.Cells) ]
+
+                  let fn = allAggFns[rng.Next(List.length allAggFns)]
+
+                  for index in [ [ "g" ]; [ "g"; "h" ] ] do
+                      let expected = pivotOracle t index "o" "v" fn
+
+                      let actual =
+                          DataFrame.evalPipeline
+                              [ Pivot
+                                    { Index = index
+                                      On = "o"
+                                      Values = "v"
+                                      Agg = fn } ]
+                              t
+                          |> Result.mapError DataFrame.errorString
+                          |> Result.map (fun r -> r.Columns |> List.map (fun cl -> cl.Name, cl.Cells))
+
+                      match expected, actual with
+                      | Ok e, Ok a ->
+                          answers <- answers + 1
+
+                          for _, cs in e do
+                              for cell in cs do
+                                  if not (Cell.isNull cell) then
+                                      presentCells <- presentCells + 1
+
+                          let same =
+                              List.length e = List.length a
+                              && List.forall2
+                                  (fun (n1, c1) (n2, c2) ->
+                                      n1 = n2 && List.length c1 = List.length c2 && List.forall2 sameCell c1 c2)
+                                  e
+                                  a
+
+                          if not same then
+                              failures.Add(sprintf "seed %d %A %A: expected %A, got %A" seed fn index e a)
+                      | Error e, Error a ->
+                          errors <- errors + 1
+
+                          if e <> a then
+                              failures.Add(sprintf "seed %d %A %A: expected error %s, got %s" seed fn index e a)
+                      | _ -> failures.Add(sprintf "seed %d %A %A: expected %A, got %A" seed fn index expected actual)
+
+              Expect.isEmpty
+                  (List.ofSeq failures |> List.truncate 3)
+                  (sprintf
+                      "the Pivot step is the per-pair oracle's, cell for cell: %s"
+                      (String.concat " | " (Seq.truncate 3 failures)))
+
+              // Not vacuous: the drawn tables reach the refusals and answer many present cells.
+              Expect.isGreaterThan errors 100 "the drawn tables reach the refusals, and the first one is the oracle's"
+              Expect.isGreaterThan answers 3_000 "most drawn pivots answer"
+              Expect.isGreaterThan presentCells 10_000 "the answers hold present cells, not only nulls"
+
+          testCase "the oracle has teeth: it tells a pivot that drops cellEq's merge from the real one"
+          <| fun _ ->
+              // `Int 1` and `Float 1.0` are two pivot columns that each collect BOTH rows; a pivot
+              // that matched by token would give each column one row.
+              let t =
+                  tbl
+                      [ "g", StringType; "o", FloatType; "v", IntType ]
+                      [ col "g" StringType [ Str "a"; Str "a" ]
+                        col "o" FloatType [ Int 1; Float 1.0 ]
+                        col "v" IntType [ Int 10; Int 20 ] ]
+
+              match pivotOracle t [ "g" ] "o" "v" Sum with
+              | Ok cols ->
+                  Expect.equal
+                      (cols |> List.map snd)
+                      [ [ Str "a" ]; [ Int 30 ]; [ Int 30 ] ]
+                      "each numerically-equal on-value collects every cellEq match"
+              | Error e -> failtestf "the oracle refused: %s" e ]
+
 [<Tests>]
 let nowTests =
     testList

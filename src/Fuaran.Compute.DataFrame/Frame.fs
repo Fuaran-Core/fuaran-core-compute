@@ -957,10 +957,22 @@ module internal Frame =
 
     /// The physical row of every logical row, in logical order — the selection, or the identity
     /// materialised.
+    ///
+    /// The identity is filled by a counted loop (Phase 353): under Fable `Array.init` writes each
+    /// entry through the runtime's shared bounds-checked `setItem`, and every verb over a frame with
+    /// no selection asks for this array — it was 31 per cent of the node `lines` sheet at 100,000
+    /// rows, called once per derive and once more at the boundary out. The loop proves `i`.
     let physical (f: Frame) : int[] =
         match f.Sel with
         | Some s -> s
-        | None -> Array.init f.Count id
+        | None ->
+            let n = f.Count
+            let rows: int[] = Array.zeroCreate n
+
+            for i in 0 .. n - 1 do
+                Raw.set rows i i
+
+            rows
 
     /// The frame holding the physical rows `sel`, in that order, over the same vectors.
     let select (f: Frame) (sel: int[]) : Frame = { f with Sel = Some sel }

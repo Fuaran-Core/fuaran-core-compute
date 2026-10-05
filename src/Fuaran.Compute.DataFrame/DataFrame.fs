@@ -5114,6 +5114,10 @@ module DataFrame =
                         | None -> ()
                     | _ -> ()
 
+            /// Does every slot defer, whatever it is fed (`Median`, `StdDev`, `CountDistinct`, and a
+            /// numeric aggregate over a non-numeric column)?
+            member _.DefersAll: bool = mode = MDefer
+
             /// Fold the row at physical row `p` into slot `g`.
             member _.Feed(g: int, p: int) : unit =
                 if mode <> MDefer && not deferred[g] then
@@ -5919,9 +5923,13 @@ module DataFrame =
     /// straight from the column's vector (Phase 267), so only the aggregated column is boxed.
     let private columnOf (v: Vec) (members: ResizeArray<int>) : Cell list =
         let mutable acc = []
+        // A counted loop (Phase 353): a descending `for` compiles to a range enumerator under Fable,
+        // and the pivot calls this once per deferred (group, on-value) pair.
+        let mutable j = members.Count - 1
 
-        for j in members.Count - 1 .. -1 .. 0 do
+        while j >= 0 do
             acc <- Vec.cellAt v members[j] :: acc
+            j <- j - 1
 
         acc
 
@@ -7591,17 +7599,23 @@ module DataFrame =
 
                     // Index groups in first-appearance order by TOKEN equality over the index cells
                     // (Phase 41's canonical token — NOT the `cellEq` relation the on-values match by
-                    // above), through the typed row hasher (Phase 325), carrying the first row's
-                    // index-key cells for the output rows. Each group's cells arrive in frame order,
-                    // which is the order the filter aggregated.
+                    // above), through the typed row hasher (Phase 325). Each group's key is read from
+                    // its first physical row straight into the key column (`keyColumn`, Phase 344).
                     let idxVecs = idxIdx |> List.map (fun i -> f.Vecs[i]) |> List.toArray
-                    let slotOf, first = RowHash.slots idxVecs phys
+                    let slotOf, firstPhys = keySlots idxVecs phys
+                    let groups = firstPhys.Length
 
-                    let groups =
-                        Array.init first.Count (fun g ->
-                            let p = phys[first[g]]
-                            let key = idxVecs |> Array.map (fun v -> Vec.cellAt v p) |> List.ofArray
-                            key, Array.init onCount (fun _ -> ResizeArray<Cell>()))
+                    // Phase 353 — every (group, on-value) pair aggregated by Phase 323's streams: one
+                    // stream per pivot column, a slot per group, fed each row in frame order, which is
+                    // the order the per-pair cell list held. It replaced a boxed cell list per pair
+                    // and a `Column.aggregate` call per pair (5,000 of them over one-cell lists for
+                    // the corpus's 50-on-value pivot, and the most of its node profile). A pair a
+                    // stream defers — `Median`, `StdDev`, `CountDistinct`, a cell outside the column's
+                    // type, an int `Sum` past int32, a float overflow — is `Column.aggregate` over its
+                    // members, as before; the differential law (`pivotStreamLaws`) holds the two equal.
+                    let streams =
+                        Array.init onCount (fun _ ->
+                            GroupAgg.Stream(spec.Agg, valType, valVec, groups, GroupAgg.Exact))
 
                     // The loop proves `i` for `phys`, and for `rowOn` and `slotOf` once each is checked to
                     // hold a row per logical row; the slot and the code it reads are indexes it does not
@@ -7609,36 +7623,89 @@ module DataFrame =
                     Raw.within phys.Length rowOn
                     Raw.within phys.Length slotOf
 
-                    for i in 0 .. phys.Length - 1 do
+                    // An aggregate every stream defers (`Median`, `StdDev`, `CountDistinct`) is fed nothing.
+                    let fed =
+                        if onCount > 0 && not streams[0].DefersAll then
+                            phys.Length
+                        else
+                            0
+
+                    for i in 0 .. fed - 1 do
                         let code = Raw.get i rowOn
 
                         if code >= 0 then
-                            let _, cells = Raw.at (Raw.get i slotOf) groups
-                            let v = Vec.cellAt valVec (Raw.get i phys)
+                            let g = Raw.get i slotOf
+                            let p = Raw.get i phys
 #if FABLE_COMPILER
                             // A counted loop: `for` over a list compiles to an enumerator there.
                             let targets = Raw.at code columnsOf
 
                             for j in 0 .. targets.Count - 1 do
-                                cells[targets[j]].Add v
+                                streams[targets[j]].Feed(g, p)
 #else
                             for c in columnsOf[code] do
-                                cells[c].Add v
+                                streams[c].Feed(g, p)
 #endif
 
-                    let idxCols = spec.Index |> List.map (fun n -> n, colType f.Cols n |> Option.get)
+                    // A deferred pair's members — physical rows in frame order — built once, for
+                    // every pair, on the first deferral: the lists the step kept before this phase.
+                    let mutable members: ResizeArray<int>[][] = null
 
-                    let pivotCols =
-                        onValues |> List.map (fun ov -> cellString ov, aggType spec.Agg valType)
+                    let membersOf (g: int) (c: int) : ResizeArray<int> =
+                        if isNull members then
+                            members <- Array.init onCount (fun _ -> Array.init groups (fun _ -> ResizeArray<int>()))
+
+                            for i in 0 .. phys.Length - 1 do
+                                let code = rowOn[i]
+
+                                if code >= 0 then
+                                    let targets = columnsOf[code]
+
+                                    for j in 0 .. targets.Count - 1 do
+                                        let pair = members[targets[j]]
+                                        pair[slotOf[i]].Add phys[i]
+
+                        members[c][g]
+
+                    let outTy = aggType spec.Agg valType
+                    let outs = Array.init onCount (fun _ -> GroupAgg.Output(outTy, groups))
 
                     // An absent pair aggregates the EMPTY list, exactly as a filter that matched no
-                    // row did — `Null` or `Int 0` by the aggregate's own rule.
-                    List.ofArray groups
-                    |> traverseResult (fun (k, cells) ->
-                        List.init onCount id
-                        |> traverseResult (fun c -> cells[c] |> List.ofSeq |> aggCells spec.Agg valType)
-                        |> Result.map (fun vals -> List.toArray (k @ vals)))
-                    |> Result.map (fun outRows -> Frame.ofRows (idxCols @ pivotCols) (List.toArray outRows)))))
+                    // row did — `Null` or `Int 0` by the aggregate's own rule; a stream that saw no
+                    // row answers just that. The first error, in group order then column order, is
+                    // the traverse's.
+                    let mutable failed = None
+                    let mutable g = 0
+
+                    while Option.isNone failed && g < groups do
+                        let mutable c = 0
+
+                        while Option.isNone failed && c < onCount do
+                            if not (streams[c].Emit(g, outs[c])) then
+                                match aggCells spec.Agg valType (columnOf valVec (membersOf g c)) with
+                                | Ok cell -> outs[c].Cell(g, cell)
+                                | Error e -> failed <- Some e
+
+                            c <- c + 1
+
+                        g <- g + 1
+
+                    match failed with
+                    | Some e -> Error e
+                    | None ->
+                        let idxCols = spec.Index |> List.map (fun n -> n, colType f.Cols n |> Option.get)
+                        let pivotCols = onValues |> List.map (fun ov -> cellString ov, outTy)
+                        let cols = idxCols @ pivotCols
+
+                        let keyOut =
+                            idxCols |> List.mapi (fun j (_, ty) -> keyColumn ty idxVecs[j] firstPhys)
+
+                        Ok
+                            { Cols = cols
+                              Vecs = Array.append (List.toArray keyOut) (outs |> Array.map (fun o -> o.ToVec()))
+                              Origins = Array.create (List.length cols) None
+                              Sel = None
+                              Count = groups })))
 
     let private evalUnpivot (f: Frame) (idVars: string list) (valueVars: string list) : Result<Frame, EvalError> =
         let need name =
