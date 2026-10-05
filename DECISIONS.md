@@ -1,5 +1,22 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-05 — D12: the pipeline-query registry's lifecycle verbs wait for a released substrate that carries them; the pin names `0.34.0`, which does not
+
+**Decision.** `PipelineQueryRegistry` does not gain `unregister`, `replace`, `restrict` and `union`
+yet. They are to delegate to the substrate's `QueryRegistry` verbs of the same names, and those
+verbs are not in the substrate this repository pins.
+
+**Evidence (checked 2026-10-05).** `FuaranCoreVersion` reads `0.34.0`. The substrate's `v0.34.0`
+tag has no `unregister`, `replace`, `restrict` or `union` in `Fuaran.Core.Query`; they landed with
+the substrate's Phase 316 on its `0.35.0` draft. That version is not tagged on the substrate's
+remote, so the public registry does not serve it, and only a machine-local feed holds a `0.35.0`.
+Raising the pin to it would restore here and nowhere else, which the pin discipline refuses.
+
+**What stays true.** The registry's representation is still the private pair of declarations and
+bodies, so the delegation design the phase describes is unchanged. The work is deferred, not
+refuted: when `0.35.0` is released and the pin raised, the four verbs, their laws and the
+`enumerate`-equals-`declarations` property go in as one additive change.
+
 ## 2026-10-05 — D11: the consumer sweep to the `Fuaran.Compute.*` ids stops where a consumer's move is a cohort or cycle decision, not a rename
 
 **Recorded (fuaran-core#361), carrying D4's second stage.** D4 renamed the packages and left the
