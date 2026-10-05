@@ -1,5 +1,32 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-05 — D11: the consumer sweep to the `Fuaran.Compute.*` ids stops where a consumer's move is a cohort or cycle decision, not a rename
+
+**Recorded (fuaran-core#361), carrying D4's second stage.** D4 renamed the packages and left the
+consumers to a sweep. On 2026-10-05 every consumer but two already names the new ids, at `0.37.0`,
+which nuget.org serves under all four. The two still name an old id, and neither is a sweep's to move:
+
+**1. A consumer behind the substrate floor moves with its substrate, and that can be a cohort act.**
+The new ids begin at `0.36.0`, whose substrate floor is `0.33.0` (`0.37.0`'s is `0.34.0`). A consumer
+pinned at `0.34.0` of the old id over a `0.32.0` substrate takes the rename only together with the
+substrate raise and that raise's own source breaks. Done in isolation the raise was measured green in
+the consumer itself, and red one hop further out: a repository that builds it by project reference, with
+its own substrate pins further behind, no longer compiles, because a type it matches on (a policy
+denial's payload) changed shape in the raise. So that consumer moves when the repositories built
+against it raise their substrate together, which is a cohort decision for the operator; the verified
+change is held on a branch for it, and no pin moved.
+
+**2. A consumer that pins a version to MEASURE it moves by its own cycle decision.** A repository that
+holds one substrate version fixed so its measurements can be repeated (and is deliberately outside the
+version cohort) cannot take a compute id whose substrate floor is above its cycle pin without moving
+that pin. Moving it starts a new measurement cycle, which that repository's own records reserve to a
+deliberate decision; a sweep does not make it.
+
+**3. What the producer side changes.** Nothing in the packages. The two facts a consumer needs before
+it moves — the substrate floor rides with the rename, and an old id carried transitively by another
+package survives a consumer's own pin move — are added to `0.36.0`'s "What a consumer changes" in
+`STABILITY.md`.
+
 ## 2026-10-05 — D10: whether the browser host takes a worker path that needs cross-origin isolation is the operator's ruling; the evidence it asked for is recorded here, and the ruling is OPEN
 
 **Measured (fuaran-core#346), not yet decided.** Phase 346 opens with an operator ruling — whether

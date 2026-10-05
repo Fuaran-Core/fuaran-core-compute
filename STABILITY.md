@@ -381,6 +381,19 @@ and 321, below), carried across the rename rather than lost to a first snapshot.
 - The pre-split `Conformance.<family>` spellings still resolve for a file that opens both
   namespaces (the forwarding module is now `Fuaran.Compute.Conformance`); a fully qualified
   `Fuaran.Core.Conformance.<family>` spelling of a dataframe family does not.
+- *(Added 2026-10-05 from the consumer sweep, fuaran-core#361.)* The substrate pin moves with the
+  version taken: `0.36.0` carries a `Fuaran.Core.*` floor of `0.33.0`, and `0.37.0` a floor of `0.34.0`.
+  A direct `Fuaran.Core.*` pin below the floor is a package downgrade (NU1605), and where a build does
+  not treat that warning as an error it runs the compute assemblies over a substrate older than the one
+  they were compiled against. Raising the substrate pin brings the substrate's own source breaks
+  between the two versions with it (its `STABILITY.md`), so the move is the substrate raise and the
+  rename together.
+- *(Added 2026-10-05, fuaran-core#361.)* An old id can stay in a consumer's graph after its own pins
+  have moved, carried transitively by another package built on it. Both assemblies then load, and
+  their types share simple names (`Transform`, `DataFrame`, `DataFrameCodec`): in a file that opens
+  both namespaces an unqualified name resolves to the namespace opened LAST, so `open Fuaran.Compute`
+  goes after `open Fuaran.Core`. The graph is clean only when the package carrying the old id is
+  itself raised past it; `dotnet list package --include-transitive` names it.
 
 **The projects, not only the ids, moved:** `src/Fuaran.Compute.DataFrame/`, `src/Fuaran.Compute.ColumnOps/`,
 `src/Fuaran.Compute.PipelineQuery/` and `src/Fuaran.Compute.Conformance/`. The solution, the test,
