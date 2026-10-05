@@ -1,5 +1,62 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-06 — D13: the worker path's first piece is the step as data, compiled by one path; the frame's byte masks come before the pool, because every worker would otherwise copy them
+
+**Decision.** fuaran-core#375 builds D10's yes in order, and the first piece is the seam a worker
+compiles from: `MorselHandOff`, a row-local step (`Filter` or `Derive`) as plain data. It carries the
+step and its environment on the canonical wire (a one-step pipeline; each bound name as the `lit`
+expression of its cell), the frame's schema as names and type tags, the vectors the step reads (int
+and float values as they are, bool values and validity masks as bytes), the logical rows, the morsel
+geometry and range, and the result slots: a `Filter`'s kept rows from each morsel's own offset and its
+count, a `Derive`'s typed carrier and mask by physical row, and a failed flag per morsel. Strings,
+numbers and arrays of numbers only, so a structured clone carries it and shared memory could back
+every array in it. It is internal: no runner ships yet.
+
+**1. One compile path.** A runner rebuilds the frame from the data and resolves and compiles the step
+with the evaluator's own `resolveExpr` / `compileExpr`, then runs each morsel through the evaluator's
+own row loops, `filterMorsel` and `deriveMorsel`. Those loops were lifted out of `evalFilter` and
+`evalDerivedColumn`, which now run them too, so the sequential member and a runner cannot disagree on
+what a row keeps, what it writes or which error it raises. `deriveMorsel` is inlined at both sites so
+neither pays an indirect call a row for its writes.
+
+**2. Errors do not cross.** A runner records only that a morsel failed. The caller re-runs the first
+failed morsel, in morsel order, on its own thread through the same loop, and answers that error, so a
+runner that ran the morsels in another order still answers the first error in row order, and no
+`EvalError` is ever serialised.
+
+**3. What is handed off.** A step whose wire form decodes back to itself (and whose environment does),
+whose every read column is an int, float or bool vector, that is not a comparison-kernel filter (Phase
+270's bitmap answers that one faster than any tree), and, for a `Derive`, whose root is typed int,
+float or bool. Every other step runs as it always ran. A string, decimal or boxed column cannot be
+shared, so it is never carried.
+
+**4. The laws.** `MorselHandOffLaw` (Fable-clean) holds every handed-off step byte-identical to
+`Kernels.oneThread`, refusals included, over the transform vectors at 1, 2, 3 and 8,192 rows a morsel
+and over the corpus's row-local pipelines at 20,000 rows, under runners that run the morsels in order,
+in reverse, and (in the suite) one a task on the thread pool. A runner whose morsels after the first
+start a row late, and one that hands kept rows back in swapped morsel pairs, go red. Under node the
+same law passes with every morsel's record and results sent through `structuredClone`, which is what
+`postMessage` does to them (`benchmarks/results/2026-10-06-i7-9700-phase-375.md`).
+
+**5. Why the pool waits for the masks.** On one thread a hand-off's morsels cost what the sequential
+member costs, under node and on .NET. Its fixed costs are the copies: under node, at a million rows,
+4.9 to 8.0 ms to plan and 8.7 to 9.7 ms for EACH runner to rebuild, the second because the frame's
+masks are plain `bool[]` (JavaScript `Array`s) and a runner must turn the hand-off's bytes back into
+them. Seven workers would copy about 60 ms between them, half the sequential `filter`. With the masks
+as byte arrays in the frame (D10 item 4a; #375's third task) a rebuild copies nothing, so that change
+goes first and the pool is built on it rather than paying a copy it would then have to remove.
+
+**What did not land in fuaran-core#375, and why.** The frame's vectors and masks in shared memory under
+Fable: masks become byte arrays across `Frame.fs` and every verb that reads them, a representation
+change on one host whose laws run only under node, which no gate here runs. The asynchronous entry
+point, the pool and runner, the opt-in detection and fallback, and the browser measurements: each
+stands on shared vectors, and without them a pool would copy every mask into every worker (item 5).
+The pooled-under-node comparison of the laws waits for the pool. Nothing public moved.
+
+**What it bought already.** A `Filter`'s kept rows now land in one buffer, each morsel from its own
+offset, where each morsel filled a growable list before: the sequential `filter` is 1.6 to 1.8 times
+faster under node at 100,000 and 1,000,000 rows, and .NET and the `derive` are unchanged or faster.
+
 ## 2026-10-05 — D12: the pipeline-query registry's lifecycle verbs wait for a released substrate that carries them; the pin names `0.34.0`, which does not
 
 **Decision.** `PipelineQueryRegistry` does not gain `unregister`, `replace`, `restrict` and `union`

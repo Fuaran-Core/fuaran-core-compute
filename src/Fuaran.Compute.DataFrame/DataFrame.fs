@@ -81,7 +81,8 @@ type SortDir =
 // ---------------------------------------------------------------------------
 //  Deliberate omissions from the scalar/verb vocabulary (Phase 101) — decisions,
 //  not gaps. Recorded here because this is where a reader adding a function looks;
-//  the full reasoning is DECISIONS.md D13.
+//  the full reasoning is D13 of the Fuaran.Core repository's DECISIONS.md, taken
+//  before this strand was cut from it (this repository's own D13 is another entry).
 //
 //  * NO CLOCK — no `Now` / `Today` / `CurrentDate`. The evaluator is a pure function of
 //    (table, env, pipeline): a clock would make the same pipeline over the same data
@@ -4536,6 +4537,86 @@ module DataFrame =
         | RBinary(op, RConst c, RCol i) -> cmpOpOf op |> Option.bind (fun o -> leaf (Kernels.flip o) i c)
         | _ -> None
 
+    /// One morsel of a compiled `Filter` (Phase 375; the loop Phase 266 and 270 wrote inline): the
+    /// predicate compiled against `f`, run once per logical row `lo .. hi - 1` (the morsel) in
+    /// logical order, stopping at the first row that records an error. The physical rows it keeps
+    /// are written to `rows` from offset `lo` — a morsel keeps at most its own rows, so morsels
+    /// write disjoint ranges — and it answers how many it kept and the error it met, if any. A
+    /// typed boolean root is read unboxed.
+    ///
+    /// The ONE row loop of the step: the sequential evaluator runs it through `RunMorsels`, and a
+    /// runner holding the step as data (`MorselHandOff`) runs it over the frame it rebuilt, so the
+    /// two cannot disagree on what a row keeps or which error it raises.
+    let internal filterMorsel
+        (f: Frame)
+        (resolved: ResolvedExpr)
+        (phys: int[])
+        (rows: int[])
+        (lo: int)
+        (hi: int)
+        : struct (int * EvalError option) =
+        let compiled = compileExpr f resolved
+        let slot = compiled.Slot
+
+        let keep: int -> bool =
+            match compiled.Node with
+            | NBool r ->
+                fun p ->
+                    let b = r p
+                    (not slot.Null) && b
+            | NNull -> fun _ -> false
+            | NInt _
+            | NFloat _
+            | NStr _
+            | NCell _ ->
+                let r = compiled.Run
+
+                fun p ->
+                    match r p with
+                    | Bool true -> true
+                    | _ -> false
+
+        let mutable error = None
+        let mutable count = 0
+        let mutable i = lo
+
+        while Option.isNone error && i < hi do
+            slot.Error <- None
+            let p = Raw.get i phys
+            let keepIt = keep p
+
+            match slot.Error with
+            | Some e -> error <- Some e
+            | None ->
+                if keepIt then
+                    Raw.set rows (lo + count) p
+                    count <- count + 1
+
+                i <- i + 1
+
+        struct (count, error)
+
+    /// The kept rows of a morselled `Filter`, in morsel order (Phase 375): morsel `j`'s `counts[j]`
+    /// rows from its first row's offset (`j * morselRows`) in `rows`, morsel after morsel. Morsels
+    /// are ranges of logical rows in order, so morsel order is row order.
+    let internal keptInOrder (morselRows: int) (rows: int[]) (counts: int[]) : int[] =
+        let mutable total = 0
+
+        for j in 0 .. counts.Length - 1 do
+            total <- total + counts[j]
+
+        let out: int[] = Array.zeroCreate total
+        let mutable at = 0
+
+        for j in 0 .. counts.Length - 1 do
+            let c = counts[j]
+
+            if c > 0 then
+                Array.blit rows (j * morselRows) out at c
+                at <- at + c
+
+        out
+
     let private evalFilter
         (k: KernelSet)
         (env: Map<string, Cell>)
@@ -4575,58 +4656,29 @@ module DataFrame =
             // in logical order within it; a typed boolean root is read unboxed. Each morsel keeps
             // its rows, and the morsels' rows in morsel order become the frame's selection; the
             // first morsel that met an error answers it, which is the first error in row order.
+            //
+            // Phase 375: the morsel's row loop is `filterMorsel`, the one a worker runs over the step
+            // as data (`MorselHandOff`), and the kept rows land in one buffer, morsel `j`'s from its
+            // first row's offset, concatenated in morsel order by `keptInOrder`.
             let phys = Frame.physical f
             let m = Kernels.morselCount phys.Length
-            let kept: int[][] = Array.create m [||]
+            let rows: int[] = Array.zeroCreate phys.Length
+            let counts: int[] = Array.zeroCreate m
             let errors: EvalError option[] = Array.create m None
 
             let run (j: int) : bool =
-                let compiled = compileExpr f resolved
-                let slot = compiled.Slot
+                let struct (count, error) =
+                    filterMorsel f resolved phys rows (Kernels.morselStart j) (Kernels.morselEnd phys.Length j)
 
-                let keep: int -> bool =
-                    match compiled.Node with
-                    | NBool r ->
-                        fun p ->
-                            let b = r p
-                            (not slot.Null) && b
-                    | NNull -> fun _ -> false
-                    | NInt _
-                    | NFloat _
-                    | NStr _
-                    | NCell _ ->
-                        let r = compiled.Run
-
-                        fun p ->
-                            match r p with
-                            | Bool true -> true
-                            | _ -> false
-
-                let hi = Kernels.morselEnd phys.Length j
-                let mine = ResizeArray<int>()
-                let mutable i = Kernels.morselStart j
-
-                while Option.isNone errors[j] && i < hi do
-                    slot.Error <- None
-                    let p = Raw.get i phys
-                    let keepIt = keep p
-
-                    match slot.Error with
-                    | Some e -> errors[j] <- Some e
-                    | None ->
-                        if keepIt then
-                            mine.Add p
-
-                        i <- i + 1
-
-                kept[j] <- mine.ToArray()
-                Option.isNone errors[j]
+                counts[j] <- count
+                errors[j] <- error
+                Option.isNone error
 
             k.RunMorsels m run
 
             match Array.tryPick id errors with
             | Some e -> Error e
-            | None -> Ok(Frame.select f (Array.concat kept))
+            | None -> Ok(Frame.select f (keptInOrder Kernels.MorselRows rows counts))
 
     let private evalProject (f: Frame) (pairs: (string * string) list) : Result<Frame, EvalError> =
         let resolve (src, out) =
@@ -4648,6 +4700,100 @@ module DataFrame =
     /// resolved expression, so every morsel's tree has the kind of root the first one has.
     let private sameShape () : 'a =
         invalidOp "a step's compiled trees disagree on their root's kind"
+
+    /// The int, float and bool roots of a compiled tree (Phase 375), for `rootOf`.
+    let internal pickInt (n: Node) : (int -> int) option =
+        match n with
+        | NInt r -> Some r
+        | _ -> None
+
+    let internal pickFloat (n: Node) : (int -> float) option =
+        match n with
+        | NFloat r -> Some r
+        | _ -> None
+
+    let internal pickBool (n: Node) : (int -> bool) option =
+        match n with
+        | NBool r -> Some r
+        | _ -> None
+
+    /// The typed root of a compiled `Derive`'s tree, read through `pick` (Phase 375): every morsel's
+    /// tree has the first one's kind of root, so another kind is the compiler disagreeing with
+    /// itself.
+    let internal rootOf (pick: Node -> (int -> 'a) option) (c: CompiledExpr) : int -> 'a =
+        match pick c.Node with
+        | Some r -> r
+        | None -> sameShape ()
+
+    /// One morsel of a compiled `Derive` with a typed root (Phase 375; the loop Phase 266 and 270
+    /// wrote inline): `read` (the root of a tree compiled for this morsel) run once per logical row
+    /// `lo .. hi - 1` (the morsel) in logical order, stopping at the first row that records an
+    /// error. A row whose
+    /// value is present is handed to `put` at its PHYSICAL position — morsels write disjoint
+    /// positions — and it answers the error it met, if any.
+    ///
+    /// The ONE row loop of the step, inlined at both of its sites so neither pays an indirect call
+    /// a row for `put`: the sequential evaluator's, which puts into the column's carrier and mask,
+    /// and a runner holding the step as data (`MorselHandOff`), which puts into its result slots.
+    let inline internal deriveMorsel
+        (slot: ErrorSlot)
+        (read: int -> 'a)
+        (phys: int[])
+        (lo: int)
+        (hi: int)
+        ([<InlineIfLambda>] put: int -> 'a -> unit)
+        : EvalError option =
+        let mutable error = None
+        let mutable i = lo
+
+        while Option.isNone error && i < hi do
+            slot.Error <- None
+            let p = Raw.get i phys
+            let v = read p
+
+            match slot.Error with
+            | Some e -> error <- Some e
+            | None ->
+                if not slot.Null then
+                    put p v
+
+                i <- i + 1
+
+        error
+
+    /// A derived column with no present cell (Phase 338): a decided column keeps its type, packed
+    /// empty under it; one the cells type is `StringType`, as it always was.
+    let internal derivedNonePresent (dt: DerivedTyping) (count: int) : ColumnType * Vec =
+        let ty =
+            match dt with
+            | Decided ty -> ty
+            | ByCells
+            | Refused -> StringType
+
+        ty, Vec.pack ty (Array.create count Null)
+
+    /// A derived column from a typed root's carrier and mask, once every morsel has run (Phase 375,
+    /// shared by the sequential evaluator and the step as data). A typed vector holds one type, so
+    /// the cells' join is that type and cannot refuse. Where the column is decided, the decided type
+    /// is the column's; a typed root of another type would be the typer and the compiler disagreeing
+    /// — its cells are kept as produced, boxed under the decided type, and the derive-typing law
+    /// (`Conformance.deriveTypingLaws`) is what goes red on it.
+    let internal derivedTyped
+        (dt: DerivedTyping)
+        (count: int)
+        (phys: int[])
+        (nodeTy: ColumnType)
+        (v: Vec)
+        (mask: bool[])
+        : ColumnType * Vec =
+        if not (Vec.anyPresent mask phys) then
+            derivedNonePresent dt count
+        else
+            match dt with
+            | Decided ty when ty <> nodeTy -> ty, Cells(Array.init count (Vec.cellAt v))
+            | Decided _
+            | ByCells
+            | Refused -> nodeTy, v
 
     /// `evalDerive` past the static refusal.
     let private evalDerivedColumn
@@ -4694,89 +4840,49 @@ module DataFrame =
 
             Array.tryPick id errors
 
-        // A column with no present cell (Phase 338): a decided column keeps its type, packed empty
-        // under it; one the cells type is `StringType`, as it always was.
-        let nonepresent () : ColumnType * Vec =
-            let ty =
-                match dt with
-                | Decided ty -> ty
-                | ByCells
-                | Refused -> StringType
+        let nonepresent () : ColumnType * Vec = derivedNonePresent dt count
 
-            ty, Vec.pack ty (Array.create count Null)
-
-        // A typed vector holds one type, so the cells' join is that type and cannot refuse. Where
-        // the column is decided, the decided type is the column's; a typed root of another type
-        // would be the typer and the compiler disagreeing — its cells are kept as produced, boxed
-        // under the decided type, and the derive-typing law (`Conformance.deriveTypingLaws`) is
-        // what goes red on it.
+        // A typed root (Phase 375): each morsel through `deriveMorsel`, its own tree's root put
+        // straight into the carrier at the row's physical position.
         let typed
-            (read: CompiledExpr -> int -> 'a)
+            (pick: Node -> (int -> 'a) option)
             (mk: 'a[] -> bool[] -> Vec)
             (nodeTy: ColumnType)
             : Result<ColumnType * Vec, EvalError> =
             let vals: 'a[] = Array.zeroCreate count
             let mask: bool[] = Array.zeroCreate count
 
-            let failed =
-                run (fun c ->
-                    let r = read c
-                    let slot = c.Slot
+            k.RunMorsels m (fun j ->
+                let c = if j = 0 then first else compileExpr f resolved
 
-                    fun i ->
-                        let p = Raw.get i phys
-                        let v = r p
-
-                        if Option.isNone slot.Error && not slot.Null then
+                let error =
+                    deriveMorsel
+                        c.Slot
+                        (rootOf pick c)
+                        phys
+                        (Kernels.morselStart j)
+                        (Kernels.morselEnd n j)
+                        (fun p v ->
                             Raw.put vals p v
                             Raw.put mask p true)
 
-            match failed with
+                errors[j] <- error
+                Option.isNone error)
+
+            match Array.tryPick id errors with
             | Some e -> Error e
-            | None ->
-                if not (Vec.anyPresent mask phys) then
-                    Ok(nonepresent ())
-                else
-                    match dt with
-                    | Decided ty when ty <> nodeTy ->
-                        let v = mk vals mask
-                        Ok(ty, Cells(Array.init count (Vec.cellAt v)))
-                    | Decided _
-                    | ByCells
-                    | Refused -> Ok(nodeTy, mk vals mask)
+            | None -> Ok(derivedTyped dt count phys nodeTy (mk vals mask) mask)
 
         let derived =
             match first.Node with
-            | NInt _ ->
-                typed
-                    (fun c ->
-                        match c.Node with
-                        | NInt r -> r
-                        | _ -> sameShape ())
-                    (fun v m -> Ints(v, m))
-                    IntType
-            | NFloat _ ->
-                typed
-                    (fun c ->
-                        match c.Node with
-                        | NFloat r -> r
-                        | _ -> sameShape ())
-                    (fun v m -> Floats(v, m))
-                    FloatType
-            | NBool _ ->
-                typed
-                    (fun c ->
-                        match c.Node with
-                        | NBool r -> r
-                        | _ -> sameShape ())
-                    (fun v m -> Bools(v, m))
-                    BoolType
+            | NInt _ -> typed pickInt (fun v m -> Ints(v, m)) IntType
+            | NFloat _ -> typed pickFloat (fun v m -> Floats(v, m)) FloatType
+            | NBool _ -> typed pickBool (fun v m -> Bools(v, m)) BoolType
             | NStr(sty, _) ->
                 typed
-                    (fun c ->
-                        match c.Node with
-                        | NStr(_, r) -> r
-                        | _ -> sameShape ())
+                    (function
+                    | NStr(_, r) -> Some r
+                    | _ -> None)
                     (fun v m -> Strs(sty, v, m))
                     sty
             | NNull -> Ok(nonepresent ())
@@ -9868,3 +9974,420 @@ module DataFrameCodec =
     let pipelineCodec: Corpus.Codec<Transform list> =
         { Encode = encodePipeline
           Decode = fun s -> decodePipeline s |> Result.mapError ColumnCodec.errorString }
+
+// ============================================================================
+//  Phase 375 — the step as data: a row-local step handed to a runner that
+//  shares no closure with the caller.
+//
+//  The morsel runner Layer 6 runs (`KernelSet.RunMorsels`) takes a closure over
+//  the frame, the compiled tree and the caller's result arrays, which cannot
+//  cross into a Web Worker (compute `DECISIONS.md` D10 item 4b). The hand-off
+//  below is that step as PLAIN DATA: the step and its environment on the
+//  canonical wire, the frame's schema, the vectors the step reads (int and float
+//  values as they are, bool values and validity masks as bytes), the logical
+//  rows, the morsel geometry and range, and the result slots — strings, numbers
+//  and arrays of numbers only, so it survives a structured clone, and every
+//  array in it is one a typed array over shared memory can back.
+//
+//  There is ONE compile path. A runner rebuilds the frame from the data, resolves
+//  and compiles the step with the evaluator's own `resolveExpr` / `compileExpr`,
+//  and runs each morsel through the evaluator's own row loop (`filterMorsel`,
+//  `deriveMorsel`) — the loops the sequential member runs. The caller finishes:
+//  a `Filter`'s kept rows concatenated in morsel order (`keptInOrder`), a
+//  `Derive`'s carrier through `derivedTyped`; an error is recovered by re-running
+//  the first failed morsel on the caller's thread, through the same loop, so the
+//  error crosses no boundary and is the one the sequential member raises.
+//
+//  A step is handed off only when the wire carries it exactly (it decodes back to
+//  itself, and so does its environment), when every column it reads is an int,
+//  float or bool vector (a string, decimal or boxed column cannot be shared), when
+//  it is not a comparison-kernel filter (Phase 270's bitmap answers that one), and
+//  when a `Derive`'s root is typed int, float or bool. Every other step runs as it
+//  always ran. Internal: no runner ships yet, and the laws (`MorselHandOffTests`)
+//  hold every handed-off step byte-identical to the sequential member.
+// ============================================================================
+
+/// One row-local step as plain data (Phase 375): what a runner needs to compile and run a range of
+/// the step's morsels without any closure of the caller's, and the slots it writes its results to.
+type internal MorselHandOff =
+    {
+        /// The step — a `Filter` or a `Derive` — as a one-step pipeline on the canonical wire.
+        Step: string
+        /// The evaluation environment on the canonical wire: an object from each bound name to the
+        /// `lit` expression of its cell.
+        Env: string
+        /// The frame's schema, every column: its name, and its type's wire tag (`ColumnType.tag`).
+        Names: string[]
+        Types: string[]
+        /// What is carried of each column: `0` nothing (the step reads no such column), `1` int
+        /// values (`Ints`), `2` float values (`Floats`), `3` bool values as bytes (`Bools`); a
+        /// carried column's validity mask is in `Masks`, one byte a row. Empty where not carried.
+        Kinds: int[]
+        Ints: int[][]
+        Floats: float[][]
+        Bools: byte[][]
+        Masks: byte[][]
+        /// The frame's physical row count: the length of every carried vector.
+        Count: int
+        /// The physical row of every logical row, in logical order.
+        Rows: int[]
+        /// The rows in one morsel: morsel `j` is the logical rows from `j * MorselRows` to the next.
+        MorselRows: int
+        /// The morsels a runner given this record runs: `First .. Last - 1`.
+        First: int
+        Last: int
+        /// What the step answers: `0` a `Filter`'s kept rows; a `Derive`'s typed root, `1` int,
+        /// `2` float, `3` bool.
+        Root: int
+        /// A `Filter`'s kept physical rows, morsel `j`'s from offset `j * MorselRows`, and how many
+        /// each morsel kept.
+        OutRows: int[]
+        OutCounts: int[]
+        /// `1` for a morsel that met an error.
+        OutFailed: byte[]
+        /// A `Derive`'s carrier at each physical row (the one its root's type names) and its mask.
+        OutInts: int[]
+        OutFloats: float[]
+        OutBools: byte[]
+        OutMask: byte[]
+    }
+
+module internal MorselHandOff =
+
+    // The two copies between the evaluator's masks and the hand-off's bytes. The loops prove every
+    // index, so they read and write unchecked (`Raw.get` / `Raw.set`): under Fable a checked index
+    // is the runtime's shared `item` / `setItem`, several times the copy itself.
+
+    let private bytesOf (mask: bool[]) : byte[] =
+        let out: byte[] = Array.zeroCreate mask.Length
+
+        for i in 0 .. mask.Length - 1 do
+            if Raw.get i mask then
+                Raw.set out i 1uy
+
+        out
+
+    let private boolsOf (bytes: byte[]) : bool[] =
+        let out: bool[] = Array.zeroCreate bytes.Length
+
+        for i in 0 .. bytes.Length - 1 do
+            Raw.set out i (Raw.get i bytes <> 0uy)
+
+        out
+
+    let private encodeEnv (env: Map<string, Cell>) : string =
+        Canon.render (JObj [ for KeyValue(name, c) in env -> name, DataFrameCodec.encodeExpr (Lit c) ])
+
+    let private decodeEnv (s: string) : Map<string, Cell> option =
+        match Json.parseDetailed s with
+        | Ok(JObj fields) ->
+            let cells =
+                fields
+                |> List.map (fun (name, el) ->
+                    match DataFrameCodec.decodeExpr el with
+                    | Ok(Lit c) -> Some(name, c)
+                    | _ -> None)
+
+            if List.forall Option.isSome cells then
+                Some(cells |> List.choose id |> Map.ofList)
+            else
+                None
+        | _ -> None
+
+    let private decodeStep (s: string) : Transform option =
+        match DataFrameCodec.decodePipeline s with
+        | Ok [ t ] -> Some t
+        | _ -> None
+
+    /// The columns a resolved expression reads.
+    let rec private reads (e: DataFrame.ResolvedExpr) : int list =
+        match e with
+        | DataFrame.RCol i -> [ i ]
+        | DataFrame.RConst _
+        | DataFrame.RFail _ -> []
+        | DataFrame.RBinary(_, a, b) -> reads a @ reads b
+        | DataFrame.RNot a
+        | DataFrame.RCast(_, a)
+        | DataFrame.RIsNull a
+        | DataFrame.RRounded(_, _, a) -> reads a
+        | DataFrame.RCoalesce xs
+        | DataFrame.RApplyFn(_, xs) -> List.collect reads xs
+        | DataFrame.RCase(cases, e) -> (cases |> List.collect (fun (w, t) -> reads w @ reads t)) @ reads e
+        | DataFrame.RInList(s, xs) -> reads s @ List.collect reads xs
+        | DataFrame.RQuotient(_, _, a, b) -> reads a @ reads b
+
+    /// A kernel set that computes nothing: `filterBits` through it answers only WHETHER the
+    /// comparison kernels take a predicate, at no cost.
+    let private dry: KernelSet =
+        { Kernels.portable with
+            CmpInts = fun _ _ _ _ _ -> [||]
+            CmpFloats = fun _ _ _ _ _ -> [||]
+            And = fun _ _ -> [||]
+            Or = fun _ _ -> [||] }
+
+    let private morsels (morselRows: int) (n: int) : int = (n + morselRows - 1) / morselRows
+
+    /// How many morsels the hand-off's rows make.
+    let morselCount (h: MorselHandOff) : int = morsels h.MorselRows h.Rows.Length
+
+    /// The step `t` over `f` under `env` as data, in morsels of `morselRows` rows, the range covering
+    /// every morsel — or `None` when the step is not one a runner may take (see the header), in
+    /// which case it runs as it always ran.
+    let planAt (morselRows: int) (env: Map<string, Cell>) (f: Frame) (t: Transform) : MorselHandOff option =
+        let expr =
+            match t with
+            | Filter e
+            | Derive(_, e) -> Some e
+            | _ -> None
+
+        match expr with
+        | None -> None
+        | Some _ when morselRows < 1 -> None
+        | Some e ->
+            let step = DataFrameCodec.encodePipeline [ t ]
+            let envWire = encodeEnv env
+            let exact = decodeStep step = Some t && decodeEnv envWire = Some env
+            let resolved = DataFrame.resolveExpr env f.Cols e
+            let used = reads resolved |> List.distinct
+
+            let shareable =
+                used
+                |> List.forall (fun i ->
+                    match f.Vecs[i] with
+                    | Ints _
+                    | Floats _
+                    | Bools _ -> true
+                    | Strs _
+                    | Decs _
+                    | Cells _ -> false)
+
+            let root =
+                match t with
+                | Filter _ ->
+                    let past =
+                        match f.Sel with
+                        | Some sel -> sel |> Array.exists (fun p -> p < 0 || p >= f.Count)
+                        | None -> false
+
+                    if past || Option.isSome (DataFrame.filterBits dry f resolved) then
+                        None
+                    else
+                        Some 0
+                | _ ->
+                    match DataFrame.derivedTyping f.Cols e with
+                    | DataFrame.Refused -> None
+                    | _ ->
+                        match (DataFrame.compileExpr f resolved).Node with
+                        | DataFrame.NInt _ -> Some 1
+                        | DataFrame.NFloat _ -> Some 2
+                        | DataFrame.NBool _ -> Some 3
+                        | _ -> None
+
+            match root with
+            | Some root when exact && shareable ->
+                let k = List.length f.Cols
+                let rows = Frame.physical f
+                let m = morsels morselRows rows.Length
+                let kinds: int[] = Array.zeroCreate k
+                let ints: int[][] = Array.create k [||]
+                let floats: float[][] = Array.create k [||]
+                let bools: byte[][] = Array.create k [||]
+                let masks: byte[][] = Array.create k [||]
+
+                for i in used do
+                    match f.Vecs[i] with
+                    | Ints(v, mask) ->
+                        kinds[i] <- 1
+                        ints[i] <- v
+                        masks[i] <- bytesOf mask
+                    | Floats(v, mask) ->
+                        kinds[i] <- 2
+                        floats[i] <- v
+                        masks[i] <- bytesOf mask
+                    | Bools(v, mask) ->
+                        kinds[i] <- 3
+                        bools[i] <- bytesOf v
+                        masks[i] <- bytesOf mask
+                    | Strs _
+                    | Decs _
+                    | Cells _ -> ()
+
+                let sized (want: int) (n: int) = if root = want then n else 0
+
+                Some
+                    { Step = step
+                      Env = envWire
+                      Names = f.Cols |> List.map fst |> List.toArray
+                      Types = f.Cols |> List.map (snd >> ColumnType.tag) |> List.toArray
+                      Kinds = kinds
+                      Ints = ints
+                      Floats = floats
+                      Bools = bools
+                      Masks = masks
+                      Count = f.Count
+                      Rows = rows
+                      MorselRows = morselRows
+                      First = 0
+                      Last = m
+                      Root = root
+                      OutRows = Array.zeroCreate (sized 0 rows.Length)
+                      OutCounts = Array.zeroCreate m
+                      OutFailed = Array.zeroCreate m
+                      OutInts = Array.zeroCreate (sized 1 f.Count)
+                      OutFloats = Array.zeroCreate (sized 2 f.Count)
+                      OutBools = Array.zeroCreate (sized 3 f.Count)
+                      OutMask = Array.zeroCreate (if root = 0 then 0 else f.Count) }
+            | _ -> None
+
+    /// `planAt` in the evaluator's own morsels (`Kernels.MorselRows`).
+    let plan (env: Map<string, Cell>) (f: Frame) (t: Transform) : MorselHandOff option =
+        planAt Kernels.MorselRows env f t
+
+    /// The frame, environment and step a runner rebuilds from the data alone. A column the step does
+    /// not read is an empty placeholder: the compiled tree reads only the columns the step names.
+    let rebuild (h: MorselHandOff) : Frame * Map<string, Cell> * Transform =
+        let types =
+            h.Types
+            |> Array.map (fun tag ->
+                match ColumnType.ofTag tag with
+                | Some ty -> ty
+                | None -> invalidOp ("a hand-off names an unknown column type: " + tag))
+
+        let vecs =
+            Array.init h.Names.Length (fun i ->
+                match h.Kinds[i] with
+                | 1 -> Ints(h.Ints[i], boolsOf h.Masks[i])
+                | 2 -> Floats(h.Floats[i], boolsOf h.Masks[i])
+                | 3 -> Bools(boolsOf h.Bools[i], boolsOf h.Masks[i])
+                | _ -> Cells [||])
+
+        let frame: Frame =
+            { Cols = List.init h.Names.Length (fun i -> h.Names[i], types[i])
+              Vecs = vecs
+              Origins = Array.create h.Names.Length None
+              Sel = Some h.Rows
+              Count = h.Count }
+
+        match decodeStep h.Step, decodeEnv h.Env with
+        | Some t, Some env -> frame, env, t
+        | _ -> invalidOp "a hand-off whose step or environment does not decode"
+
+    /// The step resolved against the frame a runner rebuilt — once per range, before its morsels.
+    let resolve (f: Frame) (env: Map<string, Cell>) (t: Transform) : DataFrame.ResolvedExpr =
+        match t with
+        | Filter e
+        | Derive(_, e) -> DataFrame.resolveExpr env f.Cols e
+        | _ -> invalidOp "a hand-off whose step is not row-local"
+
+    /// Run morsel `j` over the logical rows `lo .. hi - 1` of the rebuilt step, writing its results
+    /// to the hand-off's slots, through the evaluator's own row loop: what `run` does for each
+    /// morsel of its range. A runner passes morsel `j`'s own rows; the laws pass others.
+    let runSpan (f: Frame) (resolved: DataFrame.ResolvedExpr) (h: MorselHandOff) (j: int) (lo: int) (hi: int) : unit =
+        let phys = h.Rows
+
+        let failed =
+            match h.Root with
+            | 0 ->
+                let struct (count, error) = DataFrame.filterMorsel f resolved phys h.OutRows lo hi
+
+                h.OutCounts[j] <- count
+                Option.isSome error
+            | 1 ->
+                let c = DataFrame.compileExpr f resolved
+
+                DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickInt c) phys lo hi (fun p v ->
+                    Raw.put h.OutInts p v
+                    Raw.put h.OutMask p 1uy)
+                |> Option.isSome
+            | 2 ->
+                let c = DataFrame.compileExpr f resolved
+
+                DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickFloat c) phys lo hi (fun p v ->
+                    Raw.put h.OutFloats p v
+                    Raw.put h.OutMask p 1uy)
+                |> Option.isSome
+            | _ ->
+                let c = DataFrame.compileExpr f resolved
+
+                DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickBool c) phys lo hi (fun p v ->
+                    Raw.put h.OutBools p (if v then 1uy else 0uy)
+                    Raw.put h.OutMask p 1uy)
+                |> Option.isSome
+
+        h.OutFailed[j] <- if failed then 1uy else 0uy
+
+    /// The runner's side: rebuild the step from the data, compile it, and run the morsels
+    /// `First .. Last - 1` in order, each over its own rows, stopping at the first that fails.
+    let run (h: MorselHandOff) : unit =
+        let f, env, t = rebuild h
+        let resolved = resolve f env t
+        let n = h.Rows.Length
+        let mutable j = h.First
+
+        while j < h.Last do
+            runSpan f resolved h j (j * h.MorselRows) (min n ((j + 1) * h.MorselRows))
+            j <- if h.OutFailed[j] <> 0uy then h.Last else j + 1
+
+    /// The caller's side, once every morsel has run: the step's answer from the result slots — the
+    /// sequential member's answer, byte for byte. An error is recovered by re-running the first
+    /// failed morsel on the caller's own frame through the same row loop.
+    let finish (env: Map<string, Cell>) (f: Frame) (t: Transform) (h: MorselHandOff) : Result<Frame, EvalError> =
+        let n = h.Rows.Length
+        let m = morselCount h
+
+        match Seq.tryFind (fun j -> h.OutFailed[j] <> 0uy) (seq { 0 .. m - 1 }) with
+        | Some j ->
+            let resolved = resolve f env t
+            let lo = j * h.MorselRows
+            let hi = min n ((j + 1) * h.MorselRows)
+
+            let error =
+                match h.Root with
+                | 0 ->
+                    let struct (_, error) =
+                        DataFrame.filterMorsel f resolved h.Rows (Array.zeroCreate n) lo hi
+
+                    error
+                | 1 ->
+                    let c = DataFrame.compileExpr f resolved
+                    DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickInt c) h.Rows lo hi (fun _ _ -> ())
+                | 2 ->
+                    let c = DataFrame.compileExpr f resolved
+                    DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickFloat c) h.Rows lo hi (fun _ _ -> ())
+                | _ ->
+                    let c = DataFrame.compileExpr f resolved
+                    DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickBool c) h.Rows lo hi (fun _ _ -> ())
+
+            match error with
+            | Some e -> Error e
+            | None -> invalidOp "a morsel the runner failed answers no error on the caller's thread"
+        | None ->
+            match t with
+            | Filter _ -> Ok(Frame.select f (DataFrame.keptInOrder h.MorselRows h.OutRows h.OutCounts))
+            | Derive(name, e) ->
+                let dt = DataFrame.derivedTyping f.Cols e
+                let mask = boolsOf h.OutMask
+
+                let ty, vec =
+                    match h.Root with
+                    | 1 -> DataFrame.derivedTyped dt f.Count h.Rows IntType (Ints(h.OutInts, mask)) mask
+                    | 2 -> DataFrame.derivedTyped dt f.Count h.Rows FloatType (Floats(h.OutFloats, mask)) mask
+                    | _ -> DataFrame.derivedTyped dt f.Count h.Rows BoolType (Bools(boolsOf h.OutBools, mask)) mask
+
+                Ok(Frame.withColumn f name ty vec)
+            | _ -> invalidOp "a hand-off whose step is not row-local"
+
+    /// The step through a runner: planned, handed to `runner` (which must run every morsel of the
+    /// hand-off it is given, in any order and on any thread), and finished — or `None` when the step
+    /// is not handed off.
+    let evalWith
+        (runner: MorselHandOff -> unit)
+        (morselRows: int)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (t: Transform)
+        : Result<Frame, EvalError> option =
+        planAt morselRows env f t
+        |> Option.map (fun h ->
+            runner h
+            finish env f t h)

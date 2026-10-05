@@ -21,6 +21,10 @@
     <Compile Include="PreparedResultLaw.fs" />
     <Compile Include="DataFrameTests.fs" />
     <Compile Include="ConcurrentPipelinesTests.fs" />
+    <!-- Phase 375: the step as data, held byte-identical to the sequential member. The law is
+         Fable-clean; the node harness under benchmarks/results/ compiles it too. -->
+    <Compile Include="MorselHandOffLaw.fs" />
+    <Compile Include="MorselHandOffTests.fs" />
     <Compile Include="ColumnOpsTests.fs" />
     <Compile Include="DeltaTests.fs" />
     <Compile Include="IncrementalTests.fs" />

@@ -73,6 +73,21 @@ tagged: an additive change rides it, a breaking one advances it.
 hand them over as one list. `resolve` may then be called from several threads at once on .NET, so it
 must be safe to call concurrently, as a lookup in an immutable map is.
 
+### A row-local step as plain data, for a worker to compile (Phase 375, `DECISIONS.md` D13) — none, `performance`
+
+**What changed.** No public surface moves, and no answer. Inside `Fuaran.Compute.DataFrame`, the
+`Filter` and `Derive` row loops are lifted into one loop each that the sequential evaluator and an
+internal hand-off (`MorselHandOff`: the step and its environment on the canonical wire, the vectors it
+reads as plain arrays, the result slots) both run, so a future worker compiles the step through the
+evaluator's own path. A `Filter`'s kept rows land in one buffer rather than a growable list per morsel:
+under node the sequential `filter` is 1.6 to 1.8 times faster at 100,000 and 1,000,000 rows, and
+nothing is slower on either host (`benchmarks/results/2026-10-06-i7-9700-phase-375.md`). The suite
+holds every handed-off step byte-identical to the sequential member over the transform-law vectors and
+the corpus, on .NET and under node.
+
+**Nothing to adopt.** The opt-in worker path D10 rules for is not yet reachable: no runner, pool or
+asynchronous entry point ships in this draft.
+
 ### The pivot aggregates per pair through streams, and the Table boundary fills its selection with a loop (Phase 353) — none, `performance`
 
 **What changed.** No public surface moves, and no answer. The pivot aggregates each (group, on-value)

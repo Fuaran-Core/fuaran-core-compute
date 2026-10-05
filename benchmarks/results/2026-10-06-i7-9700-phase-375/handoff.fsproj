@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Phase 375 — the step-as-data laws (tests/Fuaran.Core.Compute.Tests/MorselHandOffLaw.fs) under
+    node, every hand-off through a structured clone, and what planning and rebuilding a hand-off
+    costs. Not a member of the solution: the verify gate never builds it. Compile it with Fable and
+    run the emitted Program.js (see the results file beside this directory); `dotnet run` runs the
+    same program on .NET, where a hand-off crosses no clone.
+
+    The assembly takes the test suite's name because it compiles the suite's law file, which reads
+    the dataframe package's internal working forms; the package lets that one assembly see them.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Fuaran.Core.Compute.Tests</AssemblyName>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\TransformVectorSample.fs" Link="TransformVectorSample.fs" />
+    <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\PreparedResultLaw.fs" Link="PreparedResultLaw.fs" />
+    <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\MorselHandOffLaw.fs" Link="MorselHandOffLaw.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>
