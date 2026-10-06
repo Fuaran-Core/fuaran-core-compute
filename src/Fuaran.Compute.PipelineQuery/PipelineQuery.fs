@@ -358,8 +358,9 @@ module PipelineQuery =
 
     /// The pair with `args` substituted into its pipeline: a parameter the pipeline reads as a list
     /// takes every binding of its name, in order (`Transform.substituteListParams`); any other takes
-    /// its binding (`Transform.substitute`; the last, where a name is bound twice, as the
-    /// substrate's validation reads it). A parameter left unbound stays a parameter, so evaluation
+    /// its binding (`Transform.substitute`; the last, where a name is bound twice — which
+    /// `PipelineQueryRegistry.dispatch` refuses before substituting, as the substrate's validation
+    /// does since `Fuaran.Core` 0.35.1). A parameter left unbound stays a parameter, so evaluation
     /// names it — the strict `EvalError.UnboundParam` — unless the host prunes it first.
     let substitute (args: (string * Cell) list) (pq: PipelineQuery) : PipelineQuery =
         let reads = paramReads pq
@@ -426,17 +427,62 @@ module PipelineQueryRegistry =
     /// envelope — so the outcomes are the substrate's three (settled, pending, refused typed), and
     /// a resolver's `Failed` is the enumerated `ExecutionFailed`, never `Ok(Failed _)`. The resolver
     /// receives the pair with the validated arguments substituted (`PipelineQuery.substitute`).
+    ///
+    /// A parameter the pipeline reads as a LIST is bound by naming it once per element, in order. The
+    /// substrate refuses a name bound twice (`DuplicateParam`, `Fuaran.Core` 0.35.1), so its gate is
+    /// handed the first binding of each list-read name, and every further binding is held to the
+    /// same gate in that first binding's place — its type, and its name's declaration — before the
+    /// resolver runs. A scalar-read name bound twice is still the substrate's `DuplicateParam`.
     let dispatch
         (r: PipelineQueryRegistry)
         (id: string)
         (args: (string * Cell) list)
         (resolve: PipelineQuery -> Deferred<QueryResult>)
         : Result<Deferred<QueryResult>, QueryError> =
-        QueryRegistry.dispatch r.Declarations id args (fun q ->
-            match Map.tryFind q.Id r.Bodies with
-            | Some pq -> resolve (PipelineQuery.substitute args pq)
-            // Unreachable: the declarations and the bodies are added together, in `register` only.
-            | None -> Failed("no body registered for " + q.Id))
+        let viaSubstrate (gateArgs: (string * Cell) list) =
+            QueryRegistry.dispatch r.Declarations id gateArgs (fun q ->
+                match Map.tryFind q.Id r.Bodies with
+                | Some pq -> resolve (PipelineQuery.substitute args pq)
+                // Unreachable: the declarations and the bodies are added together, in `register` only.
+                | None -> Failed("no body registered for " + q.Id))
+
+        match Map.tryFind id r.Bodies with
+        // An unregistered id: the substrate answers `NoSuchQuery`.
+        | None -> viaSubstrate args
+        | Some pq ->
+            let listRead =
+                PipelineQuery.paramReads pq
+                |> List.choose (fun (n, read) ->
+                    match read with
+                    | ParamRead.List _ -> Some n
+                    | ParamRead.Scalar _ -> None)
+                |> Set.ofList
+
+            // The first binding of each list-read name stays in place; its later bindings are set aside.
+            let gateArgs, further =
+                args
+                |> List.fold
+                    (fun (kept, rest, seen: Set<string>) (n, c) ->
+                        if Set.contains n listRead && Set.contains n seen then
+                            kept, (n, c) :: rest, seen
+                        else
+                            (n, c) :: kept, rest, Set.add n seen)
+                    ([], [], Set.empty)
+                |> fun (kept, rest, _) -> List.rev kept, List.rev rest
+
+            let inPlaceOfFirst (n: string, c: Cell) =
+                gateArgs |> List.map (fun (m, d) -> if m = n then (m, c) else (m, d))
+
+            let rec checkFurther =
+                function
+                | [] -> Ok()
+                | binding :: more ->
+                    Query.validateParams pq.Query (inPlaceOfFirst binding)
+                    |> Result.bind (fun () -> checkFurther more)
+
+            Query.validateParams pq.Query gateArgs
+            |> Result.bind (fun () -> checkFurther further)
+            |> Result.bind (fun () -> viaSubstrate gateArgs)
 
 /// The canonical wire codec for a pipeline query (Phase 281):
 /// `{"$type":"pipelineQuery","pipeline":[…],"query":{…},"sources":[{"name":…,"schema":[…]}]}` —

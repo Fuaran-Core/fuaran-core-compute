@@ -118,6 +118,61 @@ let tests =
                       "the one north row at or above 0.50, exactly"
               | other -> failtestf "expected a settled answer, got %A" other
 
+          testCase
+              "a list-read name is bound once per element through the substrate's one-binding gate; a scalar name bound twice is DuplicateParam"
+          <| fun _ ->
+              let byRegions =
+                  pair
+                      (query
+                          "by-regions"
+                          [ param "regions" StringType true; param "floor" DecimalType true ]
+                          [ "region", StringType ]
+                          (Ref "ledger"))
+                      [ Filter(ColExpr.InParam(ColExpr.Col "region", "regions"))
+                        Filter(ColExpr.Binary(Ge, ColExpr.Col "amount", ColExpr.Param "floor"))
+                        Project [ "region", "region" ] ]
+
+              let reg =
+                  match PipelineQueryRegistry.register byRegions PipelineQueryRegistry.empty with
+                  | Ok r -> r
+                  | Error e -> failtestf "refused: %A" e
+
+              let seen = ref None
+
+              let run args =
+                  PipelineQueryRegistry.dispatch reg "by-regions" args (fun bound ->
+                      seen.Value <- Some bound
+                      Pending)
+
+              Expect.equal
+                  (run [ "regions", Str "north"; "floor", dec "0"; "regions", Str "south" ])
+                  (Ok Pending)
+                  "every binding of a list-read name is admitted"
+
+              match seen.Value with
+              | Some bound ->
+                  Expect.equal
+                      (List.head bound.Pipeline)
+                      (Filter(
+                          ColExpr.InList(ColExpr.Col "region", [ ColExpr.Lit(Str "north"); ColExpr.Lit(Str "south") ])
+                      ))
+                      "the resolver receives every element, in order"
+              | None -> failtest "the resolver never ran"
+
+              seen.Value <- None
+
+              Expect.equal
+                  (run [ "regions", Str "north"; "floor", dec "0"; "regions", Int 3 ])
+                  (Error(ParamTypeMismatch("regions", StringType, IntType)))
+                  "a later element is held to the declared type"
+
+              Expect.equal
+                  (run [ "regions", Str "north"; "floor", dec "0"; "floor", dec "1" ])
+                  (Error(DuplicateParam "floor"))
+                  "a scalar-read name bound twice is the substrate's refusal"
+
+              Expect.isNone seen.Value "no refused dispatch reached the resolver"
+
           testCase "a decimal floor declared as a float is refused, naming the type it is read at"
           <| fun _ ->
               let floatFloor =
