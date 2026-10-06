@@ -12,7 +12,7 @@ will be behind the day the fourth moves**, because F\* releases weekly.
 This directory is that design, written once. This repository consumes it **in place**: its
 `proofs/check.ps1` is a thin caller that declares what this repository has and hands it to
 `check-proof-leg.ps1`. Another repository adopts it by **copying** the files listed below and
-declaring each copy in its own `copies.json`, so the estate's copy registry names a copy that has
+declaring each copy in its own `copies.json`, so the workspace copy registry names a copy that has
 drifted from this one before anybody meets a red gate they did not cause.
 
 **What it deliberately is not:** a package, a module, or a runtime dependency. An adopting
@@ -104,6 +104,31 @@ not, and it should not take scrolling to find that out.
 **Every prover invocation's whole output is teed** to `<WorkDir>/logs/<module>[.retry].<step>.log`,
 and each verdict names the transcript it was read from, so a post-mortem reads the classification's
 own evidence rather than a scrollback that is gone.
+
+## Twin evaluation (Phase 309)
+
+The extraction diff makes "the oracle is the model" a checked claim about TEXT. It says nothing about
+whether the F\# the backend emits COMPUTES what the model means: a mis-extraction that compiles passes
+every other step. Twin evaluation discharges that premise on sampled inputs, and it is opt-in —
+`-Twins` on the engine.
+
+- **In each extracted model**, a final section declaring `noeq type twin = { tname : string; tholds :
+  unit -> bool }`, `twins_hold`, a `let twins : list twin = [...]` of fixtures — each closure applies
+  the model's own functions to a concrete input and compares the result with the value the model
+  means — and `let _ = assert_norm (twins_hold twins == true)`. The prover's NORMALISER evaluates
+  every fixture at the check step; a wrong expected value is a refutation like any other.
+- **In the oracle**, the list is extracted with the model, so the host can run the very closures the
+  normaliser evaluated. The adopting repository's host family evaluates each one against the
+  extracted oracle and fails on a `false` — that is the F\# computing something other than the model
+  on that input. (A top-level reader rather than a discriminator inside the list: the backend lays a
+  `match` nested in a record literal out at column one, which F\# does not parse.)
+- **In the engine**, step 2c reads each extracted model's source before the prover runs and refuses
+  one that declares no `let twins` list asserted by `assert_norm (twins_hold twins == true)`, so a
+  model added to the roster without fixtures fails rather than going quietly unsampled. A
+  `-ProofOnly` model is exempt — it has no extraction to check.
+
+The twins live in the model they sample rather than in one module beside all of them: a module
+referencing every model would put every model in every cone a selector computes.
 
 ## The extraction post-pass (Phase 169)
 
@@ -263,7 +288,7 @@ reason the factor is never multiplied into a measurement. Absent reads as "not r
 ## Importing a theorem (Phase 175)
 
 An adopter that wants a theorem rather than only a leg — fold confluence at its own witness, which is
-what the estate's three named adopters want — does three things, and the leg above is what checks
+what the three named adopters want — does three things, and the leg above is what checks
 the third. Nothing in it is a package or a reference; it is the same copy-by-declaration, with a
 template where the leg had a caller.
 

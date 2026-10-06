@@ -16,7 +16,7 @@
 # the exit code both disagreed with reality, so pinning the text alone would let the pair drift
 # apart again.
 #
-# FOUR ARMS. The first is the control that makes the other three mean something:
+# FOUR ARMS (and, since Phase 309, three TWIN arms, F-H, below). The first is the control that makes the\n# other three mean something:
 #
 #   A. GREEN CONTROL — a true model, no host step: exit 0 AND `proofs: green`. If this is red, the
 #                      scratch apparatus is broken and a red B–D would prove nothing.
@@ -181,6 +181,50 @@ Assert-That 'D. CHECK — and fails at the CHECK step, naming the module' ([bool
 $e = Invoke-Leg ($base + @{ Modules = @('LegFailsName'); ProofOnly = @('LegFailsName') })
 Assert-That 'E. NAMES — a true model whose query name contains "fails" exits 0' ($e.Exit -eq 0) "exit $($e.Exit): $(Show-Tail $e)"
 Assert-That 'E. NAMES — and prints proofs: green' $e.Green (Show-Tail $e)
+
+# ---- F. TWINS (Phase 309) --------------------------------------------------------------------------
+
+# With -Twins, an EXTRACTED model must carry a normalised `twins` list. LegTwinned does and is green
+# (extracted under -Extract into the scratch oracle); LegGood, extracted and twinless, is refused at
+# the TWIN step before the prover runs; a -ProofOnly model needs none.
+Set-Content (Join-Path $scratch 'LegTwinned.fst') @"
+module LegTwinned
+
+let double (x: nat) : nat = x + x
+
+noeq type twin = { tname : string; tholds : unit -> bool }
+
+let rec twins_hold (l: list twin) : Tot bool =
+  match l with
+  | [] -> true
+  | t :: r -> t.tholds () && twins_hold r
+
+let twins : list twin = [ { tname = "double-two"; tholds = (fun () -> double 2 = 4) } ]
+
+let _ = assert_norm (twins_hold twins == true)
+"@
+@{
+    kind    = 'proofModules'
+    modules = @(
+        @{ module = 'LegGood'; budgetSeconds = 60; floorSeconds = 0 }
+        @{ module = 'LegBad'; budgetSeconds = 60; floorSeconds = 0 }
+        @{ module = 'LegFailsName'; budgetSeconds = 60; floorSeconds = 0 }
+        @{ module = 'LegTwinned'; budgetSeconds = 60; floorSeconds = 0 }
+    )
+} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $scratch 'modules.json')
+
+New-Item -ItemType Directory -Force (Join-Path $scratch 'oracle') | Out-Null
+$f = Invoke-Leg ($base + @{ Modules = @('LegTwinned'); Twins = $true; Extract = $true })
+Assert-That 'F. TWINS — an extracted model with normalised twins exits 0' ($f.Exit -eq 0) "exit $($f.Exit): $(Show-Tail $f)"
+Assert-That 'F. TWINS — and says every extracted model is covered' ([bool](@($f.Lines -match 'twin evaluation covers all 1 extracted model').Count)) (Show-Tail $f)
+
+$g = Invoke-Leg ($base + @{ Modules = @('LegGood'); Twins = $true; Extract = $true })
+Assert-That 'G. TWINS — an extracted model with no twins exits NON-ZERO' ($g.Exit -ne 0) "exit $($g.Exit): $(Show-Tail $g)"
+Assert-That 'G. TWINS — and names it at the TWIN step' ([bool](@($g.Lines -match 'twin evaluation does not cover every extracted model: LegGood').Count)) (Show-Tail $g)
+Assert-That 'G. TWINS — and does not print proofs: green' (-not $g.Green) (Show-Tail $g)
+
+$h = Invoke-Leg ($base + @{ Modules = @('LegGood'); ProofOnly = @('LegGood'); Twins = $true })
+Assert-That 'H. TWINS — a -ProofOnly model needs no twins' ($h.Exit -eq 0) "exit $($h.Exit): $(Show-Tail $h)"
 
 Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
 

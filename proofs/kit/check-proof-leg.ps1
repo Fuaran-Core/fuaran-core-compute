@@ -44,6 +44,23 @@
 #               the caller's to declare and to justify — what step 2 buys for the other models
 #               ("the artefact is the model, byte for byte") an exempt one must get some other
 #               way, one level further up, and the caller says where.
+#   2c. TWIN  — optional, and switched on by -Twins (Phase 309). Step 2 makes "the oracle is the
+#               model" a checked claim at the TEXT: the committed F# is what the extractor emits. It
+#               says nothing about whether that F# COMPUTES what the model means — a mis-extraction
+#               that compiles passes every other step. Twin evaluation closes that on sampled
+#               inputs. Each extracted model ends with a `twins` list — records `{ tname; tholds }`
+#               whose `tholds` closure applies the model's own functions to a fixture and compares
+#               the result with an expected value — and asserts by NORMALISATION that every closure
+#               is `true` (`assert_norm (twins_hold twins == true)`), so the prover itself evaluated
+#               each fixture under the model's semantics at step 1. The list is extracted with the
+#               rest of the model, and the caller's host step runs the extracted closures against the
+#               extracted oracle: a closure that comes back `false` there is the F# disagreeing with
+#               the normaliser on that input. The twins live in the model they sample, not in one
+#               module beside all of them, so a cone run still checks only what a change reaches.
+#               What THIS step adds is COVERAGE, read off each source before the prover runs: every
+#               model the leg extracts must declare `let twins` and assert it by normalisation, so a
+#               model added to the roster without fixtures fails here rather than going quietly
+#               unsampled. A -ProofOnly model is exempt — it has no extraction to check.
 #   3. HOST   — the -HostFilters the caller declared, each its own invocation of the host test
 #               project (-HostProject / -HostProjectFile) with its own failure message. Separate
 #               invocations rather than one prefix filter, so two failures read as what they are
@@ -150,6 +167,10 @@ param(
     # An empty list means there is no host step, which is a legitimate shape for a repository whose
     # models have no differential yet.
     [hashtable[]] $HostFilters = @(),
+    # TWIN EVALUATION (Phase 309; header step 2c): every extracted model declares `twins` and
+    # asserts them by normalisation. Off means the caller runs no twin evaluation, which the leg
+    # says out loud.
+    [switch] $Twins,
     # The prover flags the leg is defined by. Defaults are the values the leg was cut with.
     [int] $Quake = 3,
     [int] $ZRlimit = 40,
@@ -651,6 +672,34 @@ function Get-Median([double[]] $values) {
     if ($n -eq 0) { return $null }
     if ($n % 2 -eq 1) { return [double]$sorted[($n - 1) / 2] }
     return ([double]$sorted[$n / 2 - 1] + [double]$sorted[$n / 2]) / 2
+}
+
+# ---- 2c. twin evaluation's coverage (Phase 309) ------------------------------------------------------
+#
+# Static, and therefore before the prover runs: an extracted model with no fixtures is a refusal that
+# needs no proof to establish. Whether each twin HOLDS is the check step's (the model's own
+# `assert_norm`) and then the host step's (the extracted closures); this is whether every extracted
+# model has twins to hold at all. Two declarations are read, each one regular form in the model's
+# own source: the list (`let twins`) and the normalised assertion over it.
+
+if ($Twins) {
+    $extractedModels = @($Modules | Where-Object { $ProofOnly -notcontains $_ })
+    $untwinned = [System.Collections.Generic.List[string]]::new()
+    foreach ($module in $extractedModels) {
+        $source = Join-Path $ProofsDir "$module.fst"
+        $text = if (Test-Path $source) { Get-Content $source -Raw } else { '' }
+        $declares = $text -match '(?m)^let\s+twins\s*:'
+        $asserts = $text -match 'assert_norm\s*\(\s*twins_hold\s+twins\s*==\s*true\s*\)'
+        if (-not ($declares -and $asserts)) { $untwinned.Add($module) }
+    }
+    if ($untwinned.Count -gt 0) {
+        Fail ("twin evaluation does not cover every extracted model: $($untwinned -join ', ') declare(s) no ``let twins`` list asserted by " +
+            '`assert_norm (twins_hold twins == true)`. Add fixtures to each, or the extractor premise goes unsampled for it.')
+    }
+    Write-Host "==== proofs: twin evaluation covers all $($extractedModels.Count) extracted model(s) — each declares twins the prover normalises" -ForegroundColor Cyan
+}
+else {
+    Write-Host '==== proofs: no -Twins — the extracted F# is held to the model''s TEXT only, never evaluated against its normaliser' -ForegroundColor Yellow
 }
 
 # ---- 3. check, -Runs times from a cold cache -------------------------------------------------------
