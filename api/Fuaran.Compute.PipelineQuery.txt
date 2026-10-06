@@ -37,7 +37,11 @@ method Fuaran.Compute.PipelineQueryRegistryModule.declarations(Fuaran.Compute.Pi
 method Fuaran.Compute.PipelineQueryRegistryModule.dispatch(Fuaran.Compute.PipelineQueryRegistry, System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.Cell>>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.PipelineQuery, Fuaran.Core.Deferred`1<Fuaran.Core.QueryResult>>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Deferred`1<Fuaran.Core.QueryResult>, Fuaran.Core.QueryError>
 method Fuaran.Compute.PipelineQueryRegistryModule.enumerate(Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PipelineQuery>
 method Fuaran.Compute.PipelineQueryRegistryModule.register(Fuaran.Compute.PipelineQuery, Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineQueryRegistry, Fuaran.Compute.PipelineQueryError>
+method Fuaran.Compute.PipelineQueryRegistryModule.replace(Fuaran.Compute.PipelineQuery, Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineQueryRegistry, Fuaran.Compute.PipelineQueryError>
+method Fuaran.Compute.PipelineQueryRegistryModule.restrict(Microsoft.FSharp.Collections.FSharpSet`1<System.String>, Fuaran.Compute.PipelineQueryRegistry) : Fuaran.Compute.PipelineQueryRegistry
 method Fuaran.Compute.PipelineQueryRegistryModule.tryFind(System.String, Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.PipelineQuery>
+method Fuaran.Compute.PipelineQueryRegistryModule.union(Fuaran.Compute.PipelineQueryRegistry, Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineQueryRegistry, Fuaran.Compute.PipelineQueryError>
+method Fuaran.Compute.PipelineQueryRegistryModule.unregister(System.String, Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineQueryRegistry, Fuaran.Compute.PipelineQueryError>
 property Fuaran.Compute.PipelineQueryRegistryModule.empty : Fuaran.Compute.PipelineQueryRegistry { get }
 record-field Fuaran.Compute.PipelineQuery.Pipeline #1 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
 record-field Fuaran.Compute.PipelineQuery.Query #0 : Fuaran.Core.Query

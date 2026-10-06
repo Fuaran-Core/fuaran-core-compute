@@ -411,6 +411,50 @@ module PipelineQueryRegistry =
                 { Declarations = declarations
                   Bodies = Map.add pq.Query.Id pq r.Bodies })
 
+    /// Remove the pair registered under `id` — the substrate's `QueryRegistry.unregister` on the
+    /// declarations, so an unregistered id is `NoSuchQuery` naming every id held; the body goes with
+    /// its declaration, and only on success. Removing a pair just registered gives back the registry
+    /// it was registered into.
+    let unregister (id: string) (r: PipelineQueryRegistry) : Result<PipelineQueryRegistry, PipelineQueryError> =
+        QueryRegistry.unregister id r.Declarations
+        |> Result.mapError QueryRefused
+        |> Result.map (fun declarations ->
+            { Declarations = declarations
+              Bodies = Map.remove id r.Bodies })
+
+    /// Swap the pair registered under `pq.Query.Id` for `pq` — the hot-reload verb. The substrate's
+    /// `QueryRegistry.replace` runs on the declaration first (`NoSuchQuery` for an unregistered id,
+    /// its admission otherwise), then the new pair is held to `PipelineQuery.check`, as `register`
+    /// holds it. On any refusal the registry is unchanged.
+    let replace (pq: PipelineQuery) (r: PipelineQueryRegistry) : Result<PipelineQueryRegistry, PipelineQueryError> =
+        match QueryRegistry.replace pq.Query r.Declarations with
+        | Error e -> Error(QueryRefused e)
+        | Ok declarations ->
+            PipelineQuery.check pq
+            |> Result.map (fun () ->
+                { Declarations = declarations
+                  Bodies = Map.add pq.Query.Id pq r.Bodies })
+
+    /// The registry narrowed to the ids in `keep` — the substrate's `QueryRegistry.restrict` on the
+    /// declarations, the bodies narrowed with them. An id in `keep` the registry does not hold is
+    /// ignored, so the result never widens.
+    let restrict (keep: Set<string>) (r: PipelineQueryRegistry) : PipelineQueryRegistry =
+        { Declarations = QueryRegistry.restrict keep r.Declarations
+          Bodies = r.Bodies |> Map.filter (fun id _ -> Set.contains id keep) }
+
+    /// The join of two registries whose ids are disjoint — the substrate's `QueryRegistry.union` on
+    /// the declarations, so a shared id is `DuplicateQuery` naming the first such id; the bodies join
+    /// with them, and only on success. Associative.
+    let union
+        (a: PipelineQueryRegistry)
+        (b: PipelineQueryRegistry)
+        : Result<PipelineQueryRegistry, PipelineQueryError> =
+        QueryRegistry.union a.Declarations b.Declarations
+        |> Result.mapError QueryRefused
+        |> Result.map (fun declarations ->
+            { Declarations = declarations
+              Bodies = Map.fold (fun acc id pq -> Map.add id pq acc) a.Bodies b.Bodies })
+
     let tryFind (id: string) (r: PipelineQueryRegistry) : PipelineQuery option = Map.tryFind id r.Bodies
 
     /// Every registered pair in a stable order (by id) — the discovery surface, as the substrate's

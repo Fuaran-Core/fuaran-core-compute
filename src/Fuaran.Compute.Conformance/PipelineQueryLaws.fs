@@ -65,6 +65,10 @@ module PipelineQueryConformance =
     ///  - **the registry is the substrate's** — a duplicate id is the substrate's `DuplicateQuery`,
     ///    an unregistered one its `NoSuchQuery`, enumeration is id-stable, and the declarations are
     ///    the substrate registry's own;
+    ///  - **the lifecycle is the substrate's** (Phase 378) — `unregister` undoes `register` for a fresh
+    ///    id, `replace` refuses an absent id and a disagreeing pair, `restrict` never widens, `union`
+    ///    refuses a shared id and is associative, and after any drawn sequence of the verbs the ids of
+    ///    `enumerate` equal the ids of `declarations`;
     ///  - **dispatch has the substrate's three outcomes** — settled, pending, refused typed before
     ///    the resolver runs; a resolver's `Failed` is `ExecutionFailed`, never `Ok(Failed _)`;
     ///  - **the bound pipeline is the pipeline under the arguments** — it reads no parameter, and it
@@ -75,6 +79,7 @@ module PipelineQueryConformance =
         let agreement = ref None
         let parameters = ref None
         let registry = ref None
+        let lifecycle = ref None
         let dispatch = ref None
         let binding = ref None
         let codec = ref None
@@ -333,6 +338,136 @@ module PipelineQueryConformance =
                  | Error(NoSuchQuery("no-such-report", known)) when known = List.sort [ q.Id; second.Query.Id ] -> ()
                  | other -> record registry false (fun () -> sprintf "an unregistered id was not NoSuchQuery: %A" other))
 
+                // ---- the lifecycle: unregister, replace, restrict and union (Phase 378) ----
+                let view (x: PipelineQueryRegistry) =
+                    PipelineQueryRegistry.enumerate x,
+                    PipelineQueryRegistry.declarations x |> QueryRegistry.enumerate |> List.map _.Id
+
+                let agrees (x: PipelineQueryRegistry) =
+                    PipelineQueryRegistry.enumerate x |> List.map _.Query.Id = snd (view x)
+
+                let third = reference ("report-c" + string i)
+
+                // unregister undoes register for a fresh id; an absent id is the substrate's NoSuchQuery
+                (match
+                    PipelineQueryRegistry.register third reg
+                    |> Result.bind (PipelineQueryRegistry.unregister third.Query.Id)
+                 with
+                 | Ok back -> record lifecycle (view back = view reg) (fun () -> "unregister did not undo register")
+                 | Error e -> record lifecycle false (fun () -> sprintf "register then unregister was refused: %A" e))
+
+                (match PipelineQueryRegistry.unregister third.Query.Id reg with
+                 | Error(QueryRefused(NoSuchQuery(id, known))) when
+                     id = third.Query.Id && known = List.sort [ q.Id; second.Query.Id ]
+                     ->
+                     ()
+                 | other ->
+                     record lifecycle false (fun () ->
+                         sprintf "unregistering an absent id was not NoSuchQuery: %A" other))
+
+                // replace swaps a registered pair, refuses an absent id, and refuses a disagreeing pair unchanged
+                (match PipelineQueryRegistry.replace second reg with
+                 | Ok swapped ->
+                     record lifecycle (view swapped = view reg) (fun () ->
+                         "replacing a pair by itself changed the registry")
+                 | Error e ->
+                     record lifecycle false (fun () -> sprintf "replace of a registered pair was refused: %A" e))
+
+                (match PipelineQueryRegistry.replace third reg with
+                 | Error(QueryRefused(NoSuchQuery(id, _))) when id = third.Query.Id -> ()
+                 | other ->
+                     record lifecycle false (fun () -> sprintf "replacing an absent id was not NoSuchQuery: %A" other))
+
+                let disagreeing =
+                    { second with
+                        Query =
+                            { second.Query with
+                                Params =
+                                    second.Query.Params
+                                    @ [ { Name = "unused"
+                                          Type = IntType
+                                          Required = false } ] } }
+
+                (match PipelineQueryRegistry.replace disagreeing reg with
+                 | Error(ParamUnread "unused") ->
+                     record lifecycle (PipelineQueryRegistry.tryFind second.Query.Id reg = Some second) (fun () ->
+                         "a refused replace lost the standing pair")
+                 | other ->
+                     record lifecycle false (fun () ->
+                         sprintf "a disagreeing replacement was not refused by name: %A" other))
+
+                // restrict never widens: exactly the held ids it was asked to keep
+                let keepIds =
+                    [ q.Id; second.Query.Id; "ghost" ]
+                    |> List.filter (fun _ -> draw 2 = 0)
+                    |> Set.ofList
+
+                let narrowed = PipelineQueryRegistry.restrict keepIds reg
+
+                record
+                    lifecycle
+                    (agrees narrowed
+                     && (PipelineQueryRegistry.enumerate narrowed |> List.map _.Query.Id |> Set.ofList) = Set.intersect
+                         keepIds
+                         (Set.ofList [ q.Id; second.Query.Id ]))
+                    (fun () -> sprintf "restrict %A did not narrow to the kept held ids" keepIds)
+
+                // union refuses a shared id, and is associative over disjoint registries
+                (match PipelineQueryRegistry.union reg reg with
+                 | Error(QueryRefused(DuplicateQuery id)) when id = List.min [ q.Id; second.Query.Id ] -> ()
+                 | other ->
+                     record lifecycle false (fun () ->
+                         sprintf "a union over shared ids was not DuplicateQuery: %A" other))
+
+                let only (p: PipelineQuery) =
+                    PipelineQueryRegistry.register p PipelineQueryRegistry.empty
+
+                (match only pq, only second, only third with
+                 | Ok a, Ok b, Ok c ->
+                     let left =
+                         PipelineQueryRegistry.union a b
+                         |> Result.bind (fun ab -> PipelineQueryRegistry.union ab c)
+
+                     let right =
+                         PipelineQueryRegistry.union b c
+                         |> Result.bind (fun bc -> PipelineQueryRegistry.union a bc)
+
+                     (match left, right with
+                      | Ok l, Ok r' ->
+                          record lifecycle (view l = view r' && agrees l) (fun () -> "union is not associative")
+                      | _ -> record lifecycle false (fun () -> "a union of disjoint registries was refused"))
+                 | _ -> record lifecycle false (fun () -> "the reference pairs were refused singly"))
+
+                // after any drawn sequence of the verbs, enumerate's ids are the declarations' ids
+                let pool = [ pq; second; third ]
+
+                let step (x: PipelineQueryRegistry) =
+                    let p = pool[draw 3]
+
+                    let next =
+                        match draw 5 with
+                        | 0 -> PipelineQueryRegistry.register p x |> Result.toOption
+                        | 1 -> PipelineQueryRegistry.unregister p.Query.Id x |> Result.toOption
+                        | 2 -> PipelineQueryRegistry.replace p x |> Result.toOption
+                        | 3 ->
+                            Some(
+                                PipelineQueryRegistry.restrict
+                                    (pool |> List.filter (fun _ -> draw 3 > 0) |> List.map _.Query.Id |> Set.ofList)
+                                    x
+                            )
+                        | _ ->
+                            only p
+                            |> Result.toOption
+                            |> Option.bind (fun o -> PipelineQueryRegistry.union x o |> Result.toOption)
+
+                    defaultArg next x
+
+                let mutable walk = reg
+
+                for _ in 1..6 do
+                    walk <- step walk
+                    record lifecycle (agrees walk) (fun () -> "enumerate and declarations disagree after a drawn verb")
+
                 // ---- dispatch: the substrate's three outcomes ----
                 let evaluate (bound: PipelineQuery) : Deferred<QueryResult> =
                     match DataFrame.evalPipeline bound.Pipeline table with
@@ -430,6 +565,9 @@ module PipelineQueryConformance =
           result
               "the registry is the substrate's: DuplicateQuery, NoSuchQuery, id-stable enumeration, its own declarations"
               registry
+          result
+              "the registry lifecycle is the substrate's: unregister undoes register, restrict never widens, union refuses a shared id and is associative, and enumerate keeps the declarations' ids through any sequence of the verbs"
+              lifecycle
           result
               "dispatch settles, stays pending or refuses typed before the resolver; a resolver failure is ExecutionFailed, never Ok(Failed _)"
               dispatch

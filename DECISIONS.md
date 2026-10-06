@@ -1,5 +1,23 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-06 — D15: the pipeline-query registry's lifecycle verbs land, each delegating to the substrate's on the declarations first; the bodies move only on success
+
+**Decision.** `PipelineQueryRegistry` gains `unregister`, `replace`, `restrict` and `union`,
+closing D12's deferral. Each calls the substrate's `QueryRegistry` verb of the same name on the
+declarations; a refusal is returned as `QueryRefused`, and the bodies change only when the
+declarations did. `replace` then holds the new pair to `PipelineQuery.check`, as `register`
+does, so a disagreeing replacement is refused by name and leaves the registry as it was.
+
+**Premises (checked 2026-10-06).** `FuaranCoreVersion` reads `0.35.1`, tagged on the substrate's
+remote. The four verbs have in `v0.35.1` the signatures Phase 316 landed (`unregister`, `replace`
+and `union` answer `Result<QueryRegistry, QueryError>`; `restrict` answers a `QueryRegistry`).
+The registry is still the private pair of declarations and bodies. All three held.
+
+**Held by the laws.** `PipelineQueryConformance` gains a lifecycle family: `unregister` undoes
+`register` for a fresh id, `restrict` never widens, `union` refuses a shared id and is
+associative, and after any drawn sequence of the verbs the ids of `enumerate` equal the ids of
+`declarations`.
+
 ## 2026-10-06 — D14: the worker pool lands on a byte-mask frame, opt-in and reached only asynchronously; the masks cost the whole evaluator some collection under node, recorded for the operator
 
 **Decision.** fuaran-core#376 completes D10's yes on the seam D13 landed. Figures in
