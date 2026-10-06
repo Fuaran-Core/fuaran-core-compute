@@ -1,0 +1,8 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Phase 376 worker pool</title>
+<pre id="out">running</pre>
+<!-- Phase 376 — the browser legs. The page loads the Fable-compiled harness, which reads ?mode= and
+     ?sizes= and posts its lines to /result: `probe` (does the opt-in take?), `main` (the evaluator on
+     the page's thread), `host` (the evaluator in a dedicated worker). serve.mjs drives it. -->
+<script type="module" src="./benchmarks/results/2026-10-06-i7-9700-phase-376/PoolBench.js"></script>

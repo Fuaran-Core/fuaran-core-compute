@@ -14,16 +14,18 @@ open Fuaran.Core
 //  One vector per column, typed where the column's cells agree with its
 //  declared type (an `int[]`, a `float[]`, a `bool[]`, a `string[]`, or for a
 //  decimal the scaled integers in a `float[]` beside the cells (Phase 280), each
-//  beside a `bool[]` validity mask — a present integer cell costs five bytes
-//  at rest, where a `Cell` in a list cost about fifty-six), and a boxed
+//  beside a validity mask (a `Mask`: `bool[]` on .NET, bytes under Fable) — a
+//  present integer cell costs five bytes at rest, where a `Cell` in a list
+//  cost about fifty-six), and a boxed
 //  `Cell[]` where they do not. A selection vector says which physical rows
 //  the frame currently holds and in what order, so a `Filter` keeps a subset,
 //  a `Limit` slices and a `Sort` permutes without copying a cell; a `Derive`
 //  adds one vector and shares every other by reference; the gathering verbs
 //  read rows through the selection and emit fresh vectors.
 //
-//  Fable-clean: numeric arrays compile to typed arrays, the mask is a `bool[]`,
-//  and nothing here uses spans, intrinsics, pooled buffers or threads.
+//  Fable-clean: numeric arrays compile to typed arrays, a mask to a `Uint8Array` (Phase 376),
+//  and nothing here uses spans, intrinsics or threads; under Fable the `Shared` module allocates over
+//  shared memory once a host opts in to the worker pool.
 // ============================================================================
 
 /// Array access as the JavaScript host should emit it (Phase 326). Fable compiles every `a[i]` on an
@@ -116,10 +118,303 @@ module internal Raw =
     let inline sortFinite (a: float[]) : unit = Array.sortInPlace a
 #endif
 
+/// A row of booleans as the frame holds it (Phase 376): a vector's validity mask (`true` = present),
+/// and a `Bools` vector's values. On .NET a `bool[]`, the representation it always was. Under Fable
+/// a `byte[]` — a `Uint8Array`, one byte a row, `1` for `true` — where a `bool[]` would be a plain
+/// JavaScript `Array`: the typed form allocates zeroed (every row absent) without a fill, indexes
+/// monomorphically, and is the form a typed array over shared memory can back, so a worker reads a
+/// frame's masks where they lie instead of rebuilding them (`DECISIONS.md` D13 item 5, D14). Read and
+/// written only through the `Mask` module, whose accessors are the plain index on .NET.
+#if FABLE_COMPILER
+type internal Mask = byte[]
+#else
+type internal Mask = bool[]
+#endif
+
+/// The accessors of a `Mask`, in `Raw`'s two families: `get` / `set` unchecked under JavaScript
+/// (only where the loop proves the index), `at` / `put` checked, refusing as `Raw` does. On .NET
+/// each is the plain index, inlined, so the code there is the code it was.
+module internal Mask =
+
+#if FABLE_COMPILER
+    /// `m[i]`, unchecked: only where the enclosing loop proves `0 <= i < m.Length`.
+    [<Fable.Core.Emit("($1[$0] !== 0)")>]
+    let get (i: int) (m: Mask) : bool = Fable.Core.Util.jsNative
+
+    /// `m[i] <- v`, unchecked; a `Uint8Array` stores `true` as `1` and `false` as `0`.
+    [<Fable.Core.Emit("$0[$1] = $2")>]
+    let set (m: Mask) (i: int) (v: bool) : unit = Fable.Core.Util.jsNative
+
+    /// `m[i]`, checked.
+    let inline at (i: int) (m: Mask) : bool =
+        if uint32 i >= uint32 m.Length then
+            Raw.outOfRange ()
+        else
+            get i m
+
+    /// `m[i] <- v`, checked.
+    let inline put (m: Mask) (i: int) (v: bool) : unit =
+        if uint32 i >= uint32 m.Length then
+            Raw.outOfRange ()
+        else
+            set m i v
+
+    /// A mask of `n` rows, every one `false`.
+    let inline zero (n: int) : Mask = Array.zeroCreate n
+
+    /// The mask holding `xs`, row for row.
+    let ofBools (xs: bool[]) : Mask =
+        let m: Mask = Array.zeroCreate xs.Length
+
+        for i in 0 .. xs.Length - 1 do
+            set m i (Raw.get i xs)
+
+        m
+
+    /// The mask's rows as booleans.
+    let toBools (m: Mask) : bool[] =
+        let out: bool[] = Array.zeroCreate m.Length
+
+        for i in 0 .. m.Length - 1 do
+            Raw.set out i (get i m)
+
+        out
+#else
+    /// `m[i]`; the runtime checks it, as it always did.
+    let inline get (i: int) (m: Mask) : bool = m[i]
+
+    /// `m[i] <- v`; the runtime checks it, as it always did.
+    let inline set (m: Mask) (i: int) (v: bool) : unit = m[i] <- v
+
+    /// `m[i]`; the runtime checks it, as it always did.
+    let inline at (i: int) (m: Mask) : bool = m[i]
+
+    /// `m[i] <- v`; the runtime checks it, as it always did.
+    let inline put (m: Mask) (i: int) (v: bool) : unit = m[i] <- v
+
+    /// A mask of `n` rows, every one `false`.
+    let inline zero (n: int) : Mask = Array.zeroCreate n
+
+    /// The mask holding `xs`: the very array, on this host.
+    let inline ofBools (xs: bool[]) : Mask = xs
+
+    /// The mask's rows as booleans: the very array, on this host.
+    let inline toBools (m: Mask) : bool[] = m
+#endif
+
+    /// A mask of `n` rows, every one `v`.
+    let create (n: int) (v: bool) : Mask =
+        let m = zero n
+
+        if v then
+            for i in 0 .. n - 1 do
+                set m i true
+
+        m
+
+    /// A mask of `n` rows, row `i` being `f i`.
+    let init (n: int) (f: int -> bool) : Mask =
+        let m = zero n
+
+        for i in 0 .. n - 1 do
+            set m i (f i)
+
+        m
+
+    /// Is any row `true`?
+    let any (m: Mask) : bool =
+        let mutable found = false
+        let mutable i = 0
+
+        while not found && i < m.Length do
+            found <- get i m
+            i <- i + 1
+
+        found
+
+    /// Is every row `true`?
+    let all (m: Mask) : bool =
+        let mutable ok = true
+        let mutable i = 0
+
+        while ok && i < m.Length do
+            ok <- get i m
+            i <- i + 1
+
+        ok
+
+/// Where the frame's typed arrays live (Phase 376). Under Fable, once a host has opted in to the
+/// worker pool (`WorkerPool.optIn`) on a page that has shared memory, int and float values and masks
+/// are allocated in typed arrays over a `SharedArrayBuffer`, which a structured clone hands a worker
+/// by reference rather than by copy; the `share` forms copy an array that is not into one that is,
+/// once, for the worker path. A host that has not opted in allocates exactly as before. On .NET every
+/// array is already visible to every thread, so nothing here allocates differently and `share` is the
+/// array itself.
+module internal Shared =
+
+#if FABLE_COMPILER
+    /// Does this realm have shared memory? `SharedArrayBuffer` exists only on a cross-origin isolated
+    /// page (COOP `same-origin` and COEP `require-corp`) or outside a browser.
+    [<Fable.Core.Emit("(typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated !== false)")>]
+    let available () : bool = Fable.Core.Util.jsNative
+
+    [<Fable.Core.Emit("(typeof SharedArrayBuffer !== 'undefined' && $0.buffer instanceof SharedArrayBuffer)")>]
+    let private sharedBacked (a: 'T[]) : bool = Fable.Core.Util.jsNative
+
+    [<Fable.Core.Emit("new Int32Array(new SharedArrayBuffer($0 * 4))")>]
+    let private newInts (n: int) : int[] = Fable.Core.Util.jsNative
+
+    [<Fable.Core.Emit("new Float64Array(new SharedArrayBuffer($0 * 8))")>]
+    let private newFloats (n: int) : float[] = Fable.Core.Util.jsNative
+
+    [<Fable.Core.Emit("new Uint8Array(new SharedArrayBuffer($0))")>]
+    let private newBytes (n: int) : byte[] = Fable.Core.Util.jsNative
+
+    [<Fable.Core.Emit("$0.set($1)")>]
+    let private copyInto (dst: 'T[]) (src: 'T[]) : unit = Fable.Core.Util.jsNative
+
+    let mutable private on = false
+
+    /// Allocate in shared memory from now on, where this realm has it; answers whether it does.
+    let enable () : bool =
+        on <- available ()
+        on
+
+    /// Allocate as before.
+    let disable () : unit = on <- false
+
+    /// Is the frame being allocated in shared memory?
+    let isOn () : bool = on
+
+    /// Is `a` over shared memory, and so handed to a worker by reference?
+    let isShared (a: 'T[]) : bool = sharedBacked a
+
+    /// `n` zeroed ints: shared when allocation is.
+    let ints (n: int) : int[] =
+        if on then newInts n else Array.zeroCreate n
+
+    /// `n` zeroed floats: shared when allocation is.
+    let floats (n: int) : float[] =
+        if on then newFloats n else Array.zeroCreate n
+
+    /// A mask of `n` rows, every one `false`: shared when allocation is.
+    let mask (n: int) : Mask = if on then newBytes n else Mask.zero n
+
+    /// `n` zeroed bytes: shared when allocation is.
+    let bytes (n: int) : byte[] =
+        if on then newBytes n else Array.zeroCreate n
+
+    /// `a` itself when allocation is not shared or `a` is over shared memory already, else a copy
+    /// of it that is.
+    let shareInts (a: int[]) : int[] =
+        if not on || sharedBacked a then
+            a
+        else
+            let s = newInts a.Length
+            copyInto s a
+            s
+
+    /// `a` itself when allocation is not shared or `a` is over shared memory already, else a copy
+    /// of it that is.
+    let shareFloats (a: float[]) : float[] =
+        if not on || sharedBacked a then
+            a
+        else
+            let s = newFloats a.Length
+            copyInto s a
+            s
+
+    /// `m` itself when allocation is not shared or `m` is over shared memory already, else a copy
+    /// of it that is.
+    let shareMask (m: Mask) : Mask =
+        if not on || sharedBacked m then
+            m
+        else
+            let s = newBytes m.Length
+            copyInto s m
+            s
+
+    // A typed vector's carrier and its mask in ONE buffer, the carrier first: half the buffers, each
+    // an allocation the engine tracks outside its heap and sweeps when it collects. Measured as a
+    // small gain in the evaluator's steady state, none in a single step
+    // (`benchmarks/results/2026-10-06-i7-9700-phase-376.md`).
+
+    [<Fable.Core.Emit("((n, s) => { const b = s ? new SharedArrayBuffer(n * 5) : new ArrayBuffer(n * 5); return [new Int32Array(b, 0, n), new Uint8Array(b, n * 4, n)]; })($0, $1)")>]
+    let private newIntsAndMask (n: int) (shared: bool) : struct (int[] * Mask) = Fable.Core.Util.jsNative
+
+    [<Fable.Core.Emit("((n, s) => { const b = s ? new SharedArrayBuffer(n * 9) : new ArrayBuffer(n * 9); return [new Float64Array(b, 0, n), new Uint8Array(b, n * 8, n)]; })($0, $1)")>]
+    let private newFloatsAndMask (n: int) (shared: bool) : struct (float[] * Mask) = Fable.Core.Util.jsNative
+
+    [<Fable.Core.Emit("((n, s) => { const b = s ? new SharedArrayBuffer(n * 2) : new ArrayBuffer(n * 2); return [new Uint8Array(b, 0, n), new Uint8Array(b, n, n)]; })($0, $1)")>]
+    let private newBoolsAndMask (n: int) (shared: bool) : struct (Mask * Mask) = Fable.Core.Util.jsNative
+
+    /// `n` zeroed ints and a mask of `n` absent rows, in one buffer: shared when allocation is.
+    let intsAndMask (n: int) : struct (int[] * Mask) = newIntsAndMask n on
+
+    /// `n` zeroed floats and a mask of `n` absent rows, in one buffer: shared when allocation is.
+    let floatsAndMask (n: int) : struct (float[] * Mask) = newFloatsAndMask n on
+
+    /// `n` false values and a mask of `n` absent rows, in one buffer: shared when allocation is.
+    let boolsAndMask (n: int) : struct (Mask * Mask) = newBoolsAndMask n on
+#else
+    /// Every .NET array is visible to every thread.
+    let available () : bool = true
+
+    let mutable private on = false
+
+    /// Recorded, and nothing else changes: every .NET array is already shared.
+    let enable () : bool =
+        on <- true
+        true
+
+    /// Recorded.
+    let disable () : unit = on <- false
+
+    /// Has a host opted in?
+    let isOn () : bool = on
+
+    /// Every .NET array is shared.
+    let inline isShared (_: 'T[]) : bool = true
+
+    /// `n` zeroed ints.
+    let inline ints (n: int) : int[] = Array.zeroCreate n
+
+    /// `n` zeroed floats.
+    let inline floats (n: int) : float[] = Array.zeroCreate n
+
+    /// A mask of `n` rows, every one `false`.
+    let inline mask (n: int) : Mask = Array.zeroCreate n
+
+    /// `n` zeroed bytes.
+    let inline bytes (n: int) : byte[] = Array.zeroCreate n
+
+    /// The array itself.
+    let inline shareInts (a: int[]) : int[] = a
+
+    /// The array itself.
+    let inline shareFloats (a: float[]) : float[] = a
+
+    /// The mask itself.
+    let inline shareMask (m: Mask) : Mask = m
+
+    /// `n` zeroed ints and a mask of `n` absent rows.
+    let inline intsAndMask (n: int) : struct (int[] * Mask) =
+        struct (Array.zeroCreate n, Array.zeroCreate n)
+
+    /// `n` zeroed floats and a mask of `n` absent rows.
+    let inline floatsAndMask (n: int) : struct (float[] * Mask) =
+        struct (Array.zeroCreate n, Array.zeroCreate n)
+
+    /// `n` false values and a mask of `n` absent rows.
+    let inline boolsAndMask (n: int) : struct (Mask * Mask) =
+        struct (Array.zeroCreate n, Array.zeroCreate n)
+#endif
+
 /// One column's cells as a dense vector: a typed carrier beside a validity mask (`true` = present)
 /// where every present cell agrees with the column's declared type, or the boxed cells where one
 /// does not. The three string-carrying families share one carrier and are told apart by the type
-/// the vector records, so the cell it reads back is the cell that was unpacked.
+/// the vector records, so the cell it reads back is the cell that was unpacked. Masks and a
+/// `Bools` vector's values are `Mask`s: a `bool[]` on .NET, bytes under Fable (Phase 376).
 ///
 /// A decimal column (Phase 280) is `Decs`: the column's cells as they were handed in, beside each
 /// present value as an unscaled integer at ONE scale for the column, carried in a float64 — so a
@@ -128,11 +423,11 @@ module internal Raw =
 /// read of a cell is the cell the text path reads, byte for byte, with nothing rendered; only the
 /// kernels read the integers. A column that does not fit (`ScaledDecimal.scaleOf`) stays `Cells`.
 type internal Vec =
-    | Ints of int[] * bool[]
-    | Floats of float[] * bool[]
-    | Bools of bool[] * bool[]
-    | Strs of ColumnType * string[] * bool[]
-    | Decs of scaled: float[] * scale: int * cells: Cell[] * mask: bool[]
+    | Ints of int[] * Mask
+    | Floats of float[] * Mask
+    | Bools of Mask * Mask
+    | Strs of ColumnType * string[] * Mask
+    | Decs of scaled: float[] * scale: int * cells: Cell[] * mask: Mask
     | Cells of Cell[]
 
 /// The scaled-integer reading of decimal text the `Decs` vector carries (Phase 280). The grammar
@@ -362,22 +657,23 @@ module internal Vec =
     let cellAt (v: Vec) (p: int) : Cell =
         match v with
         | Ints(a, m) ->
-            if Raw.at p m then
+            if Mask.at p m then
                 InternedCells.ofInt (Raw.at p a)
             else
                 Null
-        | Floats(a, m) -> if Raw.at p m then Float(Raw.at p a) else Null
+        | Floats(a, m) -> if Mask.at p m then Float(Raw.at p a) else Null
         | Bools(a, m) ->
-            if Raw.at p m then
-                InternedCells.ofBool (Raw.at p a)
+            if Mask.at p m then
+                InternedCells.ofBool (Mask.at p a)
             else
                 Null
-        | Strs(ty, a, m) -> if Raw.at p m then strCell ty (Raw.at p a) else Null
+        | Strs(ty, a, m) -> if Mask.at p m then strCell ty (Raw.at p a) else Null
         | Decs(_, _, cells, _) -> Raw.at p cells
         | Cells a -> Raw.at p a
 
     /// Is any selected row present?
-    let anyPresent (mask: bool[]) (phys: int[]) : bool = phys |> Array.exists (fun p -> mask[p])
+    let anyPresent (mask: Mask) (phys: int[]) : bool =
+        phys |> Array.exists (fun p -> Mask.at p mask)
 
     /// Pack `cells` — one per LOGICAL row, `cells[i]` landing at physical row `posOf i` — into a
     /// vector of `count` physical rows under the declared type `ty`. The typed unpack: one pass
@@ -397,8 +693,7 @@ module internal Vec =
 
         match ty with
         | IntType ->
-            let vals: int[] = Array.zeroCreate count
-            let mask: bool[] = Array.zeroCreate count
+            let struct (vals, mask) = Shared.intsAndMask count
             let mutable ok = true
             let mutable i = 0
 
@@ -407,7 +702,7 @@ module internal Vec =
                 | Int v ->
                     let p = posOf i
                     Raw.put vals p v
-                    Raw.put mask p true
+                    Mask.put mask p true
                 | Null -> ()
                 | _ -> ok <- false
 
@@ -415,8 +710,7 @@ module internal Vec =
 
             if ok then Ints(vals, mask) else boxed ()
         | FloatType ->
-            let vals: float[] = Array.zeroCreate count
-            let mask: bool[] = Array.zeroCreate count
+            let struct (vals, mask) = Shared.floatsAndMask count
             let mutable ok = true
             let mutable i = 0
 
@@ -425,7 +719,7 @@ module internal Vec =
                 | Float v ->
                     let p = posOf i
                     Raw.put vals p v
-                    Raw.put mask p true
+                    Mask.put mask p true
                 | Null -> ()
                 | _ -> ok <- false
 
@@ -433,8 +727,7 @@ module internal Vec =
 
             if ok then Floats(vals, mask) else boxed ()
         | BoolType ->
-            let vals: bool[] = Array.zeroCreate count
-            let mask: bool[] = Array.zeroCreate count
+            let struct (vals, mask) = Shared.boolsAndMask count
             let mutable ok = true
             let mutable i = 0
 
@@ -442,8 +735,8 @@ module internal Vec =
                 match Raw.get i cells with
                 | Bool v ->
                     let p = posOf i
-                    Raw.put vals p v
-                    Raw.put mask p true
+                    Mask.put vals p v
+                    Mask.put mask p true
                 | Null -> ()
                 | _ -> ok <- false
 
@@ -457,8 +750,7 @@ module internal Vec =
         | DecimalType ->
             match ScaledDecimal.scaleOf cells with
             | Some scale ->
-                let vals: float[] = Array.zeroCreate count
-                let mask: bool[] = Array.zeroCreate count
+                let struct (vals, mask) = Shared.floatsAndMask count
                 let out = Array.create count Null
 
                 for i in 0 .. n - 1 do
@@ -467,7 +759,7 @@ module internal Vec =
                         let p = posOf i
                         // `scaleOf` admitted every present cell at this scale, so this always reads.
                         Raw.put vals p (ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0)
-                        Raw.put mask p true
+                        Mask.put mask p true
                         Raw.put out p (Raw.get i cells)
                     | _ -> ()
 
@@ -477,7 +769,7 @@ module internal Vec =
         | DateType
         | TimestampType ->
             let vals: string[] = Array.zeroCreate count
-            let mask: bool[] = Array.zeroCreate count
+            let mask = Shared.mask count
             let mutable ok = true
             let mutable i = 0
 
@@ -492,7 +784,7 @@ module internal Vec =
                 if not (isNull s) then
                     let p = posOf i
                     Raw.put vals p s
-                    Raw.put mask p true
+                    Mask.put mask p true
                 else
                     match Raw.get i cells with
                     | Null -> ()
@@ -531,45 +823,42 @@ module internal Vec =
     let packList (ty: ColumnType) (n: int) (cells: Cell list) : Vec voption =
         match ty with
         | IntType ->
-            let vals: int[] = Array.zeroCreate n
-            let mask: bool[] = Array.zeroCreate n
+            let struct (vals, mask) = Shared.intsAndMask n
 
             let ok =
                 walkExact n cells (fun i c ->
                     match c with
                     | Int v ->
                         Raw.set vals i v
-                        Raw.set mask i true
+                        Mask.set mask i true
                         true
                     | Null -> true
                     | _ -> false)
 
             if ok then ValueSome(Ints(vals, mask)) else ValueNone
         | FloatType ->
-            let vals: float[] = Array.zeroCreate n
-            let mask: bool[] = Array.zeroCreate n
+            let struct (vals, mask) = Shared.floatsAndMask n
 
             let ok =
                 walkExact n cells (fun i c ->
                     match c with
                     | Float v ->
                         Raw.set vals i v
-                        Raw.set mask i true
+                        Mask.set mask i true
                         true
                     | Null -> true
                     | _ -> false)
 
             if ok then ValueSome(Floats(vals, mask)) else ValueNone
         | BoolType ->
-            let vals: bool[] = Array.zeroCreate n
-            let mask: bool[] = Array.zeroCreate n
+            let struct (vals, mask) = Shared.boolsAndMask n
 
             let ok =
                 walkExact n cells (fun i c ->
                     match c with
                     | Bool v ->
-                        Raw.set vals i v
-                        Raw.set mask i true
+                        Mask.set vals i v
+                        Mask.set mask i true
                         true
                     | Null -> true
                     | _ -> false)
@@ -588,15 +877,14 @@ module internal Vec =
             then
                 match ScaledDecimal.scaleOf out with
                 | Some scale ->
-                    let vals: float[] = Array.zeroCreate n
-                    let mask: bool[] = Array.zeroCreate n
+                    let struct (vals, mask) = Shared.floatsAndMask n
 
                     for i in 0 .. n - 1 do
                         match Raw.get i out with
                         | Decimal s ->
                             // `scaleOf` admitted every present cell at this scale, so this always reads.
                             Raw.set vals i (ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0)
-                            Raw.set mask i true
+                            Mask.set mask i true
                         | _ -> ()
 
                     ValueSome(Decs(vals, scale, out, mask))
@@ -607,7 +895,7 @@ module internal Vec =
         | DateType
         | TimestampType ->
             let vals: string[] = Array.zeroCreate n
-            let mask: bool[] = Array.zeroCreate n
+            let mask = Shared.mask n
 
             let ok =
                 walkExact n cells (fun i c ->
@@ -616,7 +904,7 @@ module internal Vec =
                     | Date s, DateType
                     | Timestamp s, TimestampType when not (isNull s) ->
                         Raw.set vals i s
-                        Raw.set mask i true
+                        Mask.set mask i true
                         true
                     | Null, _ -> true
                     | _ -> false)
@@ -641,12 +929,19 @@ module internal Vec =
             out
 
         match v with
-        | Ints(a, m) -> Ints(pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
-        | Floats(a, m) -> Floats(pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
-        | Bools(a, m) -> Bools(pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
+        | Ints(a, m) ->
+            let struct (va, vm) = Shared.intsAndMask n
+            Ints(pick a va, pick m vm)
+        | Floats(a, m) ->
+            let struct (va, vm) = Shared.floatsAndMask n
+            Floats(pick a va, pick m vm)
+        | Bools(a, m) ->
+            let struct (va, vm) = Shared.boolsAndMask n
+            Bools(pick a va, pick m vm)
         | Strs(ty, a, m) -> Strs(ty, pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
         | Decs(a, s, c, m) ->
-            Decs(pick a (Array.zeroCreate n), s, pick c (Array.zeroCreate n), pick m (Array.zeroCreate n))
+            let struct (va, vm) = Shared.floatsAndMask n
+            Decs(pick a va, s, pick c (Array.zeroCreate n), pick m vm)
         | Cells a -> Cells(pick a (Array.zeroCreate n))
 
     /// `gather` where a negative index reads `Null` (Phase 325): the side a combining join pads.
@@ -664,12 +959,12 @@ module internal Vec =
 
             out
 
-        let maskOf (m: bool[]) = pick m false (Array.zeroCreate n)
+        let maskOf (m: Mask) = pick m 0uy (Array.zeroCreate n)
 
         match v with
         | Ints(a, m) -> Ints(pick a 0 (Array.zeroCreate n), maskOf m)
         | Floats(a, m) -> Floats(pick a 0.0 (Array.zeroCreate n), maskOf m)
-        | Bools(a, m) -> Bools(pick a false (Array.zeroCreate n), maskOf m)
+        | Bools(a, m) -> Bools(pick a 0uy (Array.zeroCreate n), maskOf m)
         | Strs(ty, a, m) -> Strs(ty, pick a "" (Array.zeroCreate n), maskOf m)
         | Decs(a, s, c, m) -> Decs(pick a 0.0 (Array.zeroCreate n), s, pick c Null (Array.zeroCreate n), maskOf m)
         | Cells a -> Cells(pick a Null (Array.zeroCreate n))
@@ -840,9 +1135,9 @@ module internal Vec =
             out[i] <- c
             Cells out
 
-        let masked (m: bool[]) =
+        let masked (m: Mask) =
             let m' = Array.copy m
-            m'[i] <- false
+            Mask.put m' i false
             m'
 
         match v, c with
@@ -850,21 +1145,21 @@ module internal Vec =
             let a' = Array.copy a
             let m' = Array.copy m
             a'[i] <- x
-            m'[i] <- true
+            Mask.put m' i true
             Ints(a', m')
         | Ints(a, m), Null -> Ints(a, masked m)
         | Floats(a, m), Float x ->
             let a' = Array.copy a
             let m' = Array.copy m
             a'[i] <- x
-            m'[i] <- true
+            Mask.put m' i true
             Floats(a', m')
         | Floats(a, m), Null -> Floats(a, masked m)
         | Bools(a, m), Bool x ->
             let a' = Array.copy a
             let m' = Array.copy m
-            a'[i] <- x
-            m'[i] <- true
+            Mask.put a' i x
+            Mask.put m' i true
             Bools(a', m')
         | Bools(a, m), Null -> Bools(a, masked m)
         // A decimal vector stays at its scale for a value that fits it; any other cell — a value
@@ -882,7 +1177,7 @@ module internal Vec =
                     let a' = Array.copy a
                     let m' = Array.copy m
                     a'[i] <- x
-                    m'[i] <- true
+                    Mask.put m' i true
                     Decs(a', s, edited, m')
                 | ValueNone -> pack DecimalType edited
             | _ -> pack DecimalType edited
@@ -893,7 +1188,7 @@ module internal Vec =
                 let a' = Array.copy a
                 let m' = Array.copy m
                 a'[i] <- s
-                m'[i] <- true
+                Mask.put m' i true
                 Strs(ty, a', m')
             | None -> boxed ()
         | Cells a, _ ->
@@ -920,25 +1215,25 @@ module internal Vec =
                     match v with
                     | Ints(a, m) ->
                         match cells[offset + j] with
-                        | Int x -> m[j] && a[j] = x
-                        | Null -> not m[j]
+                        | Int x -> Mask.at j m && a[j] = x
+                        | Null -> not (Mask.at j m)
                         | _ -> false
                     | Floats(a, m) ->
                         match cells[offset + j] with
-                        | Float x -> m[j] && a[j] = x
-                        | Null -> not m[j]
+                        | Float x -> Mask.at j m && a[j] = x
+                        | Null -> not (Mask.at j m)
                         | _ -> false
                     | Bools(a, m) ->
                         match cells[offset + j] with
-                        | Bool x -> m[j] && a[j] = x
-                        | Null -> not m[j]
+                        | Bool x -> Mask.at j m && Mask.at j a = x
+                        | Null -> not (Mask.at j m)
                         | _ -> false
                     | Strs(ty, a, m) ->
                         match cells[offset + j] with
-                        | Null -> not m[j]
+                        | Null -> not (Mask.at j m)
                         | c ->
                             match carrierOf ty c with
-                            | Some s -> m[j] && a[j] = s
+                            | Some s -> Mask.at j m && a[j] = s
                             | None -> false
                     | Decs(_, _, a, _)
                     | Cells a -> a[j] = cells[offset + j]
@@ -967,7 +1262,7 @@ module internal Frame =
         | Some s -> s
         | None ->
             let n = f.Count
-            let rows: int[] = Array.zeroCreate n
+            let rows = Shared.ints n
 
             for i in 0 .. n - 1 do
                 Raw.set rows i i

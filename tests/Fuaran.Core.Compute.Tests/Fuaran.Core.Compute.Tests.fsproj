@@ -25,6 +25,9 @@
          Fable-clean; the node harness under benchmarks/results/ compiles it too. -->
     <Compile Include="MorselHandOffLaw.fs" />
     <Compile Include="MorselHandOffTests.fs" />
+    <!-- Phase 376: the worker pool's laws, Fable-clean; the node leg under Node/ compiles them too. -->
+    <Compile Include="PooledLaw.fs" />
+    <Compile Include="PooledLawTests.fs" />
     <Compile Include="ColumnOpsTests.fs" />
     <Compile Include="DeltaTests.fs" />
     <Compile Include="IncrementalTests.fs" />

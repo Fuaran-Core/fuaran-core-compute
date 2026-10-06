@@ -150,47 +150,37 @@ let lines =
     [ Derive("amount", Binary(Mul, Col "qty", Col "price"))
       Derive("big", Binary(Ge, Col "amount", Param "threshold")) ]
 
+/// The corpus's row-local pipelines at `n` rows, whole: each its name, environment, source and steps.
+let corpusPipelines (n: int) : (string * Map<string, Cell> * Table * Transform list) list =
+    let o = orders n false
+    let poisoned = orders n true
+
+    [ "lines", sheetEnv, o, lines
+      // The chain's second and third hops, over `lines`' answer.
+      "chain",
+      sheetEnv,
+      o,
+      lines
+      @ [ Filter(Col "big")
+          Derive("net", Binary(Mul, Col "amount", Lit(Float 0.8)))
+          Derive("tax", Binary(Sub, Col "amount", Col "net"))
+          Derive("units", Binary(Add, Col "qty", Col "id")) ]
+      // Layer 6's compiled filter, and a filter over a selection.
+      "compiled filter", Map.empty, rowTable n, [ Filter(Binary(Gt, Binary(Add, Col "a", Col "b"), Lit(Int 500))) ]
+      "filter after filter",
+      Map.empty,
+      rowTable n,
+      [ Filter(Binary(Gt, Binary(Add, Col "a", Col "b"), Lit(Int 500)))
+        Filter(Binary(Lt, Binary(Mul, Col "a", Col "x"), Lit(Float 40000.0)))
+        Derive("y", Binary(Add, Col "x", Col "a")) ]
+      // Refusals in two morsels: the first in row order answers.
+      "derive refuses", sheetEnv, poisoned, [ Derive("twice", Binary(Add, Col "qty", Col "qty")) ]
+      "filter refuses", sheetEnv, poisoned, [ Filter(Binary(Gt, Binary(Add, Col "qty", Col "qty"), Lit(Int 0))) ] ]
+
 /// The corpus's row-local pipelines at `n` rows, step by step.
 let corpusCases (n: int) : Case list =
-    let o = orders n false
-
-    [ yield! casesOf "lines" sheetEnv o lines
-      // The chain's second and third hops, over `lines`' answer.
-      yield!
-          casesOf
-              "chain"
-              sheetEnv
-              o
-              (lines
-               @ [ Filter(Col "big")
-                   Derive("net", Binary(Mul, Col "amount", Lit(Float 0.8)))
-                   Derive("tax", Binary(Sub, Col "amount", Col "net"))
-                   Derive("units", Binary(Add, Col "qty", Col "id")) ])
-      // Layer 6's compiled filter, and a filter over a selection.
-      yield!
-          casesOf
-              "compiled filter"
-              Map.empty
-              (rowTable n)
-              [ Filter(Binary(Gt, Binary(Add, Col "a", Col "b"), Lit(Int 500))) ]
-      yield!
-          casesOf
-              "filter after filter"
-              Map.empty
-              (rowTable n)
-              [ Filter(Binary(Gt, Binary(Add, Col "a", Col "b"), Lit(Int 500)))
-                Filter(Binary(Lt, Binary(Mul, Col "a", Col "x"), Lit(Float 40000.0)))
-                Derive("y", Binary(Add, Col "x", Col "a")) ]
-      // Refusals in two morsels: the first in row order answers.
-      let poisoned = orders n true
-      yield! casesOf "derive refuses" sheetEnv poisoned [ Derive("twice", Binary(Add, Col "qty", Col "qty")) ]
-
-      yield!
-          casesOf
-              "filter refuses"
-              sheetEnv
-              poisoned
-              [ Filter(Binary(Gt, Binary(Add, Col "qty", Col "qty"), Lit(Int 0))) ] ]
+    corpusPipelines n
+    |> List.collect (fun (name, env, table, pipeline) -> casesOf name env table pipeline)
 
 /// The disagreements of `runner` with the sequential member over `cases` at `morselRows`, and how
 /// many cases it was handed.

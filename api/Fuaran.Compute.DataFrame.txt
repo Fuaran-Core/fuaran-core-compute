@@ -178,6 +178,8 @@ field Fuaran.Compute.WindowFn+Tags.Rank : System.Int32 (literal)
 field Fuaran.Compute.WindowFn+Tags.RollingMean : System.Int32 (literal)
 field Fuaran.Compute.WindowFn+Tags.RollingSum : System.Int32 (literal)
 field Fuaran.Compute.WindowFn+Tags.RowNumber : System.Int32 (literal)
+field Fuaran.Compute.WorkerPool.PoolRows : System.Int32 (literal)
+interface-marker Fuaran.Compute.MorselWorker
 method Fuaran.Compute.ColExprModule.paramsOf(Fuaran.Compute.ColExpr) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.ColExprModule.substitute(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
 method Fuaran.Compute.ColExprModule.substituteListParams(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
@@ -204,6 +206,7 @@ method Fuaran.Compute.DataFrame.evalPipelineWithInEnvCounted(Microsoft.FSharp.Co
 method Fuaran.Compute.DataFrame.evalPrepared(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.evalSource(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Fuaran.Core.DataSource) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.evalToPrepared(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.Prepared) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Prepared, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.evalToPreparedAsync(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Compute.Prepared) : Microsoft.FSharp.Control.FSharpAsync`1<Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Prepared, Fuaran.Compute.EvalError>>
 method Fuaran.Compute.DataFrame.inferCellType(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Fuaran.Core.ColumnType
 method Fuaran.Compute.DataFrame.joinKeyIndices(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, System.String>>) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<System.Int32>, Microsoft.FSharp.Collections.FSharpList`1<System.Int32>>, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.joinKeysMatch(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.Boolean
@@ -280,6 +283,9 @@ method Fuaran.Compute.IncrementalCodec.encodeDetached(Fuaran.Compute.Incremental
 method Fuaran.Compute.IncrementalCodec.keyOf(Fuaran.Compute.IncrementalEval) : Fuaran.Compute.IncrementalStateKey
 method Fuaran.Compute.IncrementalCodec.pipelineHash(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : System.String
 method Fuaran.Compute.IncrementalCodec.sourceFingerprint(Fuaran.Core.Table) : System.String
+method Fuaran.Compute.MorselWorker.Listen(Microsoft.FSharp.Core.FSharpFunc`2<System.Object, Microsoft.FSharp.Core.Unit>) : System.Void
+method Fuaran.Compute.MorselWorker.Post(System.Object) : System.Void
+method Fuaran.Compute.MorselWorker.Stop() : System.Void
 method Fuaran.Compute.NowGrainModule.ofTag(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.NowGrain>
 method Fuaran.Compute.NowGrainModule.tag(Fuaran.Compute.NowGrain) : System.String
 method Fuaran.Compute.Plan.explain(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.PlanReport
@@ -313,6 +319,11 @@ method Fuaran.Compute.TransformModule.substitute(Microsoft.FSharp.Collections.FS
 method Fuaran.Compute.TransformModule.substituteListParams(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
 method Fuaran.Compute.TransformModule.substituteNow(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.NowGrain, Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
 method Fuaran.Compute.TransformModule.usesNow(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : System.Boolean
+method Fuaran.Compute.WorkerPool.isActive() : System.Boolean
+method Fuaran.Compute.WorkerPool.optIn(Microsoft.FSharp.Core.FSharpFunc`2<Microsoft.FSharp.Core.Unit, Fuaran.Compute.MorselWorker>, System.Int32) : System.Boolean
+method Fuaran.Compute.WorkerPool.optOut() : System.Void
+method Fuaran.Compute.WorkerPool.serve(Microsoft.FSharp.Core.FSharpFunc`2<System.Object, Microsoft.FSharp.Core.Unit>) : Microsoft.FSharp.Core.FSharpFunc`2<System.Object, Microsoft.FSharp.Core.Unit>
+method Fuaran.Compute.WorkerPool.warm() : Microsoft.FSharp.Control.FSharpAsync`1<Microsoft.FSharp.Core.Unit>
 property Fuaran.Compute.DataFrameCodec.pipelineCodec : Fuaran.Core.Corpus+Codec`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>> { get }
 property Fuaran.Compute.NowGrainModule.allTags : Microsoft.FSharp.Collections.FSharpList`1<System.String> { get }
 property Fuaran.Compute.RowIdentity.ordinalScheme : System.String { get }
@@ -430,6 +441,7 @@ type Fuaran.Compute.KeyEqualityDisagreement+EqualIdsDistinctKeys (type)
 type Fuaran.Compute.KeyEqualityDisagreement+NotDeclared (type)
 type Fuaran.Compute.KeyEqualityDisagreement+Tags (type)
 type Fuaran.Compute.KeyEqualityDisagreement+UnequalHashes (type)
+type Fuaran.Compute.MorselWorker (interface)
 type Fuaran.Compute.NowGrain (union)
 type Fuaran.Compute.NowGrain+Tags (type)
 type Fuaran.Compute.NowGrainModule (module)
@@ -505,6 +517,7 @@ type Fuaran.Compute.WindowFn (union)
 type Fuaran.Compute.WindowFn+NTile (type)
 type Fuaran.Compute.WindowFn+Tags (type)
 type Fuaran.Compute.WindowSpec (record)
+type Fuaran.Compute.WorkerPool (module)
 union-case Fuaran.Compute.BinOp.Add #0()
 union-case Fuaran.Compute.BinOp.And #11()
 union-case Fuaran.Compute.BinOp.Contains #13()

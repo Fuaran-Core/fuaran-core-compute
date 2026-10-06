@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Phase 376 — the node leg of the worker pool's laws (../PooledLaw.fs) over node's worker_threads.
+    Not a member of the solution: the suite's PooledLawTests compiles it with Fable (the version the
+    repository's tool manifest pins) into a scratch directory and runs the emitted PooledLawNode.js
+    under node, which starts its own workers from the same module. Exit 0 when every law held.
+
+    The assembly takes the test suite's name because it compiles the suite's law files, which read
+    the dataframe package's internal working forms; the package lets that one assembly see them.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Fuaran.Core.Compute.Tests</AssemblyName>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\TransformVectorSample.fs" Link="TransformVectorSample.fs" />
+    <Compile Include="..\PreparedResultLaw.fs" Link="PreparedResultLaw.fs" />
+    <Compile Include="..\MorselHandOffLaw.fs" Link="MorselHandOffLaw.fs" />
+    <Compile Include="..\PooledLaw.fs" Link="PooledLaw.fs" />
+    <Compile Include="PooledLawNode.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

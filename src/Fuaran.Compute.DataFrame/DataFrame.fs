@@ -4144,24 +4144,24 @@ module DataFrame =
                 | Ints(vals, mask) ->
                     Of IntType,
                     NInt(fun p ->
-                        slot.Null <- not (Raw.at p mask)
+                        slot.Null <- not (Mask.at p mask)
                         Raw.at p vals)
                 | Floats(vals, mask) ->
                     Of FloatType,
                     NFloat(fun p ->
-                        slot.Null <- not (Raw.at p mask)
+                        slot.Null <- not (Mask.at p mask)
                         Raw.at p vals)
                 | Bools(vals, mask) ->
                     Of BoolType,
                     NBool(fun p ->
-                        slot.Null <- not (Raw.at p mask)
-                        Raw.at p vals)
+                        slot.Null <- not (Mask.at p mask)
+                        Mask.at p vals)
                 | Strs(ty, vals, mask) ->
                     Of ty,
                     NStr(
                         ty,
                         fun p ->
-                            slot.Null <- not (Raw.at p mask)
+                            slot.Null <- not (Mask.at p mask)
                             Raw.at p vals
                     )
                 // A column whose cells disagree with its declared type is typed as declared, as the
@@ -4784,7 +4784,7 @@ module DataFrame =
         (phys: int[])
         (nodeTy: ColumnType)
         (v: Vec)
-        (mask: bool[])
+        (mask: Mask)
         : ColumnType * Vec =
         if not (Vec.anyPresent mask phys) then
             derivedNonePresent dt count
@@ -4844,13 +4844,17 @@ module DataFrame =
 
         // A typed root (Phase 375): each morsel through `deriveMorsel`, its own tree's root put
         // straight into the carrier at the row's physical position.
-        let typed
+        // The carrier and its mask are allocated together by `alloc` and the carrier written by `put`
+        // (Phase 376): a bool root's values are a `Mask`, and int and float carriers are typed arrays,
+        // in one buffer with the mask (in shared memory once a host has opted in to the worker pool).
+        let inline typed
             (pick: Node -> (int -> 'a) option)
-            (mk: 'a[] -> bool[] -> Vec)
+            (alloc: int -> struct ('c * Mask))
+            (put: 'c -> int -> 'a -> unit)
+            (mk: 'c -> Mask -> Vec)
             (nodeTy: ColumnType)
             : Result<ColumnType * Vec, EvalError> =
-            let vals: 'a[] = Array.zeroCreate count
-            let mask: bool[] = Array.zeroCreate count
+            let struct (vals, mask) = alloc count
 
             k.RunMorsels m (fun j ->
                 let c = if j = 0 then first else compileExpr f resolved
@@ -4863,8 +4867,8 @@ module DataFrame =
                         (Kernels.morselStart j)
                         (Kernels.morselEnd n j)
                         (fun p v ->
-                            Raw.put vals p v
-                            Raw.put mask p true)
+                            put vals p v
+                            Mask.put mask p true)
 
                 errors[j] <- error
                 Option.isNone error)
@@ -4875,14 +4879,16 @@ module DataFrame =
 
         let derived =
             match first.Node with
-            | NInt _ -> typed pickInt (fun v m -> Ints(v, m)) IntType
-            | NFloat _ -> typed pickFloat (fun v m -> Floats(v, m)) FloatType
-            | NBool _ -> typed pickBool (fun v m -> Bools(v, m)) BoolType
+            | NInt _ -> typed pickInt Shared.intsAndMask Raw.put (fun v m -> Ints(v, m)) IntType
+            | NFloat _ -> typed pickFloat Shared.floatsAndMask Raw.put (fun v m -> Floats(v, m)) FloatType
+            | NBool _ -> typed pickBool Shared.boolsAndMask Mask.put (fun v m -> Bools(v, m)) BoolType
             | NStr(sty, _) ->
                 typed
                     (function
                     | NStr(_, r) -> Some r
                     | _ -> None)
+                    (fun n -> struct ((Array.zeroCreate n: string[]), Shared.mask n))
+                    Raw.put
                     (fun v m -> Strs(sty, v, m))
                     sty
             | NNull -> Ok(nonepresent ())
@@ -5232,26 +5238,26 @@ module DataFrame =
                     else
                         match mode with
                         | MCount ->
-                            if mask[p] || countsNulls then
+                            if Mask.at p mask || countsNulls then
                                 count[g] <- count[g] + 1
                         | MFirst ->
                             if row[g] < 0 then
                                 row[g] <- p
                         | MLast -> row[g] <- p
                         | MSumInt ->
-                            if mask[p] then
+                            if Mask.at p mask then
                                 longs[g] <- longs[g] + int64 ints[p]
                                 count[g] <- count[g] + 1
                         | MSumDecimal when kind = 4 ->
-                            if mask[p] then
+                            if Mask.at p mask then
                                 addScaled g floats[p]
                         | MSumFloat
                         | MMean when kind <> 4 ->
-                            if mask[p] then
+                            if Mask.at p mask then
                                 addFloat g (if kind = 1 then float ints[p] else floats[p])
                         | MMin
                         | MMax when kind = 1 ->
-                            if mask[p] then
+                            if Mask.at p mask then
                                 count[g] <- count[g] + 1
                                 let b = row[g]
 
@@ -5259,7 +5265,7 @@ module DataFrame =
                                     row[g] <- p
                         | MMin
                         | MMax when kind = 2 ->
-                            if mask[p] then
+                            if Mask.at p mask then
                                 count[g] <- count[g] + 1
                                 let b = row[g]
 
@@ -5280,14 +5286,14 @@ module DataFrame =
                     ()
                 elif mode = MCount && kind <> 0 && not countsNulls then
                     for i in 0 .. n - 1 do
-                        if Raw.at (Raw.get i phys) mask then
+                        if Mask.at (Raw.get i phys) mask then
                             let g = Raw.get i slotOf
                             Raw.put count g (Raw.at g count + 1)
                 elif mode = MSumInt && kind = 1 then
                     for i in 0 .. n - 1 do
                         let p = Raw.get i phys
 
-                        if Raw.at p mask then
+                        if Mask.at p mask then
                             let g = Raw.get i slotOf
                             Raw.put longs g (Raw.at g longs + int64 (Raw.at p ints))
                             Raw.put count g (Raw.at g count + 1)
@@ -5295,7 +5301,7 @@ module DataFrame =
                     for i in 0 .. n - 1 do
                         let p = Raw.get i phys
 
-                        if Raw.at p mask then
+                        if Mask.at p mask then
                             let g = Raw.get i slotOf
                             let f = Raw.at p floats
                             Raw.put totals g (Raw.at g totals + f)
@@ -5307,7 +5313,7 @@ module DataFrame =
                     for i in 0 .. n - 1 do
                         let p = Raw.get i phys
 
-                        if Raw.at p mask then
+                        if Mask.at p mask then
                             addScaled (Raw.get i slotOf) (Raw.at p floats)
                 else
                     for i in 0 .. n - 1 do
@@ -5392,7 +5398,7 @@ module DataFrame =
                     | MMax when kind = 1 || kind = 2 ->
                         let p = row[g]
 
-                        if p < 0 || not mask[p] then out.Null g
+                        if p < 0 || not (Mask.at p mask) then out.Null g
                         elif kind = 1 then out.Int(g, ints[p])
                         else out.Float(g, floats[p])
 
@@ -5413,14 +5419,14 @@ module DataFrame =
             let typedFloat = ty = FloatType
             let ints: int[] = if typedInt then Array.zeroCreate n else [||]
             let floats: float[] = if typedFloat then Array.zeroCreate n else [||]
-            let mask: bool[] = if typedInt || typedFloat then Array.zeroCreate n else [||]
+            let mask: Mask = if typedInt || typedFloat then Array.zeroCreate n else [||]
             let mutable typed = typedInt || typedFloat
             let mutable cells: Cell[] = if typed then [||] else Array.create n Null
 
             let unpack () =
                 cells <-
                     Array.init n (fun i ->
-                        if not mask[i] then Null
+                        if not (Mask.at i mask) then Null
                         elif typedInt then Int ints[i]
                         else Float floats[i])
 
@@ -5433,7 +5439,7 @@ module DataFrame =
             member _.Int(i: int, x: int) : unit =
                 if typed && typedInt then
                     ints[i] <- x
-                    mask[i] <- true
+                    Mask.put mask i true
                 else
                     if typed then
                         unpack ()
@@ -5443,7 +5449,7 @@ module DataFrame =
             member _.Float(i: int, x: float) : unit =
                 if typed && typedFloat then
                     floats[i] <- x
-                    mask[i] <- true
+                    Mask.put mask i true
                 else
                     if typed then
                         unpack ()
@@ -5636,13 +5642,13 @@ module DataFrame =
 
         /// Give a FRESH token coder a direct table over an int vector's present values (at `phys`)
         /// when their range is at most a small multiple of the rows; otherwise leave it without one.
-        let private intTableFor (c: Coder) (a: int[]) (m: bool[]) (phys: int[]) : unit =
+        let private intTableFor (c: Coder) (a: int[]) (m: Mask) (phys: int[]) : unit =
             if not c.CellEq && c.Count = 0 && c.IntTable.Length = 0 then
                 let mutable lo = System.Int32.MaxValue
                 let mutable hi = System.Int32.MinValue
 
                 for p in phys do
-                    if Raw.at p m then
+                    if Mask.at p m then
                         let x = Raw.at p a
 
                         if x < lo then
@@ -5701,7 +5707,7 @@ module DataFrame =
                     let p = Raw.get i phys
 
                     let code =
-                        if Raw.at p m then
+                        if Mask.at p m then
                             intCode c (Raw.at p a) openNew
                         else
                             nullCode c openNew
@@ -5712,7 +5718,7 @@ module DataFrame =
                     let p = Raw.get i phys
 
                     let code =
-                        if Raw.at p m then
+                        if Mask.at p m then
                             floatCode c (Raw.at p a) openNew
                         else
                             nullCode c openNew
@@ -5723,8 +5729,8 @@ module DataFrame =
                     let p = Raw.get i phys
 
                     let code =
-                        if Raw.at p m then
-                            boolCode c (Raw.at p a) openNew
+                        if Mask.at p m then
+                            boolCode c (Mask.at p a) openNew
                         else
                             nullCode c openNew
 
@@ -5736,7 +5742,7 @@ module DataFrame =
                     let p = Raw.get i phys
 
                     let code =
-                        if Raw.at p m then
+                        if Mask.at p m then
                             codeIn c d (Raw.at p a) openNew
                         else
                             nullCode c openNew
@@ -6002,16 +6008,16 @@ module DataFrame =
     let private keyColumn (ty: ColumnType) (v: Vec) (rows: int[]) : Vec =
         let n = rows.Length
 
-        let inline across (a: 'T[]) (m: bool[]) : 'T[] * bool[] =
+        let inline across (a: 'T[]) (m: Mask) : 'T[] * Mask =
             let vals: 'T[] = Array.zeroCreate n
-            let mask: bool[] = Array.zeroCreate n
+            let mask: Mask = Array.zeroCreate n
 
             for i in 0 .. n - 1 do
                 let p = Raw.get i rows
 
-                if Raw.at p m then
+                if Mask.at p m then
                     Raw.set vals i (Raw.at p a)
-                    Raw.set mask i true
+                    Mask.set mask i true
 
             vals, mask
 
@@ -6166,9 +6172,9 @@ module DataFrame =
         let asc = (dir = Asc)
         let signed (c: int) : int = if asc then c else -c
 
-        let withNulls (mask: bool[]) (cmp: int -> int -> int) : int -> int -> int =
+        let withNulls (mask: Mask) (cmp: int -> int -> int) : int -> int -> int =
             fun p q ->
-                match Raw.at p mask, Raw.at q mask with
+                match Mask.at p mask, Mask.at q mask with
                 | true, true -> signed (cmp p q)
                 | true, false -> -1 // null sorts last
                 | false, true -> 1
@@ -6177,7 +6183,7 @@ module DataFrame =
         match v with
         | Ints(a, m) -> withNulls m (fun p q -> compare (Raw.at p a) (Raw.at q a))
         | Floats(a, m) -> withNulls m (fun p q -> compareNum (Raw.at p a) (Raw.at q a))
-        | Bools(a, m) -> withNulls m (fun p q -> compare (Raw.at p a) (Raw.at q a))
+        | Bools(a, m) -> withNulls m (fun p q -> compare (Mask.at p a) (Mask.at q a))
         | Strs(_, a, m) -> withNulls m (fun p q -> System.String.CompareOrdinal(Raw.at p a, Raw.at q a))
         // Every value of one decimal vector is an exact integer at the column's one scale (Phase 280).
         | Decs(a, _, _, m) -> withNulls m (fun p q -> compare (Raw.at p a) (Raw.at q a))
@@ -6286,7 +6292,7 @@ module DataFrame =
 
         /// A float carrier's codes: dense ranks under `Kernels.compareFloat` (`-0.0` keyed with
         /// `0.0`, every `NaN` one value above the rest).
-        let private ofFloats (vals: float[]) (mask: bool[]) (phys: int[]) (dir: SortDir) : KeyCodes =
+        let private ofFloats (vals: float[]) (mask: Mask) (phys: int[]) (dir: SortDir) : KeyCodes =
 #if FABLE_COMPILER
             // Under JavaScript the open slot table (Phase 326).
             let index = OpenSlots<float>((fun f -> hash f), (fun a b -> a = b))
@@ -6300,7 +6306,7 @@ module DataFrame =
             for i in 0 .. phys.Length - 1 do
                 let p = Raw.get i phys
 
-                if not (Raw.at p mask) then
+                if not (Mask.at p mask) then
                     Raw.set ids i -1
                 else
                     let x = Raw.at p vals
@@ -6334,7 +6340,7 @@ module DataFrame =
             ofIds ids (distinct.ToArray()) (fun (a: float) b -> compare a b) anyNaN dir
 
         /// A string carrier's codes: dense ranks under the ordinal order.
-        let private ofStrings (vals: string[]) (mask: bool[]) (phys: int[]) (dir: SortDir) : KeyCodes =
+        let private ofStrings (vals: string[]) (mask: Mask) (phys: int[]) (dir: SortDir) : KeyCodes =
 #if FABLE_COMPILER
             // Under JavaScript the open slot table (Phase 326).
             let index =
@@ -6348,7 +6354,7 @@ module DataFrame =
             for i in 0 .. phys.Length - 1 do
                 let p = Raw.get i phys
 
-                if not (Raw.at p mask) then
+                if not (Mask.at p mask) then
                     Raw.set ids i -1
                 else
                     let x = Raw.at p vals
@@ -6378,7 +6384,7 @@ module DataFrame =
         /// An int carrier's codes: the value offset from the least present one (ascending) or the
         /// greatest (descending), where the values span at most a few times the row count; past
         /// that, dense ranks of the values in the float carrier, where every int is exact.
-        let private ofInts (vals: int[]) (mask: bool[]) (phys: int[]) (dir: SortDir) : KeyCodes =
+        let private ofInts (vals: int[]) (mask: Mask) (phys: int[]) (dir: SortDir) : KeyCodes =
             let n = phys.Length
             let mutable lo = System.Int32.MaxValue
             let mutable hi = System.Int32.MinValue
@@ -6387,7 +6393,7 @@ module DataFrame =
             for i in 0 .. n - 1 do
                 let p = Raw.get i phys
 
-                if Raw.at p mask then
+                if Mask.at p mask then
                     any <- true
                     let v = Raw.at p vals
 
@@ -6412,7 +6418,7 @@ module DataFrame =
                         let p = Raw.get i phys
 
                         let code =
-                            if not (Raw.at p mask) then nullCode
+                            if not (Mask.at p mask) then nullCode
                             elif asc then Raw.at p vals - lo
                             else hi - Raw.at p vals
 
@@ -6442,8 +6448,8 @@ module DataFrame =
                 let codes =
                     phys
                     |> Array.map (fun p ->
-                        if not (Raw.at p m) then 2
-                        elif Raw.at p a = asc then 1
+                        if not (Mask.at p m) then 2
+                        elif Mask.at p a = asc then 1
                         else 0)
 
                 ValueSome { Codes = codes; Range = 3 }
@@ -6834,7 +6840,7 @@ module DataFrame =
                 match v with
                 | Ints(_, m) when intPair j ->
                     for i in 0 .. codes.Length - 1 do
-                        if not m[phys[i]] then
+                        if not (Mask.at phys[i] m) then
                             codes[i] <- -1
                 | _ -> ()
 
@@ -7124,7 +7130,7 @@ module DataFrame =
         match w with
         | WInts a ->
             let vals: int[] = Array.zeroCreate count
-            let mask: bool[] = Array.zeroCreate count
+            let mask: Mask = Array.zeroCreate count
             // The loop proves `i` for `a`, and for `phys` once it is checked to be as long (Phase 326);
             // the physical row it writes is an index it does not prove.
             Raw.within a.Length phys
@@ -7132,12 +7138,12 @@ module DataFrame =
             for i in 0 .. a.Length - 1 do
                 let p = Raw.get i phys
                 Raw.put vals p (Raw.get i a)
-                Raw.put mask p true
+                Mask.put mask p true
 
             Ints(vals, mask)
         | WFloats(a, m) ->
             let vals: float[] = Array.zeroCreate count
-            let mask: bool[] = Array.zeroCreate count
+            let mask: Mask = Array.zeroCreate count
             Raw.within a.Length phys
             Raw.within a.Length m
 
@@ -7145,7 +7151,7 @@ module DataFrame =
                 if Raw.get i m then
                     let p = Raw.get i phys
                     Raw.put vals p (Raw.get i a)
-                    Raw.put mask p true
+                    Mask.put mask p true
 
             Floats(vals, mask)
         | WCells cells -> Vec.packAt ty count (fun i -> phys[i]) cells
@@ -7304,14 +7310,14 @@ module DataFrame =
                     fun i ->
                         let p = Raw.at i phys
 
-                        if Raw.at p m then
+                        if Mask.at p m then
                             ValueSome(float (Raw.at p a))
                         else
                             ValueNone
                 | Some(Floats(a, m)) ->
                     fun i ->
                         let p = Raw.at i phys
-                        if Raw.at p m then ValueSome(Raw.at p a) else ValueNone
+                        if Mask.at p m then ValueSome(Raw.at p a) else ValueNone
                 | _ ->
                     fun i ->
                         match asNum (valueAt i) with
@@ -7433,7 +7439,7 @@ module DataFrame =
                             let i = Raw.at (s + k) perm
                             let p = Raw.at i phys
 
-                            if Raw.at p m then
+                            if Mask.at p m then
                                 acc <- acc + float (Raw.at p a)
 
                             Raw.put floats i acc
@@ -7443,7 +7449,7 @@ module DataFrame =
                             let i = Raw.at (s + k) perm
                             let p = Raw.at i phys
 
-                            if Raw.at p m then
+                            if Mask.at p m then
                                 acc <- acc + Raw.at p a
 
                             Raw.put floats i acc
@@ -7988,6 +7994,42 @@ module DataFrame =
     let noResolve: string -> Result<Table, EvalError> =
         fun r -> Error(UnresolvedSource r)
 
+    /// One move of the fold over a non-empty `steps` (Phase 376: lifted out of
+    /// `evalPreparedCountedFolding` so the asynchronous entry point folds through the same moves): the
+    /// step at the head — or, `fused`, a `Sort` followed by a `Limit` as one — over `f`, answering the
+    /// frame, the row evaluations it cost and the steps left.
+    let private foldHead
+        (k: KernelSet)
+        (fused: bool)
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (steps: Transform list)
+        : Result<Frame * int * Transform list, EvalError> =
+        match steps with
+        | [] -> Ok(f, 0, [])
+        // Phase 269 — the fusion the planner names as `TopN`: a `Sort` followed by a `Limit`
+        // runs as the stable top-n kernel. The slots resolve through the same resolvers, in the
+        // order the two steps would have resolved them, so the first error is the same one.
+        // Neither step is charged an evaluation, as neither was.
+        | Sort by :: Limit(n, offset) :: rest when fused ->
+            by
+            |> List.map (fun (c, d) -> resolveStrSlot env "sort key column" c |> Result.map (fun c -> c, d))
+            |> sequenceR
+            |> Result.bind (fun keys ->
+                resolveIntSlot env "limit n" n
+                |> Result.bind (fun n ->
+                    resolveIntSlot env "limit offset" offset
+                    |> Result.map (fun offset -> evalTopN k f keys n offset, 0, rest)))
+        | step :: rest ->
+            let cost =
+                match step with
+                | Filter _
+                | Derive _ -> Frame.rows f
+                | _ -> 0
+
+            evalStepWith k resolve env f step |> Result.map (fun f' -> f', cost, rest)
+
     /// The reference evaluator over a prepared source, reporting alongside its answer how many row
     /// evaluations at steps it cost (Phase 267) — the one driver every entry point folds through;
     /// see `evalPipelineWithInEnvCounted` for what the count means. `k` is the kernel set the
@@ -8005,33 +8047,13 @@ module DataFrame =
         (pipeline: Transform list)
         (prepared: Prepared)
         : Result<Frame * int, EvalError> =
-        let costOf (f: Frame) (step: Transform) =
-            match step with
-            | Filter _
-            | Derive _ -> Frame.rows f
-            | _ -> 0
-
-        let rec go f evaluated =
-            function
+        let rec go f evaluated steps =
+            match steps with
             | [] -> Ok(f, evaluated)
-            // Phase 269 — the fusion the planner names as `TopN`: a `Sort` followed by a `Limit`
-            // runs as the stable top-n kernel. The slots resolve through the same resolvers, in the
-            // order the two steps would have resolved them, so the first error is the same one.
-            // Neither step is charged an evaluation, as neither was.
-            | Sort by :: Limit(n, offset) :: rest when fused ->
-                by
-                |> List.map (fun (c, d) -> resolveStrSlot env "sort key column" c |> Result.map (fun c -> c, d))
-                |> sequenceR
-                |> Result.bind (fun keys ->
-                    resolveIntSlot env "limit n" n
-                    |> Result.bind (fun n ->
-                        resolveIntSlot env "limit offset" offset
-                        |> Result.bind (fun offset -> go (evalTopN k f keys n offset) evaluated rest)))
-            | step :: rest ->
-                let cost = costOf f step
-
-                evalStepWith k resolve env f step
-                |> Result.bind (fun f' -> go f' (evaluated + cost) rest)
+            | _ ->
+                match foldHead k fused resolve env f steps with
+                | Ok(f', cost, rest) -> go f' (evaluated + cost) rest
+                | Error e -> Error e
 
         go prepared.Frame.Value 0 pipeline
 
@@ -8130,6 +8152,76 @@ module DataFrame =
         : Result<Prepared, EvalError> =
         evalPreparedFrameCountedWith Kernels.host resolve env pipeline prepared
         |> Result.map (fst >> Prepared.ofFrame)
+
+    /// The worker pool as the evaluator reaches it (Phase 376): for a row-local step over a frame,
+    /// `Some` work that evaluates it on the pool, or `None` to run it as `evalToPrepared` runs it.
+    /// An interface rather than a mutable function value, because Fable may store a curried function
+    /// value in one arity and call it in another.
+    type internal PoolHook =
+        abstract Step: env: Map<string, Cell> * f: Frame * t: Transform -> Async<Result<Frame, EvalError>> option
+
+    /// The opted-in pool: set by `WorkerPool.optIn` and cleared by `WorkerPool.optOut`, which are
+    /// defined after this module because the pool hands the step off as data (`MorselHandOff`).
+    let mutable internal pool: PoolHook option = None
+
+    /// The pool's work for `t` over `f`, or `None` — always `None` until a host opts in.
+    let internal pooledStep
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (t: Transform)
+        : Async<Result<Frame, EvalError>> option =
+        match pool with
+        | Some hook -> hook.Step(env, f, t)
+        | None -> None
+
+    /// `evalToPrepared`, answered asynchronously (Phase 376): the JavaScript host's ONLY route to the
+    /// worker pool. The same resolver, env, pipeline and source, the same answer and the same errors,
+    /// byte for byte, on every host. The pipeline is planned and folded as `evalToPrepared` folds it;
+    /// where a host has opted in (`WorkerPool.optIn`) and shared memory exists, each `Filter` or
+    /// `Derive` the pool takes runs across the pool's workers with the caller draining morsels beside
+    /// them, and every other step runs on the caller's thread as it always ran. A host that has not
+    /// opted in, or a page without cross-origin isolation, gets `evalToPrepared`'s answer through the
+    /// same moves. `evalToPrepared` and the synchronous kernels are unchanged and never reach the pool.
+    ///
+    /// Two entry shapes on the JavaScript host. From the PAGE'S thread, call this and await it: the
+    /// page thread drains morsels and then yields until the workers report, so it never blocks on
+    /// `Atomics.wait` (which a page's thread refuses). From a DEDICATED WORKER that hosts the whole
+    /// evaluator, call it the same way, with the pool's workers started from that worker (a worker
+    /// may start workers); the page then stays free while the evaluator works. On .NET the native
+    /// kernels already run morsels across threads, and a host has no reason to opt in.
+    let evalToPreparedAsync
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (pipeline: Transform list)
+        (prepared: Prepared)
+        : Async<Result<Prepared, EvalError>> =
+        let rec go (f: Frame) (steps: Transform list) : Async<Result<Frame, EvalError>> =
+            async {
+                match steps with
+                | [] -> return Ok f
+                | t :: rest ->
+                    let pooled =
+                        match t with
+                        | Filter _
+                        | Derive _ -> pooledStep env f t
+                        | _ -> None
+
+                    match pooled with
+                    | Some work ->
+                        match! work with
+                        | Ok f' -> return! go f' rest
+                        | Error e -> return Error e
+                    | None ->
+                        match foldHead Kernels.host true resolve env f steps with
+                        | Ok(f', _, rest') -> return! go f' rest'
+                        | Error e -> return Error e
+            }
+
+        async {
+            let frame = prepared.Frame.Value
+            let! answer = go frame (Planner.rewrite frame.Cols pipeline)
+            return answer |> Result.map Prepared.ofFrame
+        }
 
     /// `evalManyToPrepared` through the kernel set `k` (Phase 343). Internal so the suite can run
     /// the batch through every member, and through a native member that runs alongside at any
@@ -10003,8 +10095,9 @@ module DataFrameCodec =
 //  float or bool vector (a string, decimal or boxed column cannot be shared), when
 //  it is not a comparison-kernel filter (Phase 270's bitmap answers that one), and
 //  when a `Derive`'s root is typed int, float or bool. Every other step runs as it
-//  always ran. Internal: no runner ships yet, and the laws (`MorselHandOffTests`)
-//  hold every handed-off step byte-identical to the sequential member.
+//  always ran. Internal: the worker pool (`WorkerPool`, below; Phase 376) is its
+//  runner, and the laws (`MorselHandOffTests`, `PooledLawTests`) hold every handed-off
+//  step byte-identical to the sequential member.
 // ============================================================================
 
 /// One row-local step as plain data (Phase 375): what a runner needs to compile and run a range of
@@ -10025,8 +10118,8 @@ type internal MorselHandOff =
         Kinds: int[]
         Ints: int[][]
         Floats: float[][]
-        Bools: byte[][]
-        Masks: byte[][]
+        Bools: Mask[]
+        Masks: Mask[]
         /// The frame's physical row count: the length of every carried vector.
         Count: int
         /// The physical row of every logical row, in logical order.
@@ -10048,32 +10141,17 @@ type internal MorselHandOff =
         /// A `Derive`'s carrier at each physical row (the one its root's type names) and its mask.
         OutInts: int[]
         OutFloats: float[]
-        OutBools: byte[]
-        OutMask: byte[]
+        OutBools: Mask
+        OutMask: Mask
     }
 
 module internal MorselHandOff =
 
-    // The two copies between the evaluator's masks and the hand-off's bytes. The loops prove every
-    // index, so they read and write unchecked (`Raw.get` / `Raw.set`): under Fable a checked index
-    // is the runtime's shared `item` / `setItem`, several times the copy itself.
-
-    let private bytesOf (mask: bool[]) : byte[] =
-        let out: byte[] = Array.zeroCreate mask.Length
-
-        for i in 0 .. mask.Length - 1 do
-            if Raw.get i mask then
-                Raw.set out i 1uy
-
-        out
-
-    let private boolsOf (bytes: byte[]) : bool[] =
-        let out: bool[] = Array.zeroCreate bytes.Length
-
-        for i in 0 .. bytes.Length - 1 do
-            Raw.set out i (Raw.get i bytes <> 0uy)
-
-        out
+    // Since Phase 376 the hand-off carries the frame's own arrays: a mask and a `Bools` vector's
+    // values are a `Mask` (bytes under Fable), so nothing is copied between the evaluator's form and
+    // the hand-off's; Phase 375 copied every mask to bytes to plan and back to `bool[]` in every
+    // runner. Where allocation is shared (`Shared`: a host opted in to the pool) an array not yet over
+    // shared memory is copied into it once, at plan; elsewhere every array is carried as it is.
 
     let private encodeEnv (env: Map<string, Cell>) : string =
         Canon.render (JObj [ for KeyValue(name, c) in env -> name, DataFrameCodec.encodeExpr (Lit c) ])
@@ -10186,33 +10264,47 @@ module internal MorselHandOff =
             match root with
             | Some root when exact && shareable ->
                 let k = List.length f.Cols
-                let rows = Frame.physical f
+                let rows = Shared.shareInts (Frame.physical f)
                 let m = morsels morselRows rows.Length
                 let kinds: int[] = Array.zeroCreate k
                 let ints: int[][] = Array.create k [||]
                 let floats: float[][] = Array.create k [||]
-                let bools: byte[][] = Array.create k [||]
-                let masks: byte[][] = Array.create k [||]
+                let bools: Mask[] = Array.create k [||]
+                let masks: Mask[] = Array.create k [||]
 
                 for i in used do
                     match f.Vecs[i] with
                     | Ints(v, mask) ->
                         kinds[i] <- 1
-                        ints[i] <- v
-                        masks[i] <- bytesOf mask
+                        ints[i] <- Shared.shareInts v
+                        masks[i] <- Shared.shareMask mask
                     | Floats(v, mask) ->
                         kinds[i] <- 2
-                        floats[i] <- v
-                        masks[i] <- bytesOf mask
+                        floats[i] <- Shared.shareFloats v
+                        masks[i] <- Shared.shareMask mask
                     | Bools(v, mask) ->
                         kinds[i] <- 3
-                        bools[i] <- bytesOf v
-                        masks[i] <- bytesOf mask
+                        bools[i] <- Shared.shareMask v
+                        masks[i] <- Shared.shareMask mask
                     | Strs _
                     | Decs _
                     | Cells _ -> ()
 
                 let sized (want: int) (n: int) = if root = want then n else 0
+
+                // A derive's carrier and its mask in one buffer, as the sequential member allocates them.
+                let struct (outInts, outFloats, outBools, outMask) =
+                    match root with
+                    | 1 ->
+                        let struct (v, m) = Shared.intsAndMask f.Count
+                        struct (v, Shared.floats 0, Shared.mask 0, m)
+                    | 2 ->
+                        let struct (v, m) = Shared.floatsAndMask f.Count
+                        struct (Shared.ints 0, v, Shared.mask 0, m)
+                    | 3 ->
+                        let struct (v, m) = Shared.boolsAndMask f.Count
+                        struct (Shared.ints 0, Shared.floats 0, v, m)
+                    | _ -> struct (Shared.ints 0, Shared.floats 0, Shared.mask 0, Shared.mask 0)
 
                 Some
                     { Step = step
@@ -10230,13 +10322,13 @@ module internal MorselHandOff =
                       First = 0
                       Last = m
                       Root = root
-                      OutRows = Array.zeroCreate (sized 0 rows.Length)
-                      OutCounts = Array.zeroCreate m
-                      OutFailed = Array.zeroCreate m
-                      OutInts = Array.zeroCreate (sized 1 f.Count)
-                      OutFloats = Array.zeroCreate (sized 2 f.Count)
-                      OutBools = Array.zeroCreate (sized 3 f.Count)
-                      OutMask = Array.zeroCreate (if root = 0 then 0 else f.Count) }
+                      OutRows = Shared.ints (sized 0 rows.Length)
+                      OutCounts = Shared.ints m
+                      OutFailed = Shared.bytes m
+                      OutInts = outInts
+                      OutFloats = outFloats
+                      OutBools = outBools
+                      OutMask = outMask }
             | _ -> None
 
     /// `planAt` in the evaluator's own morsels (`Kernels.MorselRows`).
@@ -10256,9 +10348,9 @@ module internal MorselHandOff =
         let vecs =
             Array.init h.Names.Length (fun i ->
                 match h.Kinds[i] with
-                | 1 -> Ints(h.Ints[i], boolsOf h.Masks[i])
-                | 2 -> Floats(h.Floats[i], boolsOf h.Masks[i])
-                | 3 -> Bools(boolsOf h.Bools[i], boolsOf h.Masks[i])
+                | 1 -> Ints(h.Ints[i], h.Masks[i])
+                | 2 -> Floats(h.Floats[i], h.Masks[i])
+                | 3 -> Bools(h.Bools[i], h.Masks[i])
                 | _ -> Cells [||])
 
         let frame: Frame =
@@ -10297,21 +10389,21 @@ module internal MorselHandOff =
 
                 DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickInt c) phys lo hi (fun p v ->
                     Raw.put h.OutInts p v
-                    Raw.put h.OutMask p 1uy)
+                    Mask.put h.OutMask p true)
                 |> Option.isSome
             | 2 ->
                 let c = DataFrame.compileExpr f resolved
 
                 DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickFloat c) phys lo hi (fun p v ->
                     Raw.put h.OutFloats p v
-                    Raw.put h.OutMask p 1uy)
+                    Mask.put h.OutMask p true)
                 |> Option.isSome
             | _ ->
                 let c = DataFrame.compileExpr f resolved
 
                 DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickBool c) phys lo hi (fun p v ->
-                    Raw.put h.OutBools p (if v then 1uy else 0uy)
-                    Raw.put h.OutMask p 1uy)
+                    Mask.put h.OutBools p v
+                    Mask.put h.OutMask p true)
                 |> Option.isSome
 
         h.OutFailed[j] <- if failed then 1uy else 0uy
@@ -10366,13 +10458,13 @@ module internal MorselHandOff =
             | Filter _ -> Ok(Frame.select f (DataFrame.keptInOrder h.MorselRows h.OutRows h.OutCounts))
             | Derive(name, e) ->
                 let dt = DataFrame.derivedTyping f.Cols e
-                let mask = boolsOf h.OutMask
+                let mask = h.OutMask
 
                 let ty, vec =
                     match h.Root with
                     | 1 -> DataFrame.derivedTyped dt f.Count h.Rows IntType (Ints(h.OutInts, mask)) mask
                     | 2 -> DataFrame.derivedTyped dt f.Count h.Rows FloatType (Floats(h.OutFloats, mask)) mask
-                    | _ -> DataFrame.derivedTyped dt f.Count h.Rows BoolType (Bools(boolsOf h.OutBools, mask)) mask
+                    | _ -> DataFrame.derivedTyped dt f.Count h.Rows BoolType (Bools(h.OutBools, mask)) mask
 
                 Ok(Frame.withColumn f name ty vec)
             | _ -> invalidOp "a hand-off whose step is not row-local"
@@ -10391,3 +10483,422 @@ module internal MorselHandOff =
         |> Option.map (fun h ->
             runner h
             finish env f t h)
+
+// ============================================================================
+//  The worker pool (Phase 376) — D10's yes, built on the step as data.
+//
+//  A host opts in (`WorkerPool.optIn`) by handing the pool a way to start a
+//  worker; each worker runs a script the host owns that imports this package
+//  and calls `WorkerPool.serve`. Only on a realm with shared memory: without
+//  `SharedArrayBuffer` (a page served without COOP/COEP) the opt-in answers
+//  `false` and nothing changes. Once opted in, the frame allocates its int and
+//  float values and its masks over shared memory (`Shared`), so a hand-off
+//  (`MorselHandOff`) reaches a worker by reference, and `evalToPreparedAsync`
+//  — the only route here — hands each eligible `Filter` and `Derive` of at
+//  least `PoolRows` rows to the pool.
+//
+//  One job at a time. The caller posts the hand-off to every worker that has
+//  reported ready, then drains morsels beside them; every runner claims the
+//  next morsel from one shared counter, so each morsel lands in its own result
+//  slots, and the caller finishes in morsel order (`MorselHandOff.finish`):
+//  the kept rows concatenated morsel by morsel, a derived column assembled by
+//  physical row. A morsel that fails is flagged, no runner claims past it,
+//  and the caller re-runs the first failed morsel to answer its error (375's
+//  rule). A worker that faults, or whose error event the host forwards, is
+//  retired and the step is answered by the sequential member: the pool never
+//  answers differently, it answers or it steps aside.
+//
+//  The pool starts lazily: the first eligible step starts the workers and
+//  runs as it always ran while they load; each worker is used from the step
+//  after it reports ready, and stays warm until `optOut`.
+// ============================================================================
+
+/// A worker the host started for the pool (Phase 376), as the pool talks to it. A host wraps what
+/// its platform gives it: a Web Worker's `postMessage`, `onmessage` (passing `event.data`) and
+/// `terminate`, or node's `worker_threads` equivalents. The worker must run a script that calls
+/// `WorkerPool.serve`; its error event, where the platform has one, is forwarded to the listener as
+/// `null`, and the pool then retires the worker.
+type MorselWorker =
+    /// Send `message` to the worker.
+    abstract Post: message: obj -> unit
+    /// Hand every message the worker sends to `handler`.
+    abstract Listen: handler: (obj -> unit) -> unit
+    /// Stop the worker.
+    abstract Stop: unit -> unit
+
+/// One job, as the caller posts it to each worker: the hand-off and the shared control words
+/// (`0` the next morsel to claim, `1` set once a morsel has failed, `2` how many runners have
+/// finished, `3` how many morsels the workers ran).
+type internal MorselJob =
+    { Job: int
+      HandOff: MorselHandOff
+      Control: int[] }
+
+/// What a worker sends back: `Ready` once on start, then one reply per job, `Faulted` when the
+/// worker failed to run its share (`Fault` says why).
+type internal MorselReply =
+    { Ready: bool
+      Job: int
+      Faulted: bool
+      Fault: string }
+
+/// The atomic operations the runners share their control words through: `Atomics` over shared
+/// memory under Fable, `Interlocked` / `Volatile` on .NET.
+module internal Atomic =
+
+#if FABLE_COMPILER
+    /// Add `v` to `a[i]`, answering what it held before.
+    [<Fable.Core.Emit("Atomics.add($0, $1, $2)")>]
+    let fetchAdd (a: int[]) (i: int) (v: int) : int = Fable.Core.Util.jsNative
+
+    /// `a[i]`, read atomically.
+    [<Fable.Core.Emit("Atomics.load($0, $1)")>]
+    let load (a: int[]) (i: int) : int = Fable.Core.Util.jsNative
+
+    /// `a[i] <- v`, written atomically.
+    [<Fable.Core.Emit("Atomics.store($0, $1, $2)")>]
+    let store (a: int[]) (i: int) (v: int) : unit = Fable.Core.Util.jsNative
+#else
+    /// Add `v` to `a[i]`, answering what it held before.
+    let fetchAdd (a: int[]) (i: int) (v: int) : int =
+        System.Threading.Interlocked.Add(&a[i], v) - v
+
+    /// `a[i]`, read atomically.
+    let load (a: int[]) (i: int) : int = System.Threading.Volatile.Read(&a[i])
+
+    /// `a[i] <- v`, written atomically.
+    let store (a: int[]) (i: int) (v: int) : unit =
+        System.Threading.Volatile.Write(&a[i], v)
+#endif
+
+/// The worker pool (Phase 376): opt-in, and reached only through `DataFrame.evalToPreparedAsync`.
+[<RequireQualifiedAccess>]
+module WorkerPool =
+
+    /// The logical rows from which a step goes to the pool (four morsels); a smaller frame runs on the
+    /// caller's thread as it always did. Set from this phase's own measurement
+    /// (`benchmarks/results/2026-10-06-i7-9700-phase-376.md`), the evaluator's `filter` and `derive`
+    /// under node and in Edge from the page's thread and from a dedicated worker, at 2, 4 and 8
+    /// threads: at 10,000 rows (two morsels) it was faster in 7 of 18 cells, by at most 14 per cent,
+    /// and more than doubled the time at eight threads on the page's thread; at 20,000 rows it was
+    /// faster in 15 of 18; at 50,000 in all 18.
+    [<Literal>]
+    let PoolRows = 32768
+
+    /// How a runner runs morsel `j` over the logical rows `lo .. hi - 1` of a rebuilt step: the
+    /// pool runs `MorselHandOff.runSpan`; the laws hand it perturbed ones.
+    type internal Span = Frame -> DataFrame.ResolvedExpr -> MorselHandOff -> int -> int -> int -> unit
+
+    /// Run morsels of `h`, claimed one at a time from the shared counter, until none is left or
+    /// one has failed: what every runner does, the caller included. Answers how many it ran.
+    let internal drain (span: Span) (h: MorselHandOff) (control: int[]) : int =
+        let f, env, t = MorselHandOff.rebuild h
+        let resolved = MorselHandOff.resolve f env t
+        let n = h.Rows.Length
+        let mutable ran = 0
+        let mutable going = true
+
+        while going do
+            if Atomic.load control 1 <> 0 then
+                going <- false
+            else
+                let j = Atomic.fetchAdd control 0 1
+
+                if j >= h.Last then
+                    going <- false
+                else
+                    span f resolved h j (j * h.MorselRows) (min n ((j + 1) * h.MorselRows))
+                    ran <- ran + 1
+
+                    if h.OutFailed[j] <> 0uy then
+                        Atomic.store control 1 1
+
+        ran
+
+    /// The worker's side with the morsel runner `span`: `serve`, for the laws' perturbed runners.
+    let internal serveWith (span: Span) (post: obj -> unit) : obj -> unit =
+        post (
+            box
+                { Ready = true
+                  Job = -1
+                  Faulted = false
+                  Fault = "" }
+        )
+
+        fun (message: obj) ->
+            let job = unbox<MorselJob> message
+
+            let reply =
+                try
+                    let ran = drain span job.HandOff job.Control
+                    Atomic.fetchAdd job.Control 3 ran |> ignore
+
+                    { Ready = false
+                      Job = job.Job
+                      Faulted = false
+                      Fault = "" }
+                with e ->
+                    { Ready = false
+                      Job = job.Job
+                      Faulted = true
+                      Fault = e.Message }
+
+            // The runner's last act on the shared words, so the caller's atomic read of them after
+            // every reply sees every slot this runner wrote.
+            Atomic.fetchAdd job.Control 2 1 |> ignore
+            post (box reply)
+
+    /// The worker's side (Phase 376). A worker's script calls this once with the function that posts
+    /// a message back (`m => self.postMessage(m)` in a Web Worker, `m => parentPort.postMessage(m)`
+    /// under node), and hands every message it receives to the function this answers
+    /// (`self.onmessage = e => handle(e.data)`). The worker reports ready at once, then runs its share
+    /// of each job and replies.
+    let serve (post: obj -> unit) : obj -> unit = serveWith MorselHandOff.runSpan post
+
+    let mutable private workerMorsels = 0
+
+    /// The morsels the pool's workers (not the caller) have run since this realm loaded: the laws read
+    /// it to show that the workers, and not the caller alone, answered. A function, not the mutable
+    /// itself, because Fable reads a `let` bound to a mutable module value as an alias of it.
+    let internal morselsByWorkers () : int = workerMorsels
+
+    /// One opted-in pool: its workers, which of them are ready or retired, and the job in flight.
+    [<AllowNullLiteral>]
+    type private Pool
+        (start: unit -> MorselWorker, size: int, minRows: int, morselRows: int, span: Span, callerDrains: bool) =
+        let workers: MorselWorker[] = Array.zeroCreate size
+        let ready: bool[] = Array.zeroCreate size
+        let retired: bool[] = Array.zeroCreate size
+        let busy: int[] = Array.zeroCreate 1
+        let mutable started = false
+        let mutable nextJob = 0
+        // The job awaiting replies (`-1` for none), what a reply to it does, and who waits for the
+        // workers to settle.
+        let mutable awaiting = -1
+        let mutable onReply: int -> MorselReply -> unit = fun _ _ -> ()
+        let mutable onSettled: unit -> unit = fun () -> ()
+
+        member _.MinRows = minRows
+        member _.MorselRows = morselRows
+        member _.Span = span
+
+        /// A message from worker `w`.
+        member _.Hear (w: int) (message: obj) : unit =
+            if isNull message then
+                retired[w] <- true
+
+                if awaiting >= 0 then
+                    onReply
+                        w
+                        { Ready = false
+                          Job = awaiting
+                          Faulted = true
+                          Fault = "the worker failed" }
+                else
+                    onSettled ()
+            else
+                let reply = unbox<MorselReply> message
+
+                if reply.Ready then
+                    ready[w] <- true
+                    onSettled ()
+                elif reply.Job = awaiting then
+                    onReply w reply
+
+        /// Start the workers, once.
+        member this.Start() : unit =
+            if not started then
+                started <- true
+
+                for w in 0 .. size - 1 do
+                    let worker = start ()
+                    workers[w] <- worker
+                    worker.Listen(this.Hear w)
+
+        /// The workers that have reported ready and not been retired.
+        member _.Live() : int list =
+            [ for w in 0 .. size - 1 do
+                  if ready[w] && not retired[w] then
+                      yield w ]
+
+        /// Has every worker reported ready, or been retired?
+        member _.Settled() : bool =
+            started && Array.forall2 (fun r d -> r || d) ready retired
+
+        /// Call `k` whenever a worker reports ready or is retired.
+        member _.WhenSettled(k: unit -> unit) : unit = onSettled <- k
+
+        member _.TryAcquire() : bool = Atomic.fetchAdd busy 0 1 = 0
+        member _.Release() : unit = Atomic.store busy 0 0
+
+        member _.Stop() : unit =
+            for w in 0 .. size - 1 do
+                if not (isNull (box workers[w])) then
+                    workers[w].Stop()
+
+        /// Run every morsel of `h` across the workers `targets` and the caller; answers whether every
+        /// runner finished its share (no worker faulted).
+        member this.Run(h: MorselHandOff, targets: int list) : Async<bool> =
+            Async.FromContinuations(fun (ok, _, _) ->
+                let control = Shared.ints 4
+                control[0] <- h.First
+                // Every target and the caller; the last of them to finish settles the job. A worker
+                // counts once: its reply, or its failure, whichever comes first.
+                let remaining = [| List.length targets + 1 |]
+                let pending: int[] = Array.zeroCreate size
+                let faulted = [| 0 |]
+
+                for w in targets do
+                    pending[w] <- 1
+
+                let settle () =
+                    if Atomic.fetchAdd remaining 0 -1 = 1 then
+                        awaiting <- -1
+                        // The atomic read that orders every runner's writes before the caller's.
+                        Atomic.load control 2 |> ignore
+                        workerMorsels <- workerMorsels + Atomic.load control 3
+                        ok (Atomic.load faulted 0 = 0)
+
+                nextJob <- nextJob + 1
+                let job = nextJob
+                awaiting <- job
+
+                onReply <-
+                    fun w reply ->
+                        if Atomic.fetchAdd pending w -1 = 1 then
+                            if reply.Faulted then
+                                retired[w] <- true
+                                Atomic.store faulted 0 1
+                                // A faulted runner may hold morsels it claimed and never ran: no
+                                // runner claims another, and the step goes to the sequential member.
+                                Atomic.store control 1 1
+
+                            settle ()
+
+                let message =
+                    box
+                        { Job = job
+                          HandOff = h
+                          Control = control }
+
+                for w in targets do
+                    workers[w].Post message
+
+                if callerDrains then
+                    drain this.Span h control |> ignore
+
+                Atomic.fetchAdd control 2 1 |> ignore
+                settle ())
+
+    let mutable private current: Pool = null
+
+    /// The pool's step: `Some` work for a row-local step it takes, `None` for one it leaves to the
+    /// caller's thread.
+    let private step (pool: Pool) (env: Map<string, Cell>) (f: Frame) (t: Transform) =
+        if Frame.rows f < pool.MinRows then
+            None
+        else
+            pool.Start()
+
+            match pool.Live() with
+            | [] -> None
+            | targets ->
+                match MorselHandOff.planAt pool.MorselRows env f t with
+                | None -> None
+                | Some h ->
+                    Some(
+                        async {
+                            let! complete =
+                                if pool.TryAcquire() then
+                                    async {
+                                        try
+                                            return! pool.Run(h, targets)
+                                        finally
+                                            pool.Release()
+                                    }
+                                else
+                                    // Another evaluation holds the pool: this one runs its morsels
+                                    // on its own thread, through the same loop.
+                                    async {
+                                        let control = Shared.ints 4
+                                        control[0] <- h.First
+                                        drain pool.Span h control |> ignore
+                                        return true
+                                    }
+
+                            if complete then
+                                return MorselHandOff.finish env f t h
+                            else
+                                return DataFrame.evalStepWith Kernels.host DataFrame.noResolve env f t
+                        }
+                    )
+
+    /// Stop the pool's workers and allocate as before; `evalToPreparedAsync` then runs every step on
+    /// the caller's thread. Nothing, when the host has not opted in.
+    let optOut () : unit =
+        if not (isNull current) then
+            current.Stop()
+            current <- null
+            DataFrame.pool <- None
+            Shared.disable ()
+
+    /// `optIn` with the pool's floor in rows, its morsel size, its morsel runner, and whether the caller
+    /// drains morsels beside the workers: the laws run the pool over small frames and small morsels,
+    /// with perturbed runners, and with the workers alone.
+    let internal optInWith
+        (start: unit -> MorselWorker)
+        (workers: int)
+        (minRows: int)
+        (morselRows: int)
+        (span: Span)
+        (callerDrains: bool)
+        : bool =
+        if workers < 1 then
+            invalidArg "workers" "a pool needs at least one worker"
+
+        optOut ()
+
+        if not (Shared.enable ()) then
+            false
+        else
+            let pool = Pool(start, workers, minRows, morselRows, span, callerDrains)
+            current <- pool
+
+            DataFrame.pool <-
+                Some
+                    { new DataFrame.PoolHook with
+                        member _.Step(env, f, t) = step pool env f t }
+
+            true
+
+    /// Opt this host in to the worker pool (Phase 376): `start` starts one worker running a script
+    /// that calls `serve`, and the pool starts `workers` of them, lazily, on the first step it takes.
+    /// Answers `false`, and changes nothing, where this realm has no shared memory — a page served
+    /// without `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy:
+    /// require-corp` — so a host may call it unconditionally. From `true` on, the frame allocates its
+    /// vectors over shared memory and `DataFrame.evalToPreparedAsync` hands each eligible step of at
+    /// least `PoolRows` rows to the pool; every answer is the sequential member's, byte for byte.
+    /// Opting in again replaces the pool.
+    let optIn (start: unit -> MorselWorker) (workers: int) : bool =
+        optInWith start workers PoolRows Kernels.MorselRows MorselHandOff.runSpan true
+
+    /// Has this host opted in, on a realm with shared memory?
+    let isActive () : bool = not (isNull current)
+
+    /// Start the pool's workers now rather than on the first step it takes, and complete once every
+    /// one has reported ready or been retired. Completes at once when the host has not opted in.
+    let warm () : Async<unit> =
+        if isNull current then
+            async { return () }
+        else
+            let pool = current
+            pool.Start()
+
+            if pool.Settled() then
+                async { return () }
+            else
+                Async.FromContinuations(fun (ok, _, _) ->
+                    pool.WhenSettled(fun () ->
+                        if pool.Settled() then
+                            pool.WhenSettled(fun () -> ())
+                            ok ()))

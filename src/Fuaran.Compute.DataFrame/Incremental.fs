@@ -4884,19 +4884,19 @@ module Incremental =
         for v in chunks do
             match v with
             | Ints(_, m) ->
-                if Array.exists id m then
+                if Mask.any m then
                     fold IntType
             | Floats(_, m) ->
-                if Array.exists id m then
+                if Mask.any m then
                     fold FloatType
             | Bools(_, m) ->
-                if Array.exists id m then
+                if Mask.any m then
                     fold BoolType
             | Strs(ty, _, m) ->
-                if Array.exists id m then
+                if Mask.any m then
                     fold ty
             | Decs(_, _, _, m) ->
-                if Array.exists id m then
+                if Mask.any m then
                     fold DecimalType
             | Cells a ->
                 for c in a do
@@ -4916,7 +4916,7 @@ module Incremental =
         | Floats(_, m)
         | Bools(_, m)
         | Strs(_, _, m)
-        | Decs(_, _, _, m) -> not (Array.exists id m)
+        | Decs(_, _, _, m) -> not (Mask.any m)
         | Cells a -> a |> Array.forall (fun c -> c = Null)
 
     /// Evaluate the `Derive` steps over a prepared source chunk by chunk, reusing the prior

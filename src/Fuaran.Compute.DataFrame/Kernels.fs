@@ -120,11 +120,11 @@ type internal KernelSet =
     {
         /// `CmpInts op vals mask k count` — the rows `p < count` whose value is present
         /// (`mask[p]`) and satisfies `vals[p] op k`: the rows on which the comparison is `true`.
-        CmpInts: CmpOp -> int[] -> bool[] -> int -> int -> uint32[]
+        CmpInts: CmpOp -> int[] -> Mask -> int -> int -> uint32[]
         /// `CmpFloats op vals mask k count` — the same over a float vector, under the evaluator's
         /// pinned float ordering (`compareFloat`: `NaN` equal to itself and above every other
         /// value, `-0.0` equal to `0.0`).
-        CmpFloats: CmpOp -> float[] -> bool[] -> float -> int -> uint32[]
+        CmpFloats: CmpOp -> float[] -> Mask -> float -> int -> uint32[]
         /// The rows set in both bitmaps.
         And: uint32[] -> uint32[] -> uint32[]
         /// The rows set in either bitmap.
@@ -232,7 +232,7 @@ module internal Kernels =
     /// definition the native member is held equal to.
     module Portable =
 
-        let cmpInts (op: CmpOp) (vals: int[]) (mask: bool[]) (k: int) (count: int) : uint32[] =
+        let cmpInts (op: CmpOp) (vals: int[]) (mask: Mask) (k: int) (count: int) : uint32[] =
             let out: uint32[] = Array.zeroCreate (words count)
             // The loop proves `p` once `mask` and `vals` are known to hold `count` rows (Phase 326),
             // and `p >>> 5` for `out`, which holds a bit per row. The mask is checked first and as a
@@ -241,12 +241,12 @@ module internal Kernels =
             Raw.within count vals
 
             for p in 0 .. count - 1 do
-                if Raw.get p mask && holds op (compare (Raw.get p vals) k) then
+                if Mask.get p mask && holds op (compare (Raw.get p vals) k) then
                     Raw.set out (p >>> 5) (Raw.get (p >>> 5) out ||| (1u <<< (p &&& 31)))
 
             out
 
-        let cmpFloats (op: CmpOp) (vals: float[]) (mask: bool[]) (k: float) (count: int) : uint32[] =
+        let cmpFloats (op: CmpOp) (vals: float[]) (mask: Mask) (k: float) (count: int) : uint32[] =
             let out: uint32[] = Array.zeroCreate (words count)
             // The loop proves `p` once `mask` and `vals` are known to hold `count` rows (Phase 326),
             // and `p >>> 5` for `out`, which holds a bit per row. The mask is checked first and as a
@@ -255,7 +255,7 @@ module internal Kernels =
             Raw.within count vals
 
             for p in 0 .. count - 1 do
-                if Raw.get p mask && holds op (compareFloat (Raw.get p vals) k) then
+                if Mask.get p mask && holds op (compareFloat (Raw.get p vals) k) then
                     Raw.set out (p >>> 5) (Raw.get (p >>> 5) out ||| (1u <<< (p &&& 31)))
 
             out

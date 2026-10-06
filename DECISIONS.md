@@ -1,5 +1,69 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-06 — D14: the worker pool lands on a byte-mask frame, opt-in and reached only asynchronously; the masks cost the whole evaluator some collection under node, recorded for the operator
+
+**Decision.** fuaran-core#376 completes D10's yes on the seam D13 landed. Figures in
+[`benchmarks/results/2026-10-06-i7-9700-phase-376.md`](benchmarks/results/2026-10-06-i7-9700-phase-376.md).
+
+**1. The frame's masks are bytes under Fable.** A validity mask and a `Bools` vector's values are a
+`Mask`: `bool[]` on .NET, as they always were (every accessor is the plain index, so the code there is
+the code it was), and `byte[]` — a `Uint8Array` — under Fable, read and written only through the
+`Mask` module. A typed vector's carrier and its mask share one buffer. A worker's rebuild of a hand-off
+now reads the frame's own arrays (0.02 to 0.04 ms at any size, where 375's copied every mask, 8.7 to
+9.7 ms a million rows), and the hand-off carries a `Mask` where it carried bytes.
+
+**2. Shared memory is the opt-in's, not the frame's default.** Until a host opts in, the frame
+allocates as before; from `WorkerPool.optIn` on, on a realm with `SharedArrayBuffer`, its int and float
+values and masks are allocated over shared memory, and a hand-off copies a vector allocated earlier
+into shared memory once, at plan (2 to 4 ms a million rows). A structured clone hands a shared array
+to a worker by reference.
+
+**3. One entry point reaches the pool.** `DataFrame.evalToPreparedAsync` folds the planned pipeline
+through the same moves as `evalToPrepared` (`foldHead`, lifted out of the fold) and offers each
+`Filter` and `Derive` of at least `WorkerPool.PoolRows` rows to the pool; `evalToPrepared` and the
+synchronous kernel pair never reach it. From the page's thread a caller awaits it (the pool never uses
+`Atomics.wait`, which the page refuses); a dedicated worker hosting the evaluator awaits it the same
+way and starts the pool from there.
+
+**4. The pool.** The host hands `optIn` a way to start a worker (`MorselWorker`: post, listen, stop)
+whose script calls `WorkerPool.serve`. The pool starts lazily on the first step it would take, uses a
+worker from the step after it reports ready, and stays warm until `optOut`. One job at a time: the
+caller posts the hand-off to the ready workers, then drains morsels beside them, every runner claiming
+the next morsel from one shared counter; results land in each morsel's own slots and the caller
+finishes in morsel order. A failed morsel is flagged and no runner claims past it; the caller re-runs
+the first failed morsel for its error (375's rule). A worker that faults, or whose error event the
+host forwards, is retired and the step answered by the sequential member. A second evaluation that
+finds the pool busy runs its morsels on its own thread through the same loop.
+
+**5. The floor is measured.** `PoolRows` is 32,768 rows: at 10,000 rows the pool was faster in 7 of 18
+cells (node, Edge's page thread, Edge's dedicated worker; 2, 4, 8 threads) by at most 14 per cent and
+more than twice as slow at eight threads on the page's thread; at 20,000 faster in 15 of 18; at 50,000
+in all. At 100,000 rows and up the evaluator runs 3.4 to 5.2 times faster under node, 3.5 to 4.7 times
+from a dedicated worker and 3.2 to 4.0 times from the page's thread.
+
+**6. The laws, and the gate's node leg.** `PooledLaw` holds every pooled step byte-identical to
+`Kernels.oneThread`, and `evalToPreparedAsync` to `evalToPrepared` over whole pipelines, over the
+transform vectors and the corpus, with the caller draining and with the workers alone; a shifted
+boundary and out-of-order concatenation go red; without isolation or without `SharedArrayBuffer` the
+opt-in is refused and the answers are the sequential member's. The suite runs it on .NET over the
+thread pool and, through Fable 5.0.0 (now pinned in the tool manifest) and `node`, over
+`worker_threads`: the node leg is a case of the gate's own suite, and it fails rather than skips without
+Fable or node.
+
+**7. What the masks cost — for the operator.** The step-level sequential figures 375 recorded do not
+regress on .NET (identical code; within noise) and under node improve or hold, except the `filter`
+(+3.6 per cent a million rows, inside the sittings' spread; +6 per cent at 100,000, outside it). The
+corpus harness under node reads 19 of 71 cases faster by 5 per cent or more, the prepared chain at
+100,000 rows by 29 to 31 per cent; but the sheet's whole evaluator at 100,000 rows — `Table` in, two
+steps, `Table` out — is 5 to 17 per cent slower (by method), consistently, though each of its phases
+measured apart is faster. The cause is collection: a call allocates about 3.1 MB of typed-array backing
+stores where it allocated 1.6 MB (the masks and the derived carriers were heap arrays), and the
+engine collects for them; the same pipeline with its masks drawn from one reused buffer runs faster
+than before. That is the price of masks a worker can read in place, which this phase exists to pay.
+A ruling the operator may take: keep it (the recorded state), or look for a host-side buffer reuse
+that would recover it (no reuse ships: a buffer outliving its vector retains memory, and the lifetime
+is not the evaluator's to know). Nothing here is a correctness question.
+
 ## 2026-10-06 — D13: the worker path's first piece is the step as data, compiled by one path; the frame's byte masks come before the pool, because every worker would otherwise copy them
 
 **Decision.** fuaran-core#375 builds D10's yes in order, and the first piece is the seam a worker
