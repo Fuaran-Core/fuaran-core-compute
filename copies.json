@@ -1,7 +1,7 @@
 {
   "kind": "copies",
   "producer": "fuaran-core-compute",
-  "$adoptionNote": "Two kinds of record are declared here and they run in OPPOSITE directions. (1) The transform law vectors: this repository EMITS conformance/laws/transform-laws.json, and the shared wire-format corpus carries the declared copy the other hosts certify against; `check` is `fingerprint` because the two repositories may differ in end-of-line policy and nothing else. (2) Everything this repository COPIED from the Fuaran.Core repository (Phase 259): the proof-leg kit (verbatim), the prover pin, the two hand-written oracle shims, and the Limits model and its extraction that Pipeline opens. For those, the canonical file is the CONSUMER path and the copy is the source here, declared in this file rather than in that repository's because an adopter must be able to adopt without editing the repository it adopts from. The registry compares the two files and reports any difference whichever side moved; every such record's `regen` says which side is canonical — re-copy FROM the Fuaran.Core repository, never the other way. `bytes` for the pin (a hash-verified declaration), `fingerprint` for the rest.",
+  "$adoptionNote": "Two kinds of record are declared here and they run in OPPOSITE directions. (1) The transform law vectors: this repository EMITS conformance/laws/transform-laws.json, and the shared wire-format corpus carries the declared copy the other hosts certify against; `check` is `fingerprint` because the two repositories may differ in end-of-line policy and nothing else. The record declares `against: release` and `stamp: kitVersion` (DECISIONS.md D6 (4)): the copy is graded against this repository's file at its latest release tag, not the committed draft, so a draft ahead of that release in the `kitVersion` stamp alone is reported as information rather than drift. The `lag` beside it answers a different question (when the copy moves) and is unchanged. (2) Everything this repository COPIED from the Fuaran.Core repository (Phase 259): the proof-leg kit (verbatim), the prover pin, the two hand-written oracle shims, and the Limits model and its extraction that Pipeline opens. For those, the canonical file is the CONSUMER path and the copy is the source here, declared in this file rather than in that repository's because an adopter must be able to adopt without editing the repository it adopts from. The registry compares the two files and reports any difference whichever side moved; every such record's `regen` says which side is canonical — re-copy FROM the Fuaran.Core repository, never the other way. `bytes` for the pin (a hash-verified declaration), `fingerprint` for the rest.",
   "records": [
     {
       "source": "conformance/laws/transform-laws.json",
@@ -10,6 +10,8 @@
       ],
       "check": "fingerprint",
       "regen": "cd Fuaran/Fuaran-Core-Compute; dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-laws ../Fuaran-UI/wire-format-fixtures",
+      "against": "release",
+      "stamp": "kitVersion",
       "lag": {
         "owner": "fuaran#2001",
         "reason": "Held at its published 0.35.0 stamp (DECISIONS.md D6): the one host that reads the family cannot yet evaluate the decimal, rounding, derive-typing, columnOp and delta vectors, so the copy lands in the same change-set as that host's port rather than ahead of it.",

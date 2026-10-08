@@ -616,6 +616,16 @@ registry; the `lag` in `copies.json` covers the present gap, owned by fuaran#200
 The lag is kept deliberately (operator, 2026-10-03): it turns an unowned stale record into an honest one
 with an owner.
 
+**4 adopted (2026-10-08, Phase 715).** The record in [`copies.json`](copies.json) and the derivation in
+[`version-derives.json`](version-derives.json) both declare `"against": "release"`, and the record names
+`"stamp": "kitVersion"`. The workspace copy registry now compares the corpus copy with this repository's
+file at its newest release tag, reads a committed draft that is ahead of that release in the stamp alone
+as information rather than drift, and still reports any other difference as stale; the copy obligation
+is raised when a version is released rather than when a draft is cut. A cut still re-emits
+`conformance/laws/transform-laws.json` here, because this suite holds that file to what the kit renders
+at the declared `<Version>`. The `lag` is unchanged and still owned by fuaran#2001: it says when the copy
+moves, while the grading says what the copy is compared with.
+
 ## 2026-10-02 — D5: a derived column is typed by its expression; the cells decide only where the typer cannot; a float beside a decimal is refused
 
 **Decided (Phase 338, carrying D3's last paragraph).** One rule types every column the dataframe
