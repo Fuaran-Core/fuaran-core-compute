@@ -4429,10 +4429,33 @@ module DataFrame =
         | CellOutsideType(_, ct, cell) ->
             AggError("aggregate over a " + ct + " column met a cell outside its type: " + cell)
 
+    /// Phase 404 — THE NaN a float result leaves the evaluator with: `Double.NaN`'s bit pattern, every
+    /// other value untouched. IEEE 754 does not say which payload or sign a NaN result carries — the
+    /// hardware's default NaN differs between x64 (sign set) and Arm64 (sign clear), an operation on
+    /// two NaNs answers either operand's, and an optimising JIT may commute an addition — so a running
+    /// total meeting `-inf + +inf` answered one bit pattern in a Debug build and another in a Release
+    /// build of the same code. Every aggregate and window answer passes through here at the point it
+    /// is emitted (`aggCells`, `GroupAgg.Stream.TryCell`, `GroupAgg.Output.Float`, and the window
+    /// column as `windowColumnOverWith` builds it), so the bits of an answer are a function of its
+    /// inputs alone (`DECISIONS.md` D16).
+    let internal canonicalNaN (x: float) : float =
+        if System.Double.IsNaN x then System.Double.NaN else x
+
+    /// `canonicalNaN` over a cell: a float cell holding a NaN becomes `Float Double.NaN`; every other
+    /// cell is itself.
+    let internal canonicalNaNCell (c: Cell) : Cell =
+        match c with
+        | Float x when System.Double.IsNaN x -> Float System.Double.NaN
+        | _ -> c
+
     /// Compute one aggregate over a cell list of the given source type — the evaluator's adapter onto the
-    /// public `Column.aggregate` (single source of truth), threading the `EvalError` envelope.
+    /// public `Column.aggregate` (single source of truth), threading the `EvalError` envelope. The
+    /// answer leaves with the canonical NaN (Phase 404): this adapter is the deferred path of every
+    /// `GroupBy` and `Pivot` aggregate and the whole of `aggregateCells`.
     let private aggCells (fn: AggFn) (srcType: ColumnType) (cells: Cell list) : Result<Cell, EvalError> =
-        Column.aggregate fn (Column.create "" srcType cells) |> Result.mapError aggErr
+        Column.aggregate fn (Column.create "" srcType cells)
+        |> Result.map canonicalNaNCell
+        |> Result.mapError aggErr
 
     let private aggType (fn: AggFn) (srcType: ColumnType) : ColumnType = Column.aggType fn srcType
 
@@ -5319,8 +5342,15 @@ module DataFrame =
                     for i in 0 .. n - 1 do
                         this.Feed(Raw.get i slotOf, Raw.get i phys)
 
-            /// Slot `g`'s answer, or `ValueNone` where it defers to `Column.aggregate`.
-            member _.TryCell(g: int) : Cell voption =
+            /// Slot `g`'s answer, or `ValueNone` where it defers to `Column.aggregate`. A NaN answer
+            /// leaves canonical (Phase 404), exactly as the deferred path's does.
+            member this.TryCell(g: int) : Cell voption =
+                match this.Accumulated g with
+                | ValueSome c -> ValueSome(canonicalNaNCell c)
+                | ValueNone -> ValueNone
+
+            /// Slot `g`'s answer as its accumulator holds it, before the NaN is made canonical.
+            member private _.Accumulated(g: int) : Cell voption =
                 if mode = MDefer || deferred[g] then
                     ValueNone
                 else
@@ -5446,7 +5476,11 @@ module DataFrame =
 
                     cells[i] <- Int x
 
+            /// Every float answer a `GroupBy` or `Pivot` writes passes here — a stream's unboxed write
+            /// and every cell written through `Cell` — so it lands with the canonical NaN (Phase 404).
             member _.Float(i: int, x: float) : unit =
+                let x = canonicalNaN x
+
                 if typed && typedFloat then
                     floats[i] <- x
                     Mask.put mask i true
@@ -7588,6 +7622,16 @@ module DataFrame =
                 // The running extremes keep the source type, exactly as `AggFn.Min`/`Max` do.
                 | CumulMax
                 | CumulMin -> colType cols spec.Of |> Option.defaultValue StringType
+
+            // Phase 404 — the window column leaves with the canonical NaN, whichever function wrote
+            // it: this is the one place every window answer passes, the frame form, the row form and
+            // the incremental seam's resumed runs alike (a seed is read back from a canonical output).
+            if floatOut then
+                for i in 0 .. n - 1 do
+                    floats[i] <- canonicalNaN floats[i]
+            elif not intOut then
+                for i in 0 .. n - 1 do
+                    out[i] <- canonicalNaNCell out[i]
 
             let column =
                 if intOut then WInts ints

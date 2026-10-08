@@ -1843,6 +1843,14 @@ let private sameCell (a: Cell) (b: Cell) : bool =
     | Float x, Float y -> System.BitConverter.DoubleToInt64Bits x = System.BitConverter.DoubleToInt64Bits y
     | _ -> a = b
 
+/// Phase 404 — the one NaN an aggregate or window answer leaves the evaluator with: `Double.NaN`'s
+/// bit pattern, whatever payload or sign the arithmetic produced. Stated here, independently of the
+/// product's helper, so the oracles below say what the answer must be rather than what it is.
+let private canonicalNaNCell (c: Cell) : Cell =
+    match c with
+    | Float x when System.Double.IsNaN x -> Float System.Double.NaN
+    | _ -> c
+
 /// One drawn case of the differential law: a column type, its cells, and a group per row.
 type private AggCase =
     { Ty: ColumnType
@@ -1989,7 +1997,8 @@ let private streamLaw (perturbation: DataFrame.GroupAgg.Perturbation) (seeds: in
                     | ValueSome got, Ok want ->
                         answered <- answered + 1
 
-                        if not (sameCell got want) then
+                        // `Column.aggregate`'s answer with the evaluator's one NaN (Phase 404).
+                        if not (sameCell got (canonicalNaNCell want)) then
                             failures.Add(
                                 sprintf
                                     "seed %d %A over %A, group %d: streamed %A, Column.aggregate %A"
@@ -5654,7 +5663,7 @@ let private refCompareCells (a: Cell) (b: Cell) : int option =
 /// The reference `Window` column — the row-list algorithm the evaluator ran before Phase 324,
 /// kept here as the oracle: each partition's rows gathered by `CellKey`, sorted with the stable
 /// `List.sortWith` under `compareResolved`, the function computed over the ordered list, and the
-/// outputs scattered back to the rows' positions.
+/// outputs scattered back to the rows' positions, a NaN as `Double.NaN`'s bits (Phase 404).
 let private referenceWindow (cols: Schema) (rows: Cell[][]) (spec: WindowSpec) : Cell[] =
     let idx name =
         cols |> List.tryFindIndex (fun (c, _) -> c = name)
@@ -5824,8 +5833,10 @@ let private referenceWindow (cols: Schema) (rows: Cell[][]) (spec: WindowSpec) :
 
                 outs[k] <- acc
 
+        // Every answer with the evaluator's one NaN (Phase 404): the bits of a running total that
+        // met `-inf + +inf`, or of a carried source NaN, are `Double.NaN`'s on every host and build.
         for k in 0 .. len - 1 do
-            out[fst ordered[k]] <- outs[k]
+            out[fst ordered[k]] <- canonicalNaNCell outs[k]
 
     out
 
@@ -5932,6 +5943,101 @@ let orderCodeTests =
           <| fun _ ->
               let failures, _ = windowLaw DataFrame.Ordering.TieBreakReversed (seq { 0..2999 })
               Expect.isNonEmpty failures "the law finds the reversed tie-break"
+
+          // Phase 404 — the go-red vector. A running total meeting `-inf + +inf` answers the
+          // hardware's default NaN (sign clear on Arm64, set on x64), and a NaN meeting a NaN may
+          // answer either operand's, which an optimising JIT is free to commute: the Release build of
+          // the scan answered one sign and the Debug build the other. Red on that code; the evaluator
+          // now emits one NaN, `Double.NaN`'s bits, in every build and on every host.
+          testCase "a running total meeting -inf + +inf answers Double.NaN's bits, frame path and row form"
+          <| fun _ ->
+              let canonical = System.BitConverter.DoubleToInt64Bits System.Double.NaN
+              // A NaN whose sign bit is CLEAR — Arm64's default NaN, and not `Double.NaN`'s pattern.
+              let clearNaN = System.BitConverter.Int64BitsToDouble 0x7FF8000000000000L
+
+              let t =
+                  tbl
+                      [ "k", IntType; "x", FloatType ]
+                      [ col "k" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ]
+                        col "x" FloatType [ Float -infinity; Float infinity; Float 1.5; Float nan; Float clearNaN ] ]
+
+              let spec fn =
+                  { PartitionBy = []
+                    OrderBy = [ "k", Asc ]
+                    Fn = fn
+                    Of = "x"
+                    As = "w" }
+
+              let bitsOf (cells: Cell list) =
+                  cells
+                  |> List.map (fun c ->
+                      match c with
+                      | Float x -> Some(System.BitConverter.DoubleToInt64Bits x)
+                      | _ -> None)
+
+              let frame fn =
+                  DataFrame.evalPipeline [ Window(spec fn) ] t |> okTable |> cellsOf "w" |> bitsOf
+
+              let rows fn =
+                  let input =
+                      List.init 5 (fun i -> t.Columns |> List.map (fun c -> List.item i c.Cells))
+
+                  match DataFrame.windowStep t.Schema input (spec fn) with
+                  | Ok(_, out) -> out |> List.map List.last |> bitsOf
+                  | Error e -> failtestf "the row form refused %A" e
+
+              let ninf = System.BitConverter.DoubleToInt64Bits -infinity
+
+              for label, got in [ "frame path", frame CumulSum; "row form", rows CumulSum ] do
+                  Expect.equal
+                      got
+                      [ Some ninf; Some canonical; Some canonical; Some canonical; Some canonical ]
+                      (sprintf "CumulSum (%s): -inf, then Double.NaN's bits from the row that met +inf" label)
+
+              // A carried NaN leaves canonical too: `Lag` hands on the clear-signed source NaN.
+              Expect.equal
+                  (frame Lag |> List.last)
+                  (Some canonical)
+                  "Lag carries the clear-signed NaN out as Double.NaN's bits"
+
+          testCase "a GroupBy aggregate meeting -inf + +inf or a clear-signed NaN answers Double.NaN's bits"
+          <| fun _ ->
+              let canonical = System.BitConverter.DoubleToInt64Bits System.Double.NaN
+              let clearNaN = System.BitConverter.Int64BitsToDouble 0x7FF8000000000000L
+
+              let t =
+                  tbl
+                      [ "g", IntType; "x", FloatType ]
+                      [ col "g" IntType [ Int 1; Int 1; Int 2; Int 3 ]
+                        col "x" FloatType [ Float -infinity; Float infinity; Float clearNaN; Float clearNaN ] ]
+
+              let aggs =
+                  [ for fn in [ Sum; Mean; Min; Max; First; Last; Median ] ->
+                        { Name = sprintf "%A" fn
+                          Fn = fn
+                          Of = "x" } ]
+
+              let out = DataFrame.evalPipeline [ GroupBy([ "g" ], aggs) ] t |> okTable
+
+              let nans =
+                  [ for a in aggs do
+                        for c in cellsOf a.Name out do
+                            match c with
+                            | Float x when System.Double.IsNaN x ->
+                                yield a.Name, System.BitConverter.DoubleToInt64Bits x
+                            | _ -> () ]
+
+              for name, bits in nans do
+                  Expect.equal bits canonical (sprintf "%s answers Double.NaN's bits" name)
+
+              // Not vacuous: group 1's Sum and Mean met -inf + +inf, and groups 2 and 3 hold a NaN
+              // that every one of the seven carries or folds.
+              Expect.isGreaterThanOrEqual nans.Length 16 "the vector reaches NaN answers"
+
+              // The public adapter the incremental seam recomputes groups through answers the same.
+              match DataFrame.aggregateCells Sum FloatType [ Float -infinity; Float infinity ] with
+              | Ok(Float x) -> Expect.equal (System.BitConverter.DoubleToInt64Bits x) canonical "aggregateCells Sum"
+              | other -> failtestf "aggregateCells Sum answered %A" other
 
           testCase "sort, sort > limit and the coded order agree over the generated cases"
           <| fun _ ->

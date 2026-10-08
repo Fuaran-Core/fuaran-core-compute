@@ -7,13 +7,18 @@
 #   pwsh ./run.ps1 -SkipBuild      skip the build (implies a prior build)
 #   pwsh ./run.ps1 -SkipTests      skip the suite
 #   pwsh ./run.ps1 -Proofs         also run the F* proof leg once (installs the pinned prover)
+#   pwsh ./run.ps1 -Configuration Release   build and test in Release (the gate's Release leg)
 #Requires -Version 7.0
 [CmdletBinding()]
 param(
     [switch] $SkipFormat,
     [switch] $SkipBuild,
     [switch] $SkipTests,
-    [switch] $Proofs
+    [switch] $Proofs,
+    # Phase 404 - the configuration built and tested, as `./verify.ps1 -Configuration` takes it.
+    # Debug by default; Release is what ships, and an optimiser-sensitive answer shows only there.
+    [ValidateSet('Debug', 'Release')]
+    [string] $Configuration = 'Debug'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,12 +40,14 @@ pwsh -NoProfile -File ./gates/check-publication-boundary.ps1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (-not $SkipBuild) {
-    dotnet build Fuaran.Core.Compute.slnx --nologo
+    $global:LASTEXITCODE = 0
+    dotnet build Fuaran.Core.Compute.slnx --nologo -c $Configuration
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 if (-not $SkipTests) {
-    dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build
+    $global:LASTEXITCODE = 0
+    dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build -c $Configuration
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

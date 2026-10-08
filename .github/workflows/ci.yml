@@ -6,8 +6,18 @@ on:
   pull_request:
 
 jobs:
+  # Phase 404 - both configurations, because they ship differently: Debug is the contributor's own
+  # path (`./verify.ps1`), Release is what publish-packages verifies and then packs `--no-build`. The
+  # window law's NaN sign was a Release-only red that sat latent for weeks with the main suite run in
+  # Debug alone; the second leg costs a build and a run in parallel and moves such a red to the
+  # commit that caused it.
   verify:
+    name: verify (${{ matrix.configuration }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
     steps:
       # The package-roster and surface checks read the repository's release TAGS: fetch the history
       # and the tags, or a tag-less shallow clone reads as "nothing released yet".
@@ -39,11 +49,11 @@ jobs:
       # file (its Phase 258), two producers stamp one corpus copy with two versions, and whichever
       # the copy follows, the other's CI would be red on every push for a byte neither can change.
       # DECISIONS.md D1 (6) records this; the flag is set here in the change-set that answers 258.
-      - name: Verify (./verify.ps1)
+      - name: Verify (./verify.ps1 -Configuration ${{ matrix.configuration }})
         shell: pwsh
         env:
           FUARAN_CORE_CORPUS_DIR: ${{ github.workspace }}/wire-format-fixtures
-        run: ./verify.ps1
+        run: ./verify.ps1 -Configuration ${{ matrix.configuration }}
 
   # The proof leg: proofs/ColumnOps.fst and proofs/Pipeline.fst (and Limits.fst, which Pipeline
   # opens) checked by the PINNED F*/Z3 three times from a cold cache, the committed F# oracles held

@@ -17,6 +17,11 @@ name: publish-packages
 # scoped to package ids, so the policy must be extended to the four Fuaran.Compute.* ids before the
 # first v* tag under them: a failed NuGet/login (or a push refused for those ids) on that tag is the
 # missing registration, not an authentication fault.
+#
+# Phase 404 - a publish is the repository's own gate in Release, and the pack is `--no-build` over
+# THAT output: `verify.ps1 -Configuration Release` builds and runs the whole suite (and the clock leg)
+# with the inputs the ci workflow gives it, and the assemblies it verified are the assemblies that
+# ship, not a second build of the same sources.
 on:
   push:
     tags: ['v*']
@@ -32,7 +37,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      # The gate below reads the repository's release TAGS (the package-roster and surface checks),
+      # exactly as ci.yml's does: the history and the tags, not a depth-1 clone.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
@@ -41,8 +51,20 @@ jobs:
       # every Fuaran.Core package restores from nuget.org.
       - name: Create the empty local feed directory
         run: mkdir -p ../../local-nuget-feed
-      - name: Pack (every packable src project)
-        run: dotnet pack Fuaran.Core.Compute.slnx -c Release -o ${{ runner.temp }}/nupkgs
+      # The gate's inputs, as ci.yml gives them: the conformance corpus the law-vector legs compare
+      # against, checked out inside the workspace.
+      - name: Check out the wire-format conformance corpus
+        uses: actions/checkout@v4
+        with:
+          repository: fuaran-ui/fuaran-ui-specification
+          path: wire-format-fixtures
+      - name: Verify the Release build (./verify.ps1 -Configuration Release)
+        shell: pwsh
+        env:
+          FUARAN_CORE_CORPUS_DIR: ${{ github.workspace }}/wire-format-fixtures
+        run: ./verify.ps1 -Configuration Release
+      - name: Pack what was verified (every packable src project, --no-build)
+        run: dotnet pack Fuaran.Core.Compute.slnx -c Release --no-build -o ${{ runner.temp }}/nupkgs
       # Auth is Trusted Publishing (OIDC): a policy on nuget.org (repo owner / repo / this
       # workflow's file name) exchanges the job's OIDC token for a 1-hour API key — no long-lived
       # key secret to rotate.
