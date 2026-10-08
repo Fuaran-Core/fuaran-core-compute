@@ -98,7 +98,7 @@ let state = Incremental.primeOnPrepared idw pipelineA prepared                  
 `DataFrame.evalPipelineWithInEnv` does, and answers the same cells and the same errors.
 
 A consumer that feeds one pipeline's answer to the next — a sheet's nodes, chained dashboard
-bindings — keeps each answer prepared with `DataFrame.evalToPrepared` (`0.38.0`), so the chain pays
+bindings — keeps each answer prepared with `DataFrame.evalToPrepared` (`0.38.1`), so the chain pays
 the boundary once in and once out rather than at every hop:
 
 ```fsharp
