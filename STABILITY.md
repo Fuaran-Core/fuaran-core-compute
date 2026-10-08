@@ -46,10 +46,31 @@ CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
 It rewrites EVERY drifted baseline, not only the one you were looking at: stage the baselines you
 meant to move by name.
 
-## 0.38.0 — DRAFT
+## 0.38.0 — released 2026-10-08 as `v0.38.0`
 
-`0.37.0` is tagged, so the change below ADVANCED the slot to `0.38.0`. It is a draft until it is
-tagged: an additive change rides it, a breaking one advances it.
+**Release record.** The cut-time Fable gate ran green against the candidate on 2026-10-08, in the
+receiving host: Fuaran.UI's .NET repository (`fuaran-dotnet` at `78f858e`, pinning `Fuaran.Core.*`
+`0.36.0`) ran its Core Fable gate as `pwsh -NoProfile -File tests/core-fable/core-fable.ps1
+-ComputeVersion 0.38.0 -ComputeFeed <candidate folder>`, with the four packages at `0.38.0` packed from
+this commit's tree (`Fuaran.Compute.DataFrame`, `Fuaran.Compute.ColumnOps`, `Fuaran.Compute.PipelineQuery`
+and `Fuaran.Compute.Conformance`) and every `Fuaran.Core.*` package at that pin. Both legs were green: the
+compile leg (20 referenced packages, 2 excluded, 21 on the candidate surface) transpiled under Fable 5 with
+the compute packages at `0.38.0`, and the parity leg read 426 of 426 vectors byte-identical on .NET and
+under node. That host's gate was red before this release for the reason this version exists to remove:
+`0.37.0` was built on the substrate's `0.34.0` and does not compile against `0.36.0`, whose `Query` gained
+`Where` and `OrderBy`. The law vectors re-emitted from this commit are byte-identical to the committed
+`conformance/laws/transform-laws.json`; the corpus copy stays under its declared lag (`DECISIONS.md` D6).
+The gate (`verify.ps1`) ran green on this commit in Debug and in Release under its release tag, and CI ran
+both configurations and the proof leg green on the tree it was cut from (`df21373`, run 37768767075).
+
+This version carries the changes entered below over `0.37.0`: five additive surfaces (the prepared result,
+the incremental state's wire form, concurrent pipelines over one source, the opt-in worker pool and its
+asynchronous entry point, and the pipeline-query registry's lifecycle verbs); performance and determinism
+changes that move no answer's value; and the substrate pin raised through `0.35.1` to `0.36.0`, so a
+consumer raises `Fuaran.Core.*` to `0.36.0` with `Fuaran.Compute.*`.
+
+`0.37.0` is tagged, so the change below ADVANCED the slot to `0.38.0`. It was a draft until it was
+tagged: an additive change rode it, a breaking one would have advanced it.
 
 ### Every float the evaluator computes carries one NaN, and the gate runs Release (Phase 404, `DECISIONS.md` D16) — none, `determinism`
 
