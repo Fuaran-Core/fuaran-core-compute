@@ -3155,7 +3155,7 @@ module Incremental =
         | WProject pairs :: rest ->
             let resolveOne (src, out) =
                 match colIndex f.Cols src with
-                | None -> Error(UnknownColumn(src, available f.Cols))
+                | None -> Error(EvalError.UnknownColumn(src, available f.Cols))
                 | Some i -> Ok(out, snd (List.item i f.Cols), i)
 
             traverse resolveOne pairs
@@ -3350,14 +3350,14 @@ module Incremental =
         let keyIdx = keys |> List.map (fun k -> colIndex cols k, k)
 
         match keyIdx |> List.tryPick (fun (i, k) -> if Option.isNone i then Some k else None) with
-        | Some missing -> Error(UnknownColumn(missing, available cols))
+        | Some missing -> Error(EvalError.UnknownColumn(missing, available cols))
         | None ->
             let idxs = keyIdx |> List.map (fun (i, _) -> Option.get i) |> List.toArray
 
             let resolveAgg (a: Agg) =
                 match colType cols a.Of with
                 | Some ty -> Ok(a, ty, colIndex cols a.Of |> Option.get)
-                | None -> Error(UnknownColumn(a.Of, available cols))
+                | None -> Error(EvalError.UnknownColumn(a.Of, available cols))
 
             traverse resolveAgg aggs
             |> Result.bind (fun resolvedAggs ->

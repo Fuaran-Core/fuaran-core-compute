@@ -40,7 +40,9 @@ module PipelineQueryConformance =
                   Determinism = Effect.network }
               Source = Ref "orders"
               TimeoutMs = None
-              PageSize = None }
+              PageSize = None
+              Where = []
+              OrderBy = [] }
           Pipeline =
             [ Filter(ColExpr.Binary(Gt, ColExpr.Col "a", ColExpr.Param "min"))
               Filter(ColExpr.InParam(ColExpr.Col "b", "tags"))

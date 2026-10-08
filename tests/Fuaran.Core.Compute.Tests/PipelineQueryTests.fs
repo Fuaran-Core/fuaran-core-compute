@@ -25,7 +25,9 @@ let private query (id: string) (ps: QueryParam list) (result: Schema) (source: D
           Determinism = Effect.network }
       Source = source
       TimeoutMs = None
-      PageSize = None }
+      PageSize = None
+      Where = []
+      OrderBy = [] }
 
 let private ledger: Schema =
     [ "region", StringType; "amount", DecimalType; "n", IntType ]

@@ -29,6 +29,17 @@
 #               measuring apparatus is broken — almost always a second writer in the cache — so
 #               everything after it would be measured with the same broken apparatus. -NoFloor
 #               is the deliberate opt-out for a machine genuinely that fast.
+#               A floor is a number measured on ONE kind of machine, so since Phase 402 the budget
+#               file's `floorSeeding.os` names the OS its floors were seeded on, and on any other
+#               OS they are not enforced (one line says so): a Windows-seeded floor broke the first
+#               Linux run, whose runner is simply faster. The second writer the floor stands in for
+#               is caught DIRECTLY, on every OS and whatever the clock says, by the CACHE
+#               PROVENANCE check (Phase 402): between two of this run's prover invocations nothing
+#               in the cache may appear, change or vanish, and a module's own `.checked` file may
+#               not be in the cache before its cold check starts. Either is a refusal naming the
+#               files — the 2026-09-14 incident (another run's `.checked` files found by this one)
+#               is exactly both. A file's state is its length and the hash of its bytes, never its
+#               timestamp.
 #               The cache the cold runs use is PER INVOCATION (<WorkDir>/cache-<pid>, or
 #               -CacheDir), created and removed by this script, so that "cold cache" cannot be
 #               quietly falsified by another run in the same worktree. See "Running it" in the
@@ -134,9 +145,16 @@
 # from <ProofsDir>/.fstar/ (a previous install by this script), else DOWNLOADED from the pinned
 # GitHub release, hash-verified, and unpacked there. Both directories, and <WorkDir>, are expected
 # to be gitignored by the adopting repository.
-# Only the Windows release is pinned by the pin file's shape — the leg runs on the Windows CI
-# runner and the Windows dev machines; on another OS set FSTAR_HOME to a matching release and the
-# pin's version check still applies.
+# The pin file carries ONE ENTRY PER OPERATING SYSTEM (Phase 393: `windows` and `linux`), every
+# entry the same release. The download path resolves the entry by `$IsWindows` / `$IsLinux` /
+# `$IsMacOS`, REFUSES an OS with no entry by name (exit 2), and refuses an entry that is incomplete
+# or names a different release than the pin's `fstar` — an entry left behind by a pin bump would
+# otherwise fetch, hash-verify and run the OLD prover on that OS only. The archive is unpacked by its
+# own extension (`.zip` or `.tar.gz`); every release lays out `fstar/bin/fstar.exe` with the bundled
+# Z3 under `fstar/lib/fstar/z3-<v>/`, on every OS. FSTAR_HOME still overrides the download on any
+# OS, and the pin's version check still applies to whatever it names. `-ResolveOnly` prints the
+# entry this host would fetch and stops before any download, so the resolution is testable without
+# a prover; `-Platform` names the OS to resolve for instead of the host's.
 #
 # Public behaviour is the contract. Every line this script prints, and every exit code it returns,
 # is what the pre-kit `check.ps1` printed and returned — a repository's tests may parse them.
@@ -179,7 +197,19 @@ param(
     [switch] $Strict,
     [switch] $NoFloor,
     [string] $CacheDir,
-    [int]    $Runs = 1
+    [int]    $Runs = 1,
+    # Phase 402 — THE KIT'S OWN TEST SEAM, and nothing else: a script block run after each prover
+    # invocation, once its cache state is recorded and before the next one is checked against it —
+    # exactly where a second writer would act. It is called with the module, the run and the cache
+    # directory. `check-proof-leg.tests.ps1` plants its second writer here, synchronously, so the
+    # refusal it asserts cannot depend on scheduling. A caller that names nothing is unaffected.
+    [scriptblock] $AfterInvocation,
+    # Phase 393 — the OS whose pin entry is resolved; defaults to the host's. Naming another OS is
+    # only meaningful with -ResolveOnly: a prover built for one OS does not run on another.
+    [ValidateSet('windows', 'linux', 'macos')][string] $Platform,
+    # Print the pin entry the download path would fetch for -Platform, then exit 0 — or refuse it,
+    # exactly as the download path would. Downloads nothing, runs nothing.
+    [switch] $ResolveOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -188,7 +218,8 @@ $ErrorActionPreference = 'Stop'
 # refutation returns the PROVER's code, which is 1 in practice; these two are the leg's, so a
 # caller — a CI job, a wrapper, a post-mortem grep — can tell "the model is wrong" from "the
 # prover died" and from "the leg's machinery broke" without reading a line of output. 2 is already
-# taken (no FSTAR_HOME on a non-Windows machine), so these start at 3.
+# taken (no prover can be resolved for this OS: the pin has no usable entry for it and FSTAR_HOME is
+# unset), so these start at 3.
 $ExitAbort = 3
 $ExitApparatus = 4
 
@@ -250,6 +281,48 @@ $pinnedVersion = $pin.fstar.TrimStart('v')
 
 # ---- 1. resolve the prover ---------------------------------------------------------------------
 
+# The OS this run resolves a pin entry for (Phase 393): -Platform when named, else the host's.
+# An OS PowerShell does not name (none today) resolves to '' and is refused below like any other
+# OS without an entry.
+$pinPlatform = if ($Platform) { $Platform }
+elseif ($IsWindows) { 'windows' }
+elseif ($IsLinux) { 'linux' }
+elseif ($IsMacOS) { 'macos' }
+else { '' }
+
+# The pin entry for $pinPlatform, or a refusal NAMING the OS (exit 2, the "no prover for this OS"
+# code). An entry must be complete and must name the pin's own release in both its asset and its
+# url: the hash alone cannot catch an entry left behind by a pin bump, because it is the right hash
+# for the wrong release.
+function Resolve-PinEntry {
+    $pinName = Split-Path $PinFile -Leaf
+    $declared = @($pin.PSObject.Properties.Name | Where-Object { $pin.$_ -is [pscustomobject] -and $null -ne $pin.$_.asset })
+    $osName = if ($pinPlatform) { $pinPlatform } else { 'this operating system' }
+    $entry = if ($pinPlatform) { $pin.$pinPlatform } else { $null }
+    if ($null -eq $entry) {
+        Fail "$pinName pins no '$osName' release of F* $($pin.fstar) (it pins: $($declared -join ', ')); add a '$osName' entry (asset, url, sha256) for the same release, or set FSTAR_HOME to an F* $($pin.fstar) release" 2
+    }
+    $missing = @('asset', 'url', 'sha256' | Where-Object { -not $entry.$_ })
+    if ($missing.Count -gt 0) {
+        Fail "$pinName's '$osName' entry is incomplete: it has no $($missing -join ', ')" 2
+    }
+    foreach ($field in 'asset', 'url') {
+        if (-not ([string]$entry.$field).Contains($pin.fstar)) {
+            Fail "$pinName's '$osName' entry names a different release than the pin ($($pin.fstar)): its $field is '$($entry.$field)'" 2
+        }
+    }
+    if ($entry.sha256 -notmatch '^[0-9a-f]{64}$') {
+        Fail "$pinName's '$osName' sha256 is not 64 lowercase hex digits: '$($entry.sha256)'" 2
+    }
+    $entry
+}
+
+if ($ResolveOnly) {
+    $entry = Resolve-PinEntry
+    Write-Host "==== proofs: the pinned prover for $pinPlatform is $($entry.asset) (sha256 $($entry.sha256))" -ForegroundColor Green
+    exit 0
+}
+
 function Resolve-FStar {
     if ($env:FSTAR_HOME) {
         $exe = Join-Path $env:FSTAR_HOME 'bin/fstar.exe'
@@ -257,31 +330,39 @@ function Resolve-FStar {
         return $exe
     }
 
+    # Every release, on every OS, lays the prover out as fstar/bin/fstar.exe (the release's own
+    # packaging adds that top-level directory), so one local path serves both entries.
     $local = Join-Path $ProofsDir '.fstar/fstar/bin/fstar.exe'
     if (Test-Path $local) { return $local }
 
-    if (-not $IsWindows) {
-        Fail "no FSTAR_HOME and this is not Windows — only the Windows release is pinned ($(Split-Path $PinFile -Leaf)); set FSTAR_HOME to an F* $($pin.fstar) release" 2
-    }
-
-    $asset = $pin.windows.asset
+    $entry = Resolve-PinEntry
+    $asset = $entry.asset
     $dir = Join-Path $ProofsDir '.fstar'
     New-Item -ItemType Directory -Force $dir | Out-Null
-    $zip = Join-Path $dir $asset
+    $archive = Join-Path $dir $asset
 
-    if (-not (Test-Path $zip)) {
+    if (-not (Test-Path $archive)) {
         Write-Host "==== proofs: downloading the pinned prover $($pin.fstar) ($asset)" -ForegroundColor Cyan
-        Invoke-WebRequest -Uri $pin.windows.url -OutFile $zip
+        Invoke-WebRequest -Uri $entry.url -OutFile $archive
     }
 
-    $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-    if ($hash -ne $pin.windows.sha256) {
-        Remove-Item $zip -Force
-        Fail "the downloaded $asset does not match the pinned sha256 (got $hash, pinned $($pin.windows.sha256)); it was deleted — re-run to fetch again"
+    $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+    if ($hash -ne $entry.sha256) {
+        Remove-Item $archive -Force
+        Fail "the downloaded $asset does not match the pinned sha256 (got $hash, pinned $($entry.sha256)); it was deleted — re-run to fetch again"
     }
 
     Write-Host "==== proofs: unpacking $asset" -ForegroundColor Cyan
-    Expand-Archive -Path $zip -DestinationPath $dir -Force
+    if ($asset.EndsWith('.zip')) {
+        Expand-Archive -Path $archive -DestinationPath $dir -Force
+    }
+    elseif ($asset.EndsWith('.tar.gz')) {
+        # tar keeps the executable bits a .zip cannot carry; it is on every runner image and on
+        # Windows 10+ alike.
+        & tar -xzf $archive -C $dir
+        if ($LASTEXITCODE -ne 0) { Fail "tar could not unpack $asset into $dir (exit $LASTEXITCODE)" }
+    }
+    else { Fail "$asset is neither a .zip nor a .tar.gz; the leg does not know how to unpack it" }
     if (-not (Test-Path $local)) { Fail "unpacked $asset but found no fstar/bin/fstar.exe under $dir" }
     return $local
 }
@@ -413,7 +494,8 @@ function Get-RefutationExitCode([int] $code) {
 # running at that instant.
 function Get-ResourceSnapshot {
     $provers = 0
-    try { $provers = @(Get-Process -Name 'fstar' -ErrorAction SilentlyContinue).Count } catch { $provers = -1 }
+    # `fstar` is the Windows process name of fstar.exe; on Linux the name keeps its `.exe`.
+    try { $provers = @(Get-Process -Name 'fstar', 'fstar.exe' -ErrorAction SilentlyContinue).Count } catch { $provers = -1 }
     $free = 'unknown'
     try {
         if ($IsWindows) {
@@ -587,6 +669,25 @@ foreach ($declared in $budgets.Keys) {
 # normalised measurement would be a number nobody observed, and the whole value of this leg's cost
 # half is that every figure in it is one somebody's machine really produced.
 #
+# THE FLOORS' OS (Phase 402). A floor is the fastest cold run ever observed on the machine that
+# seeded it, halved — a fact about that machine as much as about the module. The first Linux run
+# verified WireColumn in 16s against a 17s floor seeded on Windows: a faster runner, not a second
+# writer. So `floorSeeding.os` names the OS the floors were seeded on, and they are enforced there
+# only. ABSENT means every OS, which is how an adopter's file without the key has always read. Not
+# enforcing them elsewhere does NOT leave the cold claim unchecked: the cache provenance check in
+# section 3 is what catches a second writer, on every OS, and the floor is its backstop where a
+# floor has been measured. Seeding floors for a second OS is a change to this file's format, made
+# when a reader wants that backstop there, with that OS's own cold runs as its evidence.
+$hostPlatform = if ($IsWindows) { 'windows' } elseif ($IsLinux) { 'linux' } elseif ($IsMacOS) { 'macos' } else { '' }
+$floorsSeededOn = $null
+if ($null -ne $budgetDocument.floorSeeding -and $null -ne $budgetDocument.floorSeeding.os) {
+    $floorsSeededOn = [string]$budgetDocument.floorSeeding.os
+    if (@('windows', 'linux', 'macos') -notcontains $floorsSeededOn) {
+        Fail "$budgetName floorSeeding.os is '$floorsSeededOn' — it names the OS the floors were seeded on: windows, linux or macos"
+    }
+}
+$floorsApplyHere = ($null -eq $floorsSeededOn) -or ($floorsSeededOn -eq $hostPlatform)
+
 # THE THRESHOLD is declared, in this file's own `contentionSeeding` block, for the same reason the
 # budget and floor rules are: a number the engine baked in would be a number no repository could
 # re-seed from its own machine. An ABSENT block is NOT a finding — unlike an absent budget or floor,
@@ -773,10 +874,65 @@ Write-Host "==== proofs: cache $cache$(if (-not $script:invocationCacheIsOurs) {
 if ($NoFloor) {
     Write-Host "==== proofs: -NoFloor — the per-module time floors in $budgetName are NOT enforced on this run" -ForegroundColor Yellow
 }
+elseif (-not $floorsApplyHere) {
+    Write-Host "==== proofs: the time floors in $budgetName were seeded on $floorsSeededOn and are NOT enforced on $(if ($hostPlatform) { $hostPlatform } else { 'this OS' }) — a floor measures one kind of machine; the cache provenance check is what refuses a second writer here" -ForegroundColor Cyan
+}
+
+# THE CACHE PROVENANCE CHECK (Phase 402) — the second writer, caught directly rather than inferred
+# from the clock. Only this run's prover writes the cache, one invocation at a time, so the cache's
+# state is RECORDED after each invocation and must be found unchanged before the next; and the pinned
+# prover writes a module's `.checked` file only when it checks that module itself — never for a
+# dependency it checks on the way, measured 2026-10-07 and held by the kit tests' P arms — so a
+# module's own file cannot legitimately be there before its cold check. A file's state is its length
+# and the SHA-256 of its bytes, NOT its last write time: a timestamp is as coarse as the filesystem
+# keeps it and can be set back by whoever wrote the file, so a same-size rewrite inside one clock tick,
+# or one that restored the old time, would read as unchanged. The bytes cannot. The cost is one read
+# of the cache per invocation, which is small beside the prover's. What it cannot see is a writer active only DURING one
+# invocation and silent after it, whose files the next record takes as this run's own; that is the
+# window the floor still backstops where one is enforced, and a writer whose files include a model
+# not yet checked is caught anyway, by that model's own `.checked` file.
+function Get-CacheState([string] $dir) {
+    $state = @{}
+    if (Test-Path $dir) {
+        foreach ($f in Get-ChildItem $dir -File -Recurse -Force) {
+            $state[[System.IO.Path]::GetRelativePath($dir, $f.FullName)] = "$($f.Length):$((Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash)"
+        }
+    }
+    $state
+}
+
+# What moved between two recorded states, one line per file.
+function Compare-CacheState([hashtable] $recorded, [hashtable] $now) {
+    $moved = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in $now.Keys) {
+        if (-not $recorded.ContainsKey($name)) { $moved.Add("$name appeared") }
+        elseif ($recorded[$name] -ne $now[$name]) { $moved.Add("$name was rewritten") }
+    }
+    foreach ($name in $recorded.Keys) {
+        if (-not $now.ContainsKey($name)) { $moved.Add("$name vanished") }
+    }
+    , @($moved | Sort-Object)
+}
+
+function Assert-CacheProvenance([hashtable] $recorded, [string] $module, [int] $run, [bool] $cold) {
+    $moved = Compare-CacheState $recorded (Get-CacheState $cache)
+    if ($moved.Count -gt 0) {
+        Fail ("a SECOND WRITER in the cache: before $module.fst on run $run of $Runs, $($moved.Count) file(s) in $cache moved since this run's last prover invocation, which nothing in this run did — $($moved -join '; '). " +
+            'Every time measured from here on would be read off a cache this run does not own. Check for another check.ps1 or fstar process against this cache (see section 3).')
+    }
+    if ($cold) {
+        $own = @(Get-ChildItem $cache -File -Force -Filter "$module.fst.checked*" -ErrorAction SilentlyContinue)
+        if ($own.Count -gt 0) {
+            Fail ("$module.fst is NOT about to be checked cold on run $run of ${Runs}: its own $($own[0].Name) is already in $cache. " +
+                'This run has not checked it, and the pinned prover writes a module''s .checked file only when it checks that module itself, so a SECOND WRITER put it there (see section 3).')
+        }
+    }
+}
 
 for ($run = 1; $run -le $Runs; $run++) {
     if (Test-Path $cache) { Remove-Item $cache -Recurse -Force }
     New-Item -ItemType Directory -Force $cache | Out-Null
+    $cacheState = Get-CacheState $cache
 
     # The PRE-FLIGHT line (Phase 166), at the head of every run rather than once per invocation:
     # contention is what changes between run 1 and run 3, so a number taken once says nothing about
@@ -795,12 +951,16 @@ for ($run = 1; $run -le $Runs; $run++) {
         for ($attempt = 1; $attempt -le 2; $attempt++) {
             $isRetry = $attempt -gt 1
             $suffix = if ($isRetry) { ".run$run.retry" } else { ".run$run" }
+            Assert-CacheProvenance $cacheState $module $run (-not $isRetry)
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             $checked = Invoke-Prover @(
                 '--z3rlimit', $ZRlimit, '--quake', $Quake, '--report_assumes', 'error',
                 '--cache_checked_modules', '--cache_dir', $cache, "$module.fst"
             ) (Join-Path $logsDir "$module$suffix.check.log")
             $sw.Stop()
+            # Whatever this invocation wrote — verified, refuted or aborted — is this run's own.
+            $cacheState = Get-CacheState $cache
+            if ($AfterInvocation) { & $AfterInvocation $module $run $cache }
             $seconds = [int]$sw.Elapsed.TotalSeconds
 
             if ($checked.ExitCode -ne 0) {
@@ -874,9 +1034,9 @@ for ($run = 1; $run -le $Runs; $run++) {
             # undershoot says the measurement itself is not to be believed — the cache was not cold —
             # and every module after it is measured by the same apparatus, so carrying on would print
             # more green lines that a reader is entitled to read as evidence and that are not.
-            if (-not $NoFloor -and $floors.ContainsKey($module) -and $seconds -lt $floors[$module]) {
+            if (-not $NoFloor -and $floorsApplyHere -and $floors.ContainsKey($module) -and $seconds -lt $floors[$module]) {
                 Fail ("$module.fst verified in ${seconds}s on run $run of $Runs, under its $($floors[$module])s floor — that is not a cold verification. " +
-                    'Almost always a second writer in the cache directory (see section 3). Check for another check.ps1 or fstar process against this worktree; ' +
+                    'The cache provenance check saw no second writer between invocations, so suspect one that wrote DURING this one: check for another check.ps1 or fstar process against this cache; ' +
                     "if this machine really is that fast, re-seed the floor per $budgetName floorSeeding and cite your phase, or pass -NoFloor for this run.")
             }
 

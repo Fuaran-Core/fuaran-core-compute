@@ -16,7 +16,9 @@
 # the exit code both disagreed with reality, so pinning the text alone would let the pair drift
 # apart again.
 #
-# FOUR ARMS (and, since Phase 309, three TWIN arms, F-H, below). The first is the control that makes the\n# other three mean something:
+# FOUR ARMS (and, since Phase 309, three TWIN arms, F-H, since Phase 393 the PIN-RESOLUTION arms,
+# R, which need no prover and run first, and since Phase 402 the FLOOR-OS arms, O, and the CACHE
+# PROVENANCE arms, P). The first prover arm is the control that makes the other three mean something:
 #
 #   A. GREEN CONTROL — a true model, no host step: exit 0 AND `proofs: green`. If this is red, the
 #                      scratch apparatus is broken and a red B–D would prove nothing.
@@ -24,8 +26,8 @@
 #   C. HOST RUN      — a host project that builds and cannot run the filter: exit non-zero, no green.
 #   D. CHECK         — a model with a type error: exit non-zero, no green.
 #
-# It needs the pinned prover. Where there is none it says NOT RUN and exits 2 — never 0, because
-# "nothing was checked" must not read as "everything held". `proofs/check.ps1` runs it after a
+# The R arms run anywhere. The rest need the pinned prover; where there is none it says NOT RUN
+# and exits 2 — never 0, because "nothing was checked" must not read as "everything held". `proofs/check.ps1` runs it after a
 # green leg, when the prover is by construction present.
 [CmdletBinding()]
 param(
@@ -49,16 +51,6 @@ if (-not $WorkDir) { $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) "che
 $pinFile = Join-Path $ProofsDir 'fstar-pin.json'
 $pinnedVersion = (Get-Content $pinFile -Raw | ConvertFrom-Json).fstar.TrimStart('v')
 
-# The prover, resolved the way the leg resolves it, WITHOUT the leg's download: a test that fetched
-# a 100 MB release as a side effect would be a surprise, and `check.ps1` has already fetched it.
-$fstarHome = $null
-if ($env:FSTAR_HOME) { $fstarHome = $env:FSTAR_HOME }
-elseif (Test-Path (Join-Path $ProofsDir '.fstar/fstar/bin/fstar.exe')) { $fstarHome = Join-Path $ProofsDir '.fstar/fstar' }
-if (-not $fstarHome -or -not (Test-Path (Join-Path $fstarHome 'bin/fstar.exe'))) {
-    Write-Host "==== leg-tests: NOT RUN — no pinned prover. Set FSTAR_HOME to an F* $pinnedVersion release, or run ``pwsh ./proofs/check.ps1`` once to install it under proofs/.fstar/." -ForegroundColor Yellow
-    exit 2
-}
-
 $script:failures = [System.Collections.Generic.List[string]]::new()
 $script:cases = 0
 
@@ -69,6 +61,86 @@ function Assert-That([string] $what, [bool] $holds, [string] $detail = '') {
         $script:failures.Add($what)
         Write-Host "  FAIL  $what$(if ($detail) { " — $detail" })" -ForegroundColor Red
     }
+}
+
+# ---- R. PIN RESOLUTION, PER OPERATING SYSTEM (Phase 393) -------------------------------------------
+
+# These arms need NO prover: `-ResolveOnly` resolves the pin entry the download path would fetch and
+# stops, so they run first and run everywhere. The committed pin must resolve for both OSes it
+# declares — and for the host's OS — and a pin that cannot serve an OS must be REFUSED NAMING it,
+# exit 2, rather than fetching the wrong release or reading as green.
+$resolveDir = Join-Path $WorkDir 'resolve'
+if (Test-Path $WorkDir) { Remove-Item $WorkDir -Recurse -Force }
+New-Item -ItemType Directory -Force $resolveDir | Out-Null
+$committedPin = Get-Content $pinFile -Raw | ConvertFrom-Json
+
+function Invoke-Resolve([string] $pinPath, [string] $platform) {
+    $resolveArgs = @{ Modules = @('Resolve'); ProofsDir = $resolveDir; PinFile = $pinPath; ResolveOnly = $true }
+    if ($platform) { $resolveArgs.Platform = $platform }
+    Push-Location $WorkDir
+    try {
+        $global:LASTEXITCODE = 0
+        $lines = @(& $Kit @resolveArgs *>&1 | ForEach-Object { [string]$_ })
+        $code = $global:LASTEXITCODE
+    }
+    catch { $lines = @($_.ToString()); $code = 1 }
+    finally { Pop-Location }
+    [pscustomobject]@{ Exit = $code; Text = ($lines -join ' ') }
+}
+
+# A copy of the committed pin with one edit applied, written to the scratch directory.
+function New-ScratchPin([string] $name, [scriptblock] $edit) {
+    $copy = Get-Content $pinFile -Raw | ConvertFrom-Json
+    & $edit $copy
+    $path = Join-Path $resolveDir $name
+    $copy | ConvertTo-Json -Depth 4 | Set-Content $path
+    $path
+}
+
+foreach ($os in 'windows', 'linux') {
+    $r = Invoke-Resolve $pinFile $os
+    $asset = $committedPin.$os.asset
+    Assert-That "R. RESOLVE — the committed pin resolves '$os' to its own entry" ($r.Exit -eq 0 -and $asset -and $r.Text.Contains($asset)) "exit $($r.Exit): $($r.Text)"
+}
+$hostOs = if ($IsWindows) { 'windows' } elseif ($IsLinux) { 'linux' } elseif ($IsMacOS) { 'macos' } else { '' }
+$r = Invoke-Resolve $pinFile ''
+if ($hostOs -and $committedPin.$hostOs) {
+    Assert-That "R. RESOLVE — with no -Platform the HOST's OS ($hostOs) is resolved" ($r.Exit -eq 0 -and $r.Text.Contains($committedPin.$hostOs.asset)) "exit $($r.Exit): $($r.Text)"
+}
+else {
+    Assert-That "R. REFUSE — a host OS the pin does not declare is refused by name" ($r.Exit -eq 2) "exit $($r.Exit): $($r.Text)"
+}
+
+$r = Invoke-Resolve $pinFile 'macos'
+Assert-That "R. REFUSE — an OS the pin has no entry for exits 2, naming it" ($r.Exit -eq 2 -and $r.Text.Contains("pins no 'macos' release")) "exit $($r.Exit): $($r.Text)"
+
+$noLinux = New-ScratchPin 'no-linux.json' { param($p) $p.PSObject.Properties.Remove('linux') }
+$r = Invoke-Resolve $noLinux 'linux'
+Assert-That "R. REFUSE — a pin without a linux entry refuses linux by name" ($r.Exit -eq 2 -and $r.Text.Contains("pins no 'linux' release")) "exit $($r.Exit): $($r.Text)"
+$r = Invoke-Resolve $noLinux 'windows'
+Assert-That "R. RESOLVE — and the same pin still resolves windows" ($r.Exit -eq 0) "exit $($r.Exit): $($r.Text)"
+
+$noHash = New-ScratchPin 'no-hash.json' { param($p) $p.linux.PSObject.Properties.Remove('sha256') }
+$r = Invoke-Resolve $noHash 'linux'
+Assert-That "R. REFUSE — an entry with no sha256 is refused, naming the field" ($r.Exit -eq 2 -and $r.Text.Contains('incomplete') -and $r.Text.Contains('sha256')) "exit $($r.Exit): $($r.Text)"
+
+$stale = New-ScratchPin 'stale.json' { param($p) $p.linux.asset = $p.linux.asset.Replace($p.fstar, 'v2000.01.01') }
+$r = Invoke-Resolve $stale 'linux'
+Assert-That "R. REFUSE — an entry naming a different release than the pin is refused" ($r.Exit -eq 2 -and $r.Text.Contains('different release')) "exit $($r.Exit): $($r.Text)"
+
+# The prover, resolved the way the leg resolves it, WITHOUT the leg's download: a test that fetched
+# a 100 MB release as a side effect would be a surprise, and `check.ps1` has already fetched it.
+$fstarHome = $null
+if ($env:FSTAR_HOME) { $fstarHome = $env:FSTAR_HOME }
+elseif (Test-Path (Join-Path $ProofsDir '.fstar/fstar/bin/fstar.exe')) { $fstarHome = Join-Path $ProofsDir '.fstar/fstar' }
+if (-not $fstarHome -or -not (Test-Path (Join-Path $fstarHome 'bin/fstar.exe'))) {
+    Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
+    if ($script:failures.Count -gt 0) {
+        Write-Host "==== leg-tests: RED — $($script:failures.Count) of $script:cases pin-resolution assertion(s) failed" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "==== leg-tests: NOT RUN — no pinned prover ($script:cases pin-resolution assertions held; the prover arms need it). Set FSTAR_HOME to an F* $pinnedVersion release, or run ``pwsh ./proofs/check.ps1`` once to install it under proofs/.fstar/." -ForegroundColor Yellow
+    exit 2
 }
 
 # ---- the scratch proofs directory ----------------------------------------------------------------
@@ -225,6 +297,107 @@ Assert-That 'G. TWINS — and does not print proofs: green' (-not $g.Green) (Sho
 
 $h = Invoke-Leg ($base + @{ Modules = @('LegGood'); ProofOnly = @('LegGood'); Twins = $true })
 Assert-That 'H. TWINS — a -ProofOnly model needs no twins' ($h.Exit -eq 0) "exit $($h.Exit): $(Show-Tail $h)"
+
+# ---- O. THE FLOORS' OS (Phase 402) -----------------------------------------------------------------
+
+# A floor is enforced on the OS `floorSeeding.os` names and on no other. LegGood checks in about a
+# second, so a 50s floor is a breach wherever it is enforced: red on the host's own OS, and on any
+# other OS not enforced, the leg green and saying why.
+$otherOs = if ($hostOs -eq 'linux') { 'windows' } else { 'linux' }
+function Set-FloorBudget([string] $os) {
+    @{
+        kind         = 'proofModules'
+        floorSeeding = @{ os = $os }
+        modules      = @(@{ module = 'LegGood'; budgetSeconds = 60; floorSeconds = 50 })
+    } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $scratch 'modules.floor.json')
+}
+
+Set-FloorBudget $hostOs
+$o1 = Invoke-Leg ($base + @{ Modules = @('LegGood'); ProofOnly = @('LegGood'); BudgetFile = (Join-Path $scratch 'modules.floor.json') })
+Assert-That "O. FLOOR — a floor seeded on this OS ($hostOs) is enforced: a breach exits NON-ZERO" ($o1.Exit -ne 0 -and -not $o1.Green) "exit $($o1.Exit): $(Show-Tail $o1)"
+Assert-That 'O. FLOOR — and names the floor it broke' ([bool](@($o1.Lines -match 'under its 50s floor').Count)) (Show-Tail $o1)
+
+Set-FloorBudget $otherOs
+$o2 = Invoke-Leg ($base + @{ Modules = @('LegGood'); ProofOnly = @('LegGood'); BudgetFile = (Join-Path $scratch 'modules.floor.json') })
+Assert-That "O. FLOOR — a floor seeded on $otherOs is not enforced on $($hostOs): exit 0 and green" ($o2.Exit -eq 0 -and $o2.Green) "exit $($o2.Exit): $(Show-Tail $o2)"
+Assert-That 'O. FLOOR — and says the floors are not enforced here, and why' ([bool](@($o2.Lines -match "seeded on $otherOs and are NOT enforced").Count)) (Show-Tail $o2)
+
+Set-FloorBudget 'solaris'
+$o3 = Invoke-Leg ($base + @{ Modules = @('LegGood'); ProofOnly = @('LegGood'); BudgetFile = (Join-Path $scratch 'modules.floor.json') })
+Assert-That 'O. FLOOR — a floorSeeding.os naming no OS is refused, naming the key' ($o3.Exit -ne 0 -and -not $o3.Green -and [bool](@($o3.Lines -match 'floorSeeding.os').Count)) "exit $($o3.Exit): $(Show-Tail $o3)"
+
+# ---- P. CACHE PROVENANCE (Phase 402) ----------------------------------------------------------------
+
+# The second writer, caught directly. LegUses depends on LegGood; LegThird depends on nothing.
+Set-Content (Join-Path $scratch 'LegUses.fst') "module LegUses`n`nopen LegGood`n`nlet two : nat = one + one`n"
+Set-Content (Join-Path $scratch 'LegThird.fst') "module LegThird`n`nlet three : nat = 3`n"
+@{
+    kind    = 'proofModules'
+    modules = @(
+        @{ module = 'LegGood'; budgetSeconds = 60; floorSeconds = 0 }
+        @{ module = 'LegFailsName'; budgetSeconds = 60; floorSeconds = 0 }
+        @{ module = 'LegUses'; budgetSeconds = 60; floorSeconds = 0 }
+        @{ module = 'LegThird'; budgetSeconds = 60; floorSeconds = 0 }
+    )
+} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $scratch 'modules.provenance.json')
+$provenance = $base + @{ BudgetFile = (Join-Path $scratch 'modules.provenance.json') }
+
+# The CONTROL: a dependency checked first leaves its own `.checked` file for the dependent to read,
+# which is this run's own write and no second writer.
+$p0 = Invoke-Leg ($provenance + @{ Modules = @('LegGood', 'LegUses'); ProofOnly = @('LegGood', 'LegUses') })
+Assert-That 'P. PROVENANCE CONTROL — a dependency checked before its dependent exits 0 and green' ($p0.Exit -eq 0 -and $p0.Green) "exit $($p0.Exit): $(Show-Tail $p0)"
+
+# The second CONTROL, dependent first. The pinned prover writes a module's `.checked` file only when
+# it checks that module itself, never for a dependency it checks on the way (measured 2026-10-07), so
+# checking LegUses leaves LegGood's own file absent and LegGood's check after it is still cold. If a
+# prover release ever starts caching dependencies, this arm goes red, and the rule's premise with it.
+$p1 = Invoke-Leg ($provenance + @{ Modules = @('LegUses', 'LegGood'); ProofOnly = @('LegUses', 'LegGood') })
+Assert-That 'P. PROVENANCE CONTROL — a dependent checked before its dependency leaves the dependency cold: exit 0 and green' ($p1.Exit -eq 0 -and $p1.Green) "exit $($p1.Exit): $(Show-Tail $p1)"
+
+# A SECOND WRITER, planted SYNCHRONOUSLY through the leg's -AfterInvocation seam: after LegGood's
+# invocation, at the one point between invocations where a foreign writer acts. Until Phase 402's
+# rework this was a concurrent runspace polling for LegGood's `.checked` file; on a Linux runner,
+# where these models check in well under a second, it could start after the leg had already reached
+# LegThird, and the arm read green on some runs. Nothing here depends on scheduling now: the plant
+# runs on the leg's own thread, before the leg reads the cache again.
+
+# 1. A file APPEARS — LegThird's own `.checked`, before LegThird's turn.
+$p2 = Invoke-Leg ($provenance + @{
+        Modules = @('LegGood', 'LegFailsName', 'LegThird'); ProofOnly = @('LegGood', 'LegFailsName', 'LegThird')
+        AfterInvocation = {
+            param($module, $run, $cacheDir)
+            if ($module -eq 'LegGood') { Set-Content (Join-Path $cacheDir 'LegThird.fst.checked') 'forged by a second writer' }
+        }
+    })
+Assert-That 'P. SECOND WRITER — a file another writer put in the cache is refused' ($p2.Exit -ne 0 -and -not $p2.Green) "exit $($p2.Exit): $(Show-Tail $p2)"
+Assert-That 'P. SECOND WRITER — before the next module is checked, naming the file' ([bool](@($p2.Lines -match 'SECOND WRITER.*before LegFailsName\.fst.*LegThird\.fst\.checked appeared').Count)) (Show-Tail $p2)
+Assert-That 'P. SECOND WRITER — and prints no LegFailsName.fst or LegThird.fst verified line' (-not [bool](@($p2.Lines -match '(LegFailsName|LegThird)\.fst verified').Count)) (Show-Tail $p2)
+
+# 2. A file is REWRITTEN with the same length and its old timestamp restored — invisible to any
+# check that reads the clock, which is why the state is the bytes' hash.
+$p3 = Invoke-Leg ($provenance + @{
+        Modules = @('LegGood', 'LegFailsName'); ProofOnly = @('LegGood', 'LegFailsName')
+        AfterInvocation = {
+            param($module, $run, $cacheDir)
+            if ($module -eq 'LegGood') {
+                $path = Join-Path $cacheDir 'LegGood.fst.checked'
+                $stamp = (Get-Item -LiteralPath $path).LastWriteTimeUtc
+                $bytes = [System.IO.File]::ReadAllBytes($path)
+                $bytes[$bytes.Length - 1] = $bytes[$bytes.Length - 1] -bxor 0xFF
+                [System.IO.File]::WriteAllBytes($path, $bytes)
+                (Get-Item -LiteralPath $path).LastWriteTimeUtc = $stamp
+            }
+        }
+    })
+Assert-That 'P. SECOND WRITER — a same-length rewrite with its timestamp restored is refused' ($p3.Exit -ne 0 -and -not $p3.Green) "exit $($p3.Exit): $(Show-Tail $p3)"
+Assert-That 'P. SECOND WRITER — naming the rewritten file' ([bool](@($p3.Lines -match 'SECOND WRITER.*LegGood\.fst\.checked was rewritten').Count)) (Show-Tail $p3)
+
+# 3. The seam itself changes nothing: a plant that writes nothing leaves the leg green.
+$p4 = Invoke-Leg ($provenance + @{
+        Modules = @('LegGood', 'LegFailsName'); ProofOnly = @('LegGood', 'LegFailsName')
+        AfterInvocation = { param($module, $run, $cacheDir) }
+    })
+Assert-That 'P. SEAM CONTROL — an -AfterInvocation that writes nothing leaves the leg green' ($p4.Exit -eq 0 -and $p4.Green) "exit $($p4.Exit): $(Show-Tail $p4)"
 
 Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
 

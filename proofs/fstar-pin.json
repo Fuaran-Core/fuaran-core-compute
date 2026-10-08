@@ -1,10 +1,15 @@
 {
-  "$comment": "Phase 131 \u2014 the pinned prover. F* releases weekly and this release removed proof hints outright, so an unpinned prover is a gate that changes under you; check.ps1 refuses any other version. The release zip bundles Z3, which is why one pin covers both.",
+  "$comment": "Phase 131 — the pinned prover. F* releases weekly and this release removed proof hints outright, so an unpinned prover is a gate that changes under you; check.ps1 refuses any other version. The release zip bundles Z3, which is why one pin covers both. Phase 393 — one entry per operating system the leg runs on, every entry the SAME release: the kit resolves the entry by the host's OS, refuses an OS with no entry by name, and refuses an entry whose asset or url names a different release. Each sha256 is the digest GitHub publishes for that release asset.",
   "fstar": "v2026.09.06",
   "z3": "4.13.3",
   "windows": {
     "asset": "fstar-v2026.09.06-Windows_NT-x86_64.zip",
     "url": "https://github.com/FStarLang/FStar/releases/download/v2026.09.06/fstar-v2026.09.06-Windows_NT-x86_64.zip",
     "sha256": "dbd13ddb75a08b98c1ed3def78728727aa9998d5a1d36ce9b6fc5cff5d9d58be"
+  },
+  "linux": {
+    "asset": "fstar-v2026.09.06-Linux-x86_64.tar.gz",
+    "url": "https://github.com/FStarLang/FStar/releases/download/v2026.09.06/fstar-v2026.09.06-Linux-x86_64.tar.gz",
+    "sha256": "324a4b42ba0dbce9ba44654b1e951f436c472d76f40ed11fdefd61aea6da7ea9"
   }
 }
