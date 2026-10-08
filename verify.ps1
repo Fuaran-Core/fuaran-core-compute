@@ -5,6 +5,7 @@
 #   pwsh ./verify.ps1                    the gate
 #   pwsh ./verify.ps1 -Proofs            the gate plus the F* proof leg (installs the pinned prover)
 #   pwsh ./verify.ps1 -SkipFormatCheck   skip the Fantomas check
+#   pwsh ./verify.ps1 -Configuration Release   the build and the main suite in Release
 #Requires -Version 7.0
 [CmdletBinding()]
 param(
@@ -13,7 +14,14 @@ param(
     # pinned F*/Z3 and hold the committed oracle to a fresh extraction. Opt-in here because it
     # installs a prover; CI's proofs job runs it on every push. The oracle HOST (the Proofs.Oracle
     # differential family) needs no prover and runs in the ordinary suite below, always.
-    [switch] $Proofs
+    [switch] $Proofs,
+    # Phase 404 - the configuration the solution is built in and the main suite runs in. Debug stays
+    # the default, so a contributor's command is unchanged; ci runs both, and publish-packages runs
+    # `-Configuration Release` and then packs `--no-build` from that same output, so the bytes the
+    # gate verified are the bytes that ship. A Release-only red (an optimiser-sensitive answer, as
+    # the window law's NaN sign was) then shows on the commit that caused it, not on a tag push.
+    [ValidateSet('Debug', 'Release')]
+    [string] $Configuration = 'Debug'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,19 +51,26 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-dotnet build Fuaran.Core.Compute.slnx --nologo
+$global:LASTEXITCODE = 0
+dotnet build Fuaran.Core.Compute.slnx --nologo -c $Configuration
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build
+$global:LASTEXITCODE = 0
+dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build -c $Configuration
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # The clock leg (Phase 282): the cases whose claim is about TIME, alone in their own process after
 # the main suite (which no longer contains them), each red only if red on three attempts. The leg
 # fails if it ran fewer cases than its inventory, so a filter cannot pass it vacuously.
 # It runs a RELEASE build (operator decision 2026-09-28): a bound on the clock is a claim about the
-# code consumers run, and a Debug build's timings are not that code's.
-dotnet build tests/Fuaran.Core.Compute.Tests -c Release --nologo
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# code consumers run, and a Debug build's timings are not that code's. Under `-Configuration Release`
+# that is the build above, reused; under Debug the test project is built in Release for this leg.
+if ($Configuration -ne 'Release') {
+    $global:LASTEXITCODE = 0
+    dotnet build tests/Fuaran.Core.Compute.Tests -c Release --nologo
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+$global:LASTEXITCODE = 0
 dotnet run --project tests/Fuaran.Core.Compute.Tests -c Release --no-build -- --clock-leg
 if ($LASTEXITCODE -eq 3) {
     # Phase 285: no verdict, not a red - a case found no unsaturated calibration window in its budget.
@@ -75,5 +90,5 @@ if ($Proofs) {
     }
 }
 
-Write-Host '==== verify: fuaran-core-compute green' -ForegroundColor Green
+Write-Host "==== verify: fuaran-core-compute green ($Configuration)" -ForegroundColor Green
 exit 0
