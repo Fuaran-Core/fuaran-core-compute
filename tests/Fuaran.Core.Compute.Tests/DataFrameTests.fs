@@ -3664,7 +3664,13 @@ let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
 /// (`NaN` is not equal to itself structurally, and is one token).
 let private sameOutcome (a: Result<Cell, EvalError>) (b: Result<Cell, EvalError>) : bool =
     match a, b with
-    | Ok x, Ok y -> DataFrame.cellToken x = DataFrame.cellToken y
+    // By token, and a float also by its bits: since Phase 404 both forms emit one NaN, so a NaN's
+    // sign or payload is part of the answer they must agree on.
+    | Ok x, Ok y ->
+        DataFrame.cellToken x = DataFrame.cellToken y
+        && (match x, y with
+            | Float p, Float q -> System.BitConverter.DoubleToInt64Bits p = System.BitConverter.DoubleToInt64Bits q
+            | _ -> true)
     | Error e1, Error e2 -> e1 = e2
     | _ -> false
 
@@ -6038,6 +6044,93 @@ let orderCodeTests =
               match DataFrame.aggregateCells Sum FloatType [ Float -infinity; Float infinity ] with
               | Ok(Float x) -> Expect.equal (System.BitConverter.DoubleToInt64Bits x) canonical "aggregateCells Sum"
               | other -> failtestf "aggregateCells Sum answered %A" other
+
+          // Phase 404 — the same rule over an expression's answer. `-inf + +inf` and `0 * inf` answer
+          // the hardware's default NaN, a source NaN of either sign is carried by `Col` and by an
+          // addition, and a NaN meeting a NaN answers either operand's; every one leaves the evaluator
+          // as `Double.NaN`'s bits — the compiled frame path, the row form and the incremental
+          // refresh alike, so the three cannot disagree.
+          testCase "a Derive producing NaNs of both signs answers Double.NaN's bits, compiled, row form and refresh"
+          <| fun _ ->
+              let canonical = System.BitConverter.DoubleToInt64Bits System.Double.NaN
+              let clearNaN = System.BitConverter.Int64BitsToDouble 0x7FF8000000000000L
+              let setNaN = System.BitConverter.Int64BitsToDouble 0xFFF8000000000001L
+
+              let schema =
+                  [ "id", IntType
+                    "a", FloatType
+                    "b", FloatType
+                    "c", FloatType
+                    "d", FloatType ]
+
+              let tableOf (rows: Cell list list) =
+                  tbl schema (schema |> List.mapi (fun j (n, ty) -> col n ty (rows |> List.map (List.item j))))
+
+              let row i =
+                  [ Int i; Float -infinity; Float infinity; Float clearNaN; Float setNaN ]
+
+              let before = tableOf [ for i in 1..4 -> row i ]
+              // One row changed, one added: the refresh re-evaluates rows in place and keeps the rest.
+              let after =
+                  tableOf (
+                      [ for i in 1..4 ->
+                            if i = 2 then
+                                [ Int 2; Float -infinity; Float infinity; Float setNaN; Float clearNaN ]
+                            else
+                                row i ]
+                      @ [ row 5 ]
+                  )
+
+              let derived =
+                  [ "s", Binary(Add, Col "a", Col "b")
+                    "m", Binary(Mul, Lit(Float 0.0), Col "b")
+                    "c1", Binary(Add, Col "c", Lit(Float 1.0))
+                    "cc", Col "c"
+                    "dc", Binary(Add, Col "d", Col "c")
+                    "cd", Binary(Add, Col "c", Col "d") ]
+
+              let pipeline = derived |> List.map Derive
+
+              let nanBits (t: Table) =
+                  [ for name, _ in derived do
+                        for c in cellsOf name t do
+                            match c with
+                            | Float x when System.Double.IsNaN x -> yield name, System.BitConverter.DoubleToInt64Bits x
+                            | Float x -> failtestf "%s answered %f, not a NaN" name x
+                            | other -> failtestf "%s answered %A" name other ]
+
+              let full = DataFrame.evalPipeline pipeline after |> okTable
+
+              let refreshed =
+                  let idw = RowIdentity.byColumn "id"
+
+                  match Incremental.prime DataFrame.noResolve Map.empty idw pipeline before with
+                  | Error e -> failtestf "prime refused %A" e
+                  | Ok state ->
+                      match Delta.diff idw before after with
+                      | Error e -> failtestf "diff refused %A" e
+                      | Ok delta ->
+                          match Incremental.refresh DataFrame.noResolve Map.empty idw pipeline state delta after with
+                          | Ok s -> Incremental.result s
+                          | Error e -> failtestf "refresh refused %A" e
+
+              let rowForm =
+                  [ for name, e in derived do
+                        for r in 0..4 ->
+                            let cells = after.Columns |> List.map (fun c -> List.item r c.Cells)
+
+                            match DataFrame.evalExprInRow Map.empty after.Schema cells e with
+                            | Ok(Float x) -> name, System.BitConverter.DoubleToInt64Bits x
+                            | other -> failtestf "row form %s answered %A" name other ]
+
+              for label, bits in
+                  [ "compiled frame path", nanBits full
+                    "incremental refresh", nanBits refreshed
+                    "row form", rowForm ] do
+                  Expect.hasLength bits 30 (sprintf "%s: six derived NaN columns over five rows" label)
+
+                  for name, b in bits do
+                      Expect.equal b canonical (sprintf "%s: %s answers Double.NaN's bits" label name)
 
           testCase "sort, sort > limit and the coded order agree over the generated cases"
           <| fun _ ->

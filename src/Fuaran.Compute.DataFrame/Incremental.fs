@@ -2243,7 +2243,10 @@ module Incremental =
     /// expression resolved once for the step, Phase 263, so a re-evaluated cell is still the
     /// reference's cell). Returns the step's cells by slot and the running count of row
     /// evaluations — the footprint's unit of work, charged only for a cell actually evaluated.
-    /// The first error in frame order is the answer, as it is the reference's.
+    /// The first error in frame order is the answer, as it is the reference's. A re-evaluated float
+    /// leaves `DataFrame.evalResolved` with the canonical NaN (Phase 404), the bits the batch
+    /// evaluator's compiled roots put, so a refreshed cell and a fully evaluated one cannot differ
+    /// in a NaN's sign or payload; a cached cell is one such answer, kept.
     let private evalStep
         (r: WalkRows)
         (f: WalkFrame)

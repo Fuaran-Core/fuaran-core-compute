@@ -1,24 +1,39 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-10-08 — D16: an aggregate or window answer leaves the evaluator with one NaN, `Double.NaN`'s bits, and the gate runs the main suite in Release as well as Debug
+## 2026-10-08 — D16: every float the evaluator computes leaves it with one NaN, `Double.NaN`'s bits, and the gate runs the main suite in Release as well as Debug
 
-**Decision.** Canonicalise; do not loosen the law. Every float an aggregate or a window function
-emits is passed through `canonicalNaN` (a NaN becomes `Double.NaN`, every other value is itself) at
-the points where the answer leaves the evaluator: `aggCells` (the deferred path of every `GroupBy`
-and `Pivot` aggregate, and the whole of the public `aggregateCells`), `GroupAgg.Stream.TryCell` (the
-streamed answer, which the incremental seam reads directly), `GroupAgg.Output.Float` (every float a
-`GroupBy` or `Pivot` writes, unboxed or as a cell), and the window column where
-`windowColumnOverWith` builds it (the one place every window answer passes: the frame form, the row
-form, and the incremental seam's resumed runs). Those are the exits, not the functions, so a function
-added later cannot forget. The window law and the streamed-aggregate law stay bit-for-bit; their
-oracles now state the canonical NaN.
+**Decision.** One rule, evaluator-wide: **every float the evaluator emits carries the canonical NaN.**
+A NaN answer is `Double.NaN`'s bit pattern, whatever sign or payload the arithmetic produced; every
+other value is untouched. The rule does not loosen the laws; it makes them keep their bit-for-bit
+claim. `canonicalNaN` / `canonicalNaNCell` are applied where an answer LEAVES the evaluator, never per
+function, so a function added later cannot forget:
+
+- *expressions* — `evalResolved`, the row evaluator's one exit (its recursion is the private
+  `evalNode`), which `evalExprInRow` and the incremental seam's re-evaluated cells read;
+  `runCompiled`; and a compiled `Derive`'s float root and boxed root, both where the sequential
+  member puts them and where a `MorselHandOff` runner puts them;
+- *aggregates* — `aggCells` (the deferred path of every `GroupBy` and `Pivot` aggregate, and the
+  whole of the public `aggregateCells`), `GroupAgg.Stream.TryCell` (the streamed answer, which the
+  incremental seam reads directly) and `GroupAgg.Output.Float` (every float a `GroupBy` or `Pivot`
+  writes, unboxed or as a cell);
+- *windows* — the window column where `windowColumnOverWith` builds it, the one place every window
+  answer passes: the frame form, the row form and the incremental seam's resumed runs.
+
+The batch and the incremental paths therefore go through the SAME exits — the refresh re-evaluates a
+derived cell through `evalResolved`, recomputes a group through `TryCell` and `aggregateCells`, and
+resumes a window through `windowColumnOverWith` — so they cannot disagree on a NaN's bits. The steps
+that compute nothing (`Project`, `Filter`, `Sort`, `Limit`, `Distinct`, the joins and set verbs,
+`Unpivot`) hand on the caller's cells as they were given, so a source value keeps the caller's bits
+until something computes over it; the moment an expression, an aggregate or a window reads it, the
+answer is canonical (a `Derive` of `Col x` over a sign-clear NaN answers `Double.NaN`).
 
 **Why canonicalise rather than compare NaNs as equal.** Bit-determinism of an answer across Debug,
 Release and Fable builds, and across hosts, is a property other things stand on: the .NET half of a
 parity vector is compared by bits, and any content addressing over raw values (rather than over the
-canonical wire) hashes bits. A law loosened to "any NaN equals any NaN" would stay green while those
-consumers saw two answers to one question. Making the evaluator emit one NaN keeps the law's claim
-the strong one, and costs a test per float on the way out.
+canonical wire) hashes bits — a digest over a derived column included. A law loosened to "any NaN
+equals any NaN" would stay green while those consumers saw two answers to one question. Making the
+evaluator emit one NaN keeps the law's claim the strong one, and costs a test per float on the way
+out.
 
 **The evidence (checked 2026-10-08, Arm64, .NET 10).** The window law failed in Release and passed in
 Debug on the same tree, latent since Phase 324 (`fdea31d`), because the main suite ran in Debug only.
@@ -28,29 +43,30 @@ A probe over the law's 3,000 seeds found exactly two disagreeing cases, both `Cu
 Release, at the rows where the running total, already a NaN from `-inf + +inf` (Arm64's default NaN,
 sign clear), met a source `NaN` cell (`Double.NaN`, sign set). Adding two NaNs answers one operand's
 payload, and the Release JIT commuted the addition. Every other NaN in those 3,000 cases agreed. The
-go-red vectors (a `CumulSum` over `-inf`, `+inf`, then NaNs of both signs, through the frame path and
-the row form; a `GroupBy` of seven aggregates over the same) are red on the old code in Release and
-in Debug on this host, and green on the new code in both.
+go-red vectors — a `CumulSum` over `-inf`, `+inf`, then NaNs of both signs, through the frame path and
+the row form; a `GroupBy` of seven aggregates over the same; a `Derive` of `-inf + +inf`, `0 * inf`,
+and a sign-clear and a sign-set source NaN carried and added both ways round, through the compiled
+frame path, the row form and the incremental refresh — are red on the old code in Release and in
+Debug on this host, and green on the new code in both. The compiled-versus-row-form law now compares
+a float answer by its bits as well as by its token.
 
 **The audit of the strand for the same class** (a float written to the wire, hashed, or compared by
 bits, where a NaN can arise):
 
 1. *The wire* (`DataFrameCodec`, `ColumnOps`, the incremental state's wire form, the law vectors) —
-   a NaN is the token `NaN` (the substrate's `nonFiniteToken`); its bits never reach a byte. Nothing
-   to fix.
+   a NaN is the token `NaN` (the substrate's `nonFiniteToken`), and decodes to `Double.NaN`; its bits
+   never reach a byte. Nothing to fix.
 2. *Hashes and keys* (`cellToken`, `CellKey.hashCell`, `RowHash`'s float codes, the sort's order
    codes, `Delta`'s cell equality, the incremental state's digest) — every one maps every NaN to one
    value before it hashes or compares. Nothing to fix.
 3. *Bit comparisons* — only the suite's laws compare floats by bits: the window law, the streamed-
-   aggregate law, the `GroupBy` and `Pivot` stream laws, and the incremental `GroupBy` and window
-   laws. All of them read aggregate or window answers, which are now canonical at the exits above.
-   Fixed by this decision.
-4. *Derived columns* — `Derive`'s arithmetic can make a NaN (`inf - inf`, `0 * inf`) and keeps the
-   host's bits. Every law over expressions compares by token, nothing in the strand writes those bits
-   anywhere, and the expression evaluator's exits are several (the compiled tree's typed roots, the
-   boxed root, the row evaluator the incremental seam calls). Not changed here: the phase's ruling is
-   for aggregate and window answers, and widening it to the expression evaluator is a separate call
-   on its own exits, recorded for the operator rather than taken in passing.
+   aggregate law, the `GroupBy` and `Pivot` stream laws, the incremental `GroupBy` and window laws,
+   and (since this decision) the compiled-expression law. All of them read answers that now leave
+   through the exits above. Fixed by this decision.
+4. *Derived columns* — `Derive`'s arithmetic makes a NaN (`inf - inf`, `0 * inf`) and carries a source
+   NaN. Nothing observed those bits before this decision, but a later content address or digest over
+   a derived column would have, so the rule covers expressions too (the exits above), and the
+   incremental refresh reaches them through the same `evalResolved` rather than a copy.
 
 **Fable.** JavaScript has one observable NaN, so `canonicalNaN` is the identity there and the rule
 holds by construction; the helper costs a comparison per float.
@@ -61,6 +77,8 @@ runs a Debug and a Release leg, and `publish-packages.yml` verifies in Release a
 from that output, so the assemblies verified are the assemblies shipped. The clock leg runs Release
 under either configuration, as the 2026-09-28 operator decision has it (a bound on the clock is a
 claim about the code consumers run); under `-Configuration Release` it reuses the gate's own build.
+That choice departs from the phase's literal wording (the clock leg "in the named configuration") and
+was ruled on and accepted on 2026-10-08.
 
 ## 2026-10-06 — D15: the pipeline-query registry's lifecycle verbs land, each delegating to the substrate's on the declarations first; the bodies move only on success
 

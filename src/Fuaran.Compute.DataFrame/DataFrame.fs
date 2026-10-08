@@ -2234,25 +2234,45 @@ module DataFrame =
         | Some _ -> Ok false
         | None -> Error(TypeError "in: comparison between incompatible types")
 
+    /// Phase 404 — THE NaN a float leaves the evaluator with: `Double.NaN`'s bit pattern, every other
+    /// value untouched. IEEE 754 does not say which payload or sign a NaN result carries — the
+    /// hardware's default NaN differs between x64 (sign set) and Arm64 (sign clear), an operation on
+    /// two NaNs answers either operand's, and an optimising JIT may commute an addition — so a running
+    /// total meeting `-inf + +inf` answered one bit pattern in a Debug build and another in a Release
+    /// build of the same code. Every float the evaluator COMPUTES passes through here at the point it
+    /// is emitted, so the bits of an answer are a function of its inputs alone (`DECISIONS.md` D16):
+    /// an expression's answer (`evalResolved`, `runCompiled`, and a compiled `Derive`'s float and boxed
+    /// roots, sequential or handed off), an aggregate's (`aggCells`, `GroupAgg.Stream.TryCell`,
+    /// `GroupAgg.Output.Float`) and a window's (the column as `windowColumnOverWith` builds it).
+    let internal canonicalNaN (x: float) : float =
+        if System.Double.IsNaN x then System.Double.NaN else x
+
+    /// `canonicalNaN` over a cell: a float cell holding a NaN becomes `Float Double.NaN`; every other
+    /// cell is itself.
+    let internal canonicalNaNCell (c: Cell) : Cell =
+        match c with
+        | Float x when System.Double.IsNaN x -> Float System.Double.NaN
+        | _ -> c
+
     /// Evaluate a resolved expression against one row held as an array — the reference expression
     /// evaluator. Every `Param` was read from the environment at resolution; a hit is its bound
     /// `Cell`, and a miss is the strict `UnboundParam` naming the param and the bound set (GP4/GP5)
     /// — never a throw, never a silent default.
-    let rec internal evalResolved (row: Cell[]) (e: ResolvedExpr) : Result<Cell, EvalError> =
+    let rec private evalNode (row: Cell[]) (e: ResolvedExpr) : Result<Cell, EvalError> =
         match e with
         | RCol i -> Ok(row[i])
         | RConst c -> Ok c
         | RFail err -> Error err
         | RBinary(op, a, b) ->
-            evalResolved row a
-            |> Result.bind (fun av -> evalResolved row b |> Result.bind (fun bv -> binaryOp op av bv))
-        | RNot inner -> evalResolved row inner |> Result.bind notCell
+            evalNode row a
+            |> Result.bind (fun av -> evalNode row b |> Result.bind (fun bv -> binaryOp op av bv))
+        | RNot inner -> evalNode row inner |> Result.bind notCell
         | RCoalesce exprs ->
             let rec go =
                 function
                 | [] -> Ok Null
                 | x :: rest ->
-                    evalResolved row x
+                    evalNode row x
                     |> Result.bind (function
                         | Null -> go rest
                         | c -> Ok c)
@@ -2261,17 +2281,17 @@ module DataFrame =
         | RCase(cases, elseExpr) ->
             let rec go =
                 function
-                | [] -> evalResolved row elseExpr
+                | [] -> evalNode row elseExpr
                 | (whenE, thenE) :: rest ->
-                    evalResolved row whenE
+                    evalNode row whenE
                     |> Result.bind (function
-                        | Bool true -> evalResolved row thenE
+                        | Bool true -> evalNode row thenE
                         | _ -> go rest)
 
             go cases
-        | RCast(ty, inner) -> evalResolved row inner |> Result.bind (castCell ty)
+        | RCast(ty, inner) -> evalNode row inner |> Result.bind (castCell ty)
         | RInList(subject, items) ->
-            evalResolved row subject
+            evalNode row subject
             |> Result.bind (fun sv ->
                 match sv with
                 | Null -> Ok Null
@@ -2281,7 +2301,7 @@ module DataFrame =
                         function
                         | [] -> Ok(if sawNull then Null else Bool false)
                         | it :: rest ->
-                            evalResolved row it
+                            evalNode row it
                             |> Result.bind (fun iv ->
                                 match iv with
                                 | Null -> go true rest
@@ -2293,7 +2313,7 @@ module DataFrame =
 
                     go false items)
         | RIsNull inner ->
-            evalResolved row inner
+            evalNode row inner
             |> Result.map (fun v ->
                 match v with
                 | Null -> Bool true
@@ -2302,17 +2322,24 @@ module DataFrame =
             let rec evalArgs acc =
                 function
                 | [] -> Ok(List.rev acc)
-                | a :: rest -> evalResolved row a |> Result.bind (fun v -> evalArgs (v :: acc) rest)
+                | a :: rest -> evalNode row a |> Result.bind (fun v -> evalArgs (v :: acc) rest)
 
             evalArgs [] args |> Result.bind (applyScalar fn)
         | RQuotient(scale, mode, a, b) ->
             scale
             |> Result.bind (fun n ->
-                evalResolved row a
-                |> Result.bind (fun av -> evalResolved row b |> Result.bind (fun bv -> quotientCell mode n av bv)))
+                evalNode row a
+                |> Result.bind (fun av -> evalNode row b |> Result.bind (fun bv -> quotientCell mode n av bv)))
         | RRounded(scale, mode, a) ->
             scale
-            |> Result.bind (fun n -> evalResolved row a |> Result.bind (roundedCell mode n))
+            |> Result.bind (fun n -> evalNode row a |> Result.bind (roundedCell mode n))
+
+    /// `evalNode`'s answer as it leaves the evaluator: a NaN made canonical (Phase 404). The one exit
+    /// of the row evaluator — `evalExprInRow`, and the incremental seam's re-evaluated cells, read it
+    /// here, so the row form and the incremental refresh answer the bits the compiled form does.
+    let internal evalResolved (row: Cell[]) (e: ResolvedExpr) : Result<Cell, EvalError> =
+        evalNode row e |> Result.map canonicalNaNCell
+
 
     // ---- static typing of expressions (Phase 266) ----
     //
@@ -4367,7 +4394,7 @@ module DataFrame =
 
         match c.Slot.Error with
         | Some err -> Error err
-        | None -> Ok v
+        | None -> Ok(canonicalNaNCell v)
 
     // ---- type inference for derived/melted columns ----
 
@@ -4428,25 +4455,6 @@ module DataFrame =
         // is not decimal text. Named, never truncated or dropped.
         | CellOutsideType(_, ct, cell) ->
             AggError("aggregate over a " + ct + " column met a cell outside its type: " + cell)
-
-    /// Phase 404 — THE NaN a float result leaves the evaluator with: `Double.NaN`'s bit pattern, every
-    /// other value untouched. IEEE 754 does not say which payload or sign a NaN result carries — the
-    /// hardware's default NaN differs between x64 (sign set) and Arm64 (sign clear), an operation on
-    /// two NaNs answers either operand's, and an optimising JIT may commute an addition — so a running
-    /// total meeting `-inf + +inf` answered one bit pattern in a Debug build and another in a Release
-    /// build of the same code. Every aggregate and window answer passes through here at the point it
-    /// is emitted (`aggCells`, `GroupAgg.Stream.TryCell`, `GroupAgg.Output.Float`, and the window
-    /// column as `windowColumnOverWith` builds it), so the bits of an answer are a function of its
-    /// inputs alone (`DECISIONS.md` D16).
-    let internal canonicalNaN (x: float) : float =
-        if System.Double.IsNaN x then System.Double.NaN else x
-
-    /// `canonicalNaN` over a cell: a float cell holding a NaN becomes `Float Double.NaN`; every other
-    /// cell is itself.
-    let internal canonicalNaNCell (c: Cell) : Cell =
-        match c with
-        | Float x when System.Double.IsNaN x -> Float System.Double.NaN
-        | _ -> c
 
     /// Compute one aggregate over a cell list of the given source type — the evaluator's adapter onto the
     /// public `Column.aggregate` (single source of truth), threading the `EvalError` envelope. The
@@ -4903,7 +4911,14 @@ module DataFrame =
         let derived =
             match first.Node with
             | NInt _ -> typed pickInt Shared.intsAndMask Raw.put (fun v m -> Ints(v, m)) IntType
-            | NFloat _ -> typed pickFloat Shared.floatsAndMask Raw.put (fun v m -> Floats(v, m)) FloatType
+            // A float root's value is put with the canonical NaN (Phase 404), as the hand-off's is.
+            | NFloat _ ->
+                typed
+                    pickFloat
+                    Shared.floatsAndMask
+                    (fun vals p v -> Raw.put vals p (canonicalNaN v))
+                    (fun v m -> Floats(v, m))
+                    FloatType
             | NBool _ -> typed pickBool Shared.boolsAndMask Mask.put (fun v m -> Bools(v, m)) BoolType
             | NStr(sty, _) ->
                 typed
@@ -4931,7 +4946,7 @@ module DataFrame =
                             let cell = r phys[i]
 
                             if Option.isNone slot.Error then
-                                cells[i] <- cell)
+                                cells[i] <- canonicalNaNCell cell)
 
                 match failed with
                 | Some e -> Error e
@@ -10438,8 +10453,9 @@ module internal MorselHandOff =
             | 2 ->
                 let c = DataFrame.compileExpr f resolved
 
+                // The canonical NaN, as the sequential member puts it (Phase 404).
                 DataFrame.deriveMorsel c.Slot (DataFrame.rootOf DataFrame.pickFloat c) phys lo hi (fun p v ->
-                    Raw.put h.OutFloats p v
+                    Raw.put h.OutFloats p (DataFrame.canonicalNaN v)
                     Mask.put h.OutMask p true)
                 |> Option.isSome
             | _ ->

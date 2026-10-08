@@ -51,23 +51,25 @@ meant to move by name.
 `0.37.0` is tagged, so the change below ADVANCED the slot to `0.38.0`. It is a draft until it is
 tagged: an additive change rides it, a breaking one advances it.
 
-### Aggregate and window answers carry one NaN, and the gate runs Release (Phase 404, `DECISIONS.md` D16) — none, `determinism`
+### Every float the evaluator computes carries one NaN, and the gate runs Release (Phase 404, `DECISIONS.md` D16) — none, `determinism`
 
 **What changed.** No public surface moves, and no answer changes its value: a NaN answer is still
-`NaN`, every other answer is the same to the bit. What moves is the NaN's own bits. Every float an
-aggregate (`GroupBy`, `Pivot`, `DataFrame.aggregateCells`) or a window function emits leaves the
-evaluator with `Double.NaN`'s bit pattern wherever it is a NaN, whatever the arithmetic produced: a
-running total meeting `-inf + +inf`, a `Sum` or `Mean` over both infinities, a `Lag`, `First` or `Max`
-carrying a source NaN of another payload. IEEE 754 leaves a NaN result's sign and payload open, and
-the hosts and builds took that latitude: the hardware's default NaN has its sign clear on Arm64 and
-set on x64, and a Release build commuted an addition the Debug build did not, so one window answered
-two bit patterns from one input. On the canonical wire a NaN was already one token (`NaN`), so no
-serialised byte moves; the bits are what an in-process comparison, a parity vector's .NET half and a
-content address over raw values see. A derived column's NaN (`Derive`'s arithmetic) is outside this
-change and keeps the host's result; `DECISIONS.md` D16 records why.
+`NaN`, every other answer is the same to the bit. What moves is the NaN's own bits. One rule,
+evaluator-wide: every float the evaluator computes — an expression's (`Derive`, `evalExprInRow`), an
+aggregate's (`GroupBy`, `Pivot`, `DataFrame.aggregateCells`) and a window function's — leaves it with
+`Double.NaN`'s bit pattern wherever it is a NaN, whatever the arithmetic produced: `-inf + +inf`,
+`0 * inf`, a running total or a `Sum` over both infinities, a `Lag`, `First`, `Max` or `Col` carrying a
+source NaN of another payload. The batch evaluator, the row form and the incremental refresh answer
+through the same exits, so they agree to the bit. A step that computes nothing (`Project`, `Filter`,
+`Sort`, a join) hands on the caller's cells as given. IEEE 754 leaves a NaN result's sign and payload
+open, and the hosts and builds took that latitude: the hardware's default NaN has its sign clear on
+Arm64 and set on x64, and a Release build commuted an addition the Debug build did not, so one window
+answered two bit patterns from one input. On the canonical wire a NaN was already one token (`NaN`),
+so no serialised byte moves; the bits are what an in-process comparison, a parity vector's .NET half
+and a content address over raw values see.
 
 `verify.ps1` takes `-Configuration Debug|Release` (Debug by default) and runs the build and the main
-suite in it; the clock leg stays Release. `ci.yml` runs both configurations, and `publish-packages.yml`
+suite in it; the clock leg stays Release under either. `ci.yml` runs both configurations, and `publish-packages.yml`
 verifies in Release and packs `--no-build` from what it verified.
 
 **Nothing to adopt.** A consumer comparing answers by `DoubleToInt64Bits` now sees one NaN.
