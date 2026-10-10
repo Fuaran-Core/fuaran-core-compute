@@ -2130,6 +2130,36 @@ module Incremental =
         for c in cols do
             into[c] <- (column f c)[s]
 
+    /// The cells of column `c` at the slots `slots`: from the column's array where it has one, else
+    /// read in place, one row each — without unpacking the column (Phase 323; Phase 423 reads the
+    /// source column through `Column.cell`, O(1) since Phase 417).
+    let private cellsAtSlots (f: WalkFrame) (c: int) (slots: ResizeArray<int>) : Cell[] =
+        let out: Cell[] = Array.zeroCreate slots.Count
+        let a = f.Data[c]
+
+        if not (isNull a) then
+            for j in 0 .. slots.Count - 1 do
+                out[j] <- a[slots[j]]
+        else
+            let origin = f.Origins[c].Value
+
+            // Phase 359 — appended slots are read from the tail's cells.
+            let tail =
+                if not (isNull f.Tails) && c < f.Tails.Length then
+                    f.Tails[c]
+                else
+                    None
+
+            for j in 0 .. slots.Count - 1 do
+                let s = slots[j]
+
+                if tail.IsSome && s >= f.TailFrom then
+                    out[j] <- tail.Value[s - f.TailFrom]
+                else
+                    out[j] <- Column.cell s origin
+
+        out
+
     /// Per prior slot, the slot that row holds now (`-1` where it is gone) — the inverse of
     /// `WalkRows.Prior`, which is what translates an order the prior evaluation recorded in its own
     /// numbering into this one.
@@ -2419,7 +2449,8 @@ module Incremental =
             if j = 0 || wo.Slot[perm[j]] <> wo.Slot[perm[j - 1]] then
                 bounds.Add j
                 let s = order[perm[j]]
-                keys.Add(partIdx |> Array.map (fun c -> (column f c)[s]))
+                // Phase 423 — one row a partition, read in place.
+                keys.Add(partIdx |> Array.map (fun c -> cellAtSlot f c s))
 
         bounds.Add perm.Length
 
@@ -2508,10 +2539,11 @@ module Incremental =
             let rb: Cell[] = Array.zeroCreate f.Data.Length
 
             let before (a: int) (b: int) =
+                // Phase 423 — read in place: a resume places its few moved rows by bisection, so a
+                // key column no step unpacked is never unpacked whole for it.
                 for (i, _) in keys do
-                    let col = column f i
-                    ra[i] <- col[a]
-                    rb[i] <- col[b]
+                    ra[i] <- cellAtSlot f i a
+                    rb[i] <- cellAtSlot f i b
 
                 let c = DataFrame.compareResolved keys ra rb
                 if c <> 0 then c else compare (posAt a) (posAt b)
@@ -2553,7 +2585,8 @@ module Incremental =
                     let freshOf = System.Collections.Generic.Dictionary<string, int>()
 
                     for s in moved do
-                        let cells = partIdx |> Array.map (fun c -> (column f c)[s])
+                        // Phase 423 — the few moved rows' partition keys, read in place.
+                        let cells = partIdx |> Array.map (fun c -> cellAtSlot f c s)
                         let token = DataFrame.rowTokenStringOfArray cells
 
                         match runOf.TryGetValue token with
@@ -2800,17 +2833,24 @@ module Incremental =
             let ra: Cell[] = Array.zeroCreate f.Data.Length
             let rb: Cell[] = Array.zeroCreate f.Data.Length
 
-            let cmp (a: int) (b: int) =
+            // Phase 423 — a key column no step unpacked is read in place (`cellAtSlot`) for a RESUMED
+            // sort, which compares O(m log n) times to place m moved rows, and unpacked once for a
+            // sort from scratch, which compares n log n times.
+            let cmpReading (sparse: bool) (a: int) (b: int) =
                 for (i, _) in keys do
-                    let col = column f i
-                    ra[i] <- col[a]
-                    rb[i] <- col[b]
+                    if sparse then
+                        ra[i] <- cellAtSlot f i a
+                        rb[i] <- cellAtSlot f i b
+                    else
+                        let col = column f i
+                        ra[i] <- col[a]
+                        rb[i] <- col[b]
 
                 DataFrame.compareResolved keys ra rb
 
             // A total order: the comparator, then arrival position — a stable sort by construction,
             // whichever algorithm the host's array sort is.
-            let sortSlots (xs: int[]) =
+            let sortSlots (cmp: int -> int -> int) (xs: int[]) =
                 xs
                 |> Array.sortWith (fun a b ->
                     let c = cmp a b
@@ -2850,9 +2890,10 @@ module Incremental =
 
             let ordered =
                 match reusable with
-                | None -> sortSlots arrival
+                | None -> sortSlots (cmpReading false) arrival
                 | Some cachedStable ->
-                    let moved = arrival |> Array.filter (fun s -> not r.Stable[s]) |> sortSlots
+                    let cmp = cmpReading true
+                    let moved = arrival |> Array.filter (fun s -> not r.Stable[s]) |> sortSlots cmp
                     mergeOrders cmp posOf cachedStable moved
 
             // Phase 327 — after a sort the frame's order is no longer ascending, which is what an
@@ -2966,7 +3007,9 @@ module Incremental =
                 // array first. Measured (Phase 324) at 20,000 rows, filling that array cost more than
                 // the window itself: every boxed cell stored into an array that size is a reference
                 // from an old-generation object to a young one.
-                let data2, origins2 =
+                // Phase 423 — the cells the identity case packs are also what the run records
+                // (`recorded`): the column is built from them once, never unpacked again to be kept.
+                let data2, origins2, recorded =
                     if identity.Value then
                         // A resumed prefix fold (Phase 333) shares the prior column's cells for the rows
                         // it kept where every one of them sits at its prior slot and the prior column is
@@ -3009,14 +3052,15 @@ module Incremental =
                                 cells
 
                         Array.append f.Data [| null |],
-                        Array.append f.Origins [| Some(Vec.columnOfCells field2 cells) |]
+                        Array.append f.Origins [| Some(Vec.columnOfCells field2 cells) |],
+                        Some cells
                     else
                         let last: Cell[] = Array.zeroCreate r.Stable.Length
 
                         for k in 0 .. order.Length - 1 do
                             last[order[k]] <- cellAt k
 
-                        Array.append f.Data [| last |], Array.append f.Origins [| None |]
+                        Array.append f.Data [| last |], Array.append f.Origins [| None |], None
 
                 // `Stable` is cleared for EVERY slot, dead ones too: the appended column is a
                 // function of the whole frame (see `WalkRows`). A resumed prefix fold (Phase 333)
@@ -3032,10 +3076,8 @@ module Incremental =
                     match run with
                     | Some run ->
                         let run =
-                            match origins2[origins2.Length - 1] with
-                            | Some column ->
-                                { run with
-                                    Column = Column.toCells column }
+                            match recorded with
+                            | Some cells -> { run with Column = cells }
                             | None -> run
 
                         { caches with
@@ -3261,14 +3303,17 @@ module Incremental =
                 // place, one cell each, rather than by unpacking the column whole to read them.
                 | Some origin when isNull f.Data[ci] && f.Order.Length <= sparseRowLimit ->
                     Vec.columnOfCells field (f.Order |> Array.map (fun s -> Column.cell s origin) |> List.ofArray)
+                // Phase 423 — a column no step unpacked, in another order (after a sort): its vectors
+                // gathered typed, through a view over the source column, never unpacked into cells.
+                | Some origin when isNull f.Data[ci] ->
+                    Vec.toColumn
+                        field
+                        (Vec.gather (Vec.ofColumn (Column.length origin) field.Type (Some origin)) f.Order)
+                // A step's own cells, in the frame's order: packed once from the array, with no list
+                // between.
                 | _ ->
                     let a = column f ci
-                    let mutable acc = []
-
-                    for k in f.Order.Length - 1 .. -1 .. 0 do
-                        acc <- a[f.Order[k]] :: acc
-
-                    Vec.columnOfCells field acc) }
+                    Vec.toColumn field (Vec.pack field.Type (Array.init f.Order.Length (fun k -> a[f.Order[k]])))) }
 
     // ---- the maintained-group step ----
 
@@ -3479,13 +3524,9 @@ module Incremental =
                 // One aggregate's source cells over a group's members, in member order, built from
                 // the back — only for a group that is recomputed.
                 let columnOf (members: ResizeArray<int>) (ci: int) : Cell list =
-                    let a = column f ci
-                    let mutable acc = []
-
-                    for j in members.Count - 1 .. -1 .. 0 do
-                        acc <- a[members[j]] :: acc
-
-                    acc
+                    // Phase 423 — read at the members' slots alone (`cellsAtSlots`): a column no step
+                    // unpacked is never unpacked whole for one recomputed group.
+                    List.ofArray (cellsAtSlots f ci members)
 
                 let groupCount = order.Count
                 let members: string list[] = Array.zeroCreate groupCount
@@ -3522,6 +3563,14 @@ module Incremental =
 
                 let aggArr = List.toArray resolvedAggs
 
+                // Phase 423 — a source column no step unpacked is streamed as a VIEW over its vectors
+                // (`Vec.ofColumn`, as `Frame.ofTable` takes one), never unpacked into cells to be read
+                // back typed: wherever `Data` is null the frame's slots are the source's rows.
+                let streamSource (ci: int) (ty: ColumnType) : Vec =
+                    match f.Origins[ci] with
+                    | Some origin when isNull f.Data[ci] -> Vec.ofColumn (Column.length origin) ty (Some origin)
+                    | _ -> Cells(column f ci)
+
                 let streams =
                     if reusedFrom |> Array.forall (fun pg -> pg >= 0) then
                         [||]
@@ -3532,7 +3581,7 @@ module Incremental =
                                 DataFrame.GroupAgg.Stream(
                                     a.Fn,
                                     ty,
-                                    Cells(column f ci),
+                                    streamSource ci ty,
                                     groupCount,
                                     DataFrame.GroupAgg.Exact
                                 )
@@ -3589,35 +3638,6 @@ module Incremental =
                           Aggs = aggCells
                           Recomputed = recomputed
                           RecomputedAt = recomputedAt })
-
-    /// The cells of column `c` at the ASCENDING slots `slots`: from the column's array where it has
-    /// one, else in one walk down the source list — without unpacking the column (Phase 323).
-    let private cellsAtSlots (f: WalkFrame) (c: int) (slots: ResizeArray<int>) : Cell[] =
-        let out: Cell[] = Array.zeroCreate slots.Count
-        let a = f.Data[c]
-
-        if not (isNull a) then
-            for j in 0 .. slots.Count - 1 do
-                out[j] <- a[slots[j]]
-        else
-            let origin = f.Origins[c].Value
-
-            // Phase 359 — appended slots (ascending, so last) are read from the tail's cells.
-            let tail =
-                if not (isNull f.Tails) && c < f.Tails.Length then
-                    f.Tails[c]
-                else
-                    None
-
-            for j in 0 .. slots.Count - 1 do
-                let s = slots[j]
-
-                if tail.IsSome && s >= f.TailFrom then
-                    out[j] <- tail.Value[s - f.TailFrom]
-                else
-                    out[j] <- Column.cell s origin
-
-        out
 
     /// Phase 323 — the maintained `GroupBy` of an IN-PLACE refresh (`WalkRows.InPlace`), paying for
     /// the changed rows rather than for the table: `Some` where it applies, `None` to take
@@ -4242,8 +4262,8 @@ module Incremental =
                     if counted ci || unchanged ci name c || Column.length c = n then
                         null, Some c
                     else
-                        let a = List.toArray (Column.toCells c)
-                        Array.init n (fun i -> if i < a.Length then a[i] else Null), None
+                        // Phase 423 — padded through the total `Column.cell`, never by unpacking.
+                        Array.init n (fun i -> Column.cell i c), None
                 | None -> Array.create n Null, None)
             |> List.toArray
 

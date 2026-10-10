@@ -250,6 +250,116 @@ type KeyEqualityDisagreement =
 /// Reference identity witnesses — enough to exercise the whole delta surface with no domain
 /// dependency of any kind.
 [<RequireQualifiedAccess>]
+/// Phase 423 — the diff's reads over Core's typed columns. Under Core 1.0.0 `Column.toCells` mints
+/// a `Cell` per row (under 0.36 the list WAS the column), so a diff that compared and keyed rows
+/// through it paid an allocation per cell of both tables on every tick. The content comparison runs
+/// over the two columns' vectors instead — borrowed under Phase 418's contract (read, never written;
+/// nothing here allocates an array at all) — and a key is read in place through `Column.cell`,
+/// which is O(1) since Phase 417.
+module internal ColumnRead =
+
+    /// The content rule for two floats (Phase 323, an operator ruling): every NaN is one value (its
+    /// payload is not portable across hosts), and the two zeros are told apart by the sign of their
+    /// reciprocal, which every host computes alike.
+    let sameFloat (x: float) (y: float) : bool =
+        if System.Double.IsNaN x then System.Double.IsNaN y
+        elif x = 0.0 && y = 0.0 then (1.0 / x) = (1.0 / y)
+        else x = y
+
+    /// Is a cell's CONTENT unchanged — the rule `Delta.diff` decides "changed" by? A float by
+    /// `sameFloat`, so `0.0` edited to `-0.0` is a change; a decimal by its text, so `1.50` re-spelt
+    /// `1.5` is a change; every other cell by `CellKey.equals`, which for them is already exact.
+    let sameCell (a: Cell) (b: Cell) : bool =
+        match a, b with
+        | Float x, Float y -> sameFloat x y
+        | Decimal x, Decimal y -> System.String.Equals(x, y)
+        | _ -> DataFrame.CellKey.equals a b
+
+    /// A column's presence as a total predicate over row indexes: `false` past the column's end,
+    /// where `Column.cell` reads `Null`. The mask is borrowed once; a mask shorter than the column
+    /// leaves the rows past it absent, as `Validity.isPresent` reads them.
+    let presence (c: Column) : int -> bool =
+        let n = Column.length c
+
+        match Column.validity c with
+        | AllValid -> fun i -> i >= 0 && i < n
+        | Validity.Mask m ->
+            let lent = Vector.Unsafe.borrow m
+            let arr = lent.Array
+            let off = lent.Offset
+            let len = min n lent.Length
+            fun i -> i >= 0 && i < len && arr[off + i]
+
+    /// `same i j`: does row `i` of `b` hold the content of row `j` of `a`, floats compared by
+    /// `floats`? Read through the two vectors where the columns are of one type. Two absent rows (a
+    /// `Null`, or a row past a column's end — the padding `RowAccess.columns` reads) are the same, and
+    /// a present row never matches an absent one; a missing column is absent at every row; columns
+    /// of two types fall back to the cells.
+    let sameAtWith (floats: float -> float -> bool) (b: Column option) (a: Column option) : int -> int -> bool =
+        match b, a with
+        | None, None -> fun _ _ -> true
+        | Some b, None ->
+            let pb = presence b
+            fun i _ -> not (pb i)
+        | None, Some a ->
+            let pa = presence a
+            fun _ j -> not (pa j)
+        | Some b, Some a ->
+            let pb = presence b
+            let pa = presence a
+
+            let over (same: int -> int -> bool) : int -> int -> bool =
+                fun i j ->
+                    let p = pb i
+
+                    if p <> pa j then false
+                    elif p then same i j
+                    else true
+
+            let inline lend (v: Vector<'T>) =
+                let lent = Vector.Unsafe.borrow v
+                lent.Array, lent.Offset
+
+            match b.Data, a.Data with
+            | ColumnData.Ints(x, _), ColumnData.Ints(y, _)
+            | ColumnData.Dates(x, _), ColumnData.Dates(y, _) ->
+                let xa, xo = lend x
+                let ya, yo = lend y
+                over (fun i j -> xa[xo + i] = ya[yo + j])
+            | ColumnData.Floats(x, _), ColumnData.Floats(y, _) ->
+                let xa, xo = lend x
+                let ya, yo = lend y
+                over (fun i j -> floats xa[xo + i] ya[yo + j])
+            | ColumnData.Bools(x, _), ColumnData.Bools(y, _) ->
+                let xa, xo = lend x
+                let ya, yo = lend y
+                over (fun i j -> xa[xo + i] = ya[yo + j])
+            | ColumnData.Strs(x, _), ColumnData.Strs(y, _)
+            | ColumnData.Decimals(x, _), ColumnData.Decimals(y, _) ->
+                let xa, xo = lend x
+                let ya, yo = lend y
+                over (fun i j -> System.String.Equals(xa[xo + i], ya[yo + j]))
+            | ColumnData.Timestamps(ux, sx, fx, _), ColumnData.Timestamps(uy, sy, fy, _) when ux = uy ->
+                let xa, xo = lend sx
+                let ya, yo = lend sy
+
+                // A fraction vector reads `0` where it is absent, as Core reads it.
+                let fractionAt (f: Vector<int> option) : int -> int =
+                    match f with
+                    | Some f ->
+                        let fa, fo = lend f
+                        let n = Vector.length f
+                        fun i -> if i < n then fa[fo + i] else 0
+                    | None -> fun _ -> 0
+
+                let fxAt = fractionAt fx
+                let fyAt = fractionAt fy
+                over (fun i j -> xa[xo + i] = ya[yo + j] && fxAt i = fyAt j)
+            | _ -> over (fun i j -> sameCell (Column.cell i b) (Column.cell j a))
+
+    /// `sameAtWith` under the diff's content rule.
+    let sameAt (b: Column option) (a: Column option) : int -> int -> bool = sameAtWith sameFloat b a
+
 module RowIdentity =
 
     /// The reserved scheme name for an identity-free source, whose deltas address rows by ordinal.
@@ -384,28 +494,24 @@ module RowIdentity =
         let idw: RowIdentity<Cell> =
             { Scheme = "column:" + column
               KeyOf =
-                // The currying is load-bearing (Phase 206): the per-TABLE work sits in the FIRST
-                // application, so a consumer that keys every row binds `idw.KeyOf t` once and then pays
-                // O(1) per row. Reading the cell out of the `Cell list` by index instead is O(i) each,
-                // and keying an n-row table that way is quadratic — which is what made `Delta.diff` a
-                // hundred times dearer for ten times the rows. The answers are identical either way.
+                // The currying is load-bearing (Phase 206): the per-TABLE work — finding the column —
+                // sits in the FIRST application, so a consumer that keys every row binds `idw.KeyOf t`
+                // once and then pays O(1) per row. Phase 423 — the cell is read in place through
+                // `Column.cell` (O(1) since Phase 417, total: `Null` past the column's end), never by
+                // unpacking the column, which under Core 1.0.0 would mint a cell for every row to
+                // key the few a tick asks for.
                 //
                 // A caller that writes `idw.KeyOf t i` inside its own loop re-does the first
-                // application on every iteration and gets the old cost back; the two callers in this
-                // package (`keyIndex` here, `tokensOf` in the incremental seam) hoist it deliberately.
+                // application on every iteration; the two callers in this package (`keyIndex` here,
+                // `tokensOf` in the incremental seam) hoist it deliberately.
                 fun t ->
-                    let cells =
-                        match Table.tryColumn column t with
-                        | Some c -> List.toArray (Column.toCells c)
-                        | None -> [||]
-
-                    fun i ->
-                        if i >= 0 && i < cells.Length then
-                            match cells[i] with
+                    match Table.tryColumn column t with
+                    | Some c ->
+                        fun i ->
+                            match Column.cell i c with
                             | Null -> None
                             | cell -> Some cell
-                        else
-                            None
+                    | None -> fun _ -> None
               KeyString = DataFrame.cellToken }
 
         withKeyEquality KeyEqualities.cell idw |> KeyColumns.declare [ column ]
@@ -421,16 +527,15 @@ module RowIdentity =
                 // Staged exactly as `byColumn` above, and for the same reason: one pass per key column
                 // on the first application, O(1) per row thereafter.
                 fun t ->
-                    let arrays =
-                        columns
-                        |> List.map (fun n ->
-                            match Table.tryColumn n t with
-                            | Some c -> List.toArray (Column.toCells c)
-                            | None -> [||])
+                    let found = columns |> List.map (fun n -> Table.tryColumn n t)
 
                     fun i ->
                         let cells =
-                            arrays |> List.map (fun a -> if i >= 0 && i < a.Length then a[i] else Null)
+                            found
+                            |> List.map (fun c ->
+                                match c with
+                                | Some c -> Column.cell i c
+                                | None -> Null)
 
                         if List.isEmpty cells || cells |> List.exists Cell.isNull then
                             None
@@ -925,18 +1030,6 @@ module Delta =
 
     // ---- diffing two tables (the reference producer) ----
 
-    /// Every row's cells, in row order, indexable in O(1) (Phase 206, as content tokens until Phase 323).
-    ///
-    /// This replaced a `rowContentToken t i` that read the row by index — a `Column.cell` per
-    /// column, each walking its column list from the head — and was called once per candidate row.
-    /// Computing the whole table's tokens in one transpose is linear, and the comparison below
-    /// then costs a string equality rather than a table scan. Computed lazily at the point of use,
-    /// so a diff that refuses on a keying defect never pays for it.
-    ///
-    /// Phase 323 — rows now, compared cell by cell under `sameContent` rather than as content
-    /// tokens, so an ordinal diff decides "changed" by the rule the keyed diff does.
-    let private rowArrays (t: Table) : Cell[][] = RowAccess.rows t |> List.toArray
-
     /// Index a table's rows by identity, refusing whole if the witness cannot key every row uniquely.
     let private keyIndex (idw: RowIdentity<'Id>) (t: Table) : Result<(string * int) list, DeltaDefect> =
         let n = Table.rowCount t
@@ -971,16 +1064,10 @@ module Delta =
     /// refresh answered `0.0` where a full evaluation of the new source answered `-0.0`. Grouping and
     /// distinctness still compare by token (two zeros are one group); what a delta reports is
     /// whether the source MOVED, and a consumer can see both of these moves.
-    let internal sameContent (a: Cell) (b: Cell) : bool =
-        match a, b with
-        // Every NaN is one value (its payload is not portable across hosts); the two zeros are told
-        // apart by the sign of their reciprocal, which every host computes alike.
-        | Float x, Float y ->
-            if System.Double.IsNaN x then System.Double.IsNaN y
-            elif x = 0.0 && y = 0.0 then (1.0 / x) = (1.0 / y)
-            else x = y
-        | Decimal x, Decimal y -> System.String.Equals(x, y)
-        | _ -> DataFrame.CellKey.equals a b
+    ///
+    /// Phase 423 — the rule is `ColumnRead.sameCell`; the diff applies it through the columns'
+    /// vectors (`ColumnRead.sameAt`) and reaches the cell form only where a boxed read is all there is.
+    let internal sameContent (a: Cell) (b: Cell) : bool = ColumnRead.sameCell a b
 
     /// Phase 359 — the diff of an APPEND, keying the appended rows alone: `Some` with the answer the
     /// keyed diff gives, where `after` is `before` with rows appended; `None` to take the keyed diff.
@@ -991,21 +1078,20 @@ module Delta =
     /// more rows. Then every row of `before` sits at its own index in `after` under its own key —
     /// complete and unique because `before`'s keys were — and only the rows past them need a key. So:
     ///
-    ///  * each column's two lists are walked in step once over the prefix, a cell compared by
-    ///    reference first and by `sameContent` only where the references differ (an append copies the
-    ///    list's cells, not the cells): a key column whose prefix differs is not an append, and the
-    ///    keyed diff answers; any other column marks the rows whose content moved, `RowChanged`, as
-    ///    the keyed diff's content pass would;
-    ///  * the walk leaves each list at its first appended cell, and the witness keys the TAIL alone,
+    ///  * each column's two vectors are compared in place once over the prefix (`ColumnRead.sameAt`,
+    ///    Phase 423): a key column whose prefix differs is not an append, and the keyed diff answers;
+    ///    any other column marks the rows whose content moved, `RowChanged`, as the keyed diff's
+    ///    content pass would;
+    ///  * the rows past the prefix are the TAIL, read in place, and the witness keys the tail alone,
     ///    over a table of the key columns' suffixes — a declared witness's key is a function of its
     ///    key columns' cells at that row (`KeyColumns`), so row `t` of the tail is row `PriorCount + t`;
     ///  * a tail key is checked against `before`'s keys through the chain an append extends
     ///    (`KeyChain`), and against the tail's own, in row order, so a missing or repeated key is the
     ///    keyed diff's refusal for the same row with the same payload.
     ///
-    /// The walk over every column's prefix is the floor here: an append rebuilds each column's list
-    /// (a cons list cannot share a prefix), so a diff that is to report an edit made beside the
-    /// append must read every prefix cell, and reads each once. What it no longer pays is a key per
+    /// The walk over every column's prefix is the floor here: an append builds each column a new
+    /// vector, so a diff that is to report an edit made beside the append must read every prefix
+    /// row, and reads each once, typed and without allocating. What it no longer pays is a key per
     /// row, a hash per row, or an index of `before`.
     ///
     /// `trustPrefix` is the PERTURBATION the append laws go red against (`diffTrustingPrefix`): it
@@ -1034,50 +1120,35 @@ module Delta =
             let names = Fields.names before.Schema |> List.toArray
             let isKey = names |> Array.map (fun n -> List.contains n keyCols)
 
-            let listOf (t: Table) (name: string) : Cell list =
-                match Table.tryColumn name t with
-                | Some c -> Column.toCells c
-                | None -> []
-
             let tails: Cell list[] = Array.create names.Length []
             let lengths: int[] = Array.zeroCreate names.Length
             let changed: bool[] = Array.zeroCreate nb
 
-            // One column's two lists in step over the prefix (a list shorter than the prefix reads
-            // `Null` past its end, the keyed diff's padding). `false` where a KEY column's prefix
-            // differs; otherwise the content changes are marked, and the column's tail and length
-            // recorded.
+            // One column's two vectors compared in place over the prefix (Phase 423, `ColumnRead`: a
+            // column shorter than the prefix reads absent past its end, the keyed diff's padding).
+            // `false` where a KEY column's prefix differs; otherwise the content changes are marked,
+            // and the column's tail — its rows past the prefix, read in place — and length recorded.
             let walk (ci: int) : bool =
-                let mutable b = listOf before names[ci]
-                let mutable a = listOf after names[ci]
+                let a = Table.tryColumn names[ci] after
                 let mutable same = true
-                let mutable taken = 0
-                let mutable i = 0
 
-                while same && i < nb do
-                    let bc =
-                        match b with
-                        | x :: rest ->
-                            b <- rest
-                            x
-                        | [] -> Null
+                if not trustPrefix then
+                    let sameAt = ColumnRead.sameAt (Table.tryColumn names[ci] before) a
+                    let mutable i = 0
 
-                    let ac =
-                        match a with
-                        | x :: rest ->
-                            a <- rest
-                            taken <- taken + 1
-                            x
-                        | [] -> Null
+                    while same && i < nb do
+                        if not (sameAt i i) then
+                            if isKey[ci] then same <- false else changed[i] <- true
 
-                    if not (trustPrefix || obj.ReferenceEquals(bc, ac) || sameContent bc ac) then
-                        if isKey[ci] then same <- false else changed[i] <- true
-
-                    i <- i + 1
+                        i <- i + 1
 
                 if same then
-                    tails[ci] <- a
-                    lengths[ci] <- taken + List.length a
+                    match a with
+                    | Some c ->
+                        let la = Column.length c
+                        lengths[ci] <- la
+                        tails[ci] <- [ for r in nb .. la - 1 -> Column.cell r c ]
+                    | None -> ()
 
                 same
 
@@ -1479,41 +1550,25 @@ module Delta =
             match defect with
             | Some d -> Error d
             | None ->
-                // ---- content: cell by cell under token equality, one column at a time ----
+                // ---- content: row against row under the content rule, one typed comparer a column ----
                 //
-                // Each schema column's cells as an array of exactly the table's row count, padded
-                // with `Null` — `RowAccess.columns`' reading, one column at a time and only for the
-                // columns something needs.
-                let columnOf (t: Table) (n: int) (name: string) : Cell[] =
-                    match Table.tryColumn name t with
-                    | Some c ->
-                        let a = List.toArray (Column.toCells c)
-
-                        if a.Length = n then
-                            a
-                        else
-                            Array.init n (fun r -> if r < a.Length then a[r] else Null)
-                    | None -> Array.create n Null
-
+                // Phase 423 — each schema column's two vectors are compared in place through
+                // `ColumnRead.sameAt`, built once per column and only for the columns something
+                // reads; a row past a column's end is absent, which is `RowAccess.columns`' padding.
                 let names = Fields.names before.Schema |> List.toArray
-                let bCols: Cell[] option[] = Array.create names.Length None
-                let aCols: Cell[] option[] = Array.create names.Length None
+                let comparers: (int -> int -> bool)[] = Array.zeroCreate names.Length
 
-                let bCol ci =
-                    match bCols[ci] with
-                    | Some a -> a
-                    | None ->
-                        let a = columnOf before nb names[ci]
-                        bCols[ci] <- Some a
-                        a
+                let sameAt (ci: int) : int -> int -> bool =
+                    let f = comparers[ci]
 
-                let aCol ci =
-                    match aCols[ci] with
-                    | Some a -> a
-                    | None ->
-                        let a = columnOf after na names[ci]
-                        aCols[ci] <- Some a
-                        a
+                    if isNull (box f) then
+                        let f =
+                            ColumnRead.sameAt (Table.tryColumn names[ci] before) (Table.tryColumn names[ci] after)
+
+                        comparers[ci] <- f
+                        f
+                    else
+                        f
 
                 let sameList ci =
                     match Table.tryColumn names[ci] before, Table.tryColumn names[ci] after with
@@ -1524,49 +1579,24 @@ module Delta =
                 let changed: bool[] = Array.zeroCreate na
                 let shared = min na nb
 
-                // Phase 323 — the two lists walked in step rather than unpacked into arrays: the in-place
-                // pairs are compared position by position, so no array is needed (a list shorter than
-                // the table reads `Null` past its end, `columnOf`'s padding).
+                // Phase 323 — the in-place pairs are compared position by position, and a column whose
+                // storage is the SAME object in both tables is not read for them at all.
                 for ci in 0 .. names.Length - 1 do
                     if not (sameList ci) then
-                        let mutable b =
-                            match Table.tryColumn names[ci] before with
-                            | Some c -> Column.toCells c
-                            | None -> []
-
-                        let mutable a =
-                            match Table.tryColumn names[ci] after with
-                            | Some c -> Column.toCells c
-                            | None -> []
+                        let same = sameAt ci
 
                         for r in 0 .. shared - 1 do
-                            let bc =
-                                match b with
-                                | x :: rest ->
-                                    b <- rest
-                                    x
-                                | [] -> Null
-
-                            let ac =
-                                match a with
-                                | x :: rest ->
-                                    a <- rest
-                                    x
-                                | [] -> Null
-
-                            if inPlace[r] && not changed[r] && not (sameContent bc ac) then
+                            if inPlace[r] && not changed[r] && not (same r r) then
                                 changed[r] <- true
 
                 // A row that moved is compared whole, across every column: its two positions differ,
-                // so a shared list says nothing about it.
+                // so a shared vector says nothing about it.
                 let rowDiffers (bi: int) (ai: int) =
                     let mutable differs = false
                     let mutable ci = 0
 
                     while not differs && ci < names.Length do
-                        let b = bCol ci
-                        let a = aCol ci
-                        differs <- not (sameContent b[bi] a[ai])
+                        differs <- not ((sameAt ci) bi ai)
                         ci <- ci + 1
 
                     differs
@@ -1655,9 +1685,9 @@ module Delta =
     ///    is looked up;
     ///  * "changed" is decided cell by cell under `CellKey.equals`, which is `cellToken` equality
     ///    without the token (a law in the suite pins the two equal), column by column over the
-    ///    in-place pairs, and a column whose cell list is the SAME object in both tables — a column
-    ///    the edit did not touch — is not read at all for them, because equal positions of one list
-    ///    hold one cell.
+    ///    in-place pairs through the columns' typed vectors (Phase 423, `ColumnRead`), and a column
+    ///    whose storage is the SAME object in both tables — a column the edit did not touch — is not
+    ///    read at all for them.
     ///
     /// **Paired by the typed id since Phase 283**, for a witness that declares a key equality
     /// (`KeyEqualities`; the reference witnesses do). The new table's rows are paired with the prior's
@@ -1674,8 +1704,8 @@ module Delta =
     ///
     /// **An append keys the appended rows alone since Phase 359** (`appendDiff`): where the witness
     /// declares its key columns, `before` is keyed already and `after` is `before` with rows appended,
-    /// the prefix is recognised by reading each column's cells once, by reference, and only the tail
-    /// is keyed. The answer is the keyed diff's, refusals and payloads included; the suite holds the
+    /// the prefix is recognised by comparing each column's two vectors once, in place, and only the
+    /// tail is keyed. The answer is the keyed diff's, refusals and payloads included; the suite holds the
     /// two equal over drawn appends.
     let diff (idw: RowIdentity<'Id>) (before: Table) (after: Table) : Result<TableDelta, DeltaDefect> =
         if before.Schema <> after.Schema then
@@ -1711,12 +1741,18 @@ module Delta =
             let nb = Table.rowCount before
             let na = Table.rowCount after
             let shared = min nb na
-            let beforeRows = rowArrays before
-            let afterRows = rowArrays after
+
+            // Phase 423 — row `i` against row `i` through each column's typed comparer (the keyed
+            // diff's content pass), so an ordinal diff decides "changed" by the rule the keyed diff does
+            // (Phase 323) and unpacks no column to do it.
+            let sameAt =
+                Fields.names before.Schema
+                |> List.toArray
+                |> Array.map (fun name -> ColumnRead.sameAt (Table.tryColumn name before) (Table.tryColumn name after))
 
             let changed =
                 [ for i in 0 .. shared - 1 do
-                      if not (Array.forall2 sameContent beforeRows[i] afterRows[i]) then
+                      if not (sameAt |> Array.forall (fun same -> same i i)) then
                           ByOrdinal i, RowChanged ]
 
             let added = [ for i in shared .. na - 1 -> ByOrdinal i, RowAdded ]

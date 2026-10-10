@@ -1756,8 +1756,41 @@ memo, the list packer, the interned cells) went with the conversions.
 
 **What it changes in the figures above.** Every number in this document that paid a `Table` boundary
 paid for a conversion that no longer exists, so the full evaluations the ticks are held against got
-cheaper again, by the boundary's share. The ratio bounds held on the clock leg of the gate without a
-move of either number (`tickBound` 1.6, the floor as Phase 327 measured it). One bound did not
+cheaper again, by the boundary's share — by 2.4 times at 20,000 rows and up to 6 times at 100,000 on
+the nodes whose evaluation was mostly boundary (`lines`, `window CumulSum`). The tick did NOT get
+cheaper with them at first, and for a while got dearer: under Core `1.0.0` `Column.toCells` mints a
+cell per row where the list used to BE the column, and the diff, the refresh and the ops all still
+read columns through it — the diff's content pass and its key reads, the refresh's unpack of every
+column a step read, the sort and window comparators, the result table in a sorted order, the window
+run's recorded column. Measured on one machine (Release, the `--clock-leg` cases alone) the keyed diff
+went from 3.22 ms to 6.03 ms at 20,000 rows and the refresh from 12.3 ms to 21.7 ms; the `sort two
+keys` tick from 8.9 ms to 17 ms at 100,000.
+
+**The diff and the refresh read the vectors (Phase 423, its last task).** `Delta.ColumnRead` compares
+two columns row against row through their borrowed vectors (`sameAt`: one closure per column pair,
+no array allocated, the content rule of Phase 323 kept to the bit — `sameFloat` tells the zeros apart
+and holds every NaN as one value), and a witness keys a row through `Column.cell`, O(1) and in place.
+The keyed diff, the append diff and the ordinal diff all go through it. In the refresh a group's
+aggregate streams over a `Vec.ofColumn` VIEW of its source column, a recomputed group's members are
+read at their slots, a resumed sort and a resumed window read their few moved rows in place rather
+than unpacking the key columns, a sorted result gathers each source column typed, and the window run
+records the cells it packed instead of unpacking the column it just built. `ColumnOps` edits a column
+by copying its vectors (`Vec.setAt` / `Vec.append` over the same view) and reconciles a `SetColumn`
+through the same comparer under `Cell` equality. After it, same machine: the keyed diff 3.26 ms and
+the refresh 12.8 ms at 20,000 rows (the pre-phase 3.22 / 12.3), and at 100,000 rows every corpus
+tick at or below its pre-phase cost — `sort two keys` 2.4 ms against 8.9, `inner join` 4.2 against
+17, `pivot` 8.1 against 17, `filter > groupBy` 1.4 against 5.4, `lines` 4.7–6.0 against 8.3, `window
+CumulSum` 6.3–9.4 against 8.6.
+
+**What the clock leg then says, honestly.** `tickBound` (1.6, with Phase 327's floor) was calibrated
+against a full evaluation that paid the boundary. With the boundary a view the nodes whose evaluation
+was mostly boundary now run their full in 1.6–2.2 ms at 100,000 rows, and a tick that is already
+cheaper than it has ever been still reads above the bound there: `lines` ×2.1–3.3, `group-by
+high-card` ×1.8–2.2, `pivot` ×1.8–2.4, `window CumulSum` ×3.9–5.4 (the whole-frame recompute a window
+is by design; Phase 333 resumes only the prefix folds). Every other node holds (`byRegion` ×0.9,
+`filter > groupBy` ×1.2–1.4, `filter > sort > limit` ×0.4, `inner join` ×1.2–1.3, `sort two keys`
+×0.4). The bound is an operator setting (Phases 285 and 327) and this phase does not move it; the
+figures are recorded here and in the phase's outcome for that decision. One bound did not
 survive: Phase 282 held the fused `Sort > Limit` to a quarter of the full sort's allocation, and that
 held only because the full sort's boundary conversion dominated — with the boundary a view, the full
 sort at 20,000 rows allocates 1.49 MB against the fused form's 2.31 MB, while the clock still favours

@@ -89,14 +89,19 @@ module ColumnOps =
             else
                 f)
 
-    /// `col` with its cells replaced by `cells`, under the schema entry `t` carries for it.
-    let private withCells (t: Table) (col: Column) (cells: Cell list) : Column =
-        let field =
-            t.Schema
-            |> List.tryFind (fun f -> f.Name = col.Name)
-            |> Option.defaultValue (Field.create col.Name col.Type)
+    /// The schema entry `t` carries for `col` — the field a rebuilt column is placed under.
+    let private fieldOf (t: Table) (col: Column) : Field =
+        t.Schema
+        |> List.tryFind (fun f -> f.Name = col.Name)
+        |> Option.defaultValue (Field.create col.Name col.Type)
 
-        Vec.columnOfCells field cells
+    /// `col` as the frame's vector under `field` (Phase 423), over the column's OWN length (a ragged
+    /// column keeps every row it holds, as its cell list did): a view over the column's storage where
+    /// it is of the field's type — borrowed, and never written; `Vec.setAt` and `Vec.append` copy the
+    /// arrays they change — else its cells packed under the field's type, as the boundary in reads
+    /// any column.
+    let private vecOf (field: Field) (col: Column) : Vec =
+        Vec.ofColumn (Column.length col) field.Type (Some col)
 
     let private replaceColumn (name: string) (newCol: Column) (t: Table) : Table =
         { Schema = retyped name newCol.Type t.Schema
@@ -134,10 +139,10 @@ module ColumnOps =
                 else
                     cellFits name col.Type value
                     |> Result.map (fun () ->
-                        let cells' =
-                            Column.toCells col |> List.mapi (fun i c -> if i = row then value else c)
-
-                        replaceColumn name (withCells t col cells') t)
+                        // Phase 423 — the column's vectors copied once with the cell set, never its
+                        // cells unpacked and repacked.
+                        let field = fieldOf t col
+                        replaceColumn name (Vec.toColumn field (Vec.setAt (vecOf field col) row value)) t)
         | SetColumn newCol ->
             match t.Columns |> List.tryFind (fun c -> c.Name = newCol.Name) with
             | None -> Error(NoSuchColumn(newCol.Name, Table.columnNames t))
@@ -194,7 +199,11 @@ module ColumnOps =
                                 |> Option.map snd
                                 |> Option.defaultValue Null)
 
-                        withCells t col (Column.toCells col @ appended))
+                        // Phase 423 — the column's vectors grown by the appended rows, never its
+                        // cells unpacked and repacked.
+                        let field = fieldOf t col
+                        let tail = Vec.pack field.Type (List.toArray appended)
+                        Vec.toColumn field (Vec.append (vecOf field col) tail))
 
                 Ok { t with Columns = columns' }
         | ApplyTransform pipeline ->
@@ -585,10 +594,14 @@ module ColumnOps =
                         match Table.tryColumn col.Name before with
                         | None -> FullRefresh
                         | Some old ->
-                            List.zip (Column.toCells old) (Column.toCells col)
-                            |> List.indexed
-                            |> List.choose (fun (i, (a, b)) ->
-                                if a = b then None else Some(ByKey k0[i].Value, RowChanged))
+                            // Phase 423 — compared through the two columns' vectors, a float as `=`
+                            // compares it, which is the `Cell` equality this arm always decided by: a
+                            // NaN never agrees with itself, and the two zeros agree.
+                            let same = ColumnRead.sameAtWith (fun x y -> x = y) (Some old) (Some col)
+
+                            [ for i in 0 .. k0.Length - 1 do
+                                  if not (same i i) then
+                                      ByKey k0[i].Value, RowChanged ]
                             |> rowSet
                 | AppendRows _ ->
                     let n0 = Table.rowCount before
