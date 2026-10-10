@@ -21,6 +21,14 @@ open Fuaran.Core
 /// The law families over the dataframe layer (Phase 257). Each is the family that shipped in
 /// `Fuaran.Core.Conformance` under the same name, unchanged except `aggregateParityLaws`, which
 /// keeps its `GroupBy` parity law and leaves the null-skip law to `Conformance.aggregateNullSkipLaws`.
+/// The kit's column builder (Phase 423): a column from cells under a declared type, through the
+/// frame's own boundary out — typed where the cells fit the type, under the cells' own type where
+/// they disagree with it (the sample's mistyped columns), and loud where neither holds.
+module internal KitColumn =
+
+    let create (name: string) (ty: ColumnType) (cells: Cell list) : Column =
+        Vec.columnOfCells (Field.create name ty) cells
+
 module DataFrameConformance =
 
     /// The dataframe-transform parity laws (Phase 29) — the teeth on a host evaluator's agreement
@@ -156,10 +164,10 @@ module DataFrameConformance =
             if ty = DecimalType && cells |> List.exists (fun c -> c <> Null) then
                 decimals <- decimals + 1
 
-            let col = Column.create "c" ty cells
+            let col = KitColumn.create "c" ty cells
 
             let table =
-                { Schema = [ "c", ty ]
+                { Schema = [ Field.create "c" ty ]
                   Columns = [ col ] }
 
             for fn in fns do
@@ -208,11 +216,14 @@ module DataFrameConformance =
         Cell.decimal text |> Option.defaultValue Null
 
     let private columnarKitTable: Table =
-        { Schema = [ "a", IntType; "b", IntType; "m", DecimalType ]
+        { Schema =
+            [ Field.create "a" IntType
+              Field.create "b" IntType
+              Field.create "m" DecimalType ]
           Columns =
-            [ Column.create "a" IntType [ Int 1; Int 2; Int 3 ]
-              Column.create "b" IntType [ Int 4; Int 5; Int 6 ]
-              Column.create "m" DecimalType [ kitDecimal "1.5"; kitDecimal "-0.25"; kitDecimal "100" ] ] }
+            [ KitColumn.create "a" IntType [ Int 1; Int 2; Int 3 ]
+              KitColumn.create "b" IntType [ Int 4; Int 5; Int 6 ]
+              KitColumn.create "m" DecimalType [ kitDecimal "1.5"; kitDecimal "-0.25"; kitDecimal "100" ] ] }
 
     /// Does the op carry a decimal cell?
     let private carriesDecimal (op: ColumnOp) : bool =
@@ -224,7 +235,7 @@ module DataFrameConformance =
         match op with
         | SetCell(_, _, v) -> isDec v
         | SetColumn c
-        | InsertColumn(_, c) -> c.Cells |> List.exists isDec
+        | InsertColumn(_, c) -> (Column.toCells c) |> List.exists isDec
         | AppendRows rows -> rows |> List.exists (List.exists (snd >> isDec))
         | RemoveColumn _
         | ApplyTransform _ -> false
@@ -262,7 +273,7 @@ module DataFrameConformance =
             let v, r2 = ConfRng.intBelow 100 r1
 
             if List.isEmpty names || rc = 0 then
-                InsertColumn(0, Column.create "a" IntType [ Int v; Int v; Int v ]), r2
+                InsertColumn(0, KitColumn.create "a" IntType [ Int v; Int v; Int v ]), r2
             else
                 let ci, r3 = ConfRng.intBelow (List.length names) r2
                 let row, r4 = ConfRng.intBelow rc r3
@@ -271,20 +282,20 @@ module DataFrameConformance =
             let v, r2 = ConfRng.intBelow 100 r1
 
             if List.isEmpty names then
-                InsertColumn(0, Column.create "a" IntType []), r2
+                InsertColumn(0, KitColumn.create "a" IntType []), r2
             else
                 let ci, r3 = ConfRng.intBelow (List.length names) r2
                 let nm = List.item ci names
-                SetColumn(Column.create nm IntType (List.replicate rc (Int v))), r3
+                SetColumn(KitColumn.create nm IntType (List.replicate rc (Int v))), r3
         | 2 ->
             let id, r2 = ConfRng.intBelow 1000 r1
             let v, r3 = ConfRng.intBelow 100 r2
             let len = if List.isEmpty names then 3 else rc
 
-            InsertColumn(List.length names, Column.create ("c" + string id) IntType (List.replicate len (Int v))), r3
+            InsertColumn(List.length names, KitColumn.create ("c" + string id) IntType (List.replicate len (Int v))), r3
         | 3 ->
             if List.isEmpty names then
-                InsertColumn(0, Column.create "a" IntType [ Int 0; Int 0; Int 0 ]), r1
+                InsertColumn(0, KitColumn.create "a" IntType [ Int 0; Int 0; Int 0 ]), r1
             else
                 let ci, r2 = ConfRng.intBelow (List.length names) r1
                 RemoveColumn(List.item ci names), r2
@@ -298,11 +309,11 @@ module DataFrameConformance =
             let v, r2 = ConfRng.intBelow 100 r1
 
             if List.isEmpty names then
-                InsertColumn(0, Column.create "a" IntType [ Int v; Int v; Int v ]), r2
+                InsertColumn(0, KitColumn.create "a" IntType [ Int v; Int v; Int v ]), r2
             else
                 let ci, r3 = ConfRng.intBelow (List.length names) r2
                 let nm = List.item ci names
-                InsertColumn(0, Column.create nm IntType (List.replicate rc (Int v))), r3
+                InsertColumn(0, KitColumn.create nm IntType (List.replicate rc (Int v))), r3
         | _ ->
             // Phase 181 — a `SetCell` the table MUST refuse on the VALUE. `invert`'s pre-181
             // `SetCell` clause read the column and the row but never the value, so this is the
@@ -482,12 +493,13 @@ module DataFrameConformance =
 
                 match kind with
                 | 0 -> SetCell(nm, row, Int v), r4
-                | 1 -> SetColumn(Column.create nm IntType (List.replicate 3 (Int v))), r4
+                | 1 -> SetColumn(KitColumn.create nm IntType (List.replicate 3 (Int v))), r4
                 | 2 ->
-                    InsertColumn(row % 3, Column.create ("c" + string (v % 3)) IntType (List.replicate 3 (Int v))), r4
+                    InsertColumn(row % 3, KitColumn.create ("c" + string (v % 3)) IntType (List.replicate 3 (Int v))),
+                    r4
                 | 3 -> RemoveColumn nm, r4
                 | 4 -> AppendRows [ [ "a", Int v; "b", Int v ] ], r4
-                | 5 -> InsertColumn(0, Column.create nm IntType (List.replicate 3 (Int v))), r4
+                | 5 -> InsertColumn(0, KitColumn.create nm IntType (List.replicate 3 (Int v))), r4
                 | _ -> SetCell(nm, row % 3, Str "wrong"), r4 }
 
     /// The columnar op-algebra laws at a DOMAIN'S generator (Phase 246), with the **injectable
@@ -557,7 +569,7 @@ module DataFrameConformance =
         let mutable changeDriven = None
         let mutable opDriven = None
 
-        let col name cells : Column = Column.create name IntType cells
+        let col name cells : Column = KitColumn.create name IntType cells
 
         // Phase 277 — a decimal column beside the three ints, derived from `b` (so it moves with
         // `b` and with an append, and costs the draw nothing): `b`'s digits with `.5` appended.
@@ -569,8 +581,16 @@ module DataFrameConformance =
                 | _ -> Null)
 
         let mkTable (a: Cell list) (b: Cell list) (c: Cell list) : Table =
-            { Schema = [ "a", IntType; "b", IntType; "c", IntType; "d", DecimalType ]
-              Columns = [ col "a" a; col "b" b; col "c" c; Column.create "d" DecimalType (decimalOf b) ] }
+            { Schema =
+                [ Field.create "a" IntType
+                  Field.create "b" IntType
+                  Field.create "c" IntType
+                  Field.create "d" DecimalType ]
+              Columns =
+                [ col "a" a
+                  col "b" b
+                  col "c" c
+                  KitColumn.create "d" DecimalType (decimalOf b) ] }
 
         let pipelineOf k : Transform list =
             match k with
@@ -748,7 +768,7 @@ module DataFrameConformance =
         // exact decimal arithmetic, which substitution must reproduce digit for digit).
         let mutable decimalParams = 0
 
-        let col name cells : Column = Column.create name IntType cells
+        let col name cells : Column = KitColumn.create name IntType cells
 
         for i in 0 .. iterations - 1 do
             let nRows, r1 = ConfRng.intBelow 4 rng
@@ -763,7 +783,7 @@ module DataFrameConformance =
             let aCells = [ for _ in 1..rows -> draw () ]
 
             let table =
-                { Schema = [ "a", IntType ]
+                { Schema = [ Field.create "a" IntType ]
                   Columns = [ col "a" aCells ] }
 
             // 1..3 params p0..p(k-1), each bound to an Int in the env
@@ -930,7 +950,7 @@ module DataFrameConformance =
         // Phase 321 — the accepted samples whose pipeline read the decimal column.
         let mutable decimalSteps = 0
 
-        let col name ty cells : Column = Column.create name ty cells
+        let col name ty cells : Column = KitColumn.create name ty cells
 
         let dec (text: string) : Cell =
             Cell.decimal text |> Option.defaultValue Null
@@ -942,7 +962,11 @@ module DataFrameConformance =
             let g = [ for i in 1..n -> Str(if i % 2 = 0 then "x" else "y") ]
             let m = [ for i in 1..n -> if i % 5 = 0 then Null else dec (string i + ".25") ]
 
-            { Schema = [ "a", IntType; "b", IntType; "g", StringType; "m", DecimalType ]
+            { Schema =
+                [ Field.create "a" IntType
+                  Field.create "b" IntType
+                  Field.create "g" StringType
+                  Field.create "m" DecimalType ]
               Columns =
                 [ col "a" IntType a
                   col "b" IntType b
@@ -952,14 +976,18 @@ module DataFrameConformance =
         // The right-hand table a combining join reaches. Its `g` COLLIDES with the left's, so the
         // evaluator's `_right` suffix rule is exercised on every combining sample.
         let rightTable: Table =
-            { Schema = [ "g", StringType; "v", FloatType ]
+            { Schema = [ Field.create "g" StringType; Field.create "v" FloatType ]
               Columns =
                 [ col "g" StringType [ Str "x"; Str "y" ]
                   col "v" FloatType [ Float 1.0; Float 2.5 ] ] }
 
         // A schema-identical peer, so the three set ops have something they accept.
         let peerTable: Table =
-            { Schema = [ "a", IntType; "b", IntType; "g", StringType; "m", DecimalType ]
+            { Schema =
+                [ Field.create "a" IntType
+                  Field.create "b" IntType
+                  Field.create "g" StringType
+                  Field.create "m" DecimalType ]
               Columns =
                 [ col "a" IntType [ Int 1; Int 2 ]
                   col "b" IntType [ Int 8; Null ]
@@ -1054,7 +1082,7 @@ module DataFrameConformance =
                 // `Ref` is the honest "unknown" while the evaluator resolves it — which is precisely
                 // the asymmetry the `AtLeast` case exists to carry.
                 let derived = SchemaWalk.ofPipeline table.Schema pipeline
-                let actualNames = result.Schema |> List.map fst
+                let actualNames = result.Schema |> List.map _.Name
                 let derivedCols = SchemaWalk.columns derived
 
                 let describe () =
@@ -1078,9 +1106,9 @@ module DataFrameConformance =
                     if List.length derivedCols = List.length result.Schema then
                         let bad =
                             List.zip derivedCols result.Schema
-                            |> List.tryFind (fun (d, (_, ty)) ->
+                            |> List.tryFind (fun (d, f) ->
                                 match d.Type with
-                                | Some t -> t <> ty
+                                | Some t -> t <> f.Type
                                 | None -> false)
 
                         if bad.IsSome && typesAgree.IsNone then
@@ -1102,7 +1130,7 @@ module DataFrameConformance =
                         |> List.tryFind (fun d ->
                             match d.Type with
                             | None -> false
-                            | Some t -> not (result.Schema |> List.exists (fun (n, ty) -> n = d.Name && ty = t)))
+                            | Some t -> not (result.Schema |> List.exists (fun f -> f.Name = d.Name && f.Type = t)))
 
                     if badType.IsSome && typesAgree.IsNone then
                         typesAgree <- Some(sprintf "%s (open, at %A)" (describe ()) badType)
@@ -1159,7 +1187,7 @@ module DataFrameConformance =
         let mutable unpinned = None
         let mutable clockFreeUnchanged = None
 
-        let col name cells : Column = Column.create name IntType cells
+        let col name cells : Column = KitColumn.create name IntType cells
 
         for i in 0 .. iterations - 1 do
             let nRows, r1 = ConfRng.intBelow 4 rng
@@ -1172,7 +1200,7 @@ module DataFrameConformance =
                 Int(v - 20)
 
             let table =
-                { Schema = [ "a", IntType ]
+                { Schema = [ Field.create "a" IntType ]
                   Columns = [ col "a" [ for _ in 1..rows -> draw () ] ] }
 
             // Which grain this iteration leads with — both are exercised below regardless.
@@ -1224,7 +1252,7 @@ module DataFrameConformance =
                  let got =
                      t.Columns
                      |> List.tryFind (fun c -> c.Name = "n")
-                     |> Option.bind (fun c -> List.tryHead c.Cells)
+                     |> Option.bind (fun c -> List.tryHead (Column.toCells c))
 
                  if got <> Some expected && isWitnessReading.IsNone then
                      isWitnessReading <-
@@ -1255,7 +1283,9 @@ module DataFrameConformance =
             (match DataFrame.evalPipelineAt counting pipeline table with
              | Ok t ->
                  let cellsOf n =
-                     t.Columns |> List.tryFind (fun c -> c.Name = n) |> Option.map (fun c -> c.Cells)
+                     t.Columns
+                     |> List.tryFind (fun c -> c.Name = n)
+                     |> Option.map (fun c -> (Column.toCells c))
 
                  if cellsOf "now1" <> cellsOf "now2" && oneReading.IsNone then
                      oneReading <-
@@ -1356,7 +1386,7 @@ module DataFrameConformance =
         let mutable mistyped = None
         let mutable literalOnly = None
 
-        let col name cells : Column = Column.create name IntType cells
+        let col name cells : Column = KitColumn.create name IntType cells
 
         for i in 0 .. iterations - 1 do
             let nRows, r1 = ConfRng.intBelow 6 rng
@@ -1372,7 +1402,7 @@ module DataFrameConformance =
             let bCells = [ for _ in 1..rows -> draw () ]
 
             let table =
-                { Schema = [ "a", IntType; "b", IntType ]
+                { Schema = [ Field.create "a" IntType; Field.create "b" IntType ]
                   Columns = [ col "a" aCells; col "b" bCells ] }
 
             let nTake, r2 = ConfRng.intBelow rows r
@@ -1536,11 +1566,11 @@ module DataFrameConformance =
         let mutable decimals = 0
 
         let schema: Schema =
-            [ "i", IntType
-              "f", FloatType
-              "s", StringType
-              "b", BoolType
-              "m", DecimalType ]
+            [ Field.create "i" IntType
+              Field.create "f" FloatType
+              Field.create "s" StringType
+              Field.create "b" BoolType
+              Field.create "m" DecimalType ]
 
         let mkTable (rows: int) (draw: unit -> int) : Table =
             let cellI () =
@@ -1579,7 +1609,7 @@ module DataFrameConformance =
                     |> Option.defaultValue Null
 
             let col name ty (cell: unit -> Cell) =
-                Column.create name ty [ for _ in 1..rows -> cell () ]
+                KitColumn.create name ty [ for _ in 1..rows -> cell () ]
 
             { Schema = schema
               Columns =
@@ -1685,7 +1715,7 @@ module DataFrameConformance =
             let hasDecimal =
                 Table.tryColumn "m" table
                 |> Option.exists (fun c ->
-                    c.Cells
+                    (Column.toCells c)
                     |> List.exists (fun cell ->
                         match cell with
                         | Decimal _ -> true

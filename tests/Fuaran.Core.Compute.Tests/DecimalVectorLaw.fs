@@ -24,6 +24,7 @@ module Fuaran.Compute.Tests.DecimalVectorLaw
 
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 /// A deterministic generator: `next s` is the Park-Miller step, every product below 2^53.
 type private Rng(seed: int) =
@@ -73,7 +74,7 @@ type Case =
       DecimalConstants: string list
       IntConstants: int list }
 
-let private column (name: string) (ty: ColumnType) (cells: Cell list) : Column = Column.create name ty cells
+let private column (name: string) (ty: ColumnType) (cells: Cell list) : Column = KitColumn.create name ty cells
 
 /// The table and the constants for seed `seed`.
 let generate (seed: int) : Case =
@@ -113,7 +114,11 @@ let generate (seed: int) : Case =
     let wCells = vCells |> List.mapi (fun i c -> if i = 0 then Decimal poison else c)
 
     let table =
-        { Schema = [ "id", IntType; "grp", StringType; "v", DecimalType; "w", DecimalType ]
+        { Schema =
+            [ Field.create "id" IntType
+              Field.create "grp" StringType
+              Field.create "v" DecimalType
+              Field.create "w" DecimalType ]
           Columns =
             [ column "id" IntType [ for i in 0 .. n - 1 -> Int i ]
               column "grp" StringType [ for _ in 0 .. n - 1 -> Str("g" + string (r.Int 3)) ]
@@ -128,7 +133,7 @@ let generate (seed: int) : Case =
                   Null ]
 
     let right =
-        { Schema = [ "rk", DecimalType; "b", IntType ]
+        { Schema = [ Field.create "rk" DecimalType; Field.create "b" IntType ]
           Columns =
             [ column "rk" DecimalType rightKeys
               column "b" IntType (rightKeys |> List.mapi (fun i _ -> Int i)) ] }

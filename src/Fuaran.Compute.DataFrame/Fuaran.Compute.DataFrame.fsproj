@@ -36,10 +36,16 @@
          rope behind the opaque Prepared; that rope is a working form, not a contract, so the one
          sibling package that edits it is the second assembly that may see it. -->
     <InternalsVisibleTo Include="Fuaran.Compute.ColumnOps" />
+    <!-- Phase 423 - the conformance kit builds its sample columns through the frame's boundary out
+         (`Vec.columnOfCells`): one rule for a cell list under a declared type, in one place. -->
+    <InternalsVisibleTo Include="Fuaran.Compute.Conformance" />
     <!-- Phase 341 - the benchmark harness times both members of the host-kernel pair (Phase 270)
          through the evaluator's internal entry points, on one host, over one prepared source. Never
          packed or shipped; no public surface moves. -->
     <InternalsVisibleTo Include="Fuaran.Core.Compute.Benchmarks" />
+    <!-- Phase 423 - the node benchmark links the suite's column builder, which goes through the
+         frame's boundary out. Never packed or shipped; no public surface moves. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Benchmarks.Node" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Fuaran.Core.Column" />

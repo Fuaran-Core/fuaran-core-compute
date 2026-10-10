@@ -3,6 +3,7 @@ module Fuaran.Compute.Tests.IncrementalGroupByTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---------------------------------------------------------------------------
 // Phase 202 — the steps AFTER a maintained group-by.
@@ -47,11 +48,14 @@ let private idw = RowIdentity.byColumn "id"
 let private agg name fn ofCol : Agg = { Name = name; Fn = fn; Of = ofCol }
 
 let private table (rows: (string * Cell * Cell) list) : Table =
-    { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+    { Schema =
+        [ Field.create "id" StringType
+          Field.create "a" IntType
+          Field.create "b" IntType ]
       Columns =
-        [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-          Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
-          Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
+        [ KitColumn.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+          KitColumn.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
+          KitColumn.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
 
 /// Prime over `before`, diff to `after`, refresh — the delta is truthful by construction.
 let private step (pipeline: Transform list) (before: Table) (after: Table) =
@@ -140,7 +144,7 @@ let private reuseIfGroupExisted (priorOutput: Table) (groupKey: Cell) (column: s
     let cellsOf name =
         priorOutput.Columns
         |> List.tryFind (fun c -> c.Name = name)
-        |> Option.map (fun c -> c.Cells)
+        |> Option.map (fun c -> (Column.toCells c))
 
     match cellsOf "b", cellsOf column with
     | Some keys, Some vals ->
@@ -562,8 +566,8 @@ let private sameBits (a: Table) (b: Table) : bool =
     && List.forall2
         (fun (c: Column) (d: Column) ->
             c.Name = d.Name
-            && List.length c.Cells = List.length d.Cells
-            && List.forall2 cellEq c.Cells d.Cells)
+            && Column.length c = List.length (Column.toCells d)
+            && List.forall2 cellEq (Column.toCells c) (Column.toCells d))
         a.Columns
         b.Columns
 
@@ -586,11 +590,14 @@ let private seamPool (ty: ColumnType) : Cell[] =
     | _ -> [| Null; Str "b"; Str "a"; Str "c"; Str "" |]
 
 let private seamTable (ty: ColumnType) (rows: (string * Cell * Cell) list) : Table =
-    { Schema = [ "id", StringType; "k", StringType; "v", ty ]
+    { Schema =
+        [ Field.create "id" StringType
+          Field.create "k" StringType
+          Field.create "v" ty ]
       Columns =
-        [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-          Column.create "k" StringType (rows |> List.map (fun (_, k, _) -> k))
-          Column.create "v" ty (rows |> List.map (fun (_, _, v) -> v)) ] }
+        [ KitColumn.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+          KitColumn.create "k" StringType (rows |> List.map (fun (_, k, _) -> k))
+          KitColumn.create "v" ty (rows |> List.map (fun (_, _, v) -> v)) ] }
 
 [<Tests>]
 let streamedRecomputeTests =

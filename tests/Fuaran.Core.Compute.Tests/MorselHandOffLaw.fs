@@ -16,6 +16,7 @@ module internal Fuaran.Compute.Tests.MorselHandOffLaw
 
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---- runners ---------------------------------------------------------------------------------
 
@@ -113,7 +114,7 @@ let vectorCases () : Case list =
 
 // ---- the corpus (benchmarks/Fuaran.Core.Compute.Benchmarks/Corpus.fs, Layer6.fs) --------------
 
-let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column = Column.create name ty cells
+let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column = KitColumn.create name ty cells
 
 let private regions = [| "north"; "south"; "east"; "west"; "central" |]
 
@@ -129,7 +130,11 @@ let orders (n: int) (poison: bool) : Table =
 
     let price (i: int) = float (4 + (i * 13) % 397) * 0.25
 
-    { Schema = [ "id", IntType; "region", StringType; "qty", IntType; "price", FloatType ]
+    { Schema =
+        [ Field.create "id" IntType
+          Field.create "region" StringType
+          Field.create "qty" IntType
+          Field.create "price" FloatType ]
       Columns =
         [ col "id" IntType [ for i in 0 .. n - 1 -> Int i ]
           col "region" StringType [ for i in 0 .. n - 1 -> Str regions.[(i * 3 + i / 7) % regions.Length] ]
@@ -138,7 +143,10 @@ let orders (n: int) (poison: bool) : Table =
 
 /// `Layer6.rowTable n`: `a` and `b` ints over 0 .. 999 and `x` a float in quarters.
 let rowTable (n: int) : Table =
-    { Schema = [ "a", IntType; "b", IntType; "x", FloatType ]
+    { Schema =
+        [ Field.create "a" IntType
+          Field.create "b" IntType
+          Field.create "x" FloatType ]
       Columns =
         [ col "a" IntType [ for i in 0 .. n - 1 -> Int((i * 7919) % 1000) ]
           col "b" IntType [ for i in 0 .. n - 1 -> (if i % 89 = 5 then Null else Int((i * 104729) % 1000)) ]

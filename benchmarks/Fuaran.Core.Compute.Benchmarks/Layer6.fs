@@ -30,7 +30,10 @@ let internal kernelSet (name: string) : KernelSet =
 /// The sizes 270 measured, and 10,000 rows, the size of a typical spreadsheet-shaped input.
 let sizes = [ 10_000; 100_000; 1_000_000 ]
 
-let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column = Column.create name ty cells
+let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column =
+    match Column.ofCells name ty cells with
+    | Ok c -> c
+    | Error e -> failwithf "%s: %A" name e
 
 // ---- the kernels alone ---------------------------------------------------------------------
 
@@ -110,7 +113,10 @@ type KernelPair() =
 
 /// The table the row-local cases read: `a` and `b` ints over 0 .. 999 and `x` a float in quarters.
 let rowTable (n: int) : Table =
-    { Schema = [ "a", IntType; "b", IntType; "x", FloatType ]
+    { Schema =
+        [ Field.create "a" IntType
+          Field.create "b" IntType
+          Field.create "x" FloatType ]
       Columns =
         [ col "a" IntType [ for i in 0 .. n - 1 -> Int((i * 7919) % 1000) ]
           col "b" IntType [ for i in 0 .. n - 1 -> Int((i * 104729) % 1000) ]
@@ -233,7 +239,7 @@ type Morsels() =
 /// The grouping table: an int key `k` over `cardinality` values, visited in a scrambled order, and a
 /// float `v` in whole quarters, so every total is exact whatever order it is added in.
 let groupTable (n: int) (cardinality: int) : Table =
-    { Schema = [ "k", IntType; "v", FloatType ]
+    { Schema = [ Field.create "k" IntType; Field.create "v" FloatType ]
       Columns =
         [ col "k" IntType [ for i in 0 .. n - 1 -> Int(((i % cardinality) * 7919) % cardinality) ]
           col "v" FloatType [ for i in 0 .. n - 1 -> Float(float ((i * 13) % 397) * 0.25) ] ] }
@@ -305,7 +311,6 @@ let internal morselMergeGroupBy (f: Frame) : Frame =
         [| Ints(keys.ToArray(), present)
            Floats(totals.ToArray(), present)
            Ints(counts.ToArray(), present) |]
-      Origins = Array.create 3 None
       Sel = None
       Count = keys.Count }
 

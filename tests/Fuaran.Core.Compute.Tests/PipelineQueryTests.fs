@@ -10,6 +10,7 @@ module Fuaran.Compute.Tests.PipelineQueryTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private param name ty required : QueryParam =
     { Name = name
@@ -30,7 +31,9 @@ let private query (id: string) (ps: QueryParam list) (result: Schema) (source: D
       OrderBy = [] }
 
 let private ledger: Schema =
-    [ "region", StringType; "amount", DecimalType; "n", IntType ]
+    [ Field.create "region" StringType
+      Field.create "amount" DecimalType
+      Field.create "n" IntType ]
 
 let private pair (q: Query) (pipeline: Transform list) : PipelineQuery =
     { Query = q
@@ -48,7 +51,7 @@ let private daily: PipelineQuery =
         (query
             "daily"
             [ param "floor" DecimalType true; param "region" StringType true ]
-            [ "region", StringType; "amount", DecimalType ]
+            [ Field.create "region" StringType; Field.create "amount" DecimalType ]
             (Ref "ledger"))
         [ Filter(ColExpr.Binary(Ge, ColExpr.Col "amount", ColExpr.Param "floor"))
           Filter(ColExpr.Binary(Eq, ColExpr.Col "region", ColExpr.Param "region"))
@@ -57,9 +60,9 @@ let private daily: PipelineQuery =
 let private ledgerTable: Table =
     { Schema = ledger
       Columns =
-        [ Column.create "region" StringType [ Str "north"; Str "south"; Str "north"; Null ]
-          Column.create "amount" DecimalType [ dec "10.50"; dec "3.25"; dec "0.10"; dec "99.99" ]
-          Column.create "n" IntType [ Int 1; Int 2; Int 3; Int 4 ] ] }
+        [ KitColumn.create "region" StringType [ Str "north"; Str "south"; Str "north"; Null ]
+          KitColumn.create "amount" DecimalType [ dec "10.50"; dec "3.25"; dec "0.10"; dec "99.99" ]
+          KitColumn.create "n" IntType [ Int 1; Int 2; Int 3; Int 4 ] ] }
 
 let private reads (pq: PipelineQuery) =
     PipelineQuery.paramReads pq |> List.distinct
@@ -115,7 +118,7 @@ let tests =
                   Expect.equal r.Rows.Schema daily.Query.ResultSchema "the declared schema"
 
                   Expect.equal
-                      (r.Rows.Columns |> List.map _.Cells)
+                      (r.Rows.Columns |> List.map Column.toCells)
                       [ [ Str "north" ]; [ dec "10.50" ] ]
                       "the one north row at or above 0.50, exactly"
               | other -> failtestf "expected a settled answer, got %A" other
@@ -128,7 +131,7 @@ let tests =
                       (query
                           "by-regions"
                           [ param "regions" StringType true; param "floor" DecimalType true ]
-                          [ "region", StringType ]
+                          [ Field.create "region" StringType ]
                           (Ref "ledger"))
                       [ Filter(ColExpr.InParam(ColExpr.Col "region", "regions"))
                         Filter(ColExpr.Binary(Ge, ColExpr.Col "amount", ColExpr.Param "floor"))
@@ -192,7 +195,13 @@ let tests =
           <| fun _ ->
               let totals =
                   pair
-                      (query "totals" [] [ "region", StringType; "total", DecimalType; "rows", IntType ] (Ref "ledger"))
+                      (query
+                          "totals"
+                          []
+                          [ Field.create "region" StringType
+                            Field.create "total" DecimalType
+                            Field.create "rows" IntType ]
+                          (Ref "ledger"))
                       [ GroupBy(
                             [ "region" ],
                             [ { Name = "total"
@@ -207,7 +216,7 @@ let tests =
           <| fun _ ->
               let pivoted =
                   pair
-                      (query "pivoted" [] [ "n", IntType ] (Ref "ledger"))
+                      (query "pivoted" [] [ Field.create "n" IntType ] (Ref "ledger"))
                       [ Pivot
                             { Index = [ "n" ]
                               On = "region"
@@ -225,15 +234,17 @@ let tests =
                         (query
                             "joined"
                             []
-                            [ "region", StringType
-                              "amount", DecimalType
-                              "n", IntType
-                              "region_right", StringType
-                              "manager", StringType ]
+                            [ Field.create "region" StringType
+                              Field.create "amount" DecimalType
+                              Field.create "n" IntType
+                              Field.create "region_right" StringType
+                              Field.create "manager" StringType ]
                             (Ref "ledger"))
                         [ Join(Ref "regions", [ "region", "region" ], Inner) ] with
                       Sources =
-                          Map.ofList [ "ledger", ledger; "regions", [ "region", StringType; "manager", StringType ] ] }
+                          Map.ofList
+                              [ "ledger", ledger
+                                "regions", [ Field.create "region" StringType; Field.create "manager" StringType ] ] }
 
               Expect.equal (PipelineQuery.check joined) (Ok()) "both named sources declared"
 
@@ -252,7 +263,9 @@ let tests =
               // The cause, not the symptom: a Project over an undeclared source closes the column set
               // with types nobody declared, and the refusal still names the source.
               let projected =
-                  pair (query "projected" [] [ "r", StringType ] (Ref "elsewhere")) [ Project [ "region", "r" ] ]
+                  pair
+                      (query "projected" [] [ Field.create "r" StringType ] (Ref "elsewhere"))
+                      [ Project [ "region", "r" ] ]
 
               Expect.equal
                   (PipelineQuery.check projected)
@@ -271,7 +284,7 @@ let tests =
           testCase "a derived column has the type its expression decides; a param or the clock does not (Phase 338)"
           <| fun _ ->
               let derived ty e =
-                  pair (query "d" [] (ledger @ [ "label", ty ]) (Ref "ledger")) [ Derive("label", e) ]
+                  pair (query "d" [] (ledger @ [ Field.create "label" ty ]) (Ref "ledger")) [ Derive("label", e) ]
 
               Expect.equal
                   (PipelineQuery.check (derived StringType (ColExpr.Lit(Str "x"))))

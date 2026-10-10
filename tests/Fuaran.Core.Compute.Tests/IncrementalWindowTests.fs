@@ -3,6 +3,7 @@ module Fuaran.Compute.Tests.IncrementalWindowTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---------------------------------------------------------------------------
 //  Phase 333 — the running windows resumed from their earliest change.
@@ -52,8 +53,8 @@ let private sameBits (a: Table) (b: Table) : bool =
     && List.forall2
         (fun (c: Column) (d: Column) ->
             c.Name = d.Name
-            && List.length c.Cells = List.length d.Cells
-            && List.forall2 cellEq c.Cells d.Cells)
+            && Column.length c = List.length (Column.toCells d)
+            && List.forall2 cellEq (Column.toCells c) (Column.toCells d))
         a.Columns
         b.Columns
 
@@ -119,12 +120,16 @@ let private tableOf (flavour: Flavour) (rows: Row list) : Table =
         | MixedValues -> FloatType
         | DecimalValues -> DecimalType
 
-    { Schema = [ "id", IntType; "p", StringType; "o", IntType; "v", vType ]
+    { Schema =
+        [ Field.create "id" IntType
+          Field.create "p" StringType
+          Field.create "o" IntType
+          Field.create "v" vType ]
       Columns =
-        [ Column.create "id" IntType (rows |> List.map (fun r -> Int r.Id))
-          Column.create "p" StringType (rows |> List.map (fun r -> r.P))
-          Column.create "o" IntType (rows |> List.map (fun r -> r.O))
-          Column.create "v" vType (rows |> List.map (fun r -> r.V)) ] }
+        [ KitColumn.create "id" IntType (rows |> List.map (fun r -> Int r.Id))
+          KitColumn.create "p" StringType (rows |> List.map (fun r -> r.P))
+          KitColumn.create "o" IntType (rows |> List.map (fun r -> r.O))
+          KitColumn.create "v" vType (rows |> List.map (fun r -> r.V)) ] }
 
 /// A class of delta, as the shard names them.
 type private DeltaClass =
@@ -390,7 +395,9 @@ let incrementalWindowTests =
               Expect.isTrue (sameResult actual (DataFrame.evalPipeline pipeline after)) "exact, across the null"
 
               let w =
-                  (ok actual).Columns |> List.find (fun c -> c.Name = "w") |> (fun c -> c.Cells)
+                  (ok actual).Columns
+                  |> List.find (fun c -> c.Name = "w")
+                  |> (fun c -> (Column.toCells c))
 
               Expect.equal w[4] w[3] "a null carries the total forward"
 

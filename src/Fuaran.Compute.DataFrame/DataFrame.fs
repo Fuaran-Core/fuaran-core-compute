@@ -1,6 +1,8 @@
 namespace Fuaran.Compute
 
 open Fuaran.Core
+// The frame's vector cases, over Core's `ColumnData` cases of the same names (Phase 423).
+open type Vec
 
 // ============================================================================
 //  Fuaran.Compute.DataFrame (Phase 29) — the declarative-compute layer over the
@@ -816,10 +818,10 @@ module internal RowAccess =
         let n = Table.rowCount t
 
         t.Schema
-        |> List.map (fun (name, _) ->
-            match Table.tryColumn name t with
+        |> List.map (fun field ->
+            match Table.tryColumn field.Name t with
             | Some c ->
-                let a = List.toArray c.Cells
+                let a = List.toArray (Column.toCells c)
 
                 if a.Length = n then
                     a
@@ -842,7 +844,7 @@ module internal RowAccess =
     /// `List.item` did; that shape is a defect upstream and staying loud about it is the point.
     let toColumns (cols: Schema) (rows: Cell[] list) : Column list =
         cols
-        |> List.mapi (fun ci (name, ty) -> Column.create name ty (rows |> List.map (fun r -> r[ci])))
+        |> List.mapi (fun ci field -> Vec.columnOfCells field (rows |> List.map (fun r -> r[ci])))
 
 /// Exact arithmetic over decimal text (Phase 277) — what the evaluator computes a `Decimal` cell's
 /// `Sub`, `Mul`, `Mod`, negation, `Abs`, `Floor`, `Ceil`, `Round`, `Quotient` and `Rounded` with. The column layer's
@@ -1145,12 +1147,12 @@ module DataFrame =
     // and the transform law vectors hold them so.
 
     let private colIndex (cols: Schema) (name: string) : int option =
-        cols |> List.tryFindIndex (fun (n, _) -> n = name)
+        cols |> List.tryFindIndex (fun f -> f.Name = name)
 
     let private colType (cols: Schema) (name: string) : ColumnType option =
-        cols |> List.tryFind (fun (n, _) -> n = name) |> Option.map snd
+        cols |> List.tryFind (fun f -> f.Name = name) |> Option.map _.Type
 
-    let private available (cols: Schema) : string list = cols |> List.map fst
+    let private available (cols: Schema) : string list = Fields.names cols
 
     /// Map a `Result`-returning function over a list, short-circuiting on the first `Error` (the
     /// standard traverse — threads `EvalError` out of per-element work without an exception).
@@ -1863,7 +1865,7 @@ module DataFrame =
                 | Date _ -> Ok c
                 | Str s -> Ok(Date s)
                 | _ -> Error(TypeError "cannot cast to date")
-            | TimestampType ->
+            | TimestampType _ ->
                 match c with
                 | Timestamp _ -> Ok c
                 | Str s -> Ok(Timestamp s)
@@ -2466,7 +2468,7 @@ module DataFrame =
                     | (Of IntType | Of DecimalType), (Of IntType | Of DecimalType)
                     | Of StringType, Of StringType
                     | Of DateType, Of DateType
-                    | Of TimestampType, Of TimestampType
+                    | Of(TimestampType _), Of(TimestampType _)
                     | Of BoolType, Of BoolType -> Of BoolType
                     | _ -> Unknown)
             | And
@@ -2736,13 +2738,29 @@ module DataFrame =
             + "to keep the digits exact, Cast(float, ...) to compute approximately"
         )
 
+    /// The refusal of a derived column whose cells span two types no column type holds together
+    /// (Phase 423). Until Core `1.0.0` such a column was typed by its first present cell and carried
+    /// the other cells as they were; a typed column cannot carry them, so the join is refused as a
+    /// float beside a decimal is, naming both types.
+    let internal typesBesideEachOther (column: string) (a: ColumnType) (b: ColumnType) : EvalError =
+        TypeError(
+            "derived column '"
+            + column
+            + "' holds a "
+            + ColumnType.tag a
+            + " beside a "
+            + ColumnType.tag b
+            + ", which no column type holds together: cast one to the other's type first"
+        )
+
     /// The cells' half of the rule (Phase 338): Phase 321's widening join over the present cells
-    /// an index range reads, `StringType` when none is present, and the named refusal where the
-    /// cells hold a float beside a decimal.
+    /// an index range reads, `StringType` when none is present, and the named refusals where the
+    /// cells hold a float beside a decimal, or two types with no widening between them.
     let internal typeFromCells (column: string) (count: int) (cellAt: int -> Cell) : Result<ColumnType, EvalError> =
         let mutable acc: ColumnType option = None
         let mutable sawFloat = false
         let mutable sawDecimal = false
+        let mutable disjoint: (ColumnType * ColumnType) option = None
 
         for i in 0 .. count - 1 do
             match Cell.typeOf (cellAt i) with
@@ -2755,17 +2773,23 @@ module DataFrame =
                 | BoolType
                 | StringType
                 | DateType
-                | TimestampType -> ()
+                | TimestampType _ -> ()
 
                 acc <-
                     match acc with
                     | None -> Some t
-                    | Some a -> Some(widenColumnType a t)
+                    | Some a ->
+                        if disjoint.IsNone && (joinColumnType a t).IsNone then
+                            disjoint <- Some(a, t)
+
+                        Some(widenColumnType a t)
 
         if sawFloat && sawDecimal then
             Error(floatBesideDecimal column)
         else
-            Ok(acc |> Option.defaultValue StringType)
+            match disjoint with
+            | Some(a, b) -> Error(typesBesideEachOther column a b)
+            | None -> Ok(acc |> Option.defaultValue StringType)
 
     /// A derived column's type under its typing (Phase 338): the decided type, or the cells' answer.
     /// A `Refused` typing is answered before any row is evaluated, so it reaches here only from a
@@ -2838,7 +2862,7 @@ module DataFrame =
             | (Of IntType | Of DecimalType), (Of IntType | Of DecimalType) -> true
             | Of StringType, Of StringType
             | Of DateType, Of DateType
-            | Of TimestampType, Of TimestampType
+            | Of(TimestampType _), Of(TimestampType _)
             | Of BoolType, Of BoolType -> true
             | _ -> false
 
@@ -2975,7 +2999,7 @@ module DataFrame =
                     | IntType, (Of IntType | Of BoolType) -> true
                     | BoolType, (Of BoolType | Of IntType) -> true
                     | DateType, (Of DateType | Of StringType) -> true
-                    | TimestampType, (Of TimestampType | Of StringType) -> true
+                    | TimestampType _, (Of(TimestampType _) | Of StringType) -> true
                     // An int is exactly a decimal; a decimal is itself. From a float (non-finite) or
                     // a string (parsed) the cast can refuse.
                     | DecimalType, (Of IntType | Of DecimalType) -> true
@@ -3111,7 +3135,7 @@ module DataFrame =
         type private Known = (string * ColumnType option) list
 
         let private typed (k: Known) : Schema =
-            k |> List.choose (fun (n, t) -> t |> Option.map (fun t -> n, t))
+            k |> List.choose (fun (n, t) -> t |> Option.map (Field.create n))
 
         let private has (k: Known) (name: string) : bool =
             k |> List.exists (fun (n, _) -> n = name)
@@ -3150,7 +3174,7 @@ module DataFrame =
 
         /// The schema BEFORE each step of the pipeline, where the planner knows it.
         let private schemasBefore (cols: Schema) (pipeline: Transform list) : Known option[] =
-            let start: Known = cols |> List.map (fun (n, t) -> n, Some t)
+            let start: Known = cols |> List.map (fun f -> f.Name, Some f.Type)
 
             let rec go (k: Known option) acc =
                 function
@@ -3558,7 +3582,7 @@ module DataFrame =
             match a, b with
             | (Absent | Of StringType), (Absent | Of StringType)
             | (Absent | Of DateType), (Absent | Of DateType)
-            | (Absent | Of TimestampType), (Absent | Of TimestampType) -> true
+            | (Absent | Of(TimestampType _)), (Absent | Of(TimestampType _)) -> true
             | _ -> false
 
         match op with
@@ -3612,7 +3636,7 @@ module DataFrame =
     let internal compileExpr (f: Frame) (e: ResolvedExpr) : CompiledExpr =
         let slot: ErrorSlot = { Error = None; Null = false }
         let kernels = ResizeArray<Kernel>()
-        let types = f.Cols |> List.map snd |> List.toArray
+        let types = Fields.types f.Cols |> List.toArray
 
         // Record an error — the first one in the row wins — and answer a cell the caller will
         // discard: every ancestor checks the slot before it reads a child's answer.
@@ -4212,7 +4236,7 @@ module DataFrame =
                  | Bool v -> NBool(present v)
                  | Str s -> NStr(StringType, present s)
                  | Date s -> NStr(DateType, present s)
-                 | Timestamp s -> NStr(TimestampType, present s)
+                 | Timestamp s -> NStr(TimestampType(TemporalText.unitOf s), present s)
                  // A decimal constant is read boxed: expressions over decimals are exact text
                  // arithmetic, and a filter's comparison of a carried column is the kernel's (Phase 280).
                  | Decimal _ -> NCell(present c)
@@ -4416,23 +4440,22 @@ module DataFrame =
 
         go None cells |> Option.defaultValue StringType
 
-    /// `inferType` over the cells an index range reads (Phase 321) — the same fold, for a caller
-    /// holding its cells in an array or behind a row order rather than in a list.
-    let internal inferTypeAt (count: int) (cellAt: int -> Cell) : ColumnType =
-        let mutable acc: ColumnType option = None
-
-        for i in 0 .. count - 1 do
-            match Cell.typeOf (cellAt i) with
-            | None -> ()
-            | Some t ->
-                acc <-
-                    match acc with
-                    | None -> Some t
-                    | Some a -> Some(widenColumnType a t)
-
-        acc |> Option.defaultValue StringType
-
     // ---- aggregates (Phase 36: the pinned semantics live in `Column.aggregate`; the evaluator calls it) ----
+
+    /// The wire spelling of an aggregate function — the codec's, and the refusal messages' (one
+    /// spelling, so a message names the function as the wire does).
+    let internal aggFnTag (fn: AggFn) : string =
+        match fn with
+        | Sum -> "sum"
+        | Mean -> "mean"
+        | Min -> "min"
+        | Max -> "max"
+        | Count -> "count"
+        | Median -> "median"
+        | StdDev -> "stddev"
+        | First -> "first"
+        | Last -> "last"
+        | CountDistinct -> "countDistinct"
 
     /// Lift a `Column.AggregateError` into the evaluator's `EvalError` envelope. An overflow maps to the
     /// pinned `OverflowError` (so the existing "Sum overflow is a named OverflowError" contract holds); a
@@ -4443,27 +4466,46 @@ module DataFrame =
         | IncompatibleAggType(fn, ct, expected) ->
             AggError(
                 "aggregate "
-                + fn
+                + aggFnTag fn
                 + " over a "
-                + ct
+                + ColumnType.tag ct
                 + " column (expected "
-                + String.concat "/" expected
+                + String.concat "/" (expected |> List.map ColumnType.tag)
                 + ")"
             )
-        // A present cell outside the column's type (Core `0.33.0`, its Phase 299): a cell the
-        // evaluator's column carries but its declared type does not admit, or a decimal whose text
-        // is not decimal text. Named, never truncated or dropped.
+        // A present cell outside the column's type (Core `0.33.0`, its Phase 299): since Core
+        // `1.0.0` a decimal whose text is not decimal text, the one cell a typed column can still
+        // carry outside its type. Named, never truncated or dropped.
         | CellOutsideType(_, ct, cell) ->
-            AggError("aggregate over a " + ct + " column met a cell outside its type: " + cell)
+            AggError(
+                "aggregate over a "
+                + ColumnType.tag ct
+                + " column met a cell outside its type: "
+                + cell
+            )
 
     /// Compute one aggregate over a cell list of the given source type — the evaluator's adapter onto the
     /// public `Column.aggregate` (single source of truth), threading the `EvalError` envelope. The
     /// answer leaves with the canonical NaN (Phase 404): this adapter is the deferred path of every
-    /// `GroupBy` and `Pivot` aggregate and the whole of `aggregateCells`.
+    /// `GroupBy` and `Pivot` aggregate and the whole of `aggregateCells`. A cell the typed column
+    /// cannot hold (Core `1.0.0`: `Column.ofCells` refuses it) is the cell-outside-type refusal the
+    /// aggregate itself named before.
     let private aggCells (fn: AggFn) (srcType: ColumnType) (cells: Cell list) : Result<Cell, EvalError> =
-        Column.aggregate fn (Column.create "" srcType cells)
-        |> Result.map canonicalNaNCell
-        |> Result.mapError aggErr
+        match Column.ofCells "" srcType cells with
+        | Ok column ->
+            Column.aggregate fn column
+            |> Result.map canonicalNaNCell
+            |> Result.mapError aggErr
+        | Error(TypeMismatch(_, expected, got)) ->
+            Error(
+                AggError(
+                    "aggregate over a "
+                    + ColumnType.tag expected
+                    + " column met a cell outside its type: "
+                    + got
+                )
+            )
+        | Error e -> Error(AggError("aggregate over a " + ColumnType.tag srcType + " column: " + sprintf "%A" e))
 
     let private aggType (fn: AggFn) (srcType: ColumnType) : ColumnType = Column.aggType fn srcType
 
@@ -4715,7 +4757,7 @@ module DataFrame =
         let resolve (src, out) =
             match colIndex f.Cols src with
             | None -> Error(UnknownColumn(src, available f.Cols))
-            | Some i -> Ok(out, snd (List.item i f.Cols), i)
+            | Some i -> Ok(out, List.item i f.Cols, i)
 
         let rec go acc =
             function
@@ -4725,7 +4767,7 @@ module DataFrame =
         go [] pairs
         |> Result.map (fun resolved ->
             let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
-            Frame.project f idx (resolved |> List.map (fun (o, ty, _) -> o, ty)))
+            Frame.project f idx (resolved |> List.map (fun (o, field, _) -> Fields.rename o field)))
 
     /// A step's compiled tree has one shape: `compileExpr` is a function of the frame and the
     /// resolved expression, so every morsel's tree has the kind of root the first one has.
@@ -5026,7 +5068,7 @@ module DataFrame =
             | Bool _, BoolType
             | Str _, StringType
             | Date _, DateType
-            | Timestamp _, TimestampType -> ValueSome c
+            | Timestamp _, TimestampType _ -> ValueSome c
             | _ ->
                 match c with
                 | Null -> ValueSome Null
@@ -5118,8 +5160,7 @@ module DataFrame =
                 | Ints(a, m) when ty = IntType -> a, [||], m, 1, 0
                 | Floats(a, m) when ty = FloatType -> [||], a, m, 2, 0
                 | Bools(_, m) when ty = BoolType -> [||], [||], m, 3, 0
-                | Strs(t, _, m) when t = ty && (t = StringType || t = DateType || t = TimestampType) ->
-                    [||], [||], m, 3, 0
+                | Strs(t, _, m) when t = ty -> [||], [||], m, 3, 0
                 | Decs(a, s, _, m) when ty = DecimalType -> [||], a, m, 4, s
                 | _ -> [||], [||], [||], 0, 0
 
@@ -5722,7 +5763,7 @@ module DataFrame =
         let private strsOf (c: Coder) (ty: ColumnType) : CodeMap<string> =
             match ty with
             | DateType -> c.Dates
-            | TimestampType -> c.Stamps
+            | TimestampType _ -> c.Stamps
             | StringType
             | IntType
             | FloatType
@@ -6143,8 +6184,12 @@ module DataFrame =
 
             resAll [] aggs
             |> Result.bind (fun resolvedAggs ->
-                let keyCols = keys |> List.map (fun k -> k, colType f.Cols k |> Option.get)
-                let aggCols = resolvedAggs |> List.map (fun (a, ty, _) -> a.Name, aggType a.Fn ty)
+                let keyCols =
+                    keys |> List.map (fun k -> f.Cols |> List.find (fun fd -> fd.Name = k))
+
+                let aggCols =
+                    resolvedAggs
+                    |> List.map (fun (a, ty, _) -> Field.create a.Name (aggType a.Fn ty))
 
                 // Phase 323 — every aggregate streamed over the rows once, then one output column per
                 // aggregate filled slot by slot. The first error — in group order, then aggregate
@@ -6199,15 +6244,13 @@ module DataFrame =
                 match failed with
                 | Some e -> Error e
                 | None ->
-                    let keyOut =
-                        keyCols |> List.mapi (fun j (_, ty) -> keyColumn ty keyVecs[j] firstPhys)
+                    let keyOut = keyCols |> List.mapi (fun j f -> keyColumn f.Type keyVecs[j] firstPhys)
 
                     let cols = keyCols @ aggCols
 
                     Ok
                         { Cols = cols
                           Vecs = Array.append (List.toArray keyOut) (outs |> Array.map (fun o -> o.ToVec()))
-                          Origins = Array.create (List.length cols) None
                           Sel = None
                           Count = groups })
 
@@ -6957,7 +7000,11 @@ module DataFrame =
 
                 let outRight =
                     rightCols
-                    |> List.map (fun (n, ty) -> (if Set.contains n leftNames then n + "_right" else n), ty)
+                    |> List.map (fun f ->
+                        if Set.contains f.Name leftNames then
+                            Fields.rename (f.Name + "_right") f
+                        else
+                            f)
 
                 let padsLeft = (how = Left || how = Outer)
                 let padsRight = (how = Right || how = Outer)
@@ -7000,7 +7047,6 @@ module DataFrame =
                 Ok
                     { Cols = f.Cols @ outRight
                       Vecs = vecs
-                      Origins = Array.create vecs.Length None
                       Sel = None
                       Count = lidx.Length }
 
@@ -7692,7 +7738,7 @@ module DataFrame =
     /// cell outside its type packs boxed, and is ordered by the pinned comparator as before — and
     /// the frame path run over the rows in their own order.
     let private windowColumnOfRows (cols: Schema) (rows: Cell[][]) (spec: WindowSpec) =
-        let types = cols |> List.map snd |> List.toArray
+        let types = Fields.types cols |> List.toArray
         let packed = System.Collections.Generic.Dictionary<int, Vec>()
 
         let vecOf (ci: int) : Vec =
@@ -7731,7 +7777,7 @@ module DataFrame =
             |> Result.bind (fun onIdx ->
                 need spec.Values
                 |> Result.bind (fun valIdx ->
-                    let valType = snd (List.item valIdx f.Cols)
+                    let valType = (List.item valIdx f.Cols).Type
 
                     let phys = Frame.physical f
                     let onVec = f.Vecs[onIdx]
@@ -7864,17 +7910,17 @@ module DataFrame =
                     match failed with
                     | Some e -> Error e
                     | None ->
-                        let idxCols = spec.Index |> List.map (fun n -> n, colType f.Cols n |> Option.get)
-                        let pivotCols = onValues |> List.map (fun ov -> cellString ov, outTy)
+                        let idxCols =
+                            spec.Index |> List.map (fun n -> f.Cols |> List.find (fun fd -> fd.Name = n))
+
+                        let pivotCols = onValues |> List.map (fun ov -> Field.create (cellString ov) outTy)
                         let cols = idxCols @ pivotCols
 
-                        let keyOut =
-                            idxCols |> List.mapi (fun j (_, ty) -> keyColumn ty idxVecs[j] firstPhys)
+                        let keyOut = idxCols |> List.mapi (fun j f -> keyColumn f.Type idxVecs[j] firstPhys)
 
                         Ok
                             { Cols = cols
                               Vecs = Array.append (List.toArray keyOut) (outs |> Array.map (fun o -> o.ToVec()))
-                              Origins = Array.create (List.length cols) None
                               Sel = None
                               Count = groups })))
 
@@ -7893,7 +7939,8 @@ module DataFrame =
         |> Result.bind (fun idIdx ->
             resolve [] valueVars
             |> Result.bind (fun valIdx ->
-                let idCols = idVars |> List.map (fun n -> n, colType f.Cols n |> Option.get)
+                let idCols =
+                    idVars |> List.map (fun n -> f.Cols |> List.find (fun fd -> fd.Name = n))
 
                 // The value column is typed by the one derived-column rule (Phase 338), the value
                 // columns being its arms: their declared types' join where the schema decides it —
@@ -7919,7 +7966,9 @@ module DataFrame =
 
                     columnTypeBy dt "value" rows.Length (fun i -> rows[i][valueAt])
                     |> Result.map (fun valType ->
-                        Frame.ofRows (idCols @ [ "variable", StringType; "value", valType ]) rows)))
+                        Frame.ofRows
+                            (idCols @ [ Field.create "variable" StringType; Field.create "value" valType ])
+                            rows)))
 
     // ---- pipeline driver ----
 
@@ -8542,7 +8591,7 @@ module DataFrame =
 
         windowColumnOfRows cols arr spec
         |> Result.map (fun (ty, col) ->
-            cols @ [ spec.As, ty ],
+            cols @ [ Field.create spec.As ty ],
             arr
             |> Array.mapi (fun i r -> List.ofArray (Array.append r [| windowCellAt col i |]))
             |> List.ofArray)
@@ -8663,7 +8712,7 @@ module DataFrame =
                 // table for a change that did matter.
                 && List.isEmpty (Transform.slotParamsOf pipeline)
                 && not (Set.contains c (readColumns pipeline))
-                && not (prior.Schema |> List.exists (fun (n, _) -> n = c))
+                && not (prior.Schema |> List.exists (fun f -> f.Name = c))
             | RowsAppended
             | SchemaChanged _
             | FullChange -> false
@@ -8853,7 +8902,7 @@ module SchemaWalk =
         knowledge |> withColumns (columns knowledge @ [ column ])
 
     let private ofColumns (schema: Schema) : ColumnKnowledge list =
-        schema |> List.map (fun (name, ty) -> { Name = name; Type = Some ty })
+        schema |> List.map (fun f -> { Name = f.Name; Type = Some f.Type })
 
     /// A concrete schema is closed knowledge — the walk's starting point.
     let ofSchema (schema: Schema) : SchemaKnowledge =
@@ -8950,7 +8999,7 @@ module SchemaWalk =
         | Derive(name, expr) ->
             let known =
                 columns input
-                |> List.choose (fun c -> c.Type |> Option.map (fun ty -> c.Name, ty))
+                |> List.choose (fun c -> c.Type |> Option.map (Field.create c.Name))
 
             upsert
                 { Name = name
@@ -9071,18 +9120,7 @@ module SchemaWalk =
 /// `ColumnError` envelope (a `Transform` wire is a columnar-strand wire). Fable-clean.
 module DataFrameCodec =
 
-    let private aggFnTag =
-        function
-        | Sum -> "sum"
-        | Mean -> "mean"
-        | Min -> "min"
-        | Max -> "max"
-        | Count -> "count"
-        | Median -> "median"
-        | StdDev -> "stddev"
-        | First -> "first"
-        | Last -> "last"
-        | CountDistinct -> "countDistinct"
+    let private aggFnTag = DataFrame.aggFnTag
 
     let private aggFnOf =
         function
@@ -9259,6 +9297,26 @@ module DataFrameCodec =
         // (Core `DECISIONS.md` D72 K5) — a number token would have been through a float.
         | Decimal s -> Canon.typed "Decimal" [ "value", JStr s ]
 
+    /// The refusal of a literal whose `value` is not of its `$type`: a `TypeMismatch` naming the
+    /// column type the tag denotes (Core `1.0.0` types the expected side), or, for a tag outside
+    /// the cell vocabulary, the unknown-tag refusal.
+    let private litMismatch (tag: string) : ColumnError =
+        let known =
+            match tag with
+            | "Int" -> Some IntType
+            | "Float" -> Some FloatType
+            | "Bool" -> Some BoolType
+            | "Str" -> Some StringType
+            | "Date" -> Some DateType
+            | "Timestamp" -> Some(TimestampType TimeUnit.Seconds)
+            | "Decimal" -> Some DecimalType
+            | _ -> None
+
+        match known with
+        | Some ty -> TypeMismatch("lit", ty, "value")
+        | None ->
+            WireRefusal.unknownTag (tag, [ "Null"; "Int"; "Float"; "Bool"; "Str"; "Date"; "Timestamp"; "Decimal" ])
+
     let private cellOfJson (el: JVal) : Result<Cell, ColumnError> =
         match el with
         | JObj fields ->
@@ -9281,9 +9339,9 @@ module DataFrameCodec =
                 | Some(JStr s), "Decimal" ->
                     match DecimalText.tryCanonical s with
                     | Some canonical -> Ok(Decimal canonical)
-                    | None -> Error(TypeMismatch("lit", t, "value"))
+                    | None -> Error(litMismatch t)
                 | Some(JInt i), "Decimal" -> Ok(Decimal(string i))
-                | _ -> Error(TypeMismatch("lit", t, "value"))
+                | _ -> Error(litMismatch t)
             | _ -> Error(MissingField "lit.$type")
         | _ -> Error(MalformedShape "lit: expected object")
 
@@ -9431,7 +9489,7 @@ module DataFrameCodec =
         |> Result.bind strOf
         |> Result.bind (fun ms ->
             match modeOf ms with
-            | None -> Error(UnknownType(ms, allModes |> List.map modeTag))
+            | None -> Error(WireRefusal.unknownTag (ms, allModes |> List.map modeTag))
             | Some mode ->
                 field "scale" el
                 |> Result.bind (slotOf intOf "rounding scale")
@@ -9451,7 +9509,7 @@ module DataFrameCodec =
                     match binOf ops with
                     | None ->
                         Error(
-                            UnknownType(
+                            WireRefusal.unknownTag (
                                 ops,
                                 [ "add"
                                   "sub"
@@ -9503,7 +9561,7 @@ module DataFrameCodec =
                 |> Result.bind strOf
                 |> Result.bind (fun ts ->
                     match ColumnType.ofTag ts with
-                    | None -> Error(UnknownType(ts, ColumnType.allTags))
+                    | None -> Error(UnknownType(ts, ColumnType.all))
                     | Some ty ->
                         field "expr" el
                         |> Result.bind decodeExpr
@@ -9519,7 +9577,7 @@ module DataFrameCodec =
                     match scalarOf fns with
                     | None ->
                         Error(
-                            UnknownType(
+                            WireRefusal.unknownTag (
                                 fns,
                                 [ "abs"
                                   "round"
@@ -9588,7 +9646,7 @@ module DataFrameCodec =
                 |> Result.bind (fun gs ->
                     match NowGrain.ofTag gs with
                     | Some g -> Ok(Now g)
-                    | None -> Error(UnknownType(gs, NowGrain.allTags)))
+                    | None -> Error(WireRefusal.unknownTag (gs, NowGrain.allTags)))
             // Phase 93 — expression-level string-predicate spellings (stretch-wave-2 census):
             // {"$type":"contains","expr":X,"other":Y} (also left/right) denotes exactly
             // Binary(Contains, X, Y); same for startsWith/endsWith. Canonical stays the
@@ -9669,7 +9727,7 @@ module DataFrameCodec =
                 |> Result.map (fun args -> ApplyFn(fn, args))
             | other ->
                 Error(
-                    UnknownType(
+                    WireRefusal.unknownTag (
                         other,
                         [ "col"
                           "lit"
@@ -9759,7 +9817,7 @@ module DataFrameCodec =
                 match aggFnOf fns with
                 | None ->
                     Error(
-                        UnknownType(
+                        WireRefusal.unknownTag (
                             fns,
                             [ "sum"
                               "mean"
@@ -9869,7 +9927,7 @@ module DataFrameCodec =
                                     match binOf opTag with
                                     | None ->
                                         Error(
-                                            UnknownType(
+                                            WireRefusal.unknownTag (
                                                 opTag,
                                                 [ "add"
                                                   "sub"
@@ -9960,7 +10018,12 @@ module DataFrameCodec =
                             |> Result.bind (fun hows ->
                                 match joinOf hows with
                                 | None ->
-                                    Error(UnknownType(hows, [ "inner"; "left"; "right"; "outer"; "semi"; "anti" ]))
+                                    Error(
+                                        WireRefusal.unknownTag (
+                                            hows,
+                                            [ "inner"; "left"; "right"; "outer"; "semi"; "anti" ]
+                                        )
+                                    )
                                 | Some how -> Ok(Join(src, on, how)))))
                 | "window" ->
                     field "partitionBy" el
@@ -9984,7 +10047,7 @@ module DataFrameCodec =
                                         | Some fn -> Ok fn
                                         | None ->
                                             Error(
-                                                UnknownType(
+                                                WireRefusal.unknownTag (
                                                     fns,
                                                     [ "rowNumber"
                                                       "rank"
@@ -10031,7 +10094,7 @@ module DataFrameCodec =
                                     match aggFnOf aggs with
                                     | None ->
                                         Error(
-                                            UnknownType(
+                                            WireRefusal.unknownTag (
                                                 aggs,
                                                 [ "sum"
                                                   "mean"
@@ -10080,7 +10143,7 @@ module DataFrameCodec =
                 | "except" -> field "source" el |> Result.bind ColumnCodec.decodeJson |> Result.map Except
                 | other ->
                     Error(
-                        UnknownType(
+                        WireRefusal.unknownTag (
                             other,
                             [ "filter"
                               "project"
@@ -10368,8 +10431,8 @@ module internal MorselHandOff =
                 Some
                     { Step = step
                       Env = envWire
-                      Names = f.Cols |> List.map fst |> List.toArray
-                      Types = f.Cols |> List.map (snd >> ColumnType.tag) |> List.toArray
+                      Names = Fields.names f.Cols |> List.toArray
+                      Types = f.Cols |> List.map (_.Type >> ColumnType.tag) |> List.toArray
                       Kinds = kinds
                       Ints = ints
                       Floats = floats
@@ -10413,9 +10476,8 @@ module internal MorselHandOff =
                 | _ -> Cells [||])
 
         let frame: Frame =
-            { Cols = List.init h.Names.Length (fun i -> h.Names[i], types[i])
+            { Cols = List.init h.Names.Length (fun i -> Field.create h.Names[i] types[i])
               Vecs = vecs
-              Origins = Array.create h.Names.Length None
               Sel = Some h.Rows
               Count = h.Count }
 

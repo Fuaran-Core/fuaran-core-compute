@@ -22,6 +22,8 @@
   <ItemGroup>
     <Compile Include="..\Corpus.fs" Link="Corpus.fs" />
     <!-- Phase 280: the decimal-vector law, run on this host before the typed family is timed. -->
+    <!-- Phase 423: the suite's column-from-cells builder the linked law files build their tables through. -->
+    <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\KitColumn.fs" Link="KitColumn.fs" />
     <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\DecimalVectorLaw.fs" Link="DecimalVectorLaw.fs" />
     <!-- Phase 342: the prepared-result law over the transform vectors' sample, run on this host
          before the chain is timed. -->

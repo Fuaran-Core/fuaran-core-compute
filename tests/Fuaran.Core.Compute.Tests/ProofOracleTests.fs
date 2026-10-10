@@ -27,6 +27,7 @@ module ModelPipe = Pipeline
 
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private inv = System.Globalization.CultureInfo.InvariantCulture
 
@@ -86,7 +87,7 @@ let private colTypeToModel (t: ColumnType) : ModelCol.coltype =
     | BoolType -> ModelCol.BoolType
     | StringType -> ModelCol.StringType
     | DateType -> ModelCol.DateType
-    | TimestampType -> ModelCol.TimestampType
+    | TimestampType _ -> ModelCol.TimestampType
     // Phase 321: the model carries the decimal column type, so the differential draws one.
     | DecimalType -> ModelCol.DecimalType
 
@@ -97,7 +98,7 @@ let private colTypeOfModel (t: ModelCol.coltype) : ColumnType =
     | ModelCol.BoolType -> BoolType
     | ModelCol.StringType -> StringType
     | ModelCol.DateType -> DateType
-    | ModelCol.TimestampType -> TimestampType
+    | ModelCol.TimestampType -> TimestampType TimeUnit.Seconds
     | ModelCol.DecimalType -> DecimalType
 
 /// The honest cell bridge: type + carrier, the carrier a rendering that parses back exactly.
@@ -135,19 +136,19 @@ let private cellOfModel (c: ModelCol.cell) : Cell =
 let private columnToModelWith (bridge: Cell -> ModelCol.cell) (c: Column) : ModelCol.column =
     { ModelCol.column.name = c.Name
       ModelCol.column.ty = colTypeToModel c.Type
-      ModelCol.column.cells = c.Cells |> List.map bridge }
+      ModelCol.column.cells = (Column.toCells c) |> List.map bridge }
 
 let private columnOfModel (c: ModelCol.column) : Column =
-    Column.create c.name (colTypeOfModel c.ty) (c.cells |> List.map cellOfModel)
+    KitColumn.create c.name (colTypeOfModel c.ty) (c.cells |> List.map cellOfModel)
 
 let private tableToModelWith (bridge: Cell -> ModelCol.cell) (t: Table) : ModelCol.table =
-    { ModelCol.table.schema = t.Schema |> List.map (fun (n, ty) -> n, colTypeToModel ty)
+    { ModelCol.table.schema = t.Schema |> List.map (fun f -> f.Name, colTypeToModel f.Type)
       ModelCol.table.columns = t.Columns |> List.map (columnToModelWith bridge) }
 
 let private tableToModel = tableToModelWith cellToModel
 
 let private tableOfModel (t: ModelCol.table) : Table =
-    { Schema = t.schema |> List.map (fun (n, ty) -> n, colTypeOfModel ty)
+    { Schema = t.schema |> List.map (fun (n, ty) -> Field.create n (colTypeOfModel ty))
       Columns = t.columns |> List.map columnOfModel }
 
 /// The pipelines `ApplyTransform` draws from; the model sees each as its index. Two accept on
@@ -241,7 +242,7 @@ let private colTypePool =
       BoolType
       StringType
       DateType
-      TimestampType
+      TimestampType TimeUnit.Seconds
       DecimalType ]
 
 /// A cell for a column of type `ty`: mostly fitting, sometimes `Null`, sometimes of another type.
@@ -256,7 +257,7 @@ let private genColCell (ty: ColumnType) (r: ConfRng.T) : Cell * ConfRng.T =
         | BoolType -> Bool(v % 2 = 0)
         | StringType -> Str(sprintf "s%d" v)
         | DateType -> Date(sprintf "2026-01-%02d" (1 + v % 28))
-        | TimestampType -> Timestamp(sprintf "2026-01-01T00:00:%02dZ" (v % 60))
+        | TimestampType _ -> Timestamp(sprintf "2026-01-01T00:00:%02dZ" (v % 60))
         // Phase 321: a decimal with a fraction, so it is never the digits of an int.
         | DecimalType -> Decimal(sprintf "%d.%d" (v / 10) (1 + v % 9))
 
@@ -282,7 +283,7 @@ let private genColCells (ty: ColumnType) (n: int) (r: ConfRng.T) : Cell list * C
 let private genColumn (name: string) (rows: int) (r: ConfRng.T) : Column * ConfRng.T =
     let ty, r1 = ConfRng.choose colTypePool r
     let cells, r2 = genColCells ty rows r1
-    Column.create name ty cells, r2
+    KitColumn.create name ty cells, r2
 
 /// A table: up to three columns over a four-name pool, up to three rows — and, one draw in ten
 /// each, a repeated name, a column a row long or short, or a schema that is not the columns'
@@ -316,7 +317,7 @@ let private genColTable (r: ConfRng.T) : Table * ConfRng.T =
 
     let schema =
         columns
-        |> List.map (fun c -> c.Name, c.Type)
+        |> List.map (fun c -> Field.create c.Name c.Type)
         |> fun s ->
             if schemaRoll = 0 then
                 List.truncate (List.length s - 1) s
@@ -662,10 +663,16 @@ let private colDiffDifferential (seed: int) (trials: int) : ColDiffTally =
                 | cols ->
                     let idx, r3 = ConfRng.intBelow (List.length cols) r
                     let target = List.item idx cols
-                    let cells, r4 = genColCells target.Type (List.length target.Cells) r3
+                    let cells, r4 = genColCells target.Type (List.length (Column.toCells target)) r3
 
                     { before with
-                        Columns = cols |> List.mapi (fun j c -> if j = idx then { c with Cells = cells } else c) },
+                        Columns =
+                            cols
+                            |> List.mapi (fun j c ->
+                                if j = idx then
+                                    KitColumn.create c.Name c.Type (cells)
+                                else
+                                    c) },
                     r4
 
         r <- r2
@@ -747,7 +754,7 @@ let private pColToModel (t: ColumnType) : ModelPipe.column_type =
     | BoolType -> ModelPipe.BoolType
     | StringType -> ModelPipe.StringType
     | DateType -> ModelPipe.DateType
-    | TimestampType -> ModelPipe.TimestampType
+    | TimestampType _ -> ModelPipe.TimestampType
     | DecimalType -> ModelPipe.DecimalType
 
 let private pColOfModel (t: ModelPipe.column_type) : ColumnType =
@@ -757,7 +764,7 @@ let private pColOfModel (t: ModelPipe.column_type) : ColumnType =
     | ModelPipe.BoolType -> BoolType
     | ModelPipe.StringType -> StringType
     | ModelPipe.DateType -> DateType
-    | ModelPipe.TimestampType -> TimestampType
+    | ModelPipe.TimestampType -> TimestampType TimeUnit.Seconds
     | ModelPipe.DecimalType -> DecimalType
 
 let private pCellToModel (c: Cell) : ModelPipe.cell =
@@ -792,7 +799,7 @@ let private pCellOfModel (c: ModelPipe.cell) : Cell =
 /// A closed enumeration crosses through one table read both ways, so a case the table misses is
 /// a `KeyNotFoundException` on the first draw that reaches it rather than a silent default.
 let private pFwd (table: ('a * 'b) list) (x: 'a) : 'b =
-    table |> List.find (fun (a, _) -> a = x) |> snd
+    table |> List.find (fun (n, _) -> n = x) |> snd
 
 let private pBack (table: ('a * 'b) list) (y: 'b) : 'a =
     table |> List.find (fun (_, b) -> b = y) |> fst
@@ -953,20 +960,20 @@ let rec private pExprOfModel (e: ModelPipe.col_expr) : ColExpr =
 /// A `Table` as its row-major view — the transpose `toFrame` performs.
 let private pFrameOfTable (t: Table) : ModelPipe.frame =
     let n = Table.rowCount t
-    let cols = t.Columns |> List.map (fun c -> List.toArray c.Cells)
+    let cols = t.Columns |> List.map (fun c -> List.toArray (Column.toCells c))
 
-    { ModelPipe.frame.cols = t.Schema |> List.map (fun (name, ty) -> name, pColToModel ty)
+    { ModelPipe.frame.cols = t.Schema |> List.map (fun f -> f.Name, pColToModel f.Type)
       ModelPipe.frame.rows = [ for i in 0 .. n - 1 -> cols |> List.map (fun a -> pCellToModel a[i]) ] }
 
 /// The transpose back — `ofFrame`.
 let private pTableOfFrame (f: ModelPipe.frame) : Table =
     let arrs = f.rows |> List.map List.toArray
 
-    { Schema = f.cols |> List.map (fun (name, ty) -> name, pColOfModel ty)
+    { Schema = f.cols |> List.map (fun (name, ty) -> Field.create name (pColOfModel ty))
       Columns =
         f.cols
         |> List.mapi (fun ci (name, ty) ->
-            Column.create name (pColOfModel ty) (arrs |> List.map (fun r -> pCellOfModel r[ci]))) }
+            KitColumn.create name (pColOfModel ty) (arrs |> List.map (fun r -> pCellOfModel r[ci]))) }
 
 let private pSourceToModel (s: DataSource) : ModelPipe.data_source =
     match s with
@@ -1399,12 +1406,16 @@ let private pGenTable (rng: ConfRng.T) : Table * ConfRng.T =
             | _ -> Cell.Null)
 
     let table: Table =
-        { Schema = [ "g", StringType; "v", IntType; "w", FloatType; "m", DecimalType ]
+        { Schema =
+            [ Field.create "g" StringType
+              Field.create "v" IntType
+              Field.create "w" FloatType
+              Field.create "m" DecimalType ]
           Columns =
-            [ Column.create "g" StringType g
-              Column.create "v" IntType v
-              Column.create "w" FloatType w
-              Column.create "m" DecimalType m ] }
+            [ KitColumn.create "g" StringType g
+              KitColumn.create "v" IntType v
+              KitColumn.create "w" FloatType w
+              KitColumn.create "m" DecimalType m ] }
 
     table, r2
 
@@ -1699,7 +1710,7 @@ let private pRowCompare
     (e: ColExpr)
     : string option * int * int =
     let prod = DataFrame.evalExprInRow env cols row e
-    let mcols = cols |> List.map (fun (n, t) -> n, pColToModel t)
+    let mcols = cols |> List.map (fun f -> f.Name, pColToModel f.Type)
     let mrow = row |> List.map pCellToModel
     let menv = pEnvToModel env
     let me = pExprToModel e
@@ -1743,7 +1754,8 @@ let private pRowSample (seed: int) (trials: int) : (string * Schema * Cell list 
           rng <- r2
 
           let rows =
-              [ for r in 0 .. Table.rowCount table - 1 -> table.Columns |> List.map (fun c -> List.item r c.Cells) ]
+              [ for r in 0 .. Table.rowCount table - 1 ->
+                    table.Columns |> List.map (fun c -> List.item r (Column.toCells c)) ]
 
           for j, row in List.indexed rows do
               yield sprintf "expression %d row %d" i j, table.Schema, row, e ]
@@ -1872,12 +1884,12 @@ let proofOracleTests =
               // red either if the guard is reverted OR if the finding it closed stops being what
               // the closed finding was.
               let t: Table =
-                  { Schema = [ "a", IntType; "b", IntType ]
+                  { Schema = [ Field.create "a" IntType; Field.create "b" IntType ]
                     Columns =
-                      [ Column.create "a" IntType [ Int 1; Int 2 ]
-                        Column.create "b" IntType [ Int 3; Int 4 ] ] }
+                      [ KitColumn.create "a" IntType [ Int 1; Int 2 ]
+                        KitColumn.create "b" IntType [ Int 3; Int 4 ] ] }
 
-              let op = InsertColumn(0, Column.create "a" IntType [ Int 9; Int 9 ])
+              let op = InsertColumn(0, KitColumn.create "a" IntType [ Int 9; Int 9 ])
               Expect.equal (ColumnOps.apply op t) (Error(DuplicateColumn "a")) "the insert is refused as a duplicate"
 
               match ColumnOps.invert op t with
@@ -2289,7 +2301,7 @@ let proofOracleTests =
               // then's three nodes — five visits, never the else — against six nodes and an
               // under-count of two.
               let table, _ = pGenTable (ConfRng.ofSeed 234)
-              let row = table.Columns |> List.map (fun c -> List.head c.Cells)
+              let row = table.Columns |> List.map (fun c -> List.head (Column.toCells c))
 
               let nested =
                   Case([ Lit(Cell.Bool true), Binary(Add, Col "v", Lit(Cell.Int 1)) ], Lit(Cell.Int 0))

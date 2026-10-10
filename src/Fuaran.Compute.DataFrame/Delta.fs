@@ -396,7 +396,7 @@ module RowIdentity =
                 fun t ->
                     let cells =
                         match Table.tryColumn column t with
-                        | Some c -> List.toArray c.Cells
+                        | Some c -> List.toArray (Column.toCells c)
                         | None -> [||]
 
                     fun i ->
@@ -425,7 +425,7 @@ module RowIdentity =
                         columns
                         |> List.map (fun n ->
                             match Table.tryColumn n t with
-                            | Some c -> List.toArray c.Cells
+                            | Some c -> List.toArray (Column.toCells c)
                             | None -> [||])
 
                     fun i ->
@@ -1026,17 +1026,17 @@ module Delta =
                 keyCols
                 |> List.forall (fun c ->
                     match Table.tryColumn c before, Table.tryColumn c after with
-                    | Some b, Some a -> obj.ReferenceEquals(b.Cells, a.Cells)
+                    | Some b, Some a -> obj.ReferenceEquals(b.Data, a.Data)
                     | _ -> false)
             )
             ->
             let nb = bKnown.Keys.Length
-            let names = before.Schema |> List.map fst |> List.toArray
+            let names = Fields.names before.Schema |> List.toArray
             let isKey = names |> Array.map (fun n -> List.contains n keyCols)
 
             let listOf (t: Table) (name: string) : Cell list =
                 match Table.tryColumn name t with
-                | Some c -> c.Cells
+                | Some c -> Column.toCells c
                 | None -> []
 
             let tails: Cell list[] = Array.create names.Length []
@@ -1122,8 +1122,8 @@ module Delta =
                             |> List.choose (fun c ->
                                 Table.tryColumn c after
                                 |> Option.map (fun col ->
-                                    { col with
-                                        Cells = tails[Array.findIndex (fun n -> n = c) names] })) }
+                                    let field = after.Schema |> List.find (fun f -> f.Name = col.Name)
+                                    Vec.columnOfCells field tails[Array.findIndex (fun n -> n = c) names])) }
 
                     let keyT = idw.KeyOf tailTable
 
@@ -1332,7 +1332,7 @@ module Delta =
                         && cols
                            |> List.forall (fun c ->
                                match Table.tryColumn c before, Table.tryColumn c after with
-                               | Some b, Some a -> obj.ReferenceEquals(b.Cells, a.Cells)
+                               | Some b, Some a -> obj.ReferenceEquals(b.Data, a.Data)
                                | _ -> false)
                     | None -> false)
 
@@ -1487,7 +1487,7 @@ module Delta =
                 let columnOf (t: Table) (n: int) (name: string) : Cell[] =
                     match Table.tryColumn name t with
                     | Some c ->
-                        let a = List.toArray c.Cells
+                        let a = List.toArray (Column.toCells c)
 
                         if a.Length = n then
                             a
@@ -1495,7 +1495,7 @@ module Delta =
                             Array.init n (fun r -> if r < a.Length then a[r] else Null)
                     | None -> Array.create n Null
 
-                let names = before.Schema |> List.map fst |> List.toArray
+                let names = Fields.names before.Schema |> List.toArray
                 let bCols: Cell[] option[] = Array.create names.Length None
                 let aCols: Cell[] option[] = Array.create names.Length None
 
@@ -1517,7 +1517,7 @@ module Delta =
 
                 let sameList ci =
                     match Table.tryColumn names[ci] before, Table.tryColumn names[ci] after with
-                    | Some b, Some a -> System.Object.ReferenceEquals(b.Cells, a.Cells)
+                    | Some b, Some a -> obj.ReferenceEquals(b.Data, a.Data)
                     | None, None -> true
                     | _ -> false
 
@@ -1531,12 +1531,12 @@ module Delta =
                     if not (sameList ci) then
                         let mutable b =
                             match Table.tryColumn names[ci] before with
-                            | Some c -> c.Cells
+                            | Some c -> Column.toCells c
                             | None -> []
 
                         let mutable a =
                             match Table.tryColumn names[ci] after with
-                            | Some c -> c.Cells
+                            | Some c -> Column.toCells c
                             | None -> []
 
                         for r in 0 .. shared - 1 do
@@ -1855,7 +1855,7 @@ module DeltaCodec =
         |> Result.bind strOf
         |> Result.bind (fun tag ->
             match changeOfTag tag with
-            | None -> Error(UnknownType(tag, allChangeTags))
+            | None -> Error(WireRefusal.unknownTag (tag, allChangeTags))
             | Some change ->
                 match tryField "key" el, tryField "ordinal" el with
                 | Some _, Some _ ->
@@ -1889,7 +1889,7 @@ module DeltaCodec =
                                 { Scheme = scheme
                                   Rows = rows
                                   InvalidatedColumns = cols })))
-            | other -> Error(UnknownType(other, [ "fullRefresh"; "rowSet" ])))
+            | other -> Error(WireRefusal.unknownTag (other, [ "fullRefresh"; "rowSet" ])))
         |> Result.bind (fun d ->
             match Delta.validate d with
             | Ok _ -> Ok(Delta.normalise d)

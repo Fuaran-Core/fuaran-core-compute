@@ -28,6 +28,52 @@ open Fuaran.Core
 //  shared memory once a host opts in to the worker pool.
 // ============================================================================
 
+/// The schema entries the evaluator writes (Phase 423: a `Schema` is a `Field list`, and a field
+/// carries metadata the evaluator neither reads nor invents).
+module internal Fields =
+
+    /// `f` under another name, its type and every stated metadatum kept: a projection renames a
+    /// column and states nothing new about it.
+    let rename (name: string) (f: Field) : Field =
+        let g = Field.create name f.Type
+
+        let g =
+            match f.Unit with
+            | Some u -> Field.withUnit u g
+            | None -> g
+
+        let g =
+            match f.Label with
+            | Some l -> Field.withLabel l g
+            | None -> g
+
+        let g =
+            match f.Description with
+            | Some d -> Field.withDescription d g
+            | None -> g
+
+        f.Ext |> Map.fold (fun g k v -> Field.withExt k v g) g
+
+    /// The names of a schema, in order.
+    let names (cols: Schema) : string list = cols |> List.map _.Name
+
+    /// The types of a schema, in order.
+    let types (cols: Schema) : ColumnType list = cols |> List.map _.Type
+
+/// The refusal a compute codec makes of a tag outside its vocabulary (Phase 423). Core `1.0.0`'s
+/// `ColumnError.UnknownType` names column TYPES, so a verb, a function or a mode outside its closed
+/// set is a `MalformedShape` whose detail names the tag and every admitted spelling.
+module internal WireRefusal =
+
+    let unknownTag (got: string, expected: string list) : ColumnError =
+        MalformedShape(
+            "unknown tag '"
+            + got
+            + "' (expected one of: "
+            + String.concat ", " expected
+            + ")"
+        )
+
 /// Array access as the JavaScript host should emit it (Phase 326). Fable compiles every `a[i]` on an
 /// `Int32Array`, a `Float64Array` or a plain array to one shared bounds-checked helper, which goes
 /// megamorphic across the three and costs more than the loop around it; these accessors are what
@@ -604,16 +650,12 @@ module internal InternedCells =
 /// The evaluator's frame: a schema, one vector per schema column (`Vecs` co-indexes with `Cols`),
 /// and the selection — the PHYSICAL row of each LOGICAL row, in logical order — or `None` for the
 /// identity, every physical row in physical order. `Count` is the physical row count: the length
-/// of every vector, and the bound every selection entry is inside. `Origins` co-indexes with
-/// `Vecs` too: the `Cell list` a vector was unpacked from at the boundary, where the vector is
-/// still that column untouched and the list was neither padded nor cut, so the boundary out can
-/// hand the consumer's own list back rather than box every cell again; `None` for a vector a verb
-/// produced. Two frames may share a vector; no code in this assembly writes into a vector it did
-/// not allocate itself.
+/// of every vector, and the bound every selection entry is inside. Two frames may share a vector,
+/// and a vector may be the very storage of a Core column (Phase 423: the boundary borrows in and
+/// adopts out); no code in this assembly writes into an array it did not allocate itself.
 type internal Frame =
     { Cols: Schema
       Vecs: Vec[]
-      Origins: Cell list option[]
       Sel: int[] option
       Count: int }
 
@@ -644,7 +686,7 @@ module internal Vec =
     let strCell (ty: ColumnType) (s: string) : Cell =
         match ty with
         | DateType -> Date s
-        | TimestampType -> Timestamp s
+        | TimestampType _ -> Timestamp s
         | StringType
         | IntType
         | FloatType
@@ -767,7 +809,7 @@ module internal Vec =
             | None -> boxed ()
         | StringType
         | DateType
-        | TimestampType ->
+        | TimestampType _ ->
             let vals: string[] = Array.zeroCreate count
             let mask = Shared.mask count
             let mutable ok = true
@@ -778,7 +820,7 @@ module internal Vec =
                     match Raw.get i cells, ty with
                     | Str s, StringType
                     | Date s, DateType
-                    | Timestamp s, TimestampType -> s
+                    | Timestamp s, TimestampType _ -> s
                     | _ -> null
 
                 if not (isNull s) then
@@ -893,7 +935,7 @@ module internal Vec =
                 ValueNone
         | StringType
         | DateType
-        | TimestampType ->
+        | TimestampType _ ->
             let vals: string[] = Array.zeroCreate n
             let mask = Shared.mask n
 
@@ -902,7 +944,7 @@ module internal Vec =
                     match c, ty with
                     | Str s, StringType
                     | Date s, DateType
-                    | Timestamp s, TimestampType when not (isNull s) ->
+                    | Timestamp s, TimestampType _ when not (isNull s) ->
                         Raw.set vals i s
                         Mask.set mask i true
                         true
@@ -1123,7 +1165,7 @@ module internal Vec =
         match c, ty with
         | Str s, StringType
         | Date s, DateType
-        | Timestamp s, TimestampType -> Some s
+        | Timestamp s, TimestampType _ -> Some s
         | _ -> None
 
     /// A copy of the dense vector with the cell at `i` replaced — never a write into `v`, whose
@@ -1242,6 +1284,207 @@ module internal Vec =
 
             ok
 
+    // ---- The `Table` boundary (Phase 423): a view over Core's vectors, in and out ----
+
+    /// The backing array of `v` where the vector occupies the whole of it, else a copy of its range:
+    /// the one place this assembly reads Core storage, under Phase 418's contract that a borrower
+    /// never writes — and nothing in this assembly writes into an array it did not allocate.
+    let private borrowed (v: Vector<'T>) : 'T[] =
+        let b = Vector.Unsafe.borrow v
+
+        if b.Offset = 0 && b.Length = b.Array.Length then
+            b.Array
+        else
+            Vector.toArray v
+
+    /// A column's validity as the frame's mask of `n` rows. An `AllValid` column holds no mask, so
+    /// one is built with every row present; a `Mask` is borrowed where it is `n` long (on .NET the
+    /// very array), and read into one of `n` rows otherwise — a row past a shorter mask is absent,
+    /// as Core reads it.
+    let private maskOf (n: int) (validity: Validity) : Mask =
+        match validity with
+        | AllValid -> Mask.create n true
+        | Validity.Mask present ->
+            let a = borrowed present
+
+            if a.Length = n then
+                Mask.ofBools a
+            else
+                Mask.init n (fun i -> i < a.Length && Raw.get i a)
+
+    /// The texts of a temporal column, rendered per present row from its integers; an absent row
+    /// holds no text. The frame still carries a date or an instant as its canonical text, so this is
+    /// the one conversion the boundary in still makes (recorded; the typed temporal vector is the
+    /// follow-on the phase names).
+    let private renderTexts (n: int) (mask: Mask) (render: int -> string) : string[] =
+        let out: string[] = Array.zeroCreate n
+
+        for i in 0 .. n - 1 do
+            if Mask.get i mask then
+                Raw.set out i (render i)
+
+        out
+
+    /// A Core column as a vector of `n` physical rows under the declared type `ty`. A column of that
+    /// type and that length is a VIEW: its values and its mask are borrowed, never copied (a `Bools`
+    /// column's values and every mask under Fable are read into the `Uint8Array` form the kernels
+    /// index). A column of another type, another length or none at all takes the fall-back the
+    /// per-index reads always answered: its cells padded with `Null` or cut to `n`, then packed.
+    let ofColumn (n: int) (ty: ColumnType) (column: Column option) : Vec =
+        let fallback (cells: Cell list) : Vec =
+            let a = List.toArray cells
+
+            if a.Length = n then
+                pack ty a
+            else
+                pack ty (Array.init n (fun i -> if i < a.Length then Raw.get i a else Null))
+
+        match column with
+        | None -> pack ty (Array.create n Null)
+        | Some c when c.Type <> ty || Column.length c <> n -> fallback (Column.toCells c)
+        | Some c ->
+            match c.Data with
+            | ColumnData.Ints(v, va) -> Ints(borrowed v, maskOf n va)
+            | ColumnData.Floats(v, va) -> Floats(borrowed v, maskOf n va)
+            | ColumnData.Bools(v, va) -> Bools(Mask.ofBools (borrowed v), maskOf n va)
+            | ColumnData.Strs(v, va) -> Strs(StringType, borrowed v, maskOf n va)
+            | ColumnData.Dates(v, va) ->
+                let days = borrowed v
+                let mask = maskOf n va
+                Strs(DateType, renderTexts n mask (fun i -> TemporalText.dateText (Raw.get i days)), mask)
+            | ColumnData.Timestamps(unit, seconds, fraction, va) ->
+                let secs = borrowed seconds
+                let mask = maskOf n va
+
+                let fractionAt: int -> int =
+                    match fraction with
+                    | Some f ->
+                        let fa = borrowed f
+                        fun i -> if i < fa.Length then Raw.get i fa else 0
+                    | None -> fun _ -> 0
+
+                Strs(
+                    ty,
+                    renderTexts n mask (fun i -> TemporalText.instantText unit (Raw.get i secs) (fractionAt i)),
+                    mask
+                )
+            | ColumnData.Decimals(v, va) ->
+                let texts = borrowed v
+                let mask = maskOf n va
+                pack DecimalType (Array.init n (fun i -> if Mask.get i mask then Decimal(Raw.get i texts) else Null))
+
+    /// The frame's mask as a column's validity: `AllValid` where every row is present, else the
+    /// mask itself — on .NET the very array, adopted; `Validity.ofVector` normalises.
+    let private validityOf (m: Mask) : Validity =
+        Validity.ofVector (Vector.adopt (Mask.toBools m))
+
+    /// The refusal of a column Core's typed storage cannot hold. A frame holds such a column only
+    /// where it was handed one — a table `Table.validate` refuses — so the evaluator cannot answer
+    /// it as a `Table`.
+    let private unrepresentable (name: string) (detail: string) : 'a =
+        invalidOp ("column '" + name + "' cannot be held by its type: " + detail)
+
+    /// The one type every present cell of `cells` widens into, if there is one: the type a boxed
+    /// column's cells agree on where they disagree with the schema's.
+    let private commonType (cells: Cell[]) : ColumnType option =
+        let mutable acc: ColumnType option = None
+        let mutable ok = true
+        let mutable i = 0
+
+        while ok && i < cells.Length do
+            match Cell.typeOf cells[i] with
+            | None -> ()
+            | Some t ->
+                match acc with
+                | None -> acc <- Some t
+                | Some a when a = t || ColumnType.widens t a -> ()
+                | Some a when ColumnType.widens a t -> acc <- Some t
+                | Some _ -> ok <- false
+
+            i <- i + 1
+
+        if ok then acc else None
+
+    /// The dense vector as a Core column under `field`, its storage ADOPTED, never copied and never
+    /// boxed: the array the frame allocated becomes the column's vector (a `Bools` vector's values
+    /// and every mask under Fable are read out of the `Uint8Array` form first). A boxed vector goes
+    /// through `Column.ofCells`, which is the one path that still walks cells: under the field's
+    /// type where the cells fit it, else under the one type they agree on — a column that
+    /// disagreed with its schema entry on the way in disagrees with it the same way on the way out.
+    let toColumn (field: Field) (v: Vec) : Column =
+        let name = field.Name
+
+        let viaCells (cells: Cell[]) : Column =
+            match Column.ofCells name field.Type (List.ofArray cells) with
+            | Ok c -> c
+            | Error e ->
+                match commonType cells with
+                | Some t when t <> field.Type ->
+                    match Column.ofCells name t (List.ofArray cells) with
+                    | Ok c -> c
+                    | Error e -> unrepresentable name (sprintf "%A" e)
+                | _ -> unrepresentable name (sprintf "%A" e)
+
+        match v with
+        | Ints(a, m) -> Column.ofInts name (Vector.adopt a) (validityOf m)
+        | Floats(a, m) -> Column.ofFloats name (Vector.adopt a) (validityOf m)
+        | Bools(a, m) -> Column.ofBools name (Vector.adopt (Mask.toBools a)) (validityOf m)
+        | Strs(StringType, a, m) -> Column.ofStrs name (Vector.adopt a) (validityOf m)
+        | Strs(DateType, a, m) ->
+            let n = a.Length
+            let days: int[] = Array.zeroCreate n
+            let mutable bad: string = null
+
+            for i in 0 .. n - 1 do
+                if isNull bad && Mask.get i m then
+                    match TemporalText.tryDays (Raw.get i a) with
+                    | Some d -> Raw.set days i d
+                    | None -> bad <- Raw.get i a
+
+            if isNull bad then
+                Column.ofDates name (Vector.adopt days) (validityOf m)
+            else
+                unrepresentable name ("'" + bad + "' is not a canonical date")
+        | Strs(TimestampType unit, a, m) ->
+            let n = a.Length
+            let seconds: float[] = Array.zeroCreate n
+            let fraction: int[] = Array.zeroCreate n
+            let mutable bad: string = null
+
+            for i in 0 .. n - 1 do
+                if isNull bad && Mask.get i m then
+                    match TemporalText.tryInstant unit (Raw.get i a) with
+                    | Some(s, f) ->
+                        Raw.set seconds i s
+                        Raw.set fraction i f
+                    | None -> bad <- Raw.get i a
+
+            if isNull bad then
+                let fraction =
+                    if unit = TimeUnit.Seconds then
+                        None
+                    else
+                        Some(Vector.adopt fraction)
+
+                Column.ofTimestamps name unit (Vector.adopt seconds) fraction (validityOf m)
+            else
+                unrepresentable name ("'" + bad + "' is not a canonical instant of its unit")
+        | Strs(_, a, m) -> viaCells (Array.init a.Length (fun i -> if Mask.get i m then Str(Raw.get i a) else Null))
+        | Decs(_, _, cells, m) ->
+            let texts =
+                cells
+                |> Array.map (fun c ->
+                    match c with
+                    | Decimal s -> s
+                    | _ -> null)
+
+            Column.ofDecimals name (Vector.adopt texts) (validityOf m)
+        | Cells cells -> viaCells cells
+
+    /// A column built from cells under `field` — the row form's boundary out: packed, then adopted.
+    let columnOfCells (field: Field) (cells: Cell list) : Column =
+        toColumn field (pack field.Type (List.toArray cells))
+
 module internal Frame =
 
     /// The logical row count — the rows a `Table` of this frame would have.
@@ -1272,98 +1515,42 @@ module internal Frame =
     /// The frame holding the physical rows `sel`, in that order, over the same vectors.
     let select (f: Frame) (sel: int[]) : Frame = { f with Sel = Some sel }
 
-    /// Well-formedness: one vector and one origin per schema column, every vector `Count` long,
-    /// every origin the vector's own length, and every selection entry naming a physical row. The
-    /// invariant every verb preserves; a law in the suite holds it after every step of every
-    /// generated pipeline.
+    /// Well-formedness: one vector per schema column, every vector `Count` long, and every
+    /// selection entry naming a physical row. The invariant every verb preserves; a law in the
+    /// suite holds it after every step of every generated pipeline.
     let wellFormed (f: Frame) : bool =
         f.Vecs.Length = List.length f.Cols
-        && f.Origins.Length = f.Vecs.Length
         && f.Vecs |> Array.forall (fun v -> Vec.length v = f.Count)
-        && f.Origins
-           |> Array.forall (fun o ->
-               match o with
-               | Some cells -> List.length cells = f.Count
-               | None -> true)
         && (match f.Sel with
             | None -> true
             | Some s -> s |> Array.forall (fun p -> p >= 0 && p < f.Count))
 
-    /// The fall-back of the boundary in (Phase 327): the column's list copied to an array, padded or
-    /// cut, then packed — the path every column took before `Vec.packList`, and the one a ragged
-    /// column, an absent one or one with a cell out of its type still takes.
-    ///
-    /// A short column is padded with `Null` to the table's row count and a long one is cut to it;
-    /// a schema name the table carries no column for is all `Null`. That is exactly what the
-    /// per-index reads this replaced answered (`Column.cell` is total and `Null` past the end), and
-    /// what `RowAccess.columns` still answers for the row form. A column that needed neither keeps
-    /// its list as the vector's origin.
-    let unpackFallback (n: int) (ty: ColumnType) (column: Column option) : Vec * Cell list option =
-        match column with
-        | Some c ->
-            let a = List.toArray c.Cells
-
-            if a.Length = n then
-                Vec.pack ty a, Some c.Cells
-            else
-                Vec.pack ty (Array.init n (fun i -> if i < a.Length then a[i] else Null)), None
-        | None -> Vec.pack ty (Array.create n Null), None
-
-    /// A table as a frame: one typed unpack per schema column, the identity selection. Each column
-    /// is packed straight from its list in one walk
-    /// (`Vec.packList`), keeping the list as its origin; a column that does not fit takes
-    /// `unpackFallback`.
+    /// A table as a frame (Phase 423): one VIEW per schema column over the column's own storage —
+    /// `Vec.ofColumn` borrows the values and the mask, and copies nothing — under the identity
+    /// selection. A column the schema names and the table lacks, or holds at another type or
+    /// length, is packed from its cells as the per-index reads always answered it.
     let ofTable (t: Table) : Frame =
         let n = Table.rowCount t
 
-        let unpacked =
-            t.Schema
-            |> List.map (fun (name, ty) ->
-                match Table.tryColumn name t with
-                | Some c ->
-                    match Vec.packList ty n c.Cells with
-                    | ValueSome v -> v, Some c.Cells
-                    | ValueNone -> unpackFallback n ty (Some c)
-                | None -> unpackFallback n ty None)
-            |> List.toArray
-
         { Cols = t.Schema
-          Vecs = unpacked |> Array.map fst
-          Origins = unpacked |> Array.map snd
+          Vecs =
+            t.Schema
+            |> List.map (fun field -> Vec.ofColumn n field.Type (Table.tryColumn field.Name t))
+            |> List.toArray
           Sel = None
           Count = n }
 
-    /// The frame as a table: one `Cell list` per column under the schema's declared types — the
-    /// origin list itself where the selection is still the identity and the vector still the
-    /// column it was unpacked from, else built from the back through the selection.
+    /// The frame as a table (Phase 423): one column per schema field, its storage ADOPTED from the
+    /// frame's vector — the very arrays where the selection is the identity, else one typed gather
+    /// per column through it. No cell is boxed on the typed path.
     let toTable (f: Frame) : Table =
-        let phys = physical f
-        let n = phys.Length
-
-        let columnOf (ci: int) : Cell list =
-            match f.Sel, f.Origins[ci] with
-            | None, Some cells -> cells
-            | _ ->
-                let v = f.Vecs[ci]
-                let mutable acc = []
-
-#if FABLE_COMPILER
-                // Under JavaScript (Phase 326) a counted loop: a descending `for` compiles there to a
-                // range enumerator. The loop proves `i` for `phys`.
-                let mutable i = n - 1
-
-                while i >= 0 do
-                    acc <- Vec.cellAt v (Raw.get i phys) :: acc
-                    i <- i - 1
-#else
-                for i in n - 1 .. -1 .. 0 do
-                    acc <- Vec.cellAt v phys[i] :: acc
-#endif
-
-                acc
+        let dense (ci: int) : Vec =
+            match f.Sel with
+            | None -> f.Vecs[ci]
+            | Some s -> Vec.gather f.Vecs[ci] s
 
         { Schema = f.Cols
-          Columns = f.Cols |> List.mapi (fun ci (name, ty) -> Column.create name ty (columnOf ci)) }
+          Columns = f.Cols |> List.mapi (fun ci field -> Vec.toColumn field (dense ci)) }
 
     /// Every logical row, in logical order, as an array of the schema's width — the gather the
     /// row-oriented verbs read through. The arrays are fresh; a cell is boxed per read on the
@@ -1403,9 +1590,8 @@ module internal Frame =
         { Cols = cols
           Vecs =
             cols
-            |> List.mapi (fun ci (_, ty) -> Vec.pack ty (Array.init n (fun r -> rows[r][ci])))
+            |> List.mapi (fun ci field -> Vec.pack field.Type (Array.init n (fun r -> rows[r][ci])))
             |> List.toArray
-          Origins = Array.create (List.length cols) None
           Sel = None
           Count = n }
 
@@ -1414,36 +1600,33 @@ module internal Frame =
     let project (f: Frame) (idx: int[]) (cols: Schema) : Frame =
         { f with
             Cols = cols
-            Vecs = idx |> Array.map (fun i -> f.Vecs[i])
-            Origins = idx |> Array.map (fun i -> f.Origins[i]) }
+            Vecs = idx |> Array.map (fun i -> f.Vecs[i]) }
 
     /// The frame with `name` upserted as `v` of type `ty`: replaced in place where the schema
-    /// carries the name, appended otherwise. Every other vector is shared.
+    /// carries the name, appended otherwise. Every other vector is shared. A column a verb produced
+    /// is a fresh field — its name and type, no metadata: the verb states nothing about a unit.
     let withColumn (f: Frame) (name: string) (ty: ColumnType) (v: Vec) : Frame =
-        match f.Cols |> List.tryFindIndex (fun (n, _) -> n = name) with
+        match f.Cols |> List.tryFindIndex (fun field -> field.Name = name) with
         | Some i ->
             let vecs = Array.copy f.Vecs
             vecs[i] <- v
-            let origins = Array.copy f.Origins
-            origins[i] <- None
 
             { f with
-                Cols = f.Cols |> List.mapi (fun j (n, t) -> if j = i then n, ty else n, t)
-                Vecs = vecs
-                Origins = origins }
+                Cols =
+                    f.Cols
+                    |> List.mapi (fun j field -> if j = i then Field.create name ty else field)
+                Vecs = vecs }
         | None ->
             { f with
-                Cols = f.Cols @ [ name, ty ]
-                Vecs = Array.append f.Vecs [| v |]
-                Origins = Array.append f.Origins [| None |] }
+                Cols = f.Cols @ [ Field.create name ty ]
+                Vecs = Array.append f.Vecs [| v |] }
 
     /// The frame with `name` APPENDED as `v` of type `ty`, whether or not the schema already
     /// carries the name — the shape `Window` produces.
     let appendColumn (f: Frame) (name: string) (ty: ColumnType) (v: Vec) : Frame =
         { f with
-            Cols = f.Cols @ [ name, ty ]
-            Vecs = Array.append f.Vecs [| v |]
-            Origins = Array.append f.Origins [| None |] }
+            Cols = f.Cols @ [ Field.create name ty ]
+            Vecs = Array.append f.Vecs [| v |] }
 
     /// This frame's rows followed by `other`'s, under this frame's schema, column by column:
     /// each pair of vectors gathered dense through its selection and appended, typed where both
@@ -1455,7 +1638,6 @@ module internal Frame =
         { Cols = f.Cols
           Vecs =
             Array.init f.Vecs.Length (fun ci -> Vec.append (Vec.gather f.Vecs[ci] pa) (Vec.gather other.Vecs[ci] pb))
-          Origins = Array.create f.Vecs.Length None
           Sel = None
           Count = pa.Length + pb.Length }
 
@@ -1476,17 +1658,10 @@ module internal Frame =
 /// physical rows `[k * Size, (k + 1) * Size)`; `Length` is the row count; every chunk but the
 /// last is `Size` long and none is empty.
 type internal Chunked =
-    {
-        Type: ColumnType
-        Size: int
-        Length: int
-        Chunks: Vec[]
-        /// The rope's cells as a list, once something has asked for them — one list per rope, so
-        /// every version that shares the rope shares the list, and the table a version stands for
-        /// costs the columns an edit moved rather than every column. Seeded with the consumer's own
-        /// list where the rope was cut from one. A memo, never read for anything but the list.
-        Cells: Cell list option ref
-    }
+    { Type: ColumnType
+      Size: int
+      Length: int
+      Chunks: Vec[] }
 
 module internal Chunked =
 
@@ -1509,8 +1684,7 @@ module internal Chunked =
         { Type = ty
           Size = size
           Length = n
-          Chunks = Array.init (count size n) (fun k -> Vec.slice v (k * size) (lengthOf size n k))
-          Cells = ref None }
+          Chunks = Array.init (count size n) (fun k -> Vec.slice v (k * size) (lengthOf size n k)) }
 
     /// Cells cut into chunks of `size` rows, each packed under `ty`.
     let ofCells (ty: ColumnType) (size: int) (cells: Cell[]) : Chunked =
@@ -1519,8 +1693,7 @@ module internal Chunked =
         { Type = ty
           Size = size
           Length = n
-          Chunks = Array.init (count size n) (fun k -> Vec.pack ty (Array.sub cells (k * size) (lengthOf size n k)))
-          Cells = ref None }
+          Chunks = Array.init (count size n) (fun k -> Vec.pack ty (Array.sub cells (k * size) (lengthOf size n k))) }
 
     /// The rope as one dense vector — the Phase 267 view. One chunk is handed back as it is.
     let toVec (c: Chunked) : Vec = Vec.concat c.Type c.Chunks
@@ -1534,10 +1707,7 @@ module internal Chunked =
         let k = i / c.Size
         let chunks = Array.copy c.Chunks
         chunks[k] <- Vec.setAt c.Chunks[k] (i % c.Size) cell
-
-        { c with
-            Chunks = chunks
-            Cells = ref None }
+        { c with Chunks = chunks }
 
     /// `cells` as a rope of `prior`'s shape, KEEPING every chunk of `prior` whose cells it holds
     /// unchanged — a `SetColumn` that moved a few cells shares every chunk it did not move, so a
@@ -1552,7 +1722,6 @@ module internal Chunked =
             { Type = ty
               Size = prior.Size
               Length = n
-              Cells = ref None
               Chunks =
                 Array.init (count prior.Size n) (fun k ->
                     let off = k * prior.Size
@@ -1575,7 +1744,6 @@ module internal Chunked =
 
             { c with
                 Length = total
-                Cells = ref None
                 Chunks =
                     Array.init (count size total) (fun k ->
                         if k < full then
@@ -1587,30 +1755,9 @@ module internal Chunked =
                             let off = k * size - c.Length
                             Vec.pack c.Type (Array.sub cells off (min size (total - k * size)))) }
 
-    /// The rope's cells as a list, in row order — the memo where the rope has one, else built
-    /// from the back and kept.
-    let toCells (c: Chunked) : Cell list =
-        match c.Cells.Value with
-        | Some cells -> cells
-        | None ->
-            let mutable acc = []
-
-            for k in c.Chunks.Length - 1 .. -1 .. 0 do
-                let v = c.Chunks[k]
-
-                for i in Vec.length v - 1 .. -1 .. 0 do
-                    acc <- Vec.cellAt v i :: acc
-
-            c.Cells.Value <- Some acc
-            acc
-
-    /// The rope with its list memo seeded from `cells` — the list an op carried or a consumer
-    /// handed in, which IS the rope's cells; a caller's assertion, checked by length only.
-    let withCells (cells: Cell list) (c: Chunked) : Chunked =
-        if List.length cells = c.Length then
-            { c with Cells = ref (Some cells) }
-        else
-            c
+    /// The rope as a Core column under `field` (Phase 423): one dense vector — one chunk handed
+    /// back as it is, several concatenated once — adopted as the column's storage.
+    let toColumn (field: Field) (c: Chunked) : Column = Vec.toColumn field (toVec c)
 
 /// A source prepared once for many evaluations (Phase 267), and since Phase 268 a persistent
 /// VERSION of a table: its schema and row count, and one chunked column per schema column (the
@@ -1646,26 +1793,17 @@ module internal Prepared =
         l.Force() |> ignore
         l
 
-    /// A table prepared: its frame unpacked now (one typed unpack per column, as Phase 267 paid
-    /// it), its rope cut from the frame on first demand.
+    /// A table prepared: its frame a view over the table's own vectors (Phase 423: nothing is
+    /// copied), its rope cut from the frame on first demand.
     let ofTable (t: Table) : Prepared =
         let f = Frame.ofTable t
-        let types = t.Schema |> List.map snd |> List.toArray
+        let types = t.Schema |> List.map _.Type |> List.toArray
 
         { Source = ready t
           Frame = ready f
           Cols = t.Schema
           Count = f.Count
-          Columns =
-            lazy
-                (Array.mapi
-                    (fun ci v ->
-                        let rope = Chunked.ofVec types[ci] Chunked.rows v
-
-                        match f.Origins[ci] with
-                        | Some cells -> Chunked.withCells cells rope
-                        | None -> rope)
-                    f.Vecs) }
+          Columns = lazy (Array.mapi (fun ci v -> Chunked.ofVec types[ci] Chunked.rows v) f.Vecs) }
 
     /// A version from its rope: the frame and the table each concatenated from it on first read.
     let ofChunks (cols: Schema) (count: int) (columns: Chunked[]) : Prepared =
@@ -1673,15 +1811,12 @@ module internal Prepared =
             lazy
                 { Cols = cols
                   Vecs = columns |> Array.map Chunked.toVec
-                  Origins = Array.create columns.Length None
                   Sel = None
                   Count = count }
 
         let table () : Table =
             { Schema = cols
-              Columns =
-                cols
-                |> List.mapi (fun ci (name, ty) -> Column.create name ty (Chunked.toCells columns[ci])) }
+              Columns = cols |> List.mapi (fun ci field -> Chunked.toColumn field columns[ci]) }
 
         { Source = lazy (table ())
           Frame = frame
@@ -1694,44 +1829,32 @@ module internal Prepared =
     /// A frame carrying a selection is gathered dense first — one typed gather per column, no cell
     /// boxed — so the version holds exactly its own rows (a `Limit` of ten over a large source keeps
     /// ten rows alive, not the source's vectors) and reads like any other prepared source: identity
-    /// selection, `Count` its row count, the rope cut from its vectors on first demand. A vector the
-    /// frame still holds untouched from a boundary keeps its origin list, so the table read back
-    /// hands that list out rather than boxing the column again. A frame with no columns stands for
-    /// the empty table, which has no rows, so its version has none either — as `ofTable` of that
-    /// table would.
+    /// selection, `Count` its row count, the rope cut from its vectors on first demand. The table
+    /// read back adopts the vectors (Phase 423), so a vector still held from a boundary is the
+    /// consumer's own storage handed back. A frame with no columns stands for the empty table,
+    /// which has no rows, so its version has none either — as `ofTable` of that table would.
     let ofFrame (f: Frame) : Prepared =
         let dense =
             match f.Sel with
             | _ when f.Vecs.Length = 0 ->
                 { Cols = f.Cols
                   Vecs = [||]
-                  Origins = [||]
                   Sel = None
                   Count = 0 }
             | None -> f
             | Some s ->
                 { Cols = f.Cols
                   Vecs = f.Vecs |> Array.map (fun v -> Vec.gather v s)
-                  Origins = Array.create f.Vecs.Length None
                   Sel = None
                   Count = s.Length }
 
-        let types = dense.Cols |> List.map snd |> List.toArray
+        let types = dense.Cols |> List.map _.Type |> List.toArray
 
         { Source = lazy (Frame.toTable dense)
           Frame = ready dense
           Cols = dense.Cols
           Count = dense.Count
-          Columns =
-            lazy
-                (Array.mapi
-                    (fun ci v ->
-                        let rope = Chunked.ofVec types[ci] Chunked.rows v
-
-                        match dense.Origins[ci] with
-                        | Some cells -> Chunked.withCells cells rope
-                        | None -> rope)
-                    dense.Vecs) }
+          Columns = lazy (Array.mapi (fun ci v -> Chunked.ofVec types[ci] Chunked.rows v) dense.Vecs) }
 
     /// The rope, cut if it has not been yet.
     let columns (p: Prepared) : Chunked[] = p.Columns.Value

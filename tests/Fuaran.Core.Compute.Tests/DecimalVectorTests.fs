@@ -13,6 +13,7 @@ module Fuaran.Compute.Tests.DecimalVectorTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private decs (cells: Cell list) : Vec =
     Vec.pack DecimalType (List.toArray cells)
@@ -40,7 +41,7 @@ let private sumOver (v: Vec) : Cell =
 
 /// The reference sum: `Column.aggregate` over the cells, which adds `DecimalText`.
 let private referenceSum (cells: Cell list) : Cell =
-    match Column.aggregate Sum (Column.create "v" DecimalType cells) with
+    match Column.aggregate Sum (KitColumn.create "v" DecimalType cells) with
     | Ok c -> c
     | Error e -> failtestf "the reference refused: %A" e
 
@@ -145,8 +146,8 @@ let tests =
           testCase "the filter kernel reads a constant at the column's scale, and hands back one it cannot"
           <| fun _ ->
               let t =
-                  { Schema = [ "v", DecimalType ]
-                    Columns = [ Column.create "v" DecimalType [ d "1.5"; d "2.25"; Null; d "-3"; d "0.0000001" ] ] }
+                  { Schema = [ Field.create "v" DecimalType ]
+                    Columns = [ KitColumn.create "v" DecimalType [ d "1.5"; d "2.25"; Null; d "-3"; d "0.0000001" ] ] }
 
               let frame = Frame.ofTable t
               Expect.isTrue (isDecs frame.Vecs[0]) "the column is carried"
@@ -174,7 +175,7 @@ let tests =
                   let frame = Frame.ofTable case.Table
 
                   let idx name =
-                      frame.Cols |> List.findIndex (fun (n, _) -> n = name)
+                      frame.Cols |> List.findIndex (fun f -> f.Name = name)
 
                   Expect.isFalse (isDecs frame.Vecs[idx "w"]) (sprintf "seed %d: w takes the text path" seed)
 

@@ -14,7 +14,8 @@ open Fuaran.Core
 /// The registered-pipeline-query laws (Phase 281).
 module PipelineQueryConformance =
 
-    let private fixedSchema: Schema = [ "a", IntType; "b", StringType ]
+    let private fixedSchema: Schema =
+        [ Field.create "a" IntType; Field.create "b" StringType ]
 
     /// The reference pair: a report over the named source `orders`, reading a scalar threshold, a
     /// list of tags, a sort column and a page size — one parameter at each kind of position.
@@ -34,7 +35,7 @@ module PipelineQueryConformance =
                   { Name = "take"
                     Type = IntType
                     Required = true } ]
-              ResultSchema = [ "x", IntType; "y", StringType ]
+              ResultSchema = [ Field.create "x" IntType; Field.create "y" StringType ]
               Effect =
                 { Host = ReadsHost
                   Determinism = Effect.network }
@@ -115,7 +116,7 @@ module PipelineQueryConformance =
 
             let table =
                 { Schema = fixedSchema
-                  Columns = [ Column.create "a" IntType aCells; Column.create "b" StringType bCells ] }
+                  Columns = [ KitColumn.create "a" IntType aCells; KitColumn.create "b" StringType bCells ] }
 
             let min = draw 20 - 10
             let tags = tagSet |> List.filter (fun _ -> draw 2 = 0)
@@ -176,19 +177,19 @@ module PipelineQueryConformance =
                 agreement
                 "a declared column not produced"
                 (ResultColumn("z", ResultDisagreement.NotProduced))
-                (withResult (q.ResultSchema @ [ "z", IntType ]))
+                (withResult (q.ResultSchema @ [ Field.create "z" IntType ]))
 
             expectRefused
                 agreement
                 "a produced column not declared"
                 (ResultColumn("y", ResultDisagreement.Undeclared))
-                (withResult [ "x", IntType ])
+                (withResult [ Field.create "x" IntType ])
 
             expectRefused
                 agreement
                 "a duplicated column"
                 (ResultColumn("x", ResultDisagreement.Duplicated))
-                (withResult (q.ResultSchema @ [ "x", IntType ]))
+                (withResult (q.ResultSchema @ [ Field.create "x" IntType ]))
 
             expectRefused
                 agreement
@@ -200,7 +201,7 @@ module PipelineQueryConformance =
                 agreement
                 "a column of another type"
                 (ResultColumn("x", ResultDisagreement.TypeDiffers(FloatType, IntType)))
-                (withResult [ "x", FloatType; "y", StringType ])
+                (withResult [ Field.create "x" FloatType; Field.create "y" StringType ])
 
             // Phase 338: a derive reading a `Param` or a `Now` is the data-decided remainder, refused
             // by that name; the derive typed by its expression registers below.
@@ -219,7 +220,7 @@ module PipelineQueryConformance =
                     Pipeline = pq.Pipeline @ [ Derive("x", ColExpr.Now NowGrain.Date) ]
                     Query =
                         { q with
-                            ResultSchema = [ "x", DateType; "y", StringType ] } }
+                            ResultSchema = [ Field.create "x" DateType; Field.create "y" StringType ] } }
 
             // ---- Phase 338: a derived result column registers at the type its expression decides ----
             let derivedPair (ty: ColumnType) (e: ColExpr) : PipelineQuery =
@@ -227,7 +228,7 @@ module PipelineQueryConformance =
                     Pipeline = pq.Pipeline @ [ Derive("d", e) ]
                     Query =
                         { q with
-                            ResultSchema = q.ResultSchema @ [ "d", ty ] } }
+                            ResultSchema = q.ResultSchema @ [ Field.create "d" ty ] } }
 
             let decimalLit = Cell.decimal "1.25" |> Option.defaultValue Null |> ColExpr.Lit
 
@@ -250,7 +251,7 @@ module PipelineQueryConformance =
                       "an empty frame", [ Filter(ColExpr.Lit(Bool false)); project; Derive("d", e) ] ] do
                     match DataFrame.evalPipeline pipeline table with
                     | Ok out ->
-                        record agreement (List.contains ("d", ty) out.Schema) (fun () ->
+                        record agreement (List.contains (Field.create "d" ty) out.Schema) (fun () ->
                             sprintf
                                 "a %s derive over %s evaluated to the schema %A"
                                 (ColumnType.tag ty)

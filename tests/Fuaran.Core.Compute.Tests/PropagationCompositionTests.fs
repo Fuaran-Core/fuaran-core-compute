@@ -24,6 +24,7 @@ module Fuaran.Compute.Tests.PropagationCompositionTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 /// The string id witness the sheet is walked with (the substrate suite's reference witness).
 let private idw: IdWitness<string> =
@@ -86,11 +87,14 @@ let private partTests =
 let private orders (n: int) : Table =
     let rows = [ 0 .. n - 1 ]
 
-    { Schema = [ "id", IntType; "qty", IntType; "price", FloatType ]
+    { Schema =
+        [ Field.create "id" IntType
+          Field.create "qty" IntType
+          Field.create "price" FloatType ]
       Columns =
-        [ Column.create "id" IntType (rows |> List.map (fun i -> Int(i + 1)))
-          Column.create "qty" IntType (rows |> List.map (fun i -> Int(1 + i % 7)))
-          Column.create "price" FloatType (rows |> List.map (fun i -> Float(0.25 * float (1 + i % 40)))) ] }
+        [ KitColumn.create "id" IntType (rows |> List.map (fun i -> Int(i + 1)))
+          KitColumn.create "qty" IntType (rows |> List.map (fun i -> Int(1 + i % 7)))
+          KitColumn.create "price" FloatType (rows |> List.map (fun i -> Float(0.25 * float (1 + i % 40)))) ] }
 
 let private rid = RowIdentity.byColumn "id"
 
@@ -124,7 +128,7 @@ let private deltaTests =
           testCase "a column edit names every row whose cell moved; an append names every new row"
           <| fun () ->
               let t = orders 4
-              let col = Column.create "qty" IntType [ Int 1; Int 5; Int 3; Int 4 ]
+              let col = KitColumn.create "qty" IntType [ Int 1; Int 5; Int 3; Int 4 ]
               let d = ColumnOps.deltaOf rid t (SetColumn col)
               Expect.equal (rowsOf d) (Some [ ByKey "i:2", RowChanged ]) "only row 1's qty moved"
 
@@ -163,7 +167,7 @@ let private deltaTests =
               let ops =
                   [ SetCell("price", 7, Float 3.5)
                     SetCell("id", 3, Int 1000)
-                    SetColumn(Column.create "qty" IntType [ for i in 0..49 -> Int(i % 3) ])
+                    SetColumn(KitColumn.create "qty" IntType [ for i in 0..49 -> Int(i % 3) ])
                     AppendRows [ [ "id", Int 500; "qty", Int 2; "price", Float 1.0 ] ] ]
 
               for op in ops do
@@ -293,7 +297,7 @@ let private sumColumn (t: Table) (col: string) : Cell =
     match Table.tryColumn col t with
     | None -> Null
     | Some c ->
-        c.Cells
+        (Column.toCells c)
         |> List.sumBy (function
             | Int i -> float i
             | Float f -> f
@@ -439,7 +443,9 @@ let evaluatorWitness: EvaluatorWitness<Sheet, SheetValue> =
                 | 2 -> dataEdit (SetCell("id", row, Int(1000 + v))) s
                 | 3 -> dataEdit (AppendRows [ [ "id", Int(2000 + v); "qty", Int 1; "price", Float 1.0 ] ]) s
                 | 4 ->
-                    dataEdit (SetColumn(Column.create "qty" IntType [ for i in 0 .. rows - 1 -> Int((i + v) % 5) ])) s
+                    dataEdit
+                        (SetColumn(KitColumn.create "qty" IntType [ for i in 0 .. rows - 1 -> Int((i + v) % 5) ]))
+                        s
                 | 5 -> sheetEdit (redefineLines (float (v % 3 + 1))) s
                 // A redefinition the pipeline evaluator refuses (a column the source does not have),
                 // so the failing-evaluator arm of the agreement law is reached.

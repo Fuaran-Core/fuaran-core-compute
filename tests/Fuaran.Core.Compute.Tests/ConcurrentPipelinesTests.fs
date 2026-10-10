@@ -8,6 +8,7 @@ open System.Threading
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 /// The native member running every batch of two or more alongside, whatever its work, so that the
 /// law's small sources run the concurrent path rather than the threshold's sequential one.
@@ -119,10 +120,10 @@ let concurrentPipelinesTests =
           testCase "a result kept by the batch serves as the next pipeline's source as evalToPrepared's does"
           <| fun _ ->
               let table =
-                  { Schema = [ "k", IntType; "v", FloatType ]
+                  { Schema = [ Field.create "k" IntType; Field.create "v" FloatType ]
                     Columns =
-                      [ Column.create "k" IntType [ for i in 0..199 -> Int(i % 7) ]
-                        Column.create "v" FloatType [ for i in 0..199 -> Float(float i * 0.5) ] ] }
+                      [ KitColumn.create "k" IntType [ for i in 0..199 -> Int(i % 7) ]
+                        KitColumn.create "v" FloatType [ for i in 0..199 -> Float(float i * 0.5) ] ] }
 
               let source = DataFrame.prepare table
 

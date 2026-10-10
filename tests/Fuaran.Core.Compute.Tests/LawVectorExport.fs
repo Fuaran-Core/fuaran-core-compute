@@ -186,10 +186,10 @@ module LawVectorExport =
         let dec (text: string) =
             Cell.decimal text |> Option.defaultValue Null
 
-        { Schema = [ "id", DecimalType; "m", DecimalType ]
+        { Schema = [ Field.create "id" DecimalType; Field.create "m" DecimalType ]
           Columns =
-            [ Column.create "id" DecimalType (ids |> List.map dec)
-              Column.create "m" DecimalType amounts ] }
+            [ KitColumn.create "id" DecimalType (ids |> List.map dec)
+              KitColumn.create "m" DecimalType amounts ] }
 
     let private columnOpCases: (string * ColumnOp) list =
         [ "setCell-decimal", SetCell("m", 0, cents 1999)
@@ -198,9 +198,9 @@ module LawVectorExport =
           "setCell-float-into-decimal-refused", SetCell("m", 0, Float 1.5)
           "setCell-decimal-into-float-refused", SetCell("w", 0, cents 150)
           "setCell-decimal-into-int-refused", SetCell("v", 0, cents 100)
-          "setColumn-decimal", SetColumn(Column.create "m" DecimalType [ cents -5; Null; Int 12; cents 100001 ])
+          "setColumn-decimal", SetColumn(KitColumn.create "m" DecimalType [ cents -5; Null; Int 12; cents 100001 ])
           "insertColumn-decimal",
-          InsertColumn(4, Column.create "fee" DecimalType [ cents 5; cents 0; Null; cents -125 ])
+          InsertColumn(4, KitColumn.create "fee" DecimalType [ cents 5; cents 0; Null; cents -125 ])
           "appendRows-decimal",
           AppendRows(
               [ [ "g", Str "d"; "m", cents 12345; "v", Int 9; "w", Float 0.5 ]

@@ -3,6 +3,7 @@ module Fuaran.Compute.Tests.IncrementalTopNTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---------------------------------------------------------------------------
 //  Phase 207 — a `Limit` admitted to the incremental seam.
@@ -49,11 +50,14 @@ let private ok =
 let private idw = RowIdentity.byColumn "id"
 
 let private table (rows: (string * Cell * Cell) list) : Table =
-    { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+    { Schema =
+        [ Field.create "id" StringType
+          Field.create "a" IntType
+          Field.create "b" IntType ]
       Columns =
-        [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-          Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
-          Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
+        [ KitColumn.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+          KitColumn.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
+          KitColumn.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
 
 /// Prime over `before`, diff to `after`, refresh — the delta is truthful by construction.
 let private step (pipeline: Transform list) (before: Table) (after: Table) =
@@ -68,7 +72,7 @@ let private idsOf (t: Table) : string list =
     match t.Columns |> List.tryFind (fun c -> c.Name = "id") with
     | None -> failtest "the result carries no `id` column"
     | Some c ->
-        c.Cells
+        (Column.toCells c)
         |> List.map (function
             | Str s -> s
             | other -> failtestf "expected a string identity, got %A" other)

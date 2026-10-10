@@ -4,7 +4,7 @@
 # and stage the baselines you meant to move BY NAME — the switch rewrites them all.
 # One ordinal-sorted line per externally-visible type, member, record field and union case.
 # See STABILITY.md "Public-surface baselines" for what each move class means.
-ctor Fuaran.Compute.PipelineQuery..ctor(Fuaran.Core.Query, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>)
+ctor Fuaran.Compute.PipelineQuery..ctor(Fuaran.Core.Query, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>)
 field Fuaran.Compute.ParamRead+Tags.List : System.Int32 (literal)
 field Fuaran.Compute.ParamRead+Tags.Scalar : System.Int32 (literal)
 field Fuaran.Compute.PipelineQueryError+Tags.ParamReadAs : System.Int32 (literal)
@@ -31,7 +31,7 @@ method Fuaran.Compute.PipelineQueryModule.checkResult(Fuaran.Compute.PipelineQue
 method Fuaran.Compute.PipelineQueryModule.namedSources(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.PipelineQueryModule.paramReads(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ParamRead>>
 method Fuaran.Compute.PipelineQueryModule.resultKnowledge(Fuaran.Compute.PipelineQuery) : Fuaran.Compute.SchemaKnowledge
-method Fuaran.Compute.PipelineQueryModule.sources(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>>
+method Fuaran.Compute.PipelineQueryModule.sources(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>>
 method Fuaran.Compute.PipelineQueryModule.substitute(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.Cell>>, Fuaran.Compute.PipelineQuery) : Fuaran.Compute.PipelineQuery
 method Fuaran.Compute.PipelineQueryRegistryModule.declarations(Fuaran.Compute.PipelineQueryRegistry) : Fuaran.Core.QueryRegistry
 method Fuaran.Compute.PipelineQueryRegistryModule.dispatch(Fuaran.Compute.PipelineQueryRegistry, System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.Cell>>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.PipelineQuery, Fuaran.Core.Deferred`1<Fuaran.Core.QueryResult>>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Deferred`1<Fuaran.Core.QueryResult>, Fuaran.Core.QueryError>
@@ -45,7 +45,7 @@ method Fuaran.Compute.PipelineQueryRegistryModule.unregister(System.String, Fuar
 property Fuaran.Compute.PipelineQueryRegistryModule.empty : Fuaran.Compute.PipelineQueryRegistry { get }
 record-field Fuaran.Compute.PipelineQuery.Pipeline #1 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
 record-field Fuaran.Compute.PipelineQuery.Query #0 : Fuaran.Core.Query
-record-field Fuaran.Compute.PipelineQuery.Sources #2 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.ColumnType>>>
+record-field Fuaran.Compute.PipelineQuery.Sources #2 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>
 type Fuaran.Compute.ParamRead (union)
 type Fuaran.Compute.ParamRead+List (type)
 type Fuaran.Compute.ParamRead+Scalar (type)

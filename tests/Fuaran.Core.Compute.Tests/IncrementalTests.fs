@@ -3,6 +3,7 @@ module Fuaran.Compute.Tests.IncrementalTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---------------------------------------------------------------------------
 //  Phase 99 — the incremental `Transform` evaluation seam.
@@ -25,11 +26,14 @@ let private ok =
 let private idw = RowIdentity.byColumn "id"
 
 let private table (rows: (string * Cell * Cell) list) : Table =
-    { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+    { Schema =
+        [ Field.create "id" StringType
+          Field.create "a" IntType
+          Field.create "b" IntType ]
       Columns =
-        [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-          Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
-          Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
+        [ KitColumn.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+          KitColumn.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
+          KitColumn.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
 
 let private baseRows =
     [ "r0", Int 1, Int 0
@@ -70,8 +74,8 @@ let private lagOverB =
 /// The relation the filtering joins match against: two of the three `b` values the base table
 /// carries, so both sides of the verdict are live in every case below.
 let private lookup: Table =
-    { Schema = [ "k", IntType ]
-      Columns = [ Column.create "k" IntType [ Int 0; Int 2 ] ] }
+    { Schema = [ Field.create "k" IntType ]
+      Columns = [ KitColumn.create "k" IntType [ Int 0; Int 2 ] ] }
 
 let private semiOnLookup = Join(Embedded lookup, [ "b", "k" ], Semi)
 let private antiOnLookup = Join(Embedded lookup, [ "b", "k" ], Anti)
@@ -136,8 +140,8 @@ let private windowCaseName (fn: WindowFn) : string =
 let private rowsOf (t: Table) : Cell list list =
     [ for i in 0 .. Table.rowCount t - 1 ->
           t.Schema
-          |> List.map (fun (n, _) ->
-              match Table.tryColumn n t with
+          |> List.map (fun f ->
+              match Table.tryColumn f.Name t with
               | Some c -> Column.cell i c
               | None -> Null) ]
 
@@ -467,7 +471,7 @@ let tests =
               expectMatchesReference pipeline after next
 
               Expect.equal
-                  ((Incremental.result next).Schema |> List.map fst)
+                  ((Incremental.result next).Schema |> List.map (fun (f: Field) -> f.Name))
                   [ "id"; "a"; "b"; "d" ]
                   "the derived column is present in the result"
 
@@ -581,10 +585,14 @@ let tests =
               let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 2))) ]
 
               let wide: Table =
-                  { Schema = [ "id", StringType; "a", IntType; "b", IntType; "c", IntType ]
+                  { Schema =
+                      [ Field.create "id" StringType
+                        Field.create "a" IntType
+                        Field.create "b" IntType
+                        Field.create "c" IntType ]
                     Columns =
                       baseTable.Columns
-                      @ [ Column.create "c" IntType (baseRows |> List.map (fun _ -> Int 1)) ] }
+                      @ [ KitColumn.create "c" IntType (baseRows |> List.map (fun _ -> Int 1)) ] }
 
               let state = ok (Incremental.primeOn idw pipeline baseTable)
               let delta = ok (Delta.diff idw baseTable wide)
@@ -655,11 +663,14 @@ let tests =
               let rows = [ "r0", Int 1, Int 0; "r1", Int 2, Int 0 ]
 
               let nullKeyed: Table =
-                  { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+                  { Schema =
+                      [ Field.create "id" StringType
+                        Field.create "a" IntType
+                        Field.create "b" IntType ]
                     Columns =
-                      [ Column.create "id" StringType [ Null; Str "r1" ]
-                        Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
-                        Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
+                      [ KitColumn.create "id" StringType [ Null; Str "r1" ]
+                        KitColumn.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
+                        KitColumn.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
 
               let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))) ]
               let state = ok (Incremental.primeOn idw pipeline nullKeyed)
@@ -773,7 +784,7 @@ let tests =
               Expect.equal
                   ((Incremental.result next)
                    |> Table.tryColumn "id"
-                   |> Option.map (fun c -> c.Cells))
+                   |> Option.map (fun c -> (Column.toCells c)))
                   (Some [ Str "r0"; Str "r1"; Str "r2"; Str "r3"; Str "r4" ])
                   "the tie keeps arrival order"
 
@@ -795,7 +806,7 @@ let tests =
               Expect.equal
                   ((Incremental.result next)
                    |> Table.tryColumn "id"
-                   |> Option.map (fun c -> c.Cells))
+                   |> Option.map (fun c -> (Column.toCells c)))
                   (Some [ Str "r1"; Str "r0"; Str "r3"; Str "r2"; Str "r4" ])
                   "the order is the reference's over the REVERSED frame, not the cached one"
 
@@ -888,7 +899,7 @@ let tests =
               Expect.equal
                   ((Incremental.result primed)
                    |> Table.tryColumn "prev"
-                   |> Option.map (fun c -> c.Cells))
+                   |> Option.map (fun c -> (Column.toCells c)))
                   (Some [ Null; Int 1; Null; Int 3; Null ])
                   "before: partition b=0 orders r0 (1) then r1 (2), so r1's predecessor is r0's value"
 
@@ -898,7 +909,7 @@ let tests =
               Expect.equal
                   ((Incremental.result next)
                    |> Table.tryColumn "prev"
-                   |> Option.map (fun c -> c.Cells))
+                   |> Option.map (fun c -> (Column.toCells c)))
                   (Some [ Int 2; Null; Null; Int 3; Null ])
                   "after: the unnamed neighbour's cell moved too"
 
@@ -957,14 +968,14 @@ let tests =
               Expect.equal
                   ((Incremental.result primed)
                    |> Table.tryColumn "rk"
-                   |> Option.map (fun c -> c.Cells))
+                   |> Option.map (fun c -> (Column.toCells c)))
                   (Some [ Int 1; Int 2; Int 1; Int 2; Int 1 ])
                   "before: r0 (1) ranks ahead of r1 (2) in partition b=0"
 
               Expect.equal
                   ((Incremental.result next)
                    |> Table.tryColumn "rk"
-                   |> Option.map (fun c -> c.Cells))
+                   |> Option.map (fun c -> (Column.toCells c)))
                   (Some [ Int 2; Int 1; Int 1; Int 2; Int 1 ])
                   "after: the unnamed row's rank moved too"
 
@@ -1090,7 +1101,7 @@ let tests =
               let ids (t: Table) =
                   t
                   |> Table.tryColumn "id"
-                  |> Option.map (fun c -> c.Cells)
+                  |> Option.map (fun c -> (Column.toCells c))
                   |> Option.defaultValue []
 
               Expect.equal
@@ -1152,8 +1163,8 @@ let tests =
                   fun (name: string) ->
                       if name = "lookup" then
                           Ok
-                              { Schema = [ "k", IntType ]
-                                Columns = [ Column.create "k" IntType (ks |> List.map Int) ] }
+                              { Schema = [ Field.create "k" IntType ]
+                                Columns = [ KitColumn.create "k" IntType (ks |> List.map Int) ] }
                       else
                           Error(UnresolvedSource name)
 
@@ -1175,7 +1186,7 @@ let tests =
               Expect.equal
                   ((Incremental.result next)
                    |> Table.tryColumn "id"
-                   |> Option.map (fun c -> c.Cells))
+                   |> Option.map (fun c -> (Column.toCells c)))
                   (Some [ Str "r2"; Str "r3" ])
                   "the rows matching the new relation, not the old one"
 
@@ -1200,11 +1211,14 @@ let tests =
               // those groups twice, and the answer would carry five rows where the reference has
               // three.
               let floats (rows: (string * Cell * int) list) : Table =
-                  { Schema = [ "id", StringType; "k", FloatType; "v", IntType ]
+                  { Schema =
+                      [ Field.create "id" StringType
+                        Field.create "k" FloatType
+                        Field.create "v" IntType ]
                     Columns =
-                      [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-                        Column.create "k" FloatType (rows |> List.map (fun (_, k, _) -> k))
-                        Column.create "v" IntType (rows |> List.map (fun (_, _, v) -> Int v)) ] }
+                      [ KitColumn.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+                        KitColumn.create "k" FloatType (rows |> List.map (fun (_, k, _) -> k))
+                        KitColumn.create "v" IntType (rows |> List.map (fun (_, _, v) -> Int v)) ] }
 
               let otherNaN = Float(System.BitConverter.Int64BitsToDouble 0x7ff8000000000001L)
 
@@ -1229,7 +1243,9 @@ let tests =
 
               // Compared by token, cell for cell: a table holding a NaN is never `=` to itself.
               let tokens (t: Table) =
-                  t.Schema, t.Columns |> List.map (fun c -> c.Cells |> List.map DataFrame.cellToken)
+                  t.Schema,
+                  t.Columns
+                  |> List.map (fun c -> (Column.toCells c) |> List.map DataFrame.cellToken)
 
               Expect.equal
                   (tokens (Incremental.result next))
@@ -1328,8 +1344,8 @@ let preparedTests =
           testCase "primePrepared takes the resolver and env prime takes"
           <| fun _ ->
               let lookup: Table =
-                  { Schema = [ "k", IntType ]
-                    Columns = [ Column.create "k" IntType [ Int 0; Int 2 ] ] }
+                  { Schema = [ Field.create "k" IntType ]
+                    Columns = [ KitColumn.create "k" IntType [ Int 0; Int 2 ] ] }
 
               let resolve name =
                   if name = "lookup" then

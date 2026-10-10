@@ -111,5 +111,10 @@ let tests =
               let f, env, t = MorselHandOff.rebuild h
               Expect.equal t (List.head lines) "the step decodes back to itself"
               Expect.equal env sheetEnv "the environment decodes back to itself"
-              Expect.equal (f.Cols |> List.map fst) [ "id"; "region"; "qty"; "price" ] "the schema"
+
+              Expect.equal
+                  (f.Cols |> List.map (fun (f: Field) -> f.Name))
+                  [ "id"; "region"; "qty"; "price" ]
+                  "the schema"
+
               Expect.equal h.Kinds [| 0; 0; 1; 2 |] "only the columns the step reads are carried" ]

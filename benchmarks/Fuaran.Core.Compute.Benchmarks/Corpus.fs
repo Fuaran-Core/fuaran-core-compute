@@ -32,7 +32,10 @@ let orFail (what: string) (r: Result<'T, 'E>) : 'T =
     | Ok v -> v
     | Error e -> failwithf "benchmark corpus: %s failed: %A" what e
 
-let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column = Column.create name ty cells
+let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column =
+    match Column.ofCells name ty cells with
+    | Ok c -> c
+    | Error e -> failwithf "%s: %A" name e
 
 // ---- the sheet ------------------------------------------------------------------------------
 
@@ -63,7 +66,11 @@ let ordersArrays (n: int) : OrdersArrays =
 
 /// The `orders` table: `id:int, region:string, qty:int, price:float`.
 let ordersTable (a: OrdersArrays) : Table =
-    { Schema = [ "id", IntType; "region", StringType; "qty", IntType; "price", FloatType ]
+    { Schema =
+        [ Field.create "id" IntType
+          Field.create "region" StringType
+          Field.create "qty" IntType
+          Field.create "price" FloatType ]
       Columns =
         [ col "id" IntType [ for v in a.Id -> Int v ]
           col "region" StringType [ for v in a.Region -> Str v ]
@@ -74,7 +81,7 @@ let ordersTable (a: OrdersArrays) : Table =
 /// reads it yet; it is part of the sheet's shape so that a later measurement which joins it into
 /// `byRegion` times the same inputs as every earlier one.
 let targetsTable: Table =
-    { Schema = [ "region", StringType; "target", FloatType ]
+    { Schema = [ Field.create "region" StringType; Field.create "target" FloatType ]
       Columns =
         [ col "region" StringType [ for r in regions -> Str r ]
           col "target" FloatType [ for i in 0 .. regions.Length - 1 -> Float(250_000.0 * float (i + 1)) ] ] }
@@ -163,7 +170,7 @@ let handByRegion (a: OrdersArrays) : HandByRegion =
 
 let private cellsOf (name: string) (t: Table) : Cell list =
     match t.Columns |> List.tryFind (fun c -> c.Name = name) with
-    | Some c -> c.Cells
+    | Some c -> Column.toCells c
     | None -> failwithf "benchmark corpus: the evaluated table has no column '%s'" name
 
 let private expectCells (what: string) (expected: Cell list) (actual: Cell list) =
@@ -242,7 +249,11 @@ let scalingIdentity = RowIdentity.byColumn "id"
 /// The Scaling family's table: a string identity, a grouping key over seventeen values and two
 /// integer measures.
 let scalingTable (n: int) : Table =
-    { Schema = [ "id", StringType; "grp", StringType; "a", IntType; "b", IntType ]
+    { Schema =
+        [ Field.create "id" StringType
+          Field.create "grp" StringType
+          Field.create "a" IntType
+          Field.create "b" IntType ]
       Columns =
         [ col "id" StringType [ for i in 0 .. n - 1 -> Str("r" + string i) ]
           col "grp" StringType [ for i in 0 .. n - 1 -> Str("g" + string (i % 17)) ]
@@ -260,8 +271,10 @@ let editOne (t: Table) : Table =
                 if c.Name <> "a" then
                     c
                 else
-                    { c with
-                        Cells = c.Cells |> List.mapi (fun i cell -> if i = n / 2 then Int -1 else cell) }) }
+                    col
+                        c.Name
+                        c.Type
+                        (Column.toCells c |> List.mapi (fun i cell -> if i = n / 2 then Int -1 else cell))) }
 
 let private everyRow = Filter(Binary(Ge, Col "a", Lit(Int -10)))
 
@@ -313,13 +326,13 @@ let scalingRefresh (r: RefreshInputs) =
 let joinRows = 10_000
 
 let joinLeft () : Table =
-    { Schema = [ "k", IntType; "a", IntType ]
+    { Schema = [ Field.create "k" IntType; Field.create "a" IntType ]
       Columns =
         [ col "k" IntType [ for i in 0 .. joinRows - 1 -> Int((i * 7919) % joinRows) ]
           col "a" IntType [ for i in 0 .. joinRows - 1 -> Int i ] ] }
 
 let joinRight () : Table =
-    { Schema = [ "rk", IntType; "b", IntType ]
+    { Schema = [ Field.create "rk" IntType; Field.create "b" IntType ]
       Columns =
         [ col "rk" IntType [ for i in 0 .. joinRows - 1 -> Int((i * 104729) % joinRows) ]
           col "b" IntType [ for i in 0 .. joinRows - 1 -> Int i ] ] }
@@ -333,7 +346,7 @@ let groupKeys = 10_000
 let groupRows = 2 * groupKeys
 
 let groupTable () : Table =
-    { Schema = [ "key", StringType; "v", IntType ]
+    { Schema = [ Field.create "key" StringType; Field.create "v" IntType ]
       Columns =
         [ col "key" StringType [ for i in 0 .. groupRows - 1 -> Str("k" + string (i % groupKeys)) ]
           col "v" IntType [ for i in 0 .. groupRows - 1 -> Int(i % 100) ] ] }
@@ -349,7 +362,10 @@ let pivotIndexValues = 100
 let pivotRows = pivotOnValues * pivotIndexValues
 
 let pivotTable () : Table =
-    { Schema = [ "idx", StringType; "on", StringType; "v", FloatType ]
+    { Schema =
+        [ Field.create "idx" StringType
+          Field.create "on" StringType
+          Field.create "v" FloatType ]
       Columns =
         [ col "idx" StringType [ for i in 0 .. pivotRows - 1 -> Str("i" + string (i % pivotIndexValues)) ]
           col "on" StringType [ for i in 0 .. pivotRows - 1 -> Str("o" + string (i / pivotIndexValues)) ]
@@ -366,7 +382,7 @@ let pivotPipeline: Transform list =
 let windowRows = 100_000
 
 let windowTable () : Table =
-    { Schema = [ "seq", IntType; "v", IntType ]
+    { Schema = [ Field.create "seq" IntType; Field.create "v" IntType ]
       Columns =
         [ col "seq" IntType [ for i in 0 .. windowRows - 1 -> Int i ]
           col "v" IntType [ for i in 0 .. windowRows - 1 -> Int(i % 10) ] ] }
@@ -384,7 +400,7 @@ let windowPipeline: Transform list =
 let sortRows = 100_000
 
 let sortTable () : Table =
-    { Schema = [ "k1", StringType; "k2", IntType ]
+    { Schema = [ Field.create "k1" StringType; Field.create "k2" IntType ]
       Columns =
         [ col "k1" StringType [ for i in 0 .. sortRows - 1 -> Str("c" + string (i % 100)) ]
           col "k2" IntType [ for i in 0 .. sortRows - 1 -> Int((i * 7919) % sortRows) ] ] }
@@ -470,7 +486,10 @@ let typedCell (ty: ColumnType) (h: int) : Cell =
 
 /// The family's input: `id:int, grp:string, v:<ty>`, `n` rows.
 let typedTable (ty: ColumnType) (n: int) : Table =
-    { Schema = [ "id", IntType; "grp", StringType; "v", ty ]
+    { Schema =
+        [ Field.create "id" IntType
+          Field.create "grp" StringType
+          Field.create "v" ty ]
       Columns =
         [ col "id" IntType [ for i in 0 .. n - 1 -> Int i ]
           col "grp" StringType [ for i in 0 .. n - 1 -> Str("g" + string (i % typedGroups)) ]
@@ -480,7 +499,7 @@ let typedTable (ty: ColumnType) (n: int) : Table =
 /// size, reduced first so the product stays inside int32), so each left row matches exactly one
 /// right row.
 let typedRight (ty: ColumnType) (n: int) : Table =
-    { Schema = [ "rv", ty; "b", IntType ]
+    { Schema = [ Field.create "rv" ty; Field.create "b" IntType ]
       Columns =
         [ col "rv" ty [ for j in 0 .. n - 1 -> typedCell ty (typedHundredths ((j * (104729 % n)) % n)) ]
           col "b" IntType [ for j in 0 .. n - 1 -> Int j ] ] }

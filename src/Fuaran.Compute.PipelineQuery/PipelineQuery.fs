@@ -123,7 +123,7 @@ module PipelineQuery =
     /// The typed columns of a knowledge — the schema the expression typer reads.
     let private typed (k: SchemaKnowledge) : Schema =
         SchemaWalk.columns k
-        |> List.choose (fun c -> c.Type |> Option.map (fun t -> c.Name, t))
+        |> List.choose (fun c -> c.Type |> Option.map (Field.create c.Name))
 
     let private slotRead (readAs: ColumnType) (s: Slot<'T>) : (string * ParamRead) list =
         match s with
@@ -256,7 +256,7 @@ module PipelineQuery =
         | SchemaKnowledge.Closed produced ->
             let declared = pq.Query.ResultSchema
             let producedNames = produced |> List.map _.Name
-            let declaredNames = declared |> List.map fst
+            let declaredNames = declared |> List.map _.Name
 
             let duplicate (names: string list) =
                 names
@@ -284,7 +284,10 @@ module PipelineQuery =
                         | None ->
                             let typeDisagreement =
                                 declared
-                                |> List.tryPick (fun (n, ty) ->
+                                |> List.tryPick (fun f ->
+                                    let n = f.Name
+                                    let ty = f.Type
+
                                     match (produced |> List.find (fun c -> c.Name = n)).Type with
                                     | None -> Some(n, ResultDisagreement.TypeUndecidable ty)
                                     | Some t when t <> ty -> Some(n, ResultDisagreement.TypeDiffers(ty, t))
@@ -538,18 +541,35 @@ module PipelineQueryCodec =
     let private schemaJson (s: Schema) : JVal =
         JArr(
             s
-            |> List.map (fun (n, t) -> JObj [ "name", JStr n; "type", JStr(ColumnType.tag t) ])
+            |> List.map (fun f -> JObj [ "name", JStr f.Name; "type", JStr(ColumnType.tag f.Type) ])
         )
 
+    // The string-error readers this codec is written against, over Core `1.0.0`'s `…With` forms
+    // (the bare `getProp` / `strField` / `mapList` helpers left on that slot).
+    let private getProp (name: string) (el: JVal) : Result<JVal, string> = Decode.propWith Decode.describe name el
+
+    let private strField (name: string) (el: JVal) : Result<string, string> =
+        getProp name el |> Result.bind (Decode.stringWith Decode.describe)
+
+    let private mapList (f: JVal -> Result<'a, string>) (el: JVal) : Result<'a list, string> =
+        Decode.arrayWith Decode.describe el
+        |> Result.bind (fun items ->
+            let rec go acc =
+                function
+                | [] -> Ok(List.rev acc)
+                | x :: rest -> f x |> Result.bind (fun y -> go (y :: acc) rest)
+
+            go [] items)
+
     let private schemaOf (el: JVal) : Result<Schema, string> =
-        Decode.mapList
+        mapList
             (fun e ->
-                Decode.strField "name" e
+                strField "name" e
                 |> Result.bind (fun n ->
-                    Decode.strField "type" e
+                    strField "type" e
                     |> Result.bind (fun tag ->
                         match ColumnType.ofTag tag with
-                        | Some t -> Ok(n, t)
+                        | Some t -> Ok(Field.create n t)
                         | None -> Error("unknown column type: " + tag))))
             el
 
@@ -579,31 +599,30 @@ module PipelineQueryCodec =
     /// refused rather than resolved by order.
     let decodeJson (el: JVal) : Result<PipelineQuery, string> =
         let typeTag =
-            match Decode.strField "$type" el with
+            match strField "$type" el with
             | Ok "pipelineQuery" -> Ok()
             | Ok other -> Error("expected $type pipelineQuery, got " + other)
             | Error m -> Error m
 
         let query () =
-            Decode.getProp "query" el
+            getProp "query" el
             |> Result.bind (fun j ->
                 QueryCodec.decode (Canon.render j)
                 // The substrate's codec answers its decode refusal as text (Core 0.34.0, Phase 295).
                 |> Result.mapError (fun e -> "query: " + e))
 
         let pipeline () =
-            Decode.getProp "pipeline" el
+            getProp "pipeline" el
             |> Result.bind (fun j ->
                 DataFrameCodec.decodePipelineJson j
                 |> Result.mapError (fun e -> "pipeline: " + ColumnCodec.errorString e))
 
         let sources () =
-            Decode.getProp "sources" el
+            getProp "sources" el
             |> Result.bind (
-                Decode.mapList (fun e ->
-                    Decode.strField "name" e
-                    |> Result.bind (fun n ->
-                        Decode.getProp "schema" e |> Result.bind schemaOf |> Result.map (fun s -> n, s)))
+                mapList (fun e ->
+                    strField "name" e
+                    |> Result.bind (fun n -> getProp "schema" e |> Result.bind schemaOf |> Result.map (fun s -> n, s)))
             )
             |> Result.bind (fun pairs ->
                 match pairs |> List.countBy fst |> List.tryFind (fun (_, c) -> c > 1) with

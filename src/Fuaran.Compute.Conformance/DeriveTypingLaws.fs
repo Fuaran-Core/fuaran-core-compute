@@ -16,12 +16,12 @@ open Fuaran.Core
 module DeriveTypingConformance =
 
     let private schema: Schema =
-        [ "id", IntType
-          "i", IntType
-          "f", FloatType
-          "m", DecimalType
-          "b", BoolType
-          "s", StringType ]
+        [ Field.create "id" IntType
+          Field.create "i" IntType
+          Field.create "f" FloatType
+          Field.create "m" DecimalType
+          Field.create "b" BoolType
+          Field.create "s" StringType ]
 
     let private dec (text: string) : Cell =
         Cell.decimal text |> Option.defaultValue Null
@@ -35,11 +35,11 @@ module DeriveTypingConformance =
             if allNull || (i + offset) % 5 = 4 then Null else c
 
         let col name ty (f: int -> Cell) =
-            Column.create name ty [ for i in 0 .. rows - 1 -> present i (f i) ]
+            KitColumn.create name ty [ for i in 0 .. rows - 1 -> present i (f i) ]
 
         { Schema = schema
           Columns =
-            [ Column.create "id" IntType [ for i in 0 .. rows - 1 -> Int i ]
+            [ KitColumn.create "id" IntType [ for i in 0 .. rows - 1 -> Int i ]
               col "i" IntType (fun i -> Int(i * 3 - offset - 4))
               col "f" FloatType (fun i -> Float(float (i + offset) / 4.0))
               col "m" DecimalType (fun i -> dec (string (i - offset) + ".25"))
@@ -80,12 +80,12 @@ module DeriveTypingConformance =
         [ [ "i"; "f" ]; [ "m"; "i" ]; [ "s" ]; [ "s"; "i" ] ]
 
     let private typeOfColumn (name: string) (t: Table) : ColumnType option =
-        t.Schema |> List.tryFind (fun (n, _) -> n = name) |> Option.map snd
+        t.Schema |> List.tryFind (fun f -> f.Name = name) |> Option.map _.Type
 
     let private cellsOf (name: string) (t: Table) : Cell list =
         t.Columns
         |> List.tryFind (fun c -> c.Name = name)
-        |> Option.map (fun c -> c.Cells)
+        |> Option.map (fun c -> (Column.toCells c))
         |> Option.defaultValue []
 
     /// Every present cell of `name` is of the column's type or widens into it.

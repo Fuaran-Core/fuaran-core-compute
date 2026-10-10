@@ -12,6 +12,7 @@ open System.Numerics
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private dec (text: string) : Cell =
     match Cell.decimal text with
@@ -19,15 +20,15 @@ let private dec (text: string) : Cell =
     | None -> failwithf "not decimal text: %s" text
 
 let private table (cols: (string * ColumnType * Cell list) list) : Table =
-    { Schema = cols |> List.map (fun (n, t, _) -> n, t)
-      Columns = cols |> List.map (fun (n, t, cells) -> Column.create n t cells) }
+    { Schema = cols |> List.map (fun (n, t, _) -> Field.create n t)
+      Columns = cols |> List.map (fun (n, t, cells) -> KitColumn.create n t cells) }
 
 /// The single cell an expression answers over a one-row table of `cols`.
 let private eval1 (cols: (string * ColumnType * Cell list) list) (e: ColExpr) : Result<Cell, EvalError> =
     DataFrame.evalPipeline [ Derive("out", e) ] (table cols)
     |> Result.map (fun t ->
         match Table.tryColumn "out" t with
-        | Some c -> List.head c.Cells
+        | Some c -> List.head (Column.toCells c)
         | None -> failwith "no output column")
 
 let private lit (text: string) : ColExpr = Lit(dec text)
@@ -179,7 +180,7 @@ let tests =
               | Error e -> failtestf "%A" e
               | Ok t ->
                   let cell name =
-                      (Table.tryColumn name t |> Option.get).Cells |> List.head
+                      Column.toCells (Table.tryColumn name t |> Option.get) |> List.head
 
                   Expect.equal (cell "sum") (Decimal "1") "the decimal sum is exact"
                   Expect.equal (DataFrame.cellString (cell "sum")) (DataFrame.cellString (cell "total")) "string-equal"
@@ -460,7 +461,7 @@ let tests =
               match DataFrame.evalPipeline [ Transform.sortBy [ "k", Desc ] ] t with
               | Ok r ->
                   Expect.equal
-                      (Table.tryColumn "k" r |> Option.get).Cells
+                      (Column.toCells (Table.tryColumn "k" r |> Option.get))
                       [ dec "2"; dec "1.5"; dec "1.50"; Null ]
                       "the exact order, stable, nulls last"
               | Error e -> failtestf "%A" e
@@ -484,14 +485,18 @@ let tests =
                   match DataFrame.evalPipeline [ spec fn ] t with
                   | Ok r ->
                       Expect.equal
-                          (Table.tryColumn "run" r |> Option.get).Cells
+                          (Column.toCells (Table.tryColumn "run" r |> Option.get))
                           [ dec "0.1"; dec "0.3"; dec "0.6" ]
                           (sprintf "%A" fn)
                   | Error e -> failtestf "%A" e
 
           testCase "the typer and the totality verdict over decimal arithmetic and the rounding nodes"
           <| fun _ ->
-              let schema: Schema = [ "m", DecimalType; "i", IntType; "f", FloatType ]
+              let schema: Schema =
+                  [ Field.create "m" DecimalType
+                    Field.create "i" IntType
+                    Field.create "f" FloatType ]
+
               let ty e = DataFrame.typeOf schema e
               Expect.equal (ty (Binary(Add, Col "m", Col "i"))) (Some DecimalType) "an int promotes"
               Expect.equal (ty (Binary(Add, Col "m", Col "f"))) None "a decimal beside a float is refused"
@@ -565,6 +570,6 @@ let tests =
               let unknown = wire.Replace("half-even", "bankers")
 
               match DataFrameCodec.decodePipeline unknown with
-              | Error(UnknownType("bankers", allowed)) ->
+              | Error(UnknownTag("bankers", allowed)) ->
                   Expect.contains allowed "half-even" "the decode names the modes"
               | other -> failtestf "an unknown mode is a decode error, got %A" other ]

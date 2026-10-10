@@ -8,6 +8,7 @@ module Fuaran.Compute.Tests.DeriveTypingTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private ok r =
     match r with
@@ -15,7 +16,7 @@ let private ok r =
     | Error e -> failtestf "expected Ok, got %A" e
 
 let private typeOf (name: string) (t: Table) : ColumnType option =
-    t.Schema |> List.tryFind (fun (n, _) -> n = name) |> Option.map snd
+    t.Schema |> List.tryFind (fun f -> f.Name = name) |> Option.map _.Type
 
 let private failures (rs: LawResult list) =
     rs |> List.filter (fun r -> not r.Passed) |> List.map _.Law
@@ -28,13 +29,18 @@ let private firstCellRule
     fun env pipeline t ->
         eval env pipeline t
         |> Result.map (fun out ->
-            let retype (name: string, ty: ColumnType) =
-                if List.contains name [ "d"; "value"; "x" ] then
-                    let cells = out.Columns |> List.find (fun c -> c.Name = name) |> (fun c -> c.Cells)
+            let retype (f: Field) =
+                let name = f.Name
 
-                    name, (cells |> List.tryPick Cell.typeOf |> Option.defaultValue StringType)
+                if List.contains name [ "d"; "value"; "x" ] then
+                    let cells =
+                        out.Columns
+                        |> List.find (fun c -> c.Name = name)
+                        |> (fun c -> (Column.toCells c))
+
+                    Field.create name (cells |> List.tryPick Cell.typeOf |> Option.defaultValue StringType)
                 else
-                    name, ty
+                    f
 
             let schema = out.Schema |> List.map retype
 
@@ -42,8 +48,8 @@ let private firstCellRule
               Columns =
                 out.Columns
                 |> List.map (fun c ->
-                    let ty = schema |> List.find (fun (n, _) -> n = c.Name) |> snd
-                    Column.create c.Name ty c.Cells) })
+                    let ty = schema |> List.find (fun f -> f.Name = c.Name) |> _.Type
+                    KitColumn.create c.Name ty (Column.toCells c)) })
 
 /// A perturbation the cells-admitted law exists for: every derived column declared `int`.
 let private allInt
@@ -52,12 +58,14 @@ let private allInt
     fun env pipeline t ->
         eval env pipeline t
         |> Result.map (fun out ->
-            { Schema = out.Schema |> List.map (fun (n, ty) -> if n = "d" then n, IntType else n, ty)
+            { Schema =
+                out.Schema
+                |> List.map (fun f -> if f.Name = "d" then Field.create "d" IntType else f)
               Columns =
                 out.Columns
                 |> List.map (fun c ->
                     if c.Name = "d" then
-                        Column.create "d" IntType c.Cells
+                        KitColumn.create "d" IntType (Column.toCells c)
                     else
                         c) })
 
@@ -103,10 +111,10 @@ let tests =
           testCase "an empty and an all-null frame keep a decided derive's type"
           <| fun _ ->
               let t: Table =
-                  { Schema = [ "i", IntType; "m", DecimalType ]
+                  { Schema = [ Field.create "i" IntType; Field.create "m" DecimalType ]
                     Columns =
-                      [ Column.create "i" IntType [ Null; Null ]
-                        Column.create "m" DecimalType [ Null; Null ] ] }
+                      [ KitColumn.create "i" IntType [ Null; Null ]
+                        KitColumn.create "m" DecimalType [ Null; Null ] ] }
 
               for e, ty in
                   [ Binary(Add, Col "i", Lit(Int 1)), IntType
@@ -124,17 +132,17 @@ let tests =
           <| fun _ ->
               let t: Table =
                   { Schema =
-                      [ "k", StringType
-                        "i", IntType
-                        "f", FloatType
-                        "m", DecimalType
-                        "s", StringType ]
+                      [ Field.create "k" StringType
+                        Field.create "i" IntType
+                        Field.create "f" FloatType
+                        Field.create "m" DecimalType
+                        Field.create "s" StringType ]
                     Columns =
-                      [ Column.create "k" StringType [ Str "a" ]
-                        Column.create "i" IntType [ Int 1 ]
-                        Column.create "f" FloatType [ Float 0.5 ]
-                        Column.create "m" DecimalType [ Cell.decimal "1.5" |> Option.get ]
-                        Column.create "s" StringType [ Str "x" ] ] }
+                      [ KitColumn.create "k" StringType [ Str "a" ]
+                        KitColumn.create "i" IntType [ Int 1 ]
+                        KitColumn.create "f" FloatType [ Float 0.5 ]
+                        KitColumn.create "m" DecimalType [ Cell.decimal "1.5" |> Option.get ]
+                        KitColumn.create "s" StringType [ Str "x" ] ] }
 
               let value values pipeline =
                   DataFrame.evalPipeline (pipeline @ [ Unpivot([ "k" ], values) ]) t
@@ -176,10 +184,10 @@ let tests =
               let idw = RowIdentity.byColumn "id"
 
               let src: Table =
-                  { Schema = [ "id", IntType; "i", IntType ]
+                  { Schema = [ Field.create "id" IntType; Field.create "i" IntType ]
                     Columns =
-                      [ Column.create "id" IntType (rows n Int)
-                        Column.create "i" IntType (rows n Int) ] }
+                      [ KitColumn.create "id" IntType (rows n Int)
+                        KitColumn.create "i" IntType (rows n Int) ] }
 
               let pipeline =
                   [ Derive("y", Case([ Binary(Gt, Col "i", Lit(Int 1500)), Lit(Float 0.5) ], Lit(Int 1)))
@@ -199,8 +207,8 @@ let tests =
               let edited: Table =
                   { src with
                       Columns =
-                          [ Column.create "id" IntType (rows n Int)
-                            Column.create "i" IntType (rows n (fun k -> Int(if k = 3 then 7 else k))) ] }
+                          [ KitColumn.create "id" IntType (rows n Int)
+                            KitColumn.create "i" IntType (rows n (fun k -> Int(if k = 3 then 7 else k))) ] }
 
               let delta = ok (Delta.diff idw src edited)
 
@@ -227,8 +235,8 @@ let tests =
               let idw = RowIdentity.byColumn "id"
 
               let src: Table =
-                  { Schema = [ "id", IntType ]
-                    Columns = [ Column.create "id" IntType (rows n Int) ] }
+                  { Schema = [ Field.create "id" IntType ]
+                    Columns = [ KitColumn.create "id" IntType (rows n Int) ] }
 
               let pipeline =
                   [ Derive("x", Case([ Binary(Gt, Col "id", Lit(Int 1500)), Param "f" ], Param "d")) ]

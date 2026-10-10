@@ -27,12 +27,18 @@ let cardinality (name: string) (n: int) : int =
     | "tenth" -> n / 10
     | _ -> failwithf "benchmark corpus: no cardinality named '%s'" name
 
-let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column = Column.create name ty cells
+let private col (name: string) (ty: ColumnType) (cells: Cell list) : Column =
+    match Column.ofCells name ty cells with
+    | Ok c -> c
+    | Error e -> failwithf "%s: %A" name e
 
 /// The left table: `k`, an int key over `card` values visited in a scrambled order; `s`, an int
 /// that is a permutation of `0 .. n - 1` (distinct, unordered); `v`, a float in whole quarters.
 let table (n: int) (card: int) : Table =
-    { Schema = [ "k", IntType; "s", IntType; "v", FloatType ]
+    { Schema =
+        [ Field.create "k" IntType
+          Field.create "s" IntType
+          Field.create "v" FloatType ]
       Columns =
         [ col "k" IntType [ for i in 0 .. n - 1 -> Int(((i % card) * 7919) % card) ]
           col "s" IntType [ for i in 0 .. n - 1 -> Int(int ((int64 i * 104729L) % int64 n)) ]
@@ -265,9 +271,11 @@ let internal byKeyGroupBy (f: Frame) : Frame =
 
     let present = Array.create groups true
 
-    { Cols = [ "k", IntType; "total", FloatType; "n", IntType ]
+    { Cols =
+        [ Field.create "k" IntType
+          Field.create "total" FloatType
+          Field.create "n" IntType ]
       Vecs = [| Ints(keys, present); Floats(sums, present); Ints(counted, present) |]
-      Origins = Array.create 3 None
       Sel = None
       Count = groups }
 

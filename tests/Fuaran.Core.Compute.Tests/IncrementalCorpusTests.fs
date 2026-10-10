@@ -5,6 +5,7 @@ open System.IO
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---------------------------------------------------------------------------
 //  Phase 115 — the incremental seam measured against a VENDORED corpus vector
@@ -109,14 +110,14 @@ let private fail (what: string) = failtestf "vector: %s" what
 let private mem (name: string) (v: JVal) : JVal =
     match v with
     | JObj kvs ->
-        match kvs |> List.tryFind (fun (k, _) -> k = name) with
+        match kvs |> List.tryFind (fun (n, _) -> n = name) with
         | Some(_, x) -> x
         | None -> fail ("missing member '" + name + "'")
     | _ -> fail ("expected an object to read '" + name + "' from")
 
 let private tryMem (name: string) (v: JVal) : JVal option =
     match v with
-    | JObj kvs -> kvs |> List.tryFind (fun (k, _) -> k = name) |> Option.map snd
+    | JObj kvs -> kvs |> List.tryFind (fun (n, _) -> n = name) |> Option.map snd
     | _ -> None
 
 let private str (v: JVal) : string =
@@ -157,7 +158,7 @@ let private tableOf (v: JVal) : Table =
         v
         |> mem "columns"
         |> arr
-        |> List.map (fun c -> str (mem "name" c), columnTypeOf (str (mem "type" c)))
+        |> List.map (fun c -> Field.create (str (mem "name" c)) (columnTypeOf (str (mem "type" c))))
 
     let rows =
         v
@@ -168,7 +169,7 @@ let private tableOf (v: JVal) : Table =
     { Schema = cols
       Columns =
         cols
-        |> List.mapi (fun i (n, ty) -> Column.create n ty (rows |> List.map (List.item i))) }
+        |> List.mapi (fun i f -> KitColumn.create f.Name f.Type (rows |> List.map (List.item i))) }
 
 let rec private exprOf (v: JVal) : ColExpr =
     match str (mem "expr" v) with
@@ -297,7 +298,7 @@ type private Vector =
 /// an `ordinal` stream is refused rather than run as an identity one, which is the distinction the
 /// family exists to hold.
 let private applyEdits (keyColumn: string) (source: Table) (ops: JVal list) : Table =
-    let names = source.Schema |> List.map fst
+    let names = source.Schema |> List.map (fun (f: Field) -> f.Name)
 
     let keyIdx =
         match names |> List.tryFindIndex (fun n -> n = keyColumn) with
@@ -307,8 +308,8 @@ let private applyEdits (keyColumn: string) (source: Table) (ops: JVal list) : Ta
     let rows0 =
         [ for i in 0 .. Table.rowCount source - 1 ->
               source.Schema
-              |> List.map (fun (n, _) ->
-                  match Table.tryColumn n source with
+              |> List.map (fun f ->
+                  match Table.tryColumn f.Name source with
                   | Some c -> Column.cell i c
                   | None -> Null) ]
 
@@ -347,7 +348,7 @@ let private applyEdits (keyColumn: string) (source: Table) (ops: JVal list) : Ta
     { Schema = source.Schema
       Columns =
         source.Schema
-        |> List.mapi (fun i (n, ty) -> Column.create n ty (rows |> List.map (List.item i))) }
+        |> List.mapi (fun i f -> KitColumn.create f.Name f.Type (rows |> List.map (List.item i))) }
 
 let private readVector (dir: string) (name: string) : Vector =
     let text = File.ReadAllText(Path.Combine(dir, name + ".json"))

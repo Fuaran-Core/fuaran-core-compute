@@ -3,6 +3,7 @@ module Fuaran.Compute.Tests.IncrementalStateCodecTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---------------------------------------------------------------------------
 //  Phase 355 — the incremental state's wire form.
@@ -25,11 +26,14 @@ let private ok =
 let private idw = RowIdentity.byColumn "id"
 
 let private table (rows: (string * Cell * Cell) list) : Table =
-    { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+    { Schema =
+        [ Field.create "id" StringType
+          Field.create "a" IntType
+          Field.create "b" IntType ]
       Columns =
-        [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-          Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
-          Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
+        [ KitColumn.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+          KitColumn.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
+          KitColumn.create "b" IntType (rows |> List.map (fun (_, _, b) -> b)) ] }
 
 let private baseRows =
     [ "r0", Int 1, Int 0
@@ -316,12 +320,16 @@ let tests =
               // normal form or refuses it, and the evaluator reads all four. The state holds the
               // table it was evaluated over.
               let source: Table =
-                  { Schema = [ "id", StringType; "f", FloatType; "m", DecimalType; "gone", IntType ]
+                  { Schema =
+                      [ Field.create "id" StringType
+                        Field.create "f" FloatType
+                        Field.create "m" DecimalType
+                        Field.create "gone" IntType ]
                     Columns =
-                      [ Column.create "f" FloatType [ Int 3; Float 2.5; Null ]
-                        Column.create "id" StringType [ Str "r0"; Str "r1"; Str "r2" ]
-                        Column.create "m" DecimalType [ Decimal "12.50"; Decimal "7" ]
-                        Column.create "extra" IntType [ Int 1; Int 2; Int 3 ] ] }
+                      [ KitColumn.create "f" FloatType [ Int 3; Float 2.5; Null ]
+                        KitColumn.create "id" StringType [ Str "r0"; Str "r1"; Str "r2" ]
+                        KitColumn.create "m" DecimalType [ Decimal "12.50"; Decimal "7" ]
+                        KitColumn.create "extra" IntType [ Int 1; Int 2; Int 3 ] ] }
 
               let p = [ Derive("g", Binary(Add, Col "f", Lit(Int 1))) ]
               let state = ok (Incremental.primeOn idw p source)
@@ -338,7 +346,7 @@ let tests =
                               source.Columns
                               |> List.map (fun c ->
                                   if c.Name = "f" then
-                                      Column.create "f" FloatType [ Float 3.0; Float 2.5; Null ]
+                                      KitColumn.create "f" FloatType [ Float 3.0; Float 2.5; Null ]
                                   else
                                       c) })
                   "an int and the float it widens to are two cells, so two fingerprints"
@@ -349,11 +357,14 @@ let tests =
               // column and the cached cells of the derive after a filter, which the filter's dropped
               // rows never reached.
               let source: Table =
-                  { Schema = [ "id", StringType; "a", IntType; "f", FloatType ]
+                  { Schema =
+                      [ Field.create "id" StringType
+                        Field.create "a" IntType
+                        Field.create "f" FloatType ]
                     Columns =
-                      [ Column.create "id" StringType [ Str "r0"; Str "r1"; Str "r2"; Str "r3" ]
-                        Column.create "a" IntType [ Int 1; Int 5; Int 0; Int 7 ]
-                        Column.create "f" FloatType [ Float(-0.0); Float nan; Int 2; Float infinity ] ] }
+                      [ KitColumn.create "id" StringType [ Str "r0"; Str "r1"; Str "r2"; Str "r3" ]
+                        KitColumn.create "a" IntType [ Int 1; Int 5; Int 0; Int 7 ]
+                        KitColumn.create "f" FloatType [ Float(-0.0); Float nan; Int 2; Float infinity ] ] }
 
               let p =
                   [ Filter(Binary(Gt, Col "a", Lit(Int 0)))
@@ -369,7 +380,7 @@ let tests =
 
               match Incremental.source decoded |> Table.tryColumn "f" with
               | Some c ->
-                  match c.Cells with
+                  match (Column.toCells c) with
                   | [ Float z; Float n; Int 2; Float i ] ->
                       Expect.isTrue (isNegativeZero z) "the negative zero keeps its sign"
                       Expect.isTrue (System.Double.IsNaN n) "the NaN is a NaN"
@@ -525,8 +536,8 @@ let tests =
               // value that was encoded nor the one the consumer builds again; the hash is what
               // recognises the consumer's pipeline.
               let relation (k: Cell) : Table =
-                  { Schema = [ "k", FloatType ]
-                    Columns = [ Column.create "k" FloatType [ k ] ] }
+                  { Schema = [ Field.create "k" FloatType ]
+                    Columns = [ KitColumn.create "k" FloatType [ k ] ] }
 
               let written = [ Join(Embedded(relation (Int 1)), [ "b", "k" ], Semi) ]
               let normal = [ Join(Embedded(relation (Float 1.0)), [ "b", "k" ], Semi) ]
@@ -690,7 +701,7 @@ let tests =
                | other -> failtestf "an array: %A" other)
 
               (match IncrementalCodec.decode "{\"$type\":\"rowSet\",\"body\":{},\"digest\":\"\"}" with
-               | Error(UnknownType("rowSet", [ "incrementalState" ])) -> ()
+               | Error(UnknownTag("rowSet", [ "incrementalState" ])) -> ()
                | other -> failtestf "another document: %A" other)
 
               // One character of the row tokens' shared prefix: still JSON, still the right shape, no
@@ -730,10 +741,10 @@ let tests =
               let lone = string (char 0xD800)
 
               let source: Table =
-                  { Schema = [ "id", StringType; "s", StringType ]
+                  { Schema = [ Field.create "id" StringType; Field.create "s" StringType ]
                     Columns =
-                      [ Column.create "id" StringType [ Str "r0" ]
-                        Column.create "s" StringType [ Str("x" + lone) ] ] }
+                      [ KitColumn.create "id" StringType [ Str "r0" ]
+                        KitColumn.create "s" StringType [ Str("x" + lone) ] ] }
 
               let state = ok (Incremental.primeOn idw [ Derive("t", Col "s") ] source)
 

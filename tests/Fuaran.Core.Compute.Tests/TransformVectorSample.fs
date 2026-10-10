@@ -136,12 +136,16 @@ module TransformVectorSample =
                   else
                       cents ((i * 137 + offset * 25) % 500 - 200) ]
 
-        { Schema = [ "g", StringType; "m", DecimalType; "v", IntType; "w", FloatType ]
+        { Schema =
+            [ Field.create "g" StringType
+              Field.create "m" DecimalType
+              Field.create "v" IntType
+              Field.create "w" FloatType ]
           Columns =
-            [ Column.create "g" StringType g
-              Column.create "m" DecimalType m
-              Column.create "v" IntType v
-              Column.create "w" FloatType w ] }
+            [ KitColumn.create "g" StringType g
+              KitColumn.create "m" DecimalType m
+              KitColumn.create "v" IntType v
+              KitColumn.create "w" FloatType w ] }
 
     let private decimalPipelineOf (shape: string) (rows: int) (offset: int) : Transform list =
         let m = Col "m"
@@ -278,11 +282,14 @@ module TransformVectorSample =
         let w = [ for i in 0 .. rows - 1 -> Float(float (i + offset) / 2.0) ]
 
         let table: Table =
-            { Schema = [ "g", StringType; "v", IntType; "w", FloatType ]
+            { Schema =
+                [ Field.create "g" StringType
+                  Field.create "v" IntType
+                  Field.create "w" FloatType ]
               Columns =
-                [ Column.create "g" StringType g
-                  Column.create "v" IntType v
-                  Column.create "w" FloatType w ] }
+                [ KitColumn.create "g" StringType g
+                  KitColumn.create "v" IntType v
+                  KitColumn.create "w" FloatType w ] }
 
         table, pipelineOf (iteration % List.length baseShapeNames)
 

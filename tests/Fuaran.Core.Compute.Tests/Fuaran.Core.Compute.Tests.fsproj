@@ -8,6 +8,8 @@
   <ItemGroup>
     <!-- The repository root, the UTF-8 child-process reader, the committed conformance/ directory
          and the shared-corpus lookup: the infrastructure the law-vector legs read. -->
+    <!-- Phase 423: the suite's total column-from-cells builder over Core 1.0.0's `Column.ofCells`. -->
+    <Compile Include="KitColumn.fs" />
     <Compile Include="Snapshots.fs" />
     <Compile Include="ChildProcess.fs" />
     <Compile Include="OwnedConformance.fs" />

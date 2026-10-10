@@ -56,6 +56,7 @@ open System.Diagnostics
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private ok =
     function
@@ -182,12 +183,16 @@ let private diffFloorAllocBound = 2.0
 /// is bounded so the `GroupBy` produces a small result whatever the source size, which keeps the
 /// measurement about the SOURCE scan rather than about the output.
 let private build (n: int) : Table =
-    { Schema = [ "id", StringType; "grp", StringType; "a", IntType; "b", IntType ]
+    { Schema =
+        [ Field.create "id" StringType
+          Field.create "grp" StringType
+          Field.create "a" IntType
+          Field.create "b" IntType ]
       Columns =
-        [ Column.create "id" StringType [ for i in 0 .. n - 1 -> Str("r" + string i) ]
-          Column.create "grp" StringType [ for i in 0 .. n - 1 -> Str("g" + string (i % 17)) ]
-          Column.create "a" IntType [ for i in 0 .. n - 1 -> Int i ]
-          Column.create "b" IntType [ for i in 0 .. n - 1 -> Int(i % 7) ] ]
+        [ KitColumn.create "id" StringType [ for i in 0 .. n - 1 -> Str("r" + string i) ]
+          KitColumn.create "grp" StringType [ for i in 0 .. n - 1 -> Str("g" + string (i % 17)) ]
+          KitColumn.create "a" IntType [ for i in 0 .. n - 1 -> Int i ]
+          KitColumn.create "b" IntType [ for i in 0 .. n - 1 -> Int(i % 7) ] ]
 
     }
 
@@ -201,12 +206,16 @@ let private buildDecimal (n: int) : Table =
         | Some c -> c
         | None -> failwithf "not decimal text: %s" text
 
-    { Schema = [ "id", DecimalType; "grp", DecimalType; "a", IntType; "b", DecimalType ]
+    { Schema =
+        [ Field.create "id" DecimalType
+          Field.create "grp" DecimalType
+          Field.create "a" IntType
+          Field.create "b" DecimalType ]
       Columns =
-        [ Column.create "id" DecimalType [ for i in 0 .. n - 1 -> dec (string i + ".5") ]
-          Column.create "grp" DecimalType [ for i in 0 .. n - 1 -> dec (string (i % 17) + ".25") ]
-          Column.create "a" IntType [ for i in 0 .. n - 1 -> Int i ]
-          Column.create "b" DecimalType [ for i in 0 .. n - 1 -> dec (string (i % 7) + ".01") ] ] }
+        [ KitColumn.create "id" DecimalType [ for i in 0 .. n - 1 -> dec (string i + ".5") ]
+          KitColumn.create "grp" DecimalType [ for i in 0 .. n - 1 -> dec (string (i % 17) + ".25") ]
+          KitColumn.create "a" IntType [ for i in 0 .. n - 1 -> Int i ]
+          KitColumn.create "b" DecimalType [ for i in 0 .. n - 1 -> dec (string (i % 7) + ".01") ] ] }
 
 /// Edit ONE row of the table — the delta the incremental seam is meant to answer cheaply.
 let private editOne (t: Table) : Table =
@@ -219,8 +228,10 @@ let private editOne (t: Table) : Table =
                 if c.Name <> "a" then
                     c
                 else
-                    { c with
-                        Cells = c.Cells |> List.mapi (fun i cell -> if i = n / 2 then Int -1 else cell) }) }
+                    KitColumn.create
+                        c.Name
+                        c.Type
+                        (Column.toCells c |> List.mapi (fun i cell -> if i = n / 2 then Int -1 else cell))) }
 
 /// The probe's pipeline: a row-local predicate every row satisfies (so the evaluator really does
 /// evaluate one expression per row — a filter that discarded rows would flatter the larger size),
@@ -473,12 +484,16 @@ type private CorpusNode =
 let private corpusRegions = [| "north"; "south"; "east"; "west"; "central" |]
 
 let private corpusOrders n : Table =
-    { Schema = [ "id", IntType; "region", StringType; "qty", IntType; "price", FloatType ]
+    { Schema =
+        [ Field.create "id" IntType
+          Field.create "region" StringType
+          Field.create "qty" IntType
+          Field.create "price" FloatType ]
       Columns =
-        [ Column.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
-          Column.create "region" StringType [ for i in 0 .. n - 1 -> Str corpusRegions[(i * 3 + i / 7) % 5] ]
-          Column.create "qty" IntType [ for i in 0 .. n - 1 -> Int(1 + (i * 7 + i / 3) % 20) ]
-          Column.create "price" FloatType [ for i in 0 .. n - 1 -> Float(float (4 + (i * 13) % 397) * 0.25) ] ] }
+        [ KitColumn.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+          KitColumn.create "region" StringType [ for i in 0 .. n - 1 -> Str corpusRegions[(i * 3 + i / 7) % 5] ]
+          KitColumn.create "qty" IntType [ for i in 0 .. n - 1 -> Int(1 + (i * 7 + i / 3) % 20) ]
+          KitColumn.create "price" FloatType [ for i in 0 .. n - 1 -> Float(float (4 + (i * 13) % 397) * 0.25) ] ] }
 
 let private corpusAmount = Derive("amount", Binary(Mul, Col "qty", Col "price"))
 
@@ -491,45 +506,52 @@ let private corpusSheetEnv = Map.ofList [ "threshold", Float 500.0 ]
 
 let private corpusNodes: CorpusNode list =
     let joinLeft n : Table =
-        { Schema = [ "k", IntType; "a", IntType ]
+        { Schema = [ Field.create "k" IntType; Field.create "a" IntType ]
           Columns =
-            [ Column.create "k" IntType [ for i in 0 .. n - 1 -> Int((i * 7919) % n) ]
-              Column.create "a" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+            [ KitColumn.create "k" IntType [ for i in 0 .. n - 1 -> Int((i * 7919) % n) ]
+              KitColumn.create "a" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
 
     let joinRight n : Table =
-        { Schema = [ "rk", IntType; "b", IntType ]
+        { Schema = [ Field.create "rk" IntType; Field.create "b" IntType ]
           Columns =
-            [ Column.create "rk" IntType [ for i in 0 .. n - 1 -> Int((i * 104729) % n) ]
-              Column.create "b" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+            [ KitColumn.create "rk" IntType [ for i in 0 .. n - 1 -> Int((i * 104729) % n) ]
+              KitColumn.create "b" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
 
     let groupTable n : Table =
         let keys = max 1 (n / 2)
 
-        { Schema = [ "rid", IntType; "key", StringType; "v", IntType ]
+        { Schema =
+            [ Field.create "rid" IntType
+              Field.create "key" StringType
+              Field.create "v" IntType ]
           Columns =
-            [ Column.create "rid" IntType [ for i in 0 .. n - 1 -> Int i ]
-              Column.create "key" StringType [ for i in 0 .. n - 1 -> Str("k" + string (i % keys)) ]
-              Column.create "v" IntType [ for i in 0 .. n - 1 -> Int(i % 100) ] ] }
+            [ KitColumn.create "rid" IntType [ for i in 0 .. n - 1 -> Int i ]
+              KitColumn.create "key" StringType [ for i in 0 .. n - 1 -> Str("k" + string (i % keys)) ]
+              KitColumn.create "v" IntType [ for i in 0 .. n - 1 -> Int(i % 100) ] ] }
 
     let pivotTable n : Table =
-        { Schema = [ "rid", IntType; "idx", StringType; "on", StringType; "v", FloatType ]
+        { Schema =
+            [ Field.create "rid" IntType
+              Field.create "idx" StringType
+              Field.create "on" StringType
+              Field.create "v" FloatType ]
           Columns =
-            [ Column.create "rid" IntType [ for i in 0 .. n - 1 -> Int i ]
-              Column.create "idx" StringType [ for i in 0 .. n - 1 -> Str("i" + string (i % 100)) ]
-              Column.create "on" StringType [ for i in 0 .. n - 1 -> Str("o" + string ((i / 100) % 50)) ]
-              Column.create "v" FloatType [ for i in 0 .. n - 1 -> Float(float (i % 13) * 0.5) ] ] }
+            [ KitColumn.create "rid" IntType [ for i in 0 .. n - 1 -> Int i ]
+              KitColumn.create "idx" StringType [ for i in 0 .. n - 1 -> Str("i" + string (i % 100)) ]
+              KitColumn.create "on" StringType [ for i in 0 .. n - 1 -> Str("o" + string ((i / 100) % 50)) ]
+              KitColumn.create "v" FloatType [ for i in 0 .. n - 1 -> Float(float (i % 13) * 0.5) ] ] }
 
     let windowTable n : Table =
-        { Schema = [ "seq", IntType; "v", IntType ]
+        { Schema = [ Field.create "seq" IntType; Field.create "v" IntType ]
           Columns =
-            [ Column.create "seq" IntType [ for i in 0 .. n - 1 -> Int i ]
-              Column.create "v" IntType [ for i in 0 .. n - 1 -> Int(i % 10) ] ] }
+            [ KitColumn.create "seq" IntType [ for i in 0 .. n - 1 -> Int i ]
+              KitColumn.create "v" IntType [ for i in 0 .. n - 1 -> Int(i % 10) ] ] }
 
     let sortTable n : Table =
-        { Schema = [ "k1", StringType; "k2", IntType ]
+        { Schema = [ Field.create "k1" StringType; Field.create "k2" IntType ]
           Columns =
-            [ Column.create "k1" StringType [ for i in 0 .. n - 1 -> Str("c" + string (i % 100)) ]
-              Column.create "k2" IntType [ for i in 0 .. n - 1 -> Int((i * 7919) % n) ] ] }
+            [ KitColumn.create "k1" StringType [ for i in 0 .. n - 1 -> Str("c" + string (i % 100)) ]
+              KitColumn.create "k2" IntType [ for i in 0 .. n - 1 -> Int((i * 7919) % n) ] ] }
 
     [ { Name = "lines"
         IdCol = "id"
@@ -636,8 +658,10 @@ let private setCell (colName: string) (row: int) (v: Cell) (t: Table) : Table =
                 if c.Name <> colName then
                     c
                 else
-                    { c with
-                        Cells = c.Cells |> List.mapi (fun i x -> if i = row then v else x) }) }
+                    KitColumn.create
+                        c.Name
+                        c.Type
+                        (Column.toCells c |> List.mapi (fun i x -> if i = row then v else x))) }
 
 /// Phase 359 — `t` with `k` rows APPENDED the way `ColumnOps.AppendRows` appends them: every column's list is
 /// `before @ extra`, so the prefix's cells are the very cells of `t`, in new lists. The appended rows
@@ -654,13 +678,13 @@ let private appendTo (nd: CorpusNode) (k: int) (t: Table) : Table =
                 let extra =
                     if c.Name = nd.IdCol then
                         [ for j in 0 .. k - 1 ->
-                              match List.head c.Cells with
+                              match List.head (Column.toCells c) with
                               | Int _ -> Int(10_000_000 + n + j)
                               | _ -> Str("z" + string (n + j)) ]
                     else
-                        (Table.tryColumn c.Name big).Value.Cells |> List.skip n
+                        Column.toCells (Table.tryColumn c.Name big).Value |> List.skip n
 
-                { c with Cells = c.Cells @ extra }) }
+                KitColumn.create c.Name c.Type (Column.toCells c @ extra)) }
 
 /// Best of `runs` BATCHED samples, in ms per call: each sample repeats `f` until it spans at least
 /// 20 ms, so a 1,000-row node whose one call takes a tenth of a millisecond is timed over a window
@@ -1258,11 +1282,11 @@ let clockTests =
               let names = [ for c in 0 .. width - 1 -> "c" + string c ]
 
               let wide: Table =
-                  { Schema = names |> List.map (fun n -> n, IntType)
+                  { Schema = names |> List.map (fun n -> Field.create n IntType)
                     Columns =
                       names
                       |> List.map (fun n ->
-                          Column.create n IntType [ for i in 0 .. rows - 1 -> Int((i * 7919) % rows) ]) }
+                          KitColumn.create n IntType [ for i in 0 .. rows - 1 -> Int((i * 7919) % rows) ]) }
 
               // A row expression that names the column 129 times (the costly cases' chain, sixty-four
               // levels deep and rebuilt over `name`) and a sort keyed on it: the two places the lookup
@@ -1332,10 +1356,10 @@ let clockTests =
               // at 250 rows and 3806 ms at 5,000, ratio 416.5 (red, a quadratic's signature); after,
               // 0.40 ms and 9.7 ms, ratio 24.5.
               let side (n: int) (offset: int) (payload: string) : Table =
-                  { Schema = [ "k", IntType; payload, IntType ]
+                  { Schema = [ Field.create "k" IntType; Field.create payload IntType ]
                     Columns =
-                      [ Column.create "k" IntType [ for i in 0 .. n - 1 -> Int(i + offset) ]
-                        Column.create payload IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+                      [ KitColumn.create "k" IntType [ for i in 0 .. n - 1 -> Int(i + offset) ]
+                        KitColumn.create payload IntType [ for i in 0 .. n - 1 -> Int i ] ] }
 
               let joinOf (n: int) =
                   let left = side n 0 "l"
@@ -1362,11 +1386,14 @@ let clockTests =
               // at 250 rows and 768 ms at 5,000, ratio 384.8 (red); after, 0.26 ms and 4.4 ms, ratio
               // about 17.
               let src (n: int) : Table =
-                  { Schema = [ "g", IntType; "o", StringType; "v", IntType ]
+                  { Schema =
+                      [ Field.create "g" IntType
+                        Field.create "o" StringType
+                        Field.create "v" IntType ]
                     Columns =
-                      [ Column.create "g" IntType [ for i in 0 .. n - 1 -> Int(i % (n / 10)) ]
-                        Column.create "o" StringType [ for i in 0 .. n - 1 -> Str("o" + string (i % 10)) ]
-                        Column.create "v" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+                      [ KitColumn.create "g" IntType [ for i in 0 .. n - 1 -> Int(i % (n / 10)) ]
+                        KitColumn.create "o" StringType [ for i in 0 .. n - 1 -> Str("o" + string (i % 10)) ]
+                        KitColumn.create "v" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
 
               let pivotOf (n: int) =
                   let t = src n
@@ -1407,10 +1434,10 @@ let clockTests =
               // rows alike, and 20,000 to 40,000 rows doubles the time: linear, with a collector
               // constant that only the larger leg pays.
               let src (n: int) : Table =
-                  { Schema = [ "k", StringType; "v", IntType ]
+                  { Schema = [ Field.create "k" StringType; Field.create "v" IntType ]
                     Columns =
-                      [ Column.create "k" StringType [ for i in 0 .. n - 1 -> Str("k" + string i) ]
-                        Column.create "v" IntType [ for i in 0 .. n - 1 -> Int(i % 100) ] ] }
+                      [ KitColumn.create "k" StringType [ for i in 0 .. n - 1 -> Str("k" + string i) ]
+                        KitColumn.create "v" IntType [ for i in 0 .. n - 1 -> Int(i % 100) ] ] }
 
               let groupOf (n: int) =
                   let t = src n
@@ -1436,10 +1463,10 @@ let clockTests =
               // at 1,000 rows and 19.7 ms at 20,000, ratio 45.0 (a persistent set of token lists);
               // after, 0.07 ms and 1.6 ms, ratio about 23.
               let src (n: int) : Table =
-                  { Schema = [ "k", StringType; "v", IntType ]
+                  { Schema = [ Field.create "k" StringType; Field.create "v" IntType ]
                     Columns =
-                      [ Column.create "k" StringType [ for i in 0 .. n - 1 -> Str("k" + string (i % (n / 2))) ]
-                        Column.create "v" IntType [ for i in 0 .. n - 1 -> Int((i % (n / 2)) % 100) ] ] }
+                      [ KitColumn.create "k" StringType [ for i in 0 .. n - 1 -> Str("k" + string (i % (n / 2))) ]
+                        KitColumn.create "v" IntType [ for i in 0 .. n - 1 -> Int((i % (n / 2)) % 100) ] ] }
 
               let distinctOf (n: int) =
                   let t = src n
@@ -1979,7 +2006,7 @@ let appendTests =
 
                       let rekeyed =
                           let moved =
-                              match List.head (Table.tryColumn nd.IdCol before).Value.Cells with
+                              match List.head (Column.toCells (Table.tryColumn nd.IdCol before).Value) with
                               | Int _ -> Int(-1 - row)
                               | _ -> Str("moved" + string row)
 
@@ -2083,11 +2110,14 @@ let appendTests =
                           vs
 
                   let mk (idCells: Cell list) (k2Cells: Cell list) (v: Cell list) : Table =
-                      { Schema = [ "id", StringType; "k2", IntType; "v", FloatType ]
+                      { Schema =
+                          [ Field.create "id" StringType
+                            Field.create "k2" IntType
+                            Field.create "v" FloatType ]
                         Columns =
-                          [ Column.create "id" StringType idCells
-                            Column.create "k2" IntType k2Cells
-                            Column.create "v" FloatType v ] }
+                          [ KitColumn.create "id" StringType idCells
+                            KitColumn.create "k2" IntType k2Cells
+                            KitColumn.create "v" FloatType v ] }
 
                   let before = mk ids k2 vs
 
@@ -2122,8 +2152,8 @@ let appendTests =
               let rng = System.Random 359
 
               let mk (ids: Cell list) : Table =
-                  { Schema = [ "id", IntType ]
-                    Columns = [ Column.create "id" IntType ids ] }
+                  { Schema = [ Field.create "id" IntType ]
+                    Columns = [ KitColumn.create "id" IntType ids ] }
 
               let mutable before = mk [ for i in 0..49 -> Int i ]
               let mutable next = 50
@@ -2134,7 +2164,7 @@ let appendTests =
 
               for tick in 1..200 do
                   let k = 1 + rng.Next(if tick % 50 = 0 then 300 else 4)
-                  let ids = (Table.tryColumn "id" before).Value.Cells
+                  let ids = Column.toCells (Table.tryColumn "id" before).Value
                   let fresh = [ for j in 0 .. k - 1 -> Int(next + j) ]
 
                   // One tick in seven repeats a key the table already holds, from any depth of it.

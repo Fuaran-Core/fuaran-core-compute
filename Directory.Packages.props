@@ -3,7 +3,7 @@
     <!-- ONE property for every Fuaran.Core package this repository pins: they are produced by one
          repository at one version, so one number is the only honest way to name them. Raise it in
          one edit, and only to a version the public registry serves. -->
-    <FuaranCoreVersion>0.36.0</FuaranCoreVersion>
+    <FuaranCoreVersion>1.0.0</FuaranCoreVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="FSharp.Core" Version="10.1.300" />

@@ -14,6 +14,7 @@ module Fuaran.Compute.Tests.DecimalStrandTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private ok =
     function
@@ -26,12 +27,12 @@ let private dec (text: string) : Cell =
     | None -> failwithf "not decimal text: %s" text
 
 let private table (cols: (string * ColumnType * Cell list) list) : Table =
-    { Schema = cols |> List.map (fun (n, t, _) -> n, t)
-      Columns = cols |> List.map (fun (n, t, cells) -> Column.create n t cells) }
+    { Schema = cols |> List.map (fun (n, t, _) -> Field.create n t)
+      Columns = cols |> List.map (fun (n, t, cells) -> KitColumn.create n t cells) }
 
 let private cellsOf (name: string) (t: Table) : Cell list =
     match Table.tryColumn name t with
-    | Some c -> c.Cells
+    | Some c -> (Column.toCells c)
     | None -> failtestf "no column %s" name
 
 let private typeOfCol (name: string) (t: Table) : ColumnType =
@@ -88,7 +89,7 @@ let floatOrderTests =
           testCase "the sort's first value is the aggregate's Max, NaN included"
           <| fun _ ->
               let desc = ok (DataFrame.evalPipeline [ Transform.sortBy [ "f", Desc ] ] floats)
-              let col = Column.create "f" FloatType (cellsOf "f" floats)
+              let col = KitColumn.create "f" FloatType (cellsOf "f" floats)
 
               Expect.equal
                   (DataFrame.cellToken (List.head (cellsOf "f" desc)))
@@ -119,8 +120,8 @@ let columnOpsTests =
                   ok (
                       ColumnOps.applyAll
                           [ SetCell("amount", 0, dec "9.99")
-                            SetColumn(Column.create "amount" DecimalType [ dec "0.1"; dec "0.2" ])
-                            InsertColumn(4, Column.create "fee" DecimalType [ dec "0.05"; Null ])
+                            SetColumn(KitColumn.create "amount" DecimalType [ dec "0.1"; dec "0.2" ])
+                            InsertColumn(4, KitColumn.create "fee" DecimalType [ dec "0.05"; Null ])
                             AppendRows(
                                 [ [ "id", Str "c"
                                     "amount", dec "100"
@@ -159,7 +160,7 @@ let columnOpsTests =
                   [ SetCell("amount", 0, Int 7)
                     SetCell("amount", 1, dec "3.125")
                     SetCell("rate", 1, Int 4)
-                    SetColumn(Column.create "amount" DecimalType [ Int 1; dec "2.5" ]) ] do
+                    SetColumn(KitColumn.create "amount" DecimalType [ Int 1; dec "2.5" ]) ] do
                   let inverse = ok (ColumnOps.invert op ledger)
                   let after = ok (ColumnOps.apply op ledger)
                   Expect.equal (ok (ColumnOps.apply inverse after)) ledger (sprintf "%A round-trips" op)
@@ -169,7 +170,7 @@ let columnOpsTests =
               for op in
                   [ SetCell("amount", 0, dec "1234567890.0001")
                     SetCell("amount", 1, Int 7)
-                    SetColumn(Column.create "amount" DecimalType [ dec "-0.5"; Null ])
+                    SetColumn(KitColumn.create "amount" DecimalType [ dec "-0.5"; Null ])
                     AppendRows([ [ "id", Str "c"; "amount", dec "0.001" ] ]) ] do
                   let wire = ColumnOps.encode op
                   let back = ok (ColumnOps.decode wire)
@@ -326,11 +327,11 @@ let derivedTypeTests =
               Expect.equal (typeOfCol "x" t) FloatType "one family present: the cells type it"
 
               // And the verdict declines both shapes.
-              Expect.isFalse (Plan.isTotal [ "i", IntType ] mix) "the static mix is not total"
+              Expect.isFalse (Plan.isTotal [ Field.create "i" IntType ] mix) "the static mix is not total"
 
               Expect.isFalse
                   (Plan.isTotal
-                      [ "i", IntType ]
+                      [ Field.create "i" IntType ]
                       (Derive("x", Case([ Binary(Gt, Col "i", Lit(Int 1)), Lit(Float 0.5) ], Lit(Int 1)))))
                   "a cells-typed derive is not total"
 
@@ -359,7 +360,7 @@ let derivedTypeTests =
           <| fun _ ->
               // `Of FloatType` would let `x + x` read as total while both are ints that can overflow.
               let e = Case([ Binary(Gt, Col "i", Lit(Int 1)), Lit(Float 2.5) ], Col "i")
-              Expect.equal (DataFrame.typeOf [ "i", IntType ] e) None "undecided, not widened" ]
+              Expect.equal (DataFrame.typeOf [ Field.create "i" IntType ] e) None "undecided, not widened" ]
 
 // ---- every public entry point, walked with a decimal column -----------------------------------
 

@@ -124,7 +124,7 @@ module IncrementalDelta =
     /// Phase 321 — and a decimal column `m`, derived from `a` (its digits with `.25` appended, a null
     /// where `a` is null), so it moves with every edit to `a` and costs the draw nothing.
     let private moneyOf (rows: (string * Cell * Cell) list) : Column =
-        Column.create
+        KitColumn.create
             "m"
             DecimalType
             (rows
@@ -134,31 +134,40 @@ module IncrementalDelta =
                  | _ -> Null))
 
     let private mkTable (rows: (string * Cell * Cell) list) : Table =
-        { Schema = [ "id", StringType; "a", IntType; "b", IntType; "m", DecimalType ]
+        { Schema =
+            [ Field.create "id" StringType
+              Field.create "a" IntType
+              Field.create "b" IntType
+              Field.create "m" DecimalType ]
           Columns =
-            [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-              Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
-              Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b))
+            [ KitColumn.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+              KitColumn.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
+              KitColumn.create "b" IntType (rows |> List.map (fun (_, _, b) -> b))
               moneyOf rows ] }
 
     /// The same rows with a fourth column — a SCHEMA change, which is not a row change and which
     /// the seam must recognise as such rather than diff its way through.
     let private mkWideTable (rows: (string * Cell * Cell) list) : Table =
-        { Schema = [ "id", StringType; "a", IntType; "b", IntType; "m", DecimalType; "c", IntType ]
+        { Schema =
+            [ Field.create "id" StringType
+              Field.create "a" IntType
+              Field.create "b" IntType
+              Field.create "m" DecimalType
+              Field.create "c" IntType ]
           Columns =
-            [ Column.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
-              Column.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
-              Column.create "b" IntType (rows |> List.map (fun (_, _, b) -> b))
+            [ KitColumn.create "id" StringType (rows |> List.map (fun (i, _, _) -> Str i))
+              KitColumn.create "a" IntType (rows |> List.map (fun (_, a, _) -> a))
+              KitColumn.create "b" IntType (rows |> List.map (fun (_, _, b) -> b))
               moneyOf rows
-              Column.create "c" IntType (rows |> List.map (fun _ -> Int 1)) ] }
+              KitColumn.create "c" IntType (rows |> List.map (fun _ -> Int 1)) ] }
 
     /// The relation the filtering-join pipelines match against (Phase 120): a two-row lookup on
     /// `k`, holding two of the three values `b` is drawn from. A semi join over it therefore keeps
     /// roughly two thirds of any generated table and an anti join the rest, so both sides of the
     /// verdict arise in every table rather than in the lucky ones.
     let private lookup: Table =
-        { Schema = [ "k", IntType ]
-          Columns = [ Column.create "k" IntType [ Int 0; Int 2 ] ] }
+        { Schema = [ Field.create "k" IntType ]
+          Columns = [ KitColumn.create "k" IntType [ Int 0; Int 2 ] ] }
 
     /// The pipelines. The DECLINED ones are `6`, `18`, `31`, `35` and the `_` arm; every other
     /// index is incrementalisable. They are present because a fall-back that returns the wrong

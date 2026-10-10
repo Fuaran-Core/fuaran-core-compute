@@ -79,18 +79,27 @@ module ColumnOps =
             | Some t when ColumnType.widens t ty -> Ok()
             | _ -> Error(CellTypeMismatch(colName, ColumnType.tag ty, cellTypeName c))
 
-    let private cellsFit (col: Column) : Result<unit, ColumnRejection> =
-        col.Cells
-        |> List.tryPick (fun c ->
-            match cellFits col.Name col.Type c with
-            | Error e -> Some e
-            | Ok() -> None)
-        |> function
-            | Some e -> Error e
-            | None -> Ok()
+    /// The schema entry for `name` with `ty` as its type: the entry it was where the type stands,
+    /// a fresh entry where it moved (a column retyped states nothing about its old unit).
+    let private retyped (name: string) (ty: ColumnType) (schema: Schema) : Schema =
+        schema
+        |> List.map (fun f ->
+            if f.Name = name && f.Type <> ty then
+                Field.create name ty
+            else
+                f)
+
+    /// `col` with its cells replaced by `cells`, under the schema entry `t` carries for it.
+    let private withCells (t: Table) (col: Column) (cells: Cell list) : Column =
+        let field =
+            t.Schema
+            |> List.tryFind (fun f -> f.Name = col.Name)
+            |> Option.defaultValue (Field.create col.Name col.Type)
+
+        Vec.columnOfCells field cells
 
     let private replaceColumn (name: string) (newCol: Column) (t: Table) : Table =
-        { Schema = t.Schema |> List.map (fun (n, ty) -> if n = name then n, newCol.Type else n, ty)
+        { Schema = retyped name newCol.Type t.Schema
           Columns = t.Columns |> List.map (fun c -> if c.Name = name then newCol else c) }
 
     let private insertColumnAt (index: int) (col: Column) (t: Table) : Table =
@@ -102,11 +111,11 @@ module ColumnOps =
             let after = xs |> List.skip (min i (List.length xs))
             before @ [ x ] @ after
 
-        { Schema = insertAt i (col.Name, col.Type) t.Schema
+        { Schema = insertAt i (Field.create col.Name col.Type) t.Schema
           Columns = insertAt i col t.Columns }
 
     let private removeColumn (name: string) (t: Table) : Table =
-        { Schema = t.Schema |> List.filter (fun (n, _) -> n <> name)
+        { Schema = t.Schema |> List.filter (fun f -> f.Name <> name)
           Columns = t.Columns |> List.filter (fun c -> c.Name <> name) }
 
     // ---- apply ----
@@ -125,18 +134,20 @@ module ColumnOps =
                 else
                     cellFits name col.Type value
                     |> Result.map (fun () ->
-                        let cells' = col.Cells |> List.mapi (fun i c -> if i = row then value else c)
-                        replaceColumn name { col with Cells = cells' } t)
+                        let cells' =
+                            Column.toCells col |> List.mapi (fun i c -> if i = row then value else c)
+
+                        replaceColumn name (withCells t col cells') t)
         | SetColumn newCol ->
             match t.Columns |> List.tryFind (fun c -> c.Name = newCol.Name) with
             | None -> Error(NoSuchColumn(newCol.Name, Table.columnNames t))
             | Some _ ->
                 let rc = Table.rowCount t
 
-                if List.length newCol.Cells <> rc then
-                    Error(ColumnLengthMismatch(newCol.Name, rc, List.length newCol.Cells))
+                if Column.length newCol <> rc then
+                    Error(ColumnLengthMismatch(newCol.Name, rc, Column.length newCol))
                 else
-                    cellsFit newCol |> Result.map (fun () -> replaceColumn newCol.Name newCol t)
+                    Ok(replaceColumn newCol.Name newCol t)
         | InsertColumn(index, col) ->
             if t.Columns |> List.exists (fun c -> c.Name = col.Name) then
                 Error(DuplicateColumn col.Name)
@@ -144,10 +155,10 @@ module ColumnOps =
                 let rc = Table.rowCount t
                 let hasCols = not (List.isEmpty t.Columns)
 
-                if hasCols && List.length col.Cells <> rc then
-                    Error(ColumnLengthMismatch(col.Name, rc, List.length col.Cells))
+                if hasCols && Column.length col <> rc then
+                    Error(ColumnLengthMismatch(col.Name, rc, Column.length col))
                 else
-                    cellsFit col |> Result.map (fun () -> insertColumnAt index col t)
+                    Ok(insertColumnAt index col t)
         | RemoveColumn name ->
             if t.Columns |> List.exists (fun c -> c.Name = name) then
                 Ok(removeColumn name t)
@@ -183,8 +194,7 @@ module ColumnOps =
                                 |> Option.map snd
                                 |> Option.defaultValue Null)
 
-                        { col with
-                            Cells = col.Cells @ appended })
+                        withCells t col (Column.toCells col @ appended))
 
                 Ok { t with Columns = columns' }
         | ApplyTransform pipeline ->
@@ -233,7 +243,7 @@ module ColumnOps =
                         if row < 0 || row >= rc then
                             Error(RowOutOfRange(row, rc))
                         else
-                            Ok(SetCell(name, row, List.item row col.Cells))
+                            Ok(SetCell(name, row, Column.cell row col))
                 | SetColumn newCol ->
                     match t.Columns |> List.tryFind (fun c -> c.Name = newCol.Name) with
                     | None -> Error(NoSuchColumn(newCol.Name, Table.columnNames t))
@@ -261,7 +271,7 @@ module ColumnOps =
             after.Columns
             |> List.choose (fun ac ->
                 match before.Columns |> List.tryFind (fun c -> c.Name = ac.Name) with
-                | Some bc when bc.Cells <> ac.Cells -> Some(SetColumn ac)
+                | Some bc when bc.Data <> ac.Data -> Some(SetColumn ac)
                 | _ -> None)
         else
             let removes = before.Columns |> List.rev |> List.map (fun c -> RemoveColumn c.Name)
@@ -361,7 +371,7 @@ module ColumnOps =
         JObj
             [ "name", JStr c.Name
               "type", JStr(ColumnType.tag c.Type)
-              "cells", JArr(c.Cells |> List.map cellToJson) ]
+              "cells", JArr(Column.toCells c |> List.map cellToJson) ]
 
     let private columnOfJson (el: JVal) : Result<Column, string> =
         field "name" el
@@ -376,7 +386,9 @@ module ColumnOps =
                     field "cells" el
                     |> Result.bind arrOf
                     |> Result.bind (mapM cellOfJson)
-                    |> Result.map (fun cells -> Column.create name ty cells)))
+                    |> Result.bind (fun cells ->
+                        Column.ofCells name ty cells
+                        |> Result.mapError (fun e -> "column '" + name + "': " + ColumnCodec.errorString e))))
 
     let private rowToJson (row: (string * Cell) list) : JVal =
         JArr(row |> List.map (fun (n, v) -> JObj [ "col", JStr n; "value", cellToJson v ]))
@@ -531,7 +543,7 @@ module ColumnOps =
                 | SetCell(col, row, value) ->
                     let unchanged =
                         match Table.tryColumn col before with
-                        | Some c -> List.item row c.Cells = value
+                        | Some c -> Column.cell row c = value
                         | None -> false
 
                     match
@@ -552,7 +564,7 @@ module ColumnOps =
                         match Table.tryColumn col.Name before with
                         | None -> FullRefresh
                         | Some old ->
-                            List.zip old.Cells col.Cells
+                            List.zip (Column.toCells old) (Column.toCells col)
                             |> List.indexed
                             |> List.choose (fun (i, (a, b)) ->
                                 if a = b then None else Some(ByKey k0[i].Value, RowChanged))
@@ -594,11 +606,10 @@ module ColumnOps =
     // table: the equality the suite holds, and what ties these forms to the proved model.
 
     let private columnAt (p: Prepared) (columns: Chunked[]) (ci: int) : Column =
-        let name, ty = List.item ci p.Cols
-        Column.create name ty (Chunked.toCells columns[ci])
+        Chunked.toColumn (List.item ci p.Cols) columns[ci]
 
     let private indexIn (p: Prepared) (name: string) : int option =
-        p.Cols |> List.tryFindIndex (fun (n, _) -> n = name)
+        p.Cols |> List.tryFindIndex (fun f -> f.Name = name)
 
     let private insertAt (i: int) (x: 'a) (xs: 'a list) : 'a list =
         let before = xs |> List.truncate i
@@ -610,7 +621,7 @@ module ColumnOps =
     /// the two agree cell for cell, so `apply op t` reads as `applyPrepared op (prepare t)` handed
     /// back through `DataFrame.toTable`.
     let applyPrepared (op: ColumnOp) (p: Prepared) : Result<Prepared, ColumnRejection> =
-        let names = p.Cols |> List.map fst
+        let names = Fields.names p.Cols
 
         match op with
         | SetCell(name, row, value) ->
@@ -622,7 +633,7 @@ module ColumnOps =
                 if row < 0 || row >= rc then
                     Error(RowOutOfRange(row, rc))
                 else
-                    cellFits name (snd (List.item ci p.Cols)) value
+                    cellFits name (List.item ci p.Cols).Type value
                     |> Result.map (fun () ->
                         let columns = Array.copy (Prepared.columns p)
                         columns[ci] <- Chunked.setCell columns[ci] row value
@@ -632,49 +643,45 @@ module ColumnOps =
             | None -> Error(NoSuchColumn(newCol.Name, names))
             | Some ci ->
                 let rc = p.Count
-                let n = List.length newCol.Cells
+                let n = Column.length newCol
 
                 if n <> rc then
                     Error(ColumnLengthMismatch(newCol.Name, rc, n))
                 else
-                    cellsFit newCol
-                    |> Result.map (fun () ->
+                    Ok(
                         let columns = Array.copy (Prepared.columns p)
 
                         columns[ci] <-
-                            Chunked.ofCellsSharing columns[ci] newCol.Type (List.toArray newCol.Cells)
-                            |> Chunked.withCells newCol.Cells
+                            Chunked.ofCellsSharing columns[ci] newCol.Type (List.toArray (Column.toCells newCol))
 
-                        let cols =
-                            p.Cols
-                            |> List.mapi (fun i (nm, ty) -> if i = ci then nm, newCol.Type else nm, ty)
-
-                        Prepared.ofChunks cols rc columns)
+                        Prepared.ofChunks (retyped newCol.Name newCol.Type p.Cols) rc columns
+                    )
         | InsertColumn(index, col) ->
-            if p.Cols |> List.exists (fun (n, _) -> n = col.Name) then
+            if p.Cols |> List.exists (fun f -> f.Name = col.Name) then
                 Error(DuplicateColumn col.Name)
             else
                 let rc = p.Count
                 let hasCols = not (List.isEmpty p.Cols)
-                let n = List.length col.Cells
+                let n = Column.length col
 
                 if hasCols && n <> rc then
                     Error(ColumnLengthMismatch(col.Name, rc, n))
                 else
-                    cellsFit col
-                    |> Result.map (fun () ->
+                    Ok(
                         let i = max 0 (min index (List.length p.Cols))
                         let columns = Prepared.columns p
 
-                        let rope =
-                            Chunked.ofCells col.Type Chunked.rows (List.toArray col.Cells)
-                            |> Chunked.withCells col.Cells
+                        // The inserted column's own storage, borrowed (Phase 423), cut into the rope.
+                        let rope = Chunked.ofVec col.Type Chunked.rows (Vec.ofColumn n col.Type (Some col))
 
                         let columns' =
-                            Array.concat
-                                [ Array.sub columns 0 i; [| rope |]; Array.sub columns i (columns.Length - i) ]
+                            Array.concat [ Array.sub columns 0 i; [| rope |]; Array.sub columns i (columns.Length - i) ]
 
-                        Prepared.ofChunks (insertAt i (col.Name, col.Type) p.Cols) (if hasCols then rc else n) columns')
+                        Prepared.ofChunks
+                            (insertAt i (Field.create col.Name col.Type) p.Cols)
+                            (if hasCols then rc else n)
+                            columns'
+                    )
         | RemoveColumn name ->
             match indexIn p name with
             | None -> Error(NoSuchColumn(name, names))
@@ -684,7 +691,7 @@ module ColumnOps =
                 let columns' =
                     Array.append (Array.sub columns 0 ci) (Array.sub columns (ci + 1) (columns.Length - ci - 1))
 
-                let cols = p.Cols |> List.filter (fun (n, _) -> n <> name)
+                let cols = p.Cols |> List.filter (fun f -> f.Name <> name)
                 Ok(Prepared.ofChunks cols (if List.isEmpty cols then 0 else p.Count) columns')
         | AppendRows rows ->
             let nameSet = Set.ofList names
@@ -697,7 +704,7 @@ module ColumnOps =
                     else
                         match indexIn p n with
                         | Some ci ->
-                            match cellFits n (snd (List.item ci p.Cols)) v with
+                            match cellFits n (List.item ci p.Cols).Type v with
                             | Error e -> Some e
                             | Ok() -> None
                         | None -> Some(RowShapeUnknownColumn(n, names)))
@@ -711,7 +718,7 @@ module ColumnOps =
                 let columns' =
                     columns
                     |> Array.mapi (fun ci c ->
-                        let name = fst (List.item ci p.Cols)
+                        let name = (List.item ci p.Cols).Name
 
                         let appended =
                             rowsA
@@ -750,7 +757,7 @@ module ColumnOps =
             match canApplyPrepared op p with
             | Error e -> Error e
             | Ok() ->
-                let names = p.Cols |> List.map fst
+                let names = Fields.names p.Cols
                 let columns = Prepared.columns p
 
                 match op with
@@ -790,10 +797,9 @@ module ColumnOps =
                     { Schema = p.Cols
                       Columns =
                         p.Cols
-                        |> List.mapi (fun i (n, ty) ->
-                            Column.create
-                                n
-                                ty
+                        |> List.mapi (fun i field ->
+                            Vec.columnOfCells
+                                field
                                 [ (if edited && i = ci then
                                        value
                                    else

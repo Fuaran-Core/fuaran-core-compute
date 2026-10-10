@@ -3,14 +3,15 @@ module Fuaran.Compute.Tests.ColumnOpsTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---- fixtures ----
 
 let private baseTable: Table =
-    { Schema = [ "a", IntType; "b", IntType ]
+    { Schema = [ Field.create "a" IntType; Field.create "b" IntType ]
       Columns =
-        [ Column.create "a" IntType [ Int 1; Int 2; Int 3 ]
-          Column.create "b" IntType [ Int 4; Int 5; Int 6 ] ] }
+        [ KitColumn.create "a" IntType [ Int 1; Int 2; Int 3 ]
+          KitColumn.create "b" IntType [ Int 4; Int 5; Int 6 ] ] }
 
 let private ok =
     function
@@ -27,14 +28,14 @@ let tests =
               let t = ok (ColumnOps.apply (SetCell("a", 1, Int 99)) baseTable)
 
               Expect.equal
-                  (Table.tryColumn "a" t |> Option.map (fun c -> c.Cells))
+                  (Table.tryColumn "a" t |> Option.map (fun c -> (Column.toCells c)))
                   (Some [ Int 1; Int 99; Int 3 ])
                   "cell set"
 
           testCase "InsertColumn / RemoveColumn add and drop a column"
           <| fun _ ->
               let added =
-                  ok (ColumnOps.apply (InsertColumn(1, Column.create "m" IntType [ Int 7; Int 8; Int 9 ])) baseTable)
+                  ok (ColumnOps.apply (InsertColumn(1, KitColumn.create "m" IntType [ Int 7; Int 8; Int 9 ])) baseTable)
 
               Expect.equal (Table.columnNames added) [ "a"; "m"; "b" ] "inserted at index 1"
               let dropped = ok (ColumnOps.apply (RemoveColumn "a") added)
@@ -44,8 +45,16 @@ let tests =
           <| fun _ ->
               let t = ok (ColumnOps.apply (AppendRows [ [ "a", Int 10 ] ]) baseTable)
               Expect.equal (Table.rowCount t) 4 "one row appended"
-              Expect.equal (Table.tryColumn "a" t |> Option.map (fun c -> List.last c.Cells)) (Some(Int 10)) "a got 10"
-              Expect.equal (Table.tryColumn "b" t |> Option.map (fun c -> List.last c.Cells)) (Some Null) "b got Null"
+
+              Expect.equal
+                  (Table.tryColumn "a" t |> Option.map (fun c -> List.last (Column.toCells c)))
+                  (Some(Int 10))
+                  "a got 10"
+
+              Expect.equal
+                  (Table.tryColumn "b" t |> Option.map (fun c -> List.last (Column.toCells c)))
+                  (Some Null)
+                  "b got Null"
 
           testCase "ApplyTransform applies a DataFrame pipeline as one op"
           <| fun _ ->
@@ -73,11 +82,13 @@ let tests =
 
           testCase "InsertColumn with a duplicate name / wrong length is rejected"
           <| fun _ ->
-              match ColumnOps.apply (InsertColumn(0, Column.create "a" IntType [ Int 0; Int 0; Int 0 ])) baseTable with
+              match
+                  ColumnOps.apply (InsertColumn(0, KitColumn.create "a" IntType [ Int 0; Int 0; Int 0 ])) baseTable
+              with
               | Error(DuplicateColumn "a") -> ()
               | other -> failtestf "expected DuplicateColumn, got %A" other
 
-              match ColumnOps.apply (InsertColumn(0, Column.create "z" IntType [ Int 0 ])) baseTable with
+              match ColumnOps.apply (InsertColumn(0, KitColumn.create "z" IntType [ Int 0 ])) baseTable with
               | Error(ColumnLengthMismatch("z", 3, 1)) -> ()
               | other -> failtestf "expected ColumnLengthMismatch, got %A" other
 
@@ -99,8 +110,8 @@ let tests =
                   Expect.equal (ColumnOps.apply inv post) (Ok baseTable) (sprintf "invert restores %A" op)
 
               check (SetCell("a", 2, Int 42))
-              check (SetColumn(Column.create "b" IntType [ Int 0; Int 0; Int 0 ]))
-              check (InsertColumn(1, Column.create "m" IntType [ Int 7; Int 8; Int 9 ]))
+              check (SetColumn(KitColumn.create "b" IntType [ Int 0; Int 0; Int 0 ]))
+              check (InsertColumn(1, KitColumn.create "m" IntType [ Int 7; Int 8; Int 9 ]))
               check (RemoveColumn "a")
 
           testCase "AppendRows / ApplyTransform are NotInvertible"
@@ -127,7 +138,7 @@ let tests =
               // — a remove that SUCCEEDS at the pre-state and takes the column that was already
               // there, so an undo stack recording `invert op pre` beside every op it attempted lost
               // a column the refused insert never touched.
-              let dup = InsertColumn(0, Column.create "a" IntType [ Int 9; Int 9; Int 9 ])
+              let dup = InsertColumn(0, KitColumn.create "a" IntType [ Int 9; Int 9; Int 9 ])
               Expect.equal (ColumnOps.apply dup baseTable) (Error(DuplicateColumn "a")) "the insert is refused"
               Expect.equal (ColumnOps.invert dup baseTable) (Error(DuplicateColumn "a")) "and so is its inverse"
 
@@ -140,8 +151,8 @@ let tests =
                   [ SetCell("a", 0, Str "x"), CellTypeMismatch("a", "int", "string")
                     SetCell("nope", 0, Int 1), NoSuchColumn("nope", [ "a"; "b" ])
                     SetCell("a", 9, Int 1), RowOutOfRange(9, 3)
-                    SetColumn(Column.create "b" IntType [ Int 0 ]), ColumnLengthMismatch("b", 3, 1)
-                    InsertColumn(0, Column.create "z" IntType [ Int 0 ]), ColumnLengthMismatch("z", 3, 1)
+                    SetColumn(KitColumn.create "b" IntType [ Int 0 ]), ColumnLengthMismatch("b", 3, 1)
+                    InsertColumn(0, KitColumn.create "z" IntType [ Int 0 ]), ColumnLengthMismatch("z", 3, 1)
                     RemoveColumn "nope", NoSuchColumn("nope", [ "a"; "b" ]) ]
 
               for op, rejection in cases do
@@ -158,8 +169,8 @@ let tests =
               // `apply` accepts still yields its inverse.
               let accepted =
                   [ SetCell("a", 2, Int 42)
-                    SetColumn(Column.create "b" IntType [ Int 0; Int 0; Int 0 ])
-                    InsertColumn(1, Column.create "m" IntType [ Int 7; Int 8; Int 9 ])
+                    SetColumn(KitColumn.create "b" IntType [ Int 0; Int 0; Int 0 ])
+                    InsertColumn(1, KitColumn.create "m" IntType [ Int 7; Int 8; Int 9 ])
                     RemoveColumn "a" ]
 
               for op in accepted do
@@ -237,10 +248,10 @@ let tests =
           testCase "Diff.toOps reconstructs after from before (schema rebuild)"
           <| fun _ ->
               let after =
-                  { Schema = [ "x", StringType; "y", IntType ]
+                  { Schema = [ Field.create "x" StringType; Field.create "y" IntType ]
                     Columns =
-                      [ Column.create "x" StringType [ Str "p"; Str "q" ]
-                        Column.create "y" IntType [ Int 1; Int 2 ] ] }
+                      [ KitColumn.create "x" StringType [ Str "p"; Str "q" ]
+                        KitColumn.create "y" IntType [ Int 1; Int 2 ] ] }
 
               let ops = ColumnOps.toOps baseTable after
               Expect.equal (ColumnOps.applyAll ops baseTable) (Ok after) "rebuild reconstructs a different-shape table"
@@ -250,8 +261,8 @@ let tests =
           <| fun _ ->
               let ops =
                   [ SetCell("a", 1, Int 9)
-                    SetColumn(Column.create "b" IntType [ Int 0; Int 0; Int 0 ])
-                    InsertColumn(0, Column.create "m" IntType [ Null; Int 2; Int 3 ])
+                    SetColumn(KitColumn.create "b" IntType [ Int 0; Int 0; Int 0 ])
+                    InsertColumn(0, KitColumn.create "m" IntType [ Null; Int 2; Int 3 ])
                     RemoveColumn "a"
                     AppendRows [ [ "a", Int 1; "b", Null ] ]
                     ApplyTransform [ Transform.sortBy [ "a", Asc ]; Distinct ] ]
@@ -296,15 +307,19 @@ let tests =
 // ---------------------------------------------------------------------------
 
 let private wide (n: int) : Table =
-    { Schema = [ "id", IntType; "s", StringType; "f", FloatType; "b", BoolType ]
+    { Schema =
+        [ Field.create "id" IntType
+          Field.create "s" StringType
+          Field.create "f" FloatType
+          Field.create "b" BoolType ]
       Columns =
-        [ Column.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
-          Column.create
+        [ KitColumn.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+          KitColumn.create
               "s"
               StringType
               [ for i in 0 .. n - 1 -> (if i % 11 = 0 then Null else Str("v" + string (i % 13))) ]
-          Column.create "f" FloatType [ for i in 0 .. n - 1 -> Float(float i * 0.5) ]
-          Column.create "b" BoolType [ for i in 0 .. n - 1 -> Bool(i % 2 = 0) ] ] }
+          KitColumn.create "f" FloatType [ for i in 0 .. n - 1 -> Float(float i * 0.5) ]
+          KitColumn.create "b" BoolType [ for i in 0 .. n - 1 -> Bool(i % 2 = 0) ] ] }
 
 /// Ops over `t`, accepted and refused alike — one per clause and one per rejection.
 let private opsOver (t: Table) : ColumnOp list =
@@ -321,7 +336,7 @@ let private opsOver (t: Table) : ColumnOp list =
       SetCell("id", -1, Int 0)
       SetCell("nope", 0, Int 0)
       SetColumn(
-          Column.create
+          KitColumn.create
               "f"
               FloatType
               (cells (fun i ->
@@ -330,16 +345,16 @@ let private opsOver (t: Table) : ColumnOp list =
                   else
                       Float(float i * 0.5)))
       )
-      SetColumn(Column.create "f" IntType (cells (fun i -> Int i)))
-      SetColumn(Column.create "f" FloatType (cells (fun i -> if i = 1 then Str "x" else Float 0.0)))
-      SetColumn(Column.create "f" FloatType [ Float 1.0 ])
-      SetColumn(Column.create "nope" FloatType (cells (fun _ -> Float 0.0)))
-      InsertColumn(1, Column.create "g" IntType (cells (fun i -> Int(i * 2))))
-      InsertColumn(99, Column.create "g" IntType (cells (fun i -> Int(i * 2))))
-      InsertColumn(-5, Column.create "g" IntType (cells (fun i -> Int(i * 2))))
-      InsertColumn(0, Column.create "id" IntType (cells (fun i -> Int i)))
-      InsertColumn(0, Column.create "g" IntType [ Int 1 ])
-      InsertColumn(0, Column.create "g" IntType (cells (fun _ -> Str "no")))
+      SetColumn(KitColumn.create "f" IntType (cells (fun i -> Int i)))
+      SetColumn(KitColumn.create "f" FloatType (cells (fun i -> if i = 1 then Str "x" else Float 0.0)))
+      SetColumn(KitColumn.create "f" FloatType [ Float 1.0 ])
+      SetColumn(KitColumn.create "nope" FloatType (cells (fun _ -> Float 0.0)))
+      InsertColumn(1, KitColumn.create "g" IntType (cells (fun i -> Int(i * 2))))
+      InsertColumn(99, KitColumn.create "g" IntType (cells (fun i -> Int(i * 2))))
+      InsertColumn(-5, KitColumn.create "g" IntType (cells (fun i -> Int(i * 2))))
+      InsertColumn(0, KitColumn.create "id" IntType (cells (fun i -> Int i)))
+      InsertColumn(0, KitColumn.create "g" IntType [ Int 1 ])
+      InsertColumn(0, KitColumn.create "g" IntType (cells (fun _ -> Str "no")))
       RemoveColumn "s"
       RemoveColumn "id"
       RemoveColumn "nope"
@@ -434,8 +449,8 @@ let preparedTests =
               let ops =
                   [ SetCell("f", 1_500, Float 0.0)
                     AppendRows [ [ "id", Int 2_600; "s", Str "z" ] ]
-                    SetColumn(Column.create "b" BoolType [ for i in 0..2_600 -> Bool(i % 3 = 0) ])
-                    InsertColumn(2, Column.create "g" IntType [ for i in 0..2_600 -> Int i ])
+                    SetColumn(KitColumn.create "b" BoolType [ for i in 0..2_600 -> Bool(i % 3 = 0) ])
+                    InsertColumn(2, KitColumn.create "g" IntType [ for i in 0..2_600 -> Int i ])
                     SetCell("g", 2_600, Int -7)
                     RemoveColumn "s" ]
 

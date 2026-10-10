@@ -18,9 +18,13 @@ module Fuaran.Compute.Tests.PlanTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private schema: Schema =
-    [ "i", IntType; "f", FloatType; "s", StringType; "b", BoolType ]
+    [ Field.create "i" IntType
+      Field.create "f" FloatType
+      Field.create "s" StringType
+      Field.create "b" BoolType ]
 
 let private table (rows: (int option * float option * string option * bool option) list) : Table =
     let cell f v =
@@ -30,10 +34,10 @@ let private table (rows: (int option * float option * string option * bool optio
 
     { Schema = schema
       Columns =
-        [ Column.create "i" IntType (rows |> List.map (fun (i, _, _, _) -> cell Int i))
-          Column.create "f" FloatType (rows |> List.map (fun (_, f, _, _) -> cell Float f))
-          Column.create "s" StringType (rows |> List.map (fun (_, _, s, _) -> cell Str s))
-          Column.create "b" BoolType (rows |> List.map (fun (_, _, _, b) -> cell Bool b)) ] }
+        [ KitColumn.create "i" IntType (rows |> List.map (fun (i, _, _, _) -> cell Int i))
+          KitColumn.create "f" FloatType (rows |> List.map (fun (_, f, _, _) -> cell Float f))
+          KitColumn.create "s" StringType (rows |> List.map (fun (_, _, s, _) -> cell Str s))
+          KitColumn.create "b" BoolType (rows |> List.map (fun (_, _, _, b) -> cell Bool b)) ] }
 
 let private sample =
     table

@@ -86,7 +86,7 @@ let private runs =
 /// than passed, because the census is the single declaration and this file must not become a
 /// second one.
 let private classOf (id: string) : AdequacyClass =
-    match KitRoster.census |> List.tryFind (fun (k, _) -> k = id) with
+    match KitRoster.census |> List.tryFind (fun (n, _) -> n = id) with
     | Some(_, k) -> k
     | None -> failwithf "%s has no census row (DataFrameFamilies.census) — the roster and the census disagree" id
 

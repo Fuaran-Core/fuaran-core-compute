@@ -3,6 +3,7 @@ module Fuaran.Compute.Tests.DeltaTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 // ---------------------------------------------------------------------------
 //  Phase 98 — the typed delta representation for the column layer.
@@ -40,8 +41,10 @@ let private corpus: TableDelta list =
 // ---- tables for the diff leg ----
 
 let private table (ids: Cell list) (amounts: Cell list) : Table =
-    { Schema = [ "id", StringType; "amount", IntType ]
-      Columns = [ Column.create "id" StringType ids; Column.create "amount" IntType amounts ] }
+    { Schema = [ Field.create "id" StringType; Field.create "amount" IntType ]
+      Columns =
+        [ KitColumn.create "id" StringType ids
+          KitColumn.create "amount" IntType amounts ] }
 
 let private idWitness = RowIdentity.byColumn "id"
 
@@ -309,7 +312,7 @@ let tests =
               | other -> failtestf "expected NotJson, got %A" other
 
               match DeltaCodec.decode """{"$type":"partialRefresh"}""" with
-              | Error(UnknownType(got, expected)) ->
+              | Error(UnknownTag(got, expected)) ->
                   Expect.equal got "partialRefresh" "names the tag"
                   Expect.equal expected [ "fullRefresh"; "rowSet" ] "enumerates the alternatives"
               | other -> failtestf "expected UnknownType, got %A" other
@@ -322,7 +325,7 @@ let tests =
                   DeltaCodec.decode
                       """{"$type":"rowSet","scheme":"column:id","columns":[],"rows":[{"$type":"moved","key":"a"}]}"""
               with
-              | Error(UnknownType(got, expected)) ->
+              | Error(UnknownTag(got, expected)) ->
                   Expect.equal got "moved" "names the change tag"
                   Expect.equal expected [ "added"; "changed"; "removed"; "transient" ] "enumerates the change set"
               | other -> failtestf "expected UnknownType for the change tag, got %A" other
@@ -378,6 +381,7 @@ let tests =
                           { Added = []
                             Removed = []
                             Retyped = []
+                            Amended = []
                             Reordered = false
                             Order = [] }))
                   FullRefresh
@@ -436,8 +440,8 @@ let tests =
               let before = table [ Str "a" ] [ Int 1 ]
 
               let after =
-                  { Schema = [ "id", StringType ]
-                    Columns = [ Column.create "id" StringType [ Str "a" ] ] }
+                  { Schema = [ Field.create "id" StringType ]
+                    Columns = [ KitColumn.create "id" StringType [ Str "a" ] ] }
 
               Expect.equal (ok (Delta.diff idWitness before after)) FullRefresh "column set moved"
               Expect.equal (Delta.diffByOrdinal before after) FullRefresh "same for the ordinal diff"
@@ -465,10 +469,10 @@ let tests =
           testCase "row content tells -0.0 from 0.0, and a re-spelt decimal from the original (Phase 323)"
           <| fun _ ->
               let mk (v: float) : Table =
-                  { Schema = [ "id", StringType; "v", FloatType ]
+                  { Schema = [ Field.create "id" StringType; Field.create "v" FloatType ]
                     Columns =
-                      [ Column.create "id" StringType [ Str "a" ]
-                        Column.create "v" FloatType [ Float v ] ] }
+                      [ KitColumn.create "id" StringType [ Str "a" ]
+                        KitColumn.create "v" FloatType [ Float v ] ] }
 
               let d = ok (Delta.diff idWitness (mk 0.0) (mk -0.0))
               Expect.isFalse (Delta.isQuiet d) "-0.0 is a different cell from 0.0, so the edit is a change"
@@ -479,10 +483,10 @@ let tests =
                   "an unedited zero is no change"
 
               let dec (v: string) : Table =
-                  { Schema = [ "id", StringType; "v", DecimalType ]
+                  { Schema = [ Field.create "id" StringType; Field.create "v" DecimalType ]
                     Columns =
-                      [ Column.create "id" StringType [ Str "a" ]
-                        Column.create "v" DecimalType [ Decimal v ] ] }
+                      [ KitColumn.create "id" StringType [ Str "a" ]
+                        KitColumn.create "v" DecimalType [ Decimal v ] ] }
 
               Expect.isFalse
                   (Delta.isQuiet (ok (Delta.diff idWitness (dec "1.50") (dec "1.5"))))
@@ -630,11 +634,14 @@ let sharedKeyListTests =
                       |> List.map (fun v -> if rng.Next 4 = 0 then pool[rng.Next pool.Length] else v)
 
                   let mk (idCells: Cell list) (k2Cells: Cell list) (v: Cell list) : Table =
-                      { Schema = [ "id", StringType; "k2", IntType; "v", FloatType ]
+                      { Schema =
+                          [ Field.create "id" StringType
+                            Field.create "k2" IntType
+                            Field.create "v" FloatType ]
                         Columns =
-                          [ Column.create "id" StringType idCells
-                            Column.create "k2" IntType k2Cells
-                            Column.create "v" FloatType v ] }
+                          [ KitColumn.create "id" StringType idCells
+                            KitColumn.create "k2" IntType k2Cells
+                            KitColumn.create "v" FloatType v ] }
 
 
                   let check (label: string) (diffOf: Table -> Table -> Result<TableDelta, DeltaDefect>) =

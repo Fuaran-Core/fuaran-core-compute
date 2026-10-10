@@ -26,6 +26,7 @@ module Fuaran.Compute.Tests.IncrementalRefreshCostTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Tests
 
 let private ok =
     function
@@ -40,11 +41,14 @@ let private large = 20_000
 let private sizeRatio = float large / float small
 
 let private build (n: int) : Table =
-    { Schema = [ "id", StringType; "grp", StringType; "a", IntType ]
+    { Schema =
+        [ Field.create "id" StringType
+          Field.create "grp" StringType
+          Field.create "a" IntType ]
       Columns =
-        [ Column.create "id" StringType [ for i in 0 .. n - 1 -> Str("r" + string i) ]
-          Column.create "grp" StringType [ for i in 0 .. n - 1 -> Str("g" + string (i % 17)) ]
-          Column.create "a" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+        [ KitColumn.create "id" StringType [ for i in 0 .. n - 1 -> Str("r" + string i) ]
+          KitColumn.create "grp" StringType [ for i in 0 .. n - 1 -> Str("g" + string (i % 17)) ]
+          KitColumn.create "a" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
 
 /// Edit `d` rows, spread through the table so the edit is not a prefix.
 let private editSome (d: int) (t: Table) : Table =
@@ -60,8 +64,11 @@ let private editSome (d: int) (t: Table) : Table =
                 if c.Name <> "a" then
                     c
                 else
-                    { c with
-                        Cells = c.Cells |> List.mapi (fun i cell -> if edited i then Int -1 else cell) }) }
+                    KitColumn.create
+                        c.Name
+                        c.Type
+                        ((Column.toCells c)
+                         |> List.mapi (fun i cell -> if edited i then Int -1 else cell))) }
 
 let private pipeline: Transform list =
     [ Filter(Binary(Ge, Col "a", Lit(Int -10)))
@@ -222,7 +229,9 @@ let refreshCostTests =
 
               let reordered =
                   { before with
-                      Columns = before.Columns |> List.map (fun c -> { c with Cells = List.rev c.Cells }) }
+                      Columns =
+                          before.Columns
+                          |> List.map (fun c -> KitColumn.create c.Name c.Type (List.rev (Column.toCells c))) }
 
               let inserted =
                   { before with
@@ -235,11 +244,13 @@ let refreshCostTests =
                                   | "grp" -> Str "g0"
                                   | _ -> Int 7
 
-                              { c with Cells = head :: c.Cells }) }
+                              KitColumn.create c.Name c.Type (head :: (Column.toCells c))) }
 
               let removed =
                   { before with
-                      Columns = before.Columns |> List.map (fun c -> { c with Cells = List.tail c.Cells }) }
+                      Columns =
+                          before.Columns
+                          |> List.map (fun c -> KitColumn.create c.Name c.Type (List.tail (Column.toCells c))) }
 
               for label, after in
                   [ "every row reordered", reordered
@@ -305,11 +316,14 @@ let refreshCostTests =
                     As = "run" }
 
               let before =
-                  { Schema = [ "id", StringType; "grp", StringType; "a", IntType ]
+                  { Schema =
+                      [ Field.create "id" StringType
+                        Field.create "grp" StringType
+                        Field.create "a" IntType ]
                     Columns =
-                      [ Column.create "id" StringType [ for i in 0..9 -> Str("r" + string i) ]
-                        Column.create "grp" StringType [ for _ in 0..9 -> Str "g" ]
-                        Column.create "a" IntType [ for i in 0..9 -> Int(i % 3) ] ] }
+                      [ KitColumn.create "id" StringType [ for i in 0..9 -> Str("r" + string i) ]
+                        KitColumn.create "grp" StringType [ for _ in 0..9 -> Str "g" ]
+                        KitColumn.create "a" IntType [ for i in 0..9 -> Int(i % 3) ] ] }
 
               let after =
                   { before with
@@ -319,8 +333,10 @@ let refreshCostTests =
                               if c.Name <> "a" then
                                   c
                               else
-                                  { c with
-                                      Cells = c.Cells |> List.mapi (fun i cell -> if i = 2 then Int 50 else cell) }) }
+                                  KitColumn.create
+                                      c.Name
+                                      c.Type
+                                      ((Column.toCells c) |> List.mapi (fun i cell -> if i = 2 then Int 50 else cell))) }
 
               let cases =
                   [ "a Filter reading the window's column",
@@ -398,11 +414,14 @@ let refreshCostTests =
                     As = "run" }
 
               let mk (aCells: Cell list) =
-                  { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+                  { Schema =
+                      [ Field.create "id" StringType
+                        Field.create "a" IntType
+                        Field.create "b" IntType ]
                     Columns =
-                      [ Column.create "id" StringType [ for i in 0..7 -> Str("r" + string i) ]
-                        Column.create "a" IntType aCells
-                        Column.create "b" IntType [ Int 1; Int 0; Int 0; Int 1; Int 1; Int 0; Int 1; Int 2 ] ] }
+                      [ KitColumn.create "id" StringType [ for i in 0..7 -> Str("r" + string i) ]
+                        KitColumn.create "a" IntType aCells
+                        KitColumn.create "b" IntType [ Int 1; Int 0; Int 0; Int 1; Int 1; Int 0; Int 1; Int 2 ] ] }
 
               // The generator's own counterexample, `IncrementalDelta` seed 33 iteration 3, with its
               // `changeFirstA` edit: one cell of one row moves, and the ranks of five others move
@@ -452,11 +471,14 @@ let refreshCostTests =
               // was the defect. All three agree now; the record of which was which is the comment,
               // and it is what says why shape `44`'s key had to move rather than its window.
               let mk (aCells: Cell list) =
-                  { Schema = [ "id", StringType; "a", IntType; "b", IntType ]
+                  { Schema =
+                      [ Field.create "id" StringType
+                        Field.create "a" IntType
+                        Field.create "b" IntType ]
                     Columns =
-                      [ Column.create "id" StringType [ for i in 0..7 -> Str("r" + string i) ]
-                        Column.create "a" IntType aCells
-                        Column.create "b" IntType [ Int 1; Int 0; Int 0; Int 1; Int 1; Int 0; Int 1; Int 2 ] ] }
+                      [ KitColumn.create "id" StringType [ for i in 0..7 -> Str("r" + string i) ]
+                        KitColumn.create "a" IntType aCells
+                        KitColumn.create "b" IntType [ Int 1; Int 0; Int 0; Int 1; Int 1; Int 0; Int 1; Int 2 ] ] }
 
               let before = mk [ Int -3; Int 1; Int 3; Int 6; Int 6; Int 4; Int 0; Int -1 ]
               let after = mk [ Int 42; Int 1; Int 3; Int 6; Int 6; Int 4; Int 0; Int -1 ]
@@ -562,12 +584,16 @@ let private linesPipeline: Transform list =
 let private linesEnv: Map<string, Cell> = Map.ofList [ "threshold", Float 500.0 ]
 
 let private orders (n: int) : Table =
-    { Schema = [ "id", IntType; "region", StringType; "qty", IntType; "price", FloatType ]
+    { Schema =
+        [ Field.create "id" IntType
+          Field.create "region" StringType
+          Field.create "qty" IntType
+          Field.create "price" FloatType ]
       Columns =
-        [ Column.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
-          Column.create "region" StringType [ for i in 0 .. n - 1 -> Str(if i % 2 = 0 then "north" else "south") ]
-          Column.create "qty" IntType [ for i in 0 .. n - 1 -> Int(1 + i % 7) ]
-          Column.create "price" FloatType [ for i in 0 .. n - 1 -> Float(0.25 * float (1 + i % 50)) ] ] }
+        [ KitColumn.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+          KitColumn.create "region" StringType [ for i in 0 .. n - 1 -> Str(if i % 2 = 0 then "north" else "south") ]
+          KitColumn.create "qty" IntType [ for i in 0 .. n - 1 -> Int(1 + i % 7) ]
+          KitColumn.create "price" FloatType [ for i in 0 .. n - 1 -> Float(0.25 * float (1 + i % 50)) ] ] }
 
 let private orderId = RowIdentity.byColumn "id"
 
@@ -801,7 +827,7 @@ let chunkedRefreshTests =
               let cells =
                   [ for i in 0 .. n - 1 -> if i = 100 || i = 4_000 then Int 50 else Int(1 + i % 7) ]
 
-              let op = SetColumn(Column.create "qty" IntType cells)
+              let op = SetColumn(KitColumn.create "qty" IntType cells)
               let v1 = ok (ColumnOps.applyPrepared op v0)
               let s1 = refreshChecked s0 (ColumnOps.deltaOfPrepared orderId v0 op) v1
               Expect.equal (Incremental.chunksTouched s1) (Some 2) "two chunks moved"
@@ -814,11 +840,14 @@ let chunkedRefreshTests =
               let n = 3_000
 
               let t =
-                  { Schema = [ "id", IntType; "a", IntType; "m", IntType ]
+                  { Schema =
+                      [ Field.create "id" IntType
+                        Field.create "a" IntType
+                        Field.create "m" IntType ]
                     Columns =
-                      [ Column.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
-                        Column.create "a" IntType [ for i in 0 .. n - 1 -> Int i ]
-                        Column.create "m" IntType [ for i in 0 .. n - 1 -> (if i < chunkRows then Null else Int 1) ] ] }
+                      [ KitColumn.create "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+                        KitColumn.create "a" IntType [ for i in 0 .. n - 1 -> Int i ]
+                        KitColumn.create "m" IntType [ for i in 0 .. n - 1 -> (if i < chunkRows then Null else Int 1) ] ] }
 
               let p =
                   [ Derive("c", Binary(Add, Col "a", Col "m"))
@@ -848,7 +877,7 @@ let chunkedRefreshTests =
                           t.Columns
                           |> List.map (fun c ->
                               if c.Name = "m" then
-                                  { c with Cells = List.replicate n Null }
+                                  KitColumn.create c.Name c.Type (List.replicate n Null)
                               else
                                   c) }
 
@@ -986,7 +1015,10 @@ let private rowTokenDiff (idw: RowIdentity<'Id>) (before: Table) (after: Table) 
                           InvalidatedColumns = [] }
                 )))
 
-let private diffSchema: Schema = [ "id", StringType; "v", IntType; "w", FloatType ]
+let private diffSchema: Schema =
+    [ Field.create "id" StringType
+      Field.create "v" IntType
+      Field.create "w" FloatType ]
 
 /// The cells a drawn row takes: a small key pool so inserts collide with live keys, and the floats
 /// token equality treats specially (`-0.0` equal to `0.0`, every `NaN` one value) beside `Null` —
@@ -999,7 +1031,7 @@ let private tableOfRows (rows: Cell[] list) : Table =
     { Schema = diffSchema
       Columns =
         diffSchema
-        |> List.mapi (fun ci (name, ty) -> Column.create name ty (rows |> List.map (fun r -> r[ci]))) }
+        |> List.mapi (fun ci f -> KitColumn.create f.Name f.Type (rows |> List.map (fun r -> r[ci]))) }
 
 /// What a drawn pair exercised, so the family can demand it reached every path rather than assume it.
 type private DiffCase =
@@ -1099,7 +1131,7 @@ let private drawDiffPair (rng: System.Random) : Table * Table * DiffCase =
             Columns =
                 List.map2
                     (fun (b: Column) (a: Column) ->
-                        if b.Cells = a.Cells && rng.Next 2 = 0 then
+                        if Column.toCells b = Column.toCells a && rng.Next 2 = 0 then
                             shared <- true
                             b
                         else
@@ -1118,8 +1150,10 @@ let private drawDiffPair (rng: System.Random) : Table * Table * DiffCase =
                     at1.Columns
                     |> List.map (fun c ->
                         if c.Name = "w" then
-                            { c with
-                                Cells = List.truncate (List.length c.Cells - 1) c.Cells }
+                            KitColumn.create
+                                c.Name
+                                c.Type
+                                (List.truncate (List.length (Column.toCells c) - 1) (Column.toCells c))
                         else
                             c) }
         else
@@ -1147,7 +1181,7 @@ let private drawDiffPair (rng: System.Random) : Table * Table * DiffCase =
 let private pairKeyOf (t: Table) : int -> (string * int) option =
     let cellsOf (name: string) =
         match Table.tryColumn name t with
-        | Some c -> List.toArray c.Cells
+        | Some c -> List.toArray (Column.toCells c)
         | None -> [||]
 
     let ids = cellsOf "id"
@@ -1541,7 +1575,7 @@ let private reshape (tag: string) (del: int) (ins: int) (t: Table) : Table =
     let n = Table.rowCount t
 
     let cellsOf (name: string) =
-        (Table.tryColumn name t |> Option.get).Cells |> List.toArray
+        Column.toCells (Table.tryColumn name t |> Option.get) |> List.toArray
 
     let ids = cellsOf "id"
     let grps = cellsOf "grp"
@@ -1557,9 +1591,9 @@ let private reshape (tag: string) (del: int) (ins: int) (t: Table) : Table =
 
     { t with
         Columns =
-            [ Column.create "id" StringType [ for (k, _, _) in rows -> k ]
-              Column.create "grp" StringType [ for (_, g, _) in rows -> g ]
-              Column.create "a" IntType [ for (_, _, a) in rows -> a ] ] }
+            [ KitColumn.create "id" StringType [ for (k, _, _) in rows -> k ]
+              KitColumn.create "grp" StringType [ for (_, g, _) in rows -> g ]
+              KitColumn.create "a" IntType [ for (_, _, a) in rows -> a ] ] }
 
 /// Pipelines covering the seam's incremental strategies: row-local, maintained groups, and a sort.
 let private tickPipelines: (string * Transform list) list =
@@ -1580,7 +1614,7 @@ let private customTickKey (rendered: int ref) : RowIdentity<string * string> =
         fun t ->
             let cellsOf (name: string) =
                 match Table.tryColumn name t with
-                | Some c -> List.toArray c.Cells
+                | Some c -> List.toArray (Column.toCells c)
                 | None -> [||]
 
             let ids = cellsOf "id"
@@ -1933,8 +1967,7 @@ let columnarBookkeepingTests =
                           t.Columns
                           |> List.map (fun c ->
                               if c.Name = "grp" then
-                                  { c with
-                                      Cells = List.truncate 30 c.Cells }
+                                  KitColumn.create c.Name c.Type (List.truncate 30 (Column.toCells c))
                               else
                                   c) }
 

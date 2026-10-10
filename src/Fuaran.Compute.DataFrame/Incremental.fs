@@ -1,6 +1,8 @@
 namespace Fuaran.Compute
 
 open Fuaran.Core
+// The frame's vector cases, over Core's `ColumnData` cases of the same names (Phase 423).
+open type Vec
 
 // ============================================================================
 //  Fuaran.Compute.DataFrame — the incremental `Transform` evaluation seam
@@ -1406,7 +1408,7 @@ module internal StateWire =
                             | _ -> ()
 
                         Ok out
-        | Ok(JStr tag) -> Error(UnknownType(tag, runTags))
+        | Ok(JStr tag) -> Error(WireRefusal.unknownTag (tag, runTags))
         | Ok _ -> refused "a run's tag is not a string"
 
     /// Rows of cells (a group's key and aggregate cells, a relation's key cells): each row's length
@@ -1489,7 +1491,7 @@ module internal StateWire =
     /// with its own name, type and cells as a run. Nothing is matched to the schema or padded, so a
     /// table the evaluator reads through its total padding rule comes back the same table.
     let schemaJson (schema: Schema) : JVal =
-        JArr(schema |> List.map (fun (n, ty) -> JArr [ JStr n; JStr(ColumnType.tag ty) ]))
+        JArr(schema |> List.map (fun f -> JArr [ JStr f.Name; JStr(ColumnType.tag f.Type) ]))
 
     let tableJson (t: Table) : JVal =
         JObj
@@ -1501,7 +1503,7 @@ module internal StateWire =
                       JObj
                           [ "name", JStr c.Name
                             "type", JStr(ColumnType.tag c.Type)
-                            "cells", runJson (Array.ofList c.Cells) ])
+                            "cells", runJson (Array.ofList (Column.toCells c)) ])
               ) ]
 
     /// The canonical hash of a pipeline: SHA-256 of its canonical wire string.
@@ -1789,12 +1791,12 @@ module Incremental =
     // ---- shared helpers ----
 
     let private colIndex (cols: Schema) (name: string) : int option =
-        cols |> List.tryFindIndex (fun (n, _) -> n = name)
+        cols |> List.tryFindIndex (fun f -> f.Name = name)
 
     let private colType (cols: Schema) (name: string) : ColumnType option =
-        cols |> List.tryFind (fun (n, _) -> n = name) |> Option.map snd
+        cols |> List.tryFind (fun f -> f.Name = name) |> Option.map _.Type
 
-    let private available (cols: Schema) : string list = cols |> List.map fst
+    let private available (cols: Schema) : string list = Fields.names cols
 
     /// A loop rather than a recursion through `Result.bind` (Phase 265), for the reason
     /// `DataFrame`'s own traverse gives: the maintained grouping traverses one element per group, and
@@ -1952,21 +1954,22 @@ module Incremental =
     /// `Order`, `Sort` permutes it, `Project` permutes the column arrays, and `Derive` adds ONE array.
     /// A slot outside `Order` is dead at this step: its cells are never read again this walk.
     ///
-    /// `Origins` co-indexes with `Data`: the source `Cell list` an array was unpacked from, while the
-    /// column is still exactly that list, unpadded — the frame's own twin of the reference frame's
-    /// `Origins`, and for the same reason: an output column the walk did not touch, over a frame whose
-    /// `Order` is still every slot in slot order, IS the consumer's list, and handing it back costs
-    /// nothing. No array in a frame is ever written after the step that made it; a step that changes
-    /// a column makes a new array.
+    /// `Origins` co-indexes with `Data`: the source `Column` an array stands for, while the column is
+    /// still exactly that column, unpadded (Phase 423: the column itself, where it was the column's
+    /// `Cell list` until Core `1.0.0` made the column a typed vector). An output column the walk did
+    /// not touch, over a frame whose `Order` is still every slot in slot order, IS the consumer's
+    /// column, and handing it back costs nothing; a cell of one is read in place (`Column.cell`),
+    /// never by walking a list. No array in a frame is ever written after the step that made it; a
+    /// step that changes a column makes a new array.
     ///
     /// Phase 359 — `Tails` co-indexes with `Origins` too: where a refresh answers an APPEND, the
-    /// cells of the source list from slot `TailFrom` on (the rows appended), as an array, so an
-    /// appended row's cell is read at once rather than by walking the whole list to it — and a column
-    /// no step unpacks is never unpacked for it. `null` everywhere else.
+    /// cells of the source from slot `TailFrom` on (the rows appended), as an array, so an appended
+    /// row's cell is read at once — and a column no step unpacks is never unpacked for it. `null`
+    /// everywhere else.
     type private WalkFrame =
         { Cols: Schema
           Data: Cell[][]
-          Origins: Cell list option[]
+          Origins: Column option[]
           Tails: Cell[] option[]
           TailFrom: int
           Order: int[] }
@@ -2041,7 +2044,7 @@ module Incremental =
         if not (isNull a) then
             a
         else
-            let unpacked = List.toArray f.Origins[c].Value
+            let unpacked = List.toArray (Column.toCells f.Origins[c].Value)
             f.Data[c] <- unpacked
             unpacked
 
@@ -2121,14 +2124,7 @@ module Incremental =
         then
             f.Tails[c].Value[s - f.TailFrom]
         else
-            let mutable rest = f.Origins[c].Value
-            let mutable i = 0
-
-            while i < s do
-                rest <- rest.Tail
-                i <- i + 1
-
-            rest.Head
+            Column.cell s f.Origins[c].Value
 
     let private fillRow (f: WalkFrame) (cols: int[]) (s: int) (into: Cell[]) =
         for c in cols do
@@ -2892,7 +2888,7 @@ module Incremental =
         // position before. Every other window function is recomputed wholesale, as before.
         | WWindow(windowIdx, spec) :: rest ->
             let order = f.Order
-            let types = f.Cols |> List.map snd |> List.toArray
+            let types = Fields.types f.Cols |> List.toArray
             let packed = System.Collections.Generic.Dictionary<int, Vec>()
 
             // Every slot alive, in slot order: a column no step unpacked is then its source list.
@@ -2916,14 +2912,12 @@ module Incremental =
                         let a = column f ci
                         Vec.pack types[ci] (order |> Array.map (fun s -> a[s]))
 
-                    // A column still its source list packs straight from the list, as `Frame.ofTable`
-                    // packs it (Phase 327), rather than through an unpacked array.
+                    // A column still its source column is a view over it, as `Frame.ofTable` takes
+                    // one (Phase 423), rather than a pack through an unpacked array.
                     let v =
                         match f.Origins[ci] with
                         | Some origin when isNull f.Data[ci] && identity.Value ->
-                            match Vec.packList types[ci] order.Length origin with
-                            | ValueSome v -> v
-                            | ValueNone -> fromColumn ()
+                            Vec.ofColumn order.Length types[ci] (Some origin)
                         | _ -> fromColumn ()
 
                     packed[ci] <- v
@@ -2963,14 +2957,15 @@ module Incremental =
 
             outcome
             |> Result.bind (fun (ty, cellAt, keep, run, reusable) ->
-                let cols2 = f.Cols @ [ spec.As, ty ]
+                let field2 = Field.create spec.As ty
+                let cols2 = f.Cols @ [ field2 ]
 
-                // Every slot alive in slot order: the appended column is built as the cell LIST the
-                // result hands back, carried as the column's origin (unpacked only if a later step
-                // reads it), as `Frame.toTable` builds it — not stored cell by cell into a slot array
-                // first. Measured (Phase 324) at 20,000 rows, filling that array cost more than the
-                // window itself: every boxed cell stored into an array that size is a reference from
-                // an old-generation object to a young one.
+                // Every slot alive in slot order: the appended column is built as a cell list and
+                // packed into the typed COLUMN the result hands back, carried as the column's origin
+                // (unpacked only if a later step reads it) — not stored cell by cell into a slot
+                // array first. Measured (Phase 324) at 20,000 rows, filling that array cost more than
+                // the window itself: every boxed cell stored into an array that size is a reference
+                // from an old-generation object to a young one.
                 let data2, origins2 =
                     if identity.Value then
                         // A resumed prefix fold (Phase 333) shares the prior column's cells for the rows
@@ -3013,7 +3008,8 @@ module Incremental =
 
                                 cells
 
-                        Array.append f.Data [| null |], Array.append f.Origins [| Some cells |]
+                        Array.append f.Data [| null |],
+                        Array.append f.Origins [| Some(Vec.columnOfCells field2 cells) |]
                     else
                         let last: Cell[] = Array.zeroCreate r.Stable.Length
 
@@ -3037,7 +3033,9 @@ module Incremental =
                     | Some run ->
                         let run =
                             match origins2[origins2.Length - 1] with
-                            | Some cells -> { run with Column = cells }
+                            | Some column ->
+                                { run with
+                                    Column = Column.toCells column }
                             | None -> run
 
                         { caches with
@@ -3159,7 +3157,7 @@ module Incremental =
             let resolveOne (src, out) =
                 match colIndex f.Cols src with
                 | None -> Error(EvalError.UnknownColumn(src, available f.Cols))
-                | Some i -> Ok(out, snd (List.item i f.Cols), i)
+                | Some i -> Ok(out, List.item i f.Cols, i)
 
             traverse resolveOne pairs
             |> Result.bind (fun resolved ->
@@ -3171,7 +3169,7 @@ module Incremental =
                     prior
                     r
                     { f with
-                        Cols = resolved |> List.map (fun (o, ty, _) -> o, ty)
+                        Cols = resolved |> List.map (fun (o, field, _) -> Fields.rename o field)
                         Data = idx |> Array.map (fun i -> f.Data[i])
                         Origins = idx |> Array.map (fun i -> f.Origins[i])
                         Tails =
@@ -3210,7 +3208,8 @@ module Incremental =
                             match colIndex f.Cols name with
                             | Some i ->
                                 { f with
-                                    Cols = f.Cols |> List.mapi (fun j (n2, t) -> if j = i then n2, ty else n2, t)
+                                    Cols =
+                                        f.Cols |> List.mapi (fun j fd -> if j = i then Field.create name ty else fd)
                                     Data = f.Data |> Array.mapi (fun j a -> if j = i then step else a)
                                     Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o)
                                     Tails =
@@ -3220,7 +3219,7 @@ module Incremental =
                                             f.Tails |> Array.mapi (fun j o -> if j = i then None else o) }
                             | None ->
                                 { f with
-                                    Cols = f.Cols @ [ name, ty ]
+                                    Cols = f.Cols @ [ Field.create name ty ]
                                     Data = Array.append f.Data [| step |]
                                     Origins = Array.append f.Origins [| None |]
                                     Tails =
@@ -3249,40 +3248,27 @@ module Incremental =
         { Schema = f.Cols
           Columns =
             f.Cols
-            |> List.mapi (fun ci (name, ty) ->
-                let cells =
-                    match f.Origins[ci] with
-                    | Some origin when identity -> origin
-                    // Phase 327 — a few rows (a top-N board) of a column no step unpacked are read
-                    // by one walk of its list in slot order, rather than by unpacking the column
-                    // whole to read them.
-                    | Some origin when isNull f.Data[ci] && f.Order.Length <= sparseRowLimit ->
-                        let order = f.Order
-                        let bySlot = Array.init order.Length id |> Array.sortBy (fun k -> order[k])
-                        let out: Cell[] = Array.zeroCreate order.Length
-                        let mutable rest = origin
-                        let mutable pos = 0
+            |> List.mapi (fun ci field ->
+                match f.Origins[ci] with
+                // The consumer's own column, handed back (Phase 423: no list, no copy) — under the
+                // schema's name, which a projection may have changed; the storage is shared either way.
+                | Some origin when identity ->
+                    if origin.Name = field.Name then
+                        origin
+                    else
+                        { origin with Name = field.Name }
+                // Phase 327 — a few rows (a top-N board) of a column no step unpacked are read in
+                // place, one cell each, rather than by unpacking the column whole to read them.
+                | Some origin when isNull f.Data[ci] && f.Order.Length <= sparseRowLimit ->
+                    Vec.columnOfCells field (f.Order |> Array.map (fun s -> Column.cell s origin) |> List.ofArray)
+                | _ ->
+                    let a = column f ci
+                    let mutable acc = []
 
-                        for k in bySlot do
-                            let s = order[k]
+                    for k in f.Order.Length - 1 .. -1 .. 0 do
+                        acc <- a[f.Order[k]] :: acc
 
-                            while pos < s do
-                                rest <- rest.Tail
-                                pos <- pos + 1
-
-                            out[k] <- rest.Head
-
-                        List.ofArray out
-                    | _ ->
-                        let a = column f ci
-                        let mutable acc = []
-
-                        for k in f.Order.Length - 1 .. -1 .. 0 do
-                            acc <- a[f.Order[k]] :: acc
-
-                        acc
-
-                Column.create name ty cells) }
+                    Vec.columnOfCells field acc) }
 
     // ---- the maintained-group step ----
 
@@ -3364,11 +3350,11 @@ module Incremental =
 
             traverse resolveAgg aggs
             |> Result.bind (fun resolvedAggs ->
-                let keyCols = keys |> List.map (fun k -> k, colType cols k |> Option.get)
+                let keyCols = keys |> List.map (fun k -> cols |> List.find (fun f -> f.Name = k))
 
                 let aggCols =
                     resolvedAggs
-                    |> List.map (fun (a, ty, _) -> a.Name, DataFrame.aggregateType a.Fn ty)
+                    |> List.map (fun (a, ty, _) -> Field.create a.Name (DataFrame.aggregateType a.Fn ty))
 
                 // Group, preserving first-appearance order — the same partition `evalGroupBy`
                 // builds, so the two never disagree about which rows are one group. The accumulators
@@ -3614,8 +3600,7 @@ module Incremental =
             for j in 0 .. slots.Count - 1 do
                 out[j] <- a[slots[j]]
         else
-            let mutable rest = f.Origins[c].Value
-            let mutable at = 0
+            let origin = f.Origins[c].Value
 
             // Phase 359 — appended slots (ascending, so last) are read from the tail's cells.
             let tail =
@@ -3630,11 +3615,7 @@ module Incremental =
                 if tail.IsSome && s >= f.TailFrom then
                     out[j] <- tail.Value[s - f.TailFrom]
                 else
-                    while at < s do
-                        rest <- rest.Tail
-                        at <- at + 1
-
-                    out[j] <- rest.Head
+                    out[j] <- Column.cell s origin
 
         out
 
@@ -3849,36 +3830,28 @@ module Incremental =
                             ValueNone
                     elif not (isNull (box priorSource)) && f.Origins[c].IsSome then
                         // The current source column this frame column IS: the one schema position
-                        // whose cell list is the frame column's list.
-                        let list = f.Origins[c].Value
+                        // whose column's storage is the frame column's.
+                        let origin = f.Origins[c].Value
                         let mutable at = -1
                         let mutable matches = 0
 
                         source.Schema
-                        |> List.iteri (fun i (name, _) ->
-                            match Table.tryColumn name source with
-                            | Some sc when obj.ReferenceEquals(sc.Cells, list) ->
+                        |> List.iteri (fun i field ->
+                            match Table.tryColumn field.Name source with
+                            | Some sc when obj.ReferenceEquals(sc.Data, origin.Data) ->
                                 at <- i
                                 matches <- matches + 1
                             | _ -> ())
 
                         let priorColumn =
                             if matches = 1 && at < priorExact.Length && priorExact[at] then
-                                Table.tryColumn (fst (List.item at priorSource.Schema)) priorSource
+                                Table.tryColumn (List.item at priorSource.Schema).Name priorSource
                             else
                                 None
 
                         match priorColumn with
-                        | Some pc ->
-                            let mutable rest = pc.Cells
-                            let mutable i = 0
-
-                            while i < s && not rest.IsEmpty do
-                                rest <- rest.Tail
-                                i <- i + 1
-
-                            if rest.IsEmpty then ValueNone else ValueSome rest.Head
-                        | None -> ValueNone
+                        | Some pc when s < Column.length pc -> ValueSome(Column.cell s pc)
+                        | _ -> ValueNone
                     else
                         ValueNone
 
@@ -4049,12 +4022,12 @@ module Incremental =
                 match failed with
                 | Some e -> Some(Error e)
                 | None ->
-                    let keyCols = keys |> List.map (fun k -> k, colType cols k |> Option.get)
+                    let keyCols = keys |> List.map (fun k -> cols |> List.find (fun f -> f.Name = k))
 
                     let aggCols =
                         aggArr
                         |> Array.toList
-                        |> List.map (fun (a, ty, _) -> a.Name, DataFrame.aggregateType a.Fn ty)
+                        |> List.map (fun (a, ty, _) -> Field.create a.Name (DataFrame.aggregateType a.Fn ty))
 
                     Some(
                         Ok
@@ -4251,7 +4224,7 @@ module Incremental =
             && ci < priorExact.Length
             && priorExact[ci]
             && (match Table.tryColumn name priorSource with
-                | Some pc -> System.Object.ReferenceEquals(pc.Cells, c.Cells)
+                | Some pc -> obj.ReferenceEquals(pc.Data, c.Data)
                 | None -> false)
 
         let counted (ci: int) =
@@ -4261,13 +4234,15 @@ module Incremental =
 
         let unpacked =
             t.Schema
-            |> List.mapi (fun ci (name, _) ->
+            |> List.mapi (fun ci field ->
+                let name = field.Name
+
                 match Table.tryColumn name t with
                 | Some c ->
-                    if counted ci || unchanged ci name c || List.length c.Cells = n then
-                        null, Some c.Cells
+                    if counted ci || unchanged ci name c || Column.length c = n then
+                        null, Some c
                     else
-                        let a = List.toArray c.Cells
+                        let a = List.toArray (Column.toCells c)
                         Array.init n (fun i -> if i < a.Length then a[i] else Null), None
                 | None -> Array.create n Null, None)
             |> List.toArray
@@ -4868,6 +4843,7 @@ module Incremental =
         let mutable acc: ColumnType option = None
         let mutable sawFloat = false
         let mutable sawDecimal = false
+        let mutable disjoint: (ColumnType * ColumnType) option = None
 
         let fold (t: ColumnType) =
             match t with
@@ -4877,12 +4853,16 @@ module Incremental =
             | BoolType
             | StringType
             | DateType
-            | TimestampType -> ()
+            | TimestampType _ -> ()
 
             acc <-
                 match acc with
                 | None -> Some t
-                | Some a -> Some(DataFrame.widenColumnType a t)
+                | Some a ->
+                    if disjoint.IsNone && (DataFrame.joinColumnType a t).IsNone then
+                        disjoint <- Some(a, t)
+
+                    Some(DataFrame.widenColumnType a t)
 
         for v in chunks do
             match v with
@@ -4910,7 +4890,9 @@ module Incremental =
         if sawFloat && sawDecimal then
             Error(DataFrame.floatBesideDecimal column)
         else
-            Ok(acc |> Option.defaultValue StringType)
+            match disjoint with
+            | Some(a, b) -> Error(DataFrame.typesBesideEachOther column a b)
+            | None -> Ok(acc |> Option.defaultValue StringType)
 
     /// Does the vector hold no present cell at all?
     let private nonePresent (v: Vec) : bool =
@@ -4966,7 +4948,6 @@ module Incremental =
             evalOver
                 { Cols = prepared.Cols
                   Vecs = columns |> Array.map (fun c -> c.Chunks[k])
-                  Origins = Array.create w None
                   Sel = None
                   Count = Chunked.lengthOf size count k }
 
@@ -5004,7 +4985,6 @@ module Incremental =
                         evalOver
                             { Cols = prepared.Cols
                               Vecs = columns |> Array.map (fun c -> Vec.pack c.Type [||])
-                              Origins = Array.create w None
                               Sel = None
                               Count = 0 }
                         |> Result.map (fun f -> f.Cols)
@@ -5039,8 +5019,8 @@ module Incremental =
                             | DataFrame.Decided ty -> Ok ty
                             | DataFrame.Refused -> Error(DataFrame.floatBesideDecimal name)
                             | DataFrame.ByCells ->
-                                match cols |> List.tryFindIndex (fun (n, _) -> n = name) with
-                                | Some oi when lastAt[name] = i -> ropeType name (chunksOf oi (snd cols[oi]))
+                                match cols |> List.tryFindIndex (fun f -> f.Name = name) with
+                                | Some oi when lastAt[name] = i -> ropeType name (chunksOf oi cols[oi].Type)
                                 | _ ->
                                     Error(
                                         TypeError(
@@ -5053,10 +5033,10 @@ module Incremental =
                         typed
                         |> Result.bind (fun ty ->
                             let schema' =
-                                if schema |> List.exists (fun (n, _) -> n = name) then
-                                    schema |> List.map (fun (n, t) -> if n = name then n, ty else n, t)
+                                if schema |> List.exists (fun f -> f.Name = name) then
+                                    schema |> List.map (fun f -> if f.Name = name then Field.create name ty else f)
                                 else
-                                    schema @ [ name, ty ]
+                                    schema @ [ Field.create name ty ]
 
                             replay schema' (i + 1) (Map.add name ty acc) tail)
 
@@ -5065,7 +5045,9 @@ module Incremental =
 
                     let outColumns =
                         cols
-                        |> List.mapi (fun oi (name, tyLocal) ->
+                        |> List.mapi (fun oi field ->
+                            let name = field.Name
+                            let tyLocal = field.Type
                             let chunks = chunksOf oi tyLocal
 
                             let ty =
@@ -5088,18 +5070,17 @@ module Incremental =
                             let passThrough =
                                 not (Set.contains name derived)
                                 && oi < w
-                                && fst (List.item oi prepared.Cols) = name
+                                && (List.item oi prepared.Cols).Name = name
                                 && columns[oi].Chunks.Length = chunkCount
 
-                            (name, ty),
+                            (if ty = tyLocal then field else Field.create name ty),
                             (if passThrough then
                                  columns[oi]
                              else
                                  { Type = ty
                                    Size = size
                                    Length = count
-                                   Chunks = chunks
-                                   Cells = ref None }))
+                                   Chunks = chunks }))
 
                     let out =
                         Prepared.ofChunks
@@ -6005,13 +5986,13 @@ module IncrementalCodec =
         |> Result.bind (fun tag ->
             match ColumnType.ofTag tag with
             | Some ty -> Ok ty
-            | None -> Error(UnknownType(tag, ColumnType.allTags)))
+            | None -> Error(UnknownType(tag, ColumnType.all)))
 
     let private schemaOf (el: JVal) : Result<Schema, ColumnError> =
         el
         |> items (fun entry ->
             match entry with
-            | JArr [ JStr name; ty ] -> typeOf ty |> Result.map (fun t -> name, t)
+            | JArr [ JStr name; ty ] -> typeOf ty |> Result.map (Field.create name)
             | _ -> Error(MalformedShape "incremental state: a schema entry is [name, type]"))
         |> Result.map List.ofArray
 
@@ -6029,10 +6010,7 @@ module IncrementalCodec =
                             let! ty = c |> at "type" typeOf
                             let! cs = c |> at "cells" (StateWire.runOf false)
 
-                            return
-                                { Name = name
-                                  Type = ty
-                                  Cells = List.ofArray cs }
+                            return Vec.columnOfCells (Field.create name ty) (List.ofArray cs)
                         }))
 
             return
@@ -6087,7 +6065,7 @@ module IncrementalCodec =
                 let! s = el |> at "scheme" strOf
                 let! k = el |> at "key" strOf
                 return DuplicateIdentity(s, k)
-            | other -> return! Error(UnknownType(other, defectTags))
+            | other -> return! Error(WireRefusal.unknownTag (other, defectTags))
         }
 
     let private reasonTags =
@@ -6136,7 +6114,7 @@ module IncrementalCodec =
             | "aggregateStepRepeated" ->
                 let! v = el |> at "verb" strOf
                 return AggregateStepRepeated v
-            | other -> return! Error(UnknownType(other, reasonTags))
+            | other -> return! Error(WireRefusal.unknownTag (other, reasonTags))
         }
 
     let private recomputeTags =
@@ -6166,7 +6144,7 @@ module IncrementalCodec =
                 let! n = el |> at "rowsEvaluated" intOf
                 let! reason = el |> at "reason" reasonOf
                 return FullRecompute(n, reason)
-            | other -> return! Error(UnknownType(other, recomputeTags))
+            | other -> return! Error(WireRefusal.unknownTag (other, recomputeTags))
         }
 
     let private windowRunOf (el: JVal) : Result<int * WindowRun, ColumnError> =
@@ -6198,7 +6176,7 @@ module IncrementalCodec =
                         | "cells" ->
                             let! values = o |> at "values" (cellsOf true)
                             return RunCells values
-                        | other -> return! Error(UnknownType(other, [ "floats"; "ints"; "cells" ]))
+                        | other -> return! Error(WireRefusal.unknownTag (other, [ "floats"; "ints"; "cells" ]))
                     })
 
             return
@@ -6271,10 +6249,10 @@ module IncrementalCodec =
             rows > 0
             && s.SourceExact.Length <> 0
             && (List.zip s.Source.Value.Schema (List.ofArray s.SourceExact)
-                |> List.exists (fun ((name, _), exact) ->
+                |> List.exists (fun (field, exact) ->
                     exact
-                    && (match Table.tryColumn name s.Source.Value with
-                        | Some c -> List.length c.Cells <> rows
+                    && (match Table.tryColumn field.Name s.Source.Value with
+                        | Some c -> Column.length c <> rows
                         | None -> true)))
         then
             Some "the source-column record claims a column the source does not hold in full"
@@ -6513,7 +6491,7 @@ module IncrementalCodec =
                 tagged doc
                 |> Result.bind (fun tag ->
                     if tag <> documentTag then
-                        Error(UnknownType(tag, [ documentTag ]))
+                        Error(WireRefusal.unknownTag (tag, [ documentTag ]))
                     else
                         Error(
                             Malformed
