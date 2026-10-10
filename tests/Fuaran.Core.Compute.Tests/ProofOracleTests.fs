@@ -1258,6 +1258,8 @@ type private PipeTally =
         PExprs: Set<string>
         /// Pipelines whose model crossing crossed BACK to the same pipeline.
         PRoundTrips: int
+        /// The pipelines that did not, rendered — so a lossy bridge names what it lost.
+        PLossy: string list
     }
 
 let private pEmptyTally =
@@ -1269,7 +1271,8 @@ let private pEmptyTally =
       PCounted = 0
       PVerbs = Set.empty
       PExprs = Set.empty
-      PRoundTrips = 0 }
+      PRoundTrips = 0
+      PLossy = [] }
 
 /// One comparison: production's counted evaluator against the model's, over one pipeline and one
 /// input, with the step evaluator `mkStep` builds for that pipeline.
@@ -1298,11 +1301,8 @@ let private pCompare
             | _ -> [])
         |> Set.ofList
 
-    let roundTrip =
-        if (pPipelineToModel p |> List.map pTransformOfModel) = p then
-            1
-        else
-            0
+    let back = pPipelineToModel p |> List.map pTransformOfModel
+    let roundTrip = if back = p then 1 else 0
 
     let diff, ok, err, count =
         match prod, model with
@@ -1332,6 +1332,12 @@ let private pCompare
             0
         | Ok(_, n), ModelPipe.Error me ->
             Some(sprintf "%s: production evaluated, model refused %s" label (pRenderError (pErrOfModel me))), 1, 0, n
+        | Error(TypeError detail), ModelPipe.Ok _ when detail.Contains "which no column type holds together" ->
+            // Outside the model's domain (Phase 423): the list model's column holds any cells side by
+            // side, so it evaluates a derive whose cells span two unrelated types; Core `1.0.0`'s typed
+            // column cannot hold them, and production refuses by name (`DECISIONS.md` D18). The pair is
+            // compared on nothing — a refusal the model has no object for is not a disagreement.
+            None, 0, 1, 0
         | Error e, ModelPipe.Ok _ ->
             Some(sprintf "%s: production refused %s, model evaluated" label (pRenderError e)), 0, 1, 0
 
@@ -1347,7 +1353,12 @@ let private pCompare
         PCounted = t.PCounted + (if ok = 1 && count > 0 then 1 else 0)
         PVerbs = Set.union t.PVerbs verbs
         PExprs = Set.union t.PExprs exprs
-        PRoundTrips = t.PRoundTrips + roundTrip }
+        PRoundTrips = t.PRoundTrips + roundTrip
+        PLossy =
+            if roundTrip = 1 then
+                t.PLossy
+            else
+                sprintf "%s: %A crossed back as %A" label p back :: t.PLossy }
 
 /// The `conformance/laws/transform-laws.json` vectors, decoded with the shipped codec: id, the
 /// pipeline, the embedded source, and whether the file expects the reference to refuse.
@@ -1469,7 +1480,17 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
         let els, r3 = pGenExpr (depth - 1) r2
         Case([ w, t ], els), r3
     | 7 ->
-        let ty, r1 = pPick ColumnType.all r
+        // The model's `TimestampType` carries no unit (it predates Core's Phase 422), so a cast to a
+        // sub-second unit cannot cross to it and back; the sample draws the types the model has.
+        let ty, r1 =
+            pPick
+                (ColumnType.all
+                 |> List.filter (fun t ->
+                     match t with
+                     | TimestampType u -> u = TimeUnit.Seconds
+                     | _ -> true))
+                r
+
         let x, r2 = pGenExpr (depth - 1) r1
         Cast(ty, x), r2
     | 8 ->
@@ -1973,7 +1994,8 @@ let proofOracleTests =
               Expect.equal
                   t.PRoundTrips
                   t.PCompared
-                  "every pipeline crossed to the model and back unchanged — the two closed alphabets are the same"
+                  ("every pipeline crossed to the model and back unchanged — the two closed alphabets are the same; lost: "
+                   + String.concat "; " (List.truncate 5 t.PLossy))
 
               for verb in
                   [ "Filter"

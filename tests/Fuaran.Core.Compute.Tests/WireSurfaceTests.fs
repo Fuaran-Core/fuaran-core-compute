@@ -184,6 +184,17 @@ let rec private build
         box "s"
     elif t.IsEnum then
         Enum.GetValues(t).GetValue(0)
+    elif t.IsGenericType && t.GetGenericTypeDefinition() = typedefof<Vector<int>> then
+        // Core `1.0.0`'s column storage (Phase 423): an opaque, immutable vector with no public
+        // constructor, built from a one-element array through `Vector.ofArray` at the element type.
+        let elemT = t.GetGenericArguments().[0]
+        let arr = Array.CreateInstance(elemT, 1)
+        arr.SetValue(recur elemT, 0)
+
+        let ofArray =
+            typeof<Vector<int>>.Assembly.GetType("Fuaran.Core.Vector").GetMethod("ofArray").MakeGenericMethod(elemT)
+
+        ofArray.Invoke(null, [| box arr |])
     elif isOption t then
         let cases = FSharpType.GetUnionCases t
         FSharpValue.MakeUnion(cases.[1], [| recur (t.GetGenericArguments().[0]) |])

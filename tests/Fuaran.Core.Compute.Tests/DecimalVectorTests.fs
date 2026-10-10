@@ -99,7 +99,9 @@ let tests =
               let pastWidth = [ d "123456789012.5"; d "0.0001" ]
               Expect.isFalse (isDecs (decs pastWidth)) "twelve integer digits at scale four is past the width"
               Expect.isFalse (isDecs (decs [ d DecimalVectorLaw.poison ])) "the law's poison value"
-              Expect.isFalse (isDecs (decs [ d "1"; Int 2 ])) "an int cell in the column"
+              // Core `1.0.0` (Phase 423): an int in a decimal column is the decimal of its value, so
+              // the column is the vector; it was boxed while the column was a cell list.
+              Expect.isTrue (isDecs (decs [ d "1"; Int 2 ])) "an int cell in the column is its decimal"
               Expect.isFalse (isDecs (decs [ d "1"; d "1e3" ])) "malformed decimal text"
               Expect.isTrue (isDecs (decs [ Null; Null ])) "an all-null column is an empty vector"
 

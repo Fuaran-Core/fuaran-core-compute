@@ -1970,8 +1970,16 @@ let private drawCase (seed: int) : AggCase =
     let n = if rng.Next 8 = 0 then rng.Next 2 else rng.Next 24
     let groups = 1 + rng.Next 4
 
+    // The cells as a column of the case's type HOLDS them (Core `1.0.0`, Phase 423): an int drawn
+    // into a float or decimal column is the float or decimal of its value, and a cell no column of
+    // the type holds is absent. The boxed carrier below is fed these, so it holds a column state.
+    let held =
+        KitColumn.create "" ty [ for _ in 1..n -> drawCell rng ty edge ]
+        |> Column.toCells
+        |> Array.ofList
+
     { Ty = ty
-      Cells = Array.init n (fun _ -> drawCell rng ty edge)
+      Cells = held
       Groups = groups
       GroupOf = Array.init n (fun _ -> rng.Next groups) }
 
@@ -2111,7 +2119,12 @@ let streamedAggregateLaws =
         [ testCase "every streamed group-aggregate is Column.aggregate over the same members, to the bit"
           <| fun _ ->
               let run = streamLaw DataFrame.GroupAgg.Exact (seq { 0..2999 })
-              Expect.isEmpty run.Failures "the stream answers what Column.aggregate answers, or defers"
+
+              if not (List.isEmpty run.Failures) then
+                  failtestf
+                      "the stream answers what Column.aggregate answers, or defers; %d counterexample(s), the first:\n%s"
+                      (List.length run.Failures)
+                      (run.Failures |> List.truncate 12 |> String.concat "\n")
               // Not vacuous: the stream answers most of what it is asked, and the pool reaches the
               // refusals and the recomputations it must defer (an int Sum past int32, a float Sum
               // past the range over finite input, a cell outside the column's type, Phase 306's
@@ -2449,15 +2462,17 @@ let pivotStreamLaws =
 
           testCase "the oracle has teeth: it tells a pivot that drops cellEq's merge from the real one"
           <| fun _ ->
-              // `Int 1` and `Float 1.0` are two pivot columns that each collect BOTH rows; a pivot
-              // that matched by token would give each column one row.
+              // Two NaN on-values are two pivot columns that each collect BOTH rows under cellEq
+              // (NaN matches NaN); a pivot that matched by `=` would give each column no row. The
+              // lever was `Int 1` beside `Float 1.0` until Core `1.0.0` made the float column hold
+              // the int as `1.0` (Phase 423) — one on-value, which no matching could split.
               let t =
                   tbl
                       [ Field.create "g" StringType
                         Field.create "o" FloatType
                         Field.create "v" IntType ]
                       [ col "g" StringType [ Str "a"; Str "a" ]
-                        col "o" FloatType [ Int 1; Float 1.0 ]
+                        col "o" FloatType [ Float nan; Float nan ]
                         col "v" IntType [ Int 10; Int 20 ] ]
 
               match pivotOracle t [ "g" ] "o" "v" Sum with
@@ -2915,10 +2930,13 @@ let private oPivot1Sum: (string * Cell list) list =
 
 /// The pre-phase answer for `pivotNum Sum`.
 let private oPivotnumSum: (string * Cell list) list =
+    // The pre-phase answer held TWO `1` columns: `Int 1` and `Float 1.0` were two on-values, each
+    // collecting both rows under cellEq. Since Core `1.0.0` (Phase 423) the float column holds the
+    // int as `1.0`, so there is one on-value `1` and one column; the two NaN on-values stay two
+    // (distinct as values, each collecting both NaN rows under cellEq).
     [ "g", [ Str "a"; Str "b" ]
       "\"NaN\"", [ Int 40; Int 50 ]
       "\"NaN\"", [ Int 40; Int 50 ]
-      "1", [ Int 30; Null ]
       "1", [ Int 30; Null ]
       "2", [ Null; Int 30 ] ]
 
@@ -2941,7 +2959,7 @@ let private oWindowRollingsum: (string * Cell list) list =
         Null
         Float 0.1
         Null
-        Int 3
+        Float 3.0 // the source's `Int 3`, as the float column holds it (Core `1.0.0`, Phase 423)
         Null
         Float 0.7
         Float 0.2
@@ -2978,7 +2996,7 @@ let private oWindowRollingmean: (string * Cell list) list =
         Null
         Float 0.1
         Null
-        Int 3
+        Float 3.0 // the source's `Int 3`, as the float column holds it (Core `1.0.0`, Phase 423)
         Null
         Float 0.7
         Float 0.2
@@ -3015,7 +3033,7 @@ let private oWindowRownumber: (string * Cell list) list =
         Null
         Float 0.1
         Null
-        Int 3
+        Float 3.0 // the source's `Int 3`, as the float column holds it (Core `1.0.0`, Phase 423)
         Null
         Float 0.7
         Float 0.2
@@ -3042,7 +3060,7 @@ let private oWindowCumulsum: (string * Cell list) list =
         Null
         Float 0.1
         Null
-        Int 3
+        Float 3.0 // the source's `Int 3`, as the float column holds it (Core `1.0.0`, Phase 423)
         Null
         Float 0.7
         Float 0.2
@@ -3220,22 +3238,50 @@ let private drawnCells (seed: int) (count: int) : Cell list =
           | 5 -> Timestamp(string (char (int 'a' + next 3)))
           | _ -> if next 2 = 0 then Null else Float -0.0 ]
 
+/// The type under which ONE column holds both `a` and `b` (Phase 423): the widening join of their
+/// types where one exists, else the string type — under which a cell of another family is drawn
+/// absent by `KitColumn.create`. Core `1.0.0`'s column is a typed vector, so the token law is
+/// stated over the cells AS THE COLUMN HOLDS THEM: an int in a float column is the float, and two
+/// cells no one column holds are two absences.
+let private holdingType (a: Cell) (b: Cell) : ColumnType =
+    match Cell.typeOf a, Cell.typeOf b with
+    | Some x, Some y when x = y -> x
+    | Some x, Some y when ColumnType.widens x y -> y
+    | Some x, Some y when ColumnType.widens y x -> x
+    | Some x, None
+    | None, Some x -> x
+    | _ -> StringType
+
 /// One partition count per verb, for the two-row frame `[a; b]` (or `a` against `b` for the set
-/// operations): 1 when the verb put the two cells together, 2 when it kept them apart.
-let private partitionsBy (a: Cell) (b: Cell) : (string * int) list =
+/// operations): 1 when the verb put the two cells together, 2 when it kept them apart — beside
+/// the two cells as the key column holds them, which is what the law's tokens are read from.
+let private partitionsBy (a: Cell) (b: Cell) : (Cell * Cell) * (string * int) list =
+    let ty = holdingType a b
+    let key = col "k" ty [ a; b ]
+
+    let held =
+        match Column.toCells key with
+        | [ ha; hb ] -> ha, hb
+        | other -> failtestf "the key column holds %A" other
+
     let pair: Table =
         tbl
             [ Field.create "id" StringType
-              Field.create "k" StringType
+              Field.create "k" ty
               Field.create "o" StringType
               Field.create "v" IntType ]
             [ col "id" StringType [ Str "r0"; Str "r1" ]
-              col "k" StringType [ a; b ]
+              key
               col "o" StringType [ Str "x"; Str "x" ]
               col "v" IntType [ Int 1; Int 2 ] ]
 
+    // The one-row tables for the set verbs hold the cells AS THE PAIR HOLDS THEM: a cell the pair
+    // drew absent (no one type holds it beside the other) is absent here too, where alone it would
+    // have been held under its own type.
     let one (c: Cell) : Table =
-        tbl [ Field.create "k" StringType ] [ col "k" StringType [ c ] ]
+        tbl [ Field.create "k" ty ] [ col "k" ty [ c ] ]
+
+    let a, b = held
 
     let rows (r: Result<Table, EvalError>) = r |> okTable |> Table.rowCount
     let countGroups = GroupBy([ "k" ], [ { Name = "n"; Fn = Count; Of = "v" } ])
@@ -3260,6 +3306,7 @@ let private partitionsBy (a: Cell) (b: Cell) : (string * int) list =
         | Ok state -> Table.rowCount (Incremental.result state)
         | Error e -> failtestf "prime failed: %s" (DataFrame.errorString e)
 
+    held,
     [ "GroupBy", rows (DataFrame.evalPipeline [ countGroups ] pair)
       "Distinct", rows (DataFrame.evalPipeline [ Project [ "k", "k" ]; Distinct ] pair)
       "Intersect", 2 - rows (DataFrame.evalPipeline [ Intersect(Embedded(one b)) ] (one a))
@@ -3311,8 +3358,12 @@ let tokenEqualityTests =
 
               for a in pool do
                   for b in pool do
+                      // The tokens of the cells as the key column HOLDS them (Core `1.0.0`, Phase
+                      // 423): `Int 1` beside `Float 1.0` is one float column holding `1.0` twice.
+                      let (ha, hb), counts = partitionsBy a b
+
                       let expected =
-                          if DataFrame.cellToken a = DataFrame.cellToken b then
+                          if DataFrame.cellToken ha = DataFrame.cellToken hb then
                               1
                           else
                               2
@@ -3320,13 +3371,15 @@ let tokenEqualityTests =
                       if expected = 1 then
                           together <- together + 1
 
-                      for verb, got in partitionsBy a b do
+                      for verb, got in counts do
                           if got <> expected then
                               failtestf
-                                  "%s partitioned %A and %A into %d group(s); their tokens say %d"
+                                  "%s partitioned %A and %A (held as %A and %A) into %d group(s); their tokens say %d"
                                   verb
                                   a
                                   b
+                                  ha
+                                  hb
                                   got
                                   expected
 
@@ -3353,20 +3406,26 @@ let tokenEqualityTests =
               for _ in 1..600 do
                   let a1, a2, b1, b2 = cells[next ()], cells[next ()], cells[next ()], cells[next ()]
 
+                  // Each key column under the type that holds its two cells (Phase 423), and the
+                  // row tokens read from the cells as held.
+                  let k1 = col "k1" (holdingType a1 b1) [ a1; b1 ]
+                  let k2 = col "k2" (holdingType a2 b2) [ a2; b2 ]
+
                   let expected =
-                      if DataFrame.rowTokenString [ a1; a2 ] = DataFrame.rowTokenString [ b1; b2 ] then
-                          1
-                      else
-                          2
+                      match Column.toCells k1, Column.toCells k2 with
+                      | [ ha1; hb1 ], [ ha2; hb2 ] ->
+                          if DataFrame.rowTokenString [ ha1; ha2 ] = DataFrame.rowTokenString [ hb1; hb2 ] then
+                              1
+                          else
+                              2
+                      | other -> failtestf "the key columns hold %A" other
 
                   let t =
                       tbl
-                          [ Field.create "k1" StringType
-                            Field.create "k2" StringType
+                          [ Field.create "k1" k1.Type
+                            Field.create "k2" k2.Type
                             Field.create "v" IntType ]
-                          [ col "k1" StringType [ a1; b1 ]
-                            col "k2" StringType [ a2; b2 ]
-                            col "v" IntType [ Int 1; Int 2 ] ]
+                          [ k1; k2; col "v" IntType [ Int 1; Int 2 ] ]
 
                   let grouped =
                       DataFrame.evalPipeline [ GroupBy([ "k1"; "k2" ], [ { Name = "n"; Fn = Count; Of = "v" } ]) ] t
@@ -3722,9 +3781,24 @@ let private sameOutcome (a: Result<Cell, EvalError>) (b: Result<Cell, EvalError>
     | Error e1, Error e2 -> e1 = e2
     | _ -> false
 
+/// A one-row table over the typed schema. A cell that disagrees with its column's declared type is
+/// held under its OWN type beneath the declared field (Core `1.0.0`, Phase 423): the one-row column
+/// disagrees with its schema entry wholly, which is the one disagreement a `Table` still holds and
+/// the frame reads boxed — so the mistyped-cell fall-back of the compiled tree is still reached.
 let private oneRowTable (row: Cell[]) : Table =
     { Schema = typedSchema
-      Columns = typedSchema |> List.mapi (fun i f -> col f.Name f.Type [ row[i] ]) }
+      Columns =
+        typedSchema
+        |> List.mapi (fun i f ->
+            let c = row[i]
+            let held = col f.Name f.Type [ c ]
+
+            // A cell the declared type holds (as itself, or widened: an int in a float column is
+            // the float) stays held; one it does not — drawn absent by the builder — is the
+            // one-row column of its own type.
+            match Column.toCells held with
+            | [ Null ] when c <> Null -> col f.Name (Cell.typeOf c |> Option.get) [ c ]
+            | _ -> held) }
 
 /// The compiled evaluation of one (expression, row), through the internal entry the steps use:
 /// the row as a one-row frame (Phase 267 — a conforming column unpacks typed and reaches the
@@ -3740,6 +3814,14 @@ let private compiledOutcome (e: ColExpr) (row: Cell[]) : Result<Cell, EvalError>
 
 let private referenceOutcome (e: ColExpr) (row: Cell[]) : Result<Cell, EvalError> =
     DataFrame.evalExprInRow typedEnv typedSchema (List.ofArray row) e
+
+/// The row as a one-row TABLE holds it (Core `1.0.0`, Phase 423): an int drawn into a float column
+/// is the float, and a cell no column of the declared type holds is absent. The reference and the
+/// compiled form are compared over this row, which is the only row both can see.
+let private asHeld (row: Cell[]) : Cell[] =
+    (oneRowTable row).Columns
+    |> List.map (fun c -> List.head (Column.toCells c))
+    |> Array.ofList
 
 /// The kernel a binary node over two columns of a type compiles to, with conforming cells.
 let private kernelCases: (DataFrame.Kernel * BinOp * ColumnType) list =
@@ -3771,7 +3853,7 @@ let compiledExprLaws =
 
               for _ in 1..4000 do
                   let e = genExpr rng (rng.Next 5)
-                  let row = typedRow rng
+                  let row = asHeld (typedRow rng)
                   let expected = referenceOutcome e row
                   let actual, kernels = compiledOutcome e row
 
@@ -3922,15 +4004,16 @@ let compiledExprLaws =
 
           testCase "a compiled tree is reusable across rows: an error on one row leaves the next row's answer intact"
           <| fun _ ->
-              let e = Binary(Add, Col "i", Lit(Int 1))
+              // The error is a cast the string refuses (Phase 423): Core `1.0.0`'s table cannot hold
+              // a string in the int column `i`, which is where the mistyped cell sat before.
+              let e = Binary(Add, Cast(IntType, Col "s"), Lit(Int 1))
               let bad = typedRow (System.Random 1)
-              bad[0] <- Str "x"
+              bad[4] <- Str "x"
               let good = typedRow (System.Random 2)
-              good[0] <- Int 41
+              good[4] <- Str "41"
 
-              // One frame holding both rows (Phase 267): the mistyped cell keeps column `i` boxed,
-              // so the tree takes the cell path at both physical rows and the slot must reset
-              // between them.
+              // One frame holding both rows (Phase 267): the cast keeps the tree on the cell path at
+              // both physical rows, and the slot must reset between them.
               let frame =
                   Frame.ofTable
                       { Schema = typedSchema
@@ -4220,10 +4303,13 @@ let private genStep (rng: System.Random) : Transform =
 let private genPipeline (rng: System.Random) : Transform list =
     [ for _ in 0 .. rng.Next 4 -> genStep rng ]
 
-/// The generated sample: (table, pipeline) pairs, a third of the tables carrying a mistyped cell.
+/// The generated sample: (table, pipeline) pairs. No table carries the mistyped column since Core
+/// `1.0.0` (Phase 423): a pipeline that merged it with a typed one (`Union`, a join) produced a
+/// column holding two unrelated types, which no `Table` can hold, so the reference had no answer.
+/// The boundary law below still draws it — it round-trips without a pipeline.
 let private frameSample (seed: int) (count: int) : (Table * Transform list) list =
     let rng = System.Random seed
-    [ for i in 1..count -> frameTable rng (rng.Next 7) (i % 3 = 0), genPipeline rng ]
+    [ for _ in 1..count -> frameTable rng (rng.Next 7) false, genPipeline rng ]
 
 [<Tests>]
 let frameTests =
@@ -4415,8 +4501,14 @@ let frameTests =
                           | Error _ -> failed <- true
 
                   if not failed then
+                      let folded =
+                          try
+                              Ok(Frame.toTable frame)
+                          with e ->
+                              failtestf "the fold of %A over %A cannot leave the frame: %s" pipeline table e.Message
+
                       Expect.equal
-                          (tokenised (Ok(Frame.toTable frame)))
+                          (tokenised folded)
                           (tokenised (DataFrame.evalPipeline pipeline table))
                           "the stepwise fold, packed back, is the reference answer"
 
@@ -4434,7 +4526,7 @@ let frameTests =
               let rng = System.Random 2670
 
               for _ in 1..120 do
-                  let table = frameTable rng (rng.Next 7) (rng.Next 3 = 0)
+                  let table = frameTable rng (rng.Next 7) false
                   let prepared = DataFrame.prepare table
                   let pipelines = [ genPipeline rng; genPipeline rng; genPipeline rng ]
 
@@ -4629,9 +4721,12 @@ let frameTests =
                           (expected |> List.map DataFrame.cellToken)
                           "Table in: the padded cells"
 
+                      // A column of the schema's type fits; so does an all-null column of another
+                      // type (Phase 423) — there is no cell to disagree, and the frame types it by
+                      // the schema entry.
                       let fits =
                           match Table.tryColumn name t with
-                          | Some c -> c.Type = ty
+                          | Some c -> c.Type = ty || Column.toCells c |> List.forall ((=) Null)
                           | None -> true
 
                       Expect.equal
@@ -4662,11 +4757,22 @@ let frameTests =
                       | Some c when Column.length c <> n -> ragged <- ragged + 1
                       | _ -> ())
 
+                  // The padded table: each column under its OWN type (a column that disagrees with
+                  // its schema entry comes back disagreeing the same way, Phase 423), an absent
+                  // column under the schema's.
                   let padded: Table =
                       { Schema = t.Schema
                         Columns =
                           t.Schema
-                          |> List.map (fun f -> KitColumn.create f.Name f.Type (paddedCells f.Name)) }
+                          |> List.map (fun f ->
+                              // ... where it has a present cell to disagree with; an all-null or
+                              // empty column is typed by the schema entry on the way back.
+                              let ty =
+                                  match Table.tryColumn f.Name t with
+                                  | Some c when Column.toCells c |> List.exists ((<>) Null) -> c.Type
+                                  | _ -> f.Type
+
+                              KitColumn.create f.Name ty (paddedCells f.Name)) }
 
                   Expect.equal (tokenised (Ok(Frame.toTable frame))) (tokenised (Ok padded)) "round trip"
 
@@ -4688,52 +4794,6 @@ let frameTests =
               Expect.isGreaterThan ragged 50 "the sample reached ragged columns"
               Expect.isGreaterThan boxed 50 "the sample reached boxed columns"
               Expect.isGreaterThan borrowed 500 "the sample borrowed storage"
-
-          testCase
-              "an interned cell is the fresh cell under every comparison the evaluator makes, and only equal cells are shared"
-          <| fun _ ->
-              // `cellAt` hands back one shared `Bool` per value and one shared `Int` per value in
-              // `[Lo, Hi]`. Interning is sound only if nothing tells the shared cell from a fresh
-              // one: structural equality, `Cell.compare`, the hash, `cellToken` and the grouping
-              // comparer `CellKey` all agree, over the range, its edges and past them.
-              let ints =
-                  [ InternedCells.Lo - 3 .. InternedCells.Hi + 3 ]
-                  @ [ System.Int32.MinValue; System.Int32.MaxValue ]
-
-              let read (v: Vec) = Vec.cellAt v 0
-              let mutable shared = 0
-
-              let same (a: Cell) (fresh: Cell) =
-                  Expect.equal a fresh "structurally equal"
-                  Expect.equal (Cell.compare a fresh) (Some 0) "Cell.compare"
-                  Expect.equal (hash a) (hash fresh) "hash"
-                  Expect.equal (DataFrame.cellToken a) (DataFrame.cellToken fresh) "cellToken"
-                  Expect.isTrue (DataFrame.CellKey.equals a fresh) "CellKey.equals"
-                  Expect.equal (DataFrame.CellKey.hashCell a) (DataFrame.CellKey.hashCell fresh) "CellKey.hashCell"
-
-              for v in ints do
-                  let a = read (Ints([| v |], [| true |]))
-                  let b = read (Ints([| v |], [| true |]))
-                  same a (Int v)
-
-                  let inRange = v >= InternedCells.Lo && v <= InternedCells.Hi
-
-                  Expect.equal (obj.ReferenceEquals(a, b)) inRange (sprintf "%d is shared exactly inside the range" v)
-
-                  if inRange then
-                      shared <- shared + 1
-
-                  // A shared cell never equals a different value.
-                  Expect.notEqual a (Int(v ^^^ 1)) "not equal to a neighbour"
-
-              for b in [ true; false ] do
-                  let a = read (Bools([| b |], [| true |]))
-                  same a (Bool b)
-                  Expect.isTrue (obj.ReferenceEquals(a, read (Bools([| b |], [| true |])))) "a bool is shared"
-                  Expect.notEqual a (Bool(not b)) "not equal to the other bool"
-
-              Expect.equal shared (InternedCells.Hi - InternedCells.Lo + 1) "the whole range is shared"
-              Expect.equal (read (Ints([| 5 |], [| false |]))) Null "an absent row reads Null"
 
           testCase
               "the typed path types a derived column from its cells: all null is String, an upsert replaces in place, a window appends"
@@ -4944,7 +5004,7 @@ let preparedResultTests =
               let mutable selected = 0
 
               for _ in 1..300 do
-                  let table = frameTable rng (rng.Next 9) (rng.Next 3 = 0)
+                  let table = frameTable rng (rng.Next 9) false
                   let p1, p2, p3 = genPipeline rng, genPipeline rng, genPipeline rng
 
                   // Through the boundary at every hop: Table out, Table in.
@@ -5590,46 +5650,43 @@ let inPlaceOrderingTests =
 /// int values either in a narrow band or at int32's ends (`wide`), whose span no offset code covers.
 /// In a `dirty` column one cell in eight is outside the type, so the column packs boxed and takes the
 /// comparator path.
-let private orderCell (rng: System.Random) (ty: ColumnType) (wide: bool) (dirty: bool) : Cell =
+let private orderCell (rng: System.Random) (ty: ColumnType) (wide: bool) : Cell =
     let pick (xs: Cell[]) = xs[rng.Next xs.Length]
 
-    if dirty && rng.Next 8 = 0 then
-        pick [| Int 1; Str "x"; Float 2.0; Bool true |]
-    else
-        match ty with
-        | IntType when wide ->
-            pick
-                [| Null
-                   Int System.Int32.MaxValue
-                   Int System.Int32.MinValue
-                   Int 0
-                   Int 5
-                   Int 5
-                   Int -7 |]
-        | IntType -> if rng.Next 6 = 0 then Null else Int(rng.Next(-3, 4))
-        | FloatType ->
-            pick
-                [| Null
-                   Float 0.0
-                   Float -0.0
-                   Float nan
-                   Float infinity
-                   Float -infinity
-                   Float 1.5
-                   Float 1.5
-                   Float -2.25
-                   Float 1e-300 |]
-        | DecimalType ->
-            pick
-                [| Null
-                   Decimal "1.50"
-                   Decimal "1.5"
-                   Decimal "-2"
-                   Decimal "0.10"
-                   Decimal "3" |]
-        | BoolType -> pick [| Null; Bool true; Bool false |]
-        | DateType -> pick [| Null; Date "2026-01-02"; Date "2025-12-31"; Date "2026-01-02" |]
-        | _ -> pick [| Null; Str "b"; Str "a"; Str ""; Str "B"; Str "ab"; Str "a" |]
+    match ty with
+    | IntType when wide ->
+        pick
+            [| Null
+               Int System.Int32.MaxValue
+               Int System.Int32.MinValue
+               Int 0
+               Int 5
+               Int 5
+               Int -7 |]
+    | IntType -> if rng.Next 6 = 0 then Null else Int(rng.Next(-3, 4))
+    | FloatType ->
+        pick
+            [| Null
+               Float 0.0
+               Float -0.0
+               Float nan
+               Float infinity
+               Float -infinity
+               Float 1.5
+               Float 1.5
+               Float -2.25
+               Float 1e-300 |]
+    | DecimalType ->
+        pick
+            [| Null
+               Decimal "1.50"
+               Decimal "1.5"
+               Decimal "-2"
+               Decimal "0.10"
+               Decimal "3" |]
+    | BoolType -> pick [| Null; Bool true; Bool false |]
+    | DateType -> pick [| Null; Date "2026-01-02"; Date "2025-12-31"; Date "2026-01-02" |]
+    | _ -> pick [| Null; Str "b"; Str "a"; Str ""; Str "B"; Str "ab"; Str "a" |]
 
 let private orderTypes =
     [| IntType; FloatType; DecimalType; StringType; BoolType; DateType |]
@@ -5648,9 +5705,23 @@ let private orderCase (seed: int) : Frame =
 
     let columns =
         [ for j in 0..3 ->
+              // A dirty column (Phase 423) is drawn WHOLLY under another type than its schema entry:
+              // the one disagreement a Core `1.0.0` table can hold, which the frame reads boxed, so
+              // the law reaches the comparator path. A single cell of another type among typed ones
+              // is no longer a column state (`KitColumn.create` draws it absent).
               let dirty = rng.Next 6 = 0
-              KitColumn.create (sprintf "c%d" j) types[j] [ for _ in 1..n -> orderCell rng types[j] false dirty ] ]
-        @ [ KitColumn.create "w" IntType [ for _ in 1..n -> orderCell rng IntType wide false ] ]
+
+              let drawn =
+                  if dirty then
+                      let own = System.Array.IndexOf(orderTypes, types[j])
+                      orderTypes[(own + 1 + rng.Next(orderTypes.Length - 1)) % orderTypes.Length]
+                  else
+                      types[j]
+
+              // Built under the DRAWN type and placed under the schema's field (the table the `h`
+              // case of the boundary laws builds by hand): the frame reads it boxed.
+              KitColumn.create (sprintf "c%d" j) drawn [ for _ in 1..n -> orderCell rng drawn false ] ]
+        @ [ KitColumn.create "w" IntType [ for _ in 1..n -> orderCell rng IntType wide ] ]
 
     let f = Frame.ofTable { Schema = schema; Columns = columns }
     // A selection: some physical rows dropped, the rest shuffled.
@@ -6736,3 +6807,198 @@ let typedRowHashTests =
                       ))
                       (rowHashRender (oraclePivot pivotSrc keys "o"))
                       (sprintf "case %d, pivot index [%s] on %s" c (kindNames lk) (kindNames [ List.head rk ])) ]
+
+// ---- Phase 423 — temporal columns as integer vectors, and the date functions over them ----
+
+[<Tests>]
+let temporalVectorTests =
+    testList
+        "Frame.Temporal"
+        [ testCase "a date column and a timestamp column are VIEWS over Core's storage, in and out"
+          <| fun _ ->
+              let days = Vector.ofArray [| 20089; 20454; 19723 |]
+              let seconds = Vector.ofArray [| 1735689600.0; 1704067200.0; 1767225600.0 |]
+              let fraction = Vector.ofArray [| 1; 250; 999 |]
+
+              let t: Table =
+                  { Schema =
+                      [ Field.create "d" DateType
+                        Field.create "ts" (TimestampType TimeUnit.Milliseconds) ]
+                    Columns =
+                      [ Column.ofDates "d" days AllValid
+                        Column.ofTimestamps "ts" TimeUnit.Milliseconds seconds (Some fraction) AllValid ] }
+
+              let f = Frame.ofTable t
+
+              match f.Vecs with
+              | [| Dates(a, _); Stamps(unit, s, fr, _) |] ->
+                  Expect.isTrue (obj.ReferenceEquals(a, (Vector.Unsafe.borrow days).Array)) "the days are borrowed"
+                  Expect.equal unit TimeUnit.Milliseconds "the unit is carried"
+
+                  Expect.isTrue
+                      (obj.ReferenceEquals(s, (Vector.Unsafe.borrow seconds).Array))
+                      "the seconds are borrowed"
+
+                  Expect.isTrue
+                      (obj.ReferenceEquals(fr, (Vector.Unsafe.borrow fraction).Array))
+                      "the fraction is borrowed"
+              | other -> failtestf "a Dates and a Stamps vector expected, got %A" other
+
+              // The cells read off the vectors are the canonical texts Core renders.
+              Expect.equal
+                  [ for p in 0..2 -> Vec.cellAt f.Vecs[0] p ]
+                  (Column.toCells t.Columns[0])
+                  "the date cells are the column's"
+
+              Expect.equal
+                  [ for p in 0..2 -> Vec.cellAt f.Vecs[1] p ]
+                  (Column.toCells t.Columns[1])
+                  "the timestamp cells are the column's"
+
+              // Out: the storage is handed back, not copied.
+              let out = Frame.toTable f
+
+              match out.Columns with
+              | [ d; ts ] ->
+                  match d.Data, ts.Data with
+                  | ColumnData.Dates(dv, _), ColumnData.Timestamps(u, sv, Some fv, _) ->
+                      Expect.isTrue
+                          (obj.ReferenceEquals((Vector.Unsafe.borrow dv).Array, (Vector.Unsafe.borrow days).Array))
+                          "days out"
+
+                      Expect.equal u TimeUnit.Milliseconds "unit out"
+
+                      Expect.isTrue
+                          (obj.ReferenceEquals((Vector.Unsafe.borrow sv).Array, (Vector.Unsafe.borrow seconds).Array))
+                          "seconds out"
+
+                      Expect.isTrue
+                          (obj.ReferenceEquals((Vector.Unsafe.borrow fv).Array, (Vector.Unsafe.borrow fraction).Array))
+                          "fraction out"
+                  | other -> failtestf "typed temporal data expected, got %A" other
+              | other -> failtestf "two columns expected, got %A" other
+
+              Expect.equal out t "the round trip is the table"
+
+          testCase "a seconds timestamp column carries no fraction array, in or out"
+          <| fun _ ->
+              let seconds = Vector.ofArray [| 0.0; 86400.0 |]
+
+              let t: Table =
+                  { Schema = [ Field.create "ts" (TimestampType TimeUnit.Seconds) ]
+                    Columns = [ Column.ofTimestamps "ts" TimeUnit.Seconds seconds None AllValid ] }
+
+              let f = Frame.ofTable t
+
+              match f.Vecs with
+              | [| Stamps(TimeUnit.Seconds, _, fr, _) |] -> Expect.isTrue (isNull fr) "no fraction array"
+              | other -> failtestf "a Stamps vector expected, got %A" other
+
+              match (Frame.toTable f).Columns with
+              | [ { Data = ColumnData.Timestamps(_, _, None, _) } ] -> ()
+              | other -> failtestf "no fraction out, got %A" other
+
+          testCase "sort, group and distinct over a date column answer what the text form answered"
+          <| fun _ ->
+              let t: Table =
+                  { Schema = [ Field.create "d" DateType; Field.create "v" IntType ]
+                    Columns =
+                      [ col
+                            "d"
+                            DateType
+                            [ Date "2026-03-01"
+                              Null
+                              Date "2025-12-31"
+                              Date "2026-03-01"
+                              Date "0001-01-01" ]
+                        col "v" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ] }
+
+              Expect.equal
+                  (cellsOf "v" (okTable (DataFrame.evalPipeline [ Transform.sortBy [ "d", Asc ] ] t)))
+                  [ Int 5; Int 3; Int 1; Int 4; Int 2 ]
+                  "ascending, stable, nulls last"
+
+              Expect.equal
+                  (cellsOf "v" (okTable (DataFrame.evalPipeline [ Transform.sortBy [ "d", Desc ] ] t)))
+                  [ Int 1; Int 4; Int 3; Int 5; Int 2 ]
+                  "descending, nulls last"
+
+              Expect.equal
+                  (cellsOf
+                      "n"
+                      (okTable (DataFrame.evalPipeline [ GroupBy([ "d" ], [ { Name = "n"; Fn = Count; Of = "v" } ]) ] t)))
+                  [ Int 2; Int 1; Int 1; Int 1 ]
+                  "grouped by the day, the null its own group"
+
+              Expect.equal
+                  (Table.rowCount (okTable (DataFrame.evalPipeline [ Project [ "d", "d" ]; Distinct ] t)))
+                  4
+                  "distinct days"
+
+          testCase "DatePart and DateDiffDays read the integer form, and agree with the row evaluator"
+          <| fun _ ->
+              let t: Table =
+                  { Schema = [ Field.create "a" DateType; Field.create "b" DateType ]
+                    Columns =
+                      [ col "a" DateType [ Date "2024-02-29"; Date "1999-12-31"; Null; Date "2026-10-10" ]
+                        col "b" DateType [ Date "2024-03-01"; Date "2000-01-01"; Date "2026-01-01"; Null ] ] }
+
+              let pipeline =
+                  [ Derive("y", ApplyFn(DatePart, [ Lit(Str "year"); Col "a" ]))
+                    Derive("m", ApplyFn(DatePart, [ Lit(Str "month"); Col "a" ]))
+                    Derive("dd", ApplyFn(DatePart, [ Lit(Str "day"); Col "a" ]))
+                    Derive("diff", ApplyFn(DateDiffDays, [ Col "a"; Col "b" ])) ]
+
+              let out = okTable (DataFrame.evalPipeline pipeline t)
+              Expect.equal (cellsOf "y" out) [ Int 2024; Int 1999; Null; Int 2026 ] "year"
+              Expect.equal (cellsOf "m" out) [ Int 2; Int 12; Null; Int 10 ] "month"
+              Expect.equal (cellsOf "dd" out) [ Int 29; Int 31; Null; Int 10 ] "day"
+              Expect.equal (cellsOf "diff" out) [ Int 1; Int 1; Null; Null ] "the difference in days"
+
+              // The compiled tree took the day path: the date column reads as its day count.
+              let frame = Frame.ofTable t
+
+              match (DataFrame.compileExpr frame (DataFrame.resolveExpr Map.empty t.Schema (Col "a"))).Node with
+              | DataFrame.NDays _ -> ()
+              | other -> failtestf "a day node expected over the date column, got %A" other
+
+              // The errors are the row evaluator's, word for word.
+              for e in
+                  [ ApplyFn(DatePart, [ Lit(Str "week"); Col "a" ])
+                    ApplyFn(DatePart, [ Lit(Int 1); Col "a" ]) ] do
+                  let compiled =
+                      DataFrame.runCompiled (DataFrame.compileExpr frame (DataFrame.resolveExpr Map.empty t.Schema e)) 0
+
+                  let reference =
+                      DataFrame.evalExprInRow Map.empty t.Schema [ Date "2024-02-29"; Date "2024-03-01" ] e
+
+                  Expect.equal compiled reference (sprintf "%A" e)
+
+          testCase "a cast of text to a date or a timestamp refuses a text that is not canonical, by name"
+          <| fun _ ->
+              let t: Table =
+                  { Schema = [ Field.create "s" StringType ]
+                    Columns = [ col "s" StringType [ Str "2026-02-30" ] ] }
+
+              Expect.equal
+                  (DataFrame.evalPipeline [ Derive("d", Cast(DateType, Col "s")) ] t)
+                  (Error(TypeError "cannot cast '2026-02-30' to date: not a canonical YYYY-MM-DD"))
+                  "a day that does not exist"
+
+              Expect.equal
+                  (DataFrame.evalPipeline [ Derive("d", Cast(TimestampType TimeUnit.Seconds, Col "s")) ] t)
+                  (Error(TypeError "cannot cast '2026-02-30' to timestamp: not a canonical instant of its unit"))
+                  "a date text is not an instant"
+
+              let ok: Table =
+                  { Schema = [ Field.create "s" StringType ]
+                    Columns = [ col "s" StringType [ Str "2026-02-28" ] ] }
+
+              match DataFrame.evalPipeline [ Derive("d", Cast(DateType, Col "s")) ] ok with
+              | Ok out ->
+                  Expect.equal (cellsOf "d" out) [ Date "2026-02-28" ] "a canonical text casts"
+
+                  match (Frame.ofTable out).Vecs with
+                  | [| _; Dates _ |] -> ()
+                  | other -> failtestf "the cast column is held as days, got %A" other
+              | Error e -> failtestf "refused: %A" e ]

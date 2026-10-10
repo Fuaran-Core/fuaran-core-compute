@@ -139,13 +139,15 @@ let columnOpsTests =
           testCase "cellFits widens exactly as ColumnType.widens does, and stores the cell as given"
           <| fun _ ->
               // The ruling (DECISIONS.md D2): an int fits a decimal column and a float column, as
-              // the substrate's validator and codec already say; nothing else widens.
+              // the substrate's validator and codec already say; nothing else widens. Since Core
+              // `1.0.0` (Phase 423) the column is a typed vector, so the int it admits is HELD as the
+              // decimal, or the float, of its value — the case was "stored verbatim" until then.
               let intInDecimal = ok (ColumnOps.apply (SetCell("amount", 1, Int 7)) ledger)
-              Expect.equal (cellsOf "amount" intInDecimal) [ dec "1.5"; Int 7 ] "stored verbatim, not converted"
+              Expect.equal (cellsOf "amount" intInDecimal) [ dec "1.5"; dec "7" ] "held as the decimal of its value"
               Expect.equal (Table.validate intInDecimal) (Ok()) "a table Core's validator accepts"
 
               let intInFloat = ok (ColumnOps.apply (SetCell("rate", 0, Int 3)) ledger)
-              Expect.equal (cellsOf "rate" intInFloat) [ Int 3; Float 1.5 ] "an int in a float column"
+              Expect.equal (cellsOf "rate" intInFloat) [ Float 3.0; Float 1.5 ] "an int in a float column is the float"
 
               for op, expected in
                   [ SetCell("amount", 0, Float 1.5), CellTypeMismatch("amount", "decimal", "float")
@@ -229,13 +231,19 @@ let deltaTests =
               Expect.equal (ColumnOps.deltaOf byAmount before op) d "deltaOf a decimal edit = the diff"
               Expect.equal (ColumnOps.changedColumns op) (Some(Set.singleton "v")) "the edited column"
 
-          testCase "a decimal re-spelt, or an int replaced by the decimal of its value, is an edit"
+          testCase "an int replaced by the decimal of its value is no edit, and a changed decimal is one"
           <| fun _ ->
-              // Content is compared by what the source holds (Phase 323): an int cell and a decimal
-              // cell of the same value are two cells, so a delta reports the move.
+              // Content is compared by what the source holds (Phase 323). Until Core `1.0.0` an int
+              // cell and a decimal cell of the same value were two cells, so the delta reported the
+              // move; since Phase 423 a decimal column HOLDS the int as the decimal of its value, so
+              // the two sources below are one source and the delta is empty. A decimal whose value
+              // moved is still an edit.
               let before = keyed [] [ Int 1; dec "2"; dec "3" ]
               let after = keyed [] [ dec "1"; dec "2"; dec "3" ]
-              Expect.equal (Delta.rowsWith RowChanged (ok (Delta.diff byAmount before after))) [ ByKey "m:0.1" ] "seen"
+              Expect.equal (Delta.rowsWith RowChanged (ok (Delta.diff byAmount before after))) [] "one source, no edit"
+
+              let moved = keyed [] [ dec "1.5"; dec "2"; dec "3" ]
+              Expect.equal (Delta.rowsWith RowChanged (ok (Delta.diff byAmount before moved))) [ ByKey "m:0.1" ] "seen"
 
           testCase
               "a refresh over a decimal GroupBy sum keyed by a decimal identity returns the full evaluation's digits"
@@ -270,7 +278,12 @@ let derivedTypeTests =
           <| fun _ ->
               let t = ok (DataFrame.evalPipeline (mixed (Float 2.5)) ints)
               Expect.equal (typeOfCol "x" t) FloatType "Int ⊔ Float = Float (the first cell is an int)"
-              Expect.equal (cellsOf "x" t) [ Int 1; Float 2.5; Float 2.5 ] "the cells as derived"
+              // Core `1.0.0`'s float column holds the derived int as the float (Phase 423).
+              Expect.equal
+                  (cellsOf "x" t)
+                  [ Float 1.0; Float 2.5; Float 2.5 ]
+                  "the cells as the float column holds them"
+
               Expect.equal (Table.validate t) (Ok()) "a table the substrate's validator accepts"
 
               let summed =

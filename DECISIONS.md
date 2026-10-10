@@ -1,5 +1,99 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-10 — D18: three rulings on what Core `1.0.0`'s typed column leaves without an object — a non-canonical text cast to a temporal type is refused by name, a derived column spanning two unrelated types is refused by name, and the fused sort-then-limit bound is on work, not bytes
+
+**Context.** Until Core `1.0.0` a `Column` was a `Cell list`, so a column could hold a cell of the
+wrong type beside the right ones, and three evaluator semantics were stated for such columns. A typed
+vector cannot hold them (Phase 417), so each statement lost its object in the Phase 423 raise. The
+operator ruled on each on 2026-10-10; the rulings are recorded here because each is a behaviour a
+consumer can observe, and each was decided rather than fallen into.
+
+**1. `Cast(date, x)` and `Cast(timestamp, x)` of text that is not the canonical form are REFUSED BY
+NAME.** `castCell` used to answer `Date s` / `Timestamp s` for any string `s` and let the column carry
+it; a `Date "nonsense"` cell is one Core's `Column.ofCells` refuses since its Phase 422, so the frame
+could not hand such a column back as a `Table`. The cast now refuses with a `TypeError` naming the
+cell, the target type and the text — `cannot cast 'x' to date: not a canonical YYYY-MM-DD` and
+`cannot cast 'x' to timestamp: not a canonical instant of its unit` — at the row, the same way a
+string that is not a number refuses `Cast(int, …)`. A canonical text casts as before. The alternative,
+answering `Null` for the unparseable text, was rejected: a cast that silently drops a value is the
+defect the typed refusals exist to prevent.
+
+**2. A derived column — a `Derive`, or an `Unpivot`'s value column — whose cells span two types no
+column type holds together is REFUSED BY NAME** (`typesBesideEachOther`: "derived column 'x' holds a
+string beside a int, which no column type holds together: cast one to the other's type first"), on
+D5's precedent for a float beside a decimal. Phase 321 typed such a column by its earlier cell and
+carried the others as they were, which only a cell list could do. The static typer still decides where
+it can (D5); the refusal is the cells' half of the rule, reached where the typer deferred to them. The
+`Pipeline.fst` model's list column has no such refusal, so the oracle bridge classes it as outside the
+model's domain rather than as a disagreement (`ProofOracleTests`). *The same rule reaches `Union`*,
+the one other verb that puts two columns' cells into one: a column of the union takes the join of the
+two sides' types where one exists (an int column over a float one is a float column) and is refused by
+the same name where none does — the cell list used to carry the right side's cells under the left
+side's type, a column no `1.0.0` table can hold.
+
+**3. `PlanTests`' fused `Sort > Limit` bound is on WORK, not on bytes.** Phase 282 held the fused
+top-n to a quarter of the full sort's allocation, and that held only because the `Table` boundary's
+conversion dominated the full sort's cost. With the boundary a view (Phase 423), the full sort at
+20,000 rows allocates LESS than the fused form (1.49 MB against 2.31 MB) while the clock still favours
+the fused plan by an order of magnitude (1.3 ms against 18 ms). The claim was always about work — the
+top-n keeps ten rows in order where the sort orders them all — so the case now counts the rows each
+form hands to an ordering kernel (`SortFinite` / `SortPositions`, through a counting `KernelSet`) and
+bounds that; the allocation figures are printed beside it and not gated.
+
+## 2026-10-10 — D17: the substrate pin is raised to Core's `1.0.0` DRAFT through the local feed, with the public CI accepted RED until that version is published; the frame borrows and adopts at the `Table` boundary; and four choices the raise forced
+
+**Decision (operator ruling 2026-10-10, Phase 423).** `FuaranCoreVersion` is `1.0.0`, a version the
+public registry does not yet serve: Core's `1.0.0` is a draft slot, packed into the workspace's local
+feed, which this repository's `nuget.config` already consults first. The compute strand is the first
+consumer of the typed column (Core Phases 417, 418, 420, 421, 422, 426, 427), and the operator chose
+to raise it against the draft rather than wait for the release, so that the release ships with a
+consumer that has absorbed it.
+
+**1. The accepted state: this repository's GitHub CI is RED from this change until Core `1.0.0` is
+published.** CI restores from nuget.org and cannot see an unreleased version, so its restore fails.
+This is accepted and dated: no workaround is added (no `nuget.config` change pointing CI at another
+source, no conditional pin), because a workaround would make the public repository build against
+packages a reader outside the workspace cannot obtain, which is the state the version-pinning mandate
+forbids. The red clears when Core tags `v1.0.0`; the gate (`verify.ps1`) is green on the machine that
+holds the feed, and that run is the one this change cites.
+
+**2. The boundary converts nothing.** `Frame.ofTable` BORROWS each column's storage through
+`Vector.Unsafe.borrow` (a slice is copied, since the frame indexes from zero; an `AllValid` column has a
+mask built) and `Frame.toTable` ADOPTS the frame's arrays through `Vector.adopt`. The code that
+converted — `Frame.Origins`, `Frame.unpackFallback`, the `Chunked.Cells` memo, `Vec.packList`,
+`InternedCells` — goes. The no-write rule `Vector.Unsafe` states is one this assembly already obeyed
+internally: no verb writes into an array it did not allocate.
+
+**3. Four choices the raise forced, each the smallest that keeps a stated behaviour.**
+
+- *Unknown-tag refusals are `MalformedShape`, not `UnknownType`.* Core `1.0.0` typed `UnknownType`
+  to name column types only; the compute codecs' closed vocabularies (verbs, functions, modes) refuse
+  an outside tag as `MalformedShape "unknown tag '<got>' (expected one of: …)"`, and the suite reads
+  the pair back through its `UnknownTag` pattern.
+- *A projection renames a field KEEPING its metadata; a derived, aggregate or pivot column is a fresh
+  field with none.* `Schema = Field list` carries a unit, a label and a description per field (Core
+  Phase 427). A `Project` that renames a column is the same column under another name, so the field's
+  metadata travels (`Fields.rename`); a column the evaluator computes has no provenance a unit could
+  be read from, so it is `Field.create name type`.
+- *`Column` and `Table` are equatable by their cells and no longer comparable.* `ColumnData` is
+  `NoComparison` in Core; nothing in this repository ordered tables, and the two places that compared
+  columns for a diff (`ColumnOps.toOps`, `Delta`) compare CELLS, under the cell's own equality, which
+  tells a NaN from itself where the vector identity does not.
+- *A column that disagrees with its schema entry is read boxed, and one whose cells span two types
+  cannot leave the frame.* Core `1.0.0`'s `Table` can hold a column of another type than its field
+  says (the frame reads it as cells, as it always did), but never a mixed one: `Frame.toTable` refuses
+  such a column by name (`cannot be held by its type`), and the suite's generators stop drawing the
+  inputs that produced one (a mistyped column merged with a typed one), because the reference has no
+  answer for them. The suite's column builder (`KitColumn.create`) draws a cell no column holds beside
+  the others ABSENT, and documents it.
+
+**4. The version.** The public surface of `Fuaran.Compute.DataFrame` and `Fuaran.Compute.PipelineQuery`
+moves class `retype` (every signature that carried a schema), so the `0.38.1` release is followed by
+`0.39.0`, per the draft-slot rule. The law vectors re-emitted from this tree move ONE vector's bytes:
+`column-op-6-setColumn-decimal` records `Decimal "12"` where it recorded `Int 12`, because the decimal
+column now holds the int as the decimal of its value (the representation Core's Phase 417 stamped into
+its own `decimal-laws.json`). The shared corpus copy follows the release (D6).
+
 ## 2026-10-08 — D16: every float the evaluator computes leaves it with one NaN, `Double.NaN`'s bits, and the gate runs the main suite in Release as well as Debug
 
 **Decision.** One rule, evaluator-wide: **every float the evaluator emits carries the canonical NaN.**

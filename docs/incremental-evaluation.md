@@ -1743,6 +1743,31 @@ length and tail), so it buys the key minting and nothing of the floor; the repre
 O(appended) tick is the chunked prepared form (Phase 268), whose versions share their unchanged chunks
 by identity.
 
+### The `Table` boundary is a view (Phase 423)
+
+Core `1.0.0` made the column a typed vector (`Column = { Name; Data }` over an opaque, immutable
+`Vector<'T>`), and this evaluator's frame became a view over it: `prepare` / `Frame.ofTable` BORROWS
+each column's storage (`Vector.Unsafe.borrow`; a slice is copied, an `AllValid` column has a mask
+built) and `toTable` ADOPTS the frame's arrays (`Vector.adopt`). Temporal columns are carried as Core
+carries them — a date as its day count, an instant as whole seconds beside a fraction in the column's
+unit — and a decimal column is parsed once into the scaled-integer carrier. No cell is boxed on the
+typed path in either direction, and the code that converted (`Frame.Origins`, the `Chunked.Cells`
+memo, the list packer, the interned cells) went with the conversions.
+
+**What it changes in the figures above.** Every number in this document that paid a `Table` boundary
+paid for a conversion that no longer exists, so the full evaluations the ticks are held against got
+cheaper again, by the boundary's share. The ratio bounds held on the clock leg of the gate without a
+move of either number (`tickBound` 1.6, the floor as Phase 327 measured it). One bound did not
+survive: Phase 282 held the fused `Sort > Limit` to a quarter of the full sort's allocation, and that
+held only because the full sort's boundary conversion dominated — with the boundary a view, the full
+sort at 20,000 rows allocates 1.49 MB against the fused form's 2.31 MB, while the clock still favours
+the fused plan by an order of magnitude. The case now bounds WORK (the rows each form hands to an
+ordering kernel: none for the fused top-n, the filtered rows for the full sort) and prints the bytes
+beside it (operator ruling 2026-10-10, `DECISIONS.md` D18). The boundary's own figures, the Phase 342
+chain re-run and the dated pipeline (`byMonth`: a filter by date range, `DatePart` reading the day
+count, a group by month) are in
+[`benchmarks/results/2026-10-10-ultra9-386h-phase-423.md`](../benchmarks/results/2026-10-10-ultra9-386h-phase-423.md).
+
 ## Across a process boundary (Phase 355)
 
 A state lives as long as the process that built it. A consumer that runs in fresh processes (a

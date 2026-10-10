@@ -267,11 +267,32 @@ module ColumnOps =
     /// it is a full rebuild (`RemoveColumn` every old column, then `InsertColumn` every new one in
     /// order). Total — never throws.
     let toOps (before: Table) (after: Table) : ColumnOp list =
+        // Two columns differ when some CELL differs, under the cell's own equality — which tells a
+        // NaN from itself, as the diff always has (`proofs/ColumnOps.fst`'s `to_ops` is over cell
+        // lists). `ColumnData`'s equality is the vector identity Core `1.0.0` gave it (every NaN one
+        // value, `-0.0` equal to `0.0`), a coarser relation that would hide a NaN written over a NaN.
+        let cellsDiffer (a: Column) (b: Column) : bool =
+            let n = Column.length a
+
+            if Column.length b <> n then
+                true
+            else
+                let mutable i = 0
+                let mutable differ = false
+
+                while not differ && i < n do
+                    if Column.cell i a <> Column.cell i b then
+                        differ <- true
+
+                    i <- i + 1
+
+                differ
+
         if before.Schema = after.Schema && Table.rowCount before = Table.rowCount after then
             after.Columns
             |> List.choose (fun ac ->
                 match before.Columns |> List.tryFind (fun c -> c.Name = ac.Name) with
-                | Some bc when bc.Data <> ac.Data -> Some(SetColumn ac)
+                | Some bc when cellsDiffer bc ac -> Some(SetColumn ac)
                 | _ -> None)
         else
             let removes = before.Columns |> List.rev |> List.map (fun c -> RemoveColumn c.Name)

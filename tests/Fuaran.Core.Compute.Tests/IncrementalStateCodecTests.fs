@@ -338,7 +338,11 @@ let tests =
               Expect.equal (Incremental.result back) (Incremental.result state) "the result"
               Expect.equal (IncrementalCodec.keyOf back) (IncrementalCodec.keyOf state) "the key"
 
-              Expect.notEqual
+              // Since Core `1.0.0` (Phase 423) a float column HOLDS the int it admits as the float
+              // of its value, so the source built with `Int 3` and the one built with `Float 3.0`
+              // are one source: one column, one fingerprint. They were two cells, and two
+              // fingerprints, while the column was a cell list.
+              Expect.equal
                   (IncrementalCodec.sourceFingerprint source)
                   (IncrementalCodec.sourceFingerprint
                       { source with
@@ -349,7 +353,7 @@ let tests =
                                       KitColumn.create "f" FloatType [ Float 3.0; Float 2.5; Null ]
                                   else
                                       c) })
-                  "an int and the float it widens to are two cells, so two fingerprints"
+                  "an int and the float it widens to are one cell of a float column, so one fingerprint"
 
           testCase "a state holding a signed zero, a NaN and an unreached slot encodes again to its own bytes"
           <| fun _ ->
@@ -380,10 +384,13 @@ let tests =
 
               match Incremental.source decoded |> Table.tryColumn "f" with
               | Some c ->
+                  // The `Int 2` the column was built from is the float `2.0` the float column holds
+                  // (Core `1.0.0`, Phase 423).
                   match (Column.toCells c) with
-                  | [ Float z; Float n; Int 2; Float i ] ->
+                  | [ Float z; Float n; Float two; Float i ] ->
                       Expect.isTrue (isNegativeZero z) "the negative zero keeps its sign"
                       Expect.isTrue (System.Double.IsNaN n) "the NaN is a NaN"
+                      Expect.equal two 2.0 "the int is held as the float"
                       Expect.equal i infinity "the infinity is an infinity"
                   | other -> failtestf "the float column came back %A" other
               | None -> failtest "the float column came back"
@@ -531,17 +538,17 @@ let tests =
           testCase "a pipeline is recognised by its canonical wire string, not by the value built"
           <| fun _ ->
               // An int in a float column and the float it widens to are one cell on the column
-              // wire, so the two relations below are two VALUES and one wire string. A decoded
-              // state holds the codec's normal form (the float), which is structurally neither the
-              // value that was encoded nor the one the consumer builds again; the hash is what
-              // recognises the consumer's pipeline.
+              // wire. Until Core `1.0.0` the two relations below were two VALUES and one wire
+              // string, and the hash was what recognised the consumer's pipeline across the decode;
+              // since Phase 423 the float column holds the int as the float, so they are one value
+              // too — the wire string still decides, and now the value agrees with it.
               let relation (k: Cell) : Table =
                   { Schema = [ Field.create "k" FloatType ]
                     Columns = [ KitColumn.create "k" FloatType [ k ] ] }
 
               let written = [ Join(Embedded(relation (Int 1)), [ "b", "k" ], Semi) ]
               let normal = [ Join(Embedded(relation (Float 1.0)), [ "b", "k" ], Semi) ]
-              Expect.notEqual written normal "two values"
+              Expect.equal written normal "one value: the float column holds the int as the float"
               Expect.equal (IncrementalCodec.pipelineHash written) (IncrementalCodec.pipelineHash normal) "one hash"
 
               let state = ok (Incremental.primeOn idw written baseTable)

@@ -4881,6 +4881,12 @@ module Incremental =
             | Decs(_, _, _, m) ->
                 if Mask.any m then
                     fold DecimalType
+            | Dates(_, m) ->
+                if Mask.any m then
+                    fold DateType
+            | Stamps(u, _, _, m) ->
+                if Mask.any m then
+                    fold (TimestampType u)
             | Cells a ->
                 for c in a do
                     match Cell.typeOf c with
@@ -4901,7 +4907,9 @@ module Incremental =
         | Floats(_, m)
         | Bools(_, m)
         | Strs(_, _, m)
-        | Decs(_, _, _, m) -> not (Mask.any m)
+        | Decs(_, _, _, m)
+        | Dates(_, m)
+        | Stamps(_, _, _, m) -> not (Mask.any m)
         | Cells a -> a |> Array.forall (fun c -> c = Null)
 
     /// Evaluate the `Derive` steps over a prepared source chunk by chunk, reusing the prior

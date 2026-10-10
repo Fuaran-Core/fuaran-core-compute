@@ -1773,34 +1773,20 @@ module DataFrame =
         | _ -> Error(TypeError "string predicate on a non-string operand")
 
     /// Days since the civil epoch (1970-01-01 = 0) for the first 10 chars (`YYYY-MM-DD`) of a
-    /// date-like cell — days-from-civil as pure integer math (Phase 90, `DateDiffDays`). No host
-    /// date library: determinism + a trivial TS mirror.
+    /// date-like cell (Phase 90, `DateDiffDays`) — Core's integer temporal form (Phase 422), read
+    /// through `TemporalText.tryDays`, the days-from-civil arithmetic this evaluator carried a copy
+    /// of until Phase 423. A `Date` cell's text is canonical, so it is the day count rendered; a
+    /// timestamp or a string is admitted by its first ten characters, as it always was.
     let private civilDays (c: Cell) : Result<int, EvalError> =
         match c with
         | Date s
         | Timestamp s
         | Str s ->
-            let bad () =
-                Error(TypeError("dateDiffDays: '" + s + "' is not YYYY-MM-DD[...]"))
+            let head = if s.Length > 10 then s.Substring(0, 10) else s
 
-            if s.Length < 10 || s.[4] <> '-' || s.[7] <> '-' then
-                bad ()
-            else
-                let part (lo: int) (len: int) =
-                    match System.Int32.TryParse(s.Substring(lo, len)) with
-                    | true, v -> Some v
-                    | _ -> None
-
-                match part 0 4, part 5 2, part 8 2 with
-                | Some y, Some m, Some d ->
-                    let y = if m <= 2 then y - 1 else y
-                    let era = (if y >= 0 then y else y - 399) / 400
-                    let yoe = y - era * 400
-                    let mp = (m + 9) % 12
-                    let doy = (153 * mp + 2) / 5 + d - 1
-                    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-                    Ok(era * 146097 + doe - 719468)
-                | _ -> bad ()
+            match TemporalText.tryDays head with
+            | Some days -> Ok days
+            | None -> Error(TypeError("dateDiffDays: '" + s + "' is not YYYY-MM-DD[...]"))
         | _ -> Error(TypeError "dateDiffDays expects date/timestamp/string operands")
 
     let private castCell (ty: ColumnType) (c: Cell) : Result<Cell, EvalError> =
@@ -1860,15 +1846,21 @@ module DataFrame =
                 | Bool _ -> Ok c
                 | Int i -> Ok(Bool(i <> 0))
                 | _ -> Error(TypeError "cannot cast to bool")
+            // Phase 423 (operator ruling 2026-10-10, `DECISIONS.md` D18): a text that is not the
+            // canonical form is REFUSED by name. Core `1.0.0`'s date column holds calendar days and
+            // its timestamp column seconds in a unit, so there is no column for a `Date "x"` to
+            // land in; the cast used to admit any string and let the cell list carry it.
             | DateType ->
                 match c with
                 | Date _ -> Ok c
-                | Str s -> Ok(Date s)
+                | Str s when TemporalText.isCanonicalDate s -> Ok(Date s)
+                | Str s -> Error(TypeError("cannot cast '" + s + "' to date: not a canonical YYYY-MM-DD"))
                 | _ -> Error(TypeError "cannot cast to date")
-            | TimestampType _ ->
+            | TimestampType unit ->
                 match c with
                 | Timestamp _ -> Ok c
-                | Str s -> Ok(Timestamp s)
+                | Str s when (TemporalText.tryInstant unit s).IsSome -> Ok(Timestamp s)
+                | Str s -> Error(TypeError("cannot cast '" + s + "' to timestamp: not a canonical instant of its unit"))
                 | _ -> Error(TypeError "cannot cast to timestamp")
             // Phase 277. An int is exactly a decimal; a string is read by the decimal grammar
             // (`DecimalText`); a FLOAT is the one place an approximation enters a decimal — its
@@ -2024,6 +2016,16 @@ module DataFrame =
             |> Result.bind (fun () ->
                 match args.[0], args.[1] with
                 | _, Null -> Ok Null
+                // A `Date` cell is canonical text, so it is read through Core's integer form (Phase
+                // 423): the day count, then its civil date — the arithmetic the typed path shares.
+                | Str part, Date s when (TemporalText.tryDays s).IsSome ->
+                    let civil = TemporalText.civilOfDays (TemporalText.tryDays s).Value
+
+                    match part with
+                    | "year" -> Ok(Int civil.Year)
+                    | "month" -> Ok(Int civil.Month)
+                    | "day" -> Ok(Int civil.Day)
+                    | other -> Error(TypeError("datePart: unknown part '" + other + "'"))
                 | Str part, (Date s | Timestamp s | Str s) ->
                     // ISO-8601: YYYY-MM-DD[Thh:mm:ss]. Slice the requested part.
                     let slice (lo: int) (len: int) =
@@ -3536,6 +3538,9 @@ module DataFrame =
         | NFloat of (int -> float)
         | NBool of (int -> bool)
         | NStr of ColumnType * (int -> string)
+        /// A calendar day as its day count (Phase 423): what a `Dates` vector reads as, so a date
+        /// function reads the integer form; boxed, it is the `Date` cell of that day's text.
+        | NDays of (int -> int)
         | NNull
         | NCell of (int -> Cell)
 
@@ -3679,6 +3684,10 @@ module DataFrame =
                 fun p ->
                     let v = r p
                     if slot.Null then Null else mk v
+            | NDays r ->
+                fun p ->
+                    let v = r p
+                    if slot.Null then Null else Date(TemporalText.dateText v)
 
         /// A node that never produces a present value, read in a typed parent's carrier.
         let absent (dflt: 'a) : int -> 'a =
@@ -3693,6 +3702,7 @@ module DataFrame =
             | NFloat _
             | NBool _
             | NStr _
+            | NDays _
             | NCell _ -> None
 
         /// An int node reads as a float node in the float carrier, as the reference widens it.
@@ -3703,6 +3713,7 @@ module DataFrame =
             | NNull -> Some(absent 0.0)
             | NBool _
             | NStr _
+            | NDays _
             | NCell _ -> None
 
         let asBool (n: Node) : (int -> bool) option =
@@ -3712,11 +3723,14 @@ module DataFrame =
             | NInt _
             | NFloat _
             | NStr _
+            | NDays _
             | NCell _ -> None
 
         let asStr (n: Node) : (int -> string) option =
             match n with
             | NStr(_, r) -> Some r
+            // A day reads as its canonical text where a string is wanted, rendered on demand.
+            | NDays r -> Some(fun p -> TemporalText.dateText (r p))
             | NNull -> Some(absent "")
             | NInt _
             | NFloat _
@@ -3740,6 +3754,10 @@ module DataFrame =
                     r p |> ignore
                     slot.Null
             | NStr(_, r) ->
+                fun p ->
+                    r p |> ignore
+                    slot.Null
+            | NDays r ->
                 fun p ->
                     r p |> ignore
                     slot.Null
@@ -4061,6 +4079,7 @@ module DataFrame =
                 | NFloat _ -> 2
                 | NBool _ -> 3
                 | NStr _ -> 4
+                | NDays _ -> 5
                 | NNull -> 0
                 | NCell _ -> -1
 
@@ -4147,7 +4166,8 @@ module DataFrame =
                 | NCell _
                 | NInt _
                 | NFloat _
-                | NStr _ ->
+                | NStr _
+                | NDays _ ->
                     let r = cellOf n
 
                     fun p ->
@@ -4215,6 +4235,21 @@ module DataFrame =
                             slot.Null <- not (Mask.at p mask)
                             Raw.at p vals
                     )
+                // A temporal vector (Phase 423) renders its canonical text on read, so the string
+                // kernels over a date or an instant read what the `Date` / `Timestamp` cell carries.
+                | Dates(days, mask) ->
+                    Of DateType,
+                    NDays(fun p ->
+                        slot.Null <- not (Mask.at p mask)
+                        Raw.at p days)
+                | Stamps(unit, seconds, fraction, mask) ->
+                    Of(TimestampType unit),
+                    NStr(
+                        TimestampType unit,
+                        fun p ->
+                            slot.Null <- not (Mask.at p mask)
+                            Vec.stampText unit seconds fraction p
+                    )
                 // A column whose cells disagree with its declared type is typed as declared, as the
                 // schema-only typer types it, and read boxed: every kernel over it checks the tag per
                 // row and hands a disagreeing cell to the reference arm.
@@ -4265,6 +4300,7 @@ module DataFrame =
                  | NInt _
                  | NFloat _
                  | NStr _
+                 | NDays _
                  | NCell _ ->
                      let r = cellOf n
 
@@ -4350,22 +4386,67 @@ module DataFrame =
                     absent)
             | RApplyFn(fn, args) ->
                 let ts, ns = args |> List.map go |> List.unzip
-                let rs = ns |> List.map cellOf |> List.toArray
 
-                Typing.applyFn fn ts,
-                NCell(fun p ->
-                    // Arguments left to right, stopping at the first error, as `evalArgs` does.
-                    let vals: Cell[] = Array.zeroCreate rs.Length
-                    let mutable i = 0
+                match fn, ns with
+                // The date functions over the integer form (Phase 423, carrying Phase 422's task):
+                // a difference of two days is a subtraction, and a part of a day is read off its
+                // civil date — no text is rendered or parsed. The arguments are read left to right
+                // and the first error wins, as `evalArgs` reads them; a null date answers null.
+                | DateDiffDays, [ NDays a; NDays b ] ->
+                    Typing.applyFn fn ts,
+                    NInt(fun p ->
+                        let da = a p
 
-                    while not (erred ()) && i < rs.Length do
-                        vals[i] <- rs[i]p
-                        i <- i + 1
+                        if slot.Null || erred () then
+                            0
+                        else
+                            let db = b p
+                            if slot.Null || erred () then 0 else db - da)
+                | DatePart, [ part; NDays d ] ->
+                    let partOf = cellOf part
 
-                    if erred () then
-                        Null
-                    else
-                        unwrap (applyScalar fn (List.ofArray vals)))
+                    Typing.applyFn fn ts,
+                    NInt(fun p ->
+                        let which = partOf p
+
+                        if erred () then
+                            0
+                        else
+                            let days = d p
+
+                            if erred () || slot.Null then
+                                0
+                            else
+                                match which with
+                                | Str "year" -> (TemporalText.civilOfDays days).Year
+                                | Str "month" -> (TemporalText.civilOfDays days).Month
+                                | Str "day" -> (TemporalText.civilOfDays days).Day
+                                | Str other ->
+                                    fail (TypeError("datePart: unknown part '" + other + "'")) |> ignore
+                                    0
+                                | _ ->
+                                    fail (TypeError "datePart expects (string part, date/timestamp/string)")
+                                    |> ignore
+
+                                    0)
+                | _ ->
+
+                    let rs = ns |> List.map cellOf |> List.toArray
+
+                    Typing.applyFn fn ts,
+                    NCell(fun p ->
+                        // Arguments left to right, stopping at the first error, as `evalArgs` does.
+                        let vals: Cell[] = Array.zeroCreate rs.Length
+                        let mutable i = 0
+
+                        while not (erred ()) && i < rs.Length do
+                            vals[i] <- rs[i]p
+                            i <- i + 1
+
+                        if erred () then
+                            Null
+                        else
+                            unwrap (applyScalar fn (List.ofArray vals)))
             // Phase 277 — boxed: no typed carrier holds a decimal. The scale first, then the
             // operands left to right, as `evalResolved` reads them.
             | RQuotient(scale, mode, a, b) ->
@@ -4641,6 +4722,7 @@ module DataFrame =
             | NInt _
             | NFloat _
             | NStr _
+            | NDays _
             | NCell _ ->
                 let r = compiled.Run
 
@@ -4962,14 +5044,26 @@ module DataFrame =
                     (fun v m -> Floats(v, m))
                     FloatType
             | NBool _ -> typed pickBool Shared.boolsAndMask Mask.put (fun v m -> Bools(v, m)) BoolType
+            // A day root writes the day count straight into a `Dates` vector (Phase 423).
+            | NDays _ ->
+                typed
+                    (function
+                    | NDays r -> Some r
+                    | _ -> None)
+                    Shared.intsAndMask
+                    Raw.put
+                    (fun v m -> Dates(v, m))
+                    DateType
             | NStr(sty, _) ->
+                // A date or an instant the kernels computed as text is held as the integer temporal
+                // vector of its type (Phase 423): the frame carries no temporal column as text.
                 typed
                     (function
                     | NStr(_, r) -> Some r
                     | _ -> None)
                     (fun n -> struct ((Array.zeroCreate n: string[]), Shared.mask n))
                     Raw.put
-                    (fun v m -> Strs(sty, v, m))
+                    (fun v m -> Vec.ofTemporalTexts sty v m)
                     sty
             | NNull -> Ok(nonepresent ())
             | NCell _ ->
@@ -5161,6 +5255,8 @@ module DataFrame =
                 | Floats(a, m) when ty = FloatType -> [||], a, m, 2, 0
                 | Bools(_, m) when ty = BoolType -> [||], [||], m, 3, 0
                 | Strs(t, _, m) when t = ty -> [||], [||], m, 3, 0
+                | Dates(_, m) when ty = DateType -> [||], [||], m, 3, 0
+                | Stamps(u, _, _, m) when ty = TimestampType u -> [||], [||], m, 3, 0
                 | Decs(a, s, _, m) when ty = DecimalType -> [||], a, m, 4, s
                 | _ -> [||], [||], [||], 0, 0
 
@@ -5842,6 +5938,30 @@ module DataFrame =
                 for i in 0 .. n - 1 do
                     let code = cellCode c (Raw.at (Raw.get i phys) cells) openNew
                     Raw.set out i code
+            // A temporal key is coded by its canonical text, as the boxed `Date` / `Timestamp` cell
+            // is: one rendering per row read, which is what the text carrier paid at the boundary.
+            | Dates(a, m) ->
+                for i in 0 .. n - 1 do
+                    let p = Raw.get i phys
+
+                    let code =
+                        if Mask.at p m then
+                            codeIn c c.Dates (TemporalText.dateText (Raw.at p a)) openNew
+                        else
+                            nullCode c openNew
+
+                    Raw.set out i code
+            | Stamps(u, s, f, m) ->
+                for i in 0 .. n - 1 do
+                    let p = Raw.get i phys
+
+                    let code =
+                        if Mask.at p m then
+                            codeIn c c.Stamps (Vec.stampText u s f p) openNew
+                        else
+                            nullCode c openNew
+
+                    Raw.set out i code
             | Cells cells ->
                 for i in 0 .. n - 1 do
                     let code = cellCode c (Raw.at (Raw.get i phys) cells) openNew
@@ -6118,6 +6238,11 @@ module DataFrame =
         | Strs(t, a, m), _ when t = ty ->
             let vals, mask = across a m
             Strs(t, vals, mask)
+        | Dates(a, m), DateType -> Dates(across a m)
+        | Stamps(u, s, f, m), TimestampType t when t = u ->
+            let secs, mask = across s m
+            let fraction = if isNull f then null else fst (across f m)
+            Stamps(u, secs, fraction, mask)
         | _ -> Vec.pack ty (rows |> Array.map (Vec.cellAt v))
 
     /// One column of a group's members — physical rows, in member order — as the cell list an
@@ -6279,6 +6404,17 @@ module DataFrame =
         | Strs(_, a, m) -> withNulls m (fun p q -> System.String.CompareOrdinal(Raw.at p a, Raw.at q a))
         // Every value of one decimal vector is an exact integer at the column's one scale (Phase 280).
         | Decs(a, _, _, m) -> withNulls m (fun p q -> compare (Raw.at p a) (Raw.at q a))
+        // A calendar day's order is its canonical text's; an instant's is its seconds', then its
+        // fraction's — the order the text had, read off the integers (Phase 423).
+        | Dates(a, m) -> withNulls m (fun p q -> compare (Raw.at p a) (Raw.at q a))
+        | Stamps(_, s, f, m) ->
+            withNulls m (fun p q ->
+                let bySeconds = compare (Raw.at p s) (Raw.at q s)
+
+                if bySeconds <> 0 then
+                    bySeconds
+                else
+                    compare (Vec.fractionAt f p) (Vec.fractionAt f q))
         | Cells cells ->
             fun p q ->
                 let a = Raw.at p cells
@@ -6534,6 +6670,29 @@ module DataFrame =
             // Every value of one decimal vector is an exact integer at the column's one scale.
             | Decs(a, _, _, m) -> ValueSome(ofFloats a m phys dir)
             | Strs(_, a, m) -> ValueSome(ofStrings a m phys dir)
+            // A calendar day codes as the int it is (Phase 423). An instant at whole seconds codes as
+            // its seconds; at a sub-second unit the seconds and the fraction are joined into one
+            // exact float where the unit allows it (milliseconds and microseconds stay inside 2^53
+            // for every instant Core admits), and a nanosecond instant keeps the comparator.
+            | Dates(a, m) -> ValueSome(ofInts a m phys dir)
+            | Stamps(unit, s, f, m) ->
+                if isNull f then
+                    ValueSome(ofFloats s m phys dir)
+                else
+                    match unit with
+                    | TimeUnit.Milliseconds
+                    | TimeUnit.Microseconds ->
+                        let scale = if unit = TimeUnit.Milliseconds then 1000.0 else 1000000.0
+
+                        let joined: float[] = Array.zeroCreate s.Length
+
+                        for i in 0 .. phys.Length - 1 do
+                            let p = Raw.get i phys
+                            Raw.put joined p (Raw.at p s * scale + float (Raw.at p f))
+
+                        ValueSome(ofFloats joined m phys dir)
+                    | TimeUnit.Seconds
+                    | TimeUnit.Nanoseconds -> ValueNone
             | Bools(a, m) ->
                 let asc = (dir = Asc)
 
@@ -7054,7 +7213,36 @@ module DataFrame =
         if available f.Cols <> available other.Cols then
             Error(JoinError "union requires matching column names")
         else
-            Ok(Frame.concat f other)
+            // Phase 423: a column of the union takes the JOIN of the two sides' types where one exists
+            // (an int column over a float one is a float column, and the appended cells are packed
+            // under it), and is refused by name where none does — Core `1.0.0`'s typed column cannot
+            // hold a bool beside a float, which the cell list carried under the left side's type
+            // (`DECISIONS.md` D18). The common case, both sides of one type, is the plain append.
+            let joined =
+                List.zip f.Cols other.Cols
+                |> traverseResult (fun (left: Field, right: Field) ->
+                    if left.Type = right.Type then
+                        Ok left
+                    else
+                        match joinColumnType left.Type right.Type with
+                        | Some ty -> Ok(Field.withType ty left)
+                        | None -> Error(typesBesideEachOther left.Name left.Type right.Type))
+
+            joined
+            |> Result.map (fun cols ->
+                let g = Frame.concat f other
+
+                let vecs =
+                    g.Vecs
+                    |> Array.mapi (fun ci v ->
+                        let ty = (List.item ci cols).Type
+
+                        if Vec.declaredType v = Some ty then
+                            v
+                        else
+                            Vec.pack ty (Array.init g.Count (Vec.cellAt v)))
+
+                { g with Cols = cols; Vecs = vecs })
 
     /// `Intersect` / `Except` (Phase 101) — the multiset set-ops, keyed on the SAME canonical row
     /// token `Distinct` dedups on (Phase 41), so membership is host-identical and `Null` is a value
@@ -10359,6 +10547,8 @@ module internal MorselHandOff =
                     | Bools _ -> true
                     | Strs _
                     | Decs _
+                    | Dates _
+                    | Stamps _
                     | Cells _ -> false)
 
             let root =
@@ -10410,6 +10600,8 @@ module internal MorselHandOff =
                         masks[i] <- Shared.shareMask mask
                     | Strs _
                     | Decs _
+                    | Dates _
+                    | Stamps _
                     | Cells _ -> ()
 
                 let sized (want: int) (n: int) = if root = want then n else 0

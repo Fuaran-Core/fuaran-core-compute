@@ -75,7 +75,8 @@ let private strDerive = Derive("u", ApplyFn(Upper, [ Col "s" ]))
 let private intDerive = Derive("d", Binary(Add, Col "i", Col "i"))
 let private floatDerive = Derive("g", Binary(Mul, Col "f", Lit(Float 2.0)))
 
-/// Phase 282 — how many times fewer bytes the fused top-n must allocate than the full sort.
+/// Phase 282 — how many times fewer rows the fused top-n must hand to an ordering kernel than the
+/// full sort does (Phase 423 moved the bound from bytes to rows; see the case).
 let private fusedTopNWorkMargin = 4.0
 
 [<Tests>]
@@ -377,9 +378,15 @@ let planTests =
           <| fun _ ->
               // Phase 282 — COUNTED, where Phase 269 timed it (with a mean of five, which carried the
               // noise the family's `bestMs` minimum exists to remove). The claim is about WORK — the
-              // top-n keeps ten rows in order where the sort orders all of them — so it is held on the
-              // bytes each form allocates on this thread, which no other process can move. The clock
-              // figures, on `bestMs`, are printed beside it.
+              // top-n keeps ten rows in order where the sort orders all of them — so it is held on
+              // the ROWS each form hands to an ordering kernel (operator ruling 2026-10-10, Phase 423,
+              // `DECISIONS.md` D18): the kernel set is wrapped so that every `SortFinite` and
+              // `SortPositions` call adds the rows it was asked to order. The bytes each form
+              // allocates, which Phase 282 gated on, are PRINTED beside it and not gated: that bound
+              // was propped up by the `Table` boundary's conversion, which Phase 423 removed — with
+              // the boundary a view, the full sort allocates less (1.49 MB against the fused form's
+              // 2.31 MB at 20,000 rows) while the clock still favours the fused plan by an order of
+              // magnitude. The clock figures, on `bestMs`, are printed too.
               let rows =
                   [ for k in 0..19_999 ->
                         Some((k * 7919) % 10_007),
@@ -395,27 +402,51 @@ let planTests =
                     Transform.sortBy [ "f", Desc; "i", Asc ]
                     Transform.limit 10 0 ]
 
+              // The rows handed to an ordering kernel by the run under way.
+              let mutable ordered = 0
+
+              let counting: KernelSet =
+                  { Kernels.host with
+                      SortFinite =
+                          fun keys ->
+                              ordered <- ordered + keys.Length
+                              Kernels.host.SortFinite keys
+                      SortPositions =
+                          fun positions cmp ->
+                              ordered <- ordered + positions.Length
+                              Kernels.host.SortPositions positions cmp }
+
               let plannedRun () =
-                  DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline prepared
+                  DataFrame.evalPreparedCountedWith counting DataFrame.noResolve Map.empty pipeline prepared
                   |> ok
                   |> ignore
 
+              // As written: the steps folded one by one over the frame, with no rewrite and no fused
+              // kernel — the `Sort` orders every row the `Filter` kept, the `Limit` then cuts.
               let writtenRun () =
-                  DataFrame.evalPipelineWithInEnvAsWritten
-                      DataFrame.noResolve
-                      Map.empty
-                      pipeline
-                      (DataFrame.toTable prepared)
+                  (Ok(Frame.ofTable t), pipeline)
+                  ||> List.fold (fun acc step ->
+                      acc
+                      |> Result.bind (fun f -> DataFrame.evalStepWith counting DataFrame.noResolve Map.empty f step))
                   |> ok
                   |> ignore
 
+              let rowsOrderedBy (run: unit -> unit) : int =
+                  ordered <- 0
+                  run ()
+                  ordered
+
+              let plannedRows = rowsOrderedBy plannedRun
+              let writtenRows = rowsOrderedBy writtenRun
               let plannedBytes = ScalingTests.allocatedBytes plannedRun
               let writtenBytes = ScalingTests.allocatedBytes writtenRun
               let plannedMs = ScalingTests.bestMs 5 plannedRun
               let writtenMs = ScalingTests.bestMs 5 writtenRun
 
               printfn
-                  "Phase 269 — Filter > Sort > Limit 10 at 20,000 rows: planned %d B, as written %d B (x%.2f); clock planned %.2f ms, as written %.2f ms"
+                  "Phase 269 — Filter > Sort > Limit 10 at 20,000 rows: rows ordered planned %d, as written %d; planned %d B, as written %d B (x%.2f, not gated); clock planned %.2f ms, as written %.2f ms"
+                  plannedRows
+                  writtenRows
                   plannedBytes
                   writtenBytes
                   (float writtenBytes / float plannedBytes)
@@ -424,7 +455,10 @@ let planTests =
 
               agree pipeline t
 
+              // Not vacuous: the full sort orders the rows the filter kept, which is most of them.
+              Expect.isGreaterThan writtenRows 15_000 "the full sort orders the filtered rows"
+
               Expect.isLessThan
-                  (float plannedBytes * fusedTopNWorkMargin)
-                  (float writtenBytes)
-                  "the top-n does less than the full sort" ]
+                  (float plannedRows * fusedTopNWorkMargin)
+                  (float writtenRows)
+                  "the top-n orders fewer rows than the full sort" ]

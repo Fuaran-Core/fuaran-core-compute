@@ -57,17 +57,14 @@ let private allInt
     : Map<string, Cell> -> Transform list -> Table -> Result<Table, EvalError> =
     fun env pipeline t ->
         eval env pipeline t
+        // The schema entry is retyped and the column left as the evaluator built it (Phase 423): a
+        // column that disagrees with its schema entry wholly is the one disagreement a Core `1.0.0`
+        // table still holds, and it is what the admission law must catch.
         |> Result.map (fun out ->
-            { Schema =
-                out.Schema
-                |> List.map (fun f -> if f.Name = "d" then Field.create "d" IntType else f)
-              Columns =
-                out.Columns
-                |> List.map (fun c ->
-                    if c.Name = "d" then
-                        KitColumn.create "d" IntType (Column.toCells c)
-                    else
-                        c) })
+            { out with
+                Schema =
+                    out.Schema
+                    |> List.map (fun f -> if f.Name = "d" then Field.create "d" IntType else f) })
 
 let private rows (n: int) (cell: int -> Cell) : Cell list = [ for i in 0 .. n - 1 -> cell i ]
 
@@ -161,8 +158,19 @@ let tests =
                       expected
                       (sprintf "%A, walked" values)
 
-              // A string beside an int: no widening relates them, so the cells decide.
-              Expect.equal (value [ "s"; "i" ] []) (Ok(Some StringType)) "the earlier type, as Phase 321 keeps it"
+              // A string beside an int: no widening relates them, so the cells decide — and since
+              // Core `1.0.0` no column holds the two together, so a value column that would is
+              // refused by name (Phase 423, operator ruling 2026-10-10, `DECISIONS.md` D18). Phase 321
+              // typed it by the earlier cell and carried the other as it was; a typed vector cannot.
+              // With no row there is no cell beside another, and the empty column is a string.
+              Expect.equal
+                  (value [ "s"; "i" ] [])
+                  (Error(
+                      TypeError
+                          "derived column 'value' holds a string beside a int, which no column type holds together: cast one to the other's type first"
+                  ))
+                  "refused by name"
+
               Expect.equal (value [ "i"; "s" ] [ Filter(Lit(Bool false)) ]) (Ok(Some StringType)) "no cell: string"
 
               Expect.equal

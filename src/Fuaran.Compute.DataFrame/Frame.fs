@@ -468,12 +468,21 @@ module internal Shared =
 /// sum the kernels keep is an integer of magnitude at most 2^53 - 1. The cells ride along so every
 /// read of a cell is the cell the text path reads, byte for byte, with nothing rendered; only the
 /// kernels read the integers. A column that does not fit (`ScaledDecimal.scaleOf`) stays `Cells`.
+///
+/// A temporal column (Phase 423, over Core's Phase 422) is carried as Core carries it: `Dates` is
+/// the calendar day of each row (days since 1970-01-01), and `Stamps` is each row's instant as whole
+/// seconds in a float64 beside the fraction of a second in the column's unit — `null` where the unit
+/// is seconds, as Core's own fraction vector is absent then. Both are VIEWS over the column's own
+/// storage at the boundary; a cell read off either renders the canonical text on demand, the same
+/// text the `Date` / `Timestamp` cell has always carried.
 type internal Vec =
     | Ints of int[] * Mask
     | Floats of float[] * Mask
     | Bools of Mask * Mask
     | Strs of ColumnType * string[] * Mask
     | Decs of scaled: float[] * scale: int * cells: Cell[] * mask: Mask
+    | Dates of days: int[] * mask: Mask
+    | Stamps of unit: TimeUnit * seconds: float[] * fraction: int[] * mask: Mask
     | Cells of Cell[]
 
 /// The scaled-integer reading of decimal text the `Decs` vector carries (Phase 280). The grammar
@@ -621,32 +630,6 @@ module internal ScaledDecimal =
         let signed = if u < 0.0 then "-" + text else text
         DecimalText.tryCanonical signed |> Option.defaultValue signed
 
-/// The cells a typed vector boxes on the way out, shared where they can be (Phase 327): the two
-/// `Bool` cells, and one `Int` cell per value in `[Lo, Hi]`, allocated once. A shared cell is the
-/// same union case with the same value as a fresh one, so every comparison the evaluator makes —
-/// structural equality, `Cell.compare`, `cellToken`, `CellKey` — reads them alike; nothing in this
-/// assembly compares a cell by reference, and interning only ever makes EQUAL cells identical.
-module internal InternedCells =
-
-    /// The lowest interned integer.
-    [<Literal>]
-    let Lo = -128
-
-    /// The highest interned integer.
-    [<Literal>]
-    let Hi = 1023
-
-    let private trueCell = Bool true
-    let private falseCell = Bool false
-    let private ints: Cell[] = Array.init (Hi - Lo + 1) (fun k -> Int(k + Lo))
-
-    /// The `Bool` cell for `b` — one of two shared instances.
-    let ofBool (b: bool) : Cell = if b then trueCell else falseCell
-
-    /// The `Int` cell for `v` — shared inside `[Lo, Hi]`, fresh outside it.
-    let ofInt (v: int) : Cell =
-        if v >= Lo && v <= Hi then Raw.get (v - Lo) ints else Int v
-
 /// The evaluator's frame: a schema, one vector per schema column (`Vecs` co-indexes with `Cols`),
 /// and the selection — the PHYSICAL row of each LOGICAL row, in logical order — or `None` for the
 /// identity, every physical row in physical order. `Count` is the physical row count: the length
@@ -669,6 +652,8 @@ module internal Vec =
         | Bools(a, _) -> a.Length
         | Strs(_, a, _) -> a.Length
         | Decs(a, _, _, _) -> a.Length
+        | Dates(a, _) -> a.Length
+        | Stamps(_, a, _, _) -> a.Length
         | Cells a -> a.Length
 
     /// The declared type a typed vector carries; `None` for the boxed fall-back, whose cells may
@@ -680,7 +665,18 @@ module internal Vec =
         | Bools _ -> Some BoolType
         | Strs(ty, _, _) -> Some ty
         | Decs _ -> Some DecimalType
+        | Dates _ -> Some DateType
+        | Stamps(unit, _, _, _) -> Some(TimestampType unit)
         | Cells _ -> None
+
+    /// The fraction of a second at physical row `p` of a `Stamps` vector: zero where the vector
+    /// carries no fraction array (the unit is seconds).
+    let inline fractionAt (fraction: int[]) (p: int) : int =
+        if isNull fraction then 0 else Raw.at p fraction
+
+    /// The canonical text of the instant at physical row `p` of a `Stamps` vector.
+    let inline stampText (unit: TimeUnit) (seconds: float[]) (fraction: int[]) (p: int) : string =
+        TemporalText.instantText unit (Raw.at p seconds) (fractionAt fraction p)
 
     /// The cell a string-family column of type `ty` holds for the carrier value `s`.
     let strCell (ty: ColumnType) (s: string) : Cell =
@@ -693,24 +689,25 @@ module internal Vec =
         | BoolType
         | DecimalType -> Str s
 
-    /// The cell at physical row `p` — boxed on demand from the typed carrier (a `Bool`, and an `Int`
-    /// in the interned range, read as the shared cell: `InternedCells`), or read as it is from the
-    /// boxed one.
+    /// The cell at physical row `p` — boxed on demand from the typed carrier, or read as it is from
+    /// the boxed one.
     let cellAt (v: Vec) (p: int) : Cell =
         match v with
-        | Ints(a, m) ->
-            if Mask.at p m then
-                InternedCells.ofInt (Raw.at p a)
-            else
-                Null
+        | Ints(a, m) -> if Mask.at p m then Int(Raw.at p a) else Null
         | Floats(a, m) -> if Mask.at p m then Float(Raw.at p a) else Null
-        | Bools(a, m) ->
-            if Mask.at p m then
-                InternedCells.ofBool (Mask.at p a)
-            else
-                Null
+        | Bools(a, m) -> if Mask.at p m then Bool(Mask.at p a) else Null
         | Strs(ty, a, m) -> if Mask.at p m then strCell ty (Raw.at p a) else Null
         | Decs(_, _, cells, _) -> Raw.at p cells
+        | Dates(a, m) ->
+            if Mask.at p m then
+                Date(TemporalText.dateText (Raw.at p a))
+            else
+                Null
+        | Stamps(unit, s, f, m) ->
+            if Mask.at p m then
+                Timestamp(stampText unit s f p)
+            else
+                Null
         | Cells a -> Raw.at p a
 
     /// Is any selected row present?
@@ -762,6 +759,12 @@ module internal Vec =
                     let p = posOf i
                     Raw.put vals p v
                     Mask.put mask p true
+                // An int in a float column is the float of its value (Core `1.0.0`, Phase 423), as
+                // `Column.ofCells` admits it.
+                | Int v ->
+                    let p = posOf i
+                    Raw.put vals p (float v)
+                    Mask.put mask p true
                 | Null -> ()
                 | _ -> ok <- false
 
@@ -790,6 +793,24 @@ module internal Vec =
         // present cell that is not a well-formed `Decimal`, takes the text path: packed boxed, every
         // kernel reading its cells through the reference arm.
         | DecimalType ->
+            // An int in a decimal column is the decimal of its value (Core `1.0.0`, Phase 423), as
+            // `Column.ofCells` admits it; the cells are rewritten only where one is present.
+            let cells =
+                if
+                    cells
+                    |> Array.exists (fun c ->
+                        match c with
+                        | Int _ -> true
+                        | _ -> false)
+                then
+                    cells
+                    |> Array.map (fun c ->
+                        match c with
+                        | Int i -> Decimal(string i)
+                        | _ -> c)
+                else
+                    cells
+
             match ScaledDecimal.scaleOf cells with
             | Some scale ->
                 let struct (vals, mask) = Shared.floatsAndMask count
@@ -807,9 +828,58 @@ module internal Vec =
 
                 Decs(vals, scale, out, mask)
             | None -> boxed ()
-        | StringType
-        | DateType
-        | TimestampType _ ->
+        | DateType ->
+            // A `Date` cell's canonical text as its calendar day; a text that is not canonical is a
+            // cell the column does not hold, so the vector is boxed as for any disagreeing cell.
+            let struct (vals, mask) = Shared.intsAndMask count
+            let mutable ok = true
+            let mutable i = 0
+
+            while ok && i < n do
+                match Raw.get i cells with
+                | Date s ->
+                    match TemporalText.tryDays s with
+                    | Some d ->
+                        let p = posOf i
+                        Raw.put vals p d
+                        Mask.put mask p true
+                    | None -> ok <- false
+                | Null -> ()
+                | _ -> ok <- false
+
+                i <- i + 1
+
+            if ok then Dates(vals, mask) else boxed ()
+        | TimestampType unit ->
+            // A `Timestamp` cell's canonical text as whole seconds and the fraction in the column's
+            // unit (`TemporalText.tryInstant`, which admits a text at a coarser unit).
+            let struct (secs, mask) = Shared.floatsAndMask count
+
+            let fraction: int[] = if unit = TimeUnit.Seconds then null else Shared.ints count
+
+            let mutable ok = true
+            let mutable i = 0
+
+            while ok && i < n do
+                match Raw.get i cells with
+                | Timestamp s ->
+                    match TemporalText.tryInstant unit s with
+                    | Some(sec, frac) ->
+                        let p = posOf i
+                        Raw.put secs p sec
+
+                        if not (isNull fraction) then
+                            Raw.put fraction p frac
+
+                        Mask.put mask p true
+                    | None -> ok <- false
+                | Null -> ()
+                | _ -> ok <- false
+
+                i <- i + 1
+
+            if ok then Stamps(unit, secs, fraction, mask) else boxed ()
+        | StringType ->
             let vals: string[] = Array.zeroCreate count
             let mask = Shared.mask count
             let mutable ok = true
@@ -817,10 +887,8 @@ module internal Vec =
 
             while ok && i < n do
                 let s =
-                    match Raw.get i cells, ty with
-                    | Str s, StringType
-                    | Date s, DateType
-                    | Timestamp s, TimestampType _ -> s
+                    match Raw.get i cells with
+                    | Str s -> s
                     | _ -> null
 
                 if not (isNull s) then
@@ -839,119 +907,60 @@ module internal Vec =
     /// Pack a dense column: `cells[i]` at physical row `i`.
     let pack (ty: ColumnType) (cells: Cell[]) : Vec = packAt ty cells.Length id cells
 
-    /// Hand the cells of `cells` to `put` with their rows, in one walk of the list; `false` where
-    /// `put` refused a cell or the list is not exactly `n` long (a ragged column).
-    let inline private walkExact (n: int) (cells: Cell list) ([<InlineIfLambda>] put: int -> Cell -> bool) : bool =
-        let mutable rest = cells
-        let mutable ok = true
-        let mutable i = 0
+    /// The temporal texts a string kernel computed (a `Date` or `Timestamp` answer per present row)
+    /// as the integer temporal vector of their type (Phase 423): each present text parsed once,
+    /// here, so the frame holds no temporal column as text. A text that is not canonical is a cell
+    /// no column of the type holds, and the vector is boxed as for any disagreeing cell.
+    let ofTemporalTexts (ty: ColumnType) (texts: string[]) (mask: Mask) : Vec =
+        let n = texts.Length
 
-        while ok && i < n do
-            match rest with
-            | c :: tail ->
-                ok <- put i c
-                rest <- tail
-                i <- i + 1
-            | [] -> ok <- false
-
-        ok && List.isEmpty rest
-
-    /// Pack a column's own list straight into the typed vector `ty` names (Phase 327): one walk of
-    /// the list per column, no intermediate cell array. `ValueNone` — and the boundary takes its
-    /// fall-back, `Frame.unpackFallback` — where the list is not exactly `n` long, or a present cell
-    /// is not of `ty` (or, for a decimal, the column does not fit `ScaledDecimal`), or a string-family
-    /// cell carries a null string: every case in which `pack` would not answer the typed vector this
-    /// answers. Where it answers, the vector is the one `pack ty (List.toArray cells)` answers.
-    let packList (ty: ColumnType) (n: int) (cells: Cell list) : Vec voption =
         match ty with
-        | IntType ->
-            let struct (vals, mask) = Shared.intsAndMask n
+        | DateType ->
+            let struct (days, out) = Shared.intsAndMask n
+            let mutable ok = true
+            let mutable i = 0
 
-            let ok =
-                walkExact n cells (fun i c ->
-                    match c with
-                    | Int v ->
-                        Raw.set vals i v
-                        Mask.set mask i true
-                        true
-                    | Null -> true
-                    | _ -> false)
+            while ok && i < n do
+                if Mask.at i mask then
+                    match TemporalText.tryDays (Raw.at i texts) with
+                    | Some d ->
+                        Raw.put days i d
+                        Mask.put out i true
+                    | None -> ok <- false
 
-            if ok then ValueSome(Ints(vals, mask)) else ValueNone
-        | FloatType ->
-            let struct (vals, mask) = Shared.floatsAndMask n
+                i <- i + 1
 
-            let ok =
-                walkExact n cells (fun i c ->
-                    match c with
-                    | Float v ->
-                        Raw.set vals i v
-                        Mask.set mask i true
-                        true
-                    | Null -> true
-                    | _ -> false)
-
-            if ok then ValueSome(Floats(vals, mask)) else ValueNone
-        | BoolType ->
-            let struct (vals, mask) = Shared.boolsAndMask n
-
-            let ok =
-                walkExact n cells (fun i c ->
-                    match c with
-                    | Bool v ->
-                        Mask.set vals i v
-                        Mask.set mask i true
-                        true
-                    | Null -> true
-                    | _ -> false)
-
-            if ok then ValueSome(Bools(vals, mask)) else ValueNone
-        // The cells ride in the vector (Phase 280), so the walk fills that array — the carrier, not
-        // an intermediate — and the scale is read from it. Every slot is written before the array is
-        // kept, so its initial fill (null on .NET, not on node) is never read.
-        | DecimalType ->
-            let out: Cell[] = Array.zeroCreate n
-
-            if
-                walkExact n cells (fun i c ->
-                    Raw.set out i c
-                    true)
-            then
-                match ScaledDecimal.scaleOf out with
-                | Some scale ->
-                    let struct (vals, mask) = Shared.floatsAndMask n
-
-                    for i in 0 .. n - 1 do
-                        match Raw.get i out with
-                        | Decimal s ->
-                            // `scaleOf` admitted every present cell at this scale, so this always reads.
-                            Raw.set vals i (ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0)
-                            Mask.set mask i true
-                        | _ -> ()
-
-                    ValueSome(Decs(vals, scale, out, mask))
-                | None -> ValueNone
+            if ok then
+                Dates(days, out)
             else
-                ValueNone
-        | StringType
-        | DateType
-        | TimestampType _ ->
-            let vals: string[] = Array.zeroCreate n
-            let mask = Shared.mask n
+                Cells(Array.init n (fun i -> if Mask.at i mask then Date(Raw.at i texts) else Null))
+        | TimestampType unit ->
+            let struct (secs, out) = Shared.floatsAndMask n
 
-            let ok =
-                walkExact n cells (fun i c ->
-                    match c, ty with
-                    | Str s, StringType
-                    | Date s, DateType
-                    | Timestamp s, TimestampType _ when not (isNull s) ->
-                        Raw.set vals i s
-                        Mask.set mask i true
-                        true
-                    | Null, _ -> true
-                    | _ -> false)
+            let fraction: int[] = if unit = TimeUnit.Seconds then null else Shared.ints n
 
-            if ok then ValueSome(Strs(ty, vals, mask)) else ValueNone
+            let mutable ok = true
+            let mutable i = 0
+
+            while ok && i < n do
+                if Mask.at i mask then
+                    match TemporalText.tryInstant unit (Raw.at i texts) with
+                    | Some(sec, frac) ->
+                        Raw.put secs i sec
+
+                        if not (isNull fraction) then
+                            Raw.put fraction i frac
+
+                        Mask.put out i true
+                    | None -> ok <- false
+
+                i <- i + 1
+
+            if ok then
+                Stamps(unit, secs, fraction, out)
+            else
+                Cells(Array.init n (fun i -> if Mask.at i mask then Timestamp(Raw.at i texts) else Null))
+        | _ -> Strs(ty, texts, mask)
 
 #if FABLE_COMPILER
     /// The vector's cells at the physical rows `phys`, in that order, as a dense vector of the same
@@ -984,6 +993,12 @@ module internal Vec =
         | Decs(a, s, c, m) ->
             let struct (va, vm) = Shared.floatsAndMask n
             Decs(pick a va, s, pick c (Array.zeroCreate n), pick m vm)
+        | Dates(a, m) ->
+            let struct (va, vm) = Shared.intsAndMask n
+            Dates(pick a va, pick m vm)
+        | Stamps(u, s, f, m) ->
+            let struct (vs, vm) = Shared.floatsAndMask n
+            Stamps(u, pick s vs, (if isNull f then null else pick f (Shared.ints n)), pick m vm)
         | Cells a -> Cells(pick a (Array.zeroCreate n))
 
     /// `gather` where a negative index reads `Null` (Phase 325): the side a combining join pads.
@@ -1009,6 +1024,14 @@ module internal Vec =
         | Bools(a, m) -> Bools(pick a 0uy (Array.zeroCreate n), maskOf m)
         | Strs(ty, a, m) -> Strs(ty, pick a "" (Array.zeroCreate n), maskOf m)
         | Decs(a, s, c, m) -> Decs(pick a 0.0 (Array.zeroCreate n), s, pick c Null (Array.zeroCreate n), maskOf m)
+        | Dates(a, m) -> Dates(pick a 0 (Array.zeroCreate n), maskOf m)
+        | Stamps(u, s, f, m) ->
+            Stamps(
+                u,
+                pick s 0.0 (Array.zeroCreate n),
+                (if isNull f then null else pick f 0 (Array.zeroCreate n)),
+                maskOf m
+            )
         | Cells a -> Cells(pick a Null (Array.zeroCreate n))
 #else
     /// The vector's cells at the physical rows `phys`, in that order, as a dense vector of the same
@@ -1026,6 +1049,17 @@ module internal Vec =
                 Array.init n (fun i -> a[phys[i]]),
                 s,
                 Array.init n (fun i -> c[phys[i]]),
+                Array.init n (fun i -> m[phys[i]])
+            )
+        | Dates(a, m) -> Dates(Array.init n (fun i -> a[phys[i]]), Array.init n (fun i -> m[phys[i]]))
+        | Stamps(u, s, f, m) ->
+            Stamps(
+                u,
+                Array.init n (fun i -> s[phys[i]]),
+                (if isNull f then
+                     null
+                 else
+                     Array.init n (fun i -> f[phys[i]])),
                 Array.init n (fun i -> m[phys[i]])
             )
         | Cells a -> Cells(Array.init n (fun i -> a[phys[i]]))
@@ -1052,6 +1086,17 @@ module internal Vec =
                 Array.init n (fun i -> if present[i] then c[idx[i]] else Null),
                 maskOf m
             )
+        | Dates(a, m) -> Dates(Array.init n (fun i -> if present[i] then a[idx[i]] else 0), maskOf m)
+        | Stamps(u, s, f, m) ->
+            Stamps(
+                u,
+                Array.init n (fun i -> if present[i] then s[idx[i]] else 0.0),
+                (if isNull f then
+                     null
+                 else
+                     Array.init n (fun i -> if present[i] then f[idx[i]] else 0)),
+                maskOf m
+            )
         | Cells a -> Cells(Array.init n (fun i -> if present[i] then a[idx[i]] else Null))
 #endif
 
@@ -1067,6 +1112,17 @@ module internal Vec =
         | Decs(x, sa, cx, mx), Decs(y, sb, cy, my) when sa = sb ->
             Decs(Array.append x y, sa, Array.append cx cy, Array.append mx my)
         | Decs(_, _, cx, _), Decs(_, _, cy, _) -> pack DecimalType (Array.append cx cy)
+        | Dates(x, mx), Dates(y, my) -> Dates(Array.append x y, Array.append mx my)
+        | Stamps(ua, sx, fx, mx), Stamps(ub, sy, fy, my) when ua = ub ->
+            let fraction =
+                if isNull fx && isNull fy then
+                    null
+                else
+                    Array.append
+                        (if isNull fx then Array.zeroCreate sx.Length else fx)
+                        (if isNull fy then Array.zeroCreate sy.Length else fy)
+
+            Stamps(ua, Array.append sx sy, fraction, Array.append mx my)
         | _ ->
             let na = length a
             let nb = length b
@@ -1082,6 +1138,9 @@ module internal Vec =
         | Bools(a, m) -> Bools(Array.sub a start len, Array.sub m start len)
         | Strs(ty, a, m) -> Strs(ty, Array.sub a start len, Array.sub m start len)
         | Decs(a, s, c, m) -> Decs(Array.sub a start len, s, Array.sub c start len, Array.sub m start len)
+        | Dates(a, m) -> Dates(Array.sub a start len, Array.sub m start len)
+        | Stamps(u, s, f, m) ->
+            Stamps(u, Array.sub s start len, (if isNull f then null else Array.sub f start len), Array.sub m start len)
         | Cells a -> Cells(Array.sub a start len)
 
     /// Dense vectors end to end, `ty` deciding the empty case: one vector of the shared kind where
@@ -1157,6 +1216,41 @@ module internal Vec =
                     )
                 else
                     pack DecimalType (Array.concat (parts |> Array.map (fun (_, _, c, _) -> c)))
+            | Dates _ ->
+                let parts =
+                    vs
+                    |> Array.choose (function
+                        | Dates(a, m) -> Some(a, m)
+                        | _ -> None)
+
+                if parts.Length = vs.Length then
+                    Dates(Array.concat (Array.map fst parts), Array.concat (Array.map snd parts))
+                else
+                    boxed ()
+            | Stamps(u0, _, _, _) ->
+                let parts =
+                    vs
+                    |> Array.choose (function
+                        | Stamps(u, s, f, m) when u = u0 -> Some(s, f, m)
+                        | _ -> None)
+
+                if parts.Length = vs.Length then
+                    let fraction =
+                        if parts |> Array.forall (fun (_, f, _) -> isNull f) then
+                            null
+                        else
+                            parts
+                            |> Array.map (fun (s, f, _) -> if isNull f then Array.zeroCreate s.Length else f)
+                            |> Array.concat
+
+                    Stamps(
+                        u0,
+                        Array.concat (parts |> Array.map (fun (s, _, _) -> s)),
+                        fraction,
+                        Array.concat (parts |> Array.map (fun (_, _, m) -> m))
+                    )
+                else
+                    boxed ()
             | Cells _ -> boxed ()
 
     /// The carrier string a string-family column of type `ty` holds for `c`, or `None` where `c`
@@ -1233,6 +1327,35 @@ module internal Vec =
                 Mask.put m' i true
                 Strs(ty, a', m')
             | None -> boxed ()
+        | Dates(a, m), Null -> Dates(a, masked m)
+        | Dates(a, m), Date s ->
+            match TemporalText.tryDays s with
+            | Some d ->
+                let a' = Array.copy a
+                let m' = Array.copy m
+                a'[i] <- d
+                Mask.put m' i true
+                Dates(a', m')
+            | None -> boxed ()
+        | Stamps(u, s, f, m), Null -> Stamps(u, s, f, masked m)
+        | Stamps(u, s, f, m), Timestamp text ->
+            match TemporalText.tryInstant u text with
+            | Some(sec, frac) ->
+                let s' = Array.copy s
+                let m' = Array.copy m
+                s'[i] <- sec
+
+                let f' =
+                    if isNull f && frac = 0 then
+                        null
+                    else
+                        let f' = if isNull f then Array.zeroCreate s.Length else Array.copy f
+                        f'[i] <- frac
+                        f'
+
+                Mask.put m' i true
+                Stamps(u, s', f', m')
+            | None -> boxed ()
         | Cells a, _ ->
             let out = Array.copy a
             out[i] <- c
@@ -1277,6 +1400,16 @@ module internal Vec =
                             match carrierOf ty c with
                             | Some s -> Mask.at j m && a[j] = s
                             | None -> false
+                    | Dates(a, m) ->
+                        match cells[offset + j] with
+                        | Null -> not (Mask.at j m)
+                        | Date s -> Mask.at j m && TemporalText.tryDays s = Some a[j]
+                        | _ -> false
+                    | Stamps(u, s, f, m) ->
+                        match cells[offset + j] with
+                        | Null -> not (Mask.at j m)
+                        | Timestamp text -> Mask.at j m && TemporalText.tryInstant u text = Some(s[j], fractionAt f j)
+                        | _ -> false
                     | Decs(_, _, a, _)
                     | Cells a -> a[j] = cells[offset + j]
 
@@ -1312,19 +1445,6 @@ module internal Vec =
             else
                 Mask.init n (fun i -> i < a.Length && Raw.get i a)
 
-    /// The texts of a temporal column, rendered per present row from its integers; an absent row
-    /// holds no text. The frame still carries a date or an instant as its canonical text, so this is
-    /// the one conversion the boundary in still makes (recorded; the typed temporal vector is the
-    /// follow-on the phase names).
-    let private renderTexts (n: int) (mask: Mask) (render: int -> string) : string[] =
-        let out: string[] = Array.zeroCreate n
-
-        for i in 0 .. n - 1 do
-            if Mask.get i mask then
-                Raw.set out i (render i)
-
-        out
-
     /// A Core column as a vector of `n` physical rows under the declared type `ty`. A column of that
     /// type and that length is a VIEW: its values and its mask are borrowed, never copied (a `Bools`
     /// column's values and every mask under Fable are read into the `Uint8Array` form the kernels
@@ -1348,26 +1468,14 @@ module internal Vec =
             | ColumnData.Floats(v, va) -> Floats(borrowed v, maskOf n va)
             | ColumnData.Bools(v, va) -> Bools(Mask.ofBools (borrowed v), maskOf n va)
             | ColumnData.Strs(v, va) -> Strs(StringType, borrowed v, maskOf n va)
-            | ColumnData.Dates(v, va) ->
-                let days = borrowed v
-                let mask = maskOf n va
-                Strs(DateType, renderTexts n mask (fun i -> TemporalText.dateText (Raw.get i days)), mask)
+            | ColumnData.Dates(v, va) -> Dates(borrowed v, maskOf n va)
             | ColumnData.Timestamps(unit, seconds, fraction, va) ->
-                let secs = borrowed seconds
-                let mask = maskOf n va
-
-                let fractionAt: int -> int =
+                let fraction =
                     match fraction with
-                    | Some f ->
-                        let fa = borrowed f
-                        fun i -> if i < fa.Length then Raw.get i fa else 0
-                    | None -> fun _ -> 0
+                    | Some f -> borrowed f
+                    | None -> null
 
-                Strs(
-                    ty,
-                    renderTexts n mask (fun i -> TemporalText.instantText unit (Raw.get i secs) (fractionAt i)),
-                    mask
-                )
+                Stamps(unit, borrowed seconds, fraction, maskOf n va)
             | ColumnData.Decimals(v, va) ->
                 let texts = borrowed v
                 let mask = maskOf n va
@@ -1430,46 +1538,12 @@ module internal Vec =
         | Floats(a, m) -> Column.ofFloats name (Vector.adopt a) (validityOf m)
         | Bools(a, m) -> Column.ofBools name (Vector.adopt (Mask.toBools a)) (validityOf m)
         | Strs(StringType, a, m) -> Column.ofStrs name (Vector.adopt a) (validityOf m)
-        | Strs(DateType, a, m) ->
-            let n = a.Length
-            let days: int[] = Array.zeroCreate n
-            let mutable bad: string = null
-
-            for i in 0 .. n - 1 do
-                if isNull bad && Mask.get i m then
-                    match TemporalText.tryDays (Raw.get i a) with
-                    | Some d -> Raw.set days i d
-                    | None -> bad <- Raw.get i a
-
-            if isNull bad then
-                Column.ofDates name (Vector.adopt days) (validityOf m)
-            else
-                unrepresentable name ("'" + bad + "' is not a canonical date")
-        | Strs(TimestampType unit, a, m) ->
-            let n = a.Length
-            let seconds: float[] = Array.zeroCreate n
-            let fraction: int[] = Array.zeroCreate n
-            let mutable bad: string = null
-
-            for i in 0 .. n - 1 do
-                if isNull bad && Mask.get i m then
-                    match TemporalText.tryInstant unit (Raw.get i a) with
-                    | Some(s, f) ->
-                        Raw.set seconds i s
-                        Raw.set fraction i f
-                    | None -> bad <- Raw.get i a
-
-            if isNull bad then
-                let fraction =
-                    if unit = TimeUnit.Seconds then
-                        None
-                    else
-                        Some(Vector.adopt fraction)
-
-                Column.ofTimestamps name unit (Vector.adopt seconds) fraction (validityOf m)
-            else
-                unrepresentable name ("'" + bad + "' is not a canonical instant of its unit")
-        | Strs(_, a, m) -> viaCells (Array.init a.Length (fun i -> if Mask.get i m then Str(Raw.get i a) else Null))
+        | Strs(ty, a, m) ->
+            viaCells (Array.init a.Length (fun i -> if Mask.get i m then strCell ty (Raw.get i a) else Null))
+        | Dates(a, m) -> Column.ofDates name (Vector.adopt a) (validityOf m)
+        | Stamps(unit, s, f, m) ->
+            let fraction = if isNull f then None else Some(Vector.adopt f)
+            Column.ofTimestamps name unit (Vector.adopt s) fraction (validityOf m)
         | Decs(_, _, cells, m) ->
             let texts =
                 cells

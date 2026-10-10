@@ -20,6 +20,9 @@ let private checkAll () =
         printfn "sheet %d rows: the hand arm agrees with the evaluator" n
         Corpus.checkChain (Corpus.ordersTable a)
         printfn "chain %d rows: the prepared-chained arm agrees with the Table-chained arm" n
+        let d = Corpus.datedArrays n
+        Corpus.checkDated d (Corpus.datedTable d)
+        printfn "dated %d rows: the hand arm agrees with the evaluator on byMonth" n
 
     for name, pipeline in Corpus.scalingPipelines do
         for n in Corpus.scalingSizes do

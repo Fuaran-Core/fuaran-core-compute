@@ -145,3 +145,62 @@ type Typed() =
 
     [<Benchmark>]
     member _.Evaluate() = DataFrame.evalPipeline pipeline input
+
+/// The dated pipeline (Phase 423, carrying Phase 422's task): `byMonth` over the dated `orders` —
+/// a filter by date range, the amount, the month read off the date column through `DatePart`, and
+/// a group by month — the evaluator arm beside the hand arm, which is the baseline.
+[<MemoryDiagnoser>]
+type Dated() =
+    let mutable arrays = Unchecked.defaultof<Corpus.DatedArrays>
+    let mutable dated = Unchecked.defaultof<Table>
+
+    static member Sizes = Corpus.sheetSizes
+
+    [<ParamsSource("Sizes")>]
+    member val Rows = 0 with get, set
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        arrays <- Corpus.datedArrays this.Rows
+        dated <- Corpus.datedTable arrays
+        Corpus.checkDated arrays dated
+
+    [<Benchmark(Baseline = true)>]
+    member _.ByMonthHandArm() = Corpus.handByMonth arrays
+
+    [<Benchmark>]
+    member _.ByMonthEvaluator() = Corpus.evalByMonth dated
+
+/// The `Table` boundary (Phase 327's measure, re-run under Phase 423): `prepare` of the sheet's
+/// `orders` — the boundary in — and the table out of the sheet's `lines` kept prepared. Since
+/// Phase 423 both are views over the column storage: no cell is boxed either way.
+[<MemoryDiagnoser>]
+type Boundary() =
+    let mutable orders = Unchecked.defaultof<Table>
+    let mutable lines = Unchecked.defaultof<Prepared>
+
+    static member Sizes = Corpus.sheetSizes
+
+    [<ParamsSource("Sizes")>]
+    member val Rows = 0 with get, set
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        orders <- Corpus.ordersTable (Corpus.ordersArrays this.Rows)
+
+        lines <-
+            match
+                DataFrame.evalToPrepared
+                    DataFrame.noResolve
+                    Corpus.sheetEnv
+                    Corpus.linesPipeline
+                    (DataFrame.prepare orders)
+            with
+            | Ok p -> p
+            | Error e -> failwithf "lines: %A" e
+
+    [<Benchmark>]
+    member _.PrepareIn() = DataFrame.prepare orders
+
+    [<Benchmark>]
+    member _.TableOut() = DataFrame.toTable lines

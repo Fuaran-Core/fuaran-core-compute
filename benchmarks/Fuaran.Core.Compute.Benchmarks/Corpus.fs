@@ -238,6 +238,102 @@ let checkChain (orders: Table) : unit =
     if Table.rowCount viaTables = 0 && Table.rowCount orders > 0 then
         failwith "benchmark corpus: the chain answered no rows"
 
+// ---- the dated pipeline (Phase 423, carrying Phase 422's task) ----------------------------------
+
+/// The dated `orders`: the sheet's table with a `day: date` column, every order dated inside 2026
+/// (`DatedArrays.Day` is the day count since 1970-01-01, the integer form Core holds a date in).
+type DatedArrays = { Orders: OrdersArrays; Day: int[] }
+
+let datedArrays (n: int) : DatedArrays =
+    let first = TemporalText.daysOfCivil 2026 1 1
+
+    { Orders = ordersArrays n
+      Day = Array.init n (fun i -> first + (i * 7 + i / 3) % 365) }
+
+/// The dated table: `id:int, region:string, qty:int, price:float, day:date`. The date column is
+/// built from the day counts straight — the integer form in, no text.
+let datedTable (a: DatedArrays) : Table =
+    let orders = ordersTable a.Orders
+
+    { Schema = orders.Schema @ [ Field.create "day" DateType ]
+      Columns = orders.Columns @ [ Column.ofDates "day" (Vector.ofArray a.Day) AllValid ] }
+
+/// The range the dated pipeline keeps: the second and third quarters of 2026.
+let datedFrom = "2026-04-01"
+let datedUntil = "2026-10-01"
+
+/// Node `byMonth`: the orders dated in the range, their `amount`, then one row per month with the
+/// month's total and its row count. The filter compares the date column against two date literals;
+/// the month is `DatePart`, which reads the integer form (Phase 423).
+let byMonthPipeline: Transform list =
+    [ Filter(Binary(And, Binary(Ge, Col "day", Lit(Date datedFrom)), Binary(Lt, Col "day", Lit(Date datedUntil))))
+      amountStep
+      Derive("month", ApplyFn(DatePart, [ Lit(Str "month"); Col "day" ]))
+      GroupBy(
+          [ "month" ],
+          [ { Name = "total"
+              Fn = Sum
+              Of = "amount" }
+            { Name = "n"
+              Fn = Count
+              Of = "amount" } ]
+      ) ]
+
+/// The evaluator's arm for `byMonth`.
+let evalByMonth (dated: Table) : Result<Table, EvalError> =
+    DataFrame.evalPipelineInEnv sheetEnv byMonthPipeline dated
+
+/// The hand arm's `byMonth`: months in first-appearance order, with their totals and counts.
+type HandByMonth =
+    { Month: int[]
+      Total: float[]
+      N: int[] }
+
+/// The hand arm for `byMonth`: one loop over the arrays, the range test on the day counts.
+let handByMonth (a: DatedArrays) : HandByMonth =
+    let lo = (TemporalText.tryDays datedFrom).Value
+    let hi = (TemporalText.tryDays datedUntil).Value
+    let slot = Dictionary<int, int>()
+    let months = ResizeArray<int>()
+    let totals = ResizeArray<float>()
+    let counts = ResizeArray<int>()
+
+    for i in 0 .. a.Day.Length - 1 do
+        let day = a.Day[i]
+
+        if day >= lo && day < hi then
+            let month = (TemporalText.civilOfDays day).Month
+
+            let k =
+                match slot.TryGetValue month with
+                | true, k -> k
+                | _ ->
+                    let k = months.Count
+                    slot[month] <- k
+                    months.Add month
+                    totals.Add 0.0
+                    counts.Add 0
+                    k
+
+            totals[k] <- totals[k] + float a.Orders.Qty[i] * a.Orders.Price[i]
+            counts[k] <- counts[k] + 1
+
+    { Month = months.ToArray()
+      Total = totals.ToArray()
+      N = counts.ToArray() }
+
+/// The hand arm and the evaluator agree on `byMonth`, and the range kept rows; asserted before
+/// anything is timed.
+let checkDated (a: DatedArrays) (dated: Table) : unit =
+    let byMonth = evalByMonth dated |> orFail "byMonth"
+    let hand = handByMonth a
+    expectCells "byMonth.month" [ for v in hand.Month -> Int v ] (cellsOf "month" byMonth)
+    expectCells "byMonth.total" [ for v in hand.Total -> Float v ] (cellsOf "total" byMonth)
+    expectCells "byMonth.n" [ for v in hand.N -> Int v ] (cellsOf "n" byMonth)
+
+    if Table.rowCount byMonth = 0 && Table.rowCount dated > 0 then
+        failwith "benchmark corpus: the dated range kept no rows"
+
 // ---- the Scaling pipelines -------------------------------------------------------------------
 
 /// The Scaling family's two sizes.

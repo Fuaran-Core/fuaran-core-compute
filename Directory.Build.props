@@ -27,8 +27,10 @@
          324's change (window and sort through order codes; no public surface moves) advanced the
          slot to 0.38.0. 0.38.0 was packed as a draft with an earlier public surface than its
          release commit's, and a released number names one contract, so the slot moved to 0.38.1
-         and 0.38.0 is never released. -->
-    <Version>0.38.1</Version>
+         and 0.38.0 is never released. 0.38.1 is tagged, so Phase 423's breaking change (the
+         substrate at Core 1.0.0: `Schema = Field list` and the typed `Column` on every signature
+         that carried one, class `retype`) advanced the slot to 0.39.0. -->
+    <Version>0.39.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

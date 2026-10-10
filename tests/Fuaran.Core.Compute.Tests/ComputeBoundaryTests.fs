@@ -42,13 +42,17 @@ let compute: Set<string> =
           "Fuaran.Compute.Conformance"
           "Fuaran.Compute.PipelineQuery" ]
 
-/// The substrate packages the compute strand stands on — and nothing above them.
+/// The substrate packages the compute strand stands on — and nothing above them. `Fuaran.Core.Unit`
+/// is BELOW the four, not above: since Core `1.0.0` a schema field carries a unit of measure, so
+/// `Fuaran.Core.Column` stands on it and every assembly that reads a `Field` references it
+/// transitively (Phase 423). No project names it; the assembly rule admits it for that reason.
 let allowedSubstrate: Set<string> =
     set
         [ "Fuaran.Core.Column"
           "Fuaran.Core.Wire"
           "Fuaran.Core.OpStream"
-          "Fuaran.Core.Conformance" ]
+          "Fuaran.Core.Conformance"
+          "Fuaran.Core.Unit" ]
 
 /// The one designed widening, per project (Phase 281): the registered pipeline query pairs the
 /// substrate's `Query` declaration with a pipeline, so it takes `Fuaran.Core.Query` — and, through
