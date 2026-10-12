@@ -1,5 +1,44 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-12 — D19: a join's colliding right column takes the first free suffix against the whole output, `x_right`, `x_right_2`, …; a refusal was rejected
+
+**Context.** A combining join suffixed a right column whose name collides with a left one by appending
+`_right`, checked against the LEFT names only. A left carrying `x` and `x_right` joined to a right
+carrying `x` therefore emitted two columns named `x_right`; so did a right carrying both `x` and its
+own `x_right`. The evaluator reads a table's columns by name, so when such a table re-enters it — a
+pushdown boundary, a cache, a checkpoint, a second query over the result — one of the two is read as
+the other with no error anywhere (Phase 411).
+
+**Decision.** The colliding right column takes `_right`, or `_right_2`, `_right_3`, … — the FIRST
+suffix free against every name the output carries: every left name, every right name (a right name
+that collides with no left name keeps its own name, so it is taken before any suffix is chosen), and
+every suffix an earlier colliding right column took, decided in right column order. It is one
+function, `DataFrame.joinRightNames`, which the evaluator and `SchemaWalk` both read. Over an open
+right source the walk no longer names a colliding right column, because the right's unnamed columns
+decide its suffix.
+
+**Why the suffix and not a refusal.** A typed refusal naming the colliding column was the other
+candidate. It would make a join's success depend on its operands' names, so a pipeline that runs today
+over one table would refuse over a table that merely gained a column, and the static walk would have to
+carry a new refusal verdict for a step that has always been total. The unique suffix keeps the join
+total and changes nothing for any join whose output was already unique — every join the corpus vectors
+record, and every one a consumer reading SQL-style output has met — while the case that changes was
+already wrong. **What each costs a consumer reading SQL-style output:** under the suffix, a consumer
+of a join whose names were already unique sees nothing move, and one that read an output which repeated
+`x_right` now finds two addressable columns — the colliding right column under the first free suffix,
+so a by-name read of `x_right` may land on the other of the two than it did, which is exactly the read
+that was ambiguous before; under a refusal, it would get an error where it got a table, and have to
+rename an operand to get one back. Neither
+consumer can be told apart from the table alone, which is why the rule is deterministic in column
+order and recorded here rather than left to a host to reproduce.
+
+**Consequences.** A behaviour change to a public evaluator, versioned per the draft-slot rule
+(`STABILITY.md` `0.39.0`); `DataFrame.joinRightNames` is new and additive. `Conformance.schemaWalkLaws`
+gains the law that a combining join adds no repeated name and that the walk names a built pair of
+joins as the evaluator does. No corpus vector moves; the corpus copy follows the release rule
+(D6 (4)). A `Window` whose `As` names an existing column still appends it, leaving the name twice
+(Phase 112's walk pins that); that is a separate rule and this decision does not change it.
+
 ## 2026-10-10 — D18: three rulings on what Core `1.0.0`'s typed column leaves without an object — a non-canonical text cast to a temporal type is refused by name, a derived column spanning two unrelated types is refused by name, and the fused sort-then-limit bound is on work, not bytes
 
 **Context.** Until Core `1.0.0` a `Column` was a `Cell list`, so a column could hold a cell of the

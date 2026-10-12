@@ -188,6 +188,79 @@ let tests =
                   "dept_right"
                   "colliding right key is suffixed"
 
+          // Phase 411 — a left that already carries `x` and `x_right`, joined to a right carrying `x`:
+          // the right `x` must not ALSO be named `x_right`, or the table re-entering the evaluator
+          // reads the left's column under the right's name.
+          testCase "A join never names two columns alike, so a re-entered table reads the right column"
+          <| fun _ ->
+              let left =
+                  tbl
+                      [ Field.create "k" IntType
+                        Field.create "x" IntType
+                        Field.create "x_right" IntType ]
+                      [ col "k" IntType [ Int 1; Int 2 ]
+                        col "x" IntType [ Int 10; Int 20 ]
+                        col "x_right" IntType [ Int 100; Int 200 ] ]
+
+              let right =
+                  tbl
+                      [ Field.create "kk" IntType; Field.create "x" IntType ]
+                      [ col "kk" IntType [ Int 1; Int 2 ]; col "x" IntType [ Int 7; Int 8 ] ]
+
+              let joined =
+                  DataFrame.evalPipeline [ Join(Embedded right, [ "k", "kk" ], Inner) ] left
+                  |> okTable
+
+              let names = Table.columnNames joined
+
+              Expect.equal names [ "k"; "x"; "x_right"; "kk"; "x_right_2" ] "the second collision takes the next suffix"
+              Expect.equal (List.distinct names) names "no name is repeated"
+
+              // The table re-enters (`evalPipeline` opens it with `Frame.ofTable`) and reads the right's
+              // `x` by the name the join gave it.
+              let rightX = List.item 4 names
+
+              let reread = DataFrame.evalPipeline [ Project [ rightX, "rx" ] ] joined |> okTable
+
+              Expect.equal (cellsOf "rx" reread) [ Int 7; Int 8 ] "the right's x, not the left's x_right"
+
+              // The static schema says exactly what the evaluator emitted.
+              let k =
+                  SchemaWalk.ofPipeline left.Schema [ Join(Embedded right, [ "k", "kk" ], Inner) ]
+
+              Expect.isTrue (SchemaWalk.isClosed k) "a closed input over an embedded right stays closed"
+              Expect.equal (SchemaWalk.names k) names "static and evaluated agree"
+
+          testCase "A join's right names are unique against the right's own names too"
+          <| fun _ ->
+              // The right carries `x` (colliding with the left) AND its own `x_right`: the renamed `x`
+              // must step past the right's `x_right` as well as the left's names.
+              let left =
+                  tbl
+                      [ Field.create "k" IntType; Field.create "x" IntType ]
+                      [ col "k" IntType [ Int 1 ]; col "x" IntType [ Int 10 ] ]
+
+              let right =
+                  tbl
+                      [ Field.create "k" IntType
+                        Field.create "x" IntType
+                        Field.create "x_right" IntType ]
+                      [ col "k" IntType [ Int 1 ]
+                        col "x" IntType [ Int 7 ]
+                        col "x_right" IntType [ Int 70 ] ]
+
+              let joined =
+                  DataFrame.evalPipeline [ Join(Embedded right, [ "k", "k" ], Left) ] left
+                  |> okTable
+
+              Expect.equal
+                  (Table.columnNames joined)
+                  [ "k"; "x"; "k_right"; "x_right_2"; "x_right" ]
+                  "a non-colliding right name keeps its own name; a colliding one steps past it"
+
+              Expect.equal (cellsOf "x_right_2" joined) [ Int 7 ] "the renamed right x"
+              Expect.equal (cellsOf "x_right" joined) [ Int 70 ] "the right's own x_right"
+
           testCase "Union concatenates matching-schema rows"
           <| fun _ ->
               let t =
@@ -1418,8 +1491,8 @@ let tests =
           testCase "schemaWalkLaws certify the walk against the evaluator's schema (Phase 112)"
           <| fun _ ->
               let results = Conformance.schemaWalkLaws 1121 300
-              // Phase 321: and the decimal step's adequacy guard.
-              Expect.equal (List.length results) 5 "closed-exact, open-sound, types, non-vacuity, decimal"
+              // Phase 321: and the decimal step's adequacy guard; Phase 411: and the join's unique names.
+              Expect.equal (List.length results) 6 "closed-exact, open-sound, types, join names, non-vacuity, decimal"
 
               if results |> List.exists (fun r -> not r.Passed) then
                   let fails =
@@ -6502,13 +6575,27 @@ let private oracleJoin (left: Table) (right: Table) (on: (string * string) list)
     | Left
     | Right
     | Outer ->
-        let leftNames = left.Schema |> List.map (fun (f: Field) -> f.Name) |> Set.ofList
+        // Phase 411's naming, written out row by row: a colliding right name takes the first of
+        // `_right`, `_right_2`, … that no output column already carries, in right column order.
+        let leftNames = left.Schema |> List.map (fun (f: Field) -> f.Name)
+
+        let outNames =
+            ResizeArray<string>(leftNames @ (right.Schema |> List.map (fun f -> f.Name)))
 
         let outRight =
             right.Schema
             |> List.map (fun f ->
-                if Set.contains f.Name leftNames then
-                    Fields.rename (f.Name + "_right") f
+                if List.contains f.Name leftNames then
+                    let name =
+                        Seq.initInfinite (fun i ->
+                            if i = 0 then
+                                f.Name + "_right"
+                            else
+                                $"{f.Name}_right_{i + 1}")
+                        |> Seq.find (fun n -> not (outNames.Contains n))
+
+                    outNames.Add name
+                    Fields.rename name f
                 else
                     f)
 

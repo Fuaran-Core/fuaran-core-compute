@@ -7052,6 +7052,38 @@ module DataFrame =
         List.length leftKeys = List.length rightKeys
         && List.forall2 cellEq leftKeys rightKeys
 
+    /// The output names of a combining join's right columns (Phase 411, `DECISIONS.md` D19). A right
+    /// name no left column carries keeps its name. A right name that collides with a left one takes
+    /// `_right`, or — when that is taken too — `_right_2`, `_right_3`, …, the first suffix that is
+    /// free against EVERY name the output carries: the left's, the right's own, and the suffixes
+    /// earlier colliding right columns took, decided in right column order. So a join adds no
+    /// repeated name, and the static schema walk reads its names from this same function.
+    let private joinRightNamesOf (leftNames: string list) (rightNames: string list) : string list =
+        let leftSet = Set.ofList leftNames
+
+        rightNames
+        |> List.mapFold
+            (fun taken name ->
+                if Set.contains name leftSet then
+                    let rec free (n: int) =
+                        let candidate =
+                            if n = 1 then
+                                name + "_right"
+                            else
+                                name + "_right_" + string n
+
+                        if Set.contains candidate taken then
+                            free (n + 1)
+                        else
+                            candidate
+
+                    let chosen = free 1
+                    chosen, Set.add chosen taken
+                else
+                    name, taken)
+            (Set.union leftSet (Set.ofList rightNames))
+        |> fst
+
     /// The join (Phase 325 — typed; Phase 264 made it a hash join). The right side arrives as a
     /// frame, unpacked typed at the boundary. Its key columns are coded through the typed row
     /// hasher in the `cellEq` relation (`RowHash`; an int key column against an int key column in
@@ -7154,16 +7186,11 @@ module DataFrame =
             | Left
             | Right
             | Outer ->
-                // output schema: left cols ++ right cols (collisions suffixed _right)
-                let leftNames = available f.Cols |> Set.ofList
-
+                // output schema: left cols ++ right cols, a colliding right name suffixed so that no
+                // output name repeats (`joinRightNamesOf`)
                 let outRight =
-                    rightCols
-                    |> List.map (fun f ->
-                        if Set.contains f.Name leftNames then
-                            Fields.rename (f.Name + "_right") f
-                        else
-                            f)
+                    joinRightNamesOf (available f.Cols) (available rightCols)
+                    |> List.map2 (fun col name -> Fields.rename name col) rightCols
 
                 let padsLeft = (how = Left || how = Outer)
                 let padsRight = (how = Right || how = Outer)
@@ -8801,6 +8828,15 @@ module DataFrame =
     /// `Distinct` and the set ops dedup on says `Null` matches itself, and a join says it does not.
     let joinKeysMatch (leftKeys: Cell list) (rightKeys: Cell list) : bool = joinKeyEq leftKeys rightKeys
 
+    /// The output names a combining join (`Inner` / `Left` / `Right` / `Outer`) gives the right
+    /// side's columns, in right column order, over the left's and the right's column names (Phase
+    /// 411, `DECISIONS.md` D19): a right name no left column carries keeps its name; a colliding one
+    /// takes `_right`, then `_right_2`, `_right_3`, … — the first that is free against every name the
+    /// output carries. The evaluator and the schema walk both read it, so the evaluated and the static
+    /// names cannot disagree, and a join adds no repeated name to its output.
+    let joinRightNames (leftNames: string list) (rightNames: string list) : string list =
+        joinRightNamesOf leftNames rightNames
+
     // ---- incremental evaluation (Phase 34) ----
     // A full-recompute evaluator made incremental via change-relevance analysis: when a change provably
     // cannot alter the output, the prior result is reused; otherwise the pipeline re-runs over the
@@ -9260,10 +9296,11 @@ module SchemaWalk =
             | Right
             | Outer ->
                 match input with
-                // The evaluator suffixes a right column whose name collides with a LEFT one. So a
-                // right column's OUTPUT name is a function of the left's names — and while any left
-                // name is invisible, every right column's name is undecidable between `x` and
-                // `x_right`. That is why an open left contributes no right columns at all rather
+                // The evaluator suffixes a right column whose name collides with a LEFT one
+                // (`DataFrame.joinRightNames`, unique against the whole output). So a right column's
+                // OUTPUT name is a function of the left's names — and while any left name is
+                // invisible, every right column's name is undecidable between `x`, `x_right` and
+                // `x_right_2`. That is why an open left contributes no right columns at all rather
                 // than guessing that no collision occurred.
                 | SchemaKnowledge.AtLeast(cols, r) ->
                     SchemaKnowledge.AtLeast(
@@ -9273,19 +9310,29 @@ module SchemaWalk =
                     )
                 | SchemaKnowledge.Closed left ->
                     let right = ofSource sources source
-                    let leftNames = left |> List.map _.Name |> Set.ofList
+                    let rightCols = columns right
 
                     let renamed =
-                        columns right
-                        |> List.map (fun c ->
-                            if Set.contains c.Name leftNames then
-                                { c with Name = c.Name + "_right" }
-                            else
-                                c)
+                        DataFrame.joinRightNames (left |> List.map _.Name) (rightCols |> List.map _.Name)
+                        |> List.map2 (fun c name -> { c with Name = name }) rightCols
 
                     match right with
                     | SchemaKnowledge.Closed _ -> SchemaKnowledge.Closed(left @ renamed)
-                    | SchemaKnowledge.AtLeast(_, r) -> SchemaKnowledge.AtLeast(left @ renamed, r)
+                    // An OPEN right: a colliding right column's suffix is the first one free against
+                    // every right name too, and the right's unnamed columns may hold `x_right` — so
+                    // only the right columns that keep their own names can be named.
+                    | SchemaKnowledge.AtLeast(_, r) ->
+                        let leftNames = left |> List.map _.Name |> Set.ofList
+                        let kept = rightCols |> List.filter (fun c -> not (Set.contains c.Name leftNames))
+
+                        if kept.Length = rightCols.Length then
+                            SchemaKnowledge.AtLeast(left @ kept, r)
+                        else
+                            SchemaKnowledge.AtLeast(
+                                left @ kept,
+                                r
+                                + " — and a right column colliding with a left name takes a suffix the right's unnamed columns decide, so it cannot be named either"
+                            )
 
     /// Fold a pipeline over knowledge already in hand — the general form, and the one a consumer
     /// that interleaves its own per-step checks with the walk reaches for.
