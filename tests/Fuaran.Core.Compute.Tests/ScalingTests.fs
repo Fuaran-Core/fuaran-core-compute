@@ -178,23 +178,16 @@ let private tickFloorFactor = 0.03
 /// Figures: docs/incremental-evaluation.md, "The tick bound reads its own baseline (Phase 439)".
 let private tickBaselineFactor = 1.5
 
-/// Phase 439 — each corpus cell's one-row tick on the pre-423 tree (`ccbddc7`, the last whose full
-/// evaluation paid the `Table` boundary), per CPU architecture (`RuntimeInformation.ProcessArchitecture`),
-/// keyed (kind, node, rows) with kind "edit" or "append", in units of the clock leg's calibration
-/// baseline: the best counted reading over the recording runs. Recorded by
-/// `gates/record-tick-baselines.ps1`, which prints the block to paste here; refreshing a table is
-/// the operator's decision (DECISIONS.md D19). An architecture with no table is NOT passed on this
-/// arm by default: the cases print that the table is missing and name the script, and hold such a
-/// machine to the ratio arm alone, which is the stricter condition.
 /// Phase 439 — the named exceptions to the tick condition, each with its reason (operator rulings
-/// 2026-10-12, the second and the third): an excepted cell is held to its own recorded post-423
-/// cost as a CEILING (`tickExceptionCeilings`), and to neither the ratio arm nor the baseline arm.
-/// Every entry is printed on every clock-leg run that judges it, and the main suite pins this
-/// list's exact contents ("the tick bound's named exceptions are exactly the ruled ones"), so a
-/// second exception cannot be added without that test moving with it. The one entry is removable
-/// only by Phase 448's acceptance (DECISIONS.md D19).
+/// 2026-10-12, the second and the third; the append cell, the fifth, Phase 449): an excepted cell is
+/// held to its own recorded post-423 cost as a CEILING (`tickExceptionCeilings`), and to neither the
+/// ratio arm nor the baseline arm. Every entry is printed on every clock-leg run that judges it, and
+/// the main suite pins this list's exact contents ("the tick bound's named exceptions are exactly
+/// the ruled ones"), so a further exception cannot be added without that test moving with it. Every
+/// entry is removable only by Phase 448's acceptance (DECISIONS.md D19 and D22).
 let tickBaselineExceptions: (string * string * int * string) list =
-    [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns" ]
+    [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns"
+      "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns" ]
 
 /// Phase 439 — each named exception's CEILING, per architecture, keyed (architecture, kind, node,
 /// rows), in calibration units: the cell's tick on the tree carrying Phase 423 and this phase's
@@ -207,8 +200,19 @@ let private tickExceptionCeilings: Map<string * string * string * int, float> =
     Map.ofList
         [
           // Arm64 - recorded 2026-10-12 from 3caa557 (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
-          ("Arm64", "edit", "lines", 20000), 0.362989 ]
+          ("Arm64", "edit", "lines", 20000), 0.362989
+          // RECORDED-CEILING-449
+          ]
 
+/// Phase 439 — each corpus cell's one-row tick on the pre-423 tree (`ccbddc7`, the last whose full
+/// evaluation paid the `Table` boundary), per CPU architecture (`RuntimeInformation.ProcessArchitecture`),
+/// keyed (kind, node, rows) with kind "edit" or "append", in units of the clock leg's calibration
+/// baseline: the median, over clean recording legs, of each leg's best counted reading (operator
+/// ruling 2026-10-12, the second). Recorded by `gates/record-tick-baselines.ps1`, which prints the
+/// block to paste here; refreshing a table is the operator's decision (DECISIONS.md D19). An
+/// architecture with no table is NOT passed on this arm by default: the cases print that the table
+/// is missing and name the script, and hold such a machine to the ratio arm alone, which is the
+/// stricter condition.
 let private tickBaselines: Map<string, Map<string * string * int, float>> =
     Map.ofList
         [
@@ -1974,12 +1978,14 @@ let scalingTests =
 
           testCase "the tick bound's named exceptions are exactly the ruled ones"
           <| fun _ ->
-              // Phase 439 (operator ruling 2026-10-12, the second; DECISIONS.md D19): one cell, and
-              // only one, is held to the ratio arm alone until Phase 448's acceptance removes it. A
-              // second exception is an operator decision, so adding one moves this test too.
+              // Phase 439 and Phase 449 (operator rulings 2026-10-12, the second to the fifth;
+              // DECISIONS.md D19 and D22): two cells, and only these two, are held to their own
+              // recorded post-423 cost as a ceiling until Phase 448's acceptance removes them. A
+              // further exception is an operator decision, so adding one moves this test too.
               Expect.equal
                   tickBaselineExceptions
-                  [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns" ]
+                  [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns"
+                    "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns" ]
                   "the named exceptions to the tick bound's baseline arm are the operator's ruling (D19), never added silently"
 
           testCase "the clock leg's saturation rule: above k times the baseline, or a bracket disagreeing by k"
