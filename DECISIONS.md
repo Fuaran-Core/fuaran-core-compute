@@ -1,5 +1,97 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-12 — D19: the corpus tick bound gains a second arm, the tick's own recorded pre-423 cost, one table per CPU architecture; and the append diff's cheap prefix test is restored
+
+**Context.** The clock leg holds every corpus node's one-row tick (edit and append; `Delta.diff` plus
+the refresh) against the full evaluation it replaces: `tick <= 1.6 x full + floor` (Phases 274, 283,
+327, 359 and 371). Phase 423 made the `Table` boundary a view. Full evaluations fell 2 to 5 times on
+`lines`, `window CumulSum` and `group-by high-card`, and those cells read ×2.4 to ×4.5 against 1.6. The
+gate's verify arm was waived to land 423, and the bound was left to the operator (Phases 285 and 327).
+
+Phase 439 re-measured both trees on one machine, the full clock leg in Release, interleaved. The
+figures are in `docs/performance.md` ("The tick bound after the boundary became a view"). Three
+findings:
+
+- **The edit ticks were no dearer than before 423** (within 1.17×).
+- **The append ticks of the grouped nodes were 1.4 to 2.0 times dearer.** Timed apart, the cause is
+  the append diff, which was 1.6 to 2.9 times its own pre-423 cost. Its prefix walk compared every row
+  through a closure where Phase 359 had tried a cell reference check first. Only a clock sees this: the
+  diff allocates nothing for it and mints no extra key.
+- **On three shapes the refresh alone now costs 2.1 to 3.4 times the full evaluation** (`lines`,
+  `window CumulSum`, `group-by high-card`). It cost 0.6 to 0.9 before 423.
+
+Four bounds were put to the operator:
+
+1. A recalibrated ratio. It needed about ×5 to be green, and it hid the append regression.
+2. An absolute non-regression bound against each cell's recorded pre-423 tick.
+3. Both of these arms together.
+4. A split: the refresh against the full, and the diff held only by its counts. The count arm is blind
+   to the regression, and the refresh arm was red on the three shapes.
+
+A work bound (rows the refresh evaluates against rows the full evaluation reads) reaches a verdict on
+any machine, because it needs no clock. It is green on every tree, including the regressed one, so it
+complements a clock bound and cannot replace one.
+
+**The operator's ruling (2026-10-12), in its own words, abridged to what binds this repository:**
+
+> 1. The assertion: option C at c = 1.5. The incremental tick case (edit and append, every corpus node)
+>    asserts tick ≤ max(1.6 × full, 1.5 × recorded pre-423 tick) + the existing per-call floor.
+> 2. Fix the append-diff regression in `Delta.fs` in this phase. Restore the cheap prefix comparison
+>    before the value compare (`ColumnRead.sameAt`), without changing any diff result. Prove the results
+>    are unchanged with the existing delta laws and vectors. The phase lands only when the new bound is
+>    GREEN.
+> 3. Baselines: the pre-423 ticks, one table per CPU architecture. Record this machine's (Arm64) table
+>    from the pre-423 tree `ccbddc7`. Ship a recording script so another architecture can record its own
+>    table from `ccbddc7`. A machine whose architecture has no table must NOT pass vacuously: the absolute
+>    arm reports loudly, naming the missing table and the script. Keep the 1.6 × full arm active
+>    everywhere.
+> 4. The finding that refreshing costs more than recomputing on lines, window CumulSum and high-card
+>    group-by is NOT this phase's to fix; it goes to a successor phase. Record the finding and the
+>    numbers.
+
+**What was done.**
+
+- **The condition.** `ScalingTests.judgeCorpusTick` holds both corpus tick cases to
+  `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`, with `tickBound` 1.6 and
+  `tickBaselineFactor` 1.5. The `Scaling` tick case keeps the ratio alone.
+- **The baselines.** `tickBaselines` holds, per `RuntimeInformation.ProcessArchitecture`, each cell's best
+  counted pre-423 tick in units of the leg's calibration baseline. A unit scales with the machine within
+  an architecture, as the floor does (Phase 327). The integer chain does not track a memory-bound tick
+  across architectures, so tables are not shared across them.
+- **A missing table.** On an architecture with no table, or for a cell missing from one, every cell
+  prints `NO TICK BASELINE TABLE for architecture …` naming the script and holds the cell to the ratio
+  arm alone. That is the stricter condition, so a missing table can redden a leg and never greens one.
+- **The Arm64 table** was recorded by `gates/record-tick-baselines.ps1` on 2026-10-12: three full clock
+  legs of `ccbddc7`, no window discarded. The two corpus cases run alone read 10 to 25 percent low
+  against the gate's full leg, so the script runs the whole leg.
+- **The append fix.** `Delta.ColumnRead.samePrefix` compares a column's whole prefix in one typed loop:
+  both validities, then the two value vectors, with no closure per row. The append diff walks the rows
+  only where that fails. Its `true` is sufficient for `sameAt i i` at every row of the prefix, and its
+  `false` decides nothing. No diff result moves: the delta and append laws, the `diffTrustingPrefix`
+  falsifier and the delta wire vectors are unchanged and green. After it, the grouped append ticks are
+  0.46 to 0.88 of their pre-423 cost.
+
+**Refreshing a table, and who decides.** A table is the contract a cell is held to, so refreshing one
+is the operator's decision, recorded here as a dated note under this entry, and never a re-run to make
+a red leg green. There are two occasions:
+
+- **Adding the first table for an architecture.** Anyone may record it with the script from
+  `ccbddc7`. Landing it is an operator act, because until then that architecture's leg holds the
+  stricter ratio-only condition.
+- **Changing the baseline TREE** (a later reference than `ccbddc7`), for example after a phase
+  deliberately trades tick cost for something else. That is a new ruling, and every architecture's
+  table is re-recorded from the new tree in the same change.
+
+A table is never edited by hand, and never re-recorded from the tree under test.
+
+**Scope.** `src/Fuaran.Compute.DataFrame/Delta.fs` and `gates/record-tick-baselines.ps1` lie outside
+the phase's declared files and were approved as widenings with the ruling. No public signature moved:
+`ColumnRead` is internal.
+
+**Not decided here.** The three shapes whose refresh costs more than recomputing are admitted by the
+baseline arm, not by the seam's claim. Making them cheaper than recomputing again is a successor phase's
+work.
+
 ## 2026-10-10 — D18: three rulings on what Core `1.0.0`'s typed column leaves without an object — a non-canonical text cast to a temporal type is refused by name, a derived column spanning two unrelated types is refused by name, and the fused sort-then-limit bound is on work, not bytes
 
 **Context.** Until Core `1.0.0` a `Column` was a `Cell list`, so a column could hold a cell of the

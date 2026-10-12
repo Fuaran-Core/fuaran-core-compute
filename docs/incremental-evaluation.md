@@ -933,8 +933,8 @@ time. It printed figures and moved to the leg only so that the main suite ran no
 | a step's cost does not depend on which column | time ratio, guards a per-row name lookup | CLOCK — no counter sees the lookup | leg |
 | a join / a pivot / a group-by over n keys / a distinct is linear | complexity; guard quadratic scans | CLOCK — same | leg |
 | the table-fed tick at most 1.6× the full evaluation plus a fixed per-call floor (Phase 274; floor Phase 327; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, per row and per call | CLOCK; its countable part is the Phase 274 row below | leg |
-| the table-fed tick on every Phase 262 corpus node at most 1.6× the full evaluation plus a fixed per-call floor (Phase 283; floor Phase 327; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, per row and per call, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
-| the APPEND tick on every Phase 262 corpus node at most 1.6× the full evaluation plus a fixed per-call floor (Phase 359; one row appended; 1,000 / 20,000 / 100,000 rows) | time: an append costs no more than re-running, on every corpus shape | CLOCK; its countable part is the Phase 359 count (k keys minted for k rows appended) | leg |
+| the table-fed tick on every Phase 262 corpus node at most 1.6× the full evaluation, or 1.5× its recorded pre-423 tick, plus a fixed per-call floor (Phase 283; floor Phase 327; baseline arm Phase 439; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, or no more than it did, per row and per call, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
+| the APPEND tick on every Phase 262 corpus node at most 1.6× the full evaluation, or 1.5× its recorded pre-423 tick, plus a fixed per-call floor (Phase 359; baseline arm Phase 439; one row appended; 1,000 / 20,000 / 100,000 rows) | time: an append costs no more than re-running, or no more than it did, on every corpus shape | CLOCK; its countable part is the Phase 359 count (k keys minted for k rows appended) | leg |
 | `Delta.diff` costs what keying costs (1,000 and 20,000 rows) | work: the keying and a constant | COUNTABLE — keys minted, bytes allocated | main suite |
 | `Filter > Sort > Limit 10`: the fused pair against the full sort (`PlanTests`) | work: the top-n does less than the sort | COUNTABLE — bytes allocated | main suite |
 | the top-N step is a single pass (Phase 207) | work | already counted (visits) | main suite |
@@ -1790,7 +1790,7 @@ high-card` ×1.8–2.2, `pivot` ×1.8–2.4, `window CumulSum` ×3.9–5.4 (the 
 is by design; Phase 333 resumes only the prefix folds). Every other node holds (`byRegion` ×0.9,
 `filter > groupBy` ×1.2–1.4, `filter > sort > limit` ×0.4, `inner join` ×1.2–1.3, `sort two keys`
 ×0.4). The bound is an operator setting (Phases 285 and 327) and this phase does not move it; the
-figures are recorded here and in the phase's outcome for that decision. One bound did not
+figures are recorded here and in the phase's outcome for that decision, which Phase 439 took (next section). One bound did not
 survive: Phase 282 held the fused `Sort > Limit` to a quarter of the full sort's allocation, and that
 held only because the full sort's boundary conversion dominated — with the boundary a view, the full
 sort at 20,000 rows allocates 1.49 MB against the fused form's 2.31 MB, while the clock still favours
@@ -1800,6 +1800,83 @@ beside it (operator ruling 2026-10-10, `DECISIONS.md` D18). The boundary's own f
 chain re-run and the dated pipeline (`byMonth`: a filter by date range, `DatePart` reading the day
 count, a group by month) are in
 [`benchmarks/results/2026-10-10-ultra9-386h-phase-423.md`](../benchmarks/results/2026-10-10-ultra9-386h-phase-423.md).
+
+### The tick bound reads its own baseline (Phase 439)
+
+**The condition.** Under the operator's ruling of 2026-10-12 (`DECISIONS.md` D19) the two corpus tick
+cases on the clock leg, the edit and the append, hold every cell to
+
+    tick <= max(1.6 x full, 1.5 x baseline) + floor
+
+where `baseline` is the same cell's tick on the last tree before Phase 423 (`ccbddc7`), recorded per
+CPU architecture in units of the leg's calibration baseline (`ScalingTests.tickBaselines`). The ratio
+arm is the seam's claim: maintaining a result costs no more than recomputing it. It still decides
+wherever that claim holds. The baseline arm means a cell cannot go red because the FULL evaluation got
+faster, only because the TICK got dearer. That is the failure Phase 423 met: its full evaluations fell
+2 to 5 times and ticks no dearer than before read ×2.4 to ×4.5. The factor is 1.5, not lower, because
+a recorded figure has no denominator to cancel load. A window the saturation guard counts (every
+reading within k = 1.25) can still inflate a tick by a quarter. The Phase 274 `Scaling` tick case is
+unchanged at the ratio and the floor.
+
+**A table per architecture, and none is not a pass.** A table is recorded by
+`gates/record-tick-baselines.ps1`, which:
+
+1. Exports `ccbddc7` beside the repository.
+2. Builds it in Release.
+3. Runs its WHOLE clock leg three times, keeping only counted windows. Measured alone, the two corpus
+   cases read 10 to 25 percent lower than they do after the leg's other cases, and the gate never runs
+   them alone.
+4. Prints the block to paste.
+
+A cell no counted window measured fails the script. On an architecture with no table, or a cell
+missing from one, the cases print `NO TICK BASELINE TABLE for architecture …`, naming the script, on
+every cell, and hold the machine to the ratio arm alone. That is the stricter condition, so a missing
+table can make a leg red and never makes one green. The Arm64 table was recorded on a Snapdragon X
+Elite (X1E80100) on 2026-10-12, with three full legs and no window discarded. Its figures agree with the
+Phase 439 measurement legs of the same tree to within 15 percent (most cells within 5).
+
+**The regression the arm found, and its cure.** Measured before the ruling, against the same pre-423
+tree on the same machine, the edit ticks were at or below their pre-423 cost (within 1.17×). The
+APPEND ticks of the grouped nodes were not:
+
+| Node | Rows | Pre-423 append tick | Post-423 append tick | Change |
+|---|---:|---:|---:|---:|
+| `byRegion` | 100,000 | 3.33 ms | 5.31 ms | ×1.59 |
+| `filter > groupBy` | 1,000 | 0.024 ms | 0.049 ms | ×2.04 |
+| `group-by high-card` | 1,000 to 100,000 | | | ×1.44 to ×1.64 |
+
+Timed apart, the append's `Delta.diff` was 1.6 to 2.9 times its pre-423 cost on every node, and its
+refresh was at or below its own. Phase 359's prefix walk tried a cell reference check before the value
+comparison. Under 423 a column is a typed vector that an appended table never shares, and the walk
+compared every row through `ColumnRead.sameAt`: one closure call per row per column.
+
+`ColumnRead.samePrefix` restores the cheap test. The whole prefix is compared in one typed loop per
+column, and the row walk runs only where that fails. The loop compares both validities (both all-valid,
+or two masks equal over the prefix) and the two value vectors, with no closure per row. Its `true` is
+sufficient for `sameAt i i` at every row, and its `false` decides nothing, so every diff answers
+exactly what it answered (the delta laws, the append laws and their `diffTrustingPrefix` falsifier,
+and the delta wire vectors all unchanged).
+
+On the gate's full leg after it, the grouped append ticks (`filter > groupBy` and
+`filter > groupBy > filter` at every size) are 0.46 to 0.88 of their pre-423 cost, and `byRegion` at
+20,000 rows is 0.83 to 1.36.
+
+**What the leg says now** (Arm64, the full leg, tick over baseline, three counted attempts):
+
+| Cells | Tick / baseline |
+|---|---:|
+| Most | 0.3 to 0.9 |
+| `group-by high-card` | 1.16 to 1.39 |
+| `pivot` at 100,000 | 1.08 to 1.20 |
+| `window CumulSum`, edit, at 20,000 | 1.42 to 1.46 |
+| `lines`, edit and append, at 20,000 | 1.24 to 1.94, bimodal from one attempt to the next |
+| `byRegion` append at 100,000 | 0.69 to 1.61 |
+
+The thinnest cells are exactly the shapes whose refresh now costs more than the full evaluation it
+replaces: `lines`, `window CumulSum` and `group-by high-card` (refresh 2.1 to 3.4 times the full; it was
+0.6 to 0.9 before Phase 423). The baseline arm admits them because their tick is no dearer than before;
+it does not make them cheap. That is a finding for a successor phase, not this bound's to absorb. The
+figures are in [`performance.md`](performance.md), "The tick bound after the boundary became a view".
 
 ## Across a process boundary (Phase 355)
 

@@ -50,6 +50,16 @@ module Fuaran.Compute.Tests.ScalingTests
 //  tables). Phase 274 rewrote the refresh's bookkeeping over columns and holds
 //  the whole tick — diff plus refresh — within `tickBound` of the full
 //  evaluation, which retired both loss bounds.
+//
+//  Phase 439 gave the two corpus tick cases a second arm, and it is the one
+//  place this family reads a recorded figure rather than a ratio taken in one
+//  run: a tick passes when it is within `tickBound` of the full evaluation OR
+//  within `tickBaselineFactor` of its own recorded pre-423 cost
+//  (`tickBaselines`, one table per CPU architecture, in calibration units so
+//  it scales with the machine as the floor does). A ratio alone failed when the
+//  FULL evaluation got faster (Phase 423 made it 2 to 5 times cheaper and the
+//  tick, already cheaper than before, read red); the recorded arm is what makes
+//  the bound fail only when the TICK gets dearer.
 // ---------------------------------------------------------------------------
 
 open System.Diagnostics
@@ -155,6 +165,93 @@ let private tickBound = 1.6
 /// are not the floor. Twice the worst per-call reading, rounded: 0.03. The figures are in
 /// docs/incremental-evaluation.md ("The tick bound gains a per-call floor").
 let private tickFloorFactor = 0.03
+
+/// Phase 439 — the factor of the tick condition's second arm (operator ruling 2026-10-12, option C at
+/// c = 1.5): a corpus tick passes when `tick <= max(tickBound * full, tickBaselineFactor * baseline)
+/// + floor`, `baseline` the same cell's tick on the pre-423 tree (`tickBaselines`). The ratio arm
+/// keeps the seam's claim (maintaining no dearer than recomputing) wherever it holds; this arm means
+/// a cell cannot fail because the FULL evaluation got faster, only because the TICK got dearer. 1.5
+/// and not lower because a recorded figure has no denominator to cancel load: a window the
+/// saturation guard (k = 1.25) counts can still inflate the tick by a quarter. Measured on Arm64
+/// before the ruling: the arm red at 1.5 on exactly the cells a real 1.4-2.0x append-diff regression
+/// had reached (fixed in this phase, `ColumnRead.samePrefix`), green on every other cell.
+/// Figures: docs/incremental-evaluation.md, "The tick bound reads its own baseline (Phase 439)".
+let private tickBaselineFactor = 1.5
+
+/// Phase 439 — each corpus cell's one-row tick on the pre-423 tree (`ccbddc7`, the last whose full
+/// evaluation paid the `Table` boundary), per CPU architecture (`RuntimeInformation.ProcessArchitecture`),
+/// keyed (kind, node, rows) with kind "edit" or "append", in units of the clock leg's calibration
+/// baseline: the best counted reading over the recording runs. Recorded by
+/// `gates/record-tick-baselines.ps1`, which prints the block to paste here; refreshing a table is
+/// the operator's decision (DECISIONS.md D19). An architecture with no table is NOT passed on this
+/// arm by default: the cases print that the table is missing and name the script, and hold such a
+/// machine to the ratio arm alone, which is the stricter condition.
+let private tickBaselines: Map<string, Map<string * string * int, float>> =
+    Map.ofList
+        [
+          // Arm64 - recorded 2026-10-12 from ccbddc7, 3 run(s), by gates/record-tick-baselines.ps1
+          "Arm64",
+          Map.ofList
+              [ ("append", "byRegion", 1000), 0.006312
+                ("append", "byRegion", 20000), 0.140297
+                ("append", "byRegion", 100000), 0.697130
+                ("append", "filter > groupBy", 1000), 0.004887
+                ("append", "filter > groupBy", 20000), 0.128894
+                ("append", "filter > groupBy", 100000), 0.641563
+                ("append", "filter > groupBy > filter", 1000), 0.005292
+                ("append", "filter > groupBy > filter", 20000), 0.125585
+                ("append", "filter > groupBy > filter", 100000), 0.666667
+                ("append", "filter > sort > limit", 1000), 0.009163
+                ("append", "filter > sort > limit", 20000), 0.265622
+                ("append", "filter > sort > limit", 100000), 1.316523
+                ("append", "group-by high-card", 1000), 0.008349
+                ("append", "group-by high-card", 20000), 0.248138
+                ("append", "group-by high-card", 100000), 1.617138
+                ("append", "inner join", 1000), 0.022195
+                ("append", "inner join", 20000), 0.733659
+                ("append", "inner join", 100000), 3.580126
+                ("append", "lines", 1000), 0.011652
+                ("append", "lines", 20000), 0.316840
+                ("append", "lines", 100000), 1.666870
+                ("append", "pivot", 1000), 0.024451
+                ("append", "pivot", 20000), 0.680440
+                ("append", "pivot", 100000), 3.165479
+                ("append", "sort two keys", 1000), 0.009770
+                ("append", "sort two keys", 20000), 0.301568
+                ("append", "sort two keys", 100000), 2.075310
+                ("append", "window CumulSum", 1000), 0.010381
+                ("append", "window CumulSum", 20000), 0.293792
+                ("append", "window CumulSum", 100000), 1.633238
+                ("edit", "byRegion", 1000), 0.006312
+                ("edit", "byRegion", 20000), 0.122378
+                ("edit", "byRegion", 100000), 0.721681
+                ("edit", "filter > groupBy", 1000), 0.006312
+                ("edit", "filter > groupBy", 20000), 0.133578
+                ("edit", "filter > groupBy", 100000), 0.861535
+                ("edit", "filter > groupBy > filter", 1000), 0.006720
+                ("edit", "filter > groupBy > filter", 20000), 0.133727
+                ("edit", "filter > groupBy > filter", 100000), 0.870291
+                ("edit", "filter > sort > limit", 1000), 0.009367
+                ("edit", "filter > sort > limit", 20000), 0.236815
+                ("edit", "filter > sort > limit", 100000), 1.426743
+                ("edit", "group-by high-card", 1000), 0.008959
+                ("edit", "group-by high-card", 20000), 0.192359
+                ("edit", "group-by high-card", 100000), 1.418245
+                ("edit", "inner join", 1000), 0.024435
+                ("edit", "inner join", 20000), 0.714422
+                ("edit", "inner join", 100000), 3.975549
+                ("edit", "lines", 1000), 0.015883
+                ("edit", "lines", 20000), 0.264915
+                ("edit", "lines", 100000), 1.503156
+                ("edit", "pivot", 1000), 0.025453
+                ("edit", "pivot", 20000), 0.554346
+                ("edit", "pivot", 100000), 2.908883
+                ("edit", "sort two keys", 1000), 0.011403
+                ("edit", "sort two keys", 20000), 0.292455
+                ("edit", "sort two keys", 100000), 2.075748
+                ("edit", "window CumulSum", 1000), 0.011607
+                ("edit", "window CumulSum", 20000), 0.245775
+                ("edit", "window CumulSum", 100000), 1.011199 ] ]
 
 /// Phase 272 — how much `Delta.diff` may cost beyond minting both tables' keys through the witness,
 /// which is the floor of any diff by identity (`KeyString` is the only thing that can say what a key
@@ -895,6 +992,94 @@ let clockBaselineMs () : float = Calibration.baselineMs ()
 let private tickFloorMs () : float =
     tickFloorFactor * Calibration.baselineMs ()
 
+/// The architecture `tickBaselines` is read under on this machine.
+let private tickBaselineArchitecture: string =
+    string System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+
+/// Phase 439 — the second arm's allowance for one corpus cell, in ms on this machine:
+/// `tickBaselineFactor` times the cell's recorded pre-423 tick (`tickBaselines`), or, where this
+/// architecture or this cell has no recorded figure, the message saying so — which the cases print
+/// and carry into their failure, so a missing table is never a silent pass and never a silent
+/// loosening.
+let private tickBaselineAllowanceMs (kind: string) (node: string) (rows: int) : Result<float, string> =
+    match Map.tryFind tickBaselineArchitecture tickBaselines with
+    | None ->
+        Error(
+            sprintf
+                "NO TICK BASELINE TABLE for architecture %s: only the %.1f x full arm is asserted here; record one with gates/record-tick-baselines.ps1 and paste it into ScalingTests.tickBaselines (DECISIONS.md D19)"
+                tickBaselineArchitecture
+                tickBound
+        )
+    | Some table ->
+        match Map.tryFind (kind, node, rows) table with
+        | Some units -> Ok(tickBaselineFactor * units * Calibration.baselineMs ())
+        | None ->
+            Error(
+                sprintf
+                    "NO TICK BASELINE for %s %s @ %d in the %s table: only the %.1f x full arm is asserted for it; re-record with gates/record-tick-baselines.ps1 (DECISIONS.md D19)"
+                    kind
+                    node
+                    rows
+                    tickBaselineArchitecture
+                    tickBound
+            )
+
+/// Phase 439 — the two corpus tick cases' condition for one cell, printed and judged in one place:
+/// `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`. Answers the failure line
+/// for a red cell, `None` for a green one.
+let private judgeCorpusTick (kind: string) (node: string) (rows: int) (tickMs: float) (fullMs: float) : string option =
+    let floorMs = tickFloorMs ()
+    let ratioMs = tickBound * fullMs
+    let baseline = tickBaselineAllowanceMs kind node rows
+
+    let allowedMs =
+        match baseline with
+        | Ok b -> max ratioMs b
+        | Error _ -> ratioMs
+
+    let baselineShown =
+        match baseline with
+        | Ok b -> sprintf "%.3f ms" b
+        | Error _ -> "NONE"
+
+    printfn
+        "  [%s tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f; allowed max(x%.1f full = %.3f ms, x%.1f baseline = %s) + floor %.3f ms)"
+        (if kind = "edit" then "corpus" else kind)
+        node
+        rows
+        tickMs
+        fullMs
+        (tickMs / fullMs)
+        tickBound
+        ratioMs
+        tickBaselineFactor
+        baselineShown
+        floorMs
+
+    match baseline with
+    | Error why -> printfn "  [tick baseline] %s" why
+    | Ok _ -> ()
+
+    if tickMs > allowedMs + floorMs then
+        Some(
+            sprintf
+                "%s %s @ %d: tick %.3f ms against max(x%.1f full = %.3f ms, x%.1f baseline = %s) + %.3f ms%s"
+                kind
+                node
+                rows
+                tickMs
+                tickBound
+                ratioMs
+                tickBaselineFactor
+                baselineShown
+                floorMs
+                (match baseline with
+                 | Error why -> " - " + why
+                 | Ok _ -> "")
+        )
+    else
+        None
+
 /// Phase 371 — the kernels the full evaluation runs on when a tick is held against it: the native
 /// member at ONE thread. Its comparisons and selection are the native member's vectors, so the
 /// arithmetic is the host's; its morsels run in order on the caller's thread (the portable runner),
@@ -1564,7 +1749,7 @@ let clockTests =
           // ================= Phase 283 — the tick on every corpus node =================
 
           clockCase
-              "the table-fed tick on every corpus node costs at most 1.6 times the full evaluation plus a fixed per-call floor"
+              "the table-fed tick on every corpus node costs at most 1.6 times the full evaluation, or 1.5 times its recorded pre-423 tick, plus a fixed per-call floor"
           <| fun _ ->
               // The case above holds the three `Scaling` pipelines; this one holds EVERY Phase 262
               // corpus node (the shapes the doc's tables measure) at 1,000, 20,000 and 100,000 rows,
@@ -1587,6 +1772,12 @@ let clockTests =
               // `filter > sort > limit` at 100,000 rows to 1.74 to 2.04 here against a parallel full
               // evaluation; the ruling kept the bound at 1.6 and made the comparison like with like,
               // so the ratio measures the seam and not the core count.
+              //
+              // Phase 439 (operator ruling 2026-10-12, `DECISIONS.md` D19): each cell is judged by
+              // `judgeCorpusTick`, `tick <= max(tickBound * full, tickBaselineFactor * baseline) +
+              // floor`, the baseline the cell's own pre-423 tick (`tickBaselines`). Phase 423 made the
+              // full evaluation 2 to 5 times cheaper on `lines`, `window CumulSum` and `group-by
+              // high-card` and the ratio alone read x2.4 to x4.5 there on ticks no dearer than before.
               //
               // Every cell is measured and printed before any is asserted, so a red attempt still
               // leaves the whole table in the log.
@@ -1622,34 +1813,21 @@ let clockTests =
                       let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
 
                       let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
-                      let bound = tickBound
-                      let floorMs = tickFloorMs ()
-                      let ratio = tickMs / fullMs
-
-                      printfn
-                          "  [corpus tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f, bound x%.1f + floor %.3f ms)"
-                          nd.Name
-                          n
-                          tickMs
-                          fullMs
-                          ratio
-                          bound
-                          floorMs
+                      let verdict = judgeCorpusTick "edit" nd.Name n tickMs fullMs
 
                       // Phase 285: a calibration reading between cells (see the case above).
                       Calibration.checkpoint ()
 
-                      if tickMs > bound * fullMs + floorMs then
-                          failures.Add(sprintf "%s @ %d: x%.2f against x%.1f + %.3f ms" nd.Name n ratio bound floorMs)
+                      verdict |> Option.iter failures.Add
 
               Expect.isEmpty
                   failures
-                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces plus the per-call floor"
+                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces, or 1.5 times its recorded pre-423 tick, plus the per-call floor"
 
           // ================= Phase 359 — the append tick on every corpus node =================
 
           clockCase
-              "an append tick on every corpus node costs at most 1.6 times the full evaluation plus a fixed per-call floor"
+              "an append tick on every corpus node costs at most 1.6 times the full evaluation, or 1.5 times its recorded pre-423 tick, plus a fixed per-call floor"
           <| fun _ ->
               // The case above with the commonest delta a live table makes in place of the edit: ONE
               // ROW APPENDED, the way `ColumnOps.AppendRows` appends it (every column's list is the
@@ -1683,29 +1861,15 @@ let clockTests =
 
                       let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
                       let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
-                      let floorMs = tickFloorMs ()
-                      let ratio = tickMs / fullMs
-
-                      printfn
-                          "  [append tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f, bound x%.1f + floor %.3f ms)"
-                          nd.Name
-                          n
-                          tickMs
-                          fullMs
-                          ratio
-                          tickBound
-                          floorMs
+                      let verdict = judgeCorpusTick "append" nd.Name n tickMs fullMs
 
                       Calibration.checkpoint ()
 
-                      if tickMs > tickBound * fullMs + floorMs then
-                          failures.Add(
-                              sprintf "%s @ %d: x%.2f against x%.1f + %.3f ms" nd.Name n ratio tickBound floorMs
-                          )
+                      verdict |> Option.iter failures.Add
 
               Expect.isEmpty
                   failures
-                  "every corpus node's one-row APPEND tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces plus the per-call floor" ]
+                  "every corpus node's one-row APPEND tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces, or 1.5 times its recorded pre-423 tick, plus the per-call floor" ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
 let private countingId (minted: int ref) : RowIdentity<Cell> =

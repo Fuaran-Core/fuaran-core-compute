@@ -360,6 +360,55 @@ module internal ColumnRead =
     /// `sameAtWith` under the diff's content rule.
     let sameAt (b: Column option) (a: Column option) : int -> int -> bool = sameAtWith sameFloat b a
 
+    /// The first `n` values of two vectors equal under `eq`, read in one typed loop; `false` when
+    /// either is shorter than `n`.
+    let inline private valuesAgree (eq: 'T -> 'T -> bool) (x: Vector<'T>) (y: Vector<'T>) (n: int) : bool =
+        let xl = Vector.Unsafe.borrow x
+        let yl = Vector.Unsafe.borrow y
+
+        if xl.Length < n || yl.Length < n then
+            false
+        else
+            let xa, xo, ya, yo = xl.Array, xl.Offset, yl.Array, yl.Offset
+            let mutable i = 0
+
+            while i < n && eq xa[xo + i] ya[yo + i] do
+                i <- i + 1
+
+            i = n
+
+    /// Phase 439 — the cheap test an append's prefix walk tries first: are rows `0 .. n-1` of `b`
+    /// and `a` the same, row for row, under `sameAt`'s rule? `true` only when the two validities
+    /// agree over the prefix (both all-valid, or two masks equal there) AND the two value vectors
+    /// agree there, each read in one typed loop with no closure per row. That is SUFFICIENT for
+    /// `sameAt i i` at every `i < n` — equal masks and equal values give equal cells, and a value
+    /// under a masked-out row is only compared, never trusted — so a caller that takes `true` as
+    /// "no row of the prefix changed" answers what the row walk answers. `false` decides nothing:
+    /// the caller walks the rows (a mask beside an all-valid column, a short column, a timestamp
+    /// with a fraction, two types, any one row that differs). Phase 359 had this test as a cell
+    /// reference check, which the typed column cannot share; without it the append diff cost 1.6
+    /// to 2.9 times its pre-423 figure (docs/incremental-evaluation.md, Phase 439).
+    let samePrefix (b: Column option) (a: Column option) (n: int) : bool =
+        match b, a with
+        | Some b, Some a when Column.length b >= n && Column.length a >= n ->
+            obj.ReferenceEquals(b.Data, a.Data)
+            || (match Column.validity b, Column.validity a with
+                | AllValid, AllValid -> true
+                | Validity.Mask mb, Validity.Mask ma -> valuesAgree (=) mb ma n
+                | _ -> false)
+               && (match b.Data, a.Data with
+                   | ColumnData.Ints(x, _), ColumnData.Ints(y, _)
+                   | ColumnData.Dates(x, _), ColumnData.Dates(y, _) -> valuesAgree (=) x y n
+                   | ColumnData.Floats(x, _), ColumnData.Floats(y, _) -> valuesAgree sameFloat x y n
+                   | ColumnData.Bools(x, _), ColumnData.Bools(y, _) -> valuesAgree (=) x y n
+                   | ColumnData.Strs(x, _), ColumnData.Strs(y, _)
+                   | ColumnData.Decimals(x, _), ColumnData.Decimals(y, _) ->
+                       valuesAgree (fun (p: string) q -> System.String.Equals(p, q)) x y n
+                   | ColumnData.Timestamps(ux, sx, None, _), ColumnData.Timestamps(uy, sy, None, _) when ux = uy ->
+                       valuesAgree (=) sx sy n
+                   | _ -> false)
+        | _ -> false
+
 module RowIdentity =
 
     /// The reserved scheme name for an identity-free source, whose deltas address rows by ordinal.
@@ -1132,8 +1181,11 @@ module Delta =
                 let a = Table.tryColumn names[ci] after
                 let mutable same = true
 
-                if not trustPrefix then
-                    let sameAt = ColumnRead.sameAt (Table.tryColumn names[ci] before) a
+                let b = Table.tryColumn names[ci] before
+
+                // Phase 439: the whole prefix in one typed pass first; the row walk only where it fails.
+                if not trustPrefix && not (ColumnRead.samePrefix b a nb) then
+                    let sameAt = ColumnRead.sameAt b a
                     let mutable i = 0
 
                     while same && i < nb do
