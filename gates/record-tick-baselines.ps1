@@ -41,7 +41,14 @@ param(
     # Where the generated block is written, besides being printed.
     [string] $OutFile = '',
     # Keep the exported tree after the run (it is removed by default).
-    [switch] $Keep
+    [switch] $Keep,
+    # CEILING MODE (operator ruling 2026-10-12, the third): record, for these cells only
+    # ("kind|node|rows", e.g. "edit|lines|20000"), the median-of-bests tick of -Commit as a named
+    # exception's ceiling (`tickExceptionCeilings`) instead of the baseline table. -Commit then names
+    # the post-423 tree the ceiling is TODAY'S COST of.
+    [string[]] $Ceiling = @(),
+    # Legs to attempt in all: a leg that discarded a window is set aside and another run in its place.
+    [int] $MaxLegs = 9
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,9 +85,16 @@ $calibration = [regex]'calibration baseline ([0-9.]+) ms \(best of'
 
 if ($Runs -lt 3) { throw "-Runs ${Runs}: the ruling asks for at least three full legs" }
 
-foreach ($run in 1..$Runs) {
-    $log = Join-Path $export "clock-run$run.log"
-    Write-Host "==== tick baselines: run $run of $Runs -> $log"
+$leg = 0
+$run = 0
+while ($run -lt $Runs) {
+    $leg++
+    if ($leg -gt $MaxLegs) {
+        $global:LASTEXITCODE = 1
+        throw "only $run of $Runs legs ran with no window discarded in $MaxLegs attempts - re-run on a quieter machine (logs in $export)"
+    }
+    $log = Join-Path $export "clock-leg$leg.log"
+    Write-Host "==== tick baselines: leg $leg ($run of $Runs clean so far) -> $log"
     $global:LASTEXITCODE = 0
     # The WHOLE leg, as the gate runs it: measured alone, the two corpus cases read 10 to 25 percent
     # lower than they do after the leg's other cases (measured on Arm64 in Phase 439), and a baseline
@@ -89,12 +103,14 @@ foreach ($run in 1..$Runs) {
     $code = $LASTEXITCODE
     if ($code -notin 0, 1, 3) { throw "the clock leg exited $code (see $log)" }
 
-    # A run with ANY discarded window is not a recording run: the ruling asks for legs with none.
     $discarded = @(Select-String -Path $log -Pattern '\[clock\] .*: window SATURATED').Count
     if ($discarded -gt 0) {
-        $global:LASTEXITCODE = 1
-        throw "run $run discarded $discarded window(s) as saturated - re-run the script on a quieter machine (log $log)"
+        # A leg with ANY discarded window is not a recording leg (the ruling asks for legs with none):
+        # it is set aside, named, and another leg is run in its place.
+        Write-Host "==== tick baselines: leg $leg discarded $discarded window(s) as saturated - not a recording leg; running another"
+        continue
     }
+    $run++
 
     $unit = $null
     $best = @{}
@@ -126,9 +142,10 @@ foreach ($run in 1..$Runs) {
 
 # Ten nodes x three sizes x two kinds, each measured in EVERY run. A hole is a failure, never a
 # silently shorter table or a median over fewer runs.
-$expected = 60
-$complete = @($perRun.Keys | Where-Object { $perRun[$_].Count -eq $Runs }).Count
-if ($perRun.Count -ne $expected -or $complete -ne $expected) {
+$wanted = if ($Ceiling.Count -gt 0) { @($Ceiling) } else { @($perRun.Keys) }
+$expected = if ($Ceiling.Count -gt 0) { $Ceiling.Count } else { 60 }
+$complete = @($wanted | Where-Object { $perRun.ContainsKey($_) -and $perRun[$_].Count -eq $Runs }).Count
+if (($Ceiling.Count -eq 0 -and $perRun.Count -ne $expected) -or $complete -ne $expected) {
     $global:LASTEXITCODE = 1
     throw "only $complete of $expected cells were measured in every run - re-run on a quieter machine (logs in $export)"
 }
@@ -140,8 +157,24 @@ foreach ($key in $perRun.Keys) {
     $median[$key] = if ($s.Count % 2 -eq 1) { $s[($s.Count - 1) / 2] } else { ($s[$s.Count / 2 - 1] + $s[$s.Count / 2]) / 2 }
 }
 $best = $median
-
 $inv = [cultureinfo]::InvariantCulture
+
+if ($Ceiling.Count -gt 0) {
+    $block = @(
+        "          // $arch - recorded $(Get-Date -Format 'yyyy-MM-dd') from $Commit (post-423: the tree whose cost is the ceiling), the median of $Runs runs' bests, by gates/record-tick-baselines.ps1 -Ceiling"
+    ) + @($Ceiling | ForEach-Object {
+            $k, $node, $n = $_ -split '\|'
+            '          ("{0}", "{1}", "{2}", {3}), {4}' -f $arch, $k, $node, $n, $best[$_].ToString('0.000000', $inv)
+        })
+    $block | Set-Content -Encoding utf8 $OutFile
+    Write-Host "==== tick baselines: $expected ceiling cell(s); paste these lines into ScalingTests.fs (tickExceptionCeilings)"
+    $block | ForEach-Object { Write-Host $_ }
+    Write-Host "==== tick baselines: also written to $OutFile"
+    if (-not $Keep) { Remove-Item -Recurse -Force $export }
+    $global:LASTEXITCODE = 0
+    exit 0
+}
+
 $rows = @($best.Keys | Sort-Object { ($_ -split '\|')[0] }, { ($_ -split '\|')[1] }, { [int](($_ -split '\|')[2]) } | ForEach-Object {
     $k, $node, $n = $_ -split '\|'
     '                ("{0}", "{1}", {2}), {3}' -f $k, $node, $n, $best[$_].ToString('0.000000', $inv)

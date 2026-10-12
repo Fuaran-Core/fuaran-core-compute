@@ -186,13 +186,28 @@ let private tickBaselineFactor = 1.5
 /// the operator's decision (DECISIONS.md D19). An architecture with no table is NOT passed on this
 /// arm by default: the cases print that the table is missing and name the script, and hold such a
 /// machine to the ratio arm alone, which is the stricter condition.
-/// Phase 439 — the cells held to the ratio arm ALONE, each named with its reason (operator ruling
-/// 2026-10-12, the second). Every entry is printed on every clock-leg run that judges it, and the
-/// main suite pins this list's exact contents ("the tick bound's named exceptions are exactly the
-/// ruled ones"), so a second exception cannot be added without that test moving with it. The one
-/// entry is removable only by Phase 448's acceptance (DECISIONS.md D19).
+/// Phase 439 — the named exceptions to the tick condition, each with its reason (operator rulings
+/// 2026-10-12, the second and the third): an excepted cell is held to its own recorded post-423
+/// cost as a CEILING (`tickExceptionCeilings`), and to neither the ratio arm nor the baseline arm.
+/// Every entry is printed on every clock-leg run that judges it, and the main suite pins this
+/// list's exact contents ("the tick bound's named exceptions are exactly the ruled ones"), so a
+/// second exception cannot be added without that test moving with it. The one entry is removable
+/// only by Phase 448's acceptance (DECISIONS.md D19).
 let tickBaselineExceptions: (string * string * int * string) list =
     [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns" ]
+
+/// Phase 439 — each named exception's CEILING, per architecture, keyed (architecture, kind, node,
+/// rows), in calibration units: the cell's tick on the tree carrying Phase 423 and this phase's
+/// `Delta.fs` fix, the median over three full legs of each leg's best (operator ruling 2026-10-12,
+/// the third). An excepted cell is held to `tickBaselineFactor` times this figure plus the floor,
+/// and to neither other arm: today's cost is its ceiling until Phase 448. Written only by
+/// `gates/record-tick-baselines.ps1 -Ceiling`; an architecture with no figure holds the cell to the
+/// ratio arm instead, the stricter condition, and says so on every run.
+let private tickExceptionCeilings: Map<string * string * string * int, float> =
+    Map.ofList
+        [
+          // Arm64 - recorded 2026-10-12 from 3caa557 (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
+          ("Arm64", "edit", "lines", 20000), 0.362989 ]
 
 let private tickBaselines: Map<string, Map<string * string * int, float>> =
     Map.ofList
@@ -1011,37 +1026,49 @@ let private tickBaselineArchitecture: string =
 /// and carry into their failure, so a missing table is never a silent pass and never a silent
 /// loosening.
 let private tickBaselineAllowanceMs (kind: string) (node: string) (rows: int) : Result<float, string> =
+    match Map.tryFind tickBaselineArchitecture tickBaselines with
+    | None ->
+        Error(
+            sprintf
+                "NO TICK BASELINE TABLE for architecture %s: only the %.1f x full arm is asserted here; record one with gates/record-tick-baselines.ps1 and paste it into ScalingTests.tickBaselines (DECISIONS.md D19)"
+                tickBaselineArchitecture
+                tickBound
+        )
+    | Some table ->
+        match Map.tryFind (kind, node, rows) table with
+        | Some units -> Ok(tickBaselineFactor * units * Calibration.baselineMs ())
+        | None ->
+            Error(
+                sprintf
+                    "NO TICK BASELINE for %s %s @ %d in the %s table: only the %.1f x full arm is asserted for it; re-record with gates/record-tick-baselines.ps1 (DECISIONS.md D19)"
+                    kind
+                    node
+                    rows
+                    tickBaselineArchitecture
+                    tickBound
+            )
+
+/// What one corpus cell is held to (Phase 439): the two arms, or, for a named exception
+/// (`tickBaselineExceptions`), its recorded post-423 ceiling ALONE (operator ruling 2026-10-12, the
+/// third). A missing figure is the `Error` the cases print and carry into their failure.
+type private TickCondition =
+    | Arms of baseline: Result<float, string>
+    | ExceptionCeiling of ceiling: Result<float, string> * reason: string
+
+/// The condition one corpus cell is held to on this machine.
+let private tickConditionOf (kind: string) (node: string) (rows: int) : TickCondition =
     match
         tickBaselineExceptions
         |> List.tryFind (fun (k, n, r, _) -> k = kind && n = node && r = rows)
     with
     | Some(_, _, _, reason) ->
-        Error(
-            sprintf
-                "NAMED EXCEPTION (DECISIONS.md D19): %s %s @ %d is held to the %.1f x full arm only - %s"
-                kind
-                node
-                rows
-                tickBound
-                reason
-        )
-    | None ->
-
-        match Map.tryFind tickBaselineArchitecture tickBaselines with
-        | None ->
-            Error(
-                sprintf
-                    "NO TICK BASELINE TABLE for architecture %s: only the %.1f x full arm is asserted here; record one with gates/record-tick-baselines.ps1 and paste it into ScalingTests.tickBaselines (DECISIONS.md D19)"
-                    tickBaselineArchitecture
-                    tickBound
-            )
-        | Some table ->
-            match Map.tryFind (kind, node, rows) table with
+        let ceiling =
+            match Map.tryFind (tickBaselineArchitecture, kind, node, rows) tickExceptionCeilings with
             | Some units -> Ok(tickBaselineFactor * units * Calibration.baselineMs ())
             | None ->
                 Error(
                     sprintf
-                        "NO TICK BASELINE for %s %s @ %d in the %s table: only the %.1f x full arm is asserted for it; re-record with gates/record-tick-baselines.ps1 (DECISIONS.md D19)"
+                        "NO CEILING for the named exception %s %s @ %d on architecture %s: held to the %.1f x full arm instead, the stricter condition; record one with gates/record-tick-baselines.ps1 -Ceiling (DECISIONS.md D19)"
                         kind
                         node
                         rows
@@ -1049,58 +1076,70 @@ let private tickBaselineAllowanceMs (kind: string) (node: string) (rows: int) : 
                         tickBound
                 )
 
+        ExceptionCeiling(ceiling, reason)
+    | None -> Arms(tickBaselineAllowanceMs kind node rows)
+
 /// Phase 439 — the two corpus tick cases' condition for one cell, printed and judged in one place:
-/// `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`. Answers the failure line
+/// `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`, or, for a named exception,
+/// `tick <= tickBaselineFactor * ceiling + floor` with neither other arm. Answers the failure line
 /// for a red cell, `None` for a green one.
 let private judgeCorpusTick (kind: string) (node: string) (rows: int) (tickMs: float) (fullMs: float) : string option =
     let floorMs = tickFloorMs ()
     let ratioMs = tickBound * fullMs
-    let baseline = tickBaselineAllowanceMs kind node rows
 
-    let allowedMs =
-        match baseline with
-        | Ok b -> max ratioMs b
-        | Error _ -> ratioMs
-
-    let baselineShown =
-        match baseline with
-        | Ok b -> sprintf "%.3f ms" b
-        | Error _ -> "NONE"
+    let allowedMs, shown, note =
+        match tickConditionOf kind node rows with
+        | Arms(Ok b) ->
+            max ratioMs b,
+            sprintf "max(x%.1f full = %.3f ms, x%.1f baseline = %.3f ms)" tickBound ratioMs tickBaselineFactor b,
+            None
+        | Arms(Error why) ->
+            ratioMs,
+            sprintf "max(x%.1f full = %.3f ms, x%.1f baseline = NONE)" tickBound ratioMs tickBaselineFactor,
+            Some why
+        | ExceptionCeiling(Ok c, reason) ->
+            c,
+            sprintf "x%.1f post-423 ceiling = %.3f ms" tickBaselineFactor c,
+            Some(
+                sprintf
+                    "NAMED EXCEPTION (DECISIONS.md D19, removable only by Phase 448's acceptance): %s %s @ %d is held to %.1f x its recorded post-423 tick alone, neither other arm applying - %s"
+                    kind
+                    node
+                    rows
+                    tickBaselineFactor
+                    reason
+            )
+        | ExceptionCeiling(Error why, reason) ->
+            ratioMs,
+            sprintf "x%.1f full = %.3f ms" tickBound ratioMs,
+            Some(sprintf "NAMED EXCEPTION (DECISIONS.md D19): %s - %s" reason why)
 
     printfn
-        "  [%s tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f; allowed max(x%.1f full = %.3f ms, x%.1f baseline = %s) + floor %.3f ms)"
+        "  [%s tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f; allowed %s + floor %.3f ms)"
         (if kind = "edit" then "corpus" else kind)
         node
         rows
         tickMs
         fullMs
         (tickMs / fullMs)
-        tickBound
-        ratioMs
-        tickBaselineFactor
-        baselineShown
+        shown
         floorMs
 
-    match baseline with
-    | Error why -> printfn "  [tick baseline] %s" why
-    | Ok _ -> ()
+    note |> Option.iter (printfn "  [tick baseline] %s")
 
     if tickMs > allowedMs + floorMs then
         Some(
             sprintf
-                "%s %s @ %d: tick %.3f ms against max(x%.1f full = %.3f ms, x%.1f baseline = %s) + %.3f ms%s"
+                "%s %s @ %d: tick %.3f ms against %s + %.3f ms%s"
                 kind
                 node
                 rows
                 tickMs
-                tickBound
-                ratioMs
-                tickBaselineFactor
-                baselineShown
+                shown
                 floorMs
-                (match baseline with
-                 | Error why -> " - " + why
-                 | Ok _ -> "")
+                (match note with
+                 | Some n -> " - " + n
+                 | None -> "")
         )
     else
         None
