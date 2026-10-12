@@ -4598,7 +4598,7 @@ module DataFrame =
     // ---- sort (pinned: stable; nulls last regardless of direction) ----
 
     /// The first sort key a schema does not carry, as the `UnknownColumn` every other verb answers
-    /// for an unknown column (Phase 412, `DECISIONS.md` D20). `Sort` and a `Window`'s ordering
+    /// for an unknown column (Phase 412, `DECISIONS.md` D21). `Sort` and a `Window`'s ordering
     /// refuse with it before they order anything, so a misspelled key is an error, never the input
     /// order returned as if it had been sorted.
     let internal unknownSortKey (cols: Schema) (by: (string * SortDir) list) : EvalError option =
@@ -7074,7 +7074,7 @@ module DataFrame =
         List.length leftKeys = List.length rightKeys
         && List.forall2 cellEq leftKeys rightKeys
 
-    /// The output names of a combining join's right columns (Phase 411, `DECISIONS.md` D19). A right
+    /// The output names of a combining join's right columns (Phase 411, `DECISIONS.md` D20). A right
     /// name no left column carries keeps its name. A right name that collides with a left one takes
     /// `_right`, or — when that is taken too — `_right_2`, `_right_3`, …, the first suffix that is
     /// free against EVERY name the output carries: the left's, the right's own, and the suffixes
@@ -8772,7 +8772,7 @@ module DataFrame =
 
     /// The reference `Sort`'s row comparator: the pinned ordering (multi-key, nulls last regardless
     /// of direction). The reference `Sort` refuses a key the schema does not carry before it orders
-    /// anything (Phase 412, `DECISIONS.md` D20), so it never compares under one; this comparator,
+    /// anything (Phase 412, `DECISIONS.md` D21), so it never compares under one; this comparator,
     /// which has no error to answer, drops such a key, and a caller reproducing the reference refuses
     /// it first, as the reference does. Exposed for the same reason as the four above — an
     /// incremental evaluator that merged rows into a cached order under its OWN comparator would
@@ -8863,7 +8863,7 @@ module DataFrame =
 
     /// The output names a combining join (`Inner` / `Left` / `Right` / `Outer`) gives the right
     /// side's columns, in right column order, over the left's and the right's column names (Phase
-    /// 411, `DECISIONS.md` D19): a right name no left column carries keeps its name; a colliding one
+    /// 411, `DECISIONS.md` D20): a right name no left column carries keeps its name; a colliding one
     /// takes `_right`, then `_right_2`, `_right_3`, … — the first that is free against every name the
     /// output carries. The evaluator and the schema walk both read it, so the evaluated and the static
     /// names cannot disagree, and a join adds no repeated name to its output.

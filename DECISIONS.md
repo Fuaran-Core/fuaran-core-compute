@@ -1,6 +1,6 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-10-12 — D20: a sort key that names no column is refused with `UnknownColumn`, in a `Sort` and in a `Window`'s ordering; the pinned "unknown columns skipped" is reversed
+## 2026-10-12 — D21: a sort key that names no column is refused with `UnknownColumn`, in a `Sort` and in a `Window`'s ordering; the pinned "unknown columns skipped" is reversed
 
 **Context.** `Sort` dropped a key that named no column: `resolveSortKeys` resolved the keys against
 the step's schema and silently left the unknown ones out, which the comparator's documentation pinned
@@ -42,7 +42,7 @@ here.
 **Consequences.** A behaviour change to a public evaluator, versioned per the draft-slot rule
 (`STABILITY.md` `0.39.0`); no public signature moves.
 
-## 2026-10-12 — D19: a join's colliding right column takes the first free suffix against the whole output, `x_right`, `x_right_2`, …; a refusal was rejected
+## 2026-10-12 — D20: a join's colliding right column takes the first free suffix against the whole output, `x_right`, `x_right_2`, …; a refusal was rejected
 
 **Context.** A combining join suffixed a right column whose name collides with a left one by appending
 `_right`, checked against the LEFT names only. A left carrying `x` and `x_right` joined to a right
