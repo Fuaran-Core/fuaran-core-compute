@@ -2816,6 +2816,9 @@ module Incremental =
 
         match steps with
         | [] -> Ok(f, evaluated, caches)
+        // Phase 412 — the reference `Sort` refuses a key the frame does not carry, so the walk does.
+        | WSort(_, by) :: _ when Option.isSome (DataFrame.unknownSortKey f.Cols by) ->
+            Error(Option.get (DataFrame.unknownSortKey f.Cols by))
         | WSort(sortIdx, by) :: rest ->
             // The rows the sort orders, in the order they arrived.
             let arrival = f.Order

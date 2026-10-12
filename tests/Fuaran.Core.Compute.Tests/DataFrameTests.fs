@@ -124,6 +124,49 @@ let tests =
               let desc = run [ Transform.sortBy [ "salary", Desc ] ] |> okTable
               Expect.equal (cellsOf "salary" desc) [ Int 120; Int 100; Int 90; Int 90; Null ] "desc, nulls still last"
 
+          // Phase 412 — a misspelled key used to be dropped, returning the input order as if sorted.
+          testCase "A sort key that names no column is refused, like every other verb's unknown column"
+          <| fun _ ->
+              let refused pipeline what =
+                  match run pipeline with
+                  | Error(UnknownColumn("salry", available)) ->
+                      Expect.equal
+                          available
+                          [ "dept"; "name"; "salary"; "bonus" ]
+                          (what + ": names the columns there are")
+                  | other -> failtestf "%s: a misspelled sort key must refuse by name, got %A" what other
+
+              refused [ Transform.sortBy [ "salry", Asc ] ] "a sort"
+              refused [ Transform.sortBy [ "dept", Asc; "salry", Desc ] ] "a second key"
+              // The fused sort-then-limit (the planner's top-n) refuses the same way.
+              refused [ Transform.sortBy [ "salry", Asc ]; Transform.limit 2 0 ] "a sort then a limit"
+
+              // A `Window`'s ordering takes its keys from the pipeline too.
+              let spec =
+                  { PartitionBy = [ "dept" ]
+                    OrderBy = [ "salry", Asc ]
+                    Fn = RowNumber
+                    Of = "salary"
+                    As = "rn" }
+
+              refused [ Window spec ] "a window's order key"
+
+              // The planner's totality verdict agrees: a sort whose key the schema lacks is not total.
+              Expect.isFalse
+                  (Plan.isTotal people.Schema (Transform.sortBy [ "salry", Asc ]))
+                  "an unknown key is not total"
+
+              Expect.isTrue (Plan.isTotal people.Schema (Transform.sortBy [ "salary", Asc ])) "a known one is"
+
+              // The incremental seam primes through the same steps, so it refuses the same way.
+              for pipeline in [ [ Transform.sortBy [ "salry", Asc ] ]; [ Window spec ] ] do
+                  match
+                      Incremental.prime DataFrame.noResolve Map.empty (RowIdentity.byColumn "name") pipeline people
+                  with
+                  | Error(UnknownColumn("salry", _)) -> ()
+                  | Error e -> failtestf "%A: the incremental prime refused with another error: %A" pipeline e
+                  | Ok _ -> failtestf "%A: the incremental prime accepted a misspelled key" pipeline
+
           testCase "Distinct dedupes whole rows, first occurrence wins"
           <| fun _ ->
               let t = run [ Project [ "dept", "dept" ]; Distinct ] |> okTable

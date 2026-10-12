@@ -1,5 +1,47 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-12 — D20: a sort key that names no column is refused with `UnknownColumn`, in a `Sort` and in a `Window`'s ordering; the pinned "unknown columns skipped" is reversed
+
+**Context.** `Sort` dropped a key that named no column: `resolveSortKeys` resolved the keys against
+the step's schema and silently left the unknown ones out, which the comparator's documentation pinned
+as "unknown columns skipped". Every other verb refuses an unknown column with a typed `EvalError`, and
+the planner's totality verdict counted every literal-keyed `Sort` as total. So a misspelled sort key
+returned the input order, `Ok`, with no sign the sort had not happened (Phase 412).
+
+**Decision.** A key a `Sort` takes from a pipeline that the frame does not carry is refused with
+`UnknownColumn(name, available)`, the error every other verb answers, at the FIRST such key in key
+order, before anything is ordered. The same holds for a `Window`'s `OrderBy`, the other step whose
+ordering keys come from the pipeline. The sites that held the old rule, and where each now stands:
+
+- **the `Sort` step and the fused sort-then-limit** (the planner's top-n): both refuse, the fused
+  form after the sort's slots resolve and before the limit's, so the first error is the one the two
+  steps would have given unfused;
+- **`Window`'s ordering** (`windowColumnOfWith`, and `windowColumnOverWith` for a caller holding an
+  ordering already): refuses after the window's own `Of` checks;
+- **the incremental seam** — its sort step merges under `compareResolved`, and its window steps order
+  through the same functions: the sort step refuses before merging, and the window steps refuse
+  through the window functions above, so a prime and a refresh refuse exactly where the reference does;
+- **the planner's totality verdict** (`Plan.isTotal`): a `Sort` is total only when every key is a
+  literal the schema carries;
+- **`rowCompareBy`**, the exported comparator: a comparator has no error to answer, so it still drops
+  an unknown key, and its documentation now says the reference refuses such a key before it ever
+  compares; a caller reproducing the reference refuses first, as the reference does;
+- **the conformance laws and the corpus**: no law pinned the skip, and no vector sorts or orders a
+  window on a key its table lacks, so no vector moves; the corpus copy follows the release rule
+  (D6 (4)) unchanged. The proof model treats `Sort` as one of the verbs it does not model, so it holds
+  no copy of the rule.
+
+**Why refuse rather than keep the skip.** The skip made a typo indistinguishable from a sort, and the
+pipeline's author is the only one who could have noticed. A refusal is what every other verb already
+does, so a consumer handling `UnknownColumn` handles this too.
+
+**What it does not change.** A `Window`'s `PartitionBy` still partitions by the columns it can find
+and drops a name the schema lacks; that is not a sort key and is a separate rule, left as it stands
+here.
+
+**Consequences.** A behaviour change to a public evaluator, versioned per the draft-slot rule
+(`STABILITY.md` `0.39.0`); no public signature moves.
+
 ## 2026-10-12 — D19: a join's colliding right column takes the first free suffix against the whole output, `x_right`, `x_right_2`, …; a refusal was rejected
 
 **Context.** A combining join suffixed a right column whose name collides with a left one by appending

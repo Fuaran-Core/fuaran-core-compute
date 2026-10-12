@@ -91,9 +91,10 @@ let planTests =
           <| fun _ ->
               Expect.isTrue (Plan.isTotal schema (Transform.sortBy [ "i", Asc ])) "a literal sort"
 
-              Expect.isTrue
+              // Phase 412: a sort refuses a key the schema lacks, so such a sort is not total.
+              Expect.isFalse
                   (Plan.isTotal schema (Transform.sortBy [ "zzz", Asc ]))
-                  "an unknown key is dropped, not refused"
+                  "an unknown key is refused, not dropped"
 
               Expect.isFalse (Plan.isTotal schema (Sort [ Slot.Param "k", Asc ])) "a param key needs an env"
               Expect.isTrue (Plan.isTotal schema (Transform.limit 3 1)) "a literal limit"

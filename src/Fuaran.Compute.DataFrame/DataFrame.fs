@@ -3076,9 +3076,9 @@ module DataFrame =
             | Rounded(a, r) -> exprTotal cols a && scaleAdmitted r && exactOrAbsent (ty a)
 
         /// THE TOTALITY VERDICT over a step: `true` only where evaluating the step over ANY table
-        /// of schema `cols` returns `Ok`. `Sort` drops a key the schema does not carry rather than
-        /// refusing it, so a literal-keyed sort is total; a `Limit` clamps; `Distinct` compares
-        /// tokens; a `Project` fails only on a source the schema lacks. A slot still holding a
+        /// of schema `cols` returns `Ok`. `Sort` refuses a key the schema does not carry (Phase
+        /// 412), so a sort is total only where every key is a literal the schema carries; a `Limit`
+        /// clamps; `Distinct` compares tokens; a `Project` fails only on a source the schema lacks. A slot still holding a
         /// param is resolved against an env the verdict does not have. Every other verb reaches
         /// a resolver, an aggregate or a comparison the schema alone cannot vouch for.
         let isTotal (cols: Schema) (t: Transform) : bool =
@@ -3093,7 +3093,12 @@ module DataFrame =
                     | Decided _ -> true
                     | ByCells
                     | Refused -> false)
-            | Sort by -> by |> List.forall (fun (c, _) -> not (Slot.isParam c))
+            | Sort by ->
+                by
+                |> List.forall (fun (c, _) ->
+                    match Slot.tryLit c with
+                    | Some name -> Option.isSome (colType cols name)
+                    | None -> false)
             | Limit(n, offset) -> not (Slot.isParam n) && not (Slot.isParam offset)
             | Project pairs -> pairs |> List.forall (fun (src, _) -> Option.isSome (colType cols src))
             | Distinct -> true
@@ -4592,10 +4597,20 @@ module DataFrame =
 
     // ---- sort (pinned: stable; nulls last regardless of direction) ----
 
+    /// The first sort key a schema does not carry, as the `UnknownColumn` every other verb answers
+    /// for an unknown column (Phase 412, `DECISIONS.md` D20). `Sort` and a `Window`'s ordering
+    /// refuse with it before they order anything, so a misspelled key is an error, never the input
+    /// order returned as if it had been sorted.
+    let internal unknownSortKey (cols: Schema) (by: (string * SortDir) list) : EvalError option =
+        by
+        |> List.tryFind (fun (name, _) -> Option.isNone (colIndex cols name))
+        |> Option.map (fun (name, _) -> UnknownColumn(name, available cols))
+
     /// A sort's keys resolved against one step's schema (Phase 263): each named column's index with
-    /// its direction, in key order. A name the schema does not carry is DROPPED here, which is the
-    /// comparator's pinned "unknown columns skipped" — the per-comparison lookup skipped it on every
-    /// comparison, and resolving once skips it once.
+    /// its direction, in key order. The steps that take keys from a pipeline refuse an unknown key
+    /// first (`unknownSortKey`, Phase 412), so a name the schema does not carry reaches this only
+    /// through the exported comparator `rowCompareBy`, which has no error to answer and still
+    /// drops it.
     let internal resolveSortKeys (cols: Schema) (by: (string * SortDir) list) : (int * SortDir) list =
         by
         |> List.choose (fun (name, dir) -> colIndex cols name |> Option.map (fun i -> i, dir))
@@ -6867,6 +6882,13 @@ module DataFrame =
         |> List.map (fun (ci, dir) -> f.Vecs[ci], dir)
         |> List.toArray
 
+    /// The keys a `Sort` takes from a pipeline, refused at the first one the frame does not carry
+    /// (`unknownSortKey`, Phase 412).
+    let private knownSortKeys (f: Frame) (by: (string * SortDir) list) : Result<(string * SortDir) list, EvalError> =
+        match unknownSortKey f.Cols by with
+        | Some e -> Error e
+        | None -> Ok by
+
     let private evalSort (k: KernelSet) (f: Frame) (by: (string * SortDir) list) : Frame =
         // A permutation of the selection (Phase 267): the logical positions sorted under the keys,
         // ties broken by position — which is exactly the stable sort over the frame order the
@@ -7522,6 +7544,10 @@ module DataFrame =
         match spec.Fn, colIndex cols spec.Of with
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
+        // Phase 412 — an order key the schema does not carry is refused, as a `Sort`'s is, before
+        // the ordering is computed (`windowColumnOverWith` refuses it too, for a caller holding one).
+        | _ when Option.isSome (unknownSortKey cols spec.OrderBy) ->
+            Error(Option.get (unknownSortKey cols spec.OrderBy))
         | _ -> windowColumnOverWith k cols vecOf phys spec (windowOrderOfWith k perturbation cols vecOf phys spec) null
 
     /// The schema indexes of a window's PARTITION columns, a name the schema does not carry dropped
@@ -7567,6 +7593,8 @@ module DataFrame =
         match spec.Fn, colIndex cols spec.Of with
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
+        | _ when Option.isSome (unknownSortKey cols spec.OrderBy) ->
+            Error(Option.get (unknownSortKey cols spec.OrderBy))
         | _, ofIdx ->
             let n = phys.Length
             // A running total over a decimal column stays exact (Phase 277).
@@ -8278,6 +8306,7 @@ module DataFrame =
             by
             |> List.map (fun (c, d) -> resolveStrSlot env "sort key column" c |> Result.map (fun c -> c, d))
             |> sequenceR
+            |> Result.bind (knownSortKeys f)
             |> Result.map (evalSort k f)
         | Distinct -> Ok(evalDistinct f)
         | Limit(n, offset) ->
@@ -8339,6 +8368,7 @@ module DataFrame =
             by
             |> List.map (fun (c, d) -> resolveStrSlot env "sort key column" c |> Result.map (fun c -> c, d))
             |> sequenceR
+            |> Result.bind (knownSortKeys f)
             |> Result.bind (fun keys ->
                 resolveIntSlot env "limit n" n
                 |> Result.bind (fun n ->
@@ -8741,10 +8771,13 @@ module DataFrame =
     let inferCellType (cells: Cell list) : ColumnType = inferType cells
 
     /// The reference `Sort`'s row comparator: the pinned ordering (multi-key, nulls last regardless
-    /// of direction, unknown columns skipped). Exposed for the same reason as the four above — an
+    /// of direction). The reference `Sort` refuses a key the schema does not carry before it orders
+    /// anything (Phase 412, `DECISIONS.md` D20), so it never compares under one; this comparator,
+    /// which has no error to answer, drops such a key, and a caller reproducing the reference refuses
+    /// it first, as the reference does. Exposed for the same reason as the four above — an
     /// incremental evaluator that merged rows into a cached order under its OWN comparator would
     /// agree with the reference on every corpus anyone thought to write and disagree on the first
-    /// null, the first tie and the first misspelled key. `List.sortWith` over it is `evalSort`.
+    /// null and the first tie. `List.sortWith` over it is `evalSort`.
     ///
     /// It is a comparator, so it says nothing about STABILITY: `Sort`'s stability comes from
     /// `List.sortWith` being stable over the frame order, and a caller reproducing the reference
