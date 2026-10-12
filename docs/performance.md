@@ -175,8 +175,12 @@ than the full evaluation on three shapes.
 | `filter > groupBy` | 100,000 | 4.18 → 2.16 | 3.69 → 1.68 | ×1.2–1.3 |
 | `sort two keys` | 100,000 | 10.32 → 2.96 | 13.42 → 6.96 | ×0.4–0.5 |
 
-Every edit tick was within 1.17× of its pre-423 cost (`window CumulSum` at 20,000), and most were well
-below it. Every pre-423 ratio was at most 1.53.
+On each cell's best reading, every edit tick was within 1.17× of its pre-423 cost, and most were well
+below it. Every pre-423 ratio was at most 1.53. The best reading hides one cell. Across all the Phase 439
+legs, `lines` at 20,000 rows read 1.30 to 1.59 ms before 423 and 1.39 to 5.27 ms after (median 2.4 ms
+over 34 counted readings, in two clusters around 1.6–2.1 and 2.6–3.6 ms): a real 1.3–2× regression with
+a tail. It is the one cell the operator excepted from the baseline arm, held to its own post-423 cost
+until Phase 448 (`docs/incremental-evaluation.md`).
 
 **The append tick: the diff doubled.** The append ticks of the grouped nodes were 1.4 to 2.0 times
 their pre-423 cost:
@@ -215,5 +219,6 @@ the table-fed diff alone is a fixed share of the full evaluation: about 1.44 ms 
 edit node, 0.6 to 0.85 of the full evaluation of `lines`, `byRegion`, `filter > groupBy` and
 `window CumulSum`. No refresh, however cheap, keeps a whole-tick ratio near 1.6 there.
 
-The bound the operator ruled admits these three shapes on their recorded tick, not on the seam's claim.
-Making them cheaper than recomputing again is a successor phase's work.
+The bound the operator ruled admits these three shapes on their recorded tick, and `lines` at 20,000
+rows on its recorded post-423 tick, not on the seam's claim. Making them cheaper than recomputing again
+is Phase 448's work.

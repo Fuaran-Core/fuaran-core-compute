@@ -1819,25 +1819,45 @@ reading within k = 1.25) can still inflate a tick by a quarter. The Phase 274 `S
 unchanged at the ratio and the floor.
 
 **A table per architecture, and none is not a pass.** A table is recorded by
-`gates/record-tick-baselines.ps1`, which:
+`gates/record-tick-baselines.ps1`, and nothing else writes it. The script:
 
-1. Exports `ccbddc7` beside the repository.
-2. Builds it in Release.
-3. Runs its WHOLE clock leg three times, keeping only counted windows. Measured alone, the two corpus
-   cases read 10 to 25 percent lower than they do after the leg's other cases, and the gate never runs
-   them alone.
-4. Prints the block to paste.
+1. Exports `ccbddc7` beside the repository and builds it in Release.
+2. Runs its WHOLE clock leg at least three times. Measured alone, the two corpus cases read 10 to 25
+   percent lower than they do after the leg's other cases, and the gate never runs them alone.
+3. Sets aside any leg in which the saturation guard discarded a window, and runs another in its
+   place.
+4. Takes each cell's best reading WITHIN each clean leg, and records the MEDIAN of those per-leg
+   bests (the operator's second ruling). The first recording took the best reading over all legs.
+   On a noisy cell that is a reading the gate's own runs rarely reach: `window CumulSum` at
+   100,000 rows recorded 4.97 ms where its pre-423 legs spread from 4.97 to 7.46 ms.
+5. Prints the block to paste.
 
-A cell no counted window measured fails the script. On an architecture with no table, or a cell
-missing from one, the cases print `NO TICK BASELINE TABLE for architecture …`, naming the script, on
-every cell, and hold the machine to the ratio arm alone. That is the stricter condition, so a missing
-table can make a leg red and never makes one green. The Arm64 table was recorded on a Snapdragon X
-Elite (X1E80100) on 2026-10-12, with three full legs and no window discarded. Its figures agree with the
-Phase 439 measurement legs of the same tree to within 15 percent (most cells within 5).
+A cell not measured in every clean leg fails the script. On an architecture with no table, or for a
+cell missing from one, the cases print `NO TICK BASELINE TABLE for architecture …` on every cell,
+naming the script, and hold the cell to the ratio arm alone. That is the stricter condition, so a
+missing table can make a leg red and never makes one green. The Arm64 table was recorded on a
+Snapdragon X Elite (X1E80100) on 2026-10-12, from three full legs with no window discarded.
+
+**One named exception, until Phase 448.** `lines` at 20,000 rows, edit tick, is a real post-423
+regression, and the baseline arm cannot carry it. Across the Phase 439 legs its pre-423 tick read
+1.30 to 1.59 ms and its post-423 tick (with the fix below) 1.39 to 5.27 ms, in two clusters around
+1.6–2.1 and 2.6–3.6 ms. The operator's third and fourth rulings hold that one cell to TODAY'S COST as a
+ceiling: `tick <= 1.5 x ceiling + floor`, neither other arm applying. The ceiling is recorded by the
+same script (`-Ceiling`, the same median-of-bests method) from the tree carrying Phase 423 and this
+phase's fix, `1453743`'s recording of `3caa557`: 1.783 ms, an allowance of 2.821 ms on Arm64. The cell
+is judged by the leg's own rule like every other: red only when it is red on all three counted
+attempts. Of its 34 counted readings on the branch tree, 9 were above the allowance (median 2.397 ms,
+maximum 5.270 ms), and no leg had it above on every attempt.
+
+- The exception is a test-visible constant (`ScalingTests.tickBaselineExceptions`), and a main-suite
+  case pins its exact contents, so a second one cannot be added silently.
+- It is printed on every judgement as `NAMED EXCEPTION …`.
+- It is removable only by Phase 448's acceptance (`DECISIONS.md` D19).
+- An architecture with no ceiling holds the cell to the ratio arm, and says so.
 
 **The regression the arm found, and its cure.** Measured before the ruling, against the same pre-423
-tree on the same machine, the edit ticks were at or below their pre-423 cost (within 1.17×). The
-APPEND ticks of the grouped nodes were not:
+tree on the same machine, most edit ticks were at or below their pre-423 cost. The APPEND ticks of the
+grouped nodes were not:
 
 | Node | Rows | Pre-423 append tick | Post-423 append tick | Change |
 |---|---:|---:|---:|---:|
@@ -1854,29 +1874,32 @@ compared every row through `ColumnRead.sameAt`: one closure call per row per col
 column, and the row walk runs only where that fails. The loop compares both validities (both all-valid,
 or two masks equal over the prefix) and the two value vectors, with no closure per row. Its `true` is
 sufficient for `sameAt i i` at every row, and its `false` decides nothing, so every diff answers
-exactly what it answered (the delta laws, the append laws and their `diffTrustingPrefix` falsifier,
-and the delta wire vectors all unchanged).
+exactly what it answered. The delta laws, the append laws and their `diffTrustingPrefix` falsifier,
+and the delta wire vectors are all unchanged, and a `samePrefix` forced to `true` reddens them. After
+it, the grouped append ticks (`filter > groupBy` and `filter > groupBy > filter` at every size) are
+0.46 to 0.88 of their pre-423 cost.
 
-On the gate's full leg after it, the grouped append ticks (`filter > groupBy` and
-`filter > groupBy > filter` at every size) are 0.46 to 0.88 of their pre-423 cost, and `byRegion` at
-20,000 rows is 0.83 to 1.36.
+**What the gate said, in order.** On this machine the gate needed several runs, for two reasons.
 
-**What the leg says now** (Arm64, the full leg, tick over baseline, three counted attempts):
+- **No verdict.** After the main suites the processor steps its clock down partway through the leg.
+  Calibration readings of 6.2 ms against a 4.91 ms baseline are 1.26×, just past k = 1.25, so whole
+  cases end with NO VERDICT (exit 3), not red. The cure is a quieter, cooler machine and a re-run,
+  never a change to k.
+- **Red, before the rulings were complete.** Under the first table (the best over all legs, no
+  exception) the leg reached a counted RED on two cells: `lines` edit at 20,000 (2.59–5.27 ms against
+  1.95) and `window CumulSum` edit at 100,000 (7.66–8.02 ms against a baseline that was its single
+  lowest pre-423 reading).
 
-| Cells | Tick / baseline |
-|---|---:|
-| Most | 0.3 to 0.9 |
-| `group-by high-card` | 1.16 to 1.39 |
-| `pivot` at 100,000 | 1.08 to 1.20 |
-| `window CumulSum`, edit, at 20,000 | 1.42 to 1.46 |
-| `lines`, edit and append, at 20,000 | 1.24 to 1.94, bimodal from one attempt to the next |
-| `byRegion` append at 100,000 | 0.69 to 1.61 |
+The median re-record and the named exception answer those two cells. Every other cell was within its
+arms on every run that reached a verdict. The run that landed this phase reached a verdict, GREEN on
+all sixteen clock cases; its record is in the phase's outcome.
 
 The thinnest cells are exactly the shapes whose refresh now costs more than the full evaluation it
 replaces: `lines`, `window CumulSum` and `group-by high-card` (refresh 2.1 to 3.4 times the full; it was
-0.6 to 0.9 before Phase 423). The baseline arm admits them because their tick is no dearer than before;
-it does not make them cheap. That is a finding for a successor phase, not this bound's to absorb. The
-figures are in [`performance.md`](performance.md), "The tick bound after the boundary became a view".
+0.6 to 0.9 before Phase 423). The baseline arm admits them because their tick is no dearer than before,
+and the exception admits `lines` at 20,000 rows at today's cost. Neither makes them cheap; that is
+Phase 448's work. The figures are in [`performance.md`](performance.md), "The tick bound after the
+boundary became a view".
 
 ## Across a process boundary (Phase 355)
 

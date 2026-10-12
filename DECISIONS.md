@@ -54,8 +54,9 @@ complements a clock bound and cannot replace one.
 - **The condition.** `ScalingTests.judgeCorpusTick` holds both corpus tick cases to
   `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`, with `tickBound` 1.6 and
   `tickBaselineFactor` 1.5. The `Scaling` tick case keeps the ratio alone.
-- **The baselines.** `tickBaselines` holds, per `RuntimeInformation.ProcessArchitecture`, each cell's best
-  counted pre-423 tick in units of the leg's calibration baseline. A unit scales with the machine within
+- **The baselines.** `tickBaselines` holds, per `RuntimeInformation.ProcessArchitecture`, each cell's
+  pre-423 tick (the median over clean legs of each leg's best, per the second ruling below) in units
+  of the leg's calibration baseline. A unit scales with the machine within
   an architecture, as the floor does (Phase 327). The integer chain does not track a memory-bound tick
   across architectures, so tables are not shared across them.
 - **A missing table.** On an architecture with no table, or for a cell missing from one, every cell
@@ -89,8 +90,57 @@ the phase's declared files and were approved as widenings with the ruling. No pu
 `ColumnRead` is internal.
 
 **Not decided here.** The three shapes whose refresh costs more than recomputing are admitted by the
-baseline arm, not by the seam's claim. Making them cheaper than recomputing again is a successor phase's
+baseline arm, not by the seam's claim. Making them cheaper than recomputing again is Phase 448's
 work.
+
+**Amended 2026-10-12 — the operator's second, third and fourth rulings.** The first ruling's bound
+went to the gate and reached a counted RED. Gate runs 1 to 4 on the same tree had reached no verdict.
+Two cells were red on all three counted attempts:
+
+- `lines` edit at 20,000 rows: 2.59–5.27 ms against a baseline arm of 1.95 ms.
+- `window CumulSum` edit at 100,000 rows: 7.66–8.02 ms against 7.45 ms.
+
+The second cell's baseline was its single lowest pre-423 reading (4.97 ms; its pre-423 legs spread
+from 4.97 to 7.46 ms). The first cell is a real regression. Three further rulings followed, each
+summarised here as given:
+
+- **Second.** A cell's baseline is the MEDIAN, over at least three full legs with no window
+  discarded, of each leg's best reading, and the Arm64 table is re-recorded that way from `ccbddc7`.
+  One named exception, `lines` edit at 20,000 rows ("a real 1.3–2× post-423 regression on a shape
+  Phase 448 owns"), is listed in `ScalingTests.tickBaselineExceptions`. It is printed on every run,
+  pinned exactly by a main-suite case so that no second exception can be added silently, and removable
+  only by Phase 448's acceptance.
+- **Third.** The exception's shape is a ceiling of TODAY'S COST: the cell is held to
+  `1.5 x its recorded post-423 tick + floor`, and to neither other arm. The figure is recorded by the
+  same script and method (`-Ceiling`) from the tree carrying Phase 423 and this phase's `Delta.fs`
+  fix, and stored beside the exception with its provenance (`tickExceptionCeilings`). The second
+  ruling's first wording, "ratio arm only", would have held the cell to ×1.6 of a 0.59 ms full
+  evaluation, red on every run; it was corrected here.
+- **Fourth.** The ceiling as recorded is kept. The cell is judged by the clock leg's own rule, like
+  every other cell: red only when red on all three counted attempts.
+
+**What was recorded.**
+
+- **The baselines.** The Arm64 table was re-recorded on 2026-10-12 from `ccbddc7`: three full legs,
+  none discarded.
+- **The ceiling.** It was recorded from `3caa557` (the branch tree carrying the fix; committed in
+  `1453743`). It took five legs to get three clean ones, after an earlier attempt found none clean in
+  nine. The per-leg bests were 1.627, 1.789 and 1.783 ms, so the median is 1.783 ms (0.362989
+  calibration units). That makes the allowance 1.5 × 1.783 + 0.147 = 2.821 ms on Arm64.
+- **The evidence the ceiling inherits, for Phase 448.** The cell has 34 counted readings on the branch
+  tree: minimum 1.389, median 2.397, p90 3.484 and maximum 5.270 ms. Nine are above 2.821 ms. They form
+  two clusters (about 1.6–2.1 and 2.6–3.6 ms) with a tail. No leg had the cell above the allowance on
+  all of its counted attempts. Its pre-423 readings were 1.30 to 1.59 ms.
+- **Legs that discard windows.** The script now sets aside a leg with a discarded window and runs
+  another in its place, up to `-MaxLegs`. Every recorded figure therefore comes from legs with none
+  discarded, as the second ruling asks.
+- **Why so many runs, on this machine.** Discarded windows and no-verdict gate runs share one cause:
+  calibration readings step to 6.2 ms against 4.91 (1.26×, just past k = 1.25) at a window's opening
+  and after the `lines` cells, and further after the main suites. The ruled answer is to re-run on a
+  quieter machine, not to move k.
+
+**Refreshing the ceiling** follows the table rule above. It is the operator's decision, recorded
+here; the script is the only writer. It goes when Phase 448's acceptance removes the exception.
 
 ## 2026-10-10 — D18: three rulings on what Core `1.0.0`'s typed column leaves without an object — a non-canonical text cast to a temporal type is refused by name, a derived column spanning two unrelated types is refused by name, and the fused sort-then-limit bound is on work, not bytes
 
