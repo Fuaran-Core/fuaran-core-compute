@@ -57,6 +57,14 @@ packages a reader outside the workspace cannot obtain, which is the state the ve
 forbids. The red clears when Core tags `v1.0.0`; the gate (`verify.ps1`) is green on the machine that
 holds the feed, and that run is the one this change cites.
 
+**Amended 2026-10-12 (fuaran-core Phase 444): the draft is released as `0.37.0`, so the red ends at
+`v0.37.0`.** The operator ruled that Core is not published as `1.0.0`; the draft's contents, the same
+packages and the same public surface this repository was raised against, are released as the minor
+`0.37.0` (Core's DECISIONS.md D147). `FuaranCoreVersion` is `0.37.0`, packed into the local feed from
+the renamed slot, and the accepted red now ENDS when Core tags `v0.37.0` and nuget.org serves every
+`Fuaran.Core.*` package this file pins at that version; nothing else about the accepted state moves. The
+`1.0.0` this entry and D18 name is that slot.
+
 **2. The boundary converts nothing.** `Frame.ofTable` BORROWS each column's storage through
 `Vector.Unsafe.borrow` (a slice is copied, since the frame indexes from zero; an `AllValid` column has a
 mask built) and `Frame.toTable` ADOPTS the frame's arrays through `Vector.adopt`. The code that
