@@ -186,72 +186,80 @@ let private tickBaselineFactor = 1.5
 /// the operator's decision (DECISIONS.md D19). An architecture with no table is NOT passed on this
 /// arm by default: the cases print that the table is missing and name the script, and hold such a
 /// machine to the ratio arm alone, which is the stricter condition.
+/// Phase 439 — the cells held to the ratio arm ALONE, each named with its reason (operator ruling
+/// 2026-10-12, the second). Every entry is printed on every clock-leg run that judges it, and the
+/// main suite pins this list's exact contents ("the tick bound's named exceptions are exactly the
+/// ruled ones"), so a second exception cannot be added without that test moving with it. The one
+/// entry is removable only by Phase 448's acceptance (DECISIONS.md D19).
+let tickBaselineExceptions: (string * string * int * string) list =
+    [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns" ]
+
 let private tickBaselines: Map<string, Map<string * string * int, float>> =
     Map.ofList
         [
-          // Arm64 - recorded 2026-10-12 from ccbddc7, 3 run(s), by gates/record-tick-baselines.ps1
+          // Arm64 - recorded 2026-10-12 from ccbddc7, the median of 3 runs' bests, by gates/record-tick-baselines.ps1
           "Arm64",
           Map.ofList
-              [ ("append", "byRegion", 1000), 0.006312
-                ("append", "byRegion", 20000), 0.140297
-                ("append", "byRegion", 100000), 0.697130
-                ("append", "filter > groupBy", 1000), 0.004887
-                ("append", "filter > groupBy", 20000), 0.128894
-                ("append", "filter > groupBy", 100000), 0.641563
-                ("append", "filter > groupBy > filter", 1000), 0.005292
-                ("append", "filter > groupBy > filter", 20000), 0.125585
-                ("append", "filter > groupBy > filter", 100000), 0.666667
-                ("append", "filter > sort > limit", 1000), 0.009163
-                ("append", "filter > sort > limit", 20000), 0.265622
-                ("append", "filter > sort > limit", 100000), 1.316523
+              [ ("append", "byRegion", 1000), 0.005700
+                ("append", "byRegion", 20000), 0.134392
+                ("append", "byRegion", 100000), 0.475463
+                ("append", "filter > groupBy", 1000), 0.005091
+                ("append", "filter > groupBy", 20000), 0.139076
+                ("append", "filter > groupBy", 100000), 0.601100
+                ("append", "filter > groupBy > filter", 1000), 0.005091
+                ("append", "filter > groupBy > filter", 20000), 0.128868
+                ("append", "filter > groupBy > filter", 100000), 0.638974
+                ("append", "filter > sort > limit", 1000), 0.009367
+                ("append", "filter > sort > limit", 20000), 0.247557
+                ("append", "filter > sort > limit", 100000), 1.249440
                 ("append", "group-by high-card", 1000), 0.008349
-                ("append", "group-by high-card", 20000), 0.248138
-                ("append", "group-by high-card", 100000), 1.617138
-                ("append", "inner join", 1000), 0.022195
-                ("append", "inner join", 20000), 0.733659
-                ("append", "inner join", 100000), 3.580126
-                ("append", "lines", 1000), 0.011652
-                ("append", "lines", 20000), 0.316840
-                ("append", "lines", 100000), 1.666870
-                ("append", "pivot", 1000), 0.024451
-                ("append", "pivot", 20000), 0.680440
-                ("append", "pivot", 100000), 3.165479
-                ("append", "sort two keys", 1000), 0.009770
-                ("append", "sort two keys", 20000), 0.301568
-                ("append", "sort two keys", 100000), 2.075310
-                ("append", "window CumulSum", 1000), 0.010381
-                ("append", "window CumulSum", 20000), 0.293792
-                ("append", "window CumulSum", 100000), 1.633238
-                ("edit", "byRegion", 1000), 0.006312
-                ("edit", "byRegion", 20000), 0.122378
-                ("edit", "byRegion", 100000), 0.721681
-                ("edit", "filter > groupBy", 1000), 0.006312
-                ("edit", "filter > groupBy", 20000), 0.133578
-                ("edit", "filter > groupBy", 100000), 0.861535
+                ("append", "group-by high-card", 20000), 0.243331
+                ("append", "group-by high-card", 100000), 1.924252
+                ("append", "inner join", 1000), 0.023620
+                ("append", "inner join", 20000), 0.721645
+                ("append", "inner join", 100000), 3.873779
+                ("append", "lines", 1000), 0.021173
+                ("append", "lines", 20000), 0.286092
+                ("append", "lines", 100000), 1.709021
+                ("append", "pivot", 1000), 0.026064
+                ("append", "pivot", 20000), 0.704541
+                ("append", "pivot", 100000), 3.883143
+                ("append", "sort two keys", 1000), 0.009976
+                ("append", "sort two keys", 20000), 0.311953
+                ("append", "sort two keys", 100000), 2.135179
+                ("append", "window CumulSum", 1000), 0.010383
+                ("append", "window CumulSum", 20000), 0.244349
+                ("append", "window CumulSum", 100000), 1.814332
+                ("edit", "byRegion", 1000), 0.006516
+                ("edit", "byRegion", 20000), 0.120749
+                ("edit", "byRegion", 100000), 0.673860
+                ("edit", "filter > groupBy", 1000), 0.006720
+                ("edit", "filter > groupBy", 20000), 0.130116
+                ("edit", "filter > groupBy", 100000), 0.900855
                 ("edit", "filter > groupBy > filter", 1000), 0.006720
-                ("edit", "filter > groupBy > filter", 20000), 0.133727
-                ("edit", "filter > groupBy > filter", 100000), 0.870291
-                ("edit", "filter > sort > limit", 1000), 0.009367
-                ("edit", "filter > sort > limit", 20000), 0.236815
-                ("edit", "filter > sort > limit", 100000), 1.426743
-                ("edit", "group-by high-card", 1000), 0.008959
-                ("edit", "group-by high-card", 20000), 0.192359
-                ("edit", "group-by high-card", 100000), 1.418245
-                ("edit", "inner join", 1000), 0.024435
-                ("edit", "inner join", 20000), 0.714422
-                ("edit", "inner join", 100000), 3.975549
-                ("edit", "lines", 1000), 0.015883
-                ("edit", "lines", 20000), 0.264915
-                ("edit", "lines", 100000), 1.503156
-                ("edit", "pivot", 1000), 0.025453
-                ("edit", "pivot", 20000), 0.554346
-                ("edit", "pivot", 100000), 2.908883
-                ("edit", "sort two keys", 1000), 0.011403
-                ("edit", "sort two keys", 20000), 0.292455
-                ("edit", "sort two keys", 100000), 2.075748
-                ("edit", "window CumulSum", 1000), 0.011607
-                ("edit", "window CumulSum", 20000), 0.245775
-                ("edit", "window CumulSum", 100000), 1.011199 ] ]
+                ("edit", "filter > groupBy > filter", 20000), 0.136428
+                ("edit", "filter > groupBy > filter", 100000), 0.852779
+                ("edit", "filter > sort > limit", 1000), 0.009978
+                ("edit", "filter > sort > limit", 20000), 0.224959
+                ("edit", "filter > sort > limit", 100000), 1.408184
+                ("edit", "group-by high-card", 1000), 0.009163
+                ("edit", "group-by high-card", 20000), 0.193036
+                ("edit", "group-by high-card", 100000), 1.639381
+                ("edit", "inner join", 1000), 0.025041
+                ("edit", "inner join", 20000), 0.676507
+                ("edit", "inner join", 100000), 4.056800
+                ("edit", "lines", 1000), 0.016901
+                ("edit", "lines", 20000), 0.279373
+                ("edit", "lines", 100000), 1.620037
+                ("edit", "pivot", 1000), 0.026059
+                ("edit", "pivot", 20000), 0.532478
+                ("edit", "pivot", 100000), 2.969660
+                ("edit", "sort two keys", 1000), 0.011810
+                ("edit", "sort two keys", 20000), 0.276929
+                ("edit", "sort two keys", 100000), 2.072068
+                ("edit", "window CumulSum", 1000), 0.011604
+                ("edit", "window CumulSum", 20000), 0.244553
+                ("edit", "window CumulSum", 100000), 1.137215 ] ]
 
 /// Phase 272 — how much `Delta.diff` may cost beyond minting both tables' keys through the witness,
 /// which is the floor of any diff by identity (`KeyString` is the only thing that can say what a key
@@ -997,32 +1005,49 @@ let private tickBaselineArchitecture: string =
     string System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
 
 /// Phase 439 — the second arm's allowance for one corpus cell, in ms on this machine:
-/// `tickBaselineFactor` times the cell's recorded pre-423 tick (`tickBaselines`), or, where this
-/// architecture or this cell has no recorded figure, the message saying so — which the cases print
+/// `tickBaselineFactor` times the cell's recorded pre-423 tick (`tickBaselines`), or, where the cell
+/// is a named exception (`tickBaselineExceptions`) or this architecture or this cell has no recorded
+/// figure, the message saying so — which the cases print
 /// and carry into their failure, so a missing table is never a silent pass and never a silent
 /// loosening.
 let private tickBaselineAllowanceMs (kind: string) (node: string) (rows: int) : Result<float, string> =
-    match Map.tryFind tickBaselineArchitecture tickBaselines with
-    | None ->
+    match
+        tickBaselineExceptions
+        |> List.tryFind (fun (k, n, r, _) -> k = kind && n = node && r = rows)
+    with
+    | Some(_, _, _, reason) ->
         Error(
             sprintf
-                "NO TICK BASELINE TABLE for architecture %s: only the %.1f x full arm is asserted here; record one with gates/record-tick-baselines.ps1 and paste it into ScalingTests.tickBaselines (DECISIONS.md D19)"
-                tickBaselineArchitecture
+                "NAMED EXCEPTION (DECISIONS.md D19): %s %s @ %d is held to the %.1f x full arm only - %s"
+                kind
+                node
+                rows
                 tickBound
+                reason
         )
-    | Some table ->
-        match Map.tryFind (kind, node, rows) table with
-        | Some units -> Ok(tickBaselineFactor * units * Calibration.baselineMs ())
+    | None ->
+
+        match Map.tryFind tickBaselineArchitecture tickBaselines with
         | None ->
             Error(
                 sprintf
-                    "NO TICK BASELINE for %s %s @ %d in the %s table: only the %.1f x full arm is asserted for it; re-record with gates/record-tick-baselines.ps1 (DECISIONS.md D19)"
-                    kind
-                    node
-                    rows
+                    "NO TICK BASELINE TABLE for architecture %s: only the %.1f x full arm is asserted here; record one with gates/record-tick-baselines.ps1 and paste it into ScalingTests.tickBaselines (DECISIONS.md D19)"
                     tickBaselineArchitecture
                     tickBound
             )
+        | Some table ->
+            match Map.tryFind (kind, node, rows) table with
+            | Some units -> Ok(tickBaselineFactor * units * Calibration.baselineMs ())
+            | None ->
+                Error(
+                    sprintf
+                        "NO TICK BASELINE for %s %s @ %d in the %s table: only the %.1f x full arm is asserted for it; re-record with gates/record-tick-baselines.ps1 (DECISIONS.md D19)"
+                        kind
+                        node
+                        rows
+                        tickBaselineArchitecture
+                        tickBound
+                )
 
 /// Phase 439 — the two corpus tick cases' condition for one cell, printed and judged in one place:
 /// `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`. Answers the failure line
@@ -1907,6 +1932,16 @@ let scalingTests =
                   (Test.toTestCodeList clockTests |> Seq.length)
                   clockInventory
                   "the clock leg's case count is the inventory's — update both, and the doc's table"
+
+          testCase "the tick bound's named exceptions are exactly the ruled ones"
+          <| fun _ ->
+              // Phase 439 (operator ruling 2026-10-12, the second; DECISIONS.md D19): one cell, and
+              // only one, is held to the ratio arm alone until Phase 448's acceptance removes it. A
+              // second exception is an operator decision, so adding one moves this test too.
+              Expect.equal
+                  tickBaselineExceptions
+                  [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns" ]
+                  "the named exceptions to the tick bound's baseline arm are the operator's ruling (D19), never added silently"
 
           testCase "the clock leg's saturation rule: above k times the baseline, or a bracket disagreeing by k"
           <| fun _ ->

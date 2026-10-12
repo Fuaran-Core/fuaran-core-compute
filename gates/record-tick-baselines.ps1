@@ -17,11 +17,13 @@
     This script records one. It exports the baseline commit with `git archive` into a directory
     BESIDE this repository (so `nuget.config`'s relative local feed resolves exactly as it does
     here), builds its test project in Release, runs that tree's whole clock leg (as the gate runs
-    it) `-Runs` times, keeps only the readings of COUNTED windows (a window the saturation
-    guard discarded is not a reading), takes each cell's best reading over the runs in units of
-    that run's calibration baseline, and prints the F# block to paste into `tickBaselines` under
-    the architecture it names. A cell no counted window measured fails the script: a table with a
-    hole would hold that cell to the ratio arm alone without anyone having decided so.
+    it) `-Runs` times (at least three), refuses any run in which the saturation guard discarded a
+    window, takes each cell's best reading WITHIN each run in units of that run's calibration
+    baseline, and records the MEDIAN of those per-run bests (operator ruling 2026-10-12, the
+    second: the best over all runs is a reading the gate's own runs rarely reach on a noisy cell).
+    It prints the F# block to paste into `tickBaselines` under the architecture it names, and it
+    is the only way that table is written. A cell not measured in every run fails the script: a
+    table with a hole would hold that cell to the ratio arm alone without anyone having decided so.
 
     Run it on a quiet machine. Refreshing a table that exists is a decision recorded in
     DECISIONS.md (D19), not a routine re-run: see there for who decides and when.
@@ -67,10 +69,14 @@ if ($LASTEXITCODE -ne 0) { throw "building $Commit's tests failed (exit $LASTEXI
 $dll = Join-Path $export 'tests/Fuaran.Core.Compute.Tests/bin/Release/net10.0/Fuaran.Core.Compute.Tests.dll'
 if (-not (Test-Path $dll)) { throw "no test assembly at $dll" }
 
-# kind|node|rows -> best reading in calibration units
-$best = @{}
+# kind|node|rows -> one best reading per run, in calibration units (operator ruling 2026-10-12, the
+# second: a cell's baseline is the MEDIAN over the runs of each run's best reading, not the best over
+# all runs - the overall minimum of a noisy cell is a reading the gate's own runs rarely reach).
+$perRun = @{}
 $tick = [regex]'\[(corpus|append) tick\] (.+?) @ +(\d+): tick +([0-9.]+) ms vs full'
 $calibration = [regex]'calibration baseline ([0-9.]+) ms \(best of'
+
+if ($Runs -lt 3) { throw "-Runs ${Runs}: the ruling asks for at least three full legs" }
 
 foreach ($run in 1..$Runs) {
     $log = Join-Path $export "clock-run$run.log"
@@ -78,14 +84,20 @@ foreach ($run in 1..$Runs) {
     $global:LASTEXITCODE = 0
     # The WHOLE leg, as the gate runs it: measured alone, the two corpus cases read 10 to 25 percent
     # lower than they do after the leg's other cases (measured on Arm64 in Phase 439), and a baseline
-    # recorded in a context the gate never runs in is not the tick the gate compares. Exit 1 (a red
-    # case) and exit 3 (a case found no unsaturated window) still leave the readings that were
-    # counted, and the completeness check below reports any cell without one.
+    # recorded in a context the gate never runs in is not the tick the gate compares.
     dotnet $dll --clock-leg *> $log
     $code = $LASTEXITCODE
     if ($code -notin 0, 1, 3) { throw "the clock leg exited $code (see $log)" }
 
+    # A run with ANY discarded window is not a recording run: the ruling asks for legs with none.
+    $discarded = @(Select-String -Path $log -Pattern '\[clock\] .*: window SATURATED').Count
+    if ($discarded -gt 0) {
+        $global:LASTEXITCODE = 1
+        throw "run $run discarded $discarded window(s) as saturated - re-run the script on a quieter machine (log $log)"
+    }
+
     $unit = $null
+    $best = @{}
     $pending = [System.Collections.Generic.List[object]]::new()
     foreach ($line in Get-Content $log) {
         if ($null -eq $unit) {
@@ -95,7 +107,6 @@ foreach ($run in 1..$Runs) {
         if ($line -match '\[clock\] .*: attempt \d+ of') { $pending.Clear(); continue }
         $m = $tick.Match($line)
         if ($m.Success) { $pending.Add($m); continue }
-        if ($line -match '\[clock\] .*: window SATURATED') { $pending.Clear(); continue }
         if ($line -match '\[clock\] .*: window counted') {
             foreach ($p in $pending) {
                 $kind = if ($p.Groups[1].Value -eq 'corpus') { 'edit' } else { 'append' }
@@ -107,14 +118,28 @@ foreach ($run in 1..$Runs) {
         }
     }
     if ($null -eq $unit) { throw "run $run printed no calibration baseline (see $log)" }
+    foreach ($key in $best.Keys) {
+        if (-not $perRun.ContainsKey($key)) { $perRun[$key] = [System.Collections.Generic.List[double]]::new() }
+        $perRun[$key].Add($best[$key])
+    }
 }
 
-# Ten nodes x three sizes x two kinds. A hole is a failure, never a silently shorter table.
+# Ten nodes x three sizes x two kinds, each measured in EVERY run. A hole is a failure, never a
+# silently shorter table or a median over fewer runs.
 $expected = 60
-if ($best.Count -ne $expected) {
+$complete = @($perRun.Keys | Where-Object { $perRun[$_].Count -eq $Runs }).Count
+if ($perRun.Count -ne $expected -or $complete -ne $expected) {
     $global:LASTEXITCODE = 1
-    throw "only $($best.Count) of $expected cells were measured in a counted window - re-run on a quieter machine (logs in $export)"
+    throw "only $complete of $expected cells were measured in every run - re-run on a quieter machine (logs in $export)"
 }
+
+# The median of the per-run bests (the mean of the middle two for an even run count).
+$median = @{}
+foreach ($key in $perRun.Keys) {
+    $s = @($perRun[$key] | Sort-Object)
+    $median[$key] = if ($s.Count % 2 -eq 1) { $s[($s.Count - 1) / 2] } else { ($s[$s.Count / 2 - 1] + $s[$s.Count / 2]) / 2 }
+}
+$best = $median
 
 $inv = [cultureinfo]::InvariantCulture
 $rows = @($best.Keys | Sort-Object { ($_ -split '\|')[0] }, { ($_ -split '\|')[1] }, { [int](($_ -split '\|')[2]) } | ForEach-Object {
@@ -124,7 +149,7 @@ $rows = @($best.Keys | Sort-Object { ($_ -split '\|')[0] }, { ($_ -split '\|')[1
 $rows[0] = '              [ ' + $rows[0].TrimStart()
 $rows[-1] = $rows[-1] + ' ]'
 $block = @(
-    "          // $arch - recorded $(Get-Date -Format 'yyyy-MM-dd') from $Commit, $Runs run(s), by gates/record-tick-baselines.ps1"
+    "          // $arch - recorded $(Get-Date -Format 'yyyy-MM-dd') from $Commit, the median of $Runs runs' bests, by gates/record-tick-baselines.ps1"
     "          `"$arch`","
     '          Map.ofList'
 ) + $rows
