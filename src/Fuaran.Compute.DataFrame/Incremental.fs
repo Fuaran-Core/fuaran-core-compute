@@ -19,8 +19,8 @@ open type Vec
 //     (`resolveExpr` once per step, `evalResolved` per row), a recomputed
 //     aggregate through the evaluator's own streams (`DataFrame.GroupAgg`,
 //     Phase 323) or `DataFrame.aggregateCells`, a derived column's type
-//     through `DataFrame.derivedTyping` and `DataFrame.columnTypeBy` (Phase
-//     338). One implementation, called on fewer
+//     through `DataFrame.derivedTypingIn` and `DataFrame.columnTypeBy` (Phases
+//     338, 413). One implementation, called on fewer
 //     rows. The conformance family certifies the two results identical for
 //     every (base, delta) pair, so a divergence is a failing law rather than a
 //     wrong number in a consumer.
@@ -3226,10 +3226,11 @@ module Incremental =
                     caches
                     rest)
         | WDerive(name, expr) :: rest ->
-            // The derived column's typing is the reference's own rule over the same schema
-            // (`DataFrame.derivedTyping`, Phase 338), so refresh and full agree by construction. A
-            // derive refused statically is refused before any row, as the reference refuses it.
-            match DataFrame.derivedTyping f.Cols expr with
+            // The derived column's typing is the reference's own rule over the same schema and env
+            // (`DataFrame.derivedTypingIn`, Phases 338 and 413), so refresh and full agree by
+            // construction. A derive refused statically is refused before any row, as the
+            // reference refuses it.
+            match DataFrame.derivedTypingIn env f.Cols expr with
             | DataFrame.Refused -> Error(DataFrame.floatBesideDecimal name)
             | dt ->
                 let resolved = DataFrame.resolveExpr env f.Cols expr
@@ -5046,7 +5047,7 @@ module Incremental =
                     | [] -> Ok acc
                     | (name, e) :: tail ->
                         let typed =
-                            match DataFrame.derivedTyping schema e with
+                            match DataFrame.derivedTypingIn env schema e with
                             | DataFrame.Decided ty -> Ok ty
                             | DataFrame.Refused -> Error(DataFrame.floatBesideDecimal name)
                             | DataFrame.ByCells ->

@@ -21,8 +21,9 @@
      - the private `evalExpr env cols row e`, every one of its fifteen arms and its four inner
        loops (`Coalesce`'s `go`, `Case`'s `go`, `InList`'s `go sawNull`, `ApplyFn`'s `evalArgs`),
        in the order production evaluates and with every short circuit production takes;
-     - `evalFilter` and `evalDerive` (with the derived column's typing — `derivedTyping` over the
-       static typer, `typeFromCells`' widening join and its float-beside-decimal refusal, Phase
+     - `evalFilter` and `evalDerive` (with the derived column's typing — `derivedTypingIn` over the
+       static typer and, where that leaves the column to the cells, over the env-substituted
+       expression (Phase 413), `typeFromCells`' widening join and its float-beside-decimal refusal, Phase
        338 — `colIndex` and the replace-or-append of a derived column) — the two verbs that reach
        `evalExpr`, and the only two;
      - `evalStep`'s dispatch: `Filter` and `Derive` to the two above, every other verb to its
@@ -845,7 +846,9 @@ let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
       | Of FloatType -> Of FloatType
       | Of DecimalType -> Of DecimalType
       | _ -> Unknown)
-  | Round | Floor | Ceil -> unary (fun t -> match t with Of DecimalType -> Of DecimalType | _ -> Of FloatType)
+  (* Phase 413: an undecided operand may be a decimal, so the answer is undecided too. *)
+  | Round | Floor | Ceil ->
+    unary (fun t -> match t with Of DecimalType -> Of DecimalType | Unknown -> Unknown | _ -> Of FloatType)
   | Sqrt -> unary (fun _ -> Of FloatType)
   | Length -> unary (fun _ -> Of IntType)
   | Lower | Upper | Trim -> unary (fun _ -> Of StringType)
@@ -939,6 +942,47 @@ let derived_typing_of (cols:schema) (x:col_expr) : Tot derived_typing =
     | Absent -> Decided StringType
     | Unknown -> ByCells
 
+(* F#: `bindScale env r` (Phase 277) — a rounding's scale slot bound from the env, only to an
+   `Int`; a cell of another shape leaves the param, so evaluation names the slot. *)
+let bind_scale (env:param_env) (r:rounding) : Tot rounding =
+  match r.r_scale with
+  | SlotParam n -> (match assoc n env with Some (Int v) -> { r with r_scale = SlotLit v } | _ -> r)
+  | SlotLit _ -> r
+
+(* F#: `ColExpr.substitute env e` — every bound `Param` becomes its cell, clause for clause. *)
+let rec substitute (env:param_env) (x:col_expr) : Tot col_expr (decreases x) =
+  match x with
+  | Col _ | Lit _ | Now _ -> x
+  | Param n -> (match assoc n env with Some c -> Lit c | None -> x)
+  | Binary op a b -> Binary op (substitute env a) (substitute env b)
+  | Not a -> Not (substitute env a)
+  | Coalesce xs -> Coalesce (substitute_list env xs)
+  | Case cases els -> Case (substitute_cases env cases) (substitute env els)
+  | Cast ty a -> Cast ty (substitute env a)
+  | ApplyFn fn xs -> ApplyFn fn (substitute_list env xs)
+  | InList a items -> InList (substitute env a) (substitute_list env items)
+  | IsNull a -> IsNull (substitute env a)
+  | InParam a n -> InParam (substitute env a) n
+  | Quotient a b r -> Quotient (substitute env a) (substitute env b) (bind_scale env r)
+  | Rounded a r -> Rounded (substitute env a) (bind_scale env r)
+and substitute_list (env:param_env) (xs:list col_expr) : Tot (list col_expr) (decreases xs) =
+  match xs with
+  | [] -> []
+  | x :: rest -> substitute env x :: substitute_list env rest
+and substitute_cases (env:param_env) (cases:list (col_expr & col_expr))
+  : Tot (list (col_expr & col_expr)) (decreases cases) =
+  match cases with
+  | [] -> []
+  | (w, t) :: rest -> (substitute env w, substitute env t) :: substitute_cases env rest
+
+(* F#: `derivedTypingIn env cols e` (Phase 413) — how an EVALUATION types the derived column: the
+   static rule where it decides or refuses; where it leaves the column to the cells, the type the
+   same rule decides over the expression with the env's params substituted, and never a refusal. *)
+let derived_typing_in (env:param_env) (cols:schema) (x:col_expr) : Tot derived_typing =
+  match derived_typing_of cols x with
+  | ByCells -> (match derived_typing_of cols (substitute env x) with Decided ty -> Decided ty | _ -> ByCells)
+  | dt -> dt
+
 (* F#: `floatBesideDecimal column` — the refusal, its text byte for byte. *)
 let float_beside_decimal (column:string) : Tot eval_error =
   TypeError ("derived column '" ^ column ^ "' joins a float and a decimal: cast one to the other's type first - Cast(decimal, ...) to keep the digits exact, Cast(float, ...) to compute approximately")
@@ -1006,7 +1050,7 @@ let rec width_append (n:nat) (rows:list (list cell)) (cells:list cell{len cells 
    then replace the named column in place or append it. *)
 let eval_derive (pr:prims) (env:param_env) (f:wframe) (name:string) (x:col_expr)
   : Tot (outcome wframe eval_error) =
-  let dt = derived_typing_of f.cols x in
+  let dt = derived_typing_in env f.cols x in
   match dt with
   | Refused -> Error (float_beside_decimal name)
   | _ ->
@@ -2018,7 +2062,8 @@ let reorder_in_context (pr:prims) (other:other_fn) (env:param_env) (pre post:lis
    `Planner.declineReorder`'s admission — are exactly the premises under which the reorder
    preserves the driver's result. `derive_type_rows_free` is Phase 338's acceptance in the model:
    a decided derive gives its column the same type over any two frames of one schema, an empty
-   or an all-null one included.
+   or an all-null one included — since Phase 413 also one decided only once the evaluation's params
+   are substituted.
    ====================================================================================== *)
 
 (* A cell fits a typing: `Absent` is the null, `Of ty` the null or a present cell of that type,
@@ -2492,11 +2537,12 @@ let step_total (pr:prims) (h:admits pr) (other:other_fn) (env:param_env) (f:wfra
   | Filter p -> filter_total pr h env f.cols p f.rows
   | Derive _ x -> derive_total pr h env f.cols x f.rows
 
-(* Phase 338's acceptance, in the model: a derive whose column type the schema DECIDES gives the
+(* Phase 338's acceptance, in the model, widened by Phase 413: a derive whose column type an
+   evaluation DECIDES — over the schema, or over the schema and the evaluation's params — gives the
    column the same type over any two frames of one schema — a full one, an empty one, an all-null
    one — wherever both answer `Ok`; the type reads no row. *)
 let derive_type_rows_free (pr:prims) (env:param_env) (f g:wframe) (name:string) (x:col_expr)
-  : Lemma (requires f.cols == g.cols /\ Decided? (derived_typing_of f.cols x))
+  : Lemma (requires f.cols == g.cols /\ Decided? (derived_typing_in env f.cols x))
           (ensures (match eval_derive pr env f name x, eval_derive pr env g name x with
                     | Ok f', Ok g' -> f'.cols == g'.cols
                     | _ -> True)) = ()

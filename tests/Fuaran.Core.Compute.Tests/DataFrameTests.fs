@@ -4227,6 +4227,11 @@ let exprTypingTests =
                     "abs float", ApplyFn(Abs, [ Col "f" ]), Some FloatType
                     "abs str", ApplyFn(Abs, [ Col "s" ]), None
                     "round", ApplyFn(Round, [ Col "i" ]), Some FloatType
+                    // Phase 413: an undecided operand may be a decimal, which `Round` answers as one.
+                    "round of a param", ApplyFn(Round, [ Param "p" ]), None
+                    "floor of an undecided join", ApplyFn(Floor, [ Coalesce [ Col "i"; Col "f" ] ]), None
+                    "ceil of a name the schema lacks", ApplyFn(Ceil, [ Col "nope" ]), None
+                    "round of a null literal", ApplyFn(Round, [ Lit Null ]), None
                     "least mixed", ApplyFn(Least, [ Col "i"; Col "f" ]), None
                     "greatest ints", ApplyFn(Greatest, [ Col "i"; Col "j" ]), Some IntType
                     "wrong arity", ApplyFn(Length, [ Col "s"; Col "t" ]), None
@@ -4302,7 +4307,104 @@ let exprTypingTests =
                       let evaluated = run pipeline |> okTable
                       let actual = evaluated.Schema |> List.find (fun f -> f.Name = "tag") |> _.Type
 
-                      Expect.equal (SchemaWalk.typeOf "tag" (walk pipeline)) (Some actual) "walk and evaluator agree" ]
+                      Expect.equal (SchemaWalk.typeOf "tag" (walk pipeline)) (Some actual) "walk and evaluator agree"
+
+          // Phase 413's law, over GENERATED expressions rather than a menu: wherever an evaluation
+          // decides a derive's column (`derivedTypingIn` — over the schema, or over the schema and
+          // the params), the column takes that type over a populated, an empty and an all-null
+          // frame alike, every present cell is of it or widens into it, and where the schema alone
+          // decides it the static schema (`SchemaWalk`) names the same type.
+          testCase "a decided derive types its column the same over a full, an empty and an all-null frame (Phase 413)"
+          <| fun _ ->
+              let rng = System.Random 413
+              let mutable staticDecided = 0
+              let mutable paramsDecided = 0
+              let mutable decimalByParams = 0
+
+              let envs =
+                  [ typedEnv
+                    typedEnv
+                    |> Map.add "p" (Decimal "1.5")
+                    |> Map.add "pf" (Int 3)
+                    |> Map.add "pn" (Bool true) ]
+
+              let allNull = oneRowTable (typedSchema |> List.map (fun _ -> Null) |> Array.ofList)
+
+              for _ in 1..3000 do
+                  // A third of the draws put a rounding function over a generated operand: the
+                  // shape whose float typing over an undecided operand Phase 413 withdrew.
+                  let e =
+                      if rng.Next 3 = 0 then
+                          ApplyFn(pick rng [ Round; Floor; Ceil ], [ genExpr rng (rng.Next 4) ])
+                      else
+                          genExpr rng (rng.Next 5)
+
+                  // Conforming cells only: a cell its column's type does not hold is read boxed, and
+                  // the decided type is a claim about a schema's conforming frames.
+                  let full =
+                      oneRowTable (
+                          typedSchema
+                          |> List.map (fun f -> if rng.Next 6 = 0 then Null else conformingCell rng f.Type)
+                          |> Array.ofList
+                      )
+
+                  for env in envs do
+                      match DataFrame.derivedTypingIn env typedSchema e with
+                      | DataFrame.Decided ty ->
+                          let walked =
+                              SchemaWalk.typeOf "out" (SchemaWalk.ofPipeline typedSchema [ Derive("out", e) ])
+
+                          match DataFrame.derivedTyping typedSchema e with
+                          | DataFrame.Decided st ->
+                              staticDecided <- staticDecided + 1
+
+                              if st <> ty || walked <> Some ty then
+                                  failtestf "static %A, walked %A, evaluated %A on expr=%A" st walked ty e
+                          | DataFrame.ByCells
+                          | DataFrame.Refused ->
+                              paramsDecided <- paramsDecided + 1
+
+                              if ty = DecimalType then
+                                  decimalByParams <- decimalByParams + 1
+
+                              if walked.IsSome then
+                                  failtestf "the walk holds no env, yet named %A on expr=%A" walked e
+
+                          for label, pipeline, table in
+                              [ "full", [ Derive("out", e) ], full
+                                "empty", [ Filter(Lit(Bool false)); Derive("out", e) ], full
+                                "all-null", [ Derive("out", e) ], allNull ] do
+                              match DataFrame.evalPipelineInEnv env pipeline table with
+                              | Error _ -> ()
+                              | Ok t ->
+                                  let got = t.Schema |> List.find (fun f -> f.Name = "out") |> _.Type
+
+                                  if got <> ty then
+                                      failtestf
+                                          "decided %A, the %s frame typed it %A, on expr=%A env=%A"
+                                          ty
+                                          label
+                                          got
+                                          e
+                                          env
+
+                                  for c in cellsOf "out" t do
+                                      match Cell.typeOf c with
+                                      | Some ct when not (ColumnType.widens ct ty) ->
+                                          failtestf
+                                              "a %A cell in a %A column over the %s frame, on expr=%A"
+                                              ct
+                                              ty
+                                              label
+                                              e
+                                      | _ -> ()
+                      | DataFrame.ByCells
+                      | DataFrame.Refused -> ()
+
+              // Adequacy: both halves of the rule, and the decimal a param's `Round` answers.
+              Expect.isGreaterThan staticDecided 500 "derives the schema decides"
+              Expect.isGreaterThan paramsDecided 50 "derives only the params decide"
+              Expect.isGreaterThan decimalByParams 5 "decimal columns only the params decide" ]
 
 // ---------------------------------------------------------------------------
 //  Phase 267 — the dense columnar frame and the prepared source.

@@ -1,5 +1,149 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-13 — D24: the bare `Rank` window function is deprecated in documentation, keeps its wire tag, and may be removed no earlier than `1.0.0`, never re-pointed
+
+**Context.** `WindowFn.Rank` is the dense rank (`1, 1, 2`). SQL's `RANK()` is the competition rank
+(`1, 1, 3`), so the name misleads any reader coming from SQL. Phase 101 added the two explicit
+spellings: `DenseRank`, which computes exactly what `Rank` computes, and `CompetitionRank`, which is
+SQL's `RANK()`. It documented `Rank` as dense and kept it, because re-pointing it would silently
+change the output of every pipeline that uses it. Until now nothing told an author who writes it.
+
+**1. How it is marked: documentation only.** Three ways were weighed.
+
+- *`[<Obsolete>]` on the union case* — rejected. F# reports an obsolete union case wherever it is
+  constructed AND wherever it is matched (FS0044). An exhaustive `match` over `WindowFn` must name
+  the case, so every consumer that matches exhaustively would get a warning it cannot remove except
+  by adding a wildcard. Adding a wildcard gives up the exhaustiveness check on a closed vocabulary. A
+  consumer that builds with warnings as errors would break on the next package update. This
+  repository's own evaluator, codec and conformance kit would also warn at every one of their arms.
+- *A validator warning on the wire form* — rejected. No verb or reader here has a channel for
+  advisory findings: every check answers `Ok` or a refusal. Adding one for a single deprecated tag is
+  a new seam with one user, and the rule-of-three bar is not met. Refusing `"rank"` would break every
+  stored document.
+- *Documentation* — taken. The case's doc comment opens with the deprecation and names both explicit
+  spellings, saying which one is the same computation. An IDE shows it in the tooltip at the point
+  where an author writes `Rank`. It is the one marker that cannot break a build.
+
+**2. The wire form and the encoder.** `"rank"` decodes to `Rank`, unchanged. The encoder keeps
+writing `Rank` as `"rank"`, so a document holding it re-encodes byte for byte and decodes to the same
+value. Encoding it as `"denseRank"` would make it decode to a different case, which breaks the codec's
+round trip. A new pipeline is expected to construct `DenseRank` (or `CompetitionRank`), and each
+encodes as its own tag. So the encoder never writes `"rank"` unless the pipeline it was given holds
+`Rank`.
+
+**3. When it may go, and the rule.** `Rank` is **never re-pointed** at the competition semantics:
+evaluating a stored pipeline must not change its answer under the same tag. It may be **removed no
+earlier than `Fuaran.Compute.*` `1.0.0`**, the first major version, and only on these terms:
+
+- the removal is its own `STABILITY.md` entry of class `removal`, with the migration
+  `Rank` → `DenseRank`;
+- in the same release, the decoder keeps `"rank"` as a legacy alias that decodes to `DenseRank` and
+  normalises on re-encode, as `"cumSum"` does for `CumulSum`. A stored document then evaluates to
+  the same table after the removal as before it;
+- before `1.0.0` it stays, deprecated in documentation, through every `0.x` release.
+
+**The class.** No signature, no output and no wire byte changes, so this is documentation, recorded
+under the `0.39.0` draft without moving its number.
+
+## 2026-10-13 — D23: an evaluation decides a derive its params decide; `Round`, `Floor` and `Ceil` over an undecided operand are undecided; the rest of the cells' share is recorded, not decided
+
+**Context.** D5 types a derived column by its expression, and leaves it to the cells only where the
+typer answers `Unknown`. Under that rule an empty or an all-null frame types a cells-decided column
+`string`, so a full answer and an empty one disagree, and the static schema cannot name the column.
+Phase 413 walked every shape the typer answers `Unknown` for, to decide each one statically where the
+expression determines the type and to record why the cells must decide where it does not. The walk
+also found that one shape the typer DID decide was decided wrongly.
+
+**The shapes, each with a sample and its verdict.**
+
+| # | Shape | Sample | Verdict |
+|---|---|---|---|
+| 1 | A bound `Param`, and every node whose typing it leaves undecided | `Param "p"`, `Binary(Add, Col "i", Param "p")`, `ApplyFn(Round, [ Param "p" ])` | **Decided at evaluation** by the bound cell (ruling 1); the static reader holds no env and still cannot name it |
+| 2 | `Round`, `Floor`, `Ceil` over an operand the typer cannot decide | `ApplyFn(Round, [ Case([ c, Col "i" ], Col "m") ])` | **Was decided `float`, wrongly**: now undecided (ruling 2) |
+| 3 | An unbound `Param` | `Param "unbound"` | Residue: every row is refused `UnboundParam`, so only a frame with no row answers |
+| 4 | An unpinned `Now` | `Now NowGrain.Date` | Residue (ruling 3) |
+| 5 | A column the schema does not carry | `Col "nope"`, `Binary(Add, Col "nope", Lit(Int 1))` | Residue: statically the schema in hand may be open; at evaluation every row is refused `UnknownColumn` |
+| 6 | A join of two types the exact typer keeps apart, and every node over one | `Case([ c, Col "i" ], Col "f")`, `Coalesce [ Col "m"; Lit(Int 0) ]`, `ApplyFn(Least, [ Col "i"; Col "f" ])`, `Case([ c, Col "s" ], Col "i")` | Residue (ruling 4) |
+| 7 | An operator over operands it refuses | `Binary(Add, Col "s", Col "i")`, `Not(Col "i")`, `ApplyFn(Abs, [ Col "s" ])`, `Binary(Div, Col "m", Col "i")`, `Rounded(Col "f", r)`, `Binary(Eq, Col "s", Col "d")` | Residue (ruling 5) |
+| 8 | A bound param whose substituted arms put a float beside a decimal | `Case([ c, Param "pf" ], Param "pd")`, `pf` a float and `pd` a decimal | Residue (ruling 1) |
+
+An `Unpivot` of a string beside an int value column is the same rule's one cells-decided unpivot, and
+D18 already refuses it where the cells hold both.
+
+**1. A bound param decides the derive at evaluation.** `DataFrame.derivedTypingIn env cols e` is the
+rule every evaluating path reads: the reference evaluator, the morsel runner, and the incremental
+seam's row walk and chunked path. Where `derivedTyping` decides or refuses, it is the answer. Where it
+leaves the column to the cells, the answer is what the same rule DECIDES over `e` with the
+evaluation's params substituted. That is `ColExpr.substitute`'s expression, which evaluates exactly as
+`e` does (the substitution witness `paramLaws` certifies). So a bound param types as the literal it is
+bound to, on a full, an empty and an all-null frame of that evaluation alike. The planner and every
+static reader (`SchemaWalk`, `PipelineQuery`, `Plan`) hold no env and read `derivedTyping` unchanged.
+So a param-decided derive is still not total to the verdict, and the planner still moves no filter
+past it.
+
+The substituted rule DECIDES and never REFUSES. Where the substituted arms put a float beside a
+decimal (row 8), the column stays the cells', as it was. Refusing it would turn every frame whose cells
+hold one family from an answer into a refusal. The cells already refuse the frames that hold both. That
+consistency with a literal arm, which D5 refuses statically, is the one thing this ruling declines. It
+is a behaviour break with no defect behind it, and is left for a phase that wants it.
+
+**2. `Round`, `Floor` and `Ceil` over an undecided operand are undecided.** The typer answered `float`
+for any operand that was not a decided decimal, `Unknown` included. Over a decimal those three answer a
+decimal (Phase 277), so an undecided operand that turned out to be one put a decimal cell in a column
+declared `float`. Two cases were observed before the fix. `Round(Param p)` with `p` bound to a decimal
+gave a `float` column holding `Decimal "3"`. `Round(Case([ i > 0, Col "i" ], Col "m")` over rows taking
+both arms threw at the `Table` boundary ("column 'd' cannot be held by its type"), where it should
+have answered. Now an undecided operand gives an undecided answer. The cells decide such a column, or
+a bound param does by ruling 1. The cells refuse a float beside a decimal by name. The typer and the
+model (`proofs/Pipeline.fst`, `typing_apply_fn`) change in the same clause.
+
+**3. An unpinned `Now` stays undecided.** A pinned evaluation substitutes the witness's cell before
+anything is typed, so the derive is decided by its literal on every frame of that evaluation, and the
+shard's problem does not arise there. An unpinned one refuses every row. The static reader could name
+`date` for the date grain. But that name would rest on the host's witness answering a `Date`, which
+nothing checks (`nowLaws` certifies determinism, not the cell's type). A static type the evaluator
+can contradict is worse than none. The timestamp grain's unit is the witness's in any case.
+
+**4. A join of two types the exact typer keeps apart stays the cells'.** Today a frame whose rows
+take only the int arm of `Case(int, float)` answers an int column of ints, and one whose rows take
+both answers a float column. Deciding `float` statically would have to be honest at the derive
+itself: the int cells would have to become floats there, or the static schema would claim `float`
+over int cells for a later step. The totality verdict reads that claim as exact, because two ints
+added can overflow where two floats cannot (D3). So the decision is a value change on every frame
+that answers with ints today. That reopens D3's and D5's rulings, and is left to an operator ruling
+rather than taken inside a typer phase. A pair no widening relates (a string beside an int) is refused
+by the cells where both occur (D18). Deciding it statically would refuse frames that hold one of them.
+
+**5. An operator over operands it refuses stays the cells'.** Every row with its operands present is
+an error, so every frame that answers holds no present value. The cells already type that frame
+`string`, which is what a decided "no present value" would say. No two answering frames disagree.
+What is missing is only the static name of a column that can hold no value. Buying it costs an
+absence rule per operator in the typer and in its model, and changes no answer.
+
+**The law.** `DeriveTypingConformance.laws` gains a sixth law. A derive the walk leaves to the cells,
+but decides over its expression with the evaluation's params substituted, types its column the same
+over a full, an empty and an all-null frame. The menu gains `Round(Param p)`, `i + p` and a `Round`
+over an undecided int/decimal join, and the param is drawn as an int, a float or a decimal. The suite
+holds the law over GENERATED expressions too (`DataFrame.Typing`, "a decided derive types its column
+the same over a full, an empty and an all-null frame (Phase 413)"). Wherever `derivedTypingIn`
+decides, the column takes that type over every frame, every present cell is of it or widens into it,
+and a schema-decided type is the one `SchemaWalk` names. Restoring the float answer for an undecided
+`Round` turns it red. So do the explicit cases in `DeriveTypingTests`. Restoring the env-less rule in
+the incremental seam turns the prime/refresh case and the law family red. In the model,
+`derive_type_rows_free` now covers a derive `derived_typing_in` decides. Requiring `ByCells` instead
+of `Decided` fails its proof.
+
+**The class.** No public signature moves (`derivedTypingIn` is internal). What a consumer can observe
+is `behaviour`:
+
+- a `Round`, `Floor` or `Ceil` over an undecided operand is no longer typed `float` by `typeOf`,
+  `SchemaWalk` or `PipelineQuery`, which now names it `TypeUndecidable`;
+- such a derive is typed by its cells or its params;
+- a bound-param derive over an empty or all-null frame is typed by the param's cell where it was
+  `string`.
+
+`STABILITY.md` records it under the `0.39.0` draft, which already carries a BREAKING class.
+
 ## 2026-10-13 — D22: the `lines` APPEND and `window CumulSum` edit ticks at 20,000 rows join D19's named exception on the same terms, and a clock case is red only when the same cell is red on every counted attempt
 
 **Context.** D19 holds every corpus tick cell to `max(1.6 x full, 1.5 x baseline) + floor`. It holds one
