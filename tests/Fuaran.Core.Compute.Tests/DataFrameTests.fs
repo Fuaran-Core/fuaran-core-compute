@@ -167,6 +167,88 @@ let tests =
                   | Error e -> failtestf "%A: the incremental prime refused with another error: %A" pipeline e
                   | Ok _ -> failtestf "%A: the incremental prime accepted a misspelled key" pipeline
 
+          // Phase 441 — a misspelled partition key used to be dropped, so the window partitioned by
+          // nothing and answered a plausible wrong column.
+          testCase "A partition key that names no column is refused, like a sort key"
+          <| fun _ ->
+              let spec =
+                  { PartitionBy = [ "dpt" ]
+                    OrderBy = [ "salary", Asc ]
+                    Fn = RowNumber
+                    Of = "salary"
+                    As = "rn" }
+
+              let refusedAs (name: string) (what: string) (r: Result<unit, EvalError>) =
+                  match r with
+                  | Error(UnknownColumn(n, available)) when n = name ->
+                      Expect.equal
+                          available
+                          [ "dept"; "name"; "salary"; "bonus" ]
+                          (what + ": names the columns there are")
+                  | other -> failtestf "%s: an unknown window key must refuse by name (%s), got %A" what name other
+
+              let refused = refusedAs "dpt"
+              let window s = run [ Window s ] |> Result.map ignore
+
+              refused "the evaluator" (window spec)
+
+              refused
+                  "a second partition key"
+                  (window
+                      { spec with
+                          PartitionBy = [ "dept"; "dpt" ] })
+
+              // Before any row is read: a source with no rows refuses as one with rows does.
+              let empty =
+                  { people with
+                      Columns = people.Columns |> List.map (fun c -> col c.Name c.Type []) }
+
+              refused "over no rows" (DataFrame.evalPipeline [ Window spec ] empty |> Result.map ignore)
+
+              // The public row form refuses the same way.
+              let rows =
+                  [ for i in 0 .. Table.rowCount people - 1 ->
+                        people.Columns |> List.map (fun c -> List.item i (Column.toCells c)) ]
+
+              refused "the row form" (DataFrame.windowStep people.Schema rows spec |> Result.map ignore)
+
+              // The incremental seam primes through the same check, both entry points.
+              for f in [ RowNumber; CumulSum; Lag ] do
+                  let s = { spec with Fn = f }
+
+                  refused
+                      (sprintf "the incremental prime (%A)" f)
+                      (Incremental.prime DataFrame.noResolve Map.empty (RowIdentity.byColumn "name") [ Window s ] people
+                       |> Result.map ignore)
+
+                  refused
+                      (sprintf "the prepared incremental prime (%A)" f)
+                      (Incremental.primePrepared
+                          DataFrame.noResolve
+                          Map.empty
+                          (RowIdentity.byColumn "name")
+                          [ Window s ]
+                          (DataFrame.prepare people)
+                       |> Result.map ignore)
+
+              // One resolution, in the spec's order: the partition keys, then the order keys; the
+              // window's own `Of` check still comes before either.
+              refused "a partition key ahead of an order key" (window { spec with OrderBy = [ "salry", Asc ] })
+
+              refusedAs
+                  "salry"
+                  "an order key, partition keys known"
+                  (window
+                      { spec with
+                          PartitionBy = [ "dept" ]
+                          OrderBy = [ "salry", Asc ] })
+
+              refusedAs "sal" "the read column first" (window { spec with Fn = CumulSum; Of = "sal" })
+
+              // The planner's totality verdict agrees: a window is never total, so none is reordered
+              // or pruned across, and an unknown key leaves it so.
+              Expect.isFalse (Plan.isTotal people.Schema (Window spec)) "a window over an unknown key is not total"
+
           testCase "Distinct dedupes whole rows, first occurrence wins"
           <| fun _ ->
               let t = run [ Project [ "dept", "dept" ]; Distinct ] |> okTable

@@ -4634,14 +4634,20 @@ module DataFrame =
 
     // ---- sort (pinned: stable; nulls last regardless of direction) ----
 
-    /// The first sort key a schema does not carry, as the `UnknownColumn` every other verb answers
-    /// for an unknown column (Phase 412, `DECISIONS.md` D21). `Sort` and a `Window`'s ordering
-    /// refuse with it before they order anything, so a misspelled key is an error, never the input
-    /// order returned as if it had been sorted.
+    /// The first of `keys` a schema does not carry, as the `UnknownColumn` every other verb answers
+    /// for an unknown column: the ONE resolution of the keys a step takes from a pipeline to order
+    /// or partition its rows by (Phase 412, `DECISIONS.md` D21; Phase 441, D26). `Sort` refuses
+    /// with it before it orders anything, and a `Window` before it reads a row
+    /// (`windowRefusal`), so a misspelled key is an error, never the input order returned as if it
+    /// had been sorted or one partition answered as if it were several.
+    let internal unknownKey (cols: Schema) (keys: string list) : EvalError option =
+        keys
+        |> List.tryFind (fun name -> Option.isNone (colIndex cols name))
+        |> Option.map (fun name -> UnknownColumn(name, available cols))
+
+    /// The first sort key a schema does not carry (`unknownKey` over the keys' columns).
     let internal unknownSortKey (cols: Schema) (by: (string * SortDir) list) : EvalError option =
-        by
-        |> List.tryFind (fun (name, _) -> Option.isNone (colIndex cols name))
-        |> Option.map (fun (name, _) -> UnknownColumn(name, available cols))
+        unknownKey cols (List.map fst by)
 
     /// A sort's keys resolved against one step's schema (Phase 263): each named column's index with
     /// its direction, in key order. The steps that take keys from a pipeline refuse an unknown key
@@ -7565,6 +7571,20 @@ module DataFrame =
         | CumulMin, _ -> true
         | _ -> false
 
+    /// The one check a `Window` step's spec passes before any row is read (Phase 441, `DECISIONS.md`
+    /// D26), in the order the step refuses: a bucket count below one, then a column the function
+    /// reads that the schema lacks, then the first key the spec takes from the pipeline that the
+    /// schema does not carry — its partition keys, then its order keys, through `unknownKey`, the
+    /// resolution a `Sort`'s keys pass, so the partition and the order keys cannot drift apart
+    /// again. The frame form, the row form (`windowStep`) and the incremental seam all ask it;
+    /// `None` is a spec the step evaluates.
+    let internal windowRefusal (cols: Schema) (spec: WindowSpec) : EvalError option =
+        match spec.Fn with
+        | NTile b when b < 1 -> Some(TypeError("ntile expects at least 1 bucket, got " + string b))
+        | fn when windowReadsOf fn && Option.isNone (colIndex cols spec.Of) ->
+            Some(UnknownColumn(spec.Of, available cols))
+        | _ -> unknownKey cols (spec.PartitionBy @ List.map fst spec.OrderBy)
+
     /// The `Window` step's appended column (Phase 324): its type, and one value per LOGICAL row of
     /// the rows `phys` reads, over the vectors `vecOf` names by schema index. The frame form packs it
     /// back at the physical rows; the public row form (`windowStep`) and the incremental seam's
@@ -7578,17 +7598,15 @@ module DataFrame =
         (phys: int[])
         (spec: WindowSpec)
         : Result<ColumnType * WindowColumn, EvalError> =
-        match spec.Fn, colIndex cols spec.Of with
-        | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
-        | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
-        // Phase 412 — an order key the schema does not carry is refused, as a `Sort`'s is, before
-        // the ordering is computed (`windowColumnOverWith` refuses it too, for a caller holding one).
-        | _ when Option.isSome (unknownSortKey cols spec.OrderBy) ->
-            Error(Option.get (unknownSortKey cols spec.OrderBy))
-        | _ -> windowColumnOverWith k cols vecOf phys spec (windowOrderOfWith k perturbation cols vecOf phys spec) null
+        // Phase 412 / 441 — the spec is refused before the ordering is computed
+        // (`windowColumnOverWith` refuses it too, for a caller holding an ordering already).
+        match windowRefusal cols spec with
+        | Some e -> Error e
+        | None ->
+            windowColumnOverWith k cols vecOf phys spec (windowOrderOfWith k perturbation cols vecOf phys spec) null
 
-    /// The schema indexes of a window's PARTITION columns, a name the schema does not carry dropped
-    /// (the window partitions by the columns it can find, as it always has).
+    /// The schema indexes of a window's PARTITION columns. Every reader reaches it behind
+    /// `windowRefusal`, which refuses a name the schema does not carry, so every name resolves.
     and internal windowPartitionIdx (cols: Schema) (spec: WindowSpec) : int[] =
         spec.PartitionBy |> List.choose (colIndex cols) |> List.toArray
 
@@ -7627,12 +7645,9 @@ module DataFrame =
         (wo: WindowOrder)
         (seeds: Cell[])
         : Result<ColumnType * WindowColumn, EvalError> =
-        match spec.Fn, colIndex cols spec.Of with
-        | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
-        | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
-        | _ when Option.isSome (unknownSortKey cols spec.OrderBy) ->
-            Error(Option.get (unknownSortKey cols spec.OrderBy))
-        | _, ofIdx ->
+        match windowRefusal cols spec, colIndex cols spec.Of with
+        | Some e, _ -> Error e
+        | None, ofIdx ->
             let n = phys.Length
             // A running total over a decimal column stays exact (Phase 277).
             let sourceIsDecimal = windowSourceIsDecimal cols spec

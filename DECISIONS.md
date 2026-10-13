@@ -1,5 +1,45 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-13 — D26: a partition key that names no column is refused with `UnknownColumn`, through the one resolution a sort key passes; the window's keys are checked before any row is read
+
+**Context.** D21 made a sort key that names no column a refusal, in a `Sort` and in a `Window`'s
+ordering. It left a `Window`'s `PartitionBy` alone, because a partition key is not a sort key
+(Phase 441). `windowPartitionIdx` still dropped a name the schema lacks, so a misspelled partition key
+partitioned by nothing. The window then answered one partition's column as if it were several: a
+plausible wrong result, `Ok`. This was pinned before the change: a `RowNumber` window over `[ "dpt" ]`
+on a table carrying `dept` answered `Ok`.
+
+**Decision.** A partition key that names no column is refused with `UnknownColumn(name, available)`,
+the error every other verb answers.
+
+1. **One resolution.** `unknownKey` is the one check for the keys a step takes from a pipeline to
+   order or partition its rows by. `unknownSortKey` is now that check over a sort's columns, and
+   `windowRefusal` is the window's whole spec check: a bucket count below one, then a read column the
+   schema lacks, then the partition keys, then the order keys, refused at the first failure. Because
+   the partition and order keys pass through the same function, the two rules cannot drift apart
+   again, which is how the partition rule was left behind in D21.
+2. **Partition keys before order keys.** Where both a partition key and an order key are unknown, the
+   partition key is named. That is the spec's own order, and SQL's `PARTITION BY … ORDER BY`. The
+   function's own checks still come first, as they did under D21.
+3. **Before any row is read.** The frame form (`windowColumnOfWith` and `windowColumnOverWith`), the
+   public row form (`windowStep`) and the incremental seam all ask `windowRefusal`. The incremental
+   walk asks it at the step's entry, ahead of resuming a prior run or ordering the rows, as its `Sort`
+   step does under D21. A source with no rows refuses exactly as one with rows does.
+4. **The planner's totality verdict already agrees.** `Plan.isTotal` has never counted a `Window` as
+   total, so no rewrite reorders a filter across one or prunes a column behind one. An unknown key
+   leaves that unchanged.
+
+**What it does not change.** A `Window` whose `As` names an existing column still appends a second
+column of that name (D20, D25). The exported comparator `rowCompareBy` still drops an unknown key, as
+D21 says. The proof model treats `Window` as one of the verbs it does not model, so it holds no copy
+of this rule.
+
+**Consequences.** A behaviour change to a public evaluator, of the same class as D21's. No public
+signature moves, because both new functions are internal. It is versioned under the `0.39.0` draft
+(`STABILITY.md`), which it rides. No vector in `conformance/laws/transform-laws.json` partitions a
+window on a column its table lacks, so none moves, and the corpus copy follows the release rule
+(D6 (4)) unchanged.
+
 ## 2026-10-13 — D25: the evaluator's source seam is the prepared source, entered by position; `prepareRows` reads a schema and its rows, so a split pipeline hands its prefix through it rather than through a re-entered `Table`
 
 **Context.** Every evaluator entry point took a whole table (Phase 415). A placement that splits a
