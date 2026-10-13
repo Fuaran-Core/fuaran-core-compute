@@ -1,5 +1,50 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-13 — D24: the bare `Rank` window function is deprecated in documentation, keeps its wire tag, and may be removed no earlier than `1.0.0`, never re-pointed
+
+**Context.** `WindowFn.Rank` is the dense rank (`1, 1, 2`). SQL's `RANK()` is the competition rank
+(`1, 1, 3`), so the name misleads any reader coming from SQL. Phase 101 added the two explicit
+spellings: `DenseRank`, which computes exactly what `Rank` computes, and `CompetitionRank`, which is
+SQL's `RANK()`. It documented `Rank` as dense and kept it, because re-pointing it would silently
+change the output of every pipeline that uses it. Until now nothing told an author who writes it.
+
+**1. How it is marked: documentation only.** Three ways were weighed.
+
+- *`[<Obsolete>]` on the union case* — rejected. F# reports an obsolete union case wherever it is
+  constructed AND wherever it is matched (FS0044). An exhaustive `match` over `WindowFn` must name
+  the case, so every consumer that matches exhaustively would get a warning it cannot remove except
+  by adding a wildcard. Adding a wildcard gives up the exhaustiveness check on a closed vocabulary. A
+  consumer that builds with warnings as errors would break on the next package update. This
+  repository's own evaluator, codec and conformance kit would also warn at every one of their arms.
+- *A validator warning on the wire form* — rejected. No verb or reader here has a channel for
+  advisory findings: every check answers `Ok` or a refusal. Adding one for a single deprecated tag is
+  a new seam with one user, and the rule-of-three bar is not met. Refusing `"rank"` would break every
+  stored document.
+- *Documentation* — taken. The case's doc comment opens with the deprecation and names both explicit
+  spellings, saying which one is the same computation. An IDE shows it in the tooltip at the point
+  where an author writes `Rank`. It is the one marker that cannot break a build.
+
+**2. The wire form and the encoder.** `"rank"` decodes to `Rank`, unchanged. The encoder keeps
+writing `Rank` as `"rank"`, so a document holding it re-encodes byte for byte and decodes to the same
+value. Encoding it as `"denseRank"` would make it decode to a different case, which breaks the codec's
+round trip. A new pipeline is expected to construct `DenseRank` (or `CompetitionRank`), and each
+encodes as its own tag. So the encoder never writes `"rank"` unless the pipeline it was given holds
+`Rank`.
+
+**3. When it may go, and the rule.** `Rank` is **never re-pointed** at the competition semantics:
+evaluating a stored pipeline must not change its answer under the same tag. It may be **removed no
+earlier than `Fuaran.Compute.*` `1.0.0`**, the first major version, and only on these terms:
+
+- the removal is its own `STABILITY.md` entry of class `removal`, with the migration
+  `Rank` → `DenseRank`;
+- in the same release, the decoder keeps `"rank"` as a legacy alias that decodes to `DenseRank` and
+  normalises on re-encode, as `"cumSum"` does for `CumulSum`. A stored document then evaluates to
+  the same table after the removal as before it;
+- before `1.0.0` it stays, deprecated in documentation, through every `0.x` release.
+
+**The class.** No signature, no output and no wire byte changes, so this is documentation, recorded
+under the `0.39.0` draft without moving its number.
+
 ## 2026-10-13 — D23: an evaluation decides a derive its params decide; `Round`, `Floor` and `Ceil` over an undecided operand are undecided; the rest of the cells' share is recorded, not decided
 
 **Context.** D5 types a derived column by its expression, and leaves it to the cells only where the

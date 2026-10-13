@@ -43,11 +43,18 @@ type JoinKind =
 
 type WindowFn =
     | RowNumber
-    /// Ties share a rank and the NEXT distinct order key is the next integer — i.e. this is the
-    /// gapless "dense" rank, not SQL's `RANK()`. The name predates the distinction; `DenseRank` is
-    /// the explicit spelling of the same computation, and `CompetitionRank` is SQL `RANK()`.
-    /// Kept as-is because re-pointing it at the gapped semantics would silently change every
-    /// existing pipeline's output — a major bump, not an additive one.
+    /// **Deprecated (Phase 414, `DECISIONS.md` D24): write `DenseRank` or `CompetitionRank`.**
+    /// `DenseRank` is this exact computation; `CompetitionRank` is SQL's `RANK()`, which this is
+    /// NOT. Ties share a rank and the NEXT distinct order key is the next integer — the gapless
+    /// "dense" rank (`1, 1, 2`), where SQL's `RANK()` gaps (`1, 1, 3`). The name predates the
+    /// distinction.
+    ///
+    /// Deprecated in documentation only, never by `[<Obsolete>]`: an obsolete union case warns at
+    /// every exhaustive match over `WindowFn`, which a consumer building with warnings as errors
+    /// could not silence without a wildcard. It evaluates, encodes (`"rank"`) and decodes exactly
+    /// as it always has, so no existing pipeline's output or wire form changes. It is never
+    /// re-pointed at the gapped semantics; it may be REMOVED no earlier than `1.0.0`, with the wire
+    /// tag `"rank"` kept as a decode alias of `DenseRank` (D24).
     | Rank
     | Lag
     | Lead
@@ -9458,6 +9465,8 @@ module DataFrameCodec =
     let private windowTag =
         function
         | RowNumber -> "rowNumber"
+        // Deprecated `Rank` (Phase 414, D24) keeps its own tag, so a document holding it re-encodes
+        // byte for byte; a new pipeline that writes `DenseRank` encodes `"denseRank"`.
         | Rank -> "rank"
         | Lag -> "lag"
         | Lead -> "lead"
