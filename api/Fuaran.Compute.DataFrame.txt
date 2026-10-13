@@ -213,6 +213,7 @@ method Fuaran.Compute.DataFrame.joinKeysMatch(Microsoft.FSharp.Collections.FShar
 method Fuaran.Compute.DataFrame.joinRightNames(Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Collections.FSharpList`1<System.String>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.DataFrame.noResolve(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.prepare(Fuaran.Core.Table) : Fuaran.Compute.Prepared
+method Fuaran.Compute.DataFrame.prepareRows(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, System.Collections.Generic.IEnumerable`1<Fuaran.Core.Cell[]>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Prepared, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.rowCompareBy(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.SortDir>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.Int32
 method Fuaran.Compute.DataFrame.rowToken(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.DataFrame.rowTokenString(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.String

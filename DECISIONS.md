@@ -1,5 +1,77 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-13 — D25: the evaluator's source seam is the prepared source, entered by position; `prepareRows` reads a schema and its rows, so a split pipeline hands its prefix through it rather than through a re-entered `Table`
+
+**Context.** Every evaluator entry point took a whole table (Phase 415). A placement that splits a
+pipeline — a prefix pushed down to a database as a statement, a cached cell, a checkpoint — had to build
+a `Table` from the rows it held and feed it back in. The `Table` door reads columns by NAME:
+`Frame.ofTable` looks each schema field up with `Table.tryColumn`, which answers the first column of that
+name. So a result that names a column twice re-enters wrong. D20 closed the join's way of producing such
+a result, but the evaluator still produces one itself: a `Window` whose `As` names an existing column
+appends a second column of that name, which D20 left as it stands. Handed back through the `Table` door,
+that second column reads the first one's cells.
+
+This was measured, not assumed. The split law below was run once with the hand-off going through
+`prepare (toTable result)` instead of through the seam. It failed on the generated sample (a `CumulMax`
+window whose `As` names an existing int column, split after the window) and on the test written for the
+shape. Through the seam, both hold.
+
+**Decision.**
+
+1. **The carrier is `Prepared`.** The evaluator's own working form is a schema and one column vector per
+   field, in order: a result that carries its column identities by position, not by name. `Prepared`
+   already had a way in from a table (`prepare`) and a way out of an evaluation (`evalToPrepared`, Phase
+   342). Every evaluator over a prepared source already takes it, and so do `ColumnOps` and the
+   incremental seam. What it lacked was a way in that is not a `Table`. A new carrier type would have been
+   a second form of the same thing, with one user.
+2. **The new door is `DataFrame.prepareRows schema rows`: a schema plus a row reader, read by position.**
+   Cell `c` of every row is column `c` of the schema, so a schema that names a column twice keeps both,
+   as the evaluator's own frame does. Rows, not columns, because the readers a host holds (a statement's
+   reader, a cache file) yield rows. Each column is packed under its field's type exactly as the
+   evaluator packs the rows a verb emits. So the seam checks no more of a cell's type than the `Table`
+   door does: a cell its column's type cannot hold is carried the way that door carries one. A row whose
+   width is not the schema's is refused with `TypeError`, naming the row. No new `EvalError` case was
+   added, because that would make an additive door a breaking change for every exhaustive match. The way
+   out is `toTable`, whose `Columns` follow its `Schema` by position, or the `Prepared` itself.
+3. **The whole-table entry points stay, and were already adapters.** Each of them is `prepare` followed
+   by the prepared-source evaluator, and has been since Phase 267. This was checked against the tree
+   before anything was built, and nothing in them moves.
+4. **How it relates to the incremental seam.** The incremental seam takes rows APPENDED to a source it
+   already primed: a delta against a state it holds. This seam takes a whole source, by position. A
+   source entered through it primes the incremental seam (`Incremental.primePrepared`) exactly as the
+   table it came from does, and a test holds that.
+5. **How it relates to a host that pushes a prefix down.** Such a host runs a pipeline's prefix as a
+   statement, reads the statement's rows into `prepareRows`, and runs the remainder with
+   `evalPrepared`. No `Table` is built between the two halves, so nothing between them is read by name.
+   The host still receives the source and the pipeline together, and choosing where to split is still
+   the host's decision. The evaluator offers a split that is safe at every step, not a place to make one.
+6. **What it deliberately does not do.** It does no IO and nothing asynchronous: the reader is a
+   sequence the host hands in, pulled once, synchronously, and the evaluator opens and closes nothing.
+   It does not stream. The rows become columns before the remainder runs, because every step reads whole
+   columns. A `Ref` that a `Join`, `Union`, `Intersect` or `Except` names still resolves to a `Table`
+   (`resolve : string -> Result<Table, EvalError>`). A resolved operand is a whole second source, not a
+   prefix. Widening the resolver's type would move every entry point's signature, a breaking change for
+   a shape that neither the corpus nor any host has needed. The planner plans each half of a split on
+   its own, so a rewrite that would have crossed the split is not taken. That changes no answer: the
+   planned evaluation equals the reference as written (`Conformance.plannerLaws`).
+7. **The `Table` door is unchanged.** It reads by name, which is Core's `Table` contract:
+   `Table.validate` refuses a repeated name, so a valid table never meets the defect. A `Window` result
+   with a repeated name that re-enters through that door is still read wrong. That rule belongs to the
+   `Window`'s `As`, not to this seam, and it is recorded here with its measurement so that the phase
+   which takes it starts from it.
+
+**The law.** The suite list `The source seam (Phase 415)` splits every pipeline after every step: the
+prefix is evaluated with `evalToPrepared`, its rows are read out by position and back in through
+`prepareRows`, and the remainder is evaluated with `evalPrepared`. Every split answers what the whole
+pipeline answers, refusals included. That holds over the transform law vectors, and over 400 generated
+pairs of chained pipelines under a param env, with more than 500 splits falling strictly inside a
+pipeline. It also holds over Phase 411's collision shape (a left already carrying `x_right`, so the
+right's `x` is named `x_right_2`) and over the repeated-name `Window` shape above.
+
+**Consequences.** `DataFrame.prepareRows` is new and additive. Nothing else moves: no signature, no
+output and no wire byte. It is recorded under the `0.39.0` draft in `STABILITY.md` without moving its
+number. The corpus copy follows the release rule (D6 (4)) unchanged, because no vector moves.
+
 ## 2026-10-13 — D24: the bare `Rank` window function is deprecated in documentation, keeps its wire tag, and may be removed no earlier than `1.0.0`, never re-pointed
 
 **Context.** `WindowFn.Rank` is the dense rank (`1, 1, 2`). SQL's `RANK()` is the competition rank

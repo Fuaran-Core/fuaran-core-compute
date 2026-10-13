@@ -8508,7 +8508,41 @@ module DataFrame =
     /// to `evalPrepared` per pipeline, or to `Incremental.primePrepared`. Since Phase 268 a prepared
     /// source is also a persistent VERSION: `ColumnOps.applyPrepared` edits it at the cost of a
     /// chunk, sharing everything an edit did not touch, and `toTable` reads any version back.
+    /// A table's columns are read by NAME, as Core's `Table` addresses them; a table Core's
+    /// `Table.validate` admits names each column once. A source whose columns are identified by
+    /// position — rows from a reader, or a split pipeline's prefix — enters through `prepareRows`.
     let prepare (t: Table) : Prepared = Prepared.ofTable t
+
+    /// The source seam (Phase 415, `DECISIONS.md` D25): a source handed to the evaluator as a
+    /// schema and its rows, read by POSITION. Cell `c` of every row is column `c` of `schema`, so a
+    /// schema that names a column twice keeps both, as the evaluator's own frame does; nothing is
+    /// looked up by name on the way in. It is the door for a source that is not a `Table`: the
+    /// rows a statement returned, a cached or checkpointed result, the prefix of a pipeline run
+    /// somewhere else. The rows are read once, in order, and not retained; each column is packed
+    /// under its field's type exactly as the evaluator packs the rows a verb emits, so a cell the
+    /// type cannot hold is carried as the `Table` door carries one. A row whose width is not the
+    /// schema's is refused with `TypeError`, naming the row. No IO and nothing asynchronous: the
+    /// reader is whatever sequence the host hands in. The answer is a `Prepared`, which every
+    /// evaluator entry point over a prepared source, `ColumnOps` and the incremental seam take.
+    let prepareRows (schema: Schema) (rows: seq<Cell[]>) : Result<Prepared, EvalError> =
+        let all = Seq.toArray rows
+        let width = List.length schema
+
+        match all |> Array.tryFindIndex (fun r -> isNull r || r.Length <> width) with
+        | Some i ->
+            let got = if isNull all[i] then 0 else all[i].Length
+
+            Error(
+                TypeError(
+                    "source row "
+                    + string i
+                    + ": "
+                    + string got
+                    + " cells, schema width "
+                    + string width
+                )
+            )
+        | None -> Ok(Prepared.ofFrame (Frame.ofRows schema all))
 
     /// The table a prepared source stands for (Phase 268): the very table it was prepared from,
     /// or — for a version an edit or a chunked refresh produced — the table built from its chunks
