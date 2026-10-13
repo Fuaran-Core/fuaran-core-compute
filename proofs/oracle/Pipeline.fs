@@ -2815,6 +2815,9 @@ in (match (fn) with
 | Of (DecimalType) -> begin
      Of (DecimalType)
      end
+| Unknown -> begin
+     Unknown
+     end
 | uu___ -> begin
      Of (FloatType)
      end)))
@@ -2824,6 +2827,9 @@ in (match (fn) with
 | Of (DecimalType) -> begin
      Of (DecimalType)
      end
+| Unknown -> begin
+     Unknown
+     end
 | uu___ -> begin
      Of (FloatType)
      end)))
@@ -2832,6 +2838,9 @@ in (match (fn) with
      (unary (fun ( t  :  typing ) -> (match (t) with
 | Of (DecimalType) -> begin
      Of (DecimalType)
+     end
+| Unknown -> begin
+     Unknown
      end
 | uu___ -> begin
      Of (FloatType)
@@ -3143,6 +3152,104 @@ if ((arms_have FloatType cols x) && (arms_have DecimalType cols x)) then begin
      end)
 
 
+let bind_scale : param_env  ->  rounding  ->  rounding = (fun ( env  :  param_env ) ( r  :  rounding ) -> (match (r.r_scale) with
+| SlotParam (n) -> begin
+     (match ((assoc n env)) with
+| FStar_Pervasives_Native.Some (Int (v)) -> begin
+     {r_scale = SlotLit (v); r_mode = r.r_mode}
+     end
+| uu___ -> begin
+     r
+     end)
+     end
+| SlotLit (uu___) -> begin
+     r
+     end))
+
+
+let rec substitute : param_env  ->  col_expr  ->  col_expr = (fun ( env  :  param_env ) ( x  :  col_expr ) -> (match (x) with
+| Col (uu___) -> begin
+     x
+     end
+| Lit (uu___) -> begin
+     x
+     end
+| Now (uu___) -> begin
+     x
+     end
+| Param (n) -> begin
+     (match ((assoc n env)) with
+| FStar_Pervasives_Native.Some (c) -> begin
+     Lit (c)
+     end
+| FStar_Pervasives_Native.None -> begin
+     x
+     end)
+     end
+| Binary (op, a, b) -> begin
+     Binary (op, (substitute env a), (substitute env b))
+     end
+| Not (a) -> begin
+     Not ((substitute env a))
+     end
+| Coalesce (xs) -> begin
+     Coalesce ((substitute_list env xs))
+     end
+| Case (cases, els) -> begin
+     Case ((substitute_cases env cases), (substitute env els))
+     end
+| Cast (ty, a) -> begin
+     Cast (ty, (substitute env a))
+     end
+| ApplyFn (fn, xs) -> begin
+     ApplyFn (fn, (substitute_list env xs))
+     end
+| InList (a, items) -> begin
+     InList ((substitute env a), (substitute_list env items))
+     end
+| IsNull (a) -> begin
+     IsNull ((substitute env a))
+     end
+| InParam (a, n) -> begin
+     InParam ((substitute env a), n)
+     end
+| Quotient (a, b, r) -> begin
+     Quotient ((substitute env a), (substitute env b), (bind_scale env r))
+     end
+| Rounded (a, r) -> begin
+     Rounded ((substitute env a), (bind_scale env r))
+     end))
+and substitute_list : param_env  ->  Prims.list<col_expr>  ->  Prims.list<col_expr> = (fun ( env  :  param_env ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
+| [] -> begin
+     []
+     end
+| (x)::rest -> begin
+     ((substitute env x))::(substitute_list env rest)
+     end))
+and substitute_cases : param_env  ->  Prims.list<(col_expr * col_expr)>  ->  Prims.list<(col_expr * col_expr)> = (fun ( env  :  param_env ) ( cases  :  Prims.list<(col_expr * col_expr)> ) -> (match (cases) with
+| [] -> begin
+     []
+     end
+| ((w, t))::rest -> begin
+     ((((substitute env w)), ((substitute env t))))::(substitute_cases env rest)
+     end))
+
+
+let derived_typing_in : param_env  ->  schema  ->  col_expr  ->  derived_typing = (fun ( env  :  param_env ) ( cols  :  schema ) ( x  :  col_expr ) -> (match ((derived_typing_of cols x)) with
+| ByCells -> begin
+     (match ((derived_typing_of cols (substitute env x))) with
+| Decided (ty) -> begin
+     Decided (ty)
+     end
+| uu___ -> begin
+     ByCells
+     end)
+     end
+| dt -> begin
+     dt
+     end))
+
+
 let float_beside_decimal : Prims.string  ->  eval_error = (fun ( column  :  Prims.string ) -> TypeError ((Prims.strcat "derived column \'" (Prims.strcat column "\' joins a float and a decimal: cast one to the other\'s type first - Cast(decimal, ...) to keep the digits exact, Cast(float, ...) to compute approximately"))))
 
 
@@ -3206,7 +3313,7 @@ let rec zip_append : Prims.list<Prims.list<cell>>  ->  Prims.list<cell>  ->  Pri
 
 let eval_derive : prims  ->  param_env  ->  wframe  ->  Prims.string  ->  col_expr  ->  outcome<wframe, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( f  :  wframe ) ( name  :  Prims.string ) ( x  :  col_expr ) -> (
 
-let dt = (derived_typing_of f.cols x)
+let dt = (derived_typing_in env f.cols x)
 in (match (dt) with
 | Refused -> begin
      Error ((float_beside_decimal name))

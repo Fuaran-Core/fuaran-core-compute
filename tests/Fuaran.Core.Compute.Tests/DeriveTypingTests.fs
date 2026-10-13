@@ -3,7 +3,8 @@ module Fuaran.Compute.Tests.DeriveTypingTests
 // Phase 338 — a derived column is typed by its expression, not by its first cell. The law family
 // (`DeriveTypingConformance.laws`) is held green here and shown to go red against the rule it
 // replaced; the rope-level typing of the chunked path is pinned over more than one chunk, where a
-// chunk alone cannot see the column's type.
+// chunk alone cannot see the column's type. Phase 413 — an evaluation decides a derive its params
+// decide, and the incremental seam makes the same decision as the full evaluator.
 
 open Expecto
 open Fuaran.Core
@@ -87,6 +88,11 @@ let tests =
                   red
                   "a decided derive or unpivot types its column identically over a full, an empty and an all-null frame"
                   "the empty and all-null frames type it String"
+
+              Expect.contains
+                  red
+                  "a derive the evaluation's params decide types its column identically over a full, an empty and an all-null frame"
+                  "an empty frame types a param-decided column String under the restored rule"
 
               Expect.contains
                   red
@@ -261,4 +267,152 @@ let tests =
               let primed =
                   Incremental.primePrepared DataFrame.noResolve env idw pipeline (DataFrame.prepare src)
 
-              Expect.equal (primed |> Result.map ignore) (expected |> Result.map ignore) "the seam refuses the same" ]
+              Expect.equal (primed |> Result.map ignore) (expected |> Result.map ignore) "the seam refuses the same"
+          testCase
+              "a bound param decides its derive on every frame, and prime and refresh decide it the same (Phase 413)"
+          <| fun _ ->
+              let idw = RowIdentity.byColumn "id"
+              let dec (t: string) = Cell.decimal t |> Option.get
+
+              let table (cells: Cell list) : Table =
+                  { Schema = [ Field.create "id" IntType; Field.create "i" IntType ]
+                    Columns =
+                      [ KitColumn.create "id" IntType (rows cells.Length Int)
+                        KitColumn.create "i" IntType cells ] }
+
+              let full = table [ Int 1; Int -2; Int 3 ]
+              let allNull = table [ Null; Null; Null ]
+              let gone = table []
+
+              for bound, e, ty in
+                  [ Int 4, Param "p", IntType
+                    dec "2.5", Param "p", DecimalType
+                    dec "2.5", ApplyFn(Round, [ Param "p" ]), DecimalType
+                    Float 2.5, ApplyFn(Round, [ Param "p" ]), FloatType
+                    Float 0.5, Binary(Add, Col "i", Param "p"), FloatType ] do
+                  let env = Map.ofList [ "p", bound ]
+
+                  Expect.equal
+                      (SchemaWalk.typeOf "d" (SchemaWalk.ofPipeline full.Schema [ Derive("d", e) ]))
+                      None
+                      "the walk holds no env"
+
+                  for pipeline in [ [ Derive("d", e) ]; [ Filter(Lit(Bool false)); Derive("d", e) ] ] do
+                      for label, t in [ "full", full; "all-null", allNull ] do
+                          let reference = ok (DataFrame.evalPipelineInEnv env pipeline t)
+                          Expect.equal (typeOf "d" reference) (Some ty) (sprintf "%A %A over %s" e bound label)
+
+                          for prepared in [ false; true ] do
+                              let primed =
+                                  if prepared then
+                                      Incremental.primePrepared
+                                          DataFrame.noResolve
+                                          env
+                                          idw
+                                          pipeline
+                                          (DataFrame.prepare t)
+                                  else
+                                      Incremental.prime DataFrame.noResolve env idw pipeline t
+
+                              let primed = ok primed
+
+                              Expect.equal
+                                  (Incremental.result primed).Schema
+                                  reference.Schema
+                                  (sprintf "prime (prepared %b) %A %A over %s" prepared e bound label)
+
+                              // Every row deleted, then every cell nulled: the refreshed column keeps
+                              // the type the params decided, as the full evaluation of `after` does.
+                              for after in [ gone; allNull ] do
+                                  let delta = ok (Delta.diff idw t after)
+
+                                  let refreshed =
+                                      if prepared then
+                                          Incremental.refreshPrepared
+                                              DataFrame.noResolve
+                                              env
+                                              idw
+                                              pipeline
+                                              primed
+                                              delta
+                                              (DataFrame.prepare after)
+                                      else
+                                          Incremental.refresh DataFrame.noResolve env idw pipeline primed delta after
+
+                                  Expect.equal
+                                      (Incremental.result (ok refreshed)).Schema
+                                      (ok (DataFrame.evalPipelineInEnv env pipeline after)).Schema
+                                      (sprintf "refresh (prepared %b) %A %A from %s" prepared e bound label)
+
+          testCase
+              "a Round over an undecided operand is left to the cells, and prime and refresh read them the same (Phase 413)"
+          <| fun _ ->
+              // Until Phase 413 the typer called this a float on every frame, and a row taking the
+              // decimal arm put a decimal cell in a float column. Now the cells decide: a float over
+              // int rows, a decimal over decimal rows, and the float-beside-decimal refusal by name
+              // where they hold both.
+              let idw = RowIdentity.byColumn "id"
+              let dec (t: string) = Cell.decimal t |> Option.get
+
+              let e =
+                  ApplyFn(Round, [ Case([ Binary(Gt, Col "i", Lit(Int 0)), Col "i" ], Col "m") ])
+
+              let pipeline = [ Derive("d", e) ]
+
+              let table (cells: (Cell * Cell) list) : Table =
+                  { Schema =
+                      [ Field.create "id" IntType
+                        Field.create "i" IntType
+                        Field.create "m" DecimalType ]
+                    Columns =
+                      [ KitColumn.create "id" IntType (rows cells.Length Int)
+                        KitColumn.create "i" IntType (cells |> List.map fst)
+                        KitColumn.create "m" DecimalType (cells |> List.map snd) ] }
+
+              Expect.equal (SchemaWalk.typeOf "d" (SchemaWalk.ofPipeline (table []).Schema pipeline)) None "undecided"
+
+              let ints = table [ Int 1, dec "2.5"; Int 2, dec "3.5" ]
+              let decs = table [ Int -1, dec "2.5"; Int -2, dec "3.5" ]
+              let both = table [ Int 1, dec "2.5"; Int -2, dec "3.5" ]
+
+              Expect.equal (typeOf "d" (ok (DataFrame.evalPipeline pipeline ints))) (Some FloatType) "int rows"
+              Expect.equal (typeOf "d" (ok (DataFrame.evalPipeline pipeline decs))) (Some DecimalType) "decimal rows"
+
+              match DataFrame.evalPipeline pipeline both with
+              | Error(TypeError msg) -> Expect.stringContains msg "'d' joins a float and a decimal" "refused by name"
+              | other -> failtestf "expected the refusal, got %A" other
+
+              for prepared in [ false; true ] do
+                  let primed =
+                      if prepared then
+                          Incremental.primePrepared DataFrame.noResolve Map.empty idw pipeline (DataFrame.prepare ints)
+                      else
+                          Incremental.prime DataFrame.noResolve Map.empty idw pipeline ints
+
+                  let primed = ok primed
+
+                  Expect.equal
+                      (Incremental.result primed)
+                      (ok (DataFrame.evalPipeline pipeline ints))
+                      (sprintf "prime (prepared %b)" prepared)
+
+                  for after in [ decs; both ] do
+                      let delta = ok (Delta.diff idw ints after)
+
+                      let refreshed =
+                          if prepared then
+                              Incremental.refreshPrepared
+                                  DataFrame.noResolve
+                                  Map.empty
+                                  idw
+                                  pipeline
+                                  primed
+                                  delta
+                                  (DataFrame.prepare after)
+                          else
+                              Incremental.refresh DataFrame.noResolve Map.empty idw pipeline primed delta after
+
+                      Expect.equal
+                          (refreshed |> Result.map Incremental.result)
+                          (DataFrame.evalPipeline pipeline after)
+                          (sprintf "refresh (prepared %b) to %A" prepared after) ]

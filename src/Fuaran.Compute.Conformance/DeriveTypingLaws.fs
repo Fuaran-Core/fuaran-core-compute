@@ -10,6 +10,9 @@ open Fuaran.Core
 //  decide, and a float beside a decimal refused by name. These laws hold the
 //  evaluator, `SchemaWalk` and the incremental seam to that one rule, over a
 //  full frame, an empty one and an all-null one built from the same draw.
+//  Phase 413 adds the evaluation's half: a derive the static rule leaves to the
+//  cells but the rule decides once the params are substituted (D23) is typed
+//  that way on every frame of the evaluation.
 // ============================================================================
 
 /// The derived-column typing laws (Phase 338).
@@ -51,7 +54,9 @@ module DeriveTypingConformance =
     /// The expression menu: every decided type, an expression decided over a column that is ALWAYS
     /// null in the full frame (an int `Div` by zero), one decided by an arm that may answer nothing
     /// (a `Case` with a null else), and the shapes the cells decide — a `Case` joining an int and a
-    /// float, a `Coalesce` joining a decimal and an int, and a `Param`.
+    /// float, a `Coalesce` joining a decimal and an int, and a `Round` over that undecided join of an
+    /// int and a decimal, which answers a float or a decimal by the row (Phase 413) — and the
+    /// shapes an evaluation's params decide: a `Param`, a `Round` of one and an arithmetic over one.
     let private menu: ColExpr list =
         [ Binary(Add, Col "i", Lit(Int 1))
           Binary(Div, Col "i", Lit(Int 0))
@@ -68,11 +73,19 @@ module DeriveTypingConformance =
           Case([ gt0, Col "i" ], Lit Null)
           Case([ gt0, Lit(Int 1) ], Lit(Float 2.5))
           Coalesce [ Col "m"; Lit(Int 0) ]
-          Param "p" ]
+          ApplyFn(Round, [ Case([ gt0, Col "i" ], Col "m") ])
+          Param "p"
+          ApplyFn(Round, [ Param "p" ])
+          Binary(Add, Col "i", Param "p") ]
 
-    /// The params a `Param` reads, by the draw: an int, or a float.
+    /// The params a `Param` reads, by the draw: an int, a float or a decimal.
     let private envOf (k: int) : Map<string, Cell> =
-        Map.ofList [ "p", (if k % 2 = 0 then Int k else Float(float k / 2.0)) ]
+        Map.ofList
+            [ "p",
+              (match k % 3 with
+               | 0 -> Int k
+               | 1 -> Float(float k / 2.0)
+               | _ -> dec (string k + ".5")) ]
 
     /// The unpivot menu: value columns whose declared types join (an int beside a float, a decimal
     /// beside an int, one string), and a pair no widening relates, which the cells decide.
@@ -108,12 +121,14 @@ module DeriveTypingConformance =
         : LawResult list =
         let mutable rng = ConfRng.ofSeed seed
         let mutable sameEverywhere = None
+        let mutable envDecided = None
         let mutable walkAgrees = None
         let mutable refreshAgrees = None
         let mutable admitted = None
         let mutable refused = None
         let mutable decidedSeen = 0
         let mutable byCellsSeen = 0
+        let mutable envDecidedSeen = 0
         let mutable allNullSeen = 0
         let mutable refusalsSeen = 0
 
@@ -184,7 +199,36 @@ module DeriveTypingConformance =
                 | Ok(Some got) when got <> ty && walkAgrees.IsNone ->
                     walkAgrees <- Some(at (sprintf "%A: SchemaWalk says %A, the evaluator %A" e ty got))
                 | _ -> ()
-            | None -> byCellsSeen <- byCellsSeen + 1
+            | None ->
+                // The evaluation's half (Phase 413): the walk over the expression with this
+                // evaluation's params substituted is the type every frame of it gives.
+                let byEnv =
+                    SchemaWalk.columns (SchemaWalk.ofPipeline schema [ Derive("d", ColExpr.substitute env e) ])
+                    |> List.tryFind (fun c -> c.Name = "d")
+                    |> Option.bind (fun c -> c.Type)
+
+                match byEnv with
+                | Some ty ->
+                    envDecidedSeen <- envDecidedSeen + 1
+
+                    for label, r in [ "full", onFull; "empty", onEmpty; "all-null", onNull ] do
+                        match typeIn r "d" with
+                        | Ok(Some got) when got = ty -> ()
+                        | other ->
+                            if envDecided.IsNone then
+                                envDecided <-
+                                    Some(
+                                        at (
+                                            sprintf
+                                                "%A under %A: decided %A by the params, the %s frame typed it %A"
+                                                e
+                                                env
+                                                ty
+                                                label
+                                                other
+                                        )
+                                    )
+                | None -> byCellsSeen <- byCellsSeen + 1
 
             // ---- refresh and full agree, the seam reading the same rule ----
             // Over a table (the row walk) and over a prepared source (a derive-only pipeline takes
@@ -343,6 +387,9 @@ module DeriveTypingConformance =
         [ law
               "a decided derive or unpivot types its column identically over a full, an empty and an all-null frame"
               sameEverywhere
+          law
+              "a derive the evaluation's params decide types its column identically over a full, an empty and an all-null frame"
+              envDecided
           law "SchemaWalk states exactly the type the evaluator gives a decided derive" walkAgrees
           law "prime, refresh and the full evaluation type a derived column identically" refreshAgrees
           law "every present derived cell is of its column's type or widens into it" admitted
@@ -353,6 +400,7 @@ module DeriveTypingConformance =
               seed
               [ "decided", decidedSeen
                 "by cells", byCellsSeen
+                "decided by the params", envDecidedSeen
                 "all-null decided", allNullSeen
                 "refusal", refusalsSeen ] ]
 
@@ -363,6 +411,9 @@ module DeriveTypingConformance =
     ///
     ///  - **one type on every frame** — a derive or an unpivot whose column `SchemaWalk` decides is
     ///    typed that way over the full, the empty and the all-null frame;
+    ///  - **the params decide on every frame** — a derive the walk leaves to the cells but decides
+    ///    over the expression with the evaluation's params substituted is typed that way over the
+    ///    full, the empty and the all-null frame (Phase 413);
     ///  - **the walk is the evaluator** — the type `SchemaWalk` states is the one the evaluator gives;
     ///  - **refresh is full** — `Incremental.prime` and `Incremental.refresh` (on the chunked path and
     ///    on the row walk) type the derived column as the full evaluation does;

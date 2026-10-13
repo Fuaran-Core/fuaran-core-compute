@@ -2538,13 +2538,18 @@ module DataFrame =
                     | Of _
                     | Unknown -> Unknown)
             // Phase 277: over a decimal these three are scale-0 `Rounded`s and answer a decimal.
+            // Phase 413: over an operand the typer cannot decide they cannot be decided either,
+            // because that operand may be a decimal; typing them a float there let a float column
+            // hold a decimal cell.
             | Round
             | Floor
             | Ceil ->
                 unary (fun t ->
                     match t with
                     | Of DecimalType -> Of DecimalType
-                    | _ -> Of FloatType)
+                    | Unknown -> Unknown
+                    | Absent
+                    | Of _ -> Of FloatType)
             | Sqrt -> unary (fun _ -> Of FloatType)
             | Length -> unary (fun _ -> Of IntType)
             | Lower
@@ -2643,9 +2648,14 @@ module DataFrame =
     //    produced, never converted (D2's rule for an edit, applied here);
     //  - where the typer knows no present value can occur (`Absent`), the type is `StringType`,
     //    which is what an all-null column has always been typed;
-    //  - where the typer cannot decide (`Unknown`: a `Param`, a `Now`, a column the schema does not
-    //    carry, or a join of two types the exact typer keeps apart, D3), the CELLS decide, by
-    //    Phase 321's widening join, `StringType` when none is present;
+    //  - where the typer cannot decide over the schema alone but can once the evaluation's params
+    //    are substituted (a `Param`, and everything built over one), the evaluator types the column
+    //    by the substituted expression (`derivedTypingIn`, Phase 413): the same on every frame of
+    //    that evaluation, where the static reader, which holds no env, still cannot name it;
+    //  - where the typer cannot decide at all (`Unknown`: an unpinned `Now`, a column the schema
+    //    does not carry, an unbound `Param`, an operator over operands it would refuse, or a join of
+    //    two types the exact typer keeps apart, D3), the CELLS decide, by Phase 321's widening join,
+    //    `StringType` when none is present (the residue, `DECISIONS.md` D23);
     //  - a `Float` beside a `Decimal` in one column is REFUSED by name, never widened: statically
     //    where the expression's own arms carry both (`mixesFloatDecimal`), and as a whole-column
     //    refusal where only the cells show it.
@@ -2698,6 +2708,26 @@ module DataFrame =
     /// How a `Derive` of `e` over `cols` types its column (Phase 338).
     let internal derivedTyping (cols: Schema) (e: ColExpr) : DerivedTyping =
         derivedTypingOf (mixesFloatDecimal cols e) (typing cols e)
+
+    /// How an EVALUATION of a `Derive` of `e` over `cols` under `env` types its column (Phase 413):
+    /// the static rule wherever it decides or refuses, and where it leaves the column to the cells,
+    /// the type the same rule DECIDES over `e` with the env's params substituted — the expression
+    /// the evaluator answers exactly as it answers `e` (`ColExpr.substitute`'s witness), so a bound
+    /// param types as the literal it is bound to on a full, an empty and an all-null frame alike.
+    /// It decides and never refuses: a bound float beside a decimal arm stays the cells' to refuse,
+    /// as it was, because refusing it here would refuse frames whose cells hold one family
+    /// (`DECISIONS.md` D23). Every evaluating path reads this one (the reference, the morsel runner,
+    /// the incremental seam's walk and its chunked path); a static reader holds no env and reads
+    /// `derivedTyping`.
+    let internal derivedTypingIn (env: Map<string, Cell>) (cols: Schema) (e: ColExpr) : DerivedTyping =
+        match derivedTyping cols e with
+        | ByCells ->
+            match derivedTyping cols (ColExpr.substitute env e) with
+            | Decided _ as dt -> dt
+            | ByCells
+            | Refused -> ByCells
+        | Decided _
+        | Refused as dt -> dt
 
     /// How an `Unpivot`'s value column is typed over the value columns' declared types (Phase 338):
     /// the same rule, the value columns being its arms. Their join is Phase 321's widening join of
@@ -5117,7 +5147,7 @@ module DataFrame =
         // The column's typing (Phase 338) is read off the schema before any row: a derive refused
         // statically is refused on every frame, an empty one included, and a decided one carries
         // its type whatever rows the frame holds.
-        match derivedTyping f.Cols expr with
+        match derivedTypingIn env f.Cols expr with
         | Refused -> Error(floatBesideDecimal name)
         | dt -> evalDerivedColumn k env f name expr dt
 
@@ -10644,7 +10674,7 @@ module internal MorselHandOff =
                     else
                         Some 0
                 | _ ->
-                    match DataFrame.derivedTyping f.Cols e with
+                    match DataFrame.derivedTypingIn env f.Cols e with
                     | DataFrame.Refused -> None
                     | _ ->
                         match (DataFrame.compileExpr f resolved).Node with
@@ -10851,7 +10881,7 @@ module internal MorselHandOff =
             match t with
             | Filter _ -> Ok(Frame.select f (DataFrame.keptInOrder h.MorselRows h.OutRows h.OutCounts))
             | Derive(name, e) ->
-                let dt = DataFrame.derivedTyping f.Cols e
+                let dt = DataFrame.derivedTypingIn env f.Cols e
                 let mask = h.OutMask
 
                 let ty, vec =
