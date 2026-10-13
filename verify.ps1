@@ -71,7 +71,11 @@ if ($Configuration -ne 'Release') {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 $global:LASTEXITCODE = 0
-dotnet run --project tests/Fuaran.Core.Compute.Tests -c Release --no-build -- --clock-leg
+# Run the built assembly through the dotnet host, as gates/record-tick-baselines.ps1 does: the
+# baselines and ceilings the leg compares against were recorded that way. `dotnet run` starts the
+# build's apphost executable instead, which Windows can power-throttle where the dotnet host is
+# exempt (measured on Arm64: calibration 1.88x baseline through the apphost, 1.00x through the host).
+dotnet tests/Fuaran.Core.Compute.Tests/bin/Release/net10.0/Fuaran.Core.Compute.Tests.dll --clock-leg
 if ($LASTEXITCODE -eq 3) {
     # Phase 285: no verdict, not a red - a case found no unsaturated calibration window in its budget.
     Write-Host '==== verify: the clock leg reached NO VERDICT (machine saturated) - not a timing red; re-run when the machine is quieter' -ForegroundColor Yellow
