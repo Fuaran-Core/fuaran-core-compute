@@ -3076,9 +3076,9 @@ module DataFrame =
             | Rounded(a, r) -> exprTotal cols a && scaleAdmitted r && exactOrAbsent (ty a)
 
         /// THE TOTALITY VERDICT over a step: `true` only where evaluating the step over ANY table
-        /// of schema `cols` returns `Ok`. `Sort` drops a key the schema does not carry rather than
-        /// refusing it, so a literal-keyed sort is total; a `Limit` clamps; `Distinct` compares
-        /// tokens; a `Project` fails only on a source the schema lacks. A slot still holding a
+        /// of schema `cols` returns `Ok`. `Sort` refuses a key the schema does not carry (Phase
+        /// 412), so a sort is total only where every key is a literal the schema carries; a `Limit`
+        /// clamps; `Distinct` compares tokens; a `Project` fails only on a source the schema lacks. A slot still holding a
         /// param is resolved against an env the verdict does not have. Every other verb reaches
         /// a resolver, an aggregate or a comparison the schema alone cannot vouch for.
         let isTotal (cols: Schema) (t: Transform) : bool =
@@ -3093,7 +3093,12 @@ module DataFrame =
                     | Decided _ -> true
                     | ByCells
                     | Refused -> false)
-            | Sort by -> by |> List.forall (fun (c, _) -> not (Slot.isParam c))
+            | Sort by ->
+                by
+                |> List.forall (fun (c, _) ->
+                    match Slot.tryLit c with
+                    | Some name -> Option.isSome (colType cols name)
+                    | None -> false)
             | Limit(n, offset) -> not (Slot.isParam n) && not (Slot.isParam offset)
             | Project pairs -> pairs |> List.forall (fun (src, _) -> Option.isSome (colType cols src))
             | Distinct -> true
@@ -4592,10 +4597,20 @@ module DataFrame =
 
     // ---- sort (pinned: stable; nulls last regardless of direction) ----
 
+    /// The first sort key a schema does not carry, as the `UnknownColumn` every other verb answers
+    /// for an unknown column (Phase 412, `DECISIONS.md` D21). `Sort` and a `Window`'s ordering
+    /// refuse with it before they order anything, so a misspelled key is an error, never the input
+    /// order returned as if it had been sorted.
+    let internal unknownSortKey (cols: Schema) (by: (string * SortDir) list) : EvalError option =
+        by
+        |> List.tryFind (fun (name, _) -> Option.isNone (colIndex cols name))
+        |> Option.map (fun (name, _) -> UnknownColumn(name, available cols))
+
     /// A sort's keys resolved against one step's schema (Phase 263): each named column's index with
-    /// its direction, in key order. A name the schema does not carry is DROPPED here, which is the
-    /// comparator's pinned "unknown columns skipped" — the per-comparison lookup skipped it on every
-    /// comparison, and resolving once skips it once.
+    /// its direction, in key order. The steps that take keys from a pipeline refuse an unknown key
+    /// first (`unknownSortKey`, Phase 412), so a name the schema does not carry reaches this only
+    /// through the exported comparator `rowCompareBy`, which has no error to answer and still
+    /// drops it.
     let internal resolveSortKeys (cols: Schema) (by: (string * SortDir) list) : (int * SortDir) list =
         by
         |> List.choose (fun (name, dir) -> colIndex cols name |> Option.map (fun i -> i, dir))
@@ -6867,6 +6882,13 @@ module DataFrame =
         |> List.map (fun (ci, dir) -> f.Vecs[ci], dir)
         |> List.toArray
 
+    /// The keys a `Sort` takes from a pipeline, refused at the first one the frame does not carry
+    /// (`unknownSortKey`, Phase 412).
+    let private knownSortKeys (f: Frame) (by: (string * SortDir) list) : Result<(string * SortDir) list, EvalError> =
+        match unknownSortKey f.Cols by with
+        | Some e -> Error e
+        | None -> Ok by
+
     let private evalSort (k: KernelSet) (f: Frame) (by: (string * SortDir) list) : Frame =
         // A permutation of the selection (Phase 267): the logical positions sorted under the keys,
         // ties broken by position — which is exactly the stable sort over the frame order the
@@ -7052,6 +7074,38 @@ module DataFrame =
         List.length leftKeys = List.length rightKeys
         && List.forall2 cellEq leftKeys rightKeys
 
+    /// The output names of a combining join's right columns (Phase 411, `DECISIONS.md` D20). A right
+    /// name no left column carries keeps its name. A right name that collides with a left one takes
+    /// `_right`, or — when that is taken too — `_right_2`, `_right_3`, …, the first suffix that is
+    /// free against EVERY name the output carries: the left's, the right's own, and the suffixes
+    /// earlier colliding right columns took, decided in right column order. So a join adds no
+    /// repeated name, and the static schema walk reads its names from this same function.
+    let private joinRightNamesOf (leftNames: string list) (rightNames: string list) : string list =
+        let leftSet = Set.ofList leftNames
+
+        rightNames
+        |> List.mapFold
+            (fun taken name ->
+                if Set.contains name leftSet then
+                    let rec free (n: int) =
+                        let candidate =
+                            if n = 1 then
+                                name + "_right"
+                            else
+                                name + "_right_" + string n
+
+                        if Set.contains candidate taken then
+                            free (n + 1)
+                        else
+                            candidate
+
+                    let chosen = free 1
+                    chosen, Set.add chosen taken
+                else
+                    name, taken)
+            (Set.union leftSet (Set.ofList rightNames))
+        |> fst
+
     /// The join (Phase 325 — typed; Phase 264 made it a hash join). The right side arrives as a
     /// frame, unpacked typed at the boundary. Its key columns are coded through the typed row
     /// hasher in the `cellEq` relation (`RowHash`; an int key column against an int key column in
@@ -7154,16 +7208,11 @@ module DataFrame =
             | Left
             | Right
             | Outer ->
-                // output schema: left cols ++ right cols (collisions suffixed _right)
-                let leftNames = available f.Cols |> Set.ofList
-
+                // output schema: left cols ++ right cols, a colliding right name suffixed so that no
+                // output name repeats (`joinRightNamesOf`)
                 let outRight =
-                    rightCols
-                    |> List.map (fun f ->
-                        if Set.contains f.Name leftNames then
-                            Fields.rename (f.Name + "_right") f
-                        else
-                            f)
+                    joinRightNamesOf (available f.Cols) (available rightCols)
+                    |> List.map2 (fun col name -> Fields.rename name col) rightCols
 
                 let padsLeft = (how = Left || how = Outer)
                 let padsRight = (how = Right || how = Outer)
@@ -7495,6 +7544,10 @@ module DataFrame =
         match spec.Fn, colIndex cols spec.Of with
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
+        // Phase 412 — an order key the schema does not carry is refused, as a `Sort`'s is, before
+        // the ordering is computed (`windowColumnOverWith` refuses it too, for a caller holding one).
+        | _ when Option.isSome (unknownSortKey cols spec.OrderBy) ->
+            Error(Option.get (unknownSortKey cols spec.OrderBy))
         | _ -> windowColumnOverWith k cols vecOf phys spec (windowOrderOfWith k perturbation cols vecOf phys spec) null
 
     /// The schema indexes of a window's PARTITION columns, a name the schema does not carry dropped
@@ -7540,6 +7593,8 @@ module DataFrame =
         match spec.Fn, colIndex cols spec.Of with
         | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
+        | _ when Option.isSome (unknownSortKey cols spec.OrderBy) ->
+            Error(Option.get (unknownSortKey cols spec.OrderBy))
         | _, ofIdx ->
             let n = phys.Length
             // A running total over a decimal column stays exact (Phase 277).
@@ -8251,6 +8306,7 @@ module DataFrame =
             by
             |> List.map (fun (c, d) -> resolveStrSlot env "sort key column" c |> Result.map (fun c -> c, d))
             |> sequenceR
+            |> Result.bind (knownSortKeys f)
             |> Result.map (evalSort k f)
         | Distinct -> Ok(evalDistinct f)
         | Limit(n, offset) ->
@@ -8312,6 +8368,7 @@ module DataFrame =
             by
             |> List.map (fun (c, d) -> resolveStrSlot env "sort key column" c |> Result.map (fun c -> c, d))
             |> sequenceR
+            |> Result.bind (knownSortKeys f)
             |> Result.bind (fun keys ->
                 resolveIntSlot env "limit n" n
                 |> Result.bind (fun n ->
@@ -8714,10 +8771,13 @@ module DataFrame =
     let inferCellType (cells: Cell list) : ColumnType = inferType cells
 
     /// The reference `Sort`'s row comparator: the pinned ordering (multi-key, nulls last regardless
-    /// of direction, unknown columns skipped). Exposed for the same reason as the four above — an
+    /// of direction). The reference `Sort` refuses a key the schema does not carry before it orders
+    /// anything (Phase 412, `DECISIONS.md` D21), so it never compares under one; this comparator,
+    /// which has no error to answer, drops such a key, and a caller reproducing the reference refuses
+    /// it first, as the reference does. Exposed for the same reason as the four above — an
     /// incremental evaluator that merged rows into a cached order under its OWN comparator would
     /// agree with the reference on every corpus anyone thought to write and disagree on the first
-    /// null, the first tie and the first misspelled key. `List.sortWith` over it is `evalSort`.
+    /// null and the first tie. `List.sortWith` over it is `evalSort`.
     ///
     /// It is a comparator, so it says nothing about STABILITY: `Sort`'s stability comes from
     /// `List.sortWith` being stable over the frame order, and a caller reproducing the reference
@@ -8800,6 +8860,15 @@ module DataFrame =
     /// which is exactly where a second implementation would diverge: the canonical row token
     /// `Distinct` and the set ops dedup on says `Null` matches itself, and a join says it does not.
     let joinKeysMatch (leftKeys: Cell list) (rightKeys: Cell list) : bool = joinKeyEq leftKeys rightKeys
+
+    /// The output names a combining join (`Inner` / `Left` / `Right` / `Outer`) gives the right
+    /// side's columns, in right column order, over the left's and the right's column names (Phase
+    /// 411, `DECISIONS.md` D20): a right name no left column carries keeps its name; a colliding one
+    /// takes `_right`, then `_right_2`, `_right_3`, … — the first that is free against every name the
+    /// output carries. The evaluator and the schema walk both read it, so the evaluated and the static
+    /// names cannot disagree, and a join adds no repeated name to its output.
+    let joinRightNames (leftNames: string list) (rightNames: string list) : string list =
+        joinRightNamesOf leftNames rightNames
 
     // ---- incremental evaluation (Phase 34) ----
     // A full-recompute evaluator made incremental via change-relevance analysis: when a change provably
@@ -9260,10 +9329,11 @@ module SchemaWalk =
             | Right
             | Outer ->
                 match input with
-                // The evaluator suffixes a right column whose name collides with a LEFT one. So a
-                // right column's OUTPUT name is a function of the left's names — and while any left
-                // name is invisible, every right column's name is undecidable between `x` and
-                // `x_right`. That is why an open left contributes no right columns at all rather
+                // The evaluator suffixes a right column whose name collides with a LEFT one
+                // (`DataFrame.joinRightNames`, unique against the whole output). So a right column's
+                // OUTPUT name is a function of the left's names — and while any left name is
+                // invisible, every right column's name is undecidable between `x`, `x_right` and
+                // `x_right_2`. That is why an open left contributes no right columns at all rather
                 // than guessing that no collision occurred.
                 | SchemaKnowledge.AtLeast(cols, r) ->
                     SchemaKnowledge.AtLeast(
@@ -9273,19 +9343,29 @@ module SchemaWalk =
                     )
                 | SchemaKnowledge.Closed left ->
                     let right = ofSource sources source
-                    let leftNames = left |> List.map _.Name |> Set.ofList
+                    let rightCols = columns right
 
                     let renamed =
-                        columns right
-                        |> List.map (fun c ->
-                            if Set.contains c.Name leftNames then
-                                { c with Name = c.Name + "_right" }
-                            else
-                                c)
+                        DataFrame.joinRightNames (left |> List.map _.Name) (rightCols |> List.map _.Name)
+                        |> List.map2 (fun c name -> { c with Name = name }) rightCols
 
                     match right with
                     | SchemaKnowledge.Closed _ -> SchemaKnowledge.Closed(left @ renamed)
-                    | SchemaKnowledge.AtLeast(_, r) -> SchemaKnowledge.AtLeast(left @ renamed, r)
+                    // An OPEN right: a colliding right column's suffix is the first one free against
+                    // every right name too, and the right's unnamed columns may hold `x_right` — so
+                    // only the right columns that keep their own names can be named.
+                    | SchemaKnowledge.AtLeast(_, r) ->
+                        let leftNames = left |> List.map _.Name |> Set.ofList
+                        let kept = rightCols |> List.filter (fun c -> not (Set.contains c.Name leftNames))
+
+                        if kept.Length = rightCols.Length then
+                            SchemaKnowledge.AtLeast(left @ kept, r)
+                        else
+                            SchemaKnowledge.AtLeast(
+                                left @ kept,
+                                r
+                                + " — and a right column colliding with a left name takes a suffix the right's unnamed columns decide, so it cannot be named either"
+                            )
 
     /// Fold a pipeline over knowledge already in hand — the general form, and the one a consumer
     /// that interleaves its own per-step checks with the walk reaches for.

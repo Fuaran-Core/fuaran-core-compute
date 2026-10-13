@@ -938,6 +938,10 @@ module DataFrameConformance =
     ///  - **declared types agree** — wherever the walk states a column's type (`Some`), it is the
     ///    type the evaluator gave that column. `None` is the honest "decidable only from the data"
     ///    and is not judged.
+    ///  - **a join adds no repeated name** (Phase 411) — every combining join, drawn or built (two
+    ///    joins against one right table, built each iteration, so the second meets a left already
+    ///    carrying `g_right`), names its right columns distinctly from each other and from every left
+    ///    name, and the walk names the built pair exactly as the evaluator does.
     ///  - **the sample is not vacuous** — both verdicts were actually reached. A parity law whose
     ///    generator never produced one of the two cases is a green that proves half of what it says.
     let schemaWalkLaws (seed: int) (iterations: int) : LawResult list =
@@ -949,6 +953,8 @@ module DataFrameConformance =
         let mutable openSeen = 0
         // Phase 321 — the accepted samples whose pipeline read the decimal column.
         let mutable decimalSteps = 0
+        // Phase 411 — the first combining join that gave a right column a name already in its output.
+        let mutable joinNamesUnique = None
 
         let col name ty cells : Column = KitColumn.create name ty cells
 
@@ -1057,6 +1063,43 @@ module DataFrameConformance =
             | Window { As = "runm" } -> true
             | _ -> false
 
+        let combining = [| Inner; Left; Right; Outer |]
+
+        // Phase 411 — every combining join in `pipeline`, evaluated over `table`: the right side's
+        // output names are distinct from each other and from every left name, so the join adds no
+        // repeated name (a left that already carries one, a `Window` onto an existing name, keeps it).
+        let checkJoinNames (i: int) (table: Table) (pipeline: Transform list) =
+            pipeline
+            |> List.iteri (fun j step ->
+                match step with
+                | Join(_, _, (Inner | Left | Right | Outer)) when joinNamesUnique.IsNone ->
+                    let prefix = List.truncate j pipeline
+
+                    match
+                        DataFrame.evalPipelineWith resolve prefix table,
+                        DataFrame.evalPipelineWith resolve (prefix @ [ step ]) table
+                    with
+                    | Ok before, Ok after ->
+                        let leftNames = before.Schema |> List.map _.Name
+                        let rightNames = after.Schema |> List.skip leftNames.Length |> List.map _.Name
+
+                        if
+                            List.distinct rightNames <> rightNames
+                            || rightNames |> List.exists (fun n -> List.contains n leftNames)
+                        then
+                            joinNamesUnique <-
+                                Some(
+                                    sprintf
+                                        "seed=%d iter=%d: pipeline=%A left=%A right=%A"
+                                        seed
+                                        i
+                                        (prefix @ [ step ])
+                                        leftNames
+                                        rightNames
+                                )
+                    | _ -> ()
+                | _ -> ())
+
         for i in 0 .. iterations - 1 do
             let rows, r1 = ConfRng.intBelow 4 rng
             let steps, r2 = ConfRng.intBelow 3 r1
@@ -1071,6 +1114,33 @@ module DataFrameConformance =
             rng <- r
 
             let table = baseTable (rows + 2)
+
+            // Built each iteration, so the law never rests on the draw: two combining joins against
+            // the same right table, where the second's `g` meets a left already carrying `g_right`.
+            let twice =
+                [ Join(Embedded rightTable, [ "g", "g" ], combining[i % 4])
+                  Join(Embedded rightTable, [ "g", "g" ], combining[(i / 4) % 4]) ]
+
+            checkJoinNames i table pipeline
+            checkJoinNames i table twice
+
+            match DataFrame.evalPipelineWith resolve twice table with
+            | Ok result when
+                joinNamesUnique.IsNone
+                && SchemaWalk.names (SchemaWalk.ofPipeline table.Schema twice)
+                   <> (result.Schema |> List.map _.Name)
+                ->
+                joinNamesUnique <-
+                    Some(
+                        sprintf
+                            "seed=%d iter=%d: the walk and the evaluator name %A differently: %A vs %A"
+                            seed
+                            i
+                            twice
+                            (SchemaWalk.names (SchemaWalk.ofPipeline table.Schema twice))
+                            (result.Schema |> List.map _.Name)
+                    )
+            | _ -> ()
 
             match DataFrame.evalPipelineWith resolve pipeline table with
             | Error _ -> () // the evaluator rejected it; there is no output schema to agree about
@@ -1144,6 +1214,10 @@ module DataFrameConformance =
           { Law = "a derived column's DECLARED type is the type evalPipeline gave that column"
             Passed = typesAgree.IsNone
             Counterexample = typesAgree }
+          { Law =
+              "a combining join adds no repeated name: its right columns' output names are distinct from each other and from every left name, and the walk names them as the evaluator does"
+            Passed = joinNamesUnique.IsNone
+            Counterexample = joinNamesUnique }
           { Law = "the generated sample reached both verdicts (the parity claim is not vacuous)"
             Passed = closedSeen > 0 && openSeen > 0
             Counterexample =
