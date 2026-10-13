@@ -190,9 +190,9 @@ let tickBaselineExceptions: (string * string * int * string) list =
       "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns" ]
 
 /// Phase 439 — each named exception's CEILING, per architecture, keyed (architecture, kind, node,
-/// rows), in calibration units: the cell's tick on the tree carrying Phase 423 and this phase's
-/// `Delta.fs` fix, the median over three full legs of each leg's best (operator ruling 2026-10-12,
-/// the third). An excepted cell is held to `tickBaselineFactor` times this figure plus the floor,
+/// rows), in calibration units: the cell's tick on a tree carrying Phase 423 and Phase 439's
+/// `Delta.fs` fix (each line names its commit), the median over three clean full legs of each leg's
+/// best (operator ruling 2026-10-12, the third). An excepted cell is held to `tickBaselineFactor` times this figure plus the floor,
 /// and to neither other arm: today's cost is its ceiling until Phase 448. Written only by
 /// `gates/record-tick-baselines.ps1 -Ceiling`; an architecture with no figure holds the cell to the
 /// ratio arm instead, the stricter condition, and says so on every run.
@@ -201,8 +201,8 @@ let private tickExceptionCeilings: Map<string * string * string * int, float> =
         [
           // Arm64 - recorded 2026-10-12 from 3caa557 (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
           ("Arm64", "edit", "lines", 20000), 0.362989
-          // RECORDED-CEILING-449
-          ]
+          // Arm64 - recorded 2026-10-13 from 12a825d (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
+          ("Arm64", "append", "lines", 20000), 0.388911 ]
 
 /// Phase 439 — each corpus cell's one-row tick on the pre-423 tree (`ccbddc7`, the last whose full
 /// evaluation paid the `Table` boundary), per CPU architecture (`RuntimeInformation.ProcessArchitecture`),

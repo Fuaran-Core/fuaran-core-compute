@@ -1838,8 +1838,9 @@ naming the script, and hold the cell to the ratio arm alone. That is the stricte
 missing table can make a leg red and never makes one green. The Arm64 table was recorded on a
 Snapdragon X Elite (X1E80100) on 2026-10-12, from three full legs with no window discarded.
 
-**One named exception, until Phase 448.** `lines` at 20,000 rows, edit tick, is a real post-423
-regression, and the baseline arm cannot carry it. Across the Phase 439 legs its pre-423 tick read
+**Two named exceptions, until Phase 448.** `lines` at 20,000 rows, edit tick, is a real post-423
+regression, and the baseline arm cannot carry it; its APPEND tick joins it on the same terms (Phase
+449, `DECISIONS.md` D22). Across the Phase 439 legs its pre-423 tick read
 1.30 to 1.59 ms and its post-423 tick (with the fix below) 1.39 to 5.27 ms, in two clusters around
 1.6–2.1 and 2.6–3.6 ms. The operator's third and fourth rulings hold that one cell to TODAY'S COST as a
 ceiling: `tick <= 1.5 x ceiling + floor`, neither other arm applying. The ceiling is recorded by the

@@ -222,3 +222,12 @@ edit node, 0.6 to 0.85 of the full evaluation of `lines`, `byRegion`, `filter > 
 The bound the operator ruled admits these three shapes on their recorded tick, and `lines` at 20,000
 rows on its recorded post-423 tick, not on the seam's claim. Making them cheaper than recomputing again
 is Phase 448's work.
+
+**The append tick at 20,000 rows joins it (Phase 449).** `lines`'s APPEND tick at 20,000 rows is the same
+noisy shape. An alternating A/B on the Arm64 machine read it at 2.52, 2.36 and 2.39 ms on main and
+2.02, 2.38 and 2.62 ms with two later phases on top. The baseline arm allowed 2.255 ms, and Phase 439's
+landing gate had read it at 1.854 ms. The operator ruled it a second named exception on the first's
+terms (`DECISIONS.md` D22). Its ceiling is its post-423 cost, recorded from `12a825d` as the median
+over three clean full legs of each leg's best: 1.794, 1.915 and 2.196 ms, so 1.915 ms (0.388911
+calibration units). The allowance is 1.5 × that plus the floor, about 3.02 ms. Making it cheaper is
+Phase 448's work.

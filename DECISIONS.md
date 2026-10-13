@@ -1,5 +1,48 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-13 — D22: the `lines` APPEND tick at 20,000 rows joins D19's named exception, on the same terms
+
+**Context.** D19 holds every corpus tick cell to `max(1.6 x full, 1.5 x baseline) + floor`. It holds one
+named exception, `lines` edit at 20,000 rows, to 1.5 times its recorded post-423 cost plus the floor,
+and to neither other arm. A later landing round went red on the neighbouring cell, `lines` APPEND at
+20,000 rows. An alternating A/B on the Arm64 machine showed the cell reads the same with or without
+that round's changes, against a baseline-arm allowance of 2.255 ms:
+
+| Tree | Readings |
+|---|---|
+| Main | 2.52, 2.36, 2.39 ms |
+| Main plus the round's changes | 2.02, 2.38, 2.62 ms |
+
+Phase 439's own landing gate had read it at 1.854 ms. The cell is the same noisy post-423 shape as its
+edit tick, not a regression of the round.
+
+**The operator's ruling (2026-10-12, the fifth), in substance:** the `lines` APPEND tick at 20,000 rows
+joins the named exception on the same terms. Its ceiling is today's cost, judged by the leg's
+three-attempt rule and pinned by the main-suite case. Like the first entry, it is removable only by
+Phase 448's acceptance.
+
+**What was done.**
+
+- **The second entry.** `ScalingTests.tickBaselineExceptions` gains exactly one entry:
+  ("append", "lines", 20000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns").
+  The pin case ("the tick bound's named exceptions are exactly the ruled ones") lists the two ruled
+  entries and nothing else.
+- **The ceiling.** It was recorded by `gates/record-tick-baselines.ps1 -Ceiling 'append|lines|20000'`
+  from main's tree, `12a825d`, by D19's method: the median over three full legs, none discarded, of each
+  leg's best.
+  - The clean legs' bests were 1.794, 1.915 and 2.196 ms, so the median is 1.915 ms (0.388911
+    calibration units, `tickExceptionCeilings`). One leg with a discarded window was set aside.
+  - The allowance is about 2.87 ms plus the floor, roughly 3.02 ms in all.
+  - Every A/B reading above is under it.
+- **Why the recording waited overnight.** The first two recording attempts, on the evening of
+  2026-10-12, found no clean leg in eight. The machine was running a single-threaded workload at 1.9
+  times its calibration baseline: a 2,000-reading probe had a median of 1.909. That is consistent with
+  the operating system throttling a background process. Once the operator exempted the runtime from
+  that throttling, a 200-reading probe read 1.000 and the recording took four legs.
+
+**Refreshing it** follows D19: the operator decides, the script is the only writer, and the entry goes
+when Phase 448's acceptance removes it.
+
 ## 2026-10-12 — D19: the corpus tick bound gains a second arm, the tick's own recorded pre-423 cost, one table per CPU architecture; and the append diff's cheap prefix test is restored
 
 **Context.** The clock leg holds every corpus node's one-row tick (edit and append; `Delta.diff` plus
