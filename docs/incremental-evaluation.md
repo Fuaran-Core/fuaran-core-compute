@@ -890,7 +890,7 @@ only the witness can say what a key is.
 assertion only in the isolated clock leg. A count is exact and indifferent to load: the keys a
 witness mints, the chunks a refresh touches, the rows the footprint evaluated, the bytes a call
 allocates on its own thread (`ScalingTests.allocatedBytes`). The clock is for a claim that is about
-time, and there it runs alone, estimated with `bestMs`, and red only if red on three attempts.
+time, and there it runs alone, estimated with `bestMs`, and red only if red on three attempts (since Phase 449, the same cell red on all three).
 
 **Why.** On 2026-09-27 the gate went red five times with no regression behind any of them. The timing
 cases ran inside the whole suite, in one process with every parallel test list, on a machine other
@@ -908,7 +908,7 @@ dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build -- --clock-leg
 ```
 
 The leg raises its own scheduling priority to above normal (on a host that refuses, it says so and
-runs anyway). Each case gets three attempts and prints every one. (Since Phase 285 an attempt counts only
+runs anyway). Each case gets three attempts and prints every one; since Phase 449 a case that judges many cells is red only when the SAME cell is red on all three. (Since Phase 285 an attempt counts only
 when its calibration window was not saturated; see "The clock leg knows when the machine is busy".) The entry point counts the cases
 whose bodies ran and fails the leg (exit 2) on fewer than `clockInventory`: 0 of 14 with a filter that
 matches nothing, 1 of 14 with one that matches one case. A main-suite case pins `clockInventory`
@@ -1430,7 +1430,7 @@ drift across a long window's thirty cells does not.
 | Outcome | When | Leg exit |
 |---|---|---|
 | GREEN | every case green on a counted (unsaturated) attempt | 0 |
-| RED | a case red on all three counted attempts, or an evaluation error | 1 (2 if cases are missing) |
+| RED | a case with the same cell red on all three counted attempts (Phase 449), or an evaluation error | 1 (2 if cases are missing) |
 | NO VERDICT — "machine saturated, no verdict" | a case discarded 5 saturated windows (`Calibration.maxDiscarded`), or the leg spent 600 s (`legBudgetSeconds`) on discarded windows and their back-off, with nothing red | 3 |
 
 A saturated window is inconclusive whatever the body said. It is logged with every calibration
@@ -1838,8 +1838,8 @@ naming the script, and hold the cell to the ratio arm alone. That is the stricte
 missing table can make a leg red and never makes one green. The Arm64 table was recorded on a
 Snapdragon X Elite (X1E80100) on 2026-10-12, from three full legs with no window discarded.
 
-**Two named exceptions, until Phase 448.** `lines` at 20,000 rows, edit tick, is a real post-423
-regression, and the baseline arm cannot carry it; its APPEND tick joins it on the same terms (Phase
+**Three named exceptions, until Phase 448.** `lines` at 20,000 rows, edit tick, is a real post-423
+regression, and the baseline arm cannot carry it; its APPEND tick and `window CumulSum` edit at 20,000 rows join it on the same terms (Phase
 449, `DECISIONS.md` D22). Across the Phase 439 legs its pre-423 tick read
 1.30 to 1.59 ms and its post-423 tick (with the fix below) 1.39 to 5.27 ms, in two clusters around
 1.6–2.1 and 2.6–3.6 ms. The operator's third and fourth rulings hold that one cell to TODAY'S COST as a

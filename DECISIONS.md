@@ -1,6 +1,6 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-10-13 — D22: the `lines` APPEND tick at 20,000 rows joins D19's named exception, on the same terms
+## 2026-10-13 — D22: the `lines` APPEND and `window CumulSum` edit ticks at 20,000 rows join D19's named exception on the same terms, and a clock case is red only when the same cell is red on every counted attempt
 
 **Context.** D19 holds every corpus tick cell to `max(1.6 x full, 1.5 x baseline) + floor`. It holds one
 named exception, `lines` edit at 20,000 rows, to 1.5 times its recorded post-423 cost plus the floor,
@@ -42,6 +42,40 @@ Phase 448's acceptance.
 
 **Refreshing it** follows D19: the operator decides, the script is the only writer, and the entry goes
 when Phase 448's acceptance removes it.
+
+**Amended 2026-10-13 — the operator's sixth ruling.** The first full gate with the append exception
+in place reached a counted RED in its edit case. All three counted attempts were red, with no window
+discarded, but a different cell was red on different attempts:
+
+| Attempt | Red cell | Tick | Allowed |
+|---|---|---:|---:|
+| 1 | `lines` edit @ 20,000 (the first exception) | 3.155 ms | 2.822 ms |
+| 2 | `window CumulSum` edit @ 20,000 | 2.351 ms | 1.949 ms |
+| 3 | `window CumulSum` edit @ 20,000 | 1.991 ms | 1.949 ms |
+
+`lines` edit @ 20,000 read 3.155, 1.850 and 1.751 ms. `window CumulSum` edit @ 20,000 read 1.916, 2.351
+and 1.991 ms. The leg's rule was per CASE: red when every attempt has some red cell. With several noisy
+cells, that reddens a case where no single cell is red every time.
+
+The ruling ("Both"), in substance:
+
+1. **The per-cell rule.** A clock case is red only when the SAME cell is red on all three counted
+   attempts; different cells red on different attempts is green. The saturation path (no verdict,
+   exit 3) is unchanged.
+   - It is implemented as `ScalingTests.clockCellVerdict` over each attempt's red-cell set (their
+     intersection). A case that judges many cells raises `ClockCellsRed` naming them, and a case with
+     one assertion is one cell, so its verdict is the rule it always had.
+   - The main-suite case "a clock case is red only when the same cell is red on every counted attempt"
+     pins both halves:
+     - a different cell red per attempt is green;
+     - one cell red on all three is red, whatever else is red beside it.
+2. **The third named exception.** `window CumulSum` edit at 20,000 rows joins the exception on the
+   same terms, with its reason ("one of the shapes Phase 448 owns: pre-423 median 1.201 ms, post-423
+   1.45–2.35 ms against a 1.95 ms allowance").
+   - Its ceiling was recorded by `-Ceiling 'edit|window CumulSum|20000'` from `12a825d`. Three full
+     legs, none discarded, gave per-leg bests of 1.733, 1.840 and 1.825 ms. The median is 1.825 ms
+     (0.371086 units), an allowance of about 2.88 ms with the floor.
+   - The pin case lists exactly the three ruled entries.
 
 ## 2026-10-12 — D19: the corpus tick bound gains a second arm, the tick's own recorded pre-423 cost, one table per CPU architecture; and the append diff's cheap prefix test is restored
 

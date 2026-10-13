@@ -179,15 +179,20 @@ let private tickFloorFactor = 0.03
 let private tickBaselineFactor = 1.5
 
 /// Phase 439 — the named exceptions to the tick condition, each with its reason (operator rulings
-/// 2026-10-12, the second and the third; the append cell, the fifth, Phase 449): an excepted cell is
-/// held to its own recorded post-423 cost as a CEILING (`tickExceptionCeilings`), and to neither the
-/// ratio arm nor the baseline arm. Every entry is printed on every clock-leg run that judges it, and
+/// 2026-10-12 and 2026-10-13, the second, third, fifth and sixth; the last two named the two Phase 449
+/// cells): an excepted cell is held to its own recorded post-423 cost as a CEILING
+/// (`tickExceptionCeilings`), and to neither the ratio arm nor the baseline arm. Every entry is
+/// printed on every clock-leg run that judges it, and
 /// the main suite pins this list's exact contents ("the tick bound's named exceptions are exactly
 /// the ruled ones"), so a further exception cannot be added without that test moving with it. Every
 /// entry is removable only by Phase 448's acceptance (DECISIONS.md D19 and D22).
 let tickBaselineExceptions: (string * string * int * string) list =
     [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns"
-      "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns" ]
+      "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns"
+      "edit",
+      "window CumulSum",
+      20_000,
+      "one of the shapes Phase 448 owns: pre-423 median 1.201 ms, post-423 1.45–2.35 ms against a 1.95 ms allowance" ]
 
 /// Phase 439 — each named exception's CEILING, per architecture, keyed (architecture, kind, node,
 /// rows), in calibration units: the cell's tick on a tree carrying Phase 423 and Phase 439's
@@ -202,7 +207,9 @@ let private tickExceptionCeilings: Map<string * string * string * int, float> =
           // Arm64 - recorded 2026-10-12 from 3caa557 (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
           ("Arm64", "edit", "lines", 20000), 0.362989
           // Arm64 - recorded 2026-10-13 from 12a825d (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
-          ("Arm64", "append", "lines", 20000), 0.388911 ]
+          ("Arm64", "append", "lines", 20000), 0.388911
+          // Arm64 - recorded 2026-10-13 from 12a825d (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
+          ("Arm64", "edit", "window CumulSum", 20000), 0.371086 ]
 
 /// Phase 439 — each corpus cell's one-row tick on the pre-423 tree (`ccbddc7`, the last whose full
 /// evaluation paid the `Table` boundary), per CPU architecture (`RuntimeInformation.ProcessArchitecture`),
@@ -856,8 +863,9 @@ let private batchedMs (runs: int) (f: unit -> unit) : float =
 //      to run beside `testSequenced`, which orders its own cases only);
 //    - the process asks for above-normal scheduling priority, so ordinary
 //      work elsewhere on the machine yields to it for the seconds it runs;
-//    - a case fails only if it fails on each of THREE attempts. A regression
-//      fails every time; a loaded window rarely fails three times running.
+//    - a case fails only if the SAME cell fails on each of THREE attempts (for a
+//      case that judges many cells, Phase 449). A regression fails every time in
+//      the cell it reached; a loaded window rarely fails three times running.
 //      Every attempt is printed.
 //  The leg counts the cases whose bodies actually ran and the entry point
 //  fails it on fewer than `clockInventory`: a filter that matches nothing
@@ -1174,6 +1182,26 @@ let private fullAtOneThread (env: Map<string, Cell>) (p: Transform list) (t: Tab
 /// never read as a timing red, and the entry point turns it into the leg's distinct exit code.
 exception MachineSaturated of string
 
+/// Raised by a clock case that judges many CELLS in one window (the corpus tick cases): the cells red
+/// in this attempt, each as (a key naming the cell, the line that says why). The key carries no
+/// measured figure, so the same cell has the same key on every attempt.
+exception ClockCellsRed of (string * string) list
+
+/// Phase 449 (operator ruling 2026-10-13, the sixth): a clock case's verdict over its counted
+/// attempts, each given as the set of cells red in it (empty for a green attempt). The case is red
+/// only when the SAME cell is red on all `clockAttempts` counted attempts: the cells red on every
+/// attempt so far are the intersection, and the case is green as soon as that is empty. Different
+/// cells red on different attempts is green, because a regression is red every time in the cell it
+/// reached, while a loaded window or a noisy cell is not. A case with one assertion is one cell, so
+/// its verdict is the rule it always had. `None` means not yet decided: fewer than `clockAttempts`
+/// counted attempts, all red in some common cell.
+let clockCellVerdict (attempts: Set<string> list) : ClockVerdict option =
+    match attempts with
+    | [] -> None
+    | _ when Set.isEmpty (Set.intersectMany attempts) -> Some ClockGreen
+    | _ when List.length attempts >= clockAttempts -> Some ClockRed
+    | _ -> None
+
 let mutable private legDiscardedSeconds = 0.0
 
 /// A clock case (Phase 282, Phase 285): `body` runs in a WINDOW bracketed by calibration readings.
@@ -1181,14 +1209,15 @@ let mutable private legDiscardedSeconds = 0.0
 /// - A saturated window is INCONCLUSIVE: logged with its readings, retried after a back-off, and
 ///   never counted as an attempt, whatever the body said — a green under load is no more a verdict
 ///   than a red, because load can deflate a ratio's denominator as easily as inflate its numerator.
-/// - An unsaturated window counts. The case fails only when all `clockAttempts` counted attempts
-///   are red.
+/// - An unsaturated window counts. The case fails only when the same cell is red on all
+///   `clockAttempts` counted attempts (`clockCellVerdict`, Phase 449). A body that asserts once is one
+///   cell; a body that judges many raises `ClockCellsRed` naming the cells red in that attempt.
 /// - Past `Calibration.maxDiscarded` saturated windows (or the leg-wide budget), the case raises
 ///   `MachineSaturated`: no verdict, and the gate is not green.
 ///
-/// Only an assertion failure is a timing verdict; anything else (an evaluation error) is a defect and
-/// fails at once. A correctness assertion inside `body` is retried with it, harmlessly: it is
-/// deterministic, so it fails every counted attempt.
+/// Only an assertion failure (or `ClockCellsRed`) is a timing verdict; anything else (an evaluation
+/// error) is a defect and fails at once. A correctness assertion inside `body` is retried with it,
+/// harmlessly: it is deterministic, so it fails every counted attempt.
 let private clockCase (name: string) (body: unit -> unit) : Test =
     testCase name
     <| fun _ ->
@@ -1201,7 +1230,8 @@ let private clockCase (name: string) (body: unit -> unit) : Test =
                   Discarded = discarded
                   Verdict = verdict }
 
-        let rec window (counted: int) (discarded: int) =
+        // `reds`: the red-cell set of each counted attempt so far, newest first.
+        let rec window (counted: int) (discarded: int) (reds: Set<string> list) =
             printfn "  [clock] %s: attempt %d of %d" name (counted + 1) clockAttempts
             let started = Stopwatch.StartNew()
             Calibration.openWindow ()
@@ -1211,7 +1241,8 @@ let private clockCase (name: string) (body: unit -> unit) : Test =
                     body ()
                     Ok()
                 with
-                | :? AssertException as e -> Error e
+                | :? AssertException as e -> Error [ name, e.Message.Trim() ]
+                | ClockCellsRed cells -> Error cells
                 | _ ->
                     Calibration.closeWindow () |> ignore
                     record counted discarded ClockErrored
@@ -1258,31 +1289,42 @@ let private clockCase (name: string) (body: unit -> unit) : Test =
 
                 legDiscardedSeconds <- legDiscardedSeconds + started.Elapsed.TotalSeconds + float pause / 1000.0
 
-                window counted discarded
+                window counted discarded reds
             else
                 let counted = counted + 1
                 printfn "  [clock] %s: window counted - calibration [%s] ms against baseline %.3f ms" name shown b
 
-                match result with
-                | Ok() ->
+                let cells =
+                    match result with
+                    | Ok() -> []
+                    | Error cells -> cells
+
+                let reds = (cells |> List.map fst |> Set.ofList) :: reds
+
+                for _, why in cells do
+                    printfn "  [clock] %s: attempt %d red: %s (calibration [%s] ms)" name counted why shown
+
+                match clockCellVerdict reds with
+                | Some ClockGreen ->
                     if counted > 1 || discarded > 0 then
-                        printfn "  [clock] %s: green on attempt %d" name counted
+                        printfn "  [clock] %s: green on attempt %d (no cell red on every counted attempt)" name counted
 
                     record counted discarded ClockGreen
-                | Error e when counted < clockAttempts ->
-                    printfn
-                        "  [clock] %s: attempt %d red: %s (calibration [%s] ms)"
+                | Some _ ->
+                    let still = Set.intersectMany reds
+                    record counted discarded ClockRed
+
+                    failtestf
+                        "%s: red on all %d counted attempts in the same cell(s) - %s"
                         name
                         counted
-                        (e.Message.Trim())
-                        shown
+                        (cells
+                         |> List.filter (fun (key, _) -> Set.contains key still)
+                         |> List.map snd
+                         |> String.concat "; ")
+                | None -> window counted discarded reds
 
-                    window counted discarded
-                | Error e ->
-                    record counted discarded ClockRed
-                    raise e
-
-        window 0 0
+        window 0 0 []
 
 // `testSequenced`, not `testList` alone: every case here measures the clock, and Expecto runs a
 // suite in parallel by default, so an unsequenced timing family measures whatever else the runner
@@ -1849,7 +1891,7 @@ let clockTests =
               //
               // Every cell is measured and printed before any is asserted, so a red attempt still
               // leaves the whole table in the log.
-              let failures = System.Collections.Generic.List<string>()
+              let failures = System.Collections.Generic.List<string * string>()
 
               for nd in corpusNodes do
                   for n in [ small; large; 100_000 ] do
@@ -1886,11 +1928,13 @@ let clockTests =
                       // Phase 285: a calibration reading between cells (see the case above).
                       Calibration.checkpoint ()
 
-                      verdict |> Option.iter failures.Add
+                      verdict
+                      |> Option.iter (fun why -> failures.Add((sprintf "edit %s @ %d" nd.Name n, why)))
 
-              Expect.isEmpty
-                  failures
-                  "every corpus node's one-row tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces, or 1.5 times its recorded pre-423 tick, plus the per-call floor"
+              // Every cell red in this attempt, by name: the leg judges the case red only when the SAME
+              // cell is red on all three counted attempts (`clockCellVerdict`, Phase 449).
+              if failures.Count > 0 then
+                  raise (ClockCellsRed(List.ofSeq failures))
 
           // ================= Phase 359 — the append tick on every corpus node =================
 
@@ -1907,7 +1951,7 @@ let clockTests =
               // Now the diff reads each column's prefix once, by reference, and keys the appended row
               // alone, and the refresh evaluates it alone; the figures are in
               // docs/incremental-evaluation.md, "An append costs the appended rows".
-              let failures = System.Collections.Generic.List<string>()
+              let failures = System.Collections.Generic.List<string * string>()
 
               for nd in corpusNodes do
                   for n in [ small; large; 100_000 ] do
@@ -1933,11 +1977,11 @@ let clockTests =
 
                       Calibration.checkpoint ()
 
-                      verdict |> Option.iter failures.Add
+                      verdict
+                      |> Option.iter (fun why -> failures.Add((sprintf "append %s @ %d" nd.Name n, why)))
 
-              Expect.isEmpty
-                  failures
-                  "every corpus node's one-row APPEND tick (diff + refresh) must cost at most 1.6 times the full evaluation it replaces, or 1.5 times its recorded pre-423 tick, plus the per-call floor" ]
+              if failures.Count > 0 then
+                  raise (ClockCellsRed(List.ofSeq failures)) ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
 let private countingId (minted: int ref) : RowIdentity<Cell> =
@@ -1976,16 +2020,58 @@ let scalingTests =
                   clockInventory
                   "the clock leg's case count is the inventory's — update both, and the doc's table"
 
+          testCase "a clock case is red only when the same cell is red on every counted attempt"
+          <| fun _ ->
+              // Phase 449 (operator ruling 2026-10-13, the sixth; DECISIONS.md D22). The rule is pure,
+              // so it is pinned here, where no clock runs; the leg applies it to the cells it judges.
+              let attempts (cells: string list list) = cells |> List.map Set.ofList
+
+              Expect.equal
+                  (clockCellVerdict (
+                      attempts
+                          [ [ "edit lines @ 20000" ]
+                            [ "edit window CumulSum @ 20000" ]
+                            [ "append byRegion @ 100000" ] ]
+                  ))
+                  (Some ClockGreen)
+                  "a different cell red on each attempt is green"
+
+              Expect.equal
+                  (clockCellVerdict (
+                      attempts
+                          [ [ "edit lines @ 20000"; "append byRegion @ 100000" ]
+                            [ "edit lines @ 20000" ]
+                            [ "edit window CumulSum @ 20000"; "edit lines @ 20000" ] ]
+                  ))
+                  (Some ClockRed)
+                  "one cell red on all three attempts is red, whatever else is red beside it"
+
+              Expect.equal
+                  (clockCellVerdict (attempts [ [ "a" ]; [ "a" ] ]))
+                  None
+                  "two red attempts in one cell are not yet a verdict"
+
+              Expect.equal
+                  (clockCellVerdict (attempts [ [ "a" ]; [ "b" ] ]))
+                  (Some ClockGreen)
+                  "the case is green as soon as no cell is red on every attempt so far"
+
+              Expect.equal (clockCellVerdict (attempts [ [] ])) (Some ClockGreen) "a green attempt is green"
+
           testCase "the tick bound's named exceptions are exactly the ruled ones"
           <| fun _ ->
-              // Phase 439 and Phase 449 (operator rulings 2026-10-12, the second to the fifth;
-              // DECISIONS.md D19 and D22): two cells, and only these two, are held to their own
+              // Phase 439 and Phase 449 (operator rulings of 2026-10-12 and 2026-10-13;
+              // DECISIONS.md D19 and D22): three cells, and only these three, are held to their own
               // recorded post-423 cost as a ceiling until Phase 448's acceptance removes them. A
               // further exception is an operator decision, so adding one moves this test too.
               Expect.equal
                   tickBaselineExceptions
                   [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns"
-                    "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns" ]
+                    "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns"
+                    "edit",
+                    "window CumulSum",
+                    20_000,
+                    "one of the shapes Phase 448 owns: pre-423 median 1.201 ms, post-423 1.45–2.35 ms against a 1.95 ms allowance" ]
                   "the named exceptions to the tick bound's baseline arm are the operator's ruling (D19), never added silently"
 
           testCase "the clock leg's saturation rule: above k times the baseline, or a bracket disagreeing by k"

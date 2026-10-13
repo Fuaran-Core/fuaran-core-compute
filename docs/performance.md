@@ -231,3 +231,24 @@ terms (`DECISIONS.md` D22). Its ceiling is its post-423 cost, recorded from `12a
 over three clean full legs of each leg's best: 1.794, 1.915 and 2.196 ms, so 1.915 ms (0.388911
 calibration units). The allowance is 1.5 × that plus the floor, about 3.02 ms. Making it cheaper is
 Phase 448's work.
+
+**`window CumulSum` at 20,000 rows, edit tick, and the per-cell rule (Phase 449, the sixth ruling).** The
+first gate run with the append exception in place was red in its edit case on all three counted
+attempts, with a different cell each time:
+
+| Attempt | Red cell | Tick | Allowed |
+|---|---|---:|---:|
+| 1 | `lines` edit @ 20,000 | 3.155 ms | 2.822 ms |
+| 2 | `window CumulSum` edit @ 20,000 | 2.351 ms | 1.949 ms |
+| 3 | `window CumulSum` edit @ 20,000 | 1.991 ms | 1.949 ms |
+
+No single cell was red on all three attempts. The operator ruled two changes (`DECISIONS.md` D22):
+
+- **A case is red only when the SAME cell is red on all three counted attempts.** Several noisy cells
+  can no longer redden a case together. A real regression is red every time in the cell it reached, so
+  it is still caught.
+- **`window CumulSum` edit at 20,000 rows is a third named exception**, one of the shapes Phase 448
+  owns. Its pre-423 median is 1.201 ms, and post-423 it reads 1.45 to 2.35 ms against a 1.95 ms
+  allowance. Its ceiling was recorded from `12a825d` by the same method: per-leg bests of 1.733, 1.840
+  and 1.825 ms, median 1.825 ms (0.371086 calibration units), an allowance of about 2.88 ms with the
+  floor.
