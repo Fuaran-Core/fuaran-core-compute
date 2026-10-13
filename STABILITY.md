@@ -53,6 +53,43 @@ tagged: an additive change rides it, a breaking one advances it. **It is not rel
 `1.0.0` is published**: it pins a version the public registry does not yet serve (`DECISIONS.md` D17),
 and this repository's CI is red for that reason until then.
 
+### A partition key that names no column is refused (Phase 441, `DECISIONS.md` D26) — BREAKING, `behaviour`
+
+**What changed.** A `Window` whose `PartitionBy` names a column the frame lacks is refused with
+`UnknownColumn(name, available)`. Before, the window dropped the name, partitioned by the columns it
+could find, and answered `Ok`. The evaluator, the public row form (`windowStep`) and the incremental
+seam (prime and refresh) all refuse, before any row is read. The partition keys and the order keys now
+pass through one resolution, the one a `Sort`'s keys pass. Where both kinds are unknown, the first
+partition key is named. The function's own checks (a bucket count, the read column) still come first.
+
+**The class.** No public signature moves; the functions that carry the rule are internal. What a
+consumer can observe is the refusal: a `behaviour` change, the same class as Phase 412's. The `0.39.0`
+draft is untagged, publicly unpinned and already carries a BREAKING class, so this change RIDES it.
+
+**The law vectors.** No vector in `conformance/laws/transform-laws.json` partitions a window on a
+column its table lacks, so none moves. The corpus copy follows the release rule (D6 (4)) unchanged.
+
+### The evaluator takes a source by position: `DataFrame.prepareRows` (Phase 415, `DECISIONS.md` D25) — `additive`
+
+**What changed.** `DataFrame.prepareRows schema rows` is new. It is the source seam's door for a source
+that is not a `Table`: a schema and its rows, read by POSITION. Cell `c` of every row is column `c` of
+the schema, so nothing is looked up by name on the way in, and a schema that names a column twice keeps
+both columns. The answer is a `Prepared`, which every evaluator over a prepared source takes, and so do
+`ColumnOps` and the incremental seam. A row whose width is not the schema's is refused with `TypeError`,
+naming the row. A pipeline split at any step hands its prefix's result through this door
+(`evalToPrepared`, its rows read out by position, `prepareRows`, then `evalPrepared` for the remainder)
+and answers what the whole pipeline answers. The `Table` door, `prepare`, still reads by name, as Core's
+`Table` addresses columns.
+
+**What did not change.** Every whole-table entry point, every output and every wire byte. The seam does
+no IO and nothing asynchronous: the rows are a sequence the host hands in, pulled once.
+
+**The class.** The surface family prints `Fuaran.Compute.DataFrame` gaining one member,
+`prepareRows`: an `additive` move. It rides the `0.39.0` draft and moves no number.
+
+**The law vectors.** None moves. The new law (the split law, in the suite) is a suite law, not a corpus
+vector, and the corpus copy follows the release rule (D6 (4)) unchanged.
+
 ### The bare `Rank` window function is deprecated in favour of `DenseRank` and `CompetitionRank` (Phase 414, `DECISIONS.md` D24) — documentation, no class
 
 **What changed.** `WindowFn.Rank`'s documentation opens with its deprecation and names the explicit

@@ -167,6 +167,88 @@ let tests =
                   | Error e -> failtestf "%A: the incremental prime refused with another error: %A" pipeline e
                   | Ok _ -> failtestf "%A: the incremental prime accepted a misspelled key" pipeline
 
+          // Phase 441 — a misspelled partition key used to be dropped, so the window partitioned by
+          // nothing and answered a plausible wrong column.
+          testCase "A partition key that names no column is refused, like a sort key"
+          <| fun _ ->
+              let spec =
+                  { PartitionBy = [ "dpt" ]
+                    OrderBy = [ "salary", Asc ]
+                    Fn = RowNumber
+                    Of = "salary"
+                    As = "rn" }
+
+              let refusedAs (name: string) (what: string) (r: Result<unit, EvalError>) =
+                  match r with
+                  | Error(UnknownColumn(n, available)) when n = name ->
+                      Expect.equal
+                          available
+                          [ "dept"; "name"; "salary"; "bonus" ]
+                          (what + ": names the columns there are")
+                  | other -> failtestf "%s: an unknown window key must refuse by name (%s), got %A" what name other
+
+              let refused = refusedAs "dpt"
+              let window s = run [ Window s ] |> Result.map ignore
+
+              refused "the evaluator" (window spec)
+
+              refused
+                  "a second partition key"
+                  (window
+                      { spec with
+                          PartitionBy = [ "dept"; "dpt" ] })
+
+              // Before any row is read: a source with no rows refuses as one with rows does.
+              let empty =
+                  { people with
+                      Columns = people.Columns |> List.map (fun c -> col c.Name c.Type []) }
+
+              refused "over no rows" (DataFrame.evalPipeline [ Window spec ] empty |> Result.map ignore)
+
+              // The public row form refuses the same way.
+              let rows =
+                  [ for i in 0 .. Table.rowCount people - 1 ->
+                        people.Columns |> List.map (fun c -> List.item i (Column.toCells c)) ]
+
+              refused "the row form" (DataFrame.windowStep people.Schema rows spec |> Result.map ignore)
+
+              // The incremental seam primes through the same check, both entry points.
+              for f in [ RowNumber; CumulSum; Lag ] do
+                  let s = { spec with Fn = f }
+
+                  refused
+                      (sprintf "the incremental prime (%A)" f)
+                      (Incremental.prime DataFrame.noResolve Map.empty (RowIdentity.byColumn "name") [ Window s ] people
+                       |> Result.map ignore)
+
+                  refused
+                      (sprintf "the prepared incremental prime (%A)" f)
+                      (Incremental.primePrepared
+                          DataFrame.noResolve
+                          Map.empty
+                          (RowIdentity.byColumn "name")
+                          [ Window s ]
+                          (DataFrame.prepare people)
+                       |> Result.map ignore)
+
+              // One resolution, in the spec's order: the partition keys, then the order keys; the
+              // window's own `Of` check still comes before either.
+              refused "a partition key ahead of an order key" (window { spec with OrderBy = [ "salry", Asc ] })
+
+              refusedAs
+                  "salry"
+                  "an order key, partition keys known"
+                  (window
+                      { spec with
+                          PartitionBy = [ "dept" ]
+                          OrderBy = [ "salry", Asc ] })
+
+              refusedAs "sal" "the read column first" (window { spec with Fn = CumulSum; Of = "sal" })
+
+              // The planner's totality verdict agrees: a window is never total, so none is reordered
+              // or pruned across, and an unknown key leaves it so.
+              Expect.isFalse (Plan.isTotal people.Schema (Window spec)) "a window over an unknown key is not total"
+
           testCase "Distinct dedupes whole rows, first occurrence wins"
           <| fun _ ->
               let t = run [ Project [ "dept", "dept" ]; Distinct ] |> okTable
@@ -5293,6 +5375,209 @@ let preparedResultTests =
                       "a follow-on over the kept result answers as over its table"
               | Error e ->
                   Expect.isTrue (Result.isError (DataFrame.evalPipeline none t)) (sprintf "refused alike: %A" e) ]
+
+// ---- Phase 415: the source seam ----
+
+/// A table's rows read BY POSITION — column `c` of the table is cell `c` of every row — the way a
+/// host reads a statement's rows or a cached result out, with no column looked up by name.
+let private rowsByPosition (t: Table) : Cell[] list =
+    let columns = t.Columns |> List.map (Column.toCells >> List.toArray) |> List.toArray
+    let n = if columns.Length = 0 then 0 else columns[0].Length
+    [ for i in 0 .. n - 1 -> columns |> Array.map (fun c -> c[i]) ]
+
+/// A prefix's result handed through the seam: out as a schema and rows, in through `prepareRows`.
+let private handOff (p: Prepared) : Result<Prepared, EvalError> =
+    let t = DataFrame.toTable p
+    DataFrame.prepareRows t.Schema (rowsByPosition t)
+
+/// The pipeline split after `k` steps: the prefix evaluated, its result handed through the seam,
+/// the remainder evaluated over it.
+let private evalSplitIn
+    (env: Map<string, Cell>)
+    (k: int)
+    (pipeline: Transform list)
+    (source: Prepared)
+    : Result<Table, EvalError> =
+    DataFrame.evalToPrepared DataFrame.noResolve env (List.take k pipeline) source
+    |> Result.bind handOff
+    |> Result.bind (DataFrame.evalPrepared DataFrame.noResolve env (List.skip k pipeline))
+
+let private evalSplit = evalSplitIn Map.empty
+
+/// The law over `pairs`: every split of every pipeline answers what the whole pipeline answers,
+/// refusals included. Answers how many splits it compared, how many fell strictly inside a
+/// pipeline, and how many whole pipelines refused, so a caller can tell a pass from a vacuous one.
+let private splitLaw (env: Map<string, Cell>) (pairs: (Table * Transform list) list) : int * int * int =
+    let mutable splits = 0
+    let mutable inner = 0
+    let mutable refused = 0
+
+    for i, (table, pipeline) in List.indexed pairs do
+        let source = DataFrame.prepare table
+        let whole = DataFrame.evalPrepared DataFrame.noResolve env pipeline source
+
+        if Result.isError whole then
+            refused <- refused + 1
+
+        for k in 0 .. List.length pipeline do
+            Expect.equal
+                (tokenised (evalSplitIn env k pipeline source))
+                (tokenised whole)
+                (sprintf "pair %d split after %d of %A" i k pipeline)
+
+            splits <- splits + 1
+
+            if k > 0 && k < List.length pipeline then
+                inner <- inner + 1
+
+    splits, inner, refused
+
+[<Tests>]
+let sourceSeamTests =
+    testList
+        "The source seam (Phase 415)"
+        [ testCase
+              "a pipeline split at any step through the seam answers what the whole pipeline answers, over the transform vectors and the generated sample"
+          <| fun _ ->
+              let splits, inner, refused = splitLaw Map.empty (PreparedResultLaw.sample ())
+              Expect.isGreaterThan inner 0 "the vectors carry pipelines split strictly inside"
+              Expect.isGreaterThan refused 0 "the vectors carry refusals, so the error clause was exercised"
+              Expect.isGreaterThan splits inner "the empty prefix and the empty remainder were compared too"
+
+              // The vectors' pipelines are short; the generated sample chains two drawn pipelines,
+              // under a param env, so most splits fall inside one.
+              let rng = System.Random 4150
+
+              let pairs =
+                  [ for _ in 1..400 -> frameTable rng (rng.Next 9) false, genPipeline rng @ genPipeline rng ]
+
+              let splits, inner, refused = splitLaw typedEnv pairs
+              Expect.isGreaterThan inner 500 "splits strictly inside a generated pipeline were reached"
+              Expect.isGreaterThan refused 0 "generated refusals were compared"
+              Expect.isGreaterThan splits inner "the empty prefix and the empty remainder were compared too"
+
+          testCase "a split after a join that renames two colliding columns hands both through under their own names"
+          <| fun _ ->
+              // Phase 411's shape: the left already carries `x_right`, so the right's `x` is named
+              // `x_right_2`. The remainder reads both by name after the hand-off.
+              let left =
+                  tbl
+                      [ Field.create "k" IntType
+                        Field.create "x" IntType
+                        Field.create "x_right" IntType ]
+                      [ col "k" IntType [ Int 1; Int 2; Int 3 ]
+                        col "x" IntType [ Int 10; Int 20; Int 30 ]
+                        col "x_right" IntType [ Int 100; Int 200; Int 300 ] ]
+
+              let right =
+                  tbl
+                      [ Field.create "kk" IntType; Field.create "x" IntType ]
+                      [ col "kk" IntType [ Int 1; Int 3 ]; col "x" IntType [ Int 7; Int 9 ] ]
+
+              let pipeline =
+                  [ Join(Embedded right, [ "k", "kk" ], Left)
+                    Project [ "k", "k"; "x_right", "lx"; "x_right_2", "rx" ]
+                    Filter(Not(IsNull(Col "rx"))) ]
+
+              let source = DataFrame.prepare left
+
+              let whole =
+                  DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline source |> okTable
+
+              Expect.equal (cellsOf "lx" whole) [ Int 100; Int 300 ] "the left's x_right"
+              Expect.equal (cellsOf "rx" whole) [ Int 7; Int 9 ] "the right's x"
+
+              for k in 0..3 do
+                  Expect.equal
+                      (tokenised (evalSplit k pipeline source))
+                      (tokenised (Ok whole))
+                      (sprintf "split after %d" k)
+
+          testCase "a schema naming a column twice is carried by position, as the evaluator's own frame carries it"
+          <| fun _ ->
+              // A `Window` whose `As` names an existing column appends a second column of that name
+              // (D20 leaves that rule as it stands). Handed through the seam, the second column
+              // keeps its own cells: nothing on the way in is looked up by name.
+              let t =
+                  tbl
+                      [ Field.create "g" StringType; Field.create "v" IntType ]
+                      [ col "g" StringType [ Str "a"; Str "a"; Str "b" ]
+                        col "v" IntType [ Int 5; Int 6; Int 7 ] ]
+
+              let pipeline =
+                  [ Window
+                        { PartitionBy = [ "g" ]
+                          OrderBy = [ "v", Asc ]
+                          Fn = RowNumber
+                          Of = "v"
+                          As = "v" }
+                    Derive("w", Col "v") ]
+
+              let source = DataFrame.prepare t
+              let whole = DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline source
+
+              match whole with
+              | Ok w ->
+                  Expect.equal
+                      (w.Columns |> List.map _.Name)
+                      [ "g"; "v"; "v"; "w" ]
+                      "the window's column is appended under the existing name"
+
+                  Expect.equal (Column.toCells w.Columns[2]) [ Int 1; Int 2; Int 1 ] "the second v is the row number"
+              | Error e -> failtestf "the whole pipeline refused: %s" (DataFrame.errorString e)
+
+              for k in 0..2 do
+                  Expect.equal (tokenised (evalSplit k pipeline source)) (tokenised whole) (sprintf "split after %d" k)
+
+          testCase
+              "rows read in through the seam answer as the table they came from, and a row of the wrong width is refused by its index"
+          <| fun _ ->
+              let viaRows = DataFrame.prepareRows people.Schema (rowsByPosition people)
+
+              let pipeline =
+                  [ Filter(Binary(Gt, Col "salary", Lit(Int 95)))
+                    Derive("pay", Binary(Add, Col "salary", Lit(Int 1))) ]
+
+              Expect.equal
+                  (tokenised (
+                      viaRows
+                      |> Result.bind (DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline)
+                  ))
+                  (tokenised (run pipeline))
+                  "the seam's source answers as the table's"
+
+              Expect.equal
+                  (tokenised (viaRows |> Result.map DataFrame.toTable))
+                  (tokenised (Ok people))
+                  "the source the rows make stands for the table they came from"
+
+              let schema = [ Field.create "a" IntType; Field.create "b" IntType ]
+
+              match DataFrame.prepareRows schema [ [| Int 1; Int 2 |]; [| Int 3 |]; [| Int 4; Int 5; Int 6 |] ] with
+              | Error(TypeError detail) ->
+                  Expect.equal detail "source row 1: 1 cells, schema width 2" "the first ragged row is named"
+              | other -> failtestf "a ragged row was not refused: %A" other
+
+              match DataFrame.prepareRows schema [] with
+              | Ok p -> Expect.equal (Table.rowCount (DataFrame.toTable p)) 0 "no rows is the empty source"
+              | Error e -> failtestf "no rows was refused: %s" (DataFrame.errorString e)
+
+          testCase "a source read through the seam primes the incremental seam as its table does"
+          <| fun _ ->
+              let pipeline = [ Derive("pay", Binary(Add, Col "salary", Lit(Int 1))) ]
+
+              let viaRows =
+                  DataFrame.prepareRows people.Schema (rowsByPosition people)
+                  |> Result.bind (
+                      Incremental.primePrepared DataFrame.noResolve Map.empty (RowIdentity.byColumn "name") pipeline
+                  )
+                  |> Result.map Incremental.result
+
+              let viaTable =
+                  Incremental.prime DataFrame.noResolve Map.empty (RowIdentity.byColumn "name") pipeline people
+                  |> Result.map Incremental.result
+
+              Expect.equal (tokenised viaRows) (tokenised viaTable) "the incremental seam takes the seam's source" ]
 
 [<Tests>]
 let kernelTests =

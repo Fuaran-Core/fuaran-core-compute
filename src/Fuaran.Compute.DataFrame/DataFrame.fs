@@ -4634,14 +4634,20 @@ module DataFrame =
 
     // ---- sort (pinned: stable; nulls last regardless of direction) ----
 
-    /// The first sort key a schema does not carry, as the `UnknownColumn` every other verb answers
-    /// for an unknown column (Phase 412, `DECISIONS.md` D21). `Sort` and a `Window`'s ordering
-    /// refuse with it before they order anything, so a misspelled key is an error, never the input
-    /// order returned as if it had been sorted.
+    /// The first of `keys` a schema does not carry, as the `UnknownColumn` every other verb answers
+    /// for an unknown column: the ONE resolution of the keys a step takes from a pipeline to order
+    /// or partition its rows by (Phase 412, `DECISIONS.md` D21; Phase 441, D26). `Sort` refuses
+    /// with it before it orders anything, and a `Window` before it reads a row
+    /// (`windowRefusal`), so a misspelled key is an error, never the input order returned as if it
+    /// had been sorted or one partition answered as if it were several.
+    let internal unknownKey (cols: Schema) (keys: string list) : EvalError option =
+        keys
+        |> List.tryFind (fun name -> Option.isNone (colIndex cols name))
+        |> Option.map (fun name -> UnknownColumn(name, available cols))
+
+    /// The first sort key a schema does not carry (`unknownKey` over the keys' columns).
     let internal unknownSortKey (cols: Schema) (by: (string * SortDir) list) : EvalError option =
-        by
-        |> List.tryFind (fun (name, _) -> Option.isNone (colIndex cols name))
-        |> Option.map (fun (name, _) -> UnknownColumn(name, available cols))
+        unknownKey cols (List.map fst by)
 
     /// A sort's keys resolved against one step's schema (Phase 263): each named column's index with
     /// its direction, in key order. The steps that take keys from a pipeline refuse an unknown key
@@ -7565,6 +7571,20 @@ module DataFrame =
         | CumulMin, _ -> true
         | _ -> false
 
+    /// The one check a `Window` step's spec passes before any row is read (Phase 441, `DECISIONS.md`
+    /// D26), in the order the step refuses: a bucket count below one, then a column the function
+    /// reads that the schema lacks, then the first key the spec takes from the pipeline that the
+    /// schema does not carry — its partition keys, then its order keys, through `unknownKey`, the
+    /// resolution a `Sort`'s keys pass, so the partition and the order keys cannot drift apart
+    /// again. The frame form, the row form (`windowStep`) and the incremental seam all ask it;
+    /// `None` is a spec the step evaluates.
+    let internal windowRefusal (cols: Schema) (spec: WindowSpec) : EvalError option =
+        match spec.Fn with
+        | NTile b when b < 1 -> Some(TypeError("ntile expects at least 1 bucket, got " + string b))
+        | fn when windowReadsOf fn && Option.isNone (colIndex cols spec.Of) ->
+            Some(UnknownColumn(spec.Of, available cols))
+        | _ -> unknownKey cols (spec.PartitionBy @ List.map fst spec.OrderBy)
+
     /// The `Window` step's appended column (Phase 324): its type, and one value per LOGICAL row of
     /// the rows `phys` reads, over the vectors `vecOf` names by schema index. The frame form packs it
     /// back at the physical rows; the public row form (`windowStep`) and the incremental seam's
@@ -7578,17 +7598,15 @@ module DataFrame =
         (phys: int[])
         (spec: WindowSpec)
         : Result<ColumnType * WindowColumn, EvalError> =
-        match spec.Fn, colIndex cols spec.Of with
-        | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
-        | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
-        // Phase 412 — an order key the schema does not carry is refused, as a `Sort`'s is, before
-        // the ordering is computed (`windowColumnOverWith` refuses it too, for a caller holding one).
-        | _ when Option.isSome (unknownSortKey cols spec.OrderBy) ->
-            Error(Option.get (unknownSortKey cols spec.OrderBy))
-        | _ -> windowColumnOverWith k cols vecOf phys spec (windowOrderOfWith k perturbation cols vecOf phys spec) null
+        // Phase 412 / 441 — the spec is refused before the ordering is computed
+        // (`windowColumnOverWith` refuses it too, for a caller holding an ordering already).
+        match windowRefusal cols spec with
+        | Some e -> Error e
+        | None ->
+            windowColumnOverWith k cols vecOf phys spec (windowOrderOfWith k perturbation cols vecOf phys spec) null
 
-    /// The schema indexes of a window's PARTITION columns, a name the schema does not carry dropped
-    /// (the window partitions by the columns it can find, as it always has).
+    /// The schema indexes of a window's PARTITION columns. Every reader reaches it behind
+    /// `windowRefusal`, which refuses a name the schema does not carry, so every name resolves.
     and internal windowPartitionIdx (cols: Schema) (spec: WindowSpec) : int[] =
         spec.PartitionBy |> List.choose (colIndex cols) |> List.toArray
 
@@ -7627,12 +7645,9 @@ module DataFrame =
         (wo: WindowOrder)
         (seeds: Cell[])
         : Result<ColumnType * WindowColumn, EvalError> =
-        match spec.Fn, colIndex cols spec.Of with
-        | NTile b, _ when b < 1 -> Error(TypeError("ntile expects at least 1 bucket, got " + string b))
-        | fn, None when windowReadsOf fn -> Error(UnknownColumn(spec.Of, available cols))
-        | _ when Option.isSome (unknownSortKey cols spec.OrderBy) ->
-            Error(Option.get (unknownSortKey cols spec.OrderBy))
-        | _, ofIdx ->
+        match windowRefusal cols spec, colIndex cols spec.Of with
+        | Some e, _ -> Error e
+        | None, ofIdx ->
             let n = phys.Length
             // A running total over a decimal column stays exact (Phase 277).
             let sourceIsDecimal = windowSourceIsDecimal cols spec
@@ -8508,7 +8523,41 @@ module DataFrame =
     /// to `evalPrepared` per pipeline, or to `Incremental.primePrepared`. Since Phase 268 a prepared
     /// source is also a persistent VERSION: `ColumnOps.applyPrepared` edits it at the cost of a
     /// chunk, sharing everything an edit did not touch, and `toTable` reads any version back.
+    /// A table's columns are read by NAME, as Core's `Table` addresses them; a table Core's
+    /// `Table.validate` admits names each column once. A source whose columns are identified by
+    /// position — rows from a reader, or a split pipeline's prefix — enters through `prepareRows`.
     let prepare (t: Table) : Prepared = Prepared.ofTable t
+
+    /// The source seam (Phase 415, `DECISIONS.md` D25): a source handed to the evaluator as a
+    /// schema and its rows, read by POSITION. Cell `c` of every row is column `c` of `schema`, so a
+    /// schema that names a column twice keeps both, as the evaluator's own frame does; nothing is
+    /// looked up by name on the way in. It is the door for a source that is not a `Table`: the
+    /// rows a statement returned, a cached or checkpointed result, the prefix of a pipeline run
+    /// somewhere else. The rows are read once, in order, and not retained; each column is packed
+    /// under its field's type exactly as the evaluator packs the rows a verb emits, so a cell the
+    /// type cannot hold is carried as the `Table` door carries one. A row whose width is not the
+    /// schema's is refused with `TypeError`, naming the row. No IO and nothing asynchronous: the
+    /// reader is whatever sequence the host hands in. The answer is a `Prepared`, which every
+    /// evaluator entry point over a prepared source, `ColumnOps` and the incremental seam take.
+    let prepareRows (schema: Schema) (rows: seq<Cell[]>) : Result<Prepared, EvalError> =
+        let all = Seq.toArray rows
+        let width = List.length schema
+
+        match all |> Array.tryFindIndex (fun r -> isNull r || r.Length <> width) with
+        | Some i ->
+            let got = if isNull all[i] then 0 else all[i].Length
+
+            Error(
+                TypeError(
+                    "source row "
+                    + string i
+                    + ": "
+                    + string got
+                    + " cells, schema width "
+                    + string width
+                )
+            )
+        | None -> Ok(Prepared.ofFrame (Frame.ofRows schema all))
 
     /// The table a prepared source stands for (Phase 268): the very table it was prepared from,
     /// or — for a version an edit or a chunked refresh produced — the table built from its chunks
