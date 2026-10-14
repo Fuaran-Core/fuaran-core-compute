@@ -1,5 +1,66 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-14 — D28: a window output that names a column the input already carries is refused with a `TypeError` naming it, through the window spec's one check, before any row is read; the join's suffix rule (D20) was considered and rejected for a window
+
+**Context.** A `Window` appends its output column under the name its `As` gives. When that name was a
+column the input already carried, the result held two columns of one name (Phase 450). D25 measured
+what that costs: the evaluator reads a table's columns by name, so the result handed back through the
+`Table` door reads its second column as the first, and Core's `Table.validate` refuses such a table
+outright. D20 closed the join's way of producing a repeated name and left the window's as it stood.
+This was pinned before the change: a `RowNumber` window over `people` whose `As` is `salary` answered
+`Ok`, with `salary` twice in its schema.
+
+**Decision.** The window is refused, with `TypeError("window output 'x' names a column the input
+already carries; …")`.
+
+1. **One check.** `windowRefusal`, the window spec's single check (D26), gains a last clause: after the
+   bucket count, the read column, the partition keys and the order keys, an output name the schema
+   carries is refused. An unknown key is still named first, because a spec whose keys do not resolve
+   is wrong whatever its output is called.
+2. **Before any row is read, in every form.** The frame form, the public row form (`windowStep`) and
+   the incremental seam all ask `windowRefusal`, so all three refuse, over a source with no rows as over
+   one with rows. A refresh whose source has gained the output's name refuses as the full evaluation of
+   that source does.
+3. **No new `EvalError` case.** `TypeError` is what the window already answers for a spec it cannot
+   evaluate (a bucket count below one). A new case would break every exhaustive match over `EvalError`
+   and the proof model's error type for a refusal a host reports by its text, as D25 reasoned for its
+   own refusal.
+4. **The planner's totality verdict already agrees.** `Plan.isTotal` has never counted a `Window` as
+   total, and the pruning walk treats a window as a barrier, so no rewrite removes a column ahead of a
+   window and the collision with it. The planned pipeline refuses as the pipeline as written does, and a
+   test holds that over the shape a pruning would reach (`[ Window …; Project … ]`).
+5. **The schema walk still appends.** `SchemaWalk` carries no refusal verdict, as for an unknown key
+   (D26), so over a colliding window it names the column twice. That answer is about a pipeline the
+   evaluator refuses, and the repeated name marks it. Retyping the column in place, as a `Derive` does,
+   would describe an evaluation that answers `Ok`.
+
+**Why a refusal and not D20's suffix.** The two verbs differ in who chose the name. A join's right
+column names come from its operand, so a collision is a fact about two tables the author may not
+control, and D20 keeps the join total rather than make it fail when an operand gains a column. A
+window's `As` is the author's own choice, written into the pipeline, and the steps after it read the
+column by that name. Under a suffix, `As = "rank"` over a table already carrying `rank` would put the
+window's column under `rank_2`, and a later `Col "rank"`, `Sort` or `Project` would read the table's
+`rank`: a plausible wrong answer with no error anywhere, which is the defect this phase removes. Under
+the refusal, the author learns at once, by name, and renames the output or projects the old column
+away. The cost is D20's own worry: a pipeline that ran over a table refuses over the same table once
+it gains a column of the output's name. That is the honest answer there, because the pipeline's later
+reads of that name have become ambiguous. **Replacing the column**, as a `Derive` does with a name it
+already carries, was the third candidate and was not taken: a window reads its input's columns (its
+`Of`, its keys) to make its output, so replacing one of them would let a single step's output erase its
+own input under one name, a reading no SQL window offers and one every consumer would have to learn.
+
+**The split law and the refresh.** The source seam's split law (`The source seam (Phase 415)`) now
+holds over the colliding shape as a refusal: the whole pipeline refuses, and so does every split of it,
+whether the window falls in the prefix or the remainder. The incremental refresh over a source that
+gained the window's output name refuses as the full evaluation does.
+
+**Consequences.** A behaviour change to a public evaluator, of D21's and D26's class. No public
+signature moves, because the function that carries the rule is internal. It is versioned under the
+`0.39.0` draft (`STABILITY.md`), which it rides. No vector in `conformance/laws/transform-laws.json`
+names a window's output after an existing column, so none moves, and the corpus copy follows the release
+rule (D6 (4)) unchanged. Two suite cases that used such a name only as a convenient output name now use
+a fresh one.
+
 ## 2026-10-14 — D27: a refresh assembles its result from the prior one; no corpus shape is declined; the named tick exceptions are retired; a clock case holds the refresh against the full evaluation
 
 **Context.** Phase 423 made the full evaluation a few passes over typed vectors. Phase 439 then found
