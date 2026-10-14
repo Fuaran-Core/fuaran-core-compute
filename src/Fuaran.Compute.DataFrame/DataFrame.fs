@@ -845,14 +845,6 @@ module internal RowAccess =
         let n = Table.rowCount t
         [ for i in 0 .. n - 1 -> cols |> Array.map (fun a -> a[i]) ]
 
-    /// The transpose back: full-width `rows` in row order, under the schema `cols`.
-    ///
-    /// One read per cell. A row narrower than the schema throws here, as the list form's
-    /// `List.item` did; that shape is a defect upstream and staying loud about it is the point.
-    let toColumns (cols: Schema) (rows: Cell[] list) : Column list =
-        cols
-        |> List.mapi (fun ci field -> Vec.columnOfCells field (rows |> List.map (fun r -> r[ci])))
-
 /// Exact arithmetic over decimal text (Phase 277) — what the evaluator computes a `Decimal` cell's
 /// `Sub`, `Mul`, `Mod`, negation, `Abs`, `Floor`, `Ceil`, `Round`, `Quotient` and `Rounded` with. The column layer's
 /// `DecimalText` owns the canonical form, the order and the sum (Core `DECISIONS.md` D72 K7); this
@@ -7576,14 +7568,28 @@ module DataFrame =
     /// reads that the schema lacks, then the first key the spec takes from the pipeline that the
     /// schema does not carry — its partition keys, then its order keys, through `unknownKey`, the
     /// resolution a `Sort`'s keys pass, so the partition and the order keys cannot drift apart
-    /// again. The frame form, the row form (`windowStep`) and the incremental seam all ask it;
-    /// `None` is a spec the step evaluates.
+    /// again — and last an output name the schema already carries (Phase 450, D28): a `Window`
+    /// appends its column, so an `As` naming an existing column would answer two columns of one
+    /// name, which no table can hold and which re-enters by name as the first of the two. The
+    /// frame form, the row form (`windowStep`) and the incremental seam all ask it; `None` is a
+    /// spec the step evaluates.
     let internal windowRefusal (cols: Schema) (spec: WindowSpec) : EvalError option =
         match spec.Fn with
         | NTile b when b < 1 -> Some(TypeError("ntile expects at least 1 bucket, got " + string b))
         | fn when windowReadsOf fn && Option.isNone (colIndex cols spec.Of) ->
             Some(UnknownColumn(spec.Of, available cols))
-        | _ -> unknownKey cols (spec.PartitionBy @ List.map fst spec.OrderBy)
+        | _ ->
+            match unknownKey cols (spec.PartitionBy @ List.map fst spec.OrderBy) with
+            | Some e -> Some e
+            | None when Option.isSome (colIndex cols spec.As) ->
+                Some(
+                    TypeError(
+                        "window output '"
+                        + spec.As
+                        + "' names a column the input already carries; name the window's column something else, or project the existing one away first"
+                    )
+                )
+            | None -> None
 
     /// The `Window` step's appended column (Phase 324): its type, and one value per LOGICAL row of
     /// the rows `phys` reads, over the vectors `vecOf` names by schema index. The frame form packs it
@@ -9123,9 +9129,11 @@ module DataFrame =
 //  generated pipelines rather than leaving it to review. Two places where the
 //  mirror is easy to get wrong, and is deliberate here:
 //
-//    * `Window` APPENDS its output column unconditionally, it does not upsert —
-//      so a window whose `As` collides with an existing column leaves the schema
-//      carrying that name twice, and the walk says so.
+//    * `Window` APPENDS its output column, it does not upsert. A window whose
+//      `As` names an existing column is REFUSED by the evaluator (Phase 450,
+//      D28); the walk carries no refusal verdict, as for an unknown key (D26),
+//      so it still appends, and a repeated name in a walk's answer marks a
+//      pipeline the evaluator refuses rather than a shape anyone receives.
 //    * `Derive` UPSERTS (retype in place, position kept), because that is what
 //      the evaluator does with a name it already carries.
 //
@@ -9238,9 +9246,9 @@ module SchemaWalk =
             knowledge |> withColumns (cols @ [ column ])
 
     /// Append a column unconditionally, duplicate name included — what the evaluator's `Window`
-    /// does. Deliberately not `upsert`: a window whose `As` names an existing column leaves the
-    /// evaluated schema carrying that name twice, and a walk that tidied it away would be wrong
-    /// about the shape the consumer actually receives.
+    /// does. Deliberately not `upsert`: a window whose `As` names an existing column is refused by
+    /// the evaluator (Phase 450, D28), and a walk that retyped the column in place would describe
+    /// an evaluation that answers `Ok`. Appending leaves the repeated name visible instead.
     let private appendColumn (column: ColumnKnowledge) (knowledge: SchemaKnowledge) : SchemaKnowledge =
         knowledge |> withColumns (columns knowledge @ [ column ])
 

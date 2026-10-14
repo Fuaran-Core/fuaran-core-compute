@@ -1025,8 +1025,8 @@ module DataFrameConformance =
               Window(win [] [ "a", Asc ] CumulSum "a" "cs")
               Window(win [ "g" ] [ "a", Asc ] Lag "b" "lagb")
               Window(win [] [ "a", Asc ] CumulMax "b" "runmax")
-              // `As` COLLIDES with an existing column: the evaluator appends regardless, leaving the
-              // name twice, and the walk must say the same rather than tidying it away.
+              // `As` COLLIDES with an existing column: the evaluator refuses it (Phase 450, D28), so
+              // a pipeline carrying it has no output schema for the walk to agree with.
               Window(win [] [ "a", Asc ] Rank "a" "a")
               Project [ "a", "a"; "g", "grp" ]
               GroupBy(
@@ -1067,7 +1067,7 @@ module DataFrameConformance =
 
         // Phase 411 — every combining join in `pipeline`, evaluated over `table`: the right side's
         // output names are distinct from each other and from every left name, so the join adds no
-        // repeated name (a left that already carries one, a `Window` onto an existing name, keeps it).
+        // repeated name (a left that already carries one keeps it).
         let checkJoinNames (i: int) (table: Table) (pipeline: Transform list) =
             pipeline
             |> List.iteri (fun j step ->

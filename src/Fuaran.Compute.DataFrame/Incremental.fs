@@ -3139,9 +3139,9 @@ module Incremental =
         // resumes it (`windowResume`): each partition reuses its prior run up to its earliest changed
         // position and the reference's own scan continues it from there, seeded with the cell at the
         // position before. Every other window function is recomputed wholesale, as before.
-        // Phase 441 — the reference `Window` refuses its spec before it reads a row (an unknown
-        // partition or order key included), so the walk does, ahead of resuming a prior run or
-        // ordering the rows.
+        // Phase 441 / 450 — the reference `Window` refuses its spec before it reads a row (an
+        // unknown partition or order key, or an output name the frame already carries, included),
+        // so the walk does, ahead of resuming a prior run or ordering the rows.
         | WWindow(_, spec) :: _ when Option.isSome (DataFrame.windowRefusal f.Cols spec) ->
             Error(Option.get (DataFrame.windowRefusal f.Cols spec))
         | WWindow(windowIdx, spec) :: rest ->

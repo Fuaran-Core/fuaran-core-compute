@@ -249,6 +249,123 @@ let tests =
               // or pruned across, and an unknown key leaves it so.
               Expect.isFalse (Plan.isTotal people.Schema (Window spec)) "a window over an unknown key is not total"
 
+          // Phase 450 — a window whose `As` named an existing column appended a second column of
+          // that name, which re-entered by name as the first of the two (D25). It is refused now.
+          testCase "A window output that names an existing column is refused, naming the column"
+          <| fun _ ->
+              let spec =
+                  { PartitionBy = [ "dept" ]
+                    OrderBy = [ "salary", Asc ]
+                    Fn = RowNumber
+                    Of = "salary"
+                    As = "salary" }
+
+              let refusedAs (name: string) (what: string) (r: Result<unit, EvalError>) =
+                  match r with
+                  | Error(TypeError detail) ->
+                      Expect.stringContains detail ("window output '" + name + "'") (what + ": the column is named")
+                  | other -> failtestf "%s: a window output naming an existing column must refuse, got %A" what other
+
+              let refused = refusedAs "salary"
+
+              let window s = run [ Window s ] |> Result.map ignore
+
+              // Every function family: the positional, the accumulating and the shifting/extreme.
+              for f in [ RowNumber; Rank; NTile 2; CumulSum; RollingMean; Lag; CumulMax; CumulMin ] do
+                  refused (sprintf "the evaluator (%A)" f) (window { spec with Fn = f })
+
+              // A column the window does not read is refused as one it reads is.
+              refusedAs "bonus" "an unread column" (window { spec with As = "bonus" })
+
+              // Before any row is read: a source with no rows refuses as one with rows does.
+              let empty =
+                  { people with
+                      Columns = people.Columns |> List.map (fun c -> col c.Name c.Type []) }
+
+              refused "over no rows" (DataFrame.evalPipeline [ Window spec ] empty |> Result.map ignore)
+
+              // The public row form refuses the same way.
+              let rows =
+                  [ for i in 0 .. Table.rowCount people - 1 ->
+                        people.Columns |> List.map (fun c -> List.item i (Column.toCells c)) ]
+
+              refused "the row form" (DataFrame.windowStep people.Schema rows spec |> Result.map ignore)
+
+              // The incremental seam primes through the same check, both entry points, a resumable
+              // prefix fold and a wholesale recompute alike.
+              for f in [ RowNumber; CumulSum; Lag ] do
+                  let s = { spec with Fn = f }
+
+                  refused
+                      (sprintf "the incremental prime (%A)" f)
+                      (Incremental.prime DataFrame.noResolve Map.empty (RowIdentity.byColumn "name") [ Window s ] people
+                       |> Result.map ignore)
+
+                  refused
+                      (sprintf "the prepared incremental prime (%A)" f)
+                      (Incremental.primePrepared
+                          DataFrame.noResolve
+                          Map.empty
+                          (RowIdentity.byColumn "name")
+                          [ Window s ]
+                          (DataFrame.prepare people)
+                       |> Result.map ignore)
+
+              // The keys are checked first: an unknown key is named ahead of the output name.
+              match window { spec with OrderBy = [ "salry", Asc ] } with
+              | Error(UnknownColumn("salry", _)) -> ()
+              | other -> failtestf "an unknown order key must be named first, got %A" other
+
+              // A name the input does not carry is the window's own column, as before.
+              Expect.equal
+                  ((run [ Window { spec with As = "rn" } ] |> okTable).Schema
+                   |> List.map (fun (f: Field) -> f.Name))
+                  [ "dept"; "name"; "salary"; "bonus"; "rn" ]
+                  "a fresh name is appended"
+
+              // A name a previous step produced collides as a source column does.
+              refusedAs
+                  "d"
+                  "a derived column"
+                  (run [ Derive("d", Col "salary"); Window { spec with As = "d" } ]
+                   |> Result.map ignore)
+
+              // The planner agrees: a window is never total, and the planned pipeline refuses as the
+              // pipeline as written does, so no pruning ahead of the window removes the collision.
+              Expect.isFalse (Plan.isTotal people.Schema (Window spec)) "a colliding window is not total"
+
+              let pruneShape = [ Window spec; Project [ "dept", "dept" ] ]
+
+              refused "the pipeline as written" (run pruneShape |> Result.map ignore)
+
+              refused "the planned pipeline" (run (Plan.rewrite people.Schema pruneShape) |> Result.map ignore)
+
+              // A refresh whose source GAINED the window's output name refuses as the full
+              // evaluation of the new source does, rather than resuming the run it primed.
+              let gained =
+                  { Schema = people.Schema @ [ Field.create "rn" IntType ]
+                    Columns =
+                      people.Columns
+                      @ [ col "rn" IntType (List.init (Table.rowCount people) (fun i -> Int i)) ] }
+
+              let fresh = [ Window { spec with As = "rn" } ]
+              let idw = RowIdentity.byColumn "name"
+
+              let full = DataFrame.evalPipeline fresh gained |> Result.map ignore
+              refusedAs "rn" "the full evaluation of the grown source" full
+
+              match Incremental.prime DataFrame.noResolve Map.empty idw fresh people with
+              | Error e -> failtestf "the prime over the original source refused: %A" e
+              | Ok state ->
+                  match Delta.diff idw people gained with
+                  | Error e -> failtestf "the diff refused: %A" e
+                  | Ok delta ->
+                      refusedAs
+                          "rn"
+                          "the refresh over the grown source"
+                          (Incremental.refresh DataFrame.noResolve Map.empty idw fresh state delta gained
+                           |> Result.map ignore)
+
           testCase "Distinct dedupes whole rows, first occurrence wins"
           <| fun _ ->
               let t = run [ Project [ "dept", "dept" ]; Distinct ] |> okTable
@@ -1445,7 +1562,7 @@ let tests =
               Expect.equal (SchemaWalk.names projected) [ "who"; "pay" ] "renamed, in the listed order"
               Expect.equal (SchemaWalk.typeOf "pay" projected) (Some IntType) "under the source column's type"
 
-          testCase "Phase 112 — Window APPENDS, even when its As collides: the name lands twice"
+          testCase "Phase 112 — Window APPENDS; a colliding As is refused by the evaluator, and the walk still appends"
           <| fun _ ->
               let collide =
                   Window
@@ -1457,15 +1574,14 @@ let tests =
 
               let k = SchemaWalk.ofPipeline people.Schema [ collide ]
 
+              // Phase 450 (D28): the evaluator refuses the colliding name. The walk carries no
+              // refusal verdict, so it appends, and the repeated name marks the refused pipeline.
               Expect.equal
                   (SchemaWalk.names k)
                   [ "dept"; "name"; "salary"; "bonus"; "salary" ]
-                  "the evaluator appends unconditionally, so the walk must too"
+                  "the walk appends, it does not retype in place as a derive does"
 
-              Expect.equal
-                  ((run [ collide ] |> okTable).Schema |> List.map (fun (f: Field) -> f.Name))
-                  (SchemaWalk.names k)
-                  "and the evaluated schema really does carry it twice"
+              Expect.isError (run [ collide ]) "and the evaluator refuses the pipeline the walk marks"
 
               // The three window type families, each pinned to the evaluator's own rule.
               let windowed fn ofCol =
@@ -5096,7 +5212,7 @@ let frameTests =
               Expect.isGreaterThan borrowed 500 "the sample borrowed storage"
 
           testCase
-              "the typed path types a derived column from its cells: all null is String, an upsert replaces in place, a window appends"
+              "the typed path types a derived column from its cells: all null is String, an upsert replaces in place, a window appends a fresh name"
           <| fun _ ->
               let t: Table =
                   { Schema = [ Field.create "i" IntType; Field.create "j" IntType ]
@@ -5129,9 +5245,23 @@ let frameTests =
                               Of = "i"
                               PartitionBy = []
                               OrderBy = [ "i", Asc ]
-                              As = "i" } ])
-                  [ Field.create "i" IntType; Field.create "j" IntType; Field.create "i" IntType ]
-                  "a Window appends its column even where the name exists" ]
+                              As = "rn" } ])
+                  [ Field.create "i" IntType
+                    Field.create "j" IntType
+                    Field.create "rn" IntType ]
+                  "a Window appends its column"
+
+              // Phase 450 (D28): a Window never upserts; an existing name is refused instead.
+              Expect.isError
+                  (DataFrame.evalPipeline
+                      [ Window
+                            { Fn = RowNumber
+                              Of = "i"
+                              PartitionBy = []
+                              OrderBy = [ "i", Asc ]
+                              As = "i" } ]
+                      t)
+                  "a Window onto an existing name is refused, not appended" ]
 
 // ---------------------------------------------------------------------------
 //  Phase 270 — the kernel pair. The evaluator runs its row-local verbs through
@@ -5493,41 +5623,56 @@ let sourceSeamTests =
                       (tokenised (Ok whole))
                       (sprintf "split after %d" k)
 
-          testCase "a schema naming a column twice is carried by position, as the evaluator's own frame carries it"
+          testCase "a window output naming an existing column refuses at every split, as the whole pipeline does"
           <| fun _ ->
-              // A `Window` whose `As` names an existing column appends a second column of that name
-              // (D20 leaves that rule as it stands). Handed through the seam, the second column
-              // keeps its own cells: nothing on the way in is looked up by name.
+              // Phase 450 (D28): before it, this window appended a second `v`, which re-entered
+              // through the `Table` door as the first one (D25). Now the whole pipeline refuses, and
+              // so does every split of it, the window in the prefix or in the remainder.
               let t =
                   tbl
                       [ Field.create "g" StringType; Field.create "v" IntType ]
                       [ col "g" StringType [ Str "a"; Str "a"; Str "b" ]
                         col "v" IntType [ Int 5; Int 6; Int 7 ] ]
 
-              let pipeline =
-                  [ Window
-                        { PartitionBy = [ "g" ]
-                          OrderBy = [ "v", Asc ]
-                          Fn = RowNumber
-                          Of = "v"
-                          As = "v" }
-                    Derive("w", Col "v") ]
-
               let source = DataFrame.prepare t
-              let whole = DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline source
 
-              match whole with
-              | Ok w ->
-                  Expect.equal
-                      (w.Columns |> List.map _.Name)
-                      [ "g"; "v"; "v"; "w" ]
-                      "the window's column is appended under the existing name"
+              for fn in [ RowNumber; CumulMax ] do
+                  let pipeline =
+                      [ Derive("w", Col "v")
+                        Window
+                            { PartitionBy = [ "g" ]
+                              OrderBy = [ "v", Asc ]
+                              Fn = fn
+                              Of = "v"
+                              As = "v" }
+                        Derive("x", Col "v") ]
 
-                  Expect.equal (Column.toCells w.Columns[2]) [ Int 1; Int 2; Int 1 ] "the second v is the row number"
-              | Error e -> failtestf "the whole pipeline refused: %s" (DataFrame.errorString e)
+                  let whole = DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline source
 
-              for k in 0..2 do
-                  Expect.equal (tokenised (evalSplit k pipeline source)) (tokenised whole) (sprintf "split after %d" k)
+                  match whole with
+                  | Error(TypeError detail) ->
+                      Expect.stringContains detail "window output 'v'" "the whole pipeline names the column"
+                  | other -> failtestf "%A: the whole pipeline must refuse the colliding output, got %A" fn other
+
+                  for k in 0..3 do
+                      Expect.equal
+                          (tokenised (evalSplit k pipeline source))
+                          (tokenised whole)
+                          (sprintf "%A split after %d" fn k)
+
+          testCase "a schema naming a column twice is carried by position through the seam"
+          <| fun _ ->
+              // No verb produces such a schema now (D20, D28), but a host's reader may hand one in,
+              // and the seam reads by position: each `v` keeps its own cells.
+              let schema = [ Field.create "v" IntType; Field.create "v" IntType ]
+
+              match DataFrame.prepareRows schema [ [| Int 1; Int 10 |]; [| Int 2; Int 20 |] ] with
+              | Ok p ->
+                  let t = DataFrame.toTable p
+                  Expect.equal (t.Columns |> List.map _.Name) [ "v"; "v" ] "both columns are kept"
+                  Expect.equal (Column.toCells t.Columns[0]) [ Int 1; Int 2 ] "the first v is the first cell"
+                  Expect.equal (Column.toCells t.Columns[1]) [ Int 10; Int 20 ] "the second v is the second cell"
+              | Error e -> failtestf "a repeated-name schema was refused: %s" (DataFrame.errorString e)
 
           testCase
               "rows read in through the seam answer as the table they came from, and a row of the wrong width is refused by its index"
@@ -6526,7 +6671,9 @@ let private windowLaw (perturbation: DataFrame.Ordering.Perturbation) (seeds: in
                 |> List.truncate (rng.Next 3)
               Fn = windowFns[rng.Next windowFns.Length]
               Of = name (rng.Next 5)
-              As = "w" }
+              // A name the frame does not carry: `w` is one of its columns, and a window onto an
+              // existing name is refused (Phase 450).
+              As = "out" }
 
         let rows = Frame.rowsOf f
         let expected = referenceWindow f.Cols rows spec
