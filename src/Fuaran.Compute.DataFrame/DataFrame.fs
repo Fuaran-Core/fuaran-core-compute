@@ -4545,10 +4545,12 @@ module DataFrame =
                 // A column whose cells disagree with its declared type is typed as declared, as the
                 // schema-only typer types it, and read boxed: every kernel over it checks the tag per
                 // row and hands a disagreeing cell to the reference arm.
-                // A decimal vector (Phase 280) reads its cells, as the boxed vector does: the expression
-                // arms over a decimal are exact text arithmetic, and the scaled integers serve the
-                // filter, sort and sum kernels only.
-                | Decs(_, _, cells, _)
+                // A decimal vector (Phase 280) reads its cells, as the boxed vector does — each the
+                // `Decimal` of the row's text, boxed on read (Phase 440): the expression arms over a
+                // decimal are exact text arithmetic, and the scaled integers serve the filter, sort
+                // and sum kernels only.
+                | Decs(_, _, texts, mask) ->
+                    Of types[i], NCell(fun p -> if Mask.at p mask then Decimal(Raw.at p texts) else Null)
                 | Cells cells -> Of types[i], NCell(fun p -> cells[p])
             | RConst c ->
                 let present (v: 'a) : int -> 'a =
@@ -6296,9 +6298,18 @@ module DataFrame =
                             nullCode c openNew
 
                     Raw.set out i code
-            | Decs(_, _, cells, _) ->
+            // A decimal key is coded by its cell's token, the canonical text (Phase 277), read off
+            // the row's text (Phase 440).
+            | Decs(_, _, texts, m) ->
                 for i in 0 .. n - 1 do
-                    let code = cellCode c (Raw.at (Raw.get i phys) cells) openNew
+                    let p = Raw.get i phys
+
+                    let code =
+                        if Mask.at p m then
+                            codeIn c c.Decs (Cell.token (Decimal(Raw.at p texts))) openNew
+                        else
+                            nullCode c openNew
+
                     Raw.set out i code
             // A temporal key is coded by its canonical text, as the boxed `Date` / `Timestamp` cell
             // is: one rendering per row read, which is what the text carrier paid at the boundary.

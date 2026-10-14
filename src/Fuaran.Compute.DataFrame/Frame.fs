@@ -462,12 +462,14 @@ module internal Shared =
 /// the vector records, so the cell it reads back is the cell that was unpacked. Masks and a
 /// `Bools` vector's values are `Mask`s: a `bool[]` on .NET, bytes under Fable (Phase 376).
 ///
-/// A decimal column (Phase 280) is `Decs`: the column's cells as they were handed in, beside each
-/// present value as an unscaled integer at ONE scale for the column, carried in a float64 — so a
+/// A decimal column (Phase 280) is `Decs`: the column's decimal texts as they were handed in, beside
+/// each present value as an unscaled integer at ONE scale for the column, carried in a float64 — so a
 /// comparison, an order and a sum are float operations, exact because every value and every partial
-/// sum the kernels keep is an integer of magnitude at most 2^53 - 1. The cells ride along so every
-/// read of a cell is the cell the text path reads, byte for byte, with nothing rendered; only the
-/// kernels read the integers. A column that does not fit (`ScaledDecimal.scaleOf`) stays `Cells`.
+/// sum the kernels keep is an integer of magnitude at most 2^53 - 1. The texts ride along so every
+/// read of a cell is the cell the text path reads, byte for byte: the `Decimal` of the row's text,
+/// boxed on read as a string vector's cell is; only the kernels read the integers. Over a Core
+/// column the texts are a VIEW of its decimal vector (Phase 440), so the frame holds no cell per
+/// row. A column that does not fit (`ScaledDecimal.scaleOf`) stays `Cells`.
 ///
 /// A temporal column (Phase 423, over Core's Phase 422) is carried as Core carries it: `Dates` is
 /// the calendar day of each row (days since 1970-01-01), and `Stamps` is each row's instant as whole
@@ -480,7 +482,7 @@ type internal Vec =
     | Floats of float[] * Mask
     | Bools of Mask * Mask
     | Strs of ColumnType * string[] * Mask
-    | Decs of scaled: float[] * scale: int * cells: Cell[] * mask: Mask
+    | Decs of scaled: float[] * scale: int * texts: string[] * mask: Mask
     | Dates of days: int[] * mask: Mask
     | Stamps of unit: TimeUnit * seconds: float[] * fraction: int[] * mask: Mask
     | Cells of Cell[]
@@ -578,19 +580,18 @@ module internal ScaledDecimal =
             ValueSome(if negative && v <> 0.0 then -v else v)
         | _ -> ValueNone
 
-    /// The one scale a column of `cells` is carried at — its largest fraction-digit count — or
-    /// `None` where it cannot be: a present cell that is not a well-formed `Decimal`, or a column
-    /// past the width. `Null` cells are absent and read nothing.
-    let scaleOf (cells: Cell[]) : int option =
+    /// The one scale a column of decimal `texts` is carried at — its largest fraction-digit count —
+    /// or `None` where it cannot be: a present text (`mask`) that is not in the grammar, or a column
+    /// past the width. An absent row's text is a placeholder and is not read.
+    let scaleOf (texts: string[]) (mask: Mask) : int option =
         let mutable ok = true
         let mutable maxInt = 0
         let mutable maxFrac = 0
         let mutable i = 0
 
-        while ok && i < cells.Length do
-            match cells[i] with
-            | Decimal s ->
-                match shape s with
+        while ok && i < texts.Length do
+            if Mask.at i mask then
+                match shape (Raw.get i texts) with
                 | ValueSome(struct (intDigits, fracDigits)) ->
                     if intDigits > maxInt then
                         maxInt <- intDigits
@@ -598,8 +599,6 @@ module internal ScaledDecimal =
                     if fracDigits > maxFrac then
                         maxFrac <- fracDigits
                 | ValueNone -> ok <- false
-            | Null -> ()
-            | _ -> ok <- false
 
             i <- i + 1
 
@@ -607,6 +606,13 @@ module internal ScaledDecimal =
             Some maxFrac
         else
             None
+
+    /// Every present text's unscaled value at `scale`, written into `into` at its row; an absent row
+    /// is left as it is. `scaleOf` admitted every present text at this scale, so each one reads.
+    let fill (scale: int) (texts: string[]) (mask: Mask) (into: float[]) : unit =
+        for i in 0 .. texts.Length - 1 do
+            if Mask.at i mask then
+                Raw.put into i (tryScaled scale (Raw.get i texts) |> ValueOption.defaultValue 0.0)
 
     /// The canonical decimal text (`DecimalText`) of the unscaled value `u` at `scale`. `u` is an
     /// integer of magnitude at most `maxExact`.
@@ -697,7 +703,7 @@ module internal Vec =
         | Floats(a, m) -> if Mask.at p m then Float(Raw.at p a) else Null
         | Bools(a, m) -> if Mask.at p m then Bool(Mask.at p a) else Null
         | Strs(ty, a, m) -> if Mask.at p m then strCell ty (Raw.at p a) else Null
-        | Decs(_, _, cells, _) -> Raw.at p cells
+        | Decs(_, _, texts, m) -> if Mask.at p m then Decimal(Raw.at p texts) else Null
         | Dates(a, m) ->
             if Mask.at p m then
                 Date(TemporalText.dateText (Raw.at p a))
@@ -788,45 +794,38 @@ module internal Vec =
                 i <- i + 1
 
             if ok then Bools(vals, mask) else boxed ()
-        // A decimal column (Phase 280): one scan finds the column's scale, then every present value
-        // is read as an unscaled integer beside its cell. A column past the width, or holding any
-        // present cell that is not a well-formed `Decimal`, takes the text path: packed boxed, every
-        // kernel reading its cells through the reference arm.
+        // A decimal column (Phase 280): one pass takes each present cell's text, one scan finds the
+        // column's scale, then every present value is read as an unscaled integer beside its text
+        // (Phase 440: the text, not the cell). A column past the width, or holding any present cell
+        // that is not a well-formed `Decimal`, takes the text path: packed boxed, every kernel
+        // reading its cells through the reference arm.
         | DecimalType ->
-            // An int in a decimal column is the decimal of its value (Core `1.0.0`, Phase 423), as
-            // `Column.ofCells` admits it; the cells are rewritten only where one is present.
-            let cells =
-                if
-                    cells
-                    |> Array.exists (fun c ->
-                        match c with
-                        | Int _ -> true
-                        | _ -> false)
-                then
-                    cells
-                    |> Array.map (fun c ->
-                        match c with
-                        | Int i -> Decimal(string i)
-                        | _ -> c)
-                else
-                    cells
+            let texts: string[] = Array.zeroCreate count
+            let struct (vals, mask) = Shared.floatsAndMask count
+            let mutable ok = true
+            let mutable i = 0
 
-            match ScaledDecimal.scaleOf cells with
+            while ok && i < n do
+                match Raw.get i cells with
+                | Decimal s ->
+                    let p = posOf i
+                    Raw.put texts p s
+                    Mask.put mask p true
+                // An int in a decimal column is the decimal of its value (Core `1.0.0`, Phase 423), as
+                // `Column.ofCells` admits it.
+                | Int v ->
+                    let p = posOf i
+                    Raw.put texts p (string v)
+                    Mask.put mask p true
+                | Null -> ()
+                | _ -> ok <- false
+
+                i <- i + 1
+
+            match (if ok then ScaledDecimal.scaleOf texts mask else None) with
             | Some scale ->
-                let struct (vals, mask) = Shared.floatsAndMask count
-                let out = Array.create count Null
-
-                for i in 0 .. n - 1 do
-                    match Raw.get i cells with
-                    | Decimal s ->
-                        let p = posOf i
-                        // `scaleOf` admitted every present cell at this scale, so this always reads.
-                        Raw.put vals p (ScaledDecimal.tryScaled scale s |> ValueOption.defaultValue 0.0)
-                        Mask.put mask p true
-                        Raw.put out p (Raw.get i cells)
-                    | _ -> ()
-
-                Decs(vals, scale, out, mask)
+                ScaledDecimal.fill scale texts mask vals
+                Decs(vals, scale, texts, mask)
             | None -> boxed ()
         | DateType ->
             // A `Date` cell's canonical text as its calendar day; a text that is not canonical is a
@@ -906,6 +905,18 @@ module internal Vec =
 
     /// Pack a dense column: `cells[i]` at physical row `i`.
     let pack (ty: ColumnType) (cells: Cell[]) : Vec = packAt ty cells.Length id cells
+
+    /// Decimal `texts`, present where `mask` says, as the decimal vector `pack DecimalType` makes of
+    /// their cells (Phase 440): the texts and the mask are HELD, never copied — over a Core column a
+    /// view of its storage — beside the unscaled integers read from them. A column that does not fit
+    /// takes the text path, its cells boxed from the texts.
+    let ofDecimalTexts (texts: string[]) (mask: Mask) : Vec =
+        match ScaledDecimal.scaleOf texts mask with
+        | Some scale ->
+            let vals = Shared.floats texts.Length
+            ScaledDecimal.fill scale texts mask vals
+            Decs(vals, scale, texts, mask)
+        | None -> Cells(Array.init texts.Length (fun i -> if Mask.at i mask then Decimal(Raw.at i texts) else Null))
 
     /// The temporal texts a string kernel computed (a `Date` or `Timestamp` answer per present row)
     /// as the integer temporal vector of their type (Phase 423): each present text parsed once,
@@ -990,9 +1001,9 @@ module internal Vec =
             let struct (va, vm) = Shared.boolsAndMask n
             Bools(pick a va, pick m vm)
         | Strs(ty, a, m) -> Strs(ty, pick a (Array.zeroCreate n), pick m (Array.zeroCreate n))
-        | Decs(a, s, c, m) ->
+        | Decs(a, s, t, m) ->
             let struct (va, vm) = Shared.floatsAndMask n
-            Decs(pick a va, s, pick c (Array.zeroCreate n), pick m vm)
+            Decs(pick a va, s, pick t (Array.zeroCreate n), pick m vm)
         | Dates(a, m) ->
             let struct (va, vm) = Shared.intsAndMask n
             Dates(pick a va, pick m vm)
@@ -1023,7 +1034,7 @@ module internal Vec =
         | Floats(a, m) -> Floats(pick a 0.0 (Array.zeroCreate n), maskOf m)
         | Bools(a, m) -> Bools(pick a 0uy (Array.zeroCreate n), maskOf m)
         | Strs(ty, a, m) -> Strs(ty, pick a "" (Array.zeroCreate n), maskOf m)
-        | Decs(a, s, c, m) -> Decs(pick a 0.0 (Array.zeroCreate n), s, pick c Null (Array.zeroCreate n), maskOf m)
+        | Decs(a, s, t, m) -> Decs(pick a 0.0 (Array.zeroCreate n), s, pick t null (Array.zeroCreate n), maskOf m)
         | Dates(a, m) -> Dates(pick a 0 (Array.zeroCreate n), maskOf m)
         | Stamps(u, s, f, m) ->
             Stamps(
@@ -1044,11 +1055,11 @@ module internal Vec =
         | Floats(a, m) -> Floats(Array.init n (fun i -> a[phys[i]]), Array.init n (fun i -> m[phys[i]]))
         | Bools(a, m) -> Bools(Array.init n (fun i -> a[phys[i]]), Array.init n (fun i -> m[phys[i]]))
         | Strs(ty, a, m) -> Strs(ty, Array.init n (fun i -> a[phys[i]]), Array.init n (fun i -> m[phys[i]]))
-        | Decs(a, s, c, m) ->
+        | Decs(a, s, t, m) ->
             Decs(
                 Array.init n (fun i -> a[phys[i]]),
                 s,
-                Array.init n (fun i -> c[phys[i]]),
+                Array.init n (fun i -> t[phys[i]]),
                 Array.init n (fun i -> m[phys[i]])
             )
         | Dates(a, m) -> Dates(Array.init n (fun i -> a[phys[i]]), Array.init n (fun i -> m[phys[i]]))
@@ -1079,11 +1090,11 @@ module internal Vec =
         | Floats(a, m) -> Floats(Array.init n (fun i -> if present[i] then a[idx[i]] else 0.0), maskOf m)
         | Bools(a, m) -> Bools(Array.init n (fun i -> present[i] && a[idx[i]]), maskOf m)
         | Strs(ty, a, m) -> Strs(ty, Array.init n (fun i -> if present[i] then a[idx[i]] else ""), maskOf m)
-        | Decs(a, s, c, m) ->
+        | Decs(a, s, t, m) ->
             Decs(
                 Array.init n (fun i -> if present[i] then a[idx[i]] else 0.0),
                 s,
-                Array.init n (fun i -> if present[i] then c[idx[i]] else Null),
+                Array.init n (fun i -> if present[i] then t[idx[i]] else null),
                 maskOf m
             )
         | Dates(a, m) -> Dates(Array.init n (fun i -> if present[i] then a[idx[i]] else 0), maskOf m)
@@ -1101,7 +1112,7 @@ module internal Vec =
 #endif
 
     /// Two DENSE vectors end to end: the same kind when both are typed alike, boxed otherwise. Two
-    /// decimal vectors at different scales are packed again from their cells, so the result is the
+    /// decimal vectors at different scales are read again from their texts, so the result is the
     /// vector `pack DecimalType` makes of the joined column.
     let append (a: Vec) (b: Vec) : Vec =
         match a, b with
@@ -1109,9 +1120,9 @@ module internal Vec =
         | Floats(x, mx), Floats(y, my) -> Floats(Array.append x y, Array.append mx my)
         | Bools(x, mx), Bools(y, my) -> Bools(Array.append x y, Array.append mx my)
         | Strs(ta, x, mx), Strs(tb, y, my) when ta = tb -> Strs(ta, Array.append x y, Array.append mx my)
-        | Decs(x, sa, cx, mx), Decs(y, sb, cy, my) when sa = sb ->
-            Decs(Array.append x y, sa, Array.append cx cy, Array.append mx my)
-        | Decs(_, _, cx, _), Decs(_, _, cy, _) -> pack DecimalType (Array.append cx cy)
+        | Decs(x, sa, tx, mx), Decs(y, sb, ty, my) when sa = sb ->
+            Decs(Array.append x y, sa, Array.append tx ty, Array.append mx my)
+        | Decs(_, _, tx, mx), Decs(_, _, ty, my) -> ofDecimalTexts (Array.append tx ty) (Array.append mx my)
         | Dates(x, mx), Dates(y, my) -> Dates(Array.append x y, Array.append mx my)
         | Stamps(ua, sx, fx, mx), Stamps(ub, sy, fy, my) when ua = ub ->
             let fraction =
@@ -1137,7 +1148,7 @@ module internal Vec =
         | Floats(a, m) -> Floats(Array.sub a start len, Array.sub m start len)
         | Bools(a, m) -> Bools(Array.sub a start len, Array.sub m start len)
         | Strs(ty, a, m) -> Strs(ty, Array.sub a start len, Array.sub m start len)
-        | Decs(a, s, c, m) -> Decs(Array.sub a start len, s, Array.sub c start len, Array.sub m start len)
+        | Decs(a, s, t, m) -> Decs(Array.sub a start len, s, Array.sub t start len, Array.sub m start len)
         | Dates(a, m) -> Dates(Array.sub a start len, Array.sub m start len)
         | Stamps(u, s, f, m) ->
             Stamps(u, Array.sub s start len, (if isNull f then null else Array.sub f start len), Array.sub m start len)
@@ -1202,20 +1213,19 @@ module internal Vec =
                 let parts =
                     vs
                     |> Array.choose (function
-                        | Decs(a, s, c, m) -> Some(a, s, c, m)
+                        | Decs(a, s, t, m) -> Some(a, s, t, m)
                         | _ -> None)
 
                 if parts.Length < vs.Length then
                     boxed ()
-                elif parts |> Array.forall (fun (_, s, _, _) -> s = s0) then
-                    Decs(
-                        Array.concat (parts |> Array.map (fun (a, _, _, _) -> a)),
-                        s0,
-                        Array.concat (parts |> Array.map (fun (_, _, c, _) -> c)),
-                        Array.concat (parts |> Array.map (fun (_, _, _, m) -> m))
-                    )
                 else
-                    pack DecimalType (Array.concat (parts |> Array.map (fun (_, _, c, _) -> c)))
+                    let texts = Array.concat (parts |> Array.map (fun (_, _, t, _) -> t))
+                    let mask = Array.concat (parts |> Array.map (fun (_, _, _, m) -> m))
+
+                    if parts |> Array.forall (fun (_, s, _, _) -> s = s0) then
+                        Decs(Array.concat (parts |> Array.map (fun (a, _, _, _) -> a)), s0, texts, mask)
+                    else
+                        ofDecimalTexts texts mask
             | Dates _ ->
                 let parts =
                     vs
@@ -1301,22 +1311,26 @@ module internal Vec =
         // A decimal vector stays at its scale for a value that fits it; any other cell — a value
         // past the scale or the width, or a cell of another type — packs the edited column again,
         // which picks the scale that fits or takes the text path.
-        | Decs(a, s, cells, m), _ ->
-            let edited = Array.copy cells
-            edited[i] <- c
+        | Decs(a, s, t, m), _ ->
+            let repacked () =
+                let edited = Array.init (length v) (cellAt v)
+                edited[i] <- c
+                pack DecimalType edited
 
             match c with
-            | Null -> Decs(a, s, edited, masked m)
+            | Null -> Decs(a, s, t, masked m)
             | Decimal text ->
                 match ScaledDecimal.tryScaled s text with
                 | ValueSome x ->
                     let a' = Array.copy a
+                    let t' = Array.copy t
                     let m' = Array.copy m
                     a'[i] <- x
+                    t'[i] <- text
                     Mask.put m' i true
-                    Decs(a', s, edited, m')
-                | ValueNone -> pack DecimalType edited
-            | _ -> pack DecimalType edited
+                    Decs(a', s, t', m')
+                | ValueNone -> repacked ()
+            | _ -> repacked ()
         | Strs(ty, a, m), Null -> Strs(ty, a, masked m)
         | Strs(ty, a, m), _ ->
             match carrierOf ty c with
@@ -1410,7 +1424,11 @@ module internal Vec =
                         | Null -> not (Mask.at j m)
                         | Timestamp text -> Mask.at j m && TemporalText.tryInstant u text = Some(s[j], fractionAt f j)
                         | _ -> false
-                    | Decs(_, _, a, _)
+                    | Decs(_, _, t, m) ->
+                        match cells[offset + j] with
+                        | Null -> not (Mask.at j m)
+                        | Decimal s -> Mask.at j m && t[j] = s
+                        | _ -> false
                     | Cells a -> a[j] = cells[offset + j]
 
                 j <- j + 1
@@ -1476,10 +1494,9 @@ module internal Vec =
                     | None -> null
 
                 Stamps(unit, borrowed seconds, fraction, maskOf n va)
-            | ColumnData.Decimals(v, va) ->
-                let texts = borrowed v
-                let mask = maskOf n va
-                pack DecimalType (Array.init n (fun i -> if Mask.get i mask then Decimal(Raw.get i texts) else Null))
+            // Phase 440: the column's decimal texts are held as they are, beside the integers read
+            // from them; no cell is boxed.
+            | ColumnData.Decimals(v, va) -> ofDecimalTexts (borrowed v) (maskOf n va)
 
     /// The frame's mask as a column's validity: `AllValid` where every row is present, else the
     /// mask itself — on .NET the very array, adopted; `Validity.ofVector` normalises.
@@ -1544,15 +1561,7 @@ module internal Vec =
         | Stamps(unit, s, f, m) ->
             let fraction = if isNull f then None else Some(Vector.adopt f)
             Column.ofTimestamps name unit (Vector.adopt s) fraction (validityOf m)
-        | Decs(_, _, cells, m) ->
-            let texts =
-                cells
-                |> Array.map (fun c ->
-                    match c with
-                    | Decimal s -> s
-                    | _ -> null)
-
-            Column.ofDecimals name (Vector.adopt texts) (validityOf m)
+        | Decs(_, _, texts, m) -> Column.ofDecimals name (Vector.adopt texts) (validityOf m)
         | Cells cells -> viaCells cells
 
     /// A column built from cells under `field` — the row form's boundary out: packed, then adopted.

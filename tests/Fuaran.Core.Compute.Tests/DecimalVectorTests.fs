@@ -2,9 +2,10 @@ module Fuaran.Compute.Tests.DecimalVectorTests
 
 // ---------------------------------------------------------------------------
 //  Phase 280 — the scaled-integer decimal vector behind the `Table` boundary. A decimal column
-//  whose values fit fifteen significant digits at one scale is packed as `Decs`: its cells as they
-//  came in, beside each value as an exact integer in a float64. The filter, sort and sum kernels
-//  read the integers; everything else reads the cells. A column past the width, or holding any
+//  whose values fit fifteen significant digits at one scale is packed as `Decs`: its decimal texts
+//  as they came in, beside each value as an exact integer in a float64. The filter, sort and sum
+//  kernels read the integers; everything else reads the cells, each made from its row's text on read
+//  (Phase 440). A column past the width, or holding any
 //  cell that is not well-formed decimal text, takes the text path, which is a path and not a
 //  refusal. `DecimalVectorLaw` holds the two paths byte-identical; this file holds the law
 //  non-vacuous and pins the edges it relies on.

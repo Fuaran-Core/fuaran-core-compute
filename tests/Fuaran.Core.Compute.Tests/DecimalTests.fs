@@ -572,4 +572,40 @@ let tests =
               match DataFrameCodec.decodePipeline unknown with
               | Error(UnknownTag("bankers", allowed)) ->
                   Expect.contains allowed "half-even" "the decode names the modes"
-              | other -> failtestf "an unknown mode is a decode error, got %A" other ]
+              | other -> failtestf "an unknown mode is a decode error, got %A" other
+
+          testCase
+              "a decimal column is a view: the frame holds Core's text vector and no boxed cell, in and out (Phase 440)"
+          <| fun _ ->
+              // The scaled integers are the frame's own; the texts are the column's decimal vector,
+              // borrowed at the boundary in and adopted at the boundary out, by reference. A cell is
+              // the `Decimal` of its row's text, made on read.
+              let texts = Vector.adopt [| "1.5"; "0"; "-2.25" |]
+              let mask = Vector.adopt [| true; false; true |]
+
+              let t: Table =
+                  { Schema = [ Field.create "d" DecimalType ]
+                    Columns = [ Column.ofDecimals "d" texts (Validity.Mask mask) ] }
+
+              let f = Frame.ofTable t
+
+              match f.Vecs with
+              | [| Decs(scaled, scale, held, _) as v |] ->
+                  Expect.isTrue
+                      (obj.ReferenceEquals(held, (Vector.Unsafe.borrow texts).Array))
+                      "the decimal texts are borrowed"
+
+                  Expect.equal scale 2 "the column's scale is its finest value's"
+                  Expect.equal scaled[0] 150.0 "1.5 at scale 2"
+                  Expect.equal scaled[2] -225.0 "-2.25 at scale 2"
+                  Expect.equal (List.init 3 (Vec.cellAt v)) [ dec "1.5"; Null; dec "-2.25" ] "cells on read"
+              | other -> failtestf "one decimal vector expected, got %A" other
+
+              match (Frame.toTable f).Columns |> List.map (fun c -> c.Data) with
+              | [ ColumnData.Decimals(out, _) ] ->
+                  Expect.isTrue
+                      (obj.ReferenceEquals((Vector.Unsafe.borrow out).Array, (Vector.Unsafe.borrow texts).Array))
+                      "the decimal texts are handed back"
+              | other -> failtestf "one decimal column expected, got %A" other
+
+              Expect.equal (Frame.toTable f) t "the round trip is the table" ]
