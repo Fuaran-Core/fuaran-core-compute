@@ -50,6 +50,8 @@
   <ItemGroup>
     <PackageReference Include="Fuaran.Core.Column" />
     <PackageReference Include="Fuaran.Core.Wire" />
+    <!-- Phase 429: the unit algebra the evaluator checks and composes column units through. -->
+    <PackageReference Include="Fuaran.Core.Unit" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

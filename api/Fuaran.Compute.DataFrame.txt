@@ -5,7 +5,7 @@
 # One ordinal-sorted line per externally-visible type, member, record field and union case.
 # See STABILITY.md "Public-surface baselines" for what each move class means.
 ctor Fuaran.Compute.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
-ctor Fuaran.Compute.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>)
+ctor Fuaran.Compute.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>)
 ctor Fuaran.Compute.IncrementalPlan..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>, Fuaran.Compute.IncrementalStrategy)
 ctor Fuaran.Compute.IncrementalStateKey..ctor(System.String, System.String)
 ctor Fuaran.Compute.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, System.String, System.String, Fuaran.Core.AggFn)
@@ -43,6 +43,7 @@ field Fuaran.Compute.ColExpr+Tags.Case : System.Int32 (literal)
 field Fuaran.Compute.ColExpr+Tags.Cast : System.Int32 (literal)
 field Fuaran.Compute.ColExpr+Tags.Coalesce : System.Int32 (literal)
 field Fuaran.Compute.ColExpr+Tags.Col : System.Int32 (literal)
+field Fuaran.Compute.ColExpr+Tags.Convert : System.Int32 (literal)
 field Fuaran.Compute.ColExpr+Tags.InList : System.Int32 (literal)
 field Fuaran.Compute.ColExpr+Tags.InParam : System.Int32 (literal)
 field Fuaran.Compute.ColExpr+Tags.IsNull : System.Int32 (literal)
@@ -68,6 +69,7 @@ field Fuaran.Compute.EvalError+Tags.JoinError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.OverflowError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.TypeError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.UnboundParam : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.UnitMismatch : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.UnknownColumn : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.UnpinnedClock : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.UnresolvedSource : System.Int32 (literal)
@@ -185,8 +187,15 @@ method Fuaran.Compute.ColExprModule.substitute(Microsoft.FSharp.Collections.FSha
 method Fuaran.Compute.ColExprModule.substituteListParams(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
 method Fuaran.Compute.ColExprModule.substituteNow(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.NowGrain, Fuaran.Core.Cell>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
 method Fuaran.Compute.ColExprModule.usesNow(Fuaran.Compute.ColExpr) : System.Boolean
+method Fuaran.Compute.ColumnKnowledgeModule.named(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>) : Fuaran.Compute.ColumnKnowledge
+method Fuaran.Compute.ColumnKnowledgeModule.ofField(Fuaran.Core.Field) : Fuaran.Compute.ColumnKnowledge
+method Fuaran.Compute.ColumnKnowledgeModule.renamed(System.String, Fuaran.Compute.ColumnKnowledge) : Fuaran.Compute.ColumnKnowledge
+method Fuaran.Compute.ColumnKnowledgeModule.toField(Fuaran.Compute.ColumnKnowledge) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.Field>
+method Fuaran.Compute.ColumnKnowledgeModule.toFieldAs(Fuaran.Core.ColumnType, Fuaran.Compute.ColumnKnowledge) : Fuaran.Core.Field
+method Fuaran.Compute.ColumnKnowledgeModule.withUnit(Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Fuaran.Compute.ColumnKnowledge) : Fuaran.Compute.ColumnKnowledge
 method Fuaran.Compute.DataFrame.aggregateCells(Fuaran.Core.AggFn, Fuaran.Core.ColumnType, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Cell, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.aggregateType(Fuaran.Core.AggFn, Fuaran.Core.ColumnType) : Fuaran.Core.ColumnType
+method Fuaran.Compute.DataFrame.aggregateUnit(Fuaran.Core.AggFn, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>
 method Fuaran.Compute.DataFrame.cellString(Fuaran.Core.Cell) : System.String
 method Fuaran.Compute.DataFrame.cellToken(Fuaran.Core.Cell) : System.String
 method Fuaran.Compute.DataFrame.errorString(Fuaran.Compute.EvalError) : System.String
@@ -214,13 +223,18 @@ method Fuaran.Compute.DataFrame.joinRightNames(Microsoft.FSharp.Collections.FSha
 method Fuaran.Compute.DataFrame.noResolve(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Table, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.prepare(Fuaran.Core.Table) : Fuaran.Compute.Prepared
 method Fuaran.Compute.DataFrame.prepareRows(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, System.Collections.Generic.IEnumerable`1<Fuaran.Core.Cell[]>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Prepared, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.resolveUnits(System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Fuaran.Compute.ColExpr) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`2<Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Fuaran.Compute.ColExpr>, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.rowCompareBy(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.SortDir>>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.Int32
 method Fuaran.Compute.DataFrame.rowToken(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.DataFrame.rowTokenString(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : System.String
 method Fuaran.Compute.DataFrame.toTable(Fuaran.Compute.Prepared) : Fuaran.Core.Table
 method Fuaran.Compute.DataFrame.typeOf(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Fuaran.Compute.ColExpr) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
+method Fuaran.Compute.DataFrame.unitOf(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Fuaran.Compute.ColExpr) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.unitOfColumn(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>
+method Fuaran.Compute.DataFrame.unpivotUnit(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<System.String>) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>
 method Fuaran.Compute.DataFrame.windowFrameBounded(Fuaran.Compute.WindowFn) : System.Boolean
 method Fuaran.Compute.DataFrame.windowStep(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Fuaran.Compute.WindowSpec) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>>, Fuaran.Compute.EvalError>
+method Fuaran.Compute.DataFrame.windowUnit(Fuaran.Compute.WindowFn, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>
 method Fuaran.Compute.DataFrameCodec.decodeExpr(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.ColExpr, Fuaran.Core.ColumnError>
 method Fuaran.Compute.DataFrameCodec.decodePipeline(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.ColumnError>
 method Fuaran.Compute.DataFrameCodec.decodePipelineJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Fuaran.Core.ColumnError>
@@ -310,6 +324,7 @@ method Fuaran.Compute.SchemaWalk.ofSource(Microsoft.FSharp.Core.FSharpFunc`2<Sys
 method Fuaran.Compute.SchemaWalk.ofTransform(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>>, Fuaran.Compute.SchemaKnowledge, Fuaran.Compute.Transform) : Fuaran.Compute.SchemaKnowledge
 method Fuaran.Compute.SchemaWalk.reason(Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Core.FSharpOption`1<System.String>
 method Fuaran.Compute.SchemaWalk.typeOf(System.String, Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
+method Fuaran.Compute.SchemaWalk.unitOf(System.String, Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>
 method Fuaran.Compute.SlotModule.isParam`1(Fuaran.Compute.Slot`1<!!0>) : System.Boolean
 method Fuaran.Compute.SlotModule.paramName`1(Fuaran.Compute.Slot`1<!!0>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.SlotModule.tryLit`1(Fuaran.Compute.Slot`1<!!0>) : Microsoft.FSharp.Core.FSharpOption`1<!!0>
@@ -332,8 +347,12 @@ property Fuaran.Compute.RowIdentity.ordinalScheme : System.String { get }
 record-field Fuaran.Compute.Agg.Fn #1 : Fuaran.Core.AggFn
 record-field Fuaran.Compute.Agg.Name #0 : System.String
 record-field Fuaran.Compute.Agg.Of #2 : System.String
+record-field Fuaran.Compute.ColumnKnowledge.Description #4 : Microsoft.FSharp.Core.FSharpOption`1<System.String>
+record-field Fuaran.Compute.ColumnKnowledge.Ext #5 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>
+record-field Fuaran.Compute.ColumnKnowledge.Label #3 : Microsoft.FSharp.Core.FSharpOption`1<System.String>
 record-field Fuaran.Compute.ColumnKnowledge.Name #0 : System.String
 record-field Fuaran.Compute.ColumnKnowledge.Type #1 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
+record-field Fuaran.Compute.ColumnKnowledge.Unit #2 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>
 record-field Fuaran.Compute.IncrementalPlan.Steps #0 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>
 record-field Fuaran.Compute.IncrementalPlan.Strategy #1 : Fuaran.Compute.IncrementalStrategy
 record-field Fuaran.Compute.IncrementalStateKey.Pipeline #0 : System.String
@@ -382,6 +401,7 @@ type Fuaran.Compute.ColExpr+Case (type)
 type Fuaran.Compute.ColExpr+Cast (type)
 type Fuaran.Compute.ColExpr+Coalesce (type)
 type Fuaran.Compute.ColExpr+Col (type)
+type Fuaran.Compute.ColExpr+Convert (type)
 type Fuaran.Compute.ColExpr+InList (type)
 type Fuaran.Compute.ColExpr+InParam (type)
 type Fuaran.Compute.ColExpr+IsNull (type)
@@ -394,6 +414,7 @@ type Fuaran.Compute.ColExpr+Rounded (type)
 type Fuaran.Compute.ColExpr+Tags (type)
 type Fuaran.Compute.ColExprModule (module)
 type Fuaran.Compute.ColumnKnowledge (record)
+type Fuaran.Compute.ColumnKnowledgeModule (module)
 type Fuaran.Compute.DataFrame (module)
 type Fuaran.Compute.DataFrameCodec (module)
 type Fuaran.Compute.Delta (module)
@@ -415,6 +436,7 @@ type Fuaran.Compute.EvalError+OverflowError (type)
 type Fuaran.Compute.EvalError+Tags (type)
 type Fuaran.Compute.EvalError+TypeError (type)
 type Fuaran.Compute.EvalError+UnboundParam (type)
+type Fuaran.Compute.EvalError+UnitMismatch (type)
 type Fuaran.Compute.EvalError+UnknownColumn (type)
 type Fuaran.Compute.EvalError+UnpinnedClock (type)
 type Fuaran.Compute.EvalError+UnresolvedSource (type)
@@ -546,6 +568,7 @@ union-case Fuaran.Compute.ColExpr.NewCase #6(cases: Microsoft.FSharp.Collections
 union-case Fuaran.Compute.ColExpr.NewCast #7(Item1: Fuaran.Core.ColumnType, Item2: Fuaran.Compute.ColExpr)
 union-case Fuaran.Compute.ColExpr.NewCoalesce #5(Item: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColExpr>)
 union-case Fuaran.Compute.ColExpr.NewCol #0(Item: System.String)
+union-case Fuaran.Compute.ColExpr.NewConvert #15(Item1: Fuaran.Compute.ColExpr, unit: Fuaran.Core.UnitOfMeasure)
 union-case Fuaran.Compute.ColExpr.NewInList #9(Item1: Fuaran.Compute.ColExpr, Item2: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColExpr>)
 union-case Fuaran.Compute.ColExpr.NewInParam #11(Item1: Fuaran.Compute.ColExpr, name: System.String)
 union-case Fuaran.Compute.ColExpr.NewIsNull #10(Item: Fuaran.Compute.ColExpr)
@@ -571,6 +594,7 @@ union-case Fuaran.Compute.EvalError.NewJoinError #3(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewOverflowError #6(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewTypeError #1(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewUnboundParam #7(name: System.String, bound: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Compute.EvalError.NewUnitMismatch #9(step: System.String, expr: Fuaran.Compute.ColExpr, left: System.String, right: System.String)
 union-case Fuaran.Compute.EvalError.NewUnknownColumn #0(name: System.String, available: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
 union-case Fuaran.Compute.EvalError.NewUnpinnedClock #8(grain: Fuaran.Compute.NowGrain)
 union-case Fuaran.Compute.EvalError.NewUnresolvedSource #5(ref: System.String)

@@ -91,8 +91,35 @@ module TransformVectorSample =
           "typed-unpivot-empty"
           "typed-float-decimal-refused" ]
 
+    /// The unit shapes (Phase 429), one vector each after the typing ones, over the unit table: a
+    /// column's unit through every verb that keeps, composes or drops one, a conversion in each of
+    /// its three accepted forms, and seven refusals — metres beside seconds in a derive, a filter, a
+    /// `Greatest`, a join key and a union column, a scale of one dimension beside another, and a
+    /// conversion across dimensions.
+    let private unitShapeNames =
+        [ "unit-divide"
+          "unit-product-literal"
+          "unit-convert"
+          "unit-coalesce-case"
+          "unit-compare-filter"
+          "unit-group-agg"
+          "unit-window"
+          "unit-join-keep"
+          "unit-union"
+          "unit-pivot"
+          "unit-unpivot-shared"
+          "unit-unpivot-mixed"
+          "unit-project-label"
+          "unit-add-refused"
+          "unit-scale-refused"
+          "unit-convert-refused"
+          "unit-compare-refused"
+          "unit-greatest-refused"
+          "unit-join-key-refused"
+          "unit-union-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
-    let private drawnShapeNames = decimalShapeNames @ typingShapeNames
+    let private drawnShapeNames = decimalShapeNames @ typingShapeNames @ unitShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -249,6 +276,116 @@ module TransformVectorSample =
                   )
               ) ]
 
+    let private unitOf (text: string) : UnitOfMeasure =
+        match Unit.parse text with
+        | Ok u -> u
+        | Error _ -> Unit.dimensionless
+
+    /// The unit table (Phase 429): a key, a distance in metres (labelled), two elapsed times in
+    /// seconds, a mass in kilograms, the distance again in kilometres, and a unitless count that
+    /// carries a label and a description. `distanceUnit` is the unit `d` is declared in — `m` for
+    /// every shape but the union refusal's second operand, which declares it in `km`.
+    let unitTable (distanceUnit: string) (rows: int) (offset: int) : Table =
+        let keys = [| "a"; "b"; "c" |]
+        let g = [ for i in 0 .. rows - 1 -> Str keys[i % 3] ]
+
+        let d =
+            [ for i in 0 .. rows - 1 ->
+                  if (i + offset) % 4 = 3 then
+                      Null
+                  else
+                      Int((i + 1) * 100 + offset * 10) ]
+
+        let t =
+            [ for i in 0 .. rows - 1 ->
+                  if (i + offset) % 5 = 4 then
+                      Null
+                  else
+                      Float(float (i + 1 + offset) * 2.5) ]
+
+        let h = [ for i in 0 .. rows - 1 -> Float(float (i + offset) + 0.5) ]
+        let w = [ for i in 0 .. rows - 1 -> Float(float (i * 3 + offset) / 4.0) ]
+
+        let dk =
+            [ for i in 0 .. rows - 1 -> Float(float ((i + 1) * 100 + offset * 10) / 1000.0) ]
+
+        let n = [ for i in 0 .. rows - 1 -> Int(i + offset) ]
+
+        { Schema =
+            [ Field.create "g" StringType
+              Field.create "d" IntType
+              |> Field.withUnit (unitOf distanceUnit)
+              |> Field.withLabel "Distance"
+              Field.create "t" FloatType |> Field.withUnit (unitOf "s")
+              Field.create "h" FloatType |> Field.withUnit (unitOf "s")
+              Field.create "w" FloatType |> Field.withUnit (unitOf "kg")
+              Field.create "dk" FloatType |> Field.withUnit (unitOf "km")
+              Field.create "n" IntType
+              |> Field.withLabel "Count"
+              |> Field.withDescription "How many" ]
+          Columns =
+            [ KitColumn.create "g" StringType g
+              KitColumn.create "d" IntType d
+              KitColumn.create "t" FloatType t
+              KitColumn.create "h" FloatType h
+              KitColumn.create "w" FloatType w
+              KitColumn.create "dk" FloatType dk
+              KitColumn.create "n" IntType n ] }
+
+    let private unitPipelineOf (shape: string) (rows: int) (offset: int) : Transform list =
+        let d = Col "d"
+        let t = Col "t"
+        // The second operand of a join or a set verb: the same table less its last row.
+        let other = Embedded(unitTable "m" (rows - 1) offset)
+
+        let win fn ofCol asCol : Transform =
+            Window
+                { PartitionBy = [ "g" ]
+                  OrderBy = [ "n", Asc ]
+                  Fn = fn
+                  Of = ofCol
+                  As = asCol }
+
+        match shape with
+        | "unit-divide" -> [ Derive("v", Binary(Div, d, t)); Derive("r", Binary(Div, Lit(Float 1.0), t)) ]
+        | "unit-product-literal" -> [ Derive("a", Binary(Mul, d, Lit(Int 2))); Derive("b", Binary(Mul, d, d)) ]
+        | "unit-convert" ->
+            [ Derive("k", Convert(d, unitOf "km"))
+              Derive("s", Binary(Add, Convert(Col "dk", unitOf "m"), d))
+              Derive("tag", Convert(Lit(Int 5), unitOf "m"))
+              Derive("same", Convert(d, unitOf "m")) ]
+        | "unit-coalesce-case" ->
+            [ Derive("c", Coalesce [ d; Lit(Int 0) ])
+              Derive("e", Case([ Binary(Gt, Col "n", Lit(Int 1)), d ], Binary(Sub, d, Lit(Int 1))))
+              Derive("lo", ApplyFn(Least, [ t; Col "h" ])) ]
+        | "unit-compare-filter" ->
+            [ Filter(Binary(Gt, d, Convert(Col "dk", unitOf "m")))
+              Filter(Binary(Lt, t, Lit(Float 100.0))) ]
+        | "unit-group-agg" ->
+            [ GroupBy([ "g" ], [ agg "s" Sum "w"; agg "n" Count "n"; agg "m" Mean "d"; agg "x" Max "t" ]) ]
+        | "unit-window" -> [ win Lag "w" "prev"; win CumulSum "d" "run"; win RowNumber "n" "rn" ]
+        | "unit-join-keep" -> [ Join(other, [ "g", "g" ], Inner) ]
+        | "unit-union" -> [ Union other ]
+        | "unit-pivot" ->
+            [ Pivot
+                  { Index = [ "n" ]
+                    On = "g"
+                    Values = "w"
+                    Agg = Sum } ]
+        | "unit-unpivot-shared" -> [ Unpivot([ "g" ], [ "t"; "h" ]) ]
+        | "unit-unpivot-mixed" -> [ Unpivot([ "g" ], [ "d"; "t" ]) ]
+        | "unit-project-label" ->
+            [ Transform.sortBy [ "n", Desc ]
+              Transform.limit 2 0
+              Project [ "d", "dist"; "n", "n" ] ]
+        | "unit-add-refused" -> [ Derive("x", Binary(Add, d, t)) ]
+        | "unit-scale-refused" -> [ Derive("x", Binary(Add, Col "dk", d)) ]
+        | "unit-convert-refused" -> [ Derive("x", Convert(d, unitOf "s")) ]
+        | "unit-compare-refused" -> [ Filter(Binary(Gt, d, t)) ]
+        | "unit-greatest-refused" -> [ Derive("x", ApplyFn(Greatest, [ Col "w"; t ])) ]
+        | "unit-join-key-refused" -> [ Join(other, [ "d", "t" ], Inner) ]
+        | _ -> [ Union(Embedded(unitTable "km" (rows - 1) offset)) ]
+
     let private pipelineOf (k: int) : Transform list =
         match k with
         | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
@@ -305,7 +442,12 @@ module TransformVectorSample =
             baseSample iteration extra offset, r2
         else
             let rows = extra + 3
-            (decimalTable rows offset, decimalPipelineOf (shapeOf iteration) rows offset), r2
+            let shape = shapeOf iteration
+
+            if shape.StartsWith "unit-" then
+                (unitTable "m" rows offset, unitPipelineOf shape rows offset), r2
+            else
+                (decimalTable rows offset, decimalPipelineOf shape rows offset), r2
 
     /// The generator in the shape `Conformance.transformLaws` takes — the iteration counter folded
     /// into the state, so the law and the export draw the identical sample.

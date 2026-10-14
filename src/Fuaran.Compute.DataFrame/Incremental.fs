@@ -1492,8 +1492,19 @@ module internal StateWire =
     /// A table exactly as it is held: the schema, then the columns in the table's own order, each
     /// with its own name, type and cells as a run. Nothing is matched to the schema or padded, so a
     /// table the evaluator reads through its total padding rule comes back the same table.
+    /// A schema entry is `[name, type]` as it always was, and Core's field document
+    /// (`ColumnCodec.fieldJson`: `{name, type, unit?, label?, …}`) where the field states metadata
+    /// (Phase 429) — so a state over unitless columns is the bytes it was, and a field's unit,
+    /// label and description survive a refresh that crosses the wire.
     let schemaJson (schema: Schema) : JVal =
-        JArr(schema |> List.map (fun f -> JArr [ JStr f.Name; JStr(ColumnType.tag f.Type) ]))
+        JArr(
+            schema
+            |> List.map (fun f ->
+                if Field.hasMetadata f then
+                    ColumnCodec.fieldJson f
+                else
+                    JArr [ JStr f.Name; JStr(ColumnType.tag f.Type) ])
+        )
 
     let tableJson (t: Table) : JVal =
         JObj
@@ -3229,7 +3240,10 @@ module Incremental =
 
             outcome
             |> Result.bind (fun (ty, cellAt, keep, run, reusable, typed) ->
-                let field2 = Field.create spec.As ty
+                let field2 =
+                    Field.create spec.As ty
+                    |> DataFrame.stated (DataFrame.windowUnit spec.Fn (DataFrame.unitOfColumn f.Cols spec.Of))
+
                 let cols2 = f.Cols @ [ field2 ]
 
                 // Every slot alive in slot order: the appended column is built as a cell list and
@@ -3429,6 +3443,12 @@ module Incremental =
                         { caches with
                             JoinKeys = Map.add joinIdx rightKeys caches.JoinKeys }
                         rest))
+        // The predicate's units are checked over the schema before any row, as the reference checks
+        // them (Phase 429); a conversion it carries is resolved by `resolveExpr` as the reference's is.
+        | WFilter pred :: _ when Result.isError (DataFrame.resolveUnits "filter" f.Cols pred) ->
+            match DataFrame.resolveUnits "filter" f.Cols pred with
+            | Error e -> Error e
+            | Ok _ -> Error(TypeError "unreachable: the unit check answered twice")
         | WFilter pred :: rest ->
             let resolved = DataFrame.resolveExpr env f.Cols pred
 
@@ -3478,6 +3498,12 @@ module Incremental =
                     evaluated
                     caches
                     rest)
+        // The derive's units are checked over the schema before any row, as the reference checks
+        // them (Phase 429): a mismatch is refused here, and the decided unit is the column's below.
+        | WDerive(name, expr) :: _ when Result.isError (DataFrame.resolveUnits ("derive '" + name + "'") f.Cols expr) ->
+            match DataFrame.resolveUnits ("derive '" + name + "'") f.Cols expr with
+            | Error e -> Error e
+            | Ok _ -> Error(TypeError "unreachable: the unit check answered twice")
         | WDerive(name, expr) :: rest ->
             // The derived column's typing is the reference's own rule over the same schema and env
             // (`DataFrame.derivedTypingIn`, Phases 338 and 413), so refresh and full agree by
@@ -3486,6 +3512,11 @@ module Incremental =
             match DataFrame.derivedTypingIn env f.Cols expr with
             | DataFrame.Refused -> Error(DataFrame.floatBesideDecimal name)
             | dt ->
+                let unit =
+                    match DataFrame.resolveUnits "" f.Cols expr with
+                    | Ok(u, _) -> u
+                    | Error _ -> None
+
                 let resolved = DataFrame.resolveExpr env f.Cols expr
 
                 evalStep r f evalIdx resolved evaluated
@@ -3508,7 +3539,12 @@ module Incremental =
                             | Some i ->
                                 { f with
                                     Cols =
-                                        f.Cols |> List.mapi (fun j fd -> if j = i then Field.create name ty else fd)
+                                        f.Cols
+                                        |> List.mapi (fun j fd ->
+                                            if j = i then
+                                                Field.create name ty |> DataFrame.stated unit
+                                            else
+                                                fd)
                                     Data = f.Data |> Array.mapi (fun j a -> if j = i then step else a)
                                     Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o)
                                     Tails =
@@ -3518,7 +3554,7 @@ module Incremental =
                                             f.Tails |> Array.mapi (fun j o -> if j = i then None else o) }
                             | None ->
                                 { f with
-                                    Cols = f.Cols @ [ Field.create name ty ]
+                                    Cols = f.Cols @ [ Field.create name ty |> DataFrame.stated unit ]
                                     Data = Array.append f.Data [| step |]
                                     Origins = Array.append f.Origins [| None |]
                                     Tails =
@@ -3674,7 +3710,9 @@ module Incremental =
 
                 let aggCols =
                     resolvedAggs
-                    |> List.map (fun (a, ty, _) -> Field.create a.Name (DataFrame.aggregateType a.Fn ty))
+                    |> List.map (fun (a, ty, _) ->
+                        Field.create a.Name (DataFrame.aggregateType a.Fn ty)
+                        |> DataFrame.stated (DataFrame.aggregateUnit a.Fn (DataFrame.unitOfColumn cols a.Of)))
 
                 // Group, preserving first-appearance order — the same partition `evalGroupBy`
                 // builds, so the two never disagree about which rows are one group. The accumulators
@@ -4322,7 +4360,9 @@ module Incremental =
                     let aggCols =
                         aggArr
                         |> Array.toList
-                        |> List.map (fun (a, ty, _) -> Field.create a.Name (DataFrame.aggregateType a.Fn ty))
+                        |> List.map (fun (a, ty, _) ->
+                            Field.create a.Name (DataFrame.aggregateType a.Fn ty)
+                            |> DataFrame.stated (DataFrame.aggregateUnit a.Fn (DataFrame.unitOfColumn cols a.Of)))
 
                     Some(
                         Ok
@@ -5434,7 +5474,7 @@ module Incremental =
                                 && (List.item oi prepared.Cols).Name = name
                                 && columns[oi].Chunks.Length = chunkCount
 
-                            (if ty = tyLocal then field else Field.create name ty),
+                            (if ty = tyLocal then field else Field.withType ty field),
                             (if passThrough then
                                  columns[oi]
                              else
@@ -6354,7 +6394,8 @@ module IncrementalCodec =
         |> items (fun entry ->
             match entry with
             | JArr [ JStr name; ty ] -> typeOf ty |> Result.map (Field.create name)
-            | _ -> Error(MalformedShape "incremental state: a schema entry is [name, type]"))
+            | JObj _ -> ColumnCodec.decodeField entry
+            | _ -> Error(MalformedShape "incremental state: a schema entry is [name, type] or a field document"))
         |> Result.map List.ofArray
 
     let private tableOf (el: JVal) : Result<Table, ColumnError> =

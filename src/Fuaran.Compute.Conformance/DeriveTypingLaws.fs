@@ -18,13 +18,24 @@ open Fuaran.Core
 /// The derived-column typing laws (Phase 338).
 module DeriveTypingConformance =
 
+    /// Phase 429: `i` is in metres and `f` in seconds, so every derive drawn from the menu below has a
+    /// unit the check derives (the menu mixes neither with the other) and the built refusal has two
+    /// units to meet.
     let private schema: Schema =
         [ Field.create "id" IntType
           Field.create "i" IntType
+          |> Field.withUnit (Unit.parse "m" |> Result.defaultWith (fun _ -> Unit.dimensionless))
           Field.create "f" FloatType
+          |> Field.withUnit (Unit.parse "s" |> Result.defaultWith (fun _ -> Unit.dimensionless))
           Field.create "m" DecimalType
           Field.create "b" BoolType
           Field.create "s" StringType ]
+
+    let private unitOfColumn (name: string) (t: Table) : string option =
+        t.Schema
+        |> List.tryFind (fun f -> f.Name = name)
+        |> Option.bind _.Unit
+        |> Option.map Unit.render
 
     let private dec (text: string) : Cell =
         Cell.decimal text |> Option.defaultValue Null
@@ -131,6 +142,12 @@ module DeriveTypingConformance =
         let mutable envDecidedSeen = 0
         let mutable allNullSeen = 0
         let mutable refusalsSeen = 0
+        // Phase 429 — the unit law: the first disagreement, the derives whose column carried a unit,
+        // and the built metres-plus-seconds refusals.
+        let mutable unitAgrees = None
+        let mutable unitRefused = None
+        let mutable unitsSeen = 0
+        let mutable unitRefusalsSeen = 0
 
         let draw n =
             let v, r = ConfRng.intBelow n rng
@@ -165,6 +182,44 @@ module DeriveTypingConformance =
             let onFull = eval env [ derive ] full
             let onEmpty = eval env [ emptying; derive ] full
             let onNull = eval env [ derive ] allNull
+
+            // ---- the unit (Phase 429, D29): what the check derives over the schema is the column's
+            // unit on every frame, and a derive of two units is refused by name on every frame ----
+            let expectedUnit =
+                DataFrame.unitOf schema e
+                |> Result.map (Option.map Unit.render)
+                |> Result.defaultValue None
+
+            if expectedUnit.IsSome then
+                unitsSeen <- unitsSeen + 1
+
+            for label, r in [ "full", onFull; "empty", onEmpty; "all-null", onNull ] do
+                match r with
+                | Ok t when unitOfColumn "d" t <> expectedUnit && unitAgrees.IsNone ->
+                    unitAgrees <-
+                        Some(
+                            at (
+                                sprintf
+                                    "%A: the check derives %A, the %s frame carried %A"
+                                    e
+                                    expectedUnit
+                                    label
+                                    (unitOfColumn "d" t)
+                            )
+                        )
+                | _ -> ()
+
+            let mixing = Derive("d", Binary(Add, Col "i", Col "f"))
+
+            for label, r in
+                [ "full", eval env [ mixing ] full
+                  "empty", eval env [ emptying; mixing ] full ] do
+                match r with
+                | Error(UnitMismatch("derive 'd'", _, "m", "s")) -> unitRefusalsSeen <- unitRefusalsSeen + 1
+                | other ->
+                    if unitRefused.IsNone then
+                        unitRefused <-
+                            Some(at (sprintf "metres plus seconds over the %s frame answered %A" label other))
 
             for label, r in [ "full", onFull; "empty", onEmpty; "all-null", onNull ] do
                 match r with
@@ -394,6 +449,10 @@ module DeriveTypingConformance =
           law "prime, refresh and the full evaluation type a derived column identically" refreshAgrees
           law "every present derived cell is of its column's type or widens into it" admitted
           law "a float beside a decimal in one derived column is refused by name, never widened" refused
+          law
+              "a derive's column carries the unit the check derives over the schema, on a full, an empty and an all-null frame alike"
+              unitAgrees
+          law "a derive adding metres to seconds is refused by name, on a full and an empty frame alike" unitRefused
           SampleAdequacy.reached
               "DeriveTypingConformance.laws"
               "typing"
@@ -402,7 +461,9 @@ module DeriveTypingConformance =
                 "by cells", byCellsSeen
                 "decided by the params", envDecidedSeen
                 "all-null decided", allNullSeen
-                "refusal", refusalsSeen ] ]
+                "refusal", refusalsSeen
+                "unit derived", unitsSeen
+                "unit refusal", unitRefusalsSeen ] ]
 
     /// The derived-column typing laws (Phase 338) over the reference evaluator. Self-contained: each
     /// iteration draws a table, a derive from a menu reaching every decided type and every
@@ -420,6 +481,9 @@ module DeriveTypingConformance =
     ///  - **cells are admitted** — every present cell is of its column's type or widens into it, so a
     ///    typer that claimed a type the evaluator does not produce goes red here;
     ///  - **a float beside a decimal is refused** — statically, over a full and an empty frame alike,
-    ///    and by the cells where only they show it.
+    ///    and by the cells where only they show it;
+    ///  - **the unit is the check's** (Phase 429) — a derive's column carries the unit
+    ///    `DataFrame.unitOf` derives over the schema, on every frame, and a derive of two units is
+    ///    refused by name on every frame.
     let laws (seed: int) (iterations: int) : LawResult list =
         lawsWith DataFrame.evalPipelineInEnv seed iterations

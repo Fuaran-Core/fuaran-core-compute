@@ -961,6 +961,27 @@ module DataFrameConformance =
         let dec (text: string) : Cell =
             Cell.decimal text |> Option.defaultValue Null
 
+        // Phase 429 — the first column whose walked metadata (unit, label, description) is not the
+        // evaluator's, and how many accepted samples' outputs carried a unit at all.
+        let mutable metadataAgree = None
+        let mutable unitOutputs = 0
+
+        let unitOf (text: string) : UnitOfMeasure =
+            match Unit.parse text with
+            | Ok u -> u
+            | Error _ -> Unit.dimensionless
+
+        // The base schema's metadata (Phase 429): `b` in metres under a label, `m` in dollars with a
+        // description. The menu mixes neither with another unit, so no sample is refused for one;
+        // every accepted sample carries them through the verbs the walk mirrors.
+        let baseSchema: Schema =
+            [ Field.create "a" IntType
+              Field.create "b" IntType |> Field.withUnit (unitOf "m") |> Field.withLabel "B"
+              Field.create "g" StringType
+              Field.create "m" DecimalType
+              |> Field.withUnit (unitOf "USD")
+              |> Field.withDescription "Money" ]
+
         // The left/base table: two int columns, a string grouping column and (Phase 321) a decimal.
         let baseTable (n: int) : Table =
             let a = [ for i in 1..n -> Int(i % 3) ]
@@ -968,11 +989,7 @@ module DataFrameConformance =
             let g = [ for i in 1..n -> Str(if i % 2 = 0 then "x" else "y") ]
             let m = [ for i in 1..n -> if i % 5 = 0 then Null else dec (string i + ".25") ]
 
-            { Schema =
-                [ Field.create "a" IntType
-                  Field.create "b" IntType
-                  Field.create "g" StringType
-                  Field.create "m" DecimalType ]
+            { Schema = baseSchema
               Columns =
                 [ col "a" IntType a
                   col "b" IntType b
@@ -989,11 +1006,7 @@ module DataFrameConformance =
 
         // A schema-identical peer, so the three set ops have something they accept.
         let peerTable: Table =
-            { Schema =
-                [ Field.create "a" IntType
-                  Field.create "b" IntType
-                  Field.create "g" StringType
-                  Field.create "m" DecimalType ]
+            { Schema = baseSchema
               Columns =
                 [ col "a" IntType [ Int 1; Int 2 ]
                   col "b" IntType [ Int 8; Null ]
@@ -1155,6 +1168,36 @@ module DataFrameConformance =
                 let actualNames = result.Schema |> List.map _.Name
                 let derivedCols = SchemaWalk.columns derived
 
+                // Phase 429: a column the walk names carries the unit, label and description the
+                // evaluator's field does — by name, which serves the open case too.
+                if result.Schema |> List.exists (fun f -> f.Unit.IsSome) then
+                    unitOutputs <- unitOutputs + 1
+
+                let badMetadata =
+                    derivedCols
+                    |> List.tryPick (fun d ->
+                        match result.Schema |> List.tryFind (fun f -> f.Name = d.Name) with
+                        | Some f when
+                            (d.Unit |> Option.map Unit.render) <> (f.Unit |> Option.map Unit.render)
+                            || d.Label <> f.Label
+                            || d.Description <> f.Description
+                            ->
+                            Some(
+                                sprintf
+                                    "%s: walk %A/%A/%A, evaluator %A/%A/%A"
+                                    d.Name
+                                    d.Unit
+                                    d.Label
+                                    d.Description
+                                    f.Unit
+                                    f.Label
+                                    f.Description
+                            )
+                        | _ -> None)
+
+                if badMetadata.IsSome && metadataAgree.IsNone then
+                    metadataAgree <- Some(sprintf "seed=%d iter=%d: pipeline=%A — %s" seed i pipeline badMetadata.Value)
+
                 let describe () =
                     sprintf
                         "seed=%d iter=%d: pipeline=%A derived=%A actual=%A"
@@ -1218,6 +1261,17 @@ module DataFrameConformance =
               "a combining join adds no repeated name: its right columns' output names are distinct from each other and from every left name, and the walk names them as the evaluator does"
             Passed = joinNamesUnique.IsNone
             Counterexample = joinNamesUnique }
+          { Law =
+              "a walked column's unit, label and description are the ones evalPipeline gave that column, over a sample whose outputs carry units"
+            Passed = metadataAgree.IsNone && unitOutputs > 0
+            Counterexample =
+              match metadataAgree with
+              | Some c -> Some c
+              | None ->
+                  if unitOutputs > 0 then
+                      None
+                  else
+                      Some(sprintf "seed=%d: no accepted output carried a unit" seed) }
           { Law = "the generated sample reached both verdicts (the parity claim is not vacuous)"
             Passed = closedSeen > 0 && openSeen > 0
             Counterexample =
@@ -1638,11 +1692,22 @@ module DataFrameConformance =
         // Phase 277 — the iterations whose pipeline reads the decimal column over a table holding a
         // present decimal: the exact arithmetic's typing and verdict are held only where reached.
         let mutable decimals = 0
+        // Phase 429 — the first planned schema that is not the reference's, and the planned outputs
+        // whose schema carried a unit.
+        let mutable metadata = None
+        let mutable unitOutputs = 0
 
+        let unitOf (text: string) : UnitOfMeasure =
+            match Unit.parse text with
+            | Ok u -> u
+            | Error _ -> Unit.dimensionless
+
+        // Phase 429: `i` in metres, `f` in seconds, `s` under a label. No shape below mixes the two
+        // units, so the planner's rewrites meet metadata on every sample and refuse none for it.
         let schema: Schema =
-            [ Field.create "i" IntType
-              Field.create "f" FloatType
-              Field.create "s" StringType
+            [ Field.create "i" IntType |> Field.withUnit (unitOf "m")
+              Field.create "f" FloatType |> Field.withUnit (unitOf "s")
+              Field.create "s" StringType |> Field.withLabel "Text"
               Field.create "b" BoolType
               Field.create "m" DecimalType ]
 
@@ -1841,6 +1906,25 @@ module DataFrameConformance =
                         | Error a, Error b -> a = b
                         | _ -> false
 
+                    // Phase 429: the planned schema IS the reference's — fields, metadata included.
+                    (match planned, written with
+                     | Ok a, Ok b ->
+                         if a.Schema |> List.exists (fun f -> f.Unit.IsSome) then
+                             unitOutputs <- unitOutputs + 1
+
+                         if a.Schema <> b.Schema && metadata.IsNone then
+                             metadata <-
+                                 Some(
+                                     sprintf
+                                         "seed=%d iter=%d: planned schema %A ≠ as written %A (pipeline=%A)"
+                                         seed
+                                         i
+                                         a.Schema
+                                         b.Schema
+                                         pipeline
+                                 )
+                     | _ -> ())
+
                     if not agree && parity.IsNone then
                         parity <-
                             Some(
@@ -1892,6 +1976,17 @@ module DataFrameConformance =
           { Law = "the planner and both evaluators are total (never throw)"
             Passed = totality.IsNone
             Counterexample = totality }
+          { Law =
+              "the planned evaluation's schema is the reference's, unit, label and description included, over a sample whose outputs carry units"
+            Passed = metadata.IsNone && unitOutputs > 0
+            Counterexample =
+              match metadata with
+              | Some c -> Some c
+              | None ->
+                  if unitOutputs > 0 then
+                      None
+                  else
+                      Some(sprintf "seed=%d: no planned output carried a unit" seed) }
           SampleAdequacy.reached "Conformance.plannerLaws" "fusion" seed [ "fusion", fusion ]
           SampleAdequacy.reached "Conformance.plannerLaws" "pruning" seed [ "pruning", pruning ]
           SampleAdequacy.reached "Conformance.plannerLaws" "reorder" seed [ "reorder", reorder ]

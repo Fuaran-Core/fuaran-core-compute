@@ -1732,8 +1732,12 @@ let tests =
           testCase "schemaWalkLaws certify the walk against the evaluator's schema (Phase 112)"
           <| fun _ ->
               let results = Conformance.schemaWalkLaws 1121 300
-              // Phase 321: and the decimal step's adequacy guard; Phase 411: and the join's unique names.
-              Expect.equal (List.length results) 6 "closed-exact, open-sound, types, join names, non-vacuity, decimal"
+              // Phase 321: and the decimal step's adequacy guard; Phase 411: and the join's unique names;
+              // Phase 429: and the metadata the walk carries.
+              Expect.equal
+                  (List.length results)
+                  7
+                  "closed-exact, open-sound, types, join names, metadata, non-vacuity, decimal"
 
               if results |> List.exists (fun r -> not r.Passed) then
                   let fails =

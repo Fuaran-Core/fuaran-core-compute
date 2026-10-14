@@ -46,6 +46,8 @@
     <!-- Phase 281: the registered pipeline query. -->
     <Compile Include="PipelineQueryTests.fs" />
     <Compile Include="DeriveTypingTests.fs" />
+    <!-- Phase 429: the unit rules, every refusal class, and a go-red per rule. -->
+    <Compile Include="UnitPropagationTests.fs" />
     <Compile Include="IncrementalGroupByTests.fs" />
     <Compile Include="IncrementalRefreshCostTests.fs" />
     <Compile Include="IncrementalStateCodecTests.fs" />
@@ -93,6 +95,7 @@
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
     <PackageReference Include="Fuaran.Core.Column" />
+    <PackageReference Include="Fuaran.Core.Unit" />
     <PackageReference Include="Fuaran.Core.Wire" />
     <PackageReference Include="Fuaran.Core.OpStream" />
     <PackageReference Include="Fuaran.Core.Conformance" />

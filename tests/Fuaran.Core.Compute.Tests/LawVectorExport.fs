@@ -296,7 +296,17 @@ module LawVectorExport =
         + "iteration after the last decimal shape, each takes the next TYPING shape named in its vector "
         + "id (Phase 338) over the decimal table: a derived or unpivoted column is typed by its "
         + "expression where the schema decides it, over an empty and an all-null frame alike, and a "
-        + "float beside a decimal in one derived column is refused."
+        + "float beside a decimal in one derived column is refused. From the iteration after the last "
+        + "typing shape, each takes the next UNIT shape named in its vector id (Phase 429) over the unit "
+        + "table — rows = extra + 3; g as above; d = Int((i+1)*100 + offset*10) in metres (label "
+        + "Distance), null when (i + offset) mod 4 = 3; t = Float((i+1+offset)*2.5) in seconds, null when "
+        + "(i + offset) mod 5 = 4; h = Float(i + offset + 0.5) in seconds; w = Float((i*3 + offset)/4) in "
+        + "kilograms; dk = d/1000 as Float in kilometres; n = Int(i + offset), unitless, label Count, "
+        + "description How many; the second operand of a join or a set verb is the same build over "
+        + "rows - 1 rows (the union refusal's declares d in kilometres): a column's unit, label and "
+        + "description ride every verb that keeps a column, a derive carries the unit the check derives "
+        + "and a conversion resolves to a float, an aggregate and a window keep their source's unit or "
+        + "carry none, and two units met where the rule requires one are refused."
 
     let renderTransformVectors () : string =
         let sb = StringBuilder()

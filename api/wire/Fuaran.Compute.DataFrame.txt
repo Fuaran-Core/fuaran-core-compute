@@ -3,7 +3,7 @@
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
 #   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
-# class since v0.38.1: additive
+# class since v0.39.0: additive
 doc	pipeline	sha256:550548d3d7bf089a8a45fcb797fe094f1cc6caa13de897c823d29bfbb14072b2	[{"$type":"filter","pred":{"$type":"col","name":"s"}}]
 doc	pipeline / AggFn.Count	sha256:da304afcc9a509331438f6e1935f5d6da8b2571473b82423518c6a8819b82c8e	[{"$type":"groupBy","aggs":[{"fn":"count","name":"s","of":"s"}],"keys":["s"]}]
 doc	pipeline / AggFn.CountDistinct	sha256:b7eed063d04d14cb71106071777d52903f178c9cd174abaecf86db95baad1471	[{"$type":"groupBy","aggs":[{"fn":"countDistinct","name":"s","of":"s"}],"keys":["s"]}]
@@ -45,6 +45,7 @@ doc	pipeline / ColExpr.Case	sha256:6259ba6ea64173c2eaaf5168d546f62de7a3c7e12466e
 doc	pipeline / ColExpr.Cast	sha256:1d6502b1a5723afd2cc7714c00262cb11a4f2f7e3fda04ad313590ec78e499c0	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"int"}}]
 doc	pipeline / ColExpr.Coalesce	sha256:01a7328c483f0c5f0c4c5a5f1c2c8687821a9f59813c8e9758304110b10dcaec	[{"$type":"filter","pred":{"$type":"coalesce","exprs":[{"$type":"col","name":"s"}]}}]
 doc	pipeline / ColExpr.Col	sha256:550548d3d7bf089a8a45fcb797fe094f1cc6caa13de897c823d29bfbb14072b2	[{"$type":"filter","pred":{"$type":"col","name":"s"}}]
+doc	pipeline / ColExpr.Convert	sha256:f347f4646b0a345b73976e2016600bec4286ee56dc35ebaf136e1911b68cbb79	[{"$type":"filter","pred":{"$type":"convert","expr":{"$type":"col","name":"s"},"unit":"ss"}}]
 doc	pipeline / ColExpr.InList	sha256:fc265fdd767d02f4731317c57d5a739f29e8bd5b3b804d60d21d410cc45d107e	[{"$type":"filter","pred":{"$type":"in","expr":{"$type":"col","name":"s"},"items":[{"$type":"col","name":"s"}]}}]
 doc	pipeline / ColExpr.InParam	sha256:d7ab28e96919b87121633ee1147d5aa5a2a878e8754adc079408c202fc7d4db9	[{"$type":"filter","pred":{"$type":"in","expr":{"$type":"col","name":"s"},"param":"s"}}]
 doc	pipeline / ColExpr.IsNull	sha256:7f63fba36bc2d61510238d3a869dbc3e11c70c91f94cb3723d7ce6282eabd24d	[{"$type":"filter","pred":{"$type":"isNull","expr":{"$type":"col","name":"s"}}}]

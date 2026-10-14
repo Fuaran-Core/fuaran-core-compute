@@ -80,6 +80,10 @@ type ResultDisagreement =
     /// arms put a `float` beside a `decimal`, which has no type to declare. `Project` or `GroupBy`
     /// over a declared-type column, or a decided derivation, is what can agree.
     | TypeUndecidable of declared: ColumnType
+    /// Produced under a unit other than the declared one (Phase 429) — the declaration states a
+    /// unit the pipeline does not produce, or none where the pipeline states one. A unit is a fact
+    /// of the schema, so the walk always decides it and there is no undecidable case.
+    | UnitDiffers of declared: UnitOfMeasure option * produced: UnitOfMeasure option
 
 /// Why a pipeline query was refused at registration (Phase 281). Total, and each refusal names what
 /// it is about. The substrate's own refusals ride `QueryRefused` unchanged rather than being minted
@@ -120,10 +124,10 @@ module PipelineQuery =
         let lookup = sources pq
         SchemaWalk.ofPipelineFrom lookup (SchemaWalk.ofSource lookup pq.Query.Source) pq.Pipeline
 
-    /// The typed columns of a knowledge — the schema the expression typer reads.
+    /// The typed columns of a knowledge — the schema the expression typer reads, each field with
+    /// the metadata the walk carries for it (Phase 429).
     let private typed (k: SchemaKnowledge) : Schema =
-        SchemaWalk.columns k
-        |> List.choose (fun c -> c.Type |> Option.map (Field.create c.Name))
+        SchemaWalk.columns k |> List.choose ColumnKnowledge.toField
 
     let private slotRead (readAs: ColumnType) (s: Slot<'T>) : (string * ParamRead) list =
         match s with
@@ -179,6 +183,7 @@ module PipelineQuery =
         | ColExpr.InParam(x, n) -> go None x @ [ n, ParamRead.List(typeOf x) ]
         | ColExpr.Quotient(a, b, r) -> go None a @ go None b @ scale r
         | ColExpr.Rounded(x, r) -> go None x @ scale r
+        | ColExpr.Convert(x, _) -> go None x
 
     /// The reads in one step over the typed columns alive at it. Closed over `Transform` with no
     /// catch-all, for the reason `exprReads` is.
@@ -287,11 +292,20 @@ module PipelineQuery =
                                 |> List.tryPick (fun f ->
                                     let n = f.Name
                                     let ty = f.Type
+                                    let c = produced |> List.find (fun c -> c.Name = n)
 
-                                    match (produced |> List.find (fun c -> c.Name = n)).Type with
+                                    match c.Type with
                                     | None -> Some(n, ResultDisagreement.TypeUndecidable ty)
                                     | Some t when t <> ty -> Some(n, ResultDisagreement.TypeDiffers(ty, t))
-                                    | Some _ -> None)
+                                    | Some _ ->
+                                        // Phase 429: the unit, by its canonical text — one product
+                                        // is one unit, and two renderings of one product cannot differ.
+                                        let text (u: UnitOfMeasure option) = u |> Option.map Unit.render
+
+                                        if text f.Unit <> text c.Unit then
+                                            Some(n, ResultDisagreement.UnitDiffers(f.Unit, c.Unit))
+                                        else
+                                            None)
 
                             match typeDisagreement with
                             | Some(n, why) -> fail n why
@@ -538,11 +552,11 @@ module PipelineQueryRegistry =
 /// what holds it to its declaration. Fable-clean.
 module PipelineQueryCodec =
 
+    /// A schema's fields as Core's own field documents (`ColumnCodec.fieldJson`): `{name, type}` and
+    /// the metadata members a field states (Phase 429) — a field stating none is the two-member
+    /// object this codec always wrote.
     let private schemaJson (s: Schema) : JVal =
-        JArr(
-            s
-            |> List.map (fun f -> JObj [ "name", JStr f.Name; "type", JStr(ColumnType.tag f.Type) ])
-        )
+        JArr(s |> List.map ColumnCodec.fieldJson)
 
     // The string-error readers this codec is written against, over Core `1.0.0`'s `…With` forms
     // (the bare `getProp` / `strField` / `mapList` helpers left on that slot).
@@ -562,16 +576,7 @@ module PipelineQueryCodec =
             go [] items)
 
     let private schemaOf (el: JVal) : Result<Schema, string> =
-        mapList
-            (fun e ->
-                strField "name" e
-                |> Result.bind (fun n ->
-                    strField "type" e
-                    |> Result.bind (fun tag ->
-                        match ColumnType.ofTag tag with
-                        | Some t -> Ok(Field.create n t)
-                        | None -> Error("unknown column type: " + tag))))
-            el
+        mapList (fun e -> ColumnCodec.decodeField e |> Result.mapError ColumnCodec.errorString) el
 
     /// The pair as a JSON value.
     let encodeJson (pq: PipelineQuery) : JVal =

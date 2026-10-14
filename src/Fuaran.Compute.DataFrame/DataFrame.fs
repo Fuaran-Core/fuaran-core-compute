@@ -351,6 +351,19 @@ type ColExpr =
     ///
     /// Wire: `{"$type":"rounded","expr":…,"rounding":{"mode":…,"scale":…}}`.
     | Rounded of ColExpr * Rounding
+    /// The operand brought to `unit` (Phase 429, `DECISIONS.md` D29) — the one explicit conversion
+    /// between two units of one dimension, and the one way to give a literal or an unconstrained
+    /// column a unit. Resolved by SUBSTITUTION against the step's schema before evaluation
+    /// (`DataFrame.resolveUnits`), as `InParam` and `Now` are: over an operand that states no unit it
+    /// is a TAG, `Cast(FloatType, operand)` under `unit`; over an operand of a compatible unit it is
+    /// `Cast(FloatType, operand) * factor`, the exact ratio `Unit.conversionFactor` gives, as a float
+    /// literal; over an operand of another dimension it is refused by name (`EvalError.UnitMismatch`).
+    /// A conversion therefore always answers a `Float` (a measurement), a null operand propagates,
+    /// and a decimal operand is cast as `Cast(FloatType, …)` casts it — a caller that needs the exact
+    /// product writes `Quotient` with the factor itself.
+    ///
+    /// Wire: `{"$type":"convert","expr":…,"unit":"<canonical unit text>"}`.
+    | Convert of ColExpr * unit: UnitOfMeasure
 
 /// One aggregate in a `GroupBy` / `Pivot`: an output `Name`, the aggregate `Fn`, over column `Of`.
 type Agg = { Name: string; Fn: AggFn; Of: string }
@@ -487,6 +500,7 @@ module ColExpr =
         // A rounding's scale slot shares it too, as `Limit`'s does (Phase 277).
         | Quotient(a, b, r) -> paramNames a @ paramNames b @ Slot.paramName r.Scale
         | Rounded(x, r) -> paramNames x @ Slot.paramName r.Scale
+        | Convert(x, _) -> paramNames x
 
     /// The distinct `Param` names an expression references, first-occurrence order, deduplicated.
     let paramsOf (e: ColExpr) : string list = paramNames e |> List.distinct
@@ -528,6 +542,7 @@ module ColExpr =
         | InParam(x, n) -> InParam(substitute env x, n)
         | Quotient(a, b, r) -> Quotient(substitute env a, substitute env b, bindScale env r)
         | Rounded(x, r) -> Rounded(substitute env x, bindScale env r)
+        | Convert(x, u) -> Convert(substitute env x, u)
 
     /// Substitute every `InParam(x, n)` bound in `listEnv` with `InList(x, <items as literals>)`,
     /// leaving unbound list params intact — the list-valued twin of `substitute` (Phase 91). A host
@@ -560,6 +575,7 @@ module ColExpr =
         | IsNull x -> IsNull(substituteListParams listEnv x)
         | Quotient(a, b, r) -> Quotient(substituteListParams listEnv a, substituteListParams listEnv b, r)
         | Rounded(x, r) -> Rounded(substituteListParams listEnv x, r)
+        | Convert(x, u) -> Convert(substituteListParams listEnv x, u)
 
     /// Replace every `Now g` with `Lit (clock g)` — the clock-pinning twin of `substitute`
     /// (Phase 125). A `Now` resolves this way and no other: Core holds no clock, so the reading is
@@ -611,6 +627,7 @@ module ColExpr =
         | InParam(x, n) -> InParam(go x, n)
         | Quotient(a, b, r) -> Quotient(go a, go b, r)
         | Rounded(x, r) -> Rounded(go x, r)
+        | Convert(x, u) -> Convert(go x, u)
 
     /// Does the expression name `now` anywhere? The `paramsOf` analogue for the clock: a host that
     /// needs to know whether a pipeline is clock-dependent (to decide caching, or to refuse to
@@ -632,6 +649,7 @@ module ColExpr =
         | InList(x, items) -> usesNow x || (items |> List.exists usesNow)
         | Quotient(a, b, _) -> usesNow a || usesNow b
         | Rounded(x, _) -> usesNow x
+        | Convert(x, _) -> usesNow x
 
 /// Pure, total derivations over a `Transform` pipeline (Phase 77) — the load-bearing helper for a
 /// host that wires a filter/state value into a declarative pipeline: `paramsOf` names every param the
@@ -781,6 +799,15 @@ type EvalError =
     /// pipeline ran is not reproducible and not comparable across hosts. Pin one with
     /// `DataFrame.evalPipelineAt` (or `Transform.substituteNow` before evaluating).
     | UnpinnedClock of grain: NowGrain
+    /// Two units met where the rule requires one (Phase 429, `DECISIONS.md` D29): an addition, a
+    /// subtraction, a comparison, a `Coalesce` / `Case` / `Least` / `Greatest` / `InList` across
+    /// two stated units that are not one unit (a different scale of one dimension included — `km`
+    /// beside `m` is refused until converted), a `Convert` between two dimensions, a join key pair,
+    /// or a set-op column pair. Names the STEP (`derive 'speed'`, `filter`, `join key 'a' = 'b'`,
+    /// `union column 'x'`), the EXPRESSION the two units met in, and both units by their canonical
+    /// text. Static: it is decided over the step's schema before any row is read, so an empty frame
+    /// is refused exactly as a full one.
+    | UnitMismatch of step: string * expr: ColExpr * left: string * right: string
 
 /// A description of what changed in a source table between a prior evaluation and now (Phase 34) — the
 /// input to the incremental `DataFrame.evalFrom`. `ColumnValuesChanged` = the cells of one existing
@@ -2137,6 +2164,198 @@ module DataFrame =
     /// Internal, never public: this is the evaluator's working form, not a contract. The incremental
     /// seam in this assembly resolves through `resolveExpr` and evaluates through `evalResolved`; the
     /// public `evalExprInRow` is the two composed over a list row.
+    // ---- Phase 429: the unit check, resolved per step over the schema's units (D29) ----
+    //
+    // A column's unit is a fact of its FIELD (Phase 427), so the check is a static walk over the
+    // expression and the step's schema; there is nothing to look at in a row, and an empty frame is
+    // checked exactly as a full one. The walk answers the expression's unit — `None` is
+    // UNCONSTRAINED: a literal, a param, a column that states no unit; it composes with anything, so
+    // a unitless pipeline passes the check and evaluates as it always did — and rewrites every
+    // `Convert` into the cast and the multiplication that perform it, so the evaluator proper never
+    // meets one (`resolveExpr` resolves a stray one the same way).
+
+    /// The unit a schema states for a column, where it states one.
+    let private colUnit (cols: Schema) (name: string) : UnitOfMeasure option =
+        cols |> List.tryFind (fun f -> f.Name = name) |> Option.bind _.Unit
+
+    /// Two units are one unit when they render to one canonical text (Phase 426: identity is the
+    /// product, so `N` and `kg.m/s2` are two units, compatible with factor 1, and are refused here
+    /// until converted).
+    let private sameUnit (a: UnitOfMeasure) (b: UnitOfMeasure) : bool = Unit.render a = Unit.render b
+
+    /// The unit of a product: an unconstrained factor contributes nothing.
+    let private unitProduct (a: UnitOfMeasure option) (b: UnitOfMeasure option) : UnitOfMeasure option =
+        match a, b with
+        | None, u
+        | u, None -> u
+        | Some x, Some y -> Some(Unit.mul x y)
+
+    /// The unit of a quotient: an unconstrained dividend is dimensionless over a stated divisor
+    /// (`1 / s` is `/s`), an unconstrained divisor leaves the dividend's unit.
+    let private unitQuotient (a: UnitOfMeasure option) (b: UnitOfMeasure option) : UnitOfMeasure option =
+        match a, b with
+        | None, None -> None
+        | Some x, None -> Some x
+        | None, Some y -> Some(Unit.div Unit.dimensionless y)
+        | Some x, Some y -> Some(Unit.div x y)
+
+    /// The exact conversion ratio as the double the resolved expression multiplies by.
+    let private ratioToFloat (r: Ratio) : float =
+        double r.Numerator / double r.Denominator
+
+    /// A field under a stated unit, or as it is.
+    let internal stated (u: UnitOfMeasure option) (f: Field) : Field =
+        match u with
+        | Some u -> Field.withUnit u f
+        | None -> f
+
+    /// The unit of `e` over `cols`, and `e` with every `Convert` resolved (Phase 429). `step` names
+    /// the step a refusal is about. The rules, held by `UnitPropagationTests` and `DECISIONS.md` D29:
+    /// addition, subtraction, comparison, `Coalesce`, `Case` arms, `Least` / `Greatest` and `InList`
+    /// require ONE unit among the operands that state one, and the answer carries it;
+    /// multiplication, division, `Quotient` and `Mod` compose through Core's algebra; `Cast`,
+    /// `Abs`, `Round`, `Floor`, `Ceil` and `Rounded` keep their operand's unit; a boolean, a text, a
+    /// date and a `Sqrt` carry none; a literal, a param and a `Now` are unconstrained.
+    let rec internal resolveUnitsIn
+        (step: string)
+        (cols: Schema)
+        (e: ColExpr)
+        : Result<UnitOfMeasure option * ColExpr, EvalError> =
+        let go = resolveUnitsIn step cols
+
+        let mismatch (at: ColExpr) (l: UnitOfMeasure) (r: UnitOfMeasure) =
+            Error(UnitMismatch(step, at, Unit.render l, Unit.render r))
+
+        // One unit among the stated ones: an unconstrained operand takes the other's.
+        let agree (at: ColExpr) (a: UnitOfMeasure option) (b: UnitOfMeasure option) =
+            match a, b with
+            | None, u
+            | u, None -> Ok u
+            | Some x, Some y -> if sameUnit x y then Ok(Some x) else mismatch at x y
+
+        let rec agreeAll (at: ColExpr) (acc: UnitOfMeasure option) (units: UnitOfMeasure option list) =
+            match units with
+            | [] -> Ok acc
+            | u :: rest -> agree at acc u |> Result.bind (fun acc -> agreeAll at acc rest)
+
+        let rec many (xs: ColExpr list) : Result<(UnitOfMeasure option * ColExpr) list, EvalError> =
+            match xs with
+            | [] -> Ok []
+            | x :: rest -> go x |> Result.bind (fun r -> many rest |> Result.map (fun rs -> r :: rs))
+
+        let both a b k =
+            go a
+            |> Result.bind (fun (ua, a') -> go b |> Result.bind (fun (ub, b') -> k ua a' ub b'))
+
+        match e with
+        | Col name -> Ok(colUnit cols name, e)
+        | Lit _
+        | Param _
+        | Now _ -> Ok(None, e)
+        | Binary(op, a, b) ->
+            both a b (fun ua a' ub b' ->
+                let e' = Binary(op, a', b')
+
+                match op with
+                | Add
+                | Sub -> agree e ua ub |> Result.map (fun u -> u, e')
+                | Mul -> Ok(unitProduct ua ub, e')
+                | Div -> Ok(unitQuotient ua ub, e')
+                | Mod -> Ok(ua, e')
+                | Eq
+                | Ne
+                | Lt
+                | Le
+                | Gt
+                | Ge -> agree e ua ub |> Result.map (fun _ -> None, e')
+                | And
+                | Or
+                | Contains
+                | StartsWith
+                | EndsWith -> Ok(None, e'))
+        | Not x -> go x |> Result.map (fun (_, x') -> None, Not x')
+        | IsNull x -> go x |> Result.map (fun (_, x') -> None, IsNull x')
+        | InParam(x, n) -> go x |> Result.map (fun (_, x') -> None, InParam(x', n))
+        | Coalesce xs ->
+            many xs
+            |> Result.bind (fun rs ->
+                agreeAll e None (List.map fst rs)
+                |> Result.map (fun u -> u, Coalesce(List.map snd rs)))
+        | Case(cases, els) ->
+            many (cases |> List.map fst)
+            |> Result.bind (fun whens ->
+                many (cases |> List.map snd)
+                |> Result.bind (fun thens ->
+                    go els
+                    |> Result.bind (fun (ue, els') ->
+                        agreeAll e ue (List.map fst thens)
+                        |> Result.map (fun u -> u, Case(List.zip (List.map snd whens) (List.map snd thens), els')))))
+        | Cast(ty, x) -> go x |> Result.map (fun (u, x') -> u, Cast(ty, x'))
+        | ApplyFn(fn, args) ->
+            many args
+            |> Result.bind (fun rs ->
+                let units = List.map fst rs
+                let e' = ApplyFn(fn, List.map snd rs)
+
+                match fn with
+                | Abs
+                | Round
+                | Floor
+                | Ceil -> Ok((units |> List.tryHead |> Option.flatten), e')
+                | Least
+                | Greatest -> agreeAll e None units |> Result.map (fun u -> u, e')
+                // The algebra states integer powers only, so a root's unit is not derived: the
+                // answer is unconstrained, as a text, a date and a count are.
+                | Sqrt
+                | Length
+                | Lower
+                | Upper
+                | Substr
+                | DatePart
+                | Concat
+                | Trim
+                | Replace
+                | DateDiffDays
+                | IndexOf -> Ok(None, e'))
+        | InList(x, items) ->
+            go x
+            |> Result.bind (fun (ux, x') ->
+                many items
+                |> Result.bind (fun rs ->
+                    agreeAll e ux (List.map fst rs)
+                    |> Result.map (fun _ -> None, InList(x', List.map snd rs))))
+        | Quotient(a, b, r) -> both a b (fun ua a' ub b' -> Ok(unitQuotient ua ub, Quotient(a', b', r)))
+        | Rounded(x, r) -> go x |> Result.map (fun (u, x') -> u, Rounded(x', r))
+        | Convert(x, target) ->
+            go x
+            |> Result.bind (fun (ux, x') ->
+                let asFloat = Cast(FloatType, x')
+
+                match ux with
+                | None -> Ok(Some target, asFloat)
+                | Some source ->
+                    if sameUnit source target then
+                        Ok(Some target, asFloat)
+                    else
+                        match Unit.conversionFactor source target with
+                        | Ok ratio -> Ok(Some target, Binary(Mul, asFloat, Lit(Float(ratioToFloat ratio))))
+                        | Error(UnitConversionRefusal.Incompatible _) -> mismatch e source target)
+
+    /// `resolveUnitsIn` with no step to name — the unit of an expression, for a reader.
+    let internal unitOfExpr (cols: Schema) (e: ColExpr) : Result<UnitOfMeasure option, EvalError> =
+        resolveUnitsIn "expression" cols e |> Result.map fst
+
+    /// The output frame with the named column under `u` — a verb's own column, stated after the
+    /// verb built it (`Frame.withColumn` / `appendColumn` make a fresh field).
+    let internal unitised (name: string) (u: UnitOfMeasure option) (f: Frame) : Frame =
+        match u with
+        | None -> f
+        | Some u ->
+            { f with
+                Cols =
+                    f.Cols
+                    |> List.map (fun fd -> if fd.Name = name then Field.withUnit u fd else fd) }
+
     type internal ResolvedExpr =
         | RCol of int
         | RConst of Cell
@@ -2201,6 +2420,14 @@ module DataFrame =
         | ApplyFn(fn, args) -> RApplyFn(fn, List.map go args)
         | Quotient(a, b, r) -> RQuotient(resolveScale env r.Scale, r.Mode, go a, go b)
         | Rounded(a, r) -> RRounded(resolveScale env r.Scale, r.Mode, go a)
+        // A conversion resolves by substitution against the schema's units (Phase 429) BEFORE
+        // evaluation, as a list param and a `now` do; every step entry point has done so by here,
+        // and one that reaches this arm is resolved the same way — a mismatch is held and raised
+        // when a row reaches it, as an unbound param's is.
+        | Convert _ ->
+            match resolveUnitsIn "expression" cols e with
+            | Ok(_, resolved) -> go resolved
+            | Error err -> RFail err
 
     let private binaryOp (op: BinOp) (av: Cell) (bv: Cell) : Result<Cell, EvalError> =
         match op with
@@ -2629,6 +2856,8 @@ module DataFrame =
         | InParam(subject, _) -> Typing.inList (go subject)
         | Quotient(a, b, _) -> Typing.quotient (go a) (go b)
         | Rounded(a, _) -> Typing.rounded (go a)
+        // A conversion answers a float (D29): the typing of the cast it resolves to, a factor or not.
+        | Convert(x, _) -> Typing.cast FloatType (go x)
 
     /// The static type of an expression's present values over a schema, or `None` where the schema
     /// does not decide it — the typer a static reader (`SchemaWalk`, a planner) asks (Phase 266;
@@ -2686,7 +2915,8 @@ module DataFrame =
         | IsNull _
         | InParam _
         | Quotient _
-        | Rounded _ -> typing cols e = Of ty
+        | Rounded _
+        | Convert _ -> typing cols e = Of ty
 
     /// A float arm beside a decimal arm in one derived column (Phase 338, carried from 321): the
     /// static half of the refusal. Every such expression is `Unknown` to the typer, because the
@@ -2879,6 +3109,7 @@ module DataFrame =
             | InParam(x, _) -> exprCols x
             | Quotient(a, b, _) -> exprCols a @ exprCols b
             | Rounded(x, _) -> exprCols x
+            | Convert(x, _) -> exprCols x
 
         /// A typing whose present values the pinned cell ordering compares with `other`'s: an
         /// absent value propagates before any comparison, numbers compare across `Int`/`Float`,
@@ -3103,6 +3334,9 @@ module DataFrame =
                 && exactOrAbsent (ty a)
                 && exactOrAbsent (ty b)
             | Rounded(a, r) -> exprTotal cols a && scaleAdmitted r && exactOrAbsent (ty a)
+            // Conservative (Phase 429): the verdict reads the expression as written, and a
+            // conversion's arithmetic is what it resolves to over the step's units.
+            | Convert _ -> false
 
         /// THE TOTALITY VERDICT over a step: `true` only where evaluating the step over ANY table
         /// of schema `cols` returns `Ok`. `Sort` refuses a key the schema does not carry (Phase
@@ -3110,14 +3344,19 @@ module DataFrame =
         /// clamps; `Distinct` compares tokens; a `Project` fails only on a source the schema lacks. A slot still holding a
         /// param is resolved against an env the verdict does not have. Every other verb reaches
         /// a resolver, an aggregate or a comparison the schema alone cannot vouch for.
+        /// Phase 429: a step whose expression the unit check refuses (D29) refuses on every frame.
+        let private unitsAdmit (cols: Schema) (e: ColExpr) : bool =
+            Result.isOk (resolveUnitsIn "expression" cols e)
+
         let isTotal (cols: Schema) (t: Transform) : bool =
             match t with
-            | Filter p -> exprTotal cols p
+            | Filter p -> exprTotal cols p && unitsAdmit cols p
             // Phase 338: a derive whose column the CELLS type can refuse a float beside a decimal
             // over the whole column, and one refused statically always does, so only a decided
             // derive is total.
             | Derive(_, e) ->
                 exprTotal cols e
+                && unitsAdmit cols e
                 && (match derivedTyping cols e with
                     | Decided _ -> true
                     | ByCells
@@ -3168,13 +3407,22 @@ module DataFrame =
         /// The planner's own schema knowledge: every column by name, its type where the typer
         /// decides it — a `Derive`'s column carries its decided type (`derivedColumnType`, Phase
         /// 338), and is present with no type where only its cells decide it.
-        type private Known = (string * ColumnType option) list
+        /// A column the planner knows: its FIELD (name and metadata; Phase 429 carries the unit and
+        /// the labels through every rewrite, so a planned pipeline's schema is the reference's) and
+        /// its type where the schema decides it — the field's own type is read only through that
+        /// option.
+        type private Known = (Field * ColumnType option) list
 
         let private typed (k: Known) : Schema =
-            k |> List.choose (fun (n, t) -> t |> Option.map (Field.create n))
+            k |> List.choose (fun (f, t) -> t |> Option.map (fun ty -> Field.withType ty f))
+
+        /// Every known column as a field, for the unit walk, which reads no type.
+        let private fields (k: Known) : Schema = k |> List.map fst
+
+        let private nameOf ((f, _): Field * ColumnType option) : string = f.Name
 
         let private has (k: Known) (name: string) : bool =
-            k |> List.exists (fun (n, _) -> n = name)
+            k |> List.exists (fun (f, _) -> f.Name = name)
 
         /// The schema after a step, over the verbs the planner rewrites across; `None` where the
         /// planner stops knowing — a step outside the six, or one whose reads the schema lacks
@@ -3197,20 +3445,27 @@ module DataFrame =
                     Some(
                         pairs
                         |> List.map (fun (src, out) ->
-                            out, (k |> List.tryFind (fun (n, _) -> n = src) |> Option.bind snd))
+                            let f, t = k |> List.find (fun (f, _) -> f.Name = src)
+                            Fields.rename out f, t)
                     )
                 | Derive(name, e) ->
-                    let ty = derivedColumnType (typed k) e
+                    // A derive the unit check refuses errors, naming the schema, so the planner
+                    // stops knowing at it (Phase 429) exactly as at a step whose reads it lacks.
+                    match unitOfExpr (fields k) e with
+                    | Error _ -> None
+                    | Ok unit ->
+                        let ty = derivedColumnType (typed k) e
+                        let field = Field.create name (defaultArg ty StringType) |> stated unit
 
-                    if has k name then
-                        Some(k |> List.map (fun (n, t) -> if n = name then n, ty else n, t))
-                    else
-                        Some(k @ [ name, ty ])
+                        if has k name then
+                            Some(k |> List.map (fun (f, t) -> if f.Name = name then field, ty else f, t))
+                        else
+                            Some(k @ [ field, ty ])
                 | _ -> None
 
         /// The schema BEFORE each step of the pipeline, where the planner knows it.
         let private schemasBefore (cols: Schema) (pipeline: Transform list) : Known option[] =
-            let start: Known = cols |> List.map (fun f -> f.Name, Some f.Type)
+            let start: Known = cols |> List.map (fun f -> f, Some f.Type)
 
             let rec go (k: Known option) acc =
                 function
@@ -3407,11 +3662,13 @@ module DataFrame =
 
                     let inserted =
                         match needsAt[i] with
-                        | Some live when not skip && cur |> List.exists (fun (n, _) -> not (Set.contains n live)) ->
-                            let kept = cur |> List.filter (fun (n, _) -> Set.contains n live)
+                        | Some live when not skip && cur |> List.exists (fun c -> not (Set.contains (nameOf c) live)) ->
+                            let kept = cur |> List.filter (fun c -> Set.contains (nameOf c) live)
 
                             let dropped =
-                                cur |> List.filter (fun (n, _) -> not (Set.contains n live)) |> List.map fst
+                                cur
+                                |> List.filter (fun c -> not (Set.contains (nameOf c) live))
+                                |> List.map nameOf
 
                             Some(
                                 kept,
@@ -3423,7 +3680,8 @@ module DataFrame =
 
                     let cur', acc', applied' =
                         match inserted with
-                        | Some(kept, r) -> kept, Project(kept |> List.map (fun (n, _) -> n, n)) :: acc, r :: applied
+                        | Some(kept, r) ->
+                            kept, Project(kept |> List.map (fun c -> nameOf c, nameOf c)) :: acc, r :: applied
                         | None -> cur, acc, applied
 
                     // A dropping step ends the region, and the schema after it is not needed.
@@ -4624,6 +4882,47 @@ module DataFrame =
 
     let private aggType (fn: AggFn) (srcType: ColumnType) : ColumnType = Column.aggType fn srcType
 
+    /// The unit an aggregate's column carries over a source of unit `source` (Phase 429, D29): a
+    /// count is dimensionless, every other aggregate keeps its source's.
+    let private aggregateUnitOf (fn: AggFn) (source: UnitOfMeasure option) : UnitOfMeasure option =
+        match fn with
+        | Count
+        | CountDistinct -> None
+        | Sum
+        | Mean
+        | Min
+        | Max
+        | Median
+        | StdDev
+        | First
+        | Last -> source
+
+    /// The unit a window function's column carries over a source of unit `source` (Phase 429,
+    /// D29): the positional and ranking family carries none, the shifting, running and rolling
+    /// families keep their source's.
+    let private windowUnitOf (fn: WindowFn) (source: UnitOfMeasure option) : UnitOfMeasure option =
+        match fn with
+        | RowNumber
+        | Rank
+        | DenseRank
+        | CompetitionRank
+        | NTile _ -> None
+        | Lag
+        | Lead
+        | CumulSum
+        | RollingMean
+        | CumulMax
+        | CumulMin
+        | RollingSum -> source
+
+    /// The unit an unpivot's `value` column carries (Phase 429, D29): the one unit every value
+    /// column states, none where they differ or any states none — an unpivot melts measures of
+    /// different kinds into one column by design, and a unit it cannot state it does not invent.
+    let private sharedUnit (cols: Schema) (valueVars: string list) : UnitOfMeasure option =
+        match valueVars |> List.map (colUnit cols) with
+        | Some u :: rest when rest |> List.forall (fun v -> v |> Option.exists (sameUnit u)) -> Some u
+        | _ -> None
+
     // ---- sort (pinned: stable; nulls last regardless of direction) ----
 
     /// The first of `keys` a schema does not carry, as the `UnknownColumn` every other verb answers
@@ -4822,7 +5121,7 @@ module DataFrame =
 
         out
 
-    let private evalFilter
+    let private evalFilterChecked
         (k: KernelSet)
         (env: Map<string, Cell>)
         (f: Frame)
@@ -5142,6 +5441,17 @@ module DataFrame =
 
         derived |> Result.map (fun (ty, vec) -> Frame.withColumn f name ty vec)
 
+    /// The predicate's units are checked over the schema before any row (Phase 429), then the
+    /// resolved predicate is evaluated.
+    let private evalFilter
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (pred: ColExpr)
+        : Result<Frame, EvalError> =
+        resolveUnitsIn "filter" f.Cols pred
+        |> Result.bind (fun (_, pred) -> evalFilterChecked k env f pred)
+
     let private evalDerive
         (k: KernelSet)
         (env: Map<string, Cell>)
@@ -5149,12 +5459,14 @@ module DataFrame =
         (name: string)
         (expr: ColExpr)
         : Result<Frame, EvalError> =
-        // The column's typing (Phase 338) is read off the schema before any row: a derive refused
-        // statically is refused on every frame, an empty one included, and a decided one carries
-        // its type whatever rows the frame holds.
-        match derivedTypingIn env f.Cols expr with
-        | Refused -> Error(floatBesideDecimal name)
-        | dt -> evalDerivedColumn k env f name expr dt
+        // The column's unit (Phase 429) and typing (Phase 338) are read off the schema before any
+        // row: a derive refused statically is refused on every frame, an empty one included, and a
+        // decided one carries its type, and its unit, whatever rows the frame holds.
+        resolveUnitsIn ("derive '" + name + "'") f.Cols expr
+        |> Result.bind (fun (unit, expr) ->
+            match derivedTypingIn env f.Cols expr with
+            | Refused -> Error(floatBesideDecimal name)
+            | dt -> evalDerivedColumn k env f name expr dt |> Result.map (unitised name unit))
 
     /// Phase 323 — the GroupBy aggregates STREAMED: one pass over the rows, one accumulator per group
     /// slot per aggregate, results written straight into typed output vectors. It replaced, for
@@ -6362,9 +6674,12 @@ module DataFrame =
                 let keyCols =
                     keys |> List.map (fun k -> f.Cols |> List.find (fun fd -> fd.Name = k))
 
+                // An aggregate's column keeps its source's unit, a count none (Phase 429, D29).
                 let aggCols =
                     resolvedAggs
-                    |> List.map (fun (a, ty, _) -> Field.create a.Name (aggType a.Fn ty))
+                    |> List.map (fun (a, ty, _) ->
+                        Field.create a.Name (aggType a.Fn ty)
+                        |> stated (aggregateUnitOf a.Fn (colUnit f.Cols a.Of)))
 
                 // Phase 323 — every aggregate streamed over the rows once, then one output column per
                 // aggregate filled slot by slot. The first error — in group order, then aggregate
@@ -7101,7 +7416,27 @@ module DataFrame =
             |> List.tryPick (fun (i, n) -> if Option.isNone i then Some n else None)
         with
         | Some n -> Error(UnknownColumn(n, available leftCols @ available rightCols))
-        | None -> Ok(leftIdx |> List.map (fst >> Option.get), rightIdx |> List.map (fst >> Option.get))
+        | None ->
+            // A key pair is an equality, so the comparison's rule holds it (Phase 429, D29): two
+            // stated units must be one unit; an unconstrained side matches anything.
+            let mismatch =
+                on
+                |> List.tryPick (fun (l, r) ->
+                    match colUnit leftCols l, colUnit rightCols r with
+                    | Some lu, Some ru when not (sameUnit lu ru) ->
+                        Some(
+                            UnitMismatch(
+                                "join key '" + l + "' = '" + r + "'",
+                                Binary(Eq, Col l, Col r),
+                                Unit.render lu,
+                                Unit.render ru
+                            )
+                        )
+                    | _ -> None)
+
+            match mismatch with
+            | Some e -> Error e
+            | None -> Ok(leftIdx |> List.map (fst >> Option.get), rightIdx |> List.map (fst >> Option.get))
 
     /// The join's key predicate over two rows' already-projected key cells: `cellEq` pairwise, so a
     /// `Null` key matches nothing, itself included. Exposed downstream as `joinKeysMatch`.
@@ -7293,6 +7628,23 @@ module DataFrame =
                       Sel = None
                       Count = lidx.Length }
 
+    /// Two columns met as one (a union's pair, a set op's pair; Phase 429, D29): the left field under
+    /// the one unit the pair states, or the mismatch naming `what` and the column.
+    let private unitsAgree (what: string) (left: Field) (right: Field) : Result<Field, EvalError> =
+        match left.Unit, right.Unit with
+        | Some l, Some r when not (sameUnit l r) ->
+            Error(UnitMismatch(what + " '" + left.Name + "'", Col left.Name, Unit.render l, Unit.render r))
+        | None, Some r -> Ok(Field.withUnit r left)
+        | _ -> Ok left
+
+    /// The first set-op column pair two units meet in, if any (`evalSetOp`).
+    let private setOpUnitFault (verb: string) (left: Schema) (right: Schema) : EvalError option =
+        List.zip left right
+        |> List.tryPick (fun (l, r) ->
+            match unitsAgree (verb + " column") l r with
+            | Error e -> Some e
+            | Ok _ -> None)
+
     let private evalUnion (f: Frame) (other: Frame) : Result<Frame, EvalError> =
         if available f.Cols <> available other.Cols then
             Error(JoinError "union requires matching column names")
@@ -7305,12 +7657,16 @@ module DataFrame =
             let joined =
                 List.zip f.Cols other.Cols
                 |> traverseResult (fun (left: Field, right: Field) ->
-                    if left.Type = right.Type then
-                        Ok left
-                    else
-                        match joinColumnType left.Type right.Type with
-                        | Some ty -> Ok(Field.withType ty left)
-                        | None -> Error(typesBesideEachOther left.Name left.Type right.Type))
+                    // Phase 429 (D29): a column of the union carries one unit — the left's, the
+                    // right's where only the right states one — and two stated units are refused.
+                    unitsAgree "union column" left right
+                    |> Result.bind (fun left ->
+                        if left.Type = right.Type then
+                            Ok left
+                        else
+                            match joinColumnType left.Type right.Type with
+                            | Some ty -> Ok(Field.withType ty left)
+                            | None -> Error(typesBesideEachOther left.Name left.Type right.Type)))
 
             joined
             |> Result.map (fun cols ->
@@ -7335,6 +7691,10 @@ module DataFrame =
     let private evalSetOp (verb: string) (keepPresent: bool) (f: Frame) (other: Frame) : Result<Frame, EvalError> =
         if available f.Cols <> available other.Cols then
             Error(JoinError(verb + " requires matching column names"))
+        elif Option.isSome (setOpUnitFault verb f.Cols other.Cols) then
+            // Row identity across two units is the comparison's error (Phase 429, D29): checked,
+            // and the left schema is what the answer keeps.
+            Error(Option.get (setOpUnitFault verb f.Cols other.Cols))
         else
             // TOKEN equality over whole rows (Phase 265), through the typed row hasher (Phase 325):
             // the other side's rows are opened, each left row looks its tuple up, and no row is
@@ -8059,7 +8419,9 @@ module DataFrame =
         let phys = Frame.physical f
 
         windowColumnOfWith k Ordering.Exact f.Cols (fun ci -> f.Vecs[ci]) phys spec
-        |> Result.map (fun (ty, column) -> Frame.appendColumn f spec.As ty (windowVecAt ty f.Count phys column))
+        |> Result.map (fun (ty, column) ->
+            Frame.appendColumn f spec.As ty (windowVecAt ty f.Count phys column)
+            |> unitised spec.As (windowUnitOf spec.Fn (colUnit f.Cols spec.Of)))
 
     let private evalPivot (f: Frame) (spec: PivotSpec) : Result<Frame, EvalError> =
         let need name =
@@ -8214,7 +8576,14 @@ module DataFrame =
                         let idxCols =
                             spec.Index |> List.map (fun n -> f.Cols |> List.find (fun fd -> fd.Name = n))
 
-                        let pivotCols = onValues |> List.map (fun ov -> Field.create (cellString ov) outTy)
+                        // Every value column is one aggregate of `Values`, so each carries that
+                        // aggregate's unit (Phase 429, D29).
+                        let valueUnit = aggregateUnitOf spec.Agg (colUnit f.Cols spec.Values)
+
+                        let pivotCols =
+                            onValues
+                            |> List.map (fun ov -> Field.create (cellString ov) outTy |> stated valueUnit)
+
                         let cols = idxCols @ pivotCols
 
                         let keyOut = idxCols |> List.mapi (fun j f -> keyColumn f.Type idxVecs[j] firstPhys)
@@ -8268,7 +8637,9 @@ module DataFrame =
                     columnTypeBy dt "value" rows.Length (fun i -> rows[i][valueAt])
                     |> Result.map (fun valType ->
                         Frame.ofRows
-                            (idCols @ [ Field.create "variable" StringType; Field.create "value" valType ])
+                            (idCols
+                             @ [ Field.create "variable" StringType
+                                 Field.create "value" valType |> stated (sharedUnit f.Cols valueVars) ])
                             rows)))
 
     // ---- pipeline driver ----
@@ -8853,6 +9224,36 @@ module DataFrame =
     /// aggregate-column typing.
     let aggregateType (fn: AggFn) (srcType: ColumnType) : ColumnType = aggType fn srcType
 
+    /// The unit of an aggregate's column over a source column of unit `source` (Phase 429, D29):
+    /// `Count` and `CountDistinct` carry none; `Sum`, `Mean`, `Min`, `Max`, `Median`, `First`,
+    /// `Last` and `StdDev` keep the source's.
+    let aggregateUnit (fn: AggFn) (source: UnitOfMeasure option) : UnitOfMeasure option = aggregateUnitOf fn source
+
+    /// The unit of a window function's column over a source column of unit `source` (Phase 429,
+    /// D29): the positional and ranking functions carry none; `Lag`, `Lead`, `CumulSum`, `CumulMax`,
+    /// `CumulMin`, `RollingSum` and `RollingMean` keep the source's.
+    let windowUnit (fn: WindowFn) (source: UnitOfMeasure option) : UnitOfMeasure option = windowUnitOf fn source
+
+    /// The unit an unpivot's `value` column carries over `valueVars` of `cols` (Phase 429, D29):
+    /// the one unit they all state, none otherwise.
+    let unpivotUnit (cols: Schema) (valueVars: string list) : UnitOfMeasure option = sharedUnit cols valueVars
+
+    /// The unit check over an expression (Phase 429, `DECISIONS.md` D29), decided over the schema
+    /// alone: the expression's unit — `None` where it states none — and the expression with every
+    /// `Convert` resolved into the cast and the multiplication that perform it, or the
+    /// `UnitMismatch` naming `step`, the expression and both units. This is the check every
+    /// `Filter` and `Derive` runs before its first row; a reader (the schema walk, a planner, a
+    /// registered query) asks it the same question.
+    let resolveUnits (step: string) (cols: Schema) (e: ColExpr) : Result<UnitOfMeasure option * ColExpr, EvalError> =
+        resolveUnitsIn step cols e
+
+    /// The unit of an expression's values over a schema (Phase 429) — `Ok None` where it states
+    /// none, the mismatch where the schema refuses it. The unit twin of `typeOf`.
+    let unitOf (cols: Schema) (e: ColExpr) : Result<UnitOfMeasure option, EvalError> = unitOfExpr cols e
+
+    /// The unit a schema states for a column, where it states one.
+    let unitOfColumn (cols: Schema) (name: string) : UnitOfMeasure option = colUnit cols name
+
     /// The column type a `Derive`d column takes from its computed cells WHERE ONLY THE CELLS DECIDE
     /// IT: the present cells' types joined under `ColumnType.widens` in row order (Phase 321; it was
     /// the first present cell's type), `StringType` when every cell is null. Since Phase 338 a
@@ -8931,7 +9332,8 @@ module DataFrame =
 
         windowColumnOfRows cols arr spec
         |> Result.map (fun (ty, col) ->
-            cols @ [ Field.create spec.As ty ],
+            cols
+            @ [ Field.create spec.As ty |> stated (windowUnitOf spec.Fn (colUnit cols spec.Of)) ],
             arr
             |> Array.mapi (fun i r -> List.ofArray (Array.append r [| windowCellAt col i |]))
             |> List.ofArray)
@@ -8993,6 +9395,7 @@ module DataFrame =
         | Now _ -> Set.empty
         | Quotient(a, b, _) -> Set.union (exprCols a) (exprCols b)
         | Rounded(x, _) -> exprCols x
+        | Convert(x, _) -> exprCols x
 
     /// The source columns a single step references — an over-approximation is safe (it only makes the
     /// incremental check more conservative, never less). A right-hand `Join`/`Union` source is a
@@ -9072,6 +9475,35 @@ module DataFrame =
             evalPipeline pipeline changedSource
 
     /// Render an `EvalError` as a stable human string.
+    /// A compact text of an expression for a refusal: operators and functions by name, columns
+    /// quoted, literals as their cell text, params as `$name`.
+    let rec private exprText (e: ColExpr) : string =
+        let args (xs: ColExpr list) =
+            String.concat ", " (xs |> List.map exprText)
+
+        match e with
+        | Col n -> "'" + n + "'"
+        | Lit c -> cellString c
+        | Param n -> "$" + n
+        | Binary(op, a, b) -> (string op).ToLowerInvariant() + "(" + exprText a + ", " + exprText b + ")"
+        | Not x -> "not(" + exprText x + ")"
+        | Coalesce xs -> "coalesce(" + args xs + ")"
+        | Case(cases, els) ->
+            "case("
+            + args (cases |> List.collect (fun (w, t) -> [ w; t ]))
+            + ", "
+            + exprText els
+            + ")"
+        | Cast(ty, x) -> "cast(" + ColumnType.tag ty + ", " + exprText x + ")"
+        | ApplyFn(fn, xs) -> (string fn).ToLowerInvariant() + "(" + args xs + ")"
+        | InList(x, items) -> "in(" + exprText x + "; " + args items + ")"
+        | IsNull x -> "isNull(" + exprText x + ")"
+        | InParam(x, n) -> "in(" + exprText x + "; $" + n + ")"
+        | Now g -> "now(" + NowGrain.tag g + ")"
+        | Quotient(a, b, _) -> "quotient(" + exprText a + ", " + exprText b + ")"
+        | Rounded(x, _) -> "rounded(" + exprText x + ")"
+        | Convert(x, u) -> "convert(" + exprText x + ", " + Unit.render u + ")"
+
     let errorString (e: EvalError) : string =
         match e with
         | UnknownColumn(n, avail) -> "unknown column '" + n + "'; available: " + String.concat ", " avail
@@ -9086,6 +9518,15 @@ module DataFrame =
             "unpinned clock: a now("
             + NowGrain.tag g
             + ") reached evaluation with no ClockWitness; pin one with evalPipelineAt (or Transform.substituteNow)"
+        | UnitMismatch(step, expr, left, right) ->
+            "unit mismatch in "
+            + step
+            + ": "
+            + left
+            + " against "
+            + right
+            + " in "
+            + exprText expr
 
 
 // ============================================================================
@@ -9156,7 +9597,74 @@ type ColumnKnowledge =
         /// type is inferred from the cells its expression produced, so it is `None` however simple
         /// the expression looks.
         Type: ColumnType option
+        /// The unit the column carries (Phase 429, `DECISIONS.md` D29): the input field's through the
+        /// verbs that keep a column, the unit the check derives for a derive, the source's for an
+        /// aggregate or a window that keeps it, none for a count or a rank. `None` is "states none",
+        /// never "unknown": a unit is a fact of the schema, so the walk always decides it.
+        Unit: UnitOfMeasure option
+        /// The field's label, where the verb keeps the field (Phase 429): a column a verb produced
+        /// carries none.
+        Label: string option
+        /// The field's description, on the same rule.
+        Description: string option
+        /// The field's extension metadata, on the same rule.
+        Ext: Map<string, string>
     }
+
+/// Builders over `ColumnKnowledge` (Phase 429): construct through these, so the next metadata member
+/// is an addition here and not a break at every literal.
+module ColumnKnowledge =
+
+    /// A column of the given name and type knowledge, stating no metadata — what a verb's own column
+    /// is until a rule says otherwise.
+    let named (name: string) (ty: ColumnType option) : ColumnKnowledge =
+        { Name = name
+          Type = ty
+          Unit = None
+          Label = None
+          Description = None
+          Ext = Map.empty }
+
+    /// What a schema's field states: its type, and every metadatum.
+    let ofField (f: Field) : ColumnKnowledge =
+        { Name = f.Name
+          Type = Some f.Type
+          Unit = f.Unit
+          Label = f.Label
+          Description = f.Description
+          Ext = f.Ext }
+
+    /// The same knowledge under a unit.
+    let withUnit (u: UnitOfMeasure option) (c: ColumnKnowledge) : ColumnKnowledge = { c with Unit = u }
+
+    /// The same knowledge under another name — a projection's rename, a join's suffix.
+    let renamed (name: string) (c: ColumnKnowledge) : ColumnKnowledge = { c with Name = name }
+
+    /// The field this knowledge states, under `ty` where its own type is undecided: the shape a
+    /// reader that needs a `Schema` (the typer, the unit check) is handed.
+    let toFieldAs (ty: ColumnType) (c: ColumnKnowledge) : Field =
+        let f = Field.create c.Name (defaultArg c.Type ty)
+
+        let f =
+            match c.Unit with
+            | Some u -> Field.withUnit u f
+            | None -> f
+
+        let f =
+            match c.Label with
+            | Some l -> Field.withLabel l f
+            | None -> f
+
+        let f =
+            match c.Description with
+            | Some d -> Field.withDescription d f
+            | None -> f
+
+        c.Ext |> Map.fold (fun f k v -> Field.withExt k v f) f
+
+    /// The field this knowledge states, where its type is decided.
+    let toField (c: ColumnKnowledge) : Field option =
+        c.Type |> Option.map (fun ty -> toFieldAs ty c)
 
 /// What a static walk knows about a pipeline's output columns (Phase 112).
 ///
@@ -9227,6 +9735,30 @@ module SchemaWalk =
     let has (name: string) (knowledge: SchemaKnowledge) : bool =
         columns knowledge |> List.exists (fun c -> c.Name = name)
 
+    /// The unit a named column states (Phase 429): `None` when the column is absent and when it
+    /// states none, as `typeOf` is for a type.
+    let unitOf (name: string) (knowledge: SchemaKnowledge) : UnitOfMeasure option =
+        columns knowledge |> List.tryFind (fun c -> c.Name = name) |> Option.bind _.Unit
+
+    /// The named column's knowledge, or a column of that name the walk knows nothing about.
+    let private known (name: string) (knowledge: SchemaKnowledge) : ColumnKnowledge =
+        columns knowledge
+        |> List.tryFind (fun c -> c.Name = name)
+        |> Option.defaultValue (ColumnKnowledge.named name None)
+
+    /// The schema the unit check reads: every column as a field, an undecided type standing in as
+    /// a string — the check reads units, never types.
+    let private unitSchema (knowledge: SchemaKnowledge) : Schema =
+        columns knowledge |> List.map (ColumnKnowledge.toFieldAs StringType)
+
+    /// The unit a derive's column carries over the input (Phase 429): what the check derives, and
+    /// none where it refuses — the walk carries no refusal verdict (D26), so a refused derive reads
+    /// as a column that states no unit, and the evaluator is where the refusal is met.
+    let private derivedUnit (input: SchemaKnowledge) (expr: ColExpr) : UnitOfMeasure option =
+        match DataFrame.unitOf (unitSchema input) expr with
+        | Ok u -> u
+        | Error _ -> None
+
     // ---- building it ----
 
     let private withColumns (cols: ColumnKnowledge list) (knowledge: SchemaKnowledge) : SchemaKnowledge =
@@ -9253,7 +9785,7 @@ module SchemaWalk =
         knowledge |> withColumns (columns knowledge @ [ column ])
 
     let private ofColumns (schema: Schema) : ColumnKnowledge list =
-        schema |> List.map (fun f -> { Name = f.Name; Type = Some f.Type })
+        schema |> List.map ColumnKnowledge.ofField
 
     /// A concrete schema is closed knowledge — the walk's starting point.
     let ofSchema (schema: Schema) : SchemaKnowledge =
@@ -9336,9 +9868,7 @@ module SchemaWalk =
         | Project pairs ->
             SchemaKnowledge.Closed(
                 pairs
-                |> List.map (fun (source, out) ->
-                    { Name = out
-                      Type = typeOf source input })
+                |> List.map (fun (source, out) -> known source input |> ColumnKnowledge.renamed out)
             )
 
         // The name is declared; the type is the one the evaluator gives the column (Phase 338): the
@@ -9348,66 +9878,61 @@ module SchemaWalk =
         // refused. The typer reads the columns whose types are known; one the walk cannot type
         // reads as absent, which types the expression as undecidable rather than as anything false.
         | Derive(name, expr) ->
-            let known =
-                columns input
-                |> List.choose (fun c -> c.Type |> Option.map (Field.create c.Name))
+            let typed = columns input |> List.choose ColumnKnowledge.toField
 
             upsert
-                { Name = name
-                  Type = DataFrame.derivedColumnType known expr }
+                (ColumnKnowledge.named name (DataFrame.derivedColumnType typed expr)
+                 |> ColumnKnowledge.withUnit (derivedUnit input expr))
                 input
 
         // GroupBy closes the set too: the key columns then one column per aggregate, and nothing
         // survives that was not named.
         | GroupBy(keys, aggs) ->
             SchemaKnowledge.Closed(
-                (keys |> List.map (fun key -> { Name = key; Type = typeOf key input }))
+                (keys |> List.map (fun key -> known key input))
                 @ (aggs
                    |> List.map (fun agg ->
-                       { Name = agg.Name
-                         Type = aggregateType agg.Fn (typeOf agg.Of input) }))
+                       ColumnKnowledge.named agg.Name (aggregateType agg.Fn (typeOf agg.Of input))
+                       |> ColumnKnowledge.withUnit (DataFrame.aggregateUnit agg.Fn (unitOf agg.Of input))))
             )
 
         | Window spec ->
             input
-            |> appendColumn
-                { Name = spec.As
-                  Type = windowType input spec }
+            |> appendColumn (
+                ColumnKnowledge.named spec.As (windowType input spec)
+                |> ColumnKnowledge.withUnit (DataFrame.windowUnit spec.Fn (unitOf spec.Of input))
+            )
 
         // The index columns are known; the value columns are one per DISTINCT PRESENT VALUE in the
         // `on` column, which is data. Not even their number is derivable, so the set opens here and
         // every later step inherits that.
         | Pivot spec ->
             SchemaKnowledge.AtLeast(
-                spec.Index
-                |> List.map (fun name ->
-                    { Name = name
-                      Type = typeOf name input }),
+                spec.Index |> List.map (fun name -> known name input),
                 "a pivot's value columns are named by the data — one per distinct value in its `on` column"
             )
 
         | Unpivot(idVars, valueVars) ->
-            SchemaKnowledge.Closed(
-                (idVars
-                 |> List.map (fun name ->
-                     { Name = name
-                       Type = typeOf name input }))
-                @ [ { Name = "variable"
-                      Type = Some StringType }
-                    { Name = "value"
-                      Type =
-                        // The evaluator's rule over the value columns' declared types (Phase 338):
-                        // decided where every value column's type is known and they join, unknown
-                        // where one is not known or only the cells decide.
-                        let types = valueVars |> List.map (fun name -> typeOf name input)
+            // The evaluator's rule over the value columns' declared types (Phase 338): decided where
+            // every value column's type is known and they join, unknown where one is not known or
+            // only the cells decide. The value column's unit is the one every value column states
+            // (Phase 429), read off the same knowledge.
+            let valueType =
+                let types = valueVars |> List.map (fun name -> typeOf name input)
 
-                        if types |> List.forall Option.isSome then
-                            match DataFrame.unpivotTyping (types |> List.choose id) with
-                            | DataFrame.Decided ty -> Some ty
-                            | DataFrame.ByCells
-                            | DataFrame.Refused -> None
-                        else
-                            None } ]
+                if types |> List.forall Option.isSome then
+                    match DataFrame.unpivotTyping (types |> List.choose id) with
+                    | DataFrame.Decided ty -> Some ty
+                    | DataFrame.ByCells
+                    | DataFrame.Refused -> None
+                else
+                    None
+
+            SchemaKnowledge.Closed(
+                (idVars |> List.map (fun name -> known name input))
+                @ [ ColumnKnowledge.named "variable" (Some StringType)
+                    ColumnKnowledge.named "value" valueType
+                    |> ColumnKnowledge.withUnit (DataFrame.unpivotUnit (unitSchema input) valueVars) ]
             )
 
         | Join(source, _, how) ->
@@ -9441,7 +9966,7 @@ module SchemaWalk =
 
                     let renamed =
                         DataFrame.joinRightNames (left |> List.map _.Name) (rightCols |> List.map _.Name)
-                        |> List.map2 (fun c name -> { c with Name = name }) rightCols
+                        |> List.map2 (fun c name -> ColumnKnowledge.renamed name c) rightCols
 
                     match right with
                     | SchemaKnowledge.Closed _ -> SchemaKnowledge.Closed(left @ renamed)
@@ -9801,6 +10326,7 @@ module DataFrameCodec =
                   "divisor", encodeExpr b
                   "rounding", roundingJson r ]
         | Rounded(x, r) -> Canon.typed "rounded" [ "expr", encodeExpr x; "rounding", roundingJson r ]
+        | Convert(x, u) -> Canon.typed "convert" [ "expr", encodeExpr x; "unit", JStr(Unit.render u) ]
 
     let private field k el =
         match el with
@@ -9987,6 +10513,13 @@ module DataFrameCodec =
                         )
                     | None, None -> Error(MissingField "items"))
             | "isNull" -> field "expr" el |> Result.bind decodeExpr |> Result.map IsNull
+            | "convert" ->
+                field "unit" el
+                |> Result.bind strOf
+                |> Result.bind (fun text ->
+                    match Unit.parse text with
+                    | Error _ -> Error(MalformedShape("convert: '" + text + "' is not a unit"))
+                    | Ok u -> field "expr" el |> Result.bind decodeExpr |> Result.map (fun x -> Convert(x, u)))
             | "quotient" ->
                 field "dividend" el
                 |> Result.bind decodeExpr
@@ -10595,9 +11128,12 @@ type internal MorselHandOff =
         /// The evaluation environment on the canonical wire: an object from each bound name to the
         /// `lit` expression of its cell.
         Env: string
-        /// The frame's schema, every column: its name, and its type's wire tag (`ColumnType.tag`).
-        Names: string[]
-        Types: string[]
+        /// The frame's schema, every column, as the canonical wire of its field documents
+        /// (`ColumnCodec.fieldJson`: name, type and the metadata a field states — Phase 429, so a
+        /// hand-off's answer carries what the sequential path's does). A STRING, as `Step` and `Env`
+        /// are: a hand-off crosses a worker boundary by structured clone, which carries primitives
+        /// and arrays and not a map's comparer.
+        Fields: string
         /// What is carried of each column: `0` nothing (the step reads no such column), `1` int
         /// values (`Ints`), `2` float values (`Floats`), `3` bool values as bytes (`Bools`); a
         /// carried column's validity mask is in `Masks`, one byte a row. Empty where not carried.
@@ -10663,6 +11199,26 @@ module internal MorselHandOff =
         | Ok [ t ] -> Some t
         | _ -> None
 
+    /// The schema as its field documents, canonically rendered (Phase 429).
+    let private encodeFields (cols: Schema) : string =
+        Canon.render (JArr(cols |> List.map ColumnCodec.fieldJson))
+
+    let private decodeFields (s: string) : Schema option =
+        match Json.parseDetailed s with
+        | Ok(JArr items) ->
+            let fields =
+                items
+                |> List.map (fun el ->
+                    match ColumnCodec.decodeField el with
+                    | Ok f -> Some f
+                    | Error _ -> None)
+
+            if List.forall Option.isSome fields then
+                Some(fields |> List.choose id)
+            else
+                None
+        | _ -> None
+
     /// The columns a resolved expression reads.
     let rec private reads (e: DataFrame.ResolvedExpr) : int list =
         match e with
@@ -10707,6 +11263,8 @@ module internal MorselHandOff =
         match expr with
         | None -> None
         | Some _ when morselRows < 1 -> None
+        // A step the unit check refuses (Phase 429) is the sequential path's to refuse, by name.
+        | Some e when Result.isError (DataFrame.resolveUnits "" f.Cols e) -> None
         | Some e ->
             let step = DataFrameCodec.encodePipeline [ t ]
             let envWire = encodeEnv env
@@ -10799,8 +11357,7 @@ module internal MorselHandOff =
                 Some
                     { Step = step
                       Env = envWire
-                      Names = Fields.names f.Cols |> List.toArray
-                      Types = f.Cols |> List.map (_.Type >> ColumnType.tag) |> List.toArray
+                      Fields = encodeFields f.Cols
                       Kinds = kinds
                       Ints = ints
                       Floats = floats
@@ -10828,15 +11385,13 @@ module internal MorselHandOff =
     /// The frame, environment and step a runner rebuilds from the data alone. A column the step does
     /// not read is an empty placeholder: the compiled tree reads only the columns the step names.
     let rebuild (h: MorselHandOff) : Frame * Map<string, Cell> * Transform =
-        let types =
-            h.Types
-            |> Array.map (fun tag ->
-                match ColumnType.ofTag tag with
-                | Some ty -> ty
-                | None -> invalidOp ("a hand-off names an unknown column type: " + tag))
+        let cols =
+            match decodeFields h.Fields with
+            | Some cols -> cols
+            | None -> invalidOp "a hand-off whose schema does not decode"
 
         let vecs =
-            Array.init h.Names.Length (fun i ->
+            Array.init (List.length cols) (fun i ->
                 match h.Kinds[i] with
                 | 1 -> Ints(h.Ints[i], h.Masks[i])
                 | 2 -> Floats(h.Floats[i], h.Masks[i])
@@ -10844,7 +11399,7 @@ module internal MorselHandOff =
                 | _ -> Cells [||])
 
         let frame: Frame =
-            { Cols = List.init h.Names.Length (fun i -> Field.create h.Names[i] types[i])
+            { Cols = cols
               Vecs = vecs
               Sel = Some h.Rows
               Count = h.Count }
@@ -10948,6 +11503,12 @@ module internal MorselHandOff =
             | Filter _ -> Ok(Frame.select f (DataFrame.keptInOrder h.MorselRows h.OutRows h.OutCounts))
             | Derive(name, e) ->
                 let dt = DataFrame.derivedTypingIn env f.Cols e
+
+                let unit =
+                    match DataFrame.resolveUnits "" f.Cols e with
+                    | Ok(u, _) -> u
+                    | Error _ -> None
+
                 let mask = h.OutMask
 
                 let ty, vec =
@@ -10956,7 +11517,7 @@ module internal MorselHandOff =
                     | 2 -> DataFrame.derivedTyped dt f.Count h.Rows FloatType (Floats(h.OutFloats, mask)) mask
                     | _ -> DataFrame.derivedTyped dt f.Count h.Rows BoolType (Bools(h.OutBools, mask)) mask
 
-                Ok(Frame.withColumn f name ty vec)
+                Ok(Frame.withColumn f name ty vec |> DataFrame.unitised name unit)
             | _ -> invalidOp "a hand-off whose step is not row-local"
 
     /// The step through a runner: planned, handed to `runner` (which must run every morsel of the
