@@ -935,12 +935,13 @@ time. It printed figures and moved to the leg only so that the main suite ran no
 | the table-fed tick at most 1.6× the full evaluation plus a fixed per-call floor (Phase 274; floor Phase 327; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, per row and per call | CLOCK; its countable part is the Phase 274 row below | leg |
 | the table-fed tick on every Phase 262 corpus node at most 1.6× the full evaluation, or 1.5× its recorded pre-423 tick, plus a fixed per-call floor (Phase 283; floor Phase 327; baseline arm Phase 439; 1,000 / 20,000 / 100,000 rows) | time: the seam costs no more than re-running, or no more than it did, per row and per call, on every corpus shape | CLOCK; its countable part is the Phase 283 `KeyString` count | leg |
 | the APPEND tick on every Phase 262 corpus node at most 1.6× the full evaluation, or 1.5× its recorded pre-423 tick, plus a fixed per-call floor (Phase 359; baseline arm Phase 439; one row appended; 1,000 / 20,000 / 100,000 rows) | time: an append costs no more than re-running, or no more than it did, on every corpus shape | CLOCK; its countable part is the Phase 359 count (k keys minted for k rows appended) | leg |
+| a REFRESH alone on every Phase 262 corpus node the seam accepts no dearer than the full evaluation it replaces, plus a fixed per-call floor; the declined nodes named, not timed (Phase 448; the edit at 1,000 / 20,000 / 100,000 rows, the append at 1,000 / 100,000) | time: maintaining a result is no dearer than recomputing it | CLOCK; which nodes are declined is pinned in the main suite | leg |
 | `Delta.diff` costs what keying costs (1,000 and 20,000 rows) | work: the keying and a constant | COUNTABLE — keys minted, bytes allocated | main suite |
 | `Filter > Sort > Limit 10`: the fused pair against the full sort (`PlanTests`) | work: the top-n does less than the sort | COUNTABLE — bytes allocated | main suite |
 | the top-N step is a single pass (Phase 207) | work | already counted (visits) | main suite |
 | a one-row refresh allocates a bounded few words per source row (Phase 274) | work: the bookkeeping per row | COUNTABLE — bytes allocated | main suite |
 
-Fourteen cases in the leg (fifteen since Phase 283 added the corpus tick case, sixteen since Phase 359 added the append tick case). The rest of the premise needed correcting too. The seam's counters see
+Fourteen cases in the leg (fifteen since Phase 283 added the corpus tick case, sixteen since Phase 359 added the append tick case, seventeen since Phase 448 added the refresh case). The rest of the premise needed correcting too. The seam's counters see
 the work a refresh does: rows evaluated, chunks touched (Phase 268's regression, an untouched chunk
 evaluated again, is already a count in `IncrementalRefreshCostTests`), and keys minted. None of them
 sees a walk inside the evaluator or the diff, and allocation does not either, because walking a list
@@ -1838,23 +1839,15 @@ naming the script, and hold the cell to the ratio arm alone. That is the stricte
 missing table can make a leg red and never makes one green. The Arm64 table was recorded on a
 Snapdragon X Elite (X1E80100) on 2026-10-12, from three full legs with no window discarded.
 
-**Three named exceptions, until Phase 448.** `lines` at 20,000 rows, edit tick, is a real post-423
-regression, and the baseline arm cannot carry it; its APPEND tick and `window CumulSum` edit at 20,000 rows join it on the same terms (Phase
-449, `DECISIONS.md` D22). Across the Phase 439 legs its pre-423 tick read
-1.30 to 1.59 ms and its post-423 tick (with the fix below) 1.39 to 5.27 ms, in two clusters around
-1.6–2.1 and 2.6–3.6 ms. The operator's third and fourth rulings hold that one cell to TODAY'S COST as a
-ceiling: `tick <= 1.5 x ceiling + floor`, neither other arm applying. The ceiling is recorded by the
-same script (`-Ceiling`, the same median-of-bests method) from the tree carrying Phase 423 and this
-phase's fix, `1453743`'s recording of `3caa557`: 1.783 ms, an allowance of 2.821 ms on Arm64. The cell
-is judged by the leg's own rule like every other: red only when it is red on all three counted
-attempts. Of its 34 counted readings on the branch tree, 9 were above the allowance (median 2.397 ms,
-maximum 5.270 ms), and no leg had it above on every attempt.
-
-- The exception is a test-visible constant (`ScalingTests.tickBaselineExceptions`), and a main-suite
-  case pins its exact contents, so a second one cannot be added silently.
-- It is printed on every judgement as `NAMED EXCEPTION …`.
-- It is removable only by Phase 448's acceptance (`DECISIONS.md` D19).
-- An architecture with no ceiling holds the cell to the ratio arm, and says so.
+**The named exceptions, and their retirement (Phase 448).** `lines` at 20,000 rows, edit tick, was a
+real post-423 regression the baseline arm could not carry; its APPEND tick and `window CumulSum` edit
+at 20,000 rows joined it on the same terms (Phase 449, `DECISIONS.md` D22). Across the Phase 439 legs
+its pre-423 tick read 1.30 to 1.59 ms and its post-423 tick 1.39 to 5.27 ms. The operator held those
+three cells to their own recorded post-423 cost as a ceiling until Phase 448. Phase 448 made each of
+them assemble its result from the prior one ("A refresh assembles its result from the prior one",
+below), and every cell is now judged by the two arms alike: the exceptions, their ceilings and the
+main-suite case that pinned them are gone (`DECISIONS.md` D27). The recording script records the
+baseline table and nothing else.
 
 **The regression the arm found, and its cure.** Measured before the ruling, against the same pre-423
 tree on the same machine, most edit ticks were at or below their pre-423 cost. The APPEND ticks of the
@@ -1895,12 +1888,49 @@ The median re-record and the named exception answer those two cells. Every other
 arms on every run that reached a verdict. The run that landed this phase reached a verdict, GREEN on
 all sixteen clock cases; its record is in the phase's outcome.
 
-The thinnest cells are exactly the shapes whose refresh now costs more than the full evaluation it
-replaces: `lines`, `window CumulSum` and `group-by high-card` (refresh 2.1 to 3.4 times the full; it was
-0.6 to 0.9 before Phase 423). The baseline arm admits them because their tick is no dearer than before,
-and the exception admits `lines` at 20,000 rows at today's cost. Neither makes them cheap; that is
-Phase 448's work. The figures are in [`performance.md`](performance.md), "The tick bound after the
+The thinnest cells were exactly the shapes whose refresh then cost more than the full evaluation it
+replaced: `lines`, `window CumulSum` and `group-by high-card` (refresh 2.1 to 3.4 times the full; it was
+0.6 to 0.9 before Phase 423). The baseline arm admitted them because their tick was no dearer than
+before, and the exceptions admitted three cells at their post-423 cost. Neither made them cheap;
+Phase 448 did (below). The figures are in [`performance.md`](performance.md), "The tick bound after the
 boundary became a view".
+
+### A refresh assembles its result from the prior one (Phase 448)
+
+Phase 423 made the full evaluation a few passes over typed vectors. The refresh still built its result
+through cells, so on three corpus shapes the refresh ALONE cost 2.1 to 3.4 times the full evaluation
+it replaces. Timed by stage at 20,000 rows, the refreshed span was not the cost: a `lines` edit
+re-evaluates two cells and a `group-by high-card` edit recomputes one group. Result assembly was. It
+took 82% of the `lines` refresh (both derived columns packed from 20,000 cells), 73% of the
+`group-by high-card` refresh (the 10,000-row group table packed from its row arrays) and 41% of the
+`window CumulSum` refresh (the window column built as a cell list, then packed). Re-keying cost
+nothing, because the delta carries the diff's keys.
+
+Each now assembles its result from the prior one:
+
+- **Row-local steps, in place.** When every step is row-local and the refresh reads in place (each
+  unchanged row at its prior slot, appended rows after them), every other row of the result is the
+  prior result's row. A column a step computed is then the prior result's typed column, copied and
+  written at the changed and appended rows (`patchedColumn`).
+- **A maintained group table** is the prior one, written at the recomputed groups and grown by the
+  new ones, by the same function.
+- **A prefix-fold window's column** is read straight off the typed carrier the scan wrote
+  (`runColumn`). The cells a state's encoding carries for the run are read off that column only when
+  the state is encoded, so no wire byte moves.
+
+The copy answers exactly what packing answers: the same carrier, values, absent rows and the zero
+values under them. Where that cannot be shown (a carrier it does not copy, or a written cell the
+carrier does not hold), the refresh packs as before. Writing one row wrongly in either new path
+reddens the incremental and window law families.
+
+**What the clock leg holds.** A seventeenth case times the refresh alone against the one-thread full
+evaluation on every corpus node the seam accepts: `refresh <= full + floor`, the edit at every size and the
+append at 1,000 and 100,000 rows. At 20,000 rows an append grows two per-row reference arrays just past
+the runtimes large-object threshold, and the collections that triggers, not the refreshs work, decide
+a refresh timed alone there; the append tick case still holds those cells (`DECISIONS.md` D27). The declined nodes
+(`inner join`, `pivot`) refresh by the full evaluation; the case prints each with the plan's reason,
+and the main suite pins which nodes those are. The figures are in
+[`performance.md`](performance.md), "A refresh assembles its result from the prior one".
 
 ## Across a process boundary (Phase 355)
 

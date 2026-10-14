@@ -252,3 +252,71 @@ No single cell was red on all three attempts. The operator ruled two changes (`D
   allowance. Its ceiling was recorded from `12a825d` by the same method: per-leg bests of 1.733, 1.840
   and 1.825 ms, median 1.825 ms (0.371086 calibration units), an allowance of about 2.88 ms with the
   floor.
+
+## A refresh assembles its result from the prior one (Phase 448)
+
+Phase 439 left one finding open: on `lines`, `window CumulSum` and `group-by high-card` the refresh
+alone cost 2.1 to 3.4 times the one-thread full evaluation it replaces. Phase 448 measured where it
+went, made each of the three cheaper than recomputing, and retired the three named tick exceptions
+(`DECISIONS.md` D27).
+
+**Where the refresh spent its time.** The refresh was timed apart from the diff and split by stage
+(Release, Arm64, the Phase 439 tree `fc0ef74`, 20,000 rows, the corpus's one-row edit). It was not the
+refreshed span: a `lines` edit re-evaluates two cells, a `group-by high-card` edit recomputes one group.
+It was result assembly.
+
+| Node | Refresh | Assembling the result | What the assembly did |
+|---|---:|---:|---|
+| `lines` | 0.56 ms | 0.46 ms (82%) | packed both derived columns from 20,000 boxed cells |
+| `group-by high-card` | 0.82 ms | 0.60 ms (73%) | packed the 10,000-row group table from its row arrays |
+| `window CumulSum` | 2.73 ms | 1.12 ms (41%), the resume 1.42 ms | built the window column as a 20,000-cell list, then packed it |
+
+Re-keying cost nothing: the delta carries the keys the diff minted, and the refresh reads them.
+
+**What changed.**
+
+- **A computed column is the prior result's column, written at the rows that moved.** When a refresh
+  runs in place through row-local steps alone, every other row of its result is the prior result's
+  row. The column is then the prior column's typed vector, copied and written at the changed and
+  appended rows (`patchedColumn`), rather than packed from every cell.
+- **A maintained group table is the prior one, written at the recomputed groups** and grown by the new
+  ones, by the same function.
+- **A prefix-fold window's column is read straight off the typed carrier the scan wrote**
+  (`runColumn`). No cell is boxed for it. The cells the state's encoding carries are read off the
+  column only when the state is encoded, so no wire byte moves. The resume also writes its scanned
+  suffix with one loop per carrier rather than a match per row, and builds no position table when
+  the run is already in arrival order.
+- **A filter that keeps every row hands its order on** rather than copying it.
+
+Every answer is the one packing would have built. Where that cannot be shown (a carrier the copy does
+not handle, or a written cell the carrier does not hold), the refresh packs the cells as before.
+Making either new path write one row wrongly reddens the incremental and window law families.
+
+**Refresh against the full evaluation, before and after.** Each "before" figure is a batched best
+from a standalone probe on `fc0ef74`. Each "after" figure is the range over three clean clock legs of
+the new case (15 readings).
+
+| Node | Tick | Rows | Before | After |
+|---|---|---:|---:|---:|
+| `lines` | edit | 20,000 | 0.37–2.09 | 0.31–0.96 |
+| `lines` | edit | 100,000 | 1.01–2.24 | 0.23–0.44 |
+| `lines` | append | 20,000 | 1.04–1.12 | 0.42–0.58 |
+| `window CumulSum` | edit | 20,000 | 3.03–3.45 | 0.65–0.89 |
+| `window CumulSum` | edit | 100,000 | 2.11–2.72 | 0.74–0.94 |
+| `group-by high-card` | edit | 100,000 | 1.55–2.15 | 0.20–0.33 |
+| `group-by high-card` | append | 100,000 | 1.53–2.27 | 0.51–0.78 |
+
+The three cells that had been excepted now pass the tick bound itself, on the ratio arm alone. On the
+same three legs the `lines` edit tick at 20,000 rows read 0.49 to 0.50 ms (it had read 1.39 to
+5.27 ms), its append tick 0.43 to 0.44 ms, and the `window CumulSum` edit tick 0.61 to 0.62 ms, each
+within 1.6 times the full evaluation it replaces.
+
+**Where it is not yet cheaper: the append at 20,000 rows on the small-group grouped nodes.** On
+`byRegion`, `filter > groupBy` and `filter > groupBy > filter` the full evaluation at 20,000 rows costs
+0.24 to 0.45 ms, and the appends refresh timed alone read 0.8 to 2.5 times it (it read 1.0 to 2.0
+before this phase). The refreshs own work is not the cost. An in-place append grows the row tokens and
+a steps cell cache, about 160 KB each at that size, just past the runtimes large-object threshold, and
+the gen-2 collections those allocations trigger decide the reading: with the threshold raised past them
+the same refresh read 0.43 times the full and the collector ran no gen-2 collection. The clock legs
+refresh case therefore times the append at 1,000 and 100,000 rows; the append tick case holds the
+20,000-row cells, diff and refresh together, inside its bound (`DECISIONS.md` D27).

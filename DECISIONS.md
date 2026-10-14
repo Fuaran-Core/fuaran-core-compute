@@ -1,5 +1,83 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-14 — D27: a refresh assembles its result from the prior one; no corpus shape is declined; the named tick exceptions are retired; a clock case holds the refresh against the full evaluation
+
+**Context.** Phase 423 made the full evaluation a few passes over typed vectors. Phase 439 then found
+that on three corpus shapes the refresh ALONE cost more than the full evaluation it replaces:
+`lines`, `window CumulSum` and `group-by high-card`, 2.1 to 3.4 times (0.6 to 0.9 before 423). Phase
+439's bound stayed green on the baseline arm, and D19 and D22 held three cells to their own post-423
+cost as named exceptions until Phase 448: `lines` edit, `lines` append and `window CumulSum` edit, all
+at 20,000 rows. The operator's rulings of 2026-10-12/13 bind this phase: the tick bound is
+`max(1.6 x full, 1.5 x recorded pre-423 tick) + floor`, and a shape the seam declines (a visible
+fall-back to the full evaluation, with the reason) is a legitimate answer where it is better for a
+consumer.
+
+**Measured first (448.A).** The refresh was timed apart from the diff and split by stage (Release,
+Arm64, the 439 tree, 20,000 rows, the corpus's one-row edit). The refreshed span was not the cost, and
+neither was re-keying (the delta carries the diff's keys). Result assembly was: 82% of the `lines`
+refresh (both derived columns packed from every row's cell), 73% of the `group-by high-card` refresh
+(the 10,000-row group table packed from its row arrays) and 41% of the `window CumulSum` refresh (the
+window column built as a 20,000-cell list and then packed). The rest of the window's was its resume's
+row-sized bookkeeping arrays.
+
+**Decision, per shape (448.B).** No shape is declined. On each of the three, maintaining the result
+is cheaper than recomputing it once assembly stops going through cells, and declining would make every
+refresh a full evaluation and lose the edits and appends that are already far cheaper.
+
+1. **`lines` (row-local steps): the prior result's column, written at the rows that moved.** When
+   every step is row-local and the refresh reads in place, every other row of the result is the prior
+   result's row. A computed column is then the prior column's typed vector, copied and written at the
+   changed and appended rows (`patchedColumn`).
+2. **`group-by high-card` (a maintained group-by): the prior group table, written at the recomputed
+   groups** and grown by the new ones, through the same function. The group outcome's rows are an
+   array now, so they are not converted between a list and an array on every refresh.
+3. **`window CumulSum` (a resumed prefix fold): the column read straight off the typed carrier the
+   scan wrote** (`runColumn`). The run's cell list, which the state's encoding carries, is deferred:
+   it is read off the column only when the state is encoded, so no wire byte moves. The resume also
+   writes its scanned suffix in one loop per carrier, and builds no position table where the run
+   already holds the rows in arrival order.
+
+Each copy answers what packing answers: the same carrier, values, absent rows and the zero values
+under them. Where that cannot be shown (a carrier the copy does not handle, a written cell the carrier
+does not hold, a field whose type moved), the refresh packs the cells as before. Making either new
+path write one row wrongly reddens the incremental and window law families. A filter that keeps every
+row now hands its order on rather than copying it.
+
+**The named exceptions are retired (448.D).** `ScalingTests.tickBaselineExceptions`, the ceilings
+beside it, the condition that read them and the main-suite case that pinned them are deleted. So is
+the `-Ceiling` mode of `gates/record-tick-baselines.ps1`, which wrote nothing else. Every corpus cell is
+judged by the two arms alike. On three clean Arm64 clock legs the three formerly excepted cells read
+0.49–0.50 ms (`lines` edit), 0.43–0.44 ms (`lines` append) and 0.61–0.62 ms (`window CumulSum` edit),
+each within 1.6 times its full evaluation. The `lines` edit cell had read 1.39 to 5.27 ms.
+
+**Held (448.C).** A seventeenth clock case times the refresh alone, handed the delta the diff built,
+against the one-thread full evaluation on every corpus node the seam accepts: `refresh <= full +
+floor`. The two nodes the seam declines, `inner join` (a combining join's rows are not its left rows)
+and `pivot` (its output depends on rows the delta does not name), are printed with the plan's reason
+and not timed. A main-suite case pins that list against `Incremental.plan` and checks that a declined
+node's refresh reports a full evaluation with that reason, so a shape cannot come to be declined, or
+stop being declined, silently. Figures: `docs/performance.md`, "A refresh assembles its result from the
+prior one".
+
+**Where the case does not time, and why.** The refresh case times the edit at 1,000, 20,000 and
+100,000 rows and the append at 1,000 and 100,000 (`ScalingTests.refreshSizes`). At 20,000 rows the
+append's refresh on the small-group grouped nodes (`byRegion`, `filter > groupBy`, `filter > groupBy >
+filter`) read 0.8 to 2.5 times a full evaluation that costs 0.24 to 0.45 ms. That was measured, not
+assumed: an in-place append grows two per-row reference arrays (the row tokens and a step's cell
+cache), about 160 KB each at that size, just past the runtime's large-object threshold, and the
+collections those allocations trigger decide the reading. With the threshold raised past them the same
+refresh read 0.43 times the full with no gen-2 collection, and the same cell read 1.05 times from a
+pool of 500 prepared sources and 1.3 to 2.4 times from one, with the gen-2 count moving from 0 to 17
+per 500 calls. The diff and refresh together stay inside the append tick case's bound on every
+reading, and the edit and every other size of every shape read 0.13 to 0.98 of the full. It was so
+before this phase too (1.0 to 2.0). Keeping those arrays below the threshold is a representation change
+to the seam's per-row caches, not result assembly, and it is a later phase's. The case's reach was
+proposed to the operator with this evidence; the ruling is recorded with the phase.
+
+**Consequences.** No public signature, answer or wire byte moves (`STABILITY.md`, class `none`,
+`performance`), and the `0.39.0` draft is ridden. The clock leg holds seventeen cases. Re-recording the
+baseline table is unchanged (D19).
+
 ## 2026-10-13 — D26: a partition key that names no column is refused with `UnknownColumn`, through the one resolution a sort key passes; the window's keys are checked before any row is read
 
 **Context.** D21 made a sort key that names no column a refusal, in a `Sort` and in a `Window`'s
