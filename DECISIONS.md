@@ -1,5 +1,96 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-14 — D29: the evaluator propagates and checks units — a column's unit rides every verb that keeps the column, addition and comparison require one unit, multiplication and division compose through Core's algebra, a conversion is explicit and answers a float, and a column that states no unit is unconstrained, so a unitless pipeline is untouched
+
+**Context.** Since Phase 427 a schema entry is a `Field` that can carry a unit of measure (Core's
+`Fuaran.Core.Unit`, Phase 426: a product of UCUM atoms with integer exponents, one canonical text per
+product, `compatible` and `conversionFactor` reading what a unit denotes). The evaluator read none of
+it: `Add`, `Sub`, `Mul` and `Div` typed their operands by cell type alone, so a model adding metres to
+seconds evaluated, and every verb that produced a column (`Derive`, an aggregate, a window) made a fresh
+field with no metadata — `Frame.withColumn` says so in its doc. The unit was a label.
+
+**Decision.** The evaluator carries each column's metadata from input to output and refuses, before any
+row is read, the operations a unit makes meaningless. The rules, each held by `UnitPropagationTests`
+(one test per row, the refusal asserted by name) and by the law families named beside them:
+
+| Where | Rule |
+|---|---|
+| A column | Its unit is its field's (`Field.Unit`). A column that states no unit is UNCONSTRAINED: it composes with anything and never refuses, so a pipeline over unitless columns answers byte-identically to `0.39.0` (held by every pre-429 vector in `conformance/laws/transform-laws.json` being byte-unchanged, and proved: `unitless_unchanged`, `checked_step_unitless`). |
+| A literal, a param, a `now` | Unconstrained. A literal is given a unit by `Convert(Lit 5, m)`. |
+| `Add`, `Sub` | The operands' stated units must be ONE unit — one canonical text; `km` beside `m` is refused as `N` beside `kg.m/s2` is, until converted, because implicit conversion hides exactly the error this exists to catch. The answer carries that unit; an unconstrained operand takes the other's. |
+| `Eq` … `Ge` | The same rule; the answer is a boolean and carries none. `And`, `Or`, `Contains`, `StartsWith`, `EndsWith`, `Not`, `IsNull`: none. |
+| `Mul` | Composes through `Unit.mul`; an unconstrained factor contributes nothing (`m * 2` is `m`, `m * m` is `m2`). |
+| `Div`, `Quotient` | Composes through `Unit.div`; an unconstrained divisor leaves the dividend's unit, an unconstrained dividend is dimensionless over a stated divisor (`1 / s` is `/s`). `Mod` keeps the dividend's. |
+| `Coalesce`, a `Case`'s arms, `Least`, `Greatest`, `InList` | One unit among the stated ones, in order, and the answer carries it (`InList` answers a boolean). A `Case` agrees its arms with its ELSE, the else first — it is the base the arms fall through to — so a mismatch names the else's unit first. |
+| `Cast`, `Abs`, `Round`, `Floor`, `Ceil`, `Rounded` | Keep the operand's unit. |
+| `Sqrt`, the text and date functions, `Length`, `IndexOf`, `DateDiffDays` | None. The algebra states integer powers only, so a root's unit is not derived; a text and a day count measure nothing. |
+| `Convert(expr, unit)` | The one explicit conversion. Over an unconstrained operand it is a TAG; over an operand of the same unit the identity; over an operand of a compatible unit the exact ratio `Unit.conversionFactor` gives; across dimensions it is REFUSED. It is resolved by SUBSTITUTION against the step's schema before evaluation, as `InParam` and `Now` are: a tag or an identity becomes `Cast(FloatType, operand)`, a conversion `Cast(FloatType, operand) * Lit(Float factor)` with the ratio as a double — so a conversion always answers a FLOAT (a measurement), a null operand propagates, and a decimal operand is cast as `Cast` casts it; a caller that needs the exact product writes `Quotient` with the factor. The evaluator proper never meets a `Convert` (`resolved_convert_free`); `resolveExpr` resolves a stray one the same way. |
+| `Sum`, `Mean`, `Min`, `Max`, `Median`, `First`, `Last`, `StdDev` | Keep the source column's unit. `Count`, `CountDistinct`: none. (`DataFrame.aggregateUnit`.) |
+| `Lag`, `Lead`, `CumulSum`, `CumulMax`, `CumulMin`, `RollingSum`, `RollingMean` | Keep the source's. `RowNumber`, the ranks, `NTile`: none. (`DataFrame.windowUnit`.) |
+| `Join` | A key pair is an equality, so the comparison's rule holds it: two stated units must be one unit (`join key 'a' = 'b'`), an unconstrained side matches anything. Non-key columns keep their own fields, the right's suffixed as D20 names them. |
+| `Union`, `Intersect`, `Except` | A column pair is one column: two stated units are refused (`union column 'x'`), the left's field is kept, and a left that states none takes the right's stated unit (a union). |
+| `Project`, `Filter`, `Sort`, `Limit`, `Distinct`, `Window` | Keep the input's fields — unit, label, description and extension metadata — a projection under its new name. |
+| `Derive`, an aggregate column, a window column | Carry the unit the rule above derives and NO label or description: the step has no syntax to state one, and a derive onto an existing name is a fresh column (D-less until a step can name a label). |
+| `Pivot` | The index columns keep their fields; every value column is one aggregate of `Values`, so each carries that aggregate's unit (`Sum` of kilograms is kilograms, a `Count` none). |
+| `Unpivot` | The id columns keep their fields; `variable` carries none; `value` carries the one unit every value column states, and none where they differ or one states none — an unpivot melts measures of different kinds into one column by design, and a unit it cannot state it does not invent (`DataFrame.unpivotUnit`). |
+
+1. **The refusal is typed and static.** `EvalError.UnitMismatch(step, expr, left, right)` names the step
+   (`derive 'speed'`, `filter`, `join key 'd' = 'k'`, `union column 'd'`), the expression the two units met
+   in — the node as written — and both units by canonical text. It is decided over the step's schema
+   before any row, so an empty frame is refused exactly as a full one (the derive-typing family's built
+   refusal holds it on a full and an empty frame alike). `errorString` renders it as
+   `unit mismatch in derive 'x': m against s in add('d', 't')`.
+2. **One check, read by everything.** `DataFrame.resolveUnits step cols expr` is the walk: the expression's
+   unit (`None` for unconstrained) and the expression with every `Convert` resolved. `evalFilter` and
+   `evalDerive` run it before their first row, as do the incremental seam's walk and the worker pool's
+   hand-off (which falls back to the sequential path for a step the check refuses); the planner's verdict
+   (`isTotal`) declines a step the check refuses, and its `Known` schema carries fields so a pruned or
+   reordered pipeline's output schema is the reference's (`plannerLaws`: the planned schema is the
+   reference's, metadata included); `SchemaWalk` states the unit, label, description and extension metadata
+   of every output column (`ColumnKnowledge` gains the four members, built through the `ColumnKnowledge`
+   module so the next member is additive; `schemaWalkLaws` holds the walk's metadata to the evaluator's); a
+   registered pipeline query's result knowledge carries them, and registration refuses a declared field
+   whose unit differs from the produced one (`ResultDisagreement.UnitDiffers`, both directions — the
+   declaration is the contract); the incremental state wire and the registry wire carry a field's
+   metadata through Core's own field document (`ColumnCodec.fieldJson`), the state wire keeping the
+   `[name, type]` pair for a field that states none so a unitless state is the bytes it was.
+3. **Proved, with the algebra as a parameter** (`proofs/Pipeline.fst` section 13; the rows
+   `pipeline-unit-check-*` in `proofs.json`): an accepted expression evaluates convert-free; over a schema
+   stating no unit a convert-free expression is accepted with no unit and UNCHANGED, step by step; every
+   refusal names two different units or a conversion the algebra has no factor for; and each rule is the
+   unfolding of the check. That the algebra is Core's — canonical in its texts, exact in its factors — is a
+   named premise (`pipeline-unit-algebra-is-core`), Core's `proofs/Unit.fst`'s to prove and the unit
+   differential's to instantiate (`ProofOracleTests`: the extracted check at Core's algebra beside
+   production's, over the unit vectors and six hundred generated expressions).
+
+**Considered and rejected.**
+
+- **Implicit conversion of a compatible scale** (`km + m` scaling the kilometres). Rejected: a silent
+  scale is the error class — pence read as pounds — and the explicit `Convert` costs one node.
+- **A literal typed DIMENSIONLESS rather than unconstrained.** Rejected: `price + 1` over a priced column
+  would refuse, and every unitless pipeline would refuse at its first literal beside a stated unit;
+  unconstrained composes exactly as the unitless world did, and a literal that means a measurement says
+  so with `Convert`.
+- **A conversion that keeps the operand's type** (an int column in metres converted to kilometres as an
+  int). Rejected: `1500 m` is `1.5 km`; a measurement under a factor is a float, and the typer's rule for
+  a conversion is then one line (`Typing.cast FloatType`), with no second answer for an identity.
+- **A `Sqrt` that halves exponents.** Rejected for now: the algebra states integer powers only, and a root
+  of `m` has none; an unconstrained answer invents nothing, and a consumer that knows the root is in
+  metres writes `Convert(Sqrt(x), m)` — a tag.
+- **Refusing a join key of two DIFFERENT dimensions only** (the shard's wording). Rejected in favour of
+  the comparison's rule: a key match is `Eq`, and `1 m = 1 km` is as wrong as `1 m = 1 s`.
+- **Carrying the hand-off's schema as a `Field list`.** Rejected by the node leg: a hand-off crosses a
+  worker boundary by structured clone, which cannot clone a map's comparer; it crosses as the canonical
+  field documents, a string, as the step and the environment already do.
+
+**Consequences.** `ColExpr` gains `Convert` and `EvalError` gains `UnitMismatch` (a consumer matching
+either exhaustively adds an arm); `ColumnKnowledge` gains `Unit`, `Label`, `Description` and `Ext` (a
+full literal gains four members — construct through `ColumnKnowledge.named` / `ofField`); the wire gains
+`{"$type":"convert","expr":…,"unit":"<text>"}`; the planner's `Known` and the schema walk carry fields.
+`0.39.0` is tagged, so the slot advances to `0.40.0` (STABILITY.md). What a consumer gains is the check:
+a pipeline that adds metres to seconds fails where it is written, with the step, the expression and both
+units named, and a sum over kilograms is a sum in kilograms on every host that reads the vectors.
+
 ## 2026-10-14 — D28: a window output that names a column the input already carries is refused with a `TypeError` naming it, through the window spec's one check, before any row is read; the join's suffix rule (D20) was considered and rejected for a window
 
 **Context.** A `Window` appends its output column under the name its `As` gives. When that name was a
