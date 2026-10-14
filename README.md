@@ -48,7 +48,7 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `Derive of string * ColExpr` | add or replace a column computed per row |
 | `GroupBy of string list * Agg list` | group and aggregate (`sum`, `mean`, `min`, `max`, `count`, `median`, `stdDev`, `first`, `last`, `countDistinct`) |
 | `Join of DataSource * keys * JoinKind` | `Inner`, `Left`, `Right`, `Outer`, `Semi`, `Anti` |
-| `Window of WindowSpec` | `RowNumber`, `Rank`, `DenseRank`, `CompetitionRank`, `NTile`, `Lag`, `Lead`, `CumulSum`, `CumulMax`, `CumulMin`, `RollingMean`, `RollingSum` |
+| `Window of WindowSpec` | `RowNumber`, `DenseRank`, `CompetitionRank`, `NTile`, `Lag`, `Lead`, `CumulSum`, `CumulMax`, `CumulMin`, `RollingMean`, `RollingSum`; `Rank` (deprecated: the same computation as `DenseRank`, D24) |
 | `Pivot` / `Unpivot` | reshape wide ↔ long |
 | `Sort` / `Distinct` / `Limit` | order (keys may be parameter slots), de-duplicate, page |
 | `Union` / `Intersect` / `Except` | set operations against another source |
