@@ -366,9 +366,11 @@ type internal WindowRun =
         /// The window cell the step wrote at each `Perm` position.
         Out: RunColumn
         /// The appended column as the step handed it on, where its frame held every slot in slot
-        /// order (its cells in slot order); empty otherwise. A refresh in place shares its cells for
-        /// the rows it reuses rather than boxing them again.
-        Column: Cell list
+        /// order (its cells in slot order); empty otherwise. A refresh in place over a carrier that
+        /// holds cells shares them for the rows it reuses rather than boxing them again. Phase 448 —
+        /// deferred: a column built from a typed carrier is never unpacked into cells to be kept, so
+        /// they are read off it only when the state is encoded, and a refresh never forces it.
+        Column: Lazy<Cell list>
     }
 
 /// The state an incremental evaluation carries between refreshes: the result, and the caches that
@@ -1817,18 +1819,14 @@ module Incremental =
         | Some e -> Error e
         | None -> Ok(List.rev acc)
 
-    // The seam's own transposes (Phase 206). These read and wrote the source column-by-column
-    // through per-index list access, so the seam inherited the reference evaluator's quadratic even
-    // when it evaluated a single row expression — and that is why a restricted refresh used to
-    // finish AFTER the full evaluation it replaces. Same rows, same table, one traversal each.
+    // The seam's own transpose (Phase 206). It read the source column-by-column through per-index
+    // list access, so the seam inherited the reference evaluator's quadratic even when it evaluated
+    // a single row expression — and that is why a restricted refresh used to finish AFTER the full
+    // evaluation it replaces. Same rows, one traversal.
     //
     // The rows are arrays (Phase 263), as the reference evaluator's frame's are: the walk reads a
     // cell by a column index it resolved once for the step, and appends or replaces one by copy.
     let private rowsOf (t: Table) : Cell[] list = RowAccess.rows t
-
-    let private tableOf (cols: Schema) (rows: Cell[] list) : Table =
-        { Schema = cols
-          Columns = RowAccess.toColumns cols rows }
 
     // ---- the row-local walk ----
 
@@ -2417,18 +2415,199 @@ module Incremental =
 
             fits
 
-    /// Copy entry `i` of a scanned window column to `dst` at `j`; `false` where the carrier cannot
-    /// hold it.
-    let private runPut (src: DataFrame.WindowColumn) (i: int) (dst: RunColumn) (j: int) : bool =
+    /// Copy every entry `i` of a scanned window column to `dst` at `at[i]`; `false` where the carrier
+    /// cannot hold one. Phase 448 — one loop per carrier pair, not a match per entry: a resume
+    /// copies every row of the suffixes it scanned.
+    let private runPutAll (src: DataFrame.WindowColumn) (dst: RunColumn) (at: int[]) : bool =
         match src, dst with
         | DataFrame.WFloats(a, m), RunFloats(b, n) ->
-            b[j] <- a[i]
-            n[j] <- m[i]
+            for i in 0 .. at.Length - 1 do
+                b[at[i]] <- a[i]
+                n[at[i]] <- m[i]
+
             true
         | DataFrame.WInts a, RunInts b ->
-            b[j] <- a[i]
+            for i in 0 .. at.Length - 1 do
+                b[at[i]] <- a[i]
+
             true
-        | _ -> runSet dst j (DataFrame.windowCellAt src i)
+        | _ ->
+            let mutable fits = true
+
+            for i in 0 .. at.Length - 1 do
+                fits <- runSet dst at[i] (DataFrame.windowCellAt src i) && fits
+
+            fits
+
+    /// Phase 448 — the column `Vec.columnOfCells field` packs from `count` cells that are `prior`'s
+    /// (a column packed that way under the same field) at every row but the ascending `rows`, whose
+    /// cells `cellAt` gives; a row at or past `prior`'s length is appended. The prior column's typed
+    /// vector is copied and written at those rows alone, so no cell of an unmoved row is boxed,
+    /// read or packed: what a refresh that changed a few rows of a large result pays to answer it,
+    /// in place of packing the whole column from cells (measured in `docs/incremental-evaluation.md`,
+    /// "A refresh assembles its result from the prior one"). The column is the very one packing
+    /// would build — the same carrier, values, absent rows and their zero values — and where that
+    /// cannot be shown (a carrier this does not copy, or a written cell the carrier does not hold)
+    /// the answer is `None` and the caller packs the cells, as before.
+    let private patchedColumn
+        (field: Field)
+        (prior: Column)
+        (count: int)
+        (rows: int[])
+        (cellAt: int -> Cell)
+        : Column option =
+        let n = Column.length prior
+        let mutable fits = prior.Type = field.Type && count >= n
+
+        // Inline, so each copy is built at its element type (a typed array where the host has one).
+        let inline grown (a: 'T[]) : 'T[] =
+            let b: 'T[] = Array.zeroCreate count
+            Array.blit a 0 b 0 n
+            b
+
+        let maskOf (m: Mask) : Mask =
+            let b = Mask.zero count
+            Array.blit m 0 b 0 n
+            b
+
+        // Each row written as packing writes it: a present value and its mask bit, or an absent row's
+        // zero value and a clear bit.
+        let write (put: int -> Cell -> bool) =
+            let mutable j = 0
+
+            while fits && j < rows.Length do
+                fits <- put rows[j] (cellAt rows[j])
+                j <- j + 1
+
+        if not fits then
+            None
+        else
+            let v =
+                match Vec.ofColumn n field.Type (Some prior) with
+                | Ints(a, m) ->
+                    let a, m = grown a, maskOf m
+
+                    write (fun k c ->
+                        match c with
+                        | Int x ->
+                            a[k] <- x
+                            Mask.put m k true
+                            true
+                        | Null ->
+                            a[k] <- 0
+                            Mask.put m k false
+                            true
+                        | _ -> false)
+
+                    Ints(a, m)
+                | Floats(a, m) ->
+                    let a, m = grown a, maskOf m
+
+                    write (fun k c ->
+                        match c with
+                        | Float x ->
+                            a[k] <- x
+                            Mask.put m k true
+                            true
+                        // An int in a float column is the float of its value, as packing reads it.
+                        | Int x ->
+                            a[k] <- float x
+                            Mask.put m k true
+                            true
+                        | Null ->
+                            a[k] <- 0.0
+                            Mask.put m k false
+                            true
+                        | _ -> false)
+
+                    Floats(a, m)
+                | Bools(a, m) ->
+                    let a, m = maskOf a, maskOf m
+
+                    write (fun k c ->
+                        match c with
+                        | Bool x ->
+                            Mask.put a k x
+                            Mask.put m k true
+                            true
+                        | Null ->
+                            Mask.put a k false
+                            Mask.put m k false
+                            true
+                        | _ -> false)
+
+                    Bools(a, m)
+                | Strs(StringType, a, m) ->
+                    let a, m = grown a, maskOf m
+
+                    write (fun k c ->
+                        match c with
+                        | Str s when not (isNull s) ->
+                            a[k] <- s
+                            Mask.put m k true
+                            true
+                        | Null ->
+                            a[k] <- null
+                            Mask.put m k false
+                            true
+                        | _ -> false)
+
+                    Strs(StringType, a, m)
+                | _ ->
+                    fits <- false
+                    Cells [||]
+
+            // A row past the prior column that no write reached would read as absent where packing
+            // would have been handed its cell: the appended rows must all be written.
+            let appendedWritten =
+                let mutable written = 0
+
+                for k in rows do
+                    if k >= n then
+                        written <- written + 1
+
+                written = count - n
+
+            if fits && appendedWritten then
+                Some(Vec.toColumn field v)
+            else
+                None
+
+    /// Phase 448 — a scanned window column as the run carrier its entries are copied into.
+    let private carrierOf (c: DataFrame.WindowColumn) : RunColumn =
+        match c with
+        | DataFrame.WFloats(a, m) -> RunFloats(a, m)
+        | DataFrame.WInts a -> RunInts a
+        | DataFrame.WCells a -> RunCells a
+
+    /// Phase 448 — a window column the scan wrote into a typed carrier, as the column
+    /// `Vec.columnOfCells field` packs from its cells, read straight from the carrier: entry `at[k]`
+    /// of `src` is row `k` (`at` null: entry `k`). `None` where the carrier is not the field's typed
+    /// one, and the caller packs the cells, as before.
+    let private runColumn (field: Field) (src: RunColumn) (at: int[]) (count: int) : Column option =
+        let entry (k: int) = if isNull at then k else at[k]
+
+        match field.Type, src with
+        | IntType, RunInts a ->
+            // The carrier IS the column when its entries are the rows in order: it is never written
+            // again (a resumed run copies it into a fresh one), so the column adopts it.
+            let values =
+                if isNull at && a.Length = count then
+                    a
+                else
+                    Array.init count (fun k -> a[entry k])
+
+            // Every entry is present: the column holds no mask (what packing's all-set mask
+            // normalises to, so the column is equal either way).
+            Some(Column.ofInts field.Name (Vector.adopt values) Validity.AllValid)
+        | FloatType, RunFloats(a, present) ->
+            let values =
+                Array.init count (fun k ->
+                    let j = entry k
+                    if present[j] then a[j] else 0.0)
+
+            Some(Vec.toColumn field (Floats(values, Mask.init count (fun k -> present[entry k]))))
+        | _ -> None
 
     /// Phase 333 — the run a prefix-fold `Window` step made over the frame `f` (its rows in `f.Order`,
     /// logical row `k` the slot `f.Order[k]`), from the ordering it scanned and the column it wrote by
@@ -2466,7 +2645,7 @@ module Incremental =
           Bounds = bounds.ToArray()
           Keys = keys.ToArray()
           Out = out
-          Column = [] }
+          Column = lazy [] }
 
     /// Phase 333 — a prefix-fold `Window` step answered from the run it made last time (`run`, over
     /// the same schema), or `None` where that run cannot be reused — the stable rows arrived in a
@@ -2497,7 +2676,16 @@ module Incremental =
         (vecOf: int -> Vec)
         (run: WindowRun)
         (spec: WindowSpec)
-        : Result<ColumnType * (int -> Cell) * bool[] * WindowRun * (Cell list * int[] * int) option, EvalError> option =
+        : Result<
+              ColumnType *
+              (int -> Cell) *
+              bool[] *
+              WindowRun *
+              (Lazy<Cell list> * int[] * int) option *
+              (RunColumn * int[]),
+              EvalError
+           > option
+        =
         let arrival = f.Order
         // In place (Phase 323), every slot holds the row the prior evaluation held there and only
         // row-local steps ran ahead of this one, so the stable rows arrived in slot order both times:
@@ -2761,8 +2949,7 @@ module Incremental =
                 match DataFrame.windowColumnOver f.Cols vecOf phys spec wo (seeds.ToArray()) with
                 | Error e -> Some(Error e)
                 | Ok(ty, scanned) ->
-                    for i in 0 .. m - 1 do
-                        fits <- runPut scanned i out at[i] && fits
+                    fits <- runPutAll scanned out at && fits
 
                     if not fits then
                         None
@@ -2776,25 +2963,47 @@ module Incremental =
                               Bounds = bounds.ToArray()
                               Keys = partKeys.ToArray()
                               Out = out
-                              Column = [] }
+                              Column = lazy [] }
 
-                        // The cell at each position of the step's frame, through each slot's place in
-                        // `perm`.
-                        let placeOf: int[] = Array.zeroCreate width
+                        // Each position of the step's frame's place in `perm`, through its slot.
+                        // Phase 448 — `null` where every position's place is the position itself (the
+                        // run holds the rows in the order they arrived), so no table is built to say so.
+                        let entries =
+                            let mutable same = arrival.Length = w
+                            let mutable k = 0
 
-                        for p in 0 .. w - 1 do
-                            placeOf[perm[p]] <- p
+                            while same && k < arrival.Length do
+                                same <- perm[k] = arrival[k]
+                                k <- k + 1
+
+                            if same then
+                                null
+                            else
+                                let placeOf: int[] = Array.zeroCreate width
+
+                                for p in 0 .. w - 1 do
+                                    placeOf[perm[p]] <- p
+
+                                Array.init arrival.Length (fun k -> placeOf[arrival[k]])
 
                         // The prior column, where the prior step held every slot in slot order (a run
-                        // records its column only then): its cell at prior slot `r.Prior[s]` is this
-                        // column's for the rows `keep` names.
-                        let prior =
-                            if List.isEmpty run.Column then
-                                None
-                            else
-                                Some(run.Column, r.Prior, run.Arrival.Length)
-
-                        Some(Ok(ty, (fun k -> runCellAt out placeOf[arrival[k]]), keep, next, prior))
+                        // records its column only then, and an empty one otherwise): its cell at prior
+                        // slot `r.Prior[s]` is this column's for the rows `keep` names. Phase 448 — and
+                        // the carrier with each position's entry in it, which a typed carrier's column is
+                        // built from (`runColumn`), the prior column then never read.
+                        Some(
+                            Ok(
+                                ty,
+                                (if isNull entries then
+                                     (fun k -> runCellAt out k)
+                                 else
+                                     (fun k -> runCellAt out entries[k])),
+                                keep,
+                                next,
+                                Some(run.Column, r.Prior, run.Arrival.Length),
+                                (out, entries)
+                            )
+                        )
 
     /// Walk the propagating prefix, threading the frame. Dead rows leave `Order` and take no further
     /// part — exactly as in the reference evaluator, which has already dropped them — while what
@@ -2975,10 +3184,17 @@ module Incremental =
             let prefixFold = DataFrame.windowIsPrefixFold spec.Fn
 
             // The step's outcome: the column's type, its cell at each position of `order`, the slots
-            // whose `Stable` survives the step (`null`: none does), and the run to record.
+            // whose `Stable` survives the step (`null`: none does), the run to record, the prior
+            // column a resume may share, and (Phase 448) the carrier the scan wrote with each
+            // position's entry in it (`null`: the position itself), where there is one.
             let outcome
                 : Result<
-                      ColumnType * (int -> Cell) * bool[] * WindowRun option * (Cell list * int[] * int) option,
+                      ColumnType *
+                      (int -> Cell) *
+                      bool[] *
+                      WindowRun option *
+                      (Lazy<Cell list> * int[] * int) option *
+                      (RunColumn * int[]) option,
                       EvalError
                    > =
                 let resumed =
@@ -2992,20 +3208,27 @@ module Incremental =
                 match resumed with
                 | Some result ->
                     result
-                    |> Result.map (fun (ty, cellAt, keep, run, prior) -> ty, cellAt, keep, Some run, prior)
+                    |> Result.map (fun (ty, cellAt, keep, run, prior, typed) ->
+                        ty, cellAt, keep, Some run, prior, Some typed)
                 | None when prefixFold ->
                     let logical = Array.init order.Length id
                     let wo = DataFrame.windowOrderOf DataFrame.Ordering.Exact f.Cols vecOf logical spec
 
                     DataFrame.windowColumnOver f.Cols vecOf logical spec wo null
                     |> Result.map (fun (ty, appended) ->
-                        ty, DataFrame.windowCellAt appended, null, Some(windowRunOf f spec wo appended), None)
+                        ty,
+                        DataFrame.windowCellAt appended,
+                        null,
+                        Some(windowRunOf f spec wo appended),
+                        None,
+                        Some(carrierOf appended, null))
                 | None ->
                     DataFrame.windowColumnOf DataFrame.Ordering.Exact f.Cols vecOf (Array.init order.Length id) spec
-                    |> Result.map (fun (ty, appended) -> ty, DataFrame.windowCellAt appended, null, None, None)
+                    |> Result.map (fun (ty, appended) ->
+                        ty, DataFrame.windowCellAt appended, null, None, None, Some(carrierOf appended, null))
 
             outcome
-            |> Result.bind (fun (ty, cellAt, keep, run, reusable) ->
+            |> Result.bind (fun (ty, cellAt, keep, run, reusable, typed) ->
                 let field2 = Field.create spec.As ty
                 let cols2 = f.Cols @ [ field2 ]
 
@@ -3017,8 +3240,25 @@ module Incremental =
                 // from an old-generation object to a young one.
                 // Phase 423 — the cells the identity case packs are also what the run records
                 // (`recorded`): the column is built from them once, never unpacked again to be kept.
-                let data2, origins2, recorded =
+                //
+                // Phase 448 — where the scan wrote a typed carrier, the column is read straight off it
+                // (`runColumn`) and no cell is boxed for it at all; the run's cells are then read off
+                // the column only if the state is encoded. Packing the cells, shared or boxed, is what
+                // a carrier of cells still takes.
+                let typedColumn =
                     if identity.Value then
+                        typed
+                        |> Option.bind (fun (carrier, entries) -> runColumn field2 carrier entries order.Length)
+                    else
+                        None
+
+                let data2, origins2, recorded =
+                    match typedColumn with
+                    | Some column ->
+                        Array.append f.Data [| null |],
+                        Array.append f.Origins [| Some column |],
+                        Some(lazy (Column.toCells column))
+                    | None when identity.Value ->
                         // A resumed prefix fold (Phase 333) shares the prior column's cells for the rows
                         // it kept where every one of them sits at its prior slot and the prior column is
                         // as long as this one (in place): one pass over the prior list, and no cell boxed
@@ -3028,7 +3268,9 @@ module Incremental =
                         // its prior slot, and the appended rows (never kept) follow it.
                         let shared =
                             match reusable with
-                            | Some(priorCells, priorOf, priorCount) when priorCount <= order.Length ->
+                            | Some(priorCells, priorOf, priorCount) when
+                                priorCount <= order.Length && not (List.isEmpty priorCells.Value)
+                                ->
                                 let mutable inPlace = true
                                 let mutable k = 0
 
@@ -3036,7 +3278,7 @@ module Incremental =
                                     inPlace <- not keep[k] || (k < priorCount && priorOf[k] = k)
                                     k <- k + 1
 
-                                if inPlace then Some(priorCells, priorCount) else None
+                                if inPlace then Some(priorCells.Value, priorCount) else None
                             | _ -> None
 
                         let cells =
@@ -3061,8 +3303,8 @@ module Incremental =
 
                         Array.append f.Data [| null |],
                         Array.append f.Origins [| Some(Vec.columnOfCells field2 cells) |],
-                        Some cells
-                    else
+                        Some(lazy cells)
+                    | None ->
                         let last: Cell[] = Array.zeroCreate r.Stable.Length
 
                         for k in 0 .. order.Length - 1 do
@@ -3195,12 +3437,18 @@ module Incremental =
                 r.Steps.Add step
                 // Matched, not compared: `=` on a cell is structural equality through the generic
                 // comparer, once per row (Phase 323).
+                let keeps s =
+                    match step[s] with
+                    | Bool true -> true
+                    | _ -> false
+
+                // Phase 448 — a filter that keeps every row it was handed hands the same order on,
+                // rather than a copy of it: the order is never written after it is built.
                 let kept =
-                    f.Order
-                    |> Array.filter (fun s ->
-                        match step[s] with
-                        | Bool true -> true
-                        | _ -> false)
+                    if Array.forall keeps f.Order then
+                        f.Order
+                    else
+                        Array.filter keeps f.Order
 
                 walk resolve env prior r { f with Order = kept } n caches rest)
         | WProject pairs :: rest ->
@@ -3284,7 +3532,12 @@ module Incremental =
     /// The frame's rows alive at its end, as a table under its schema — the transpose `tableOf`
     /// would do over row arrays, one column at a time. A column whose array is still the source's
     /// own list, over a frame whose `Order` is every slot in slot order, hands that list back.
-    let private tableOfFrame (f: WalkFrame) (slotCount: int) : Table =
+    ///
+    /// Phase 448 — `prior`, where given, is the previous evaluation's result and the slots this one
+    /// changed (`patchedColumn`'s rows): handed only where every other row's cells are that result's,
+    /// row for row (an in-place refresh through row-local steps alone, `runIncremental`). A column a
+    /// step computed is then the prior result's column written at those rows, not packed from cells.
+    let private tableOfFrame (f: WalkFrame) (slotCount: int) (prior: (Table * int[]) option) : Table =
         let identity =
             f.Order.Length = slotCount
             && (let mutable same = true
@@ -3322,7 +3575,20 @@ module Incremental =
                 // between.
                 | _ ->
                     let a = column f ci
-                    Vec.toColumn field (Vec.pack field.Type (Array.init f.Order.Length (fun k -> a[f.Order[k]])))) }
+
+                    let patched =
+                        match prior with
+                        | Some(output, rows) when identity && Table.rowCount output <= slotCount ->
+                            match Table.tryColumn field.Name output with
+                            | Some pc when output.Schema |> List.contains field ->
+                                patchedColumn field pc slotCount rows (fun s -> a[s])
+                            | _ -> None
+                        | _ -> None
+
+                    match patched with
+                    | Some c -> c
+                    | None ->
+                        Vec.toColumn field (Vec.pack field.Type (Array.init f.Order.Length (fun k -> a[f.Order[k]])))) }
 
     // ---- the maintained-group step ----
 
@@ -3333,7 +3599,7 @@ module Incremental =
     type private GroupOutcome =
         {
             Cols: Schema
-            Rows: Cell[] list
+            Rows: Cell[][]
             /// Phase 202 — the group tokens in the same order as `Rows`, which is what lets the tail
             /// walk pair each group row with the identity its cache is keyed by. Carried rather than
             /// recomputed: re-deriving it would mean re-tokenising the key cells, and a second
@@ -3640,7 +3906,7 @@ module Incremental =
                 | None ->
                     Ok
                         { Cols = keyCols @ aggCols
-                          Rows = List.init groupCount (fun gi -> List.toArray (groupKeys[gi] @ aggCells[gi]))
+                          Rows = Array.init groupCount (fun gi -> List.toArray (groupKeys[gi] @ aggCells[gi]))
                           Order = order.ToArray()
                           RowGroups = rowGroups
                           Members = members
@@ -4061,7 +4327,7 @@ module Incremental =
                     Some(
                         Ok
                             { Cols = keyCols @ aggCols
-                              Rows = List.ofArray rows
+                              Rows = rows
                               Order =
                                 if newOrder.Count = 0 then
                                     prior.Order
@@ -4333,14 +4599,14 @@ module Incremental =
         //
         // Phase 359 — an APPEND reads the same way, under the same conditions: the prior rows sit at
         // their prior slots, and the appended slots are listed with the changed ones (`InPlaceReading`).
-        let inPlaceRows =
-            let rowLocal =
-                function
-                | WFilter _
-                | WDerive _
-                | WProject _ -> true
-                | _ -> false
+        let rowLocal =
+            function
+            | WFilter _
+            | WDerive _
+            | WProject _ -> true
+            | _ -> false
 
+        let inPlaceRows =
             let ordering =
                 function
                 | WSort _
@@ -4472,6 +4738,21 @@ module Incremental =
 
         let sourceExact = frame0.Origins |> Array.map Option.isSome
 
+        // Phase 448 — the prior result and the slots this refresh changed, handed to the result's
+        // assembly where every other row of the result is the prior result's row, cell for cell: in
+        // place (every unchanged row at its prior slot, the appended rows after them), through
+        // row-local steps alone, over a prior result that held every prior row and is already built.
+        let priorResult =
+            match prior with
+            | Some s when
+                not (isNull inPlaceRows)
+                && prefix |> List.forall rowLocal
+                && s.Output.IsValueCreated
+                && Table.rowCount s.Output.Value = s.Tokens.Length
+                ->
+                Some(s.Output.Value, inPlaceRows)
+            | _ -> None
+
         walk resolve env priorCaches rows frame0 0 noCaches prefix
         |> Result.bind (fun (frame, evaluated, caches) ->
             let stepCells = rows.Steps.ToArray()
@@ -4486,7 +4767,7 @@ module Incremental =
                       Scheme = scheme
                       Source = Prepared.ready source
                       Prepared = prepared
-                      Output = Prepared.ready (tableOfFrame frame rowCount)
+                      Output = Prepared.ready (tableOfFrame frame rowCount priorResult)
                       Tokens = tokens
                       StepCells = stepCells
                       RowGroups = [||]
@@ -4523,9 +4804,15 @@ module Incremental =
                           Aggs = [||]
                           Rows = [||] }
 
-                (match groupStepInPlace frame rows keys aggs priorGroups source priorSource priorExact with
-                 | Some outcome -> outcome
-                 | None -> groupStep frame rows keys aggs priorGroups)
+                // Phase 448 — whether the groups were maintained in place: every prior group at its
+                // prior index, the new ones after them, and `RecomputedAt` naming every group whose
+                // row is not the prior row.
+                let inPlaceGroups, outcome =
+                    match groupStepInPlace frame rows keys aggs priorGroups source priorSource priorExact with
+                    | Some outcome -> true, outcome
+                    | None -> false, groupStep frame rows keys aggs priorGroups
+
+                outcome
                 |> Result.bind (fun g ->
                     // Phase 202 — one state shape whichever side of the branch below built it, so
                     // the tail cannot quietly record a different kind of answer from the no-tail
@@ -4555,7 +4842,7 @@ module Incremental =
                           ChunkedOutput = None
                           ChunksTouched = None
                           SourceExact = sourceExact
-                          GroupRows = List.toArray g.Rows
+                          GroupRows = g.Rows
                           WindowRuns = caches'.WindowRuns
                           PipelineKey = ""
                           Stale = None }
@@ -4564,7 +4851,44 @@ module Incremental =
                         // The pipeline every pre-202 state was built for. Taken as its own branch
                         // rather than as `walk … []` so a maintained group-by that ends the
                         // pipeline pays nothing at all for a cache it has nothing to put in.
-                        Ok(finish (tableOf g.Cols g.Rows) (List.length g.Rows) [||] evaluated caches)
+                        //
+                        // Phase 448 — maintained in place over a prior result built from the prior
+                        // group rows, the group table is that result written at the recomputed groups
+                        // and grown by the new ones (`patchedColumn`), not packed from every group's
+                        // cells: on a high-cardinality key that packing was most of the refresh.
+                        let column (ci: int) (field: Field) =
+                            Vec.toColumn field (Vec.pack field.Type (g.Rows |> Array.map (fun row -> row[ci])))
+
+                        let patched =
+                            match prior with
+                            | Some s when inPlaceGroups && s.Output.IsValueCreated ->
+                                let output = s.Output.Value
+
+                                if output.Schema = g.Cols && Table.rowCount output = priorGroups.Order.Length then
+                                    let recomputed =
+                                        Array.init g.RecomputedAt.Length id
+                                        |> Array.filter (fun gi -> g.RecomputedAt[gi])
+
+                                    Some(fun (ci: int) (field: Field) ->
+                                        match Table.tryColumn field.Name output with
+                                        | Some pc ->
+                                            patchedColumn field pc g.Rows.Length recomputed (fun gi ->
+                                                g.Rows[gi][ci])
+                                        | None -> None)
+                                else
+                                    None
+                            | _ -> None
+
+                        let table =
+                            { Schema = g.Cols
+                              Columns =
+                                g.Cols
+                                |> List.mapi (fun ci field ->
+                                    match patched |> Option.bind (fun at -> at ci field) with
+                                    | Some c -> c
+                                    | None -> column ci field) }
+
+                        Ok(finish table g.Rows.Length [||] evaluated caches)
                     else
                         // The group table as a frame of its own, slot = group index. A group is
                         // STABLE exactly when `groupStep` reused its aggregates — its row is then the
@@ -4612,7 +4936,7 @@ module Incremental =
                               InPlace = null
                               SeedShift = seedShift }
 
-                        let rowArrays = List.toArray g.Rows
+                        let rowArrays = g.Rows
                         let width = List.length g.Cols
 
                         let groupFrame =
@@ -4629,7 +4953,7 @@ module Incremental =
                         walk resolve env priorCaches groupRows groupFrame evaluated caches tail
                         |> Result.map (fun (tailFrame, evaluated', caches') ->
                             finish
-                                (tableOfFrame tailFrame groupCount)
+                                (tableOfFrame tailFrame groupCount None)
                                 tailFrame.Order.Length
                                 (groupRows.Steps.ToArray())
                                 evaluated'
@@ -5744,7 +6068,7 @@ module IncrementalCodec =
           "bounds", ints run.Bounds
           "keys", StateWire.matrixJson run.Keys
           "out", out
-          "column", cellList run.Column ]
+          "column", cellList run.Column.Value ]
 
     /// The groups' member lists: each group's member count (`-1` for a group the state holds no
     /// list for), then every member in order as its index in `tokens`, where it is one of the
@@ -6224,7 +6548,7 @@ module IncrementalCodec =
                   Bounds = bounds
                   Keys = keys
                   Out = out
-                  Column = column }
+                  Column = lazy column }
         }
 
     /// The alignments the walk indexes by. A state the encoder wrote holds them all; an encoding
