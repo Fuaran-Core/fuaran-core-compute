@@ -320,3 +320,93 @@ the gen-2 collections those allocations trigger decide the reading: with the thr
 the same refresh read 0.43 times the full and the collector ran no gen-2 collection. The clock legs
 refresh case therefore times the append at 1,000 and 100,000 rows; the append tick case holds the
 20,000-row cells, diff and refresh together, inside its bound (`DECISIONS.md` D27).
+
+## A decimal vector holds no boxed cells (Phase 440)
+
+Phase 423 made the frame a view over Core's typed vectors, but a decimal column still entered it
+boxed. `Vec.ofColumn` built a `Decimal` cell per row from Core's text vector and packed them, and `Decs`
+carried those cells beside its scaled integers. On the way out, `Vec.toColumn` unboxed every cell back
+into a text array. It was the one place the frame held a `Cell` per row.
+
+**The premise, checked.** These read the boxed cells:
+
+- every cell read (`Vec.cellAt`), and the expression reader, which hands a decimal to the exact text
+  arithmetic;
+- the key coder (`codesOf`, joins and grouping on a decimal), through the cell's token;
+- the copies (`gather`, `gatherOrNull`, `slice`, `append`, `concat`), and the edits (`setAt`,
+  `sameCells`);
+- the boundary out.
+
+Every one needs only the row's text. A cell is `Decimal text`, and a token or an equality is a function
+of that text. Core holds a decimal column as text in a `Vector<string>` under a validity (Phase 417),
+canonical wherever `Table.validate` admits it, so the frame can hold Core's vector itself. Nothing
+depends on the text being canonical. The vector holds each text exactly as it was handed in, so a
+non-canonical text packed from cells reads back as itself, as before.
+
+**What changed.** `Decs` is `scaled: float[] * scale: int * texts: string[] * mask: Mask`. Over a Core
+column the texts and the mask are borrowed (`Vec.ofDecimalTexts`), and `toColumn` adopts the texts.
+No text is copied and no cell is built either way, and the only allocation is the scaled-integer
+vector. A cell is the `Decimal` of its row's text, made on read, as a string vector's cell is. The text
+path is unchanged: a column past the width, or holding a malformed text, is boxed as before. No public
+signature and no wire byte moved. A test holds the view by reference in both directions. Changing the
+borrow to a copy turns it red.
+
+**Byte-identity.** On .NET the suite's decimal law family is unchanged and green (639 of 639). That
+covers the decimal-vector law's 8,400 pipelines, the transform-law vectors and the strand. Under node,
+the benchmark harness runs the decimal-vector law (8,400 pipelines, vector path equal to text path)
+before it times anything. It held on the tree before and the tree after.
+
+**Instrument.**
+
+- An Intel Core Ultra 9 386H, .NET 10 (SDK 10.0.300) Release, and node v25.9.0 running Fable 5.0.0
+  output.
+- The trees were `d77786a` (before) and `b56ba6c` (after), each exported and built on its own.
+- The typed family is the node harness's (`Node/Program.fs`, second argument `typed`), run on both
+  hosts. It was run twice per tree per host, interleaved, and the best of the two is reported.
+- Held bytes and boundary cost come from a probe over the same corpus table (`id:int, grp:string,
+  v:decimal|float`, 100,000 rows) through the public surface alone. It reads the heap after a full
+  collection, before and after `DataFrame.prepare`, and takes the median of seven: on .NET
+  `GC.GetTotalMemory(true)`, under node `heapUsed + arrayBuffers` after a forced `gc()`. The cost
+  figures are the harness's median-of-ten wall clock and the best of the interleaved runs (three before,
+  two after on .NET; two each under node).
+
+**Held bytes at 100,000 rows** (the bytes a prepared frame holds beyond its table):
+
+| Arm | .NET before | .NET after | node before | node after |
+|---|---:|---:|---:|---:|
+| decimal | 5,100,728 | 1,100,704 | 11,522,800 | 1,111,480 |
+| float (reference) | 300,672 | 300,672 | 303,440 | 303,440 |
+
+The float arm's figure is the three masks the frame builds for the table's `AllValid` columns. The
+decimal arm now holds exactly 800,000 bytes more: its scaled integers. Before, it also held a fresh mask,
+a cell array, and a boxed `Decimal` per row, about 31 bytes each on .NET.
+
+**Decimal read cost at 100,000 rows, ms per call.** The boundary in (`prepare`) and in and out
+(`toTable (prepare t)`); the two kernels that read the column's cells, a `Derive` copying it (the
+expression reader) and a `GroupBy` on it as the key (the key coder); and the typed family's four verbs
+through `evalPipeline`, boundary included:
+
+| Case | .NET before | .NET after | node before | node after |
+|---|---:|---:|---:|---:|
+| `prepare` | 8.17 | 1.82 | 10.37 | 5.94 |
+| `toTable (prepare t)` | 5.42 | 1.85 | 10.62 | 6.00 |
+| derive copying `v` | 13.86 | 13.56 | 28.00 | 19.75 |
+| group on `v` | 41.13 | 29.31 | 105.99 | 102.01 |
+| filter `v > 500` | 14.11 | 1.95 | 16.38 | 9.63 |
+| group-and-sum | 10.66 | 2.43 | 15.62 | 10.81 |
+| sort on `v` | 34.40 | 19.34 | 61.00 | 54.98 |
+| join on `v` | 101.23 | 47.71 | 220.50 | 201.00 |
+
+On .NET the float arm of the same runs read 0.46 to 0.50 (filter), 0.80 to 0.89 (group-and-sum), 16.97
+to 22.16 (sort) and 7.81 to 8.79 ms (join). Under node it read 3.09, 2.50 to 2.53, 51.0 and 51.0 to
+51.5 ms.
+
+**Where the time went, and what is left.** Every decimal figure fell or held. The boundary in no longer
+builds 100,000 cells: it scans the texts once for the scale and once for the integers, so filter and
+group-and-sum, which are mostly boundary, fell 4 to 7 times on .NET. A cell read now makes its cell. A
+kernel that reads every row's cell pays one small allocation per read where it paid none, and at the
+boundary saves one per row. The two even out on the derive copy on .NET and on the grouping under node, and the saving wins elsewhere.
+
+What remains above the float arm is the text scan at the boundary. Under node that is about 5.6 ms of
+the 9.6 ms filter, and on both hosts the join, whose decimal key is still coded by its canonical token
+per row. That join cost is Phase 280's finding and is unchanged in kind.
