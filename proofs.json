@@ -357,6 +357,91 @@
       "evidence": {
         "assumption": "the cell primitives are a record of total functions the host supplies; what they compute is neither modelled nor claimed, and that none of them evaluates an expression is a fact of their type"
       }
+    },
+    {
+      "id": "pipeline-unit-check-unitless-unchanged",
+      "level": "proved",
+      "claim": "A UNITLESS PIPELINE'S ANSWER IS UNCHANGED (Phase 429). Over a schema that states no unit (`unitless us`) a convert-free expression is accepted by the unit check, carries no unit, and is handed to the evaluator EXACTLY as written: `resolve_units alg step us x == Ok (None, x)`; lifted to the step, `checked_step` (production's `evalFilter` / `evalDerive` shape: resolve over the schema's units, then section 4's evaluator over the resolved expression) equals `eval_step` on every filter and derive that names no conversion (`checked_step_unitless`). So every pipeline that evaluated before the check evaluates to the same table after it, for ANY algebra — the check is invisible until a schema states a unit or an expression names a conversion. Held on production by the committed transform-law vectors (every pre-429 vector byte-identical) and by the `Proofs.Oracle` case named below.",
+      "phase": "fuaran-core#429",
+      "evidence": {
+        "theorem": "unitless_unchanged",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "unitless_list_unchanged",
+          "unitless_cases_unchanged",
+          "assoc_unitless",
+          "agree_all_nones",
+          "snds_nones",
+          "first_unit_nones",
+          "checked_step_unitless"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-unit-check-accepted-is-derived",
+      "level": "proved",
+      "claim": "AN ACCEPTED EXPRESSION'S UNIT IS THE ALGEBRA'S DERIVATION, constructor by constructor (Phase 429, `DECISIONS.md` D29): an addition or subtraction carries the one unit its operands agree on (`add_rule`, through `agree` — an unconstrained operand takes the other's, two stated units must be one text); a product composes through `u_mul` with an unconstrained factor contributing nothing (`mul_rule`, `unit_product`); a quotient through `u_div`, an unconstrained dividend dimensionless over a stated divisor (`div_rule`, `unit_quotient`); a cast keeps its operand's unit (`cast_rule`); a comparison requires one unit and carries none (`comparison_rule`); and a conversion is a TAG over an unconstrained operand (`Cast FloatType` under the target), the identity over its own unit, the cast times the factor `u_factor` gives between two units of one dimension, and the mismatch otherwise (`convert_rule`). Each is the unfolding of `resolve_units`, stated so that a rule moved in the check reddens its lemma. An aggregate keeps its column's unit and a count carries none (`agg_unit_keeps`, `agg_unit_count`). What an accepted expression EVALUATES to is not claimed here: the resolved expression is convert-free (`resolved_convert_free`) and evaluates under section 3's model and premises, and that production's `Convert` MEANS its resolution is held by the differential below.",
+      "phase": "fuaran-core#429",
+      "evidence": {
+        "theorem": "convert_rule",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "add_rule",
+          "mul_rule",
+          "div_rule",
+          "cast_rule",
+          "comparison_rule",
+          "agg_unit_keeps",
+          "agg_unit_count",
+          "resolved_convert_free",
+          "resolved_list_convert_free",
+          "resolved_cases_convert_free"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-unit-check-refused-is-rejected",
+      "level": "proved",
+      "claim": "EVERY REFUSAL IS ONE THE ALGEBRA REJECTS (Phase 429). Whatever `resolve_units` refuses is a `UnitMismatch` naming two DIFFERENT units (`l =!= r`) at the node they met in — an addition, a subtraction, a comparison, a `Coalesce`, a `Case`, a `Least` / `Greatest`, an `InList`, through `agree` — or a conversion whose source and target the algebra has no factor between (`u_factor l r == None`, with the target the conversion's own). No other error class is minted by the check, and no expression is refused for two units that are one text (`rejected`, `refused_is_rejected`). The complement — that `u_factor` answers `None` exactly between two DIMENSIONS, so a refused conversion is a conversion between dimensions — is the algebra's, under `pipeline-unit-algebra-is-core`.",
+      "phase": "fuaran-core#429",
+      "evidence": {
+        "theorem": "refused_is_rejected",
+        "model": "proofs/Pipeline.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "agree_rejected",
+          "agree_all_rejected",
+          "refused_list_is_rejected",
+          "refused_cases_is_rejected"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-unit-differential",
+      "level": "tested",
+      "claim": "The extracted `resolve_units` agrees with the shipped `DataFrame.resolveUnits` on the UNIT (by canonical text), the RESOLVED EXPRESSION (crossed back through the model bridge) and the named `UnitMismatch`, with the algebra instantiated at Core's `Unit` module over canonical texts (`u_mul` / `u_div` / `u_one` / `u_factor` as `Unit.mul` / `Unit.div` / `Unit.dimensionless` / `Unit.conversionFactor` rendered, the factor crossed as the float literal's carrier text), over every expression of the twenty unit vectors in `conformance/laws/transform-laws.json` and six hundred generated expressions at seed 429 — the Phase 234 generator with conversions grafted onto the whole, onto one operand of a binary, or not at all, over a schema putting `v` in metres, `w` in seconds and `m` in kilograms — and, for every accepted expression over a table, production's derive of the ORIGINAL expression equals its derive of the RESOLVED one, cell for cell and type for type (the unit is the check's, not the arithmetic's): resolution is the whole of a conversion's value semantics. A second case holds `unitless_unchanged` on both sides: over the same schema stripped of its units, two hundred generated convert-free expressions resolve to themselves with no unit in production as in the model. Agreement is over the pools drawn, never over all inputs; the sample is required to reach accepted and refused expressions, unit-bearing answers, conversions, and conversions refused across dimensions.",
+      "phase": "fuaran-core#429",
+      "evidence": {
+        "family": "Proofs.Oracle",
+        "model": "proofs/Pipeline.fst",
+        "cases": [
+          "the unit check agrees with the model's resolve_units on the unit, the resolved expression and the refusal over the unit vectors and a generated sample, and resolution is the whole of a conversion's semantics",
+          "a unitless schema leaves every convert-free expression unchanged, in production as in the model"
+        ]
+      }
+    },
+    {
+      "id": "pipeline-unit-algebra-is-core",
+      "level": "assumed",
+      "claim": "THE ALGEBRA PREMISE (Phase 429). The unit check's algebra is a parameter of the model (`unit_alg`: `u_mul`, `u_div`, `u_one`, `u_factor` over canonical unit texts), as the cell primitives are, so every theorem of section 13 holds for ANY algebra. What is ASSUMED is that the one production supplies is Core's `Fuaran.Core.Unit` and that it has the properties the rule table relies on: one product is one canonical text (`Unit.render` injective over the canonical form, so text equality is unit equality and `N` beside `kg.m/s2` is two units until converted), `Unit.mul` / `Unit.div` compose dimensions as products do, and `Unit.conversionFactor` answers a factor exactly between two units of one dimension and `Incompatible` otherwise. Those are the algebra's own theorems, in Core's `proofs/Unit.fst` (Phase 428), not restated here; the instantiation is held by the differential (`pipeline-unit-differential`), which runs the extracted check at Core's algebra beside production's. A second assumption rides this row: that a conversion's VALUE semantics — the operand cast to a float and multiplied by the exact ratio as a double — is what a consumer means by converting; it is pinned by `UnitPropagationTests` and the `unit-convert` vector, never proved.",
+      "phase": "fuaran-core#429",
+      "class": "model-bridge",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "the model's unit algebra is a parameter; that production's is Core's `Unit` module, canonical in its texts and exact in its factors, is Core's `proofs/Unit.fst`'s to prove and the unit differential's to instantiate, not proved here"
+      }
     }
   ]
 }

@@ -1190,6 +1190,7 @@ type col_expr =
 | Now of now_grain
 | Quotient of col_expr * col_expr * rounding
 | Rounded of col_expr * rounding
+| Convert of col_expr * Prims.string
 
 
 let uu___is_Col : col_expr  ->  Prims.bool = (fun ( projectee  :  col_expr ) -> (match (projectee) with
@@ -1473,6 +1474,27 @@ let __proj__Rounded__item___0 : col_expr  ->  col_expr = (fun ( projectee  :  co
 
 let __proj__Rounded__item___1 : col_expr  ->  rounding = (fun ( projectee  :  col_expr ) -> (match (projectee) with
 | Rounded (_0, _1) -> begin
+     _1
+     end))
+
+
+let uu___is_Convert : col_expr  ->  Prims.bool = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Convert (_0, _1) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__Convert__item___0 : col_expr  ->  col_expr = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Convert (_0, _1) -> begin
+     _0
+     end))
+
+
+let __proj__Convert__item___1 : col_expr  ->  Prims.string = (fun ( projectee  :  col_expr ) -> (match (projectee) with
+| Convert (_0, _1) -> begin
      _1
      end))
 
@@ -1820,6 +1842,7 @@ type eval_error =
 | OverflowError of Prims.string
 | UnboundParam of Prims.string * Prims.list<Prims.string>
 | UnpinnedClock of now_grain
+| UnitMismatch of Prims.string * col_expr * Prims.string * Prims.string
 
 
 let uu___is_UnknownColumn : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
@@ -1978,6 +2001,39 @@ let uu___is_UnpinnedClock : eval_error  ->  Prims.bool = (fun ( projectee  :  ev
 let __proj__UnpinnedClock__item___0 : eval_error  ->  now_grain = (fun ( projectee  :  eval_error ) -> (match (projectee) with
 | UnpinnedClock (_0) -> begin
      _0
+     end))
+
+
+let uu___is_UnitMismatch : eval_error  ->  Prims.bool = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnitMismatch (_0, _1, _2, _3) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__UnitMismatch__item___0 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnitMismatch (_0, _1, _2, _3) -> begin
+     _0
+     end))
+
+
+let __proj__UnitMismatch__item___1 : eval_error  ->  col_expr = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnitMismatch (_0, _1, _2, _3) -> begin
+     _1
+     end))
+
+
+let __proj__UnitMismatch__item___2 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnitMismatch (_0, _1, _2, _3) -> begin
+     _2
+     end))
+
+
+let __proj__UnitMismatch__item___3 : eval_error  ->  Prims.string = (fun ( projectee  :  eval_error ) -> (match (projectee) with
+| UnitMismatch (_0, _1, _2, _3) -> begin
+     _3
      end))
 
 
@@ -2202,6 +2258,9 @@ let rec eval_expr : prims  ->  param_env  ->  schema  ->  row_of  ->  col_expr  
      (pr.rounded r.r_mode n av)
      end)
      end)
+     end
+| Convert (uu___, uu___1) -> begin
+     Error (TypeError ("convert: unresolved"))
      end))
 and eval_coalesce : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<col_expr>  ->  outcome<cell, eval_error> = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
 | [] -> begin
@@ -3054,6 +3113,9 @@ let rec typing_of : schema  ->  col_expr  ->  typing = (fun ( cols  :  schema ) 
      end
 | Rounded (a, uu___) -> begin
      (typing_rounded (typing_of cols a))
+     end
+| Convert (a, uu___) -> begin
+     (typing_cast FloatType (typing_of cols a))
      end))
 and typings_of : schema  ->  Prims.list<col_expr>  ->  Prims.list<typing> = (fun ( cols  :  schema ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
 | [] -> begin
@@ -3218,6 +3280,9 @@ let rec substitute : param_env  ->  col_expr  ->  col_expr = (fun ( env  :  para
      end
 | Rounded (a, r) -> begin
      Rounded ((substitute env a), (bind_scale env r))
+     end
+| Convert (a, u) -> begin
+     Convert ((substitute env a), u)
      end))
 and substitute_list : param_env  ->  Prims.list<col_expr>  ->  Prims.list<col_expr> = (fun ( env  :  param_env ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
 | [] -> begin
@@ -3473,6 +3538,9 @@ let rec expr_nodes : col_expr  ->  Prims.nat = (fun ( e  :  col_expr ) -> (match
      end
 | Rounded (a, uu___) -> begin
      ((Prims.parse_int "1") + (expr_nodes a))
+     end
+| Convert (a, uu___) -> begin
+     ((Prims.parse_int "1") + (expr_nodes a))
      end))
 and exprs_nodes : Prims.list<col_expr>  ->  Prims.nat = (fun ( l  :  Prims.list<col_expr> ) -> (match (l) with
 | [] -> begin
@@ -3604,6 +3672,9 @@ let rec expr_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  col_expr
 | Ok (uu___) -> begin
      (expr_visits pr env cols row a)
      end))
+     end
+| Convert (uu___, uu___1) -> begin
+     (Prims.parse_int "1")
      end))
 and coalesce_visits : prims  ->  param_env  ->  schema  ->  row_of  ->  Prims.list<col_expr>  ->  Prims.nat = (fun ( pr  :  prims ) ( env  :  param_env ) ( cols  :  schema ) ( row  :  row_of ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
 | [] -> begin
@@ -3713,6 +3784,634 @@ let rec work : prims  ->  other_fn  ->  param_env  ->  wframe  ->  Prims.list<tr
 | Error (uu___) -> begin
      (step_work pr env f s)
      end)
+     end))
+
+
+type units = Prims.list<(Prims.string * FStar_Pervasives_Native.option<Prims.string>)>
+
+type unit_alg = {u_mul : Prims.string  ->  Prims.string  ->  Prims.string; u_div : Prims.string  ->  Prims.string  ->  Prims.string; u_one : Prims.string; u_factor : Prims.string  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.string>}
+
+
+let __proj__Mkunit_alg__item__u_mul : unit_alg  ->  Prims.string  ->  Prims.string  ->  Prims.string = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor} -> begin
+     u_mul
+     end))
+
+
+let __proj__Mkunit_alg__item__u_div : unit_alg  ->  Prims.string  ->  Prims.string  ->  Prims.string = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor} -> begin
+     u_div
+     end))
+
+
+let __proj__Mkunit_alg__item__u_one : unit_alg  ->  Prims.string = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor} -> begin
+     u_one
+     end))
+
+
+let __proj__Mkunit_alg__item__u_factor : unit_alg  ->  Prims.string  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor} -> begin
+     u_factor
+     end))
+
+
+let unit_product : unit_alg  ->  FStar_Pervasives_Native.option<Prims.string>  ->  FStar_Pervasives_Native.option<Prims.string>  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( alg  :  unit_alg ) ( a  :  FStar_Pervasives_Native.option<Prims.string> ) ( b  :  FStar_Pervasives_Native.option<Prims.string> ) -> (match (((a), (b))) with
+| (FStar_Pervasives_Native.None, uu___) -> begin
+     b
+     end
+| (uu___, FStar_Pervasives_Native.None) -> begin
+     a
+     end
+| (FStar_Pervasives_Native.Some (x), FStar_Pervasives_Native.Some (y)) -> begin
+     FStar_Pervasives_Native.Some ((alg.u_mul x y))
+     end))
+
+
+let unit_quotient : unit_alg  ->  FStar_Pervasives_Native.option<Prims.string>  ->  FStar_Pervasives_Native.option<Prims.string>  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( alg  :  unit_alg ) ( a  :  FStar_Pervasives_Native.option<Prims.string> ) ( b  :  FStar_Pervasives_Native.option<Prims.string> ) -> (match (((a), (b))) with
+| (FStar_Pervasives_Native.None, FStar_Pervasives_Native.None) -> begin
+     FStar_Pervasives_Native.None
+     end
+| (FStar_Pervasives_Native.Some (x), FStar_Pervasives_Native.None) -> begin
+     FStar_Pervasives_Native.Some (x)
+     end
+| (FStar_Pervasives_Native.None, FStar_Pervasives_Native.Some (y)) -> begin
+     FStar_Pervasives_Native.Some ((alg.u_div alg.u_one y))
+     end
+| (FStar_Pervasives_Native.Some (x), FStar_Pervasives_Native.Some (y)) -> begin
+     FStar_Pervasives_Native.Some ((alg.u_div x y))
+     end))
+
+
+let agree : Prims.string  ->  col_expr  ->  FStar_Pervasives_Native.option<Prims.string>  ->  FStar_Pervasives_Native.option<Prims.string>  ->  outcome<FStar_Pervasives_Native.option<Prims.string>, eval_error> = (fun ( step  :  Prims.string ) ( at  :  col_expr ) ( a  :  FStar_Pervasives_Native.option<Prims.string> ) ( b  :  FStar_Pervasives_Native.option<Prims.string> ) -> (match (((a), (b))) with
+| (FStar_Pervasives_Native.None, uu___) -> begin
+     Ok (b)
+     end
+| (uu___, FStar_Pervasives_Native.None) -> begin
+     Ok (a)
+     end
+| (FStar_Pervasives_Native.Some (x), FStar_Pervasives_Native.Some (y)) -> begin
+      
+if (Prims.op_Equals x y) then begin
+     Ok (FStar_Pervasives_Native.Some (x))
+     end else begin
+     Error (UnitMismatch (step, at, x, y))
+     end
+     end))
+
+
+let rec agree_all : Prims.string  ->  col_expr  ->  FStar_Pervasives_Native.option<Prims.string>  ->  Prims.list<FStar_Pervasives_Native.option<Prims.string>>  ->  outcome<FStar_Pervasives_Native.option<Prims.string>, eval_error> = (fun ( step  :  Prims.string ) ( at  :  col_expr ) ( acc  :  FStar_Pervasives_Native.option<Prims.string> ) ( us  :  Prims.list<FStar_Pervasives_Native.option<Prims.string>> ) -> (match (us) with
+| [] -> begin
+     Ok (acc)
+     end
+| (u)::rest -> begin
+     (match ((agree step at acc u)) with
+| Ok (acc') -> begin
+     (agree_all step at acc' rest)
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end))
+
+
+let first_unit : Prims.list<FStar_Pervasives_Native.option<Prims.string>>  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( us  :  Prims.list<FStar_Pervasives_Native.option<Prims.string>> ) -> (match (us) with
+| [] -> begin
+     FStar_Pervasives_Native.None
+     end
+| (u)::uu___ -> begin
+     u
+     end))
+
+
+let rec fsts = (fun ( l  :  Prims.list<('a * 'b)> ) -> (match (l) with
+| [] -> begin
+     []
+     end
+| ((x, uu___))::rest -> begin
+     (x)::(fsts rest)
+     end))
+
+
+let rec snds = (fun ( l  :  Prims.list<('a * 'b)> ) -> (match (l) with
+| [] -> begin
+     []
+     end
+| ((uu___, y))::rest -> begin
+     (y)::(snds rest)
+     end))
+
+
+let agg_unit : agg_fn  ->  FStar_Pervasives_Native.option<Prims.string>  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( fn  :  agg_fn ) ( source  :  FStar_Pervasives_Native.option<Prims.string> ) -> (match (fn) with
+| Count -> begin
+     FStar_Pervasives_Native.None
+     end
+| CountDistinct -> begin
+     FStar_Pervasives_Native.None
+     end
+| uu___ -> begin
+     source
+     end))
+
+
+let rec resolve_units : unit_alg  ->  Prims.string  ->  units  ->  col_expr  ->  outcome<(FStar_Pervasives_Native.option<Prims.string> * col_expr), eval_error> = (fun ( alg  :  unit_alg ) ( step  :  Prims.string ) ( us  :  units ) ( x  :  col_expr ) -> (match (x) with
+| Col (n) -> begin
+     Ok ((((match ((assoc n us)) with
+| FStar_Pervasives_Native.Some (u) -> begin
+     u
+     end
+| FStar_Pervasives_Native.None -> begin
+     FStar_Pervasives_Native.None
+     end)), (x)))
+     end
+| Lit (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x)))
+     end
+| Param (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x)))
+     end
+| Now (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x)))
+     end
+| Binary (op, a, b) -> begin
+     (match ((resolve_units alg step us a)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (ua, a') -> begin
+     (match ((resolve_units alg step us b)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (ub, b') -> begin
+     (
+
+let x' = Binary (op, a', b')
+in (match (op) with
+| Add -> begin
+     (match ((agree step x ua ub)) with
+| Ok (u) -> begin
+     Ok (((u), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Sub -> begin
+     (match ((agree step x ua ub)) with
+| Ok (u) -> begin
+     Ok (((u), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Mul -> begin
+     Ok ((((unit_product alg ua ub)), (x')))
+     end
+| Div -> begin
+     Ok ((((unit_quotient alg ua ub)), (x')))
+     end
+| Mod -> begin
+     Ok (((ua), (x')))
+     end
+| Eq -> begin
+     (match ((agree step x ua ub)) with
+| Ok (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Ne -> begin
+     (match ((agree step x ua ub)) with
+| Ok (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Lt -> begin
+     (match ((agree step x ua ub)) with
+| Ok (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Le -> begin
+     (match ((agree step x ua ub)) with
+| Ok (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Gt -> begin
+     (match ((agree step x ua ub)) with
+| Ok (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Ge -> begin
+     (match ((agree step x ua ub)) with
+| Ok (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| And -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| Or -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| Contains -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| StartsWith -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| EndsWith -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end))
+     end)
+     end)
+     end
+| Not (a) -> begin
+     (match ((resolve_units alg step us a)) with
+| Ok (uu___, a') -> begin
+     Ok (((FStar_Pervasives_Native.None), (Not (a'))))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| IsNull (a) -> begin
+     (match ((resolve_units alg step us a)) with
+| Ok (uu___, a') -> begin
+     Ok (((FStar_Pervasives_Native.None), (IsNull (a'))))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| InParam (a, n) -> begin
+     (match ((resolve_units alg step us a)) with
+| Ok (uu___, a') -> begin
+     Ok (((FStar_Pervasives_Native.None), (InParam (a', n))))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Coalesce (xs) -> begin
+     (match ((resolve_list alg step us xs)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (rs) -> begin
+     (match ((agree_all step x FStar_Pervasives_Native.None (fsts rs))) with
+| Ok (u) -> begin
+     Ok (((u), (Coalesce ((snds rs)))))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end)
+     end
+| Case (cases, els) -> begin
+     (match ((resolve_cases alg step us cases)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (cs) -> begin
+     (match ((resolve_units alg step us els)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (ue, els') -> begin
+     (match ((agree_all step x ue (fsts cs))) with
+| Ok (u) -> begin
+     Ok (((u), (Case ((snds cs), els'))))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end)
+     end)
+     end
+| Cast (ty, a) -> begin
+     (match ((resolve_units alg step us a)) with
+| Ok (u, a') -> begin
+     Ok (((u), (Cast (ty, a'))))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| ApplyFn (fn, args) -> begin
+     (match ((resolve_list alg step us args)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (rs) -> begin
+     (
+
+let x' = ApplyFn (fn, (snds rs))
+in (match (fn) with
+| Abs -> begin
+     Ok ((((first_unit (fsts rs))), (x')))
+     end
+| Round -> begin
+     Ok ((((first_unit (fsts rs))), (x')))
+     end
+| Floor -> begin
+     Ok ((((first_unit (fsts rs))), (x')))
+     end
+| Ceil -> begin
+     Ok ((((first_unit (fsts rs))), (x')))
+     end
+| Least -> begin
+     (match ((agree_all step x FStar_Pervasives_Native.None (fsts rs))) with
+| Ok (u) -> begin
+     Ok (((u), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Greatest -> begin
+     (match ((agree_all step x FStar_Pervasives_Native.None (fsts rs))) with
+| Ok (u) -> begin
+     Ok (((u), (x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| uu___ -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end))
+     end)
+     end
+| InList (a, items) -> begin
+     (match ((resolve_units alg step us a)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (ua, a') -> begin
+     (match ((resolve_list alg step us items)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (rs) -> begin
+     (match ((agree_all step x ua (fsts rs))) with
+| Ok (uu___) -> begin
+     Ok (((FStar_Pervasives_Native.None), (InList (a', (snds rs)))))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end)
+     end)
+     end
+| Quotient (a, b, r) -> begin
+     (match ((resolve_units alg step us a)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (ua, a') -> begin
+     (match ((resolve_units alg step us b)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (ub, b') -> begin
+     Ok ((((unit_quotient alg ua ub)), (Quotient (a', b', r))))
+     end)
+     end)
+     end
+| Rounded (a, r) -> begin
+     (match ((resolve_units alg step us a)) with
+| Ok (u, a') -> begin
+     Ok (((u), (Rounded (a', r))))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Convert (a, target) -> begin
+     (match ((resolve_units alg step us a)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (ua, a') -> begin
+     (
+
+let as_float = Cast (FloatType, a')
+in (match (ua) with
+| FStar_Pervasives_Native.None -> begin
+     Ok (((FStar_Pervasives_Native.Some (target)), (as_float)))
+     end
+| FStar_Pervasives_Native.Some (source) -> begin
+      
+if (Prims.op_Equals source target) then begin
+     Ok (((FStar_Pervasives_Native.Some (target)), (as_float)))
+     end else begin
+     (match ((alg.u_factor source target)) with
+| FStar_Pervasives_Native.Some (k) -> begin
+     Ok (((FStar_Pervasives_Native.Some (target)), (Binary (Mul, as_float, Lit (Float (k))))))
+     end
+| FStar_Pervasives_Native.None -> begin
+     Error (UnitMismatch (step, x, source, target))
+     end)
+     end
+     end))
+     end)
+     end))
+and resolve_list : unit_alg  ->  Prims.string  ->  units  ->  Prims.list<col_expr>  ->  outcome<Prims.list<(FStar_Pervasives_Native.option<Prims.string> * col_expr)>, eval_error> = (fun ( alg  :  unit_alg ) ( step  :  Prims.string ) ( us  :  units ) ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
+| [] -> begin
+     Ok ([])
+     end
+| (x)::rest -> begin
+     (match ((resolve_units alg step us x)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (r) -> begin
+     (match ((resolve_list alg step us rest)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (rs) -> begin
+     Ok ((r)::rs)
+     end)
+     end)
+     end))
+and resolve_cases : unit_alg  ->  Prims.string  ->  units  ->  Prims.list<(col_expr * col_expr)>  ->  outcome<Prims.list<(FStar_Pervasives_Native.option<Prims.string> * (col_expr * col_expr))>, eval_error> = (fun ( alg  :  unit_alg ) ( step  :  Prims.string ) ( us  :  units ) ( cases  :  Prims.list<(col_expr * col_expr)> ) -> (match (cases) with
+| [] -> begin
+     Ok ([])
+     end
+| ((w, t))::rest -> begin
+     (match ((resolve_units alg step us w)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (uu___, w') -> begin
+     (match ((resolve_units alg step us t)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (ut, t') -> begin
+     (match ((resolve_cases alg step us rest)) with
+| Error (e) -> begin
+     Error (e)
+     end
+| Ok (cs) -> begin
+     Ok ((((ut), (((w'), (t')))))::cs)
+     end)
+     end)
+     end)
+     end))
+
+
+let rec convert_free : col_expr  ->  Prims.bool = (fun ( x  :  col_expr ) -> (match (x) with
+| Convert (uu___, uu___1) -> begin
+     false
+     end
+| Col (uu___) -> begin
+     true
+     end
+| Lit (uu___) -> begin
+     true
+     end
+| Param (uu___) -> begin
+     true
+     end
+| Now (uu___) -> begin
+     true
+     end
+| Binary (uu___, a, b) -> begin
+     ((convert_free a) && (convert_free b))
+     end
+| Quotient (a, b, uu___) -> begin
+     ((convert_free a) && (convert_free b))
+     end
+| Not (a) -> begin
+     (convert_free a)
+     end
+| IsNull (a) -> begin
+     (convert_free a)
+     end
+| InParam (a, uu___) -> begin
+     (convert_free a)
+     end
+| Cast (uu___, a) -> begin
+     (convert_free a)
+     end
+| Rounded (a, uu___) -> begin
+     (convert_free a)
+     end
+| Coalesce (xs) -> begin
+     (convert_free_list xs)
+     end
+| ApplyFn (uu___, xs) -> begin
+     (convert_free_list xs)
+     end
+| InList (a, items) -> begin
+     ((convert_free a) && (convert_free_list items))
+     end
+| Case (cases, els) -> begin
+     ((convert_free_cases cases) && (convert_free els))
+     end))
+and convert_free_list : Prims.list<col_expr>  ->  Prims.bool = (fun ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
+| [] -> begin
+     true
+     end
+| (x)::rest -> begin
+     ((convert_free x) && (convert_free_list rest))
+     end))
+and convert_free_cases : Prims.list<(col_expr * col_expr)>  ->  Prims.bool = (fun ( cases  :  Prims.list<(col_expr * col_expr)> ) -> (match (cases) with
+| [] -> begin
+     true
+     end
+| ((w, t))::rest -> begin
+     (((convert_free w) && (convert_free t)) && (convert_free_cases rest))
+     end))
+
+
+let rec unitless : units  ->  Prims.bool = (fun ( us  :  units ) -> (match (us) with
+| [] -> begin
+     true
+     end
+| ((uu___, FStar_Pervasives_Native.None))::rest -> begin
+     (unitless rest)
+     end
+| ((uu___, FStar_Pervasives_Native.Some (uu___1)))::uu___2 -> begin
+     false
+     end))
+
+
+let rec nones : Prims.list<col_expr>  ->  Prims.list<(FStar_Pervasives_Native.option<Prims.string> * col_expr)> = (fun ( xs  :  Prims.list<col_expr> ) -> (match (xs) with
+| [] -> begin
+     []
+     end
+| (x)::rest -> begin
+     (((FStar_Pervasives_Native.None), (x)))::(nones rest)
+     end))
+
+
+let rec nones_cases : Prims.list<(col_expr * col_expr)>  ->  Prims.list<(FStar_Pervasives_Native.option<Prims.string> * (col_expr * col_expr))> = (fun ( cases  :  Prims.list<(col_expr * col_expr)> ) -> (match (cases) with
+| [] -> begin
+     []
+     end
+| (c)::rest -> begin
+     (((FStar_Pervasives_Native.None), (c)))::(nones_cases rest)
+     end))
+
+
+let checked_step : unit_alg  ->  units  ->  prims  ->  other_fn  ->  param_env  ->  wframe  ->  transform  ->  outcome<wframe, eval_error> = (fun ( alg  :  unit_alg ) ( us  :  units ) ( pr  :  prims ) ( other  :  other_fn ) ( env  :  param_env ) ( f  :  wframe ) ( t  :  transform ) -> (match (t) with
+| Filter (p) -> begin
+     (match ((resolve_units alg "filter" us p)) with
+| Ok (uu___, p') -> begin
+     (eval_step pr other env f (Filter (p')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| Derive (name, x) -> begin
+     (match ((resolve_units alg (Prims.strcat "derive \'" (Prims.strcat name "\'")) us x)) with
+| Ok (uu___, x') -> begin
+     (eval_step pr other env f (Derive (name, x')))
+     end
+| Error (e) -> begin
+     Error (e)
+     end)
+     end
+| uu___ -> begin
+     (eval_step pr other env f t)
+     end))
+
+
+let step_convert_free : transform  ->  Prims.bool = (fun ( t  :  transform ) -> (match (t) with
+| Filter (p) -> begin
+     (convert_free p)
+     end
+| Derive (uu___, x) -> begin
+     (convert_free x)
+     end
+| uu___ -> begin
+     true
      end))
 
 

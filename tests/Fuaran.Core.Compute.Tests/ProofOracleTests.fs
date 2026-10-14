@@ -937,6 +937,14 @@ let rec private pExprToModel (e: ColExpr) : ModelPipe.col_expr =
     | Now g -> ModelPipe.Now(pFwd pGrains g)
     | Quotient(a, b, r) -> ModelPipe.Quotient(pExprToModel a, pExprToModel b, pRoundingToModel r)
     | Rounded(x, r) -> ModelPipe.Rounded(pExprToModel x, pRoundingToModel r)
+    // Phase 429: the target unit crosses as its canonical text (one product, one text).
+    | Convert(x, u) -> ModelPipe.Convert(pExprToModel x, Unit.render u)
+
+/// A unit back from its canonical text — the model carries texts, production the value.
+let private pUnitOfText (text: string) : UnitOfMeasure =
+    match Unit.parse text with
+    | Ok u -> u
+    | Error e -> failtestf "the model named a unit text production does not parse: '%s' (%A)" text e
 
 let rec private pExprOfModel (e: ModelPipe.col_expr) : ColExpr =
     match e with
@@ -954,6 +962,7 @@ let rec private pExprOfModel (e: ModelPipe.col_expr) : ColExpr =
     | ModelPipe.IsNull x -> IsNull(pExprOfModel x)
     | ModelPipe.InParam(x, n) -> InParam(pExprOfModel x, n)
     | ModelPipe.Now g -> Now(pBack pGrains g)
+    | ModelPipe.Convert(x, text) -> Convert(pExprOfModel x, pUnitOfText text)
     | ModelPipe.Quotient(a, b, r) -> Quotient(pExprOfModel a, pExprOfModel b, pRoundingOfModel r)
     | ModelPipe.Rounded(x, r) -> Rounded(pExprOfModel x, pRoundingOfModel r)
 
@@ -1079,6 +1088,7 @@ let private pErrToModel (e: EvalError) : ModelPipe.eval_error =
     | OverflowError detail -> ModelPipe.OverflowError detail
     | UnboundParam(name, bound) -> ModelPipe.UnboundParam(name, bound)
     | UnpinnedClock grain -> ModelPipe.UnpinnedClock(pFwd pGrains grain)
+    | UnitMismatch(step, at, l, r) -> ModelPipe.UnitMismatch(step, pExprToModel at, l, r)
 
 let private pErrOfModel (e: ModelPipe.eval_error) : EvalError =
     match e with
@@ -1091,6 +1101,7 @@ let private pErrOfModel (e: ModelPipe.eval_error) : EvalError =
     | ModelPipe.OverflowError detail -> OverflowError detail
     | ModelPipe.UnboundParam(name, bound) -> UnboundParam(name, bound)
     | ModelPipe.UnpinnedClock grain -> UnpinnedClock(pBack pGrains grain)
+    | ModelPipe.UnitMismatch(step, at, l, r) -> UnitMismatch(step, pExprOfModel at, l, r)
 
 /// The param env as the model reads it: `Map.toList`, sorted by key — the sets-and-maps-are-lists
 /// bridge, and exactly the list `UnboundParam` enumerates.
@@ -1238,6 +1249,7 @@ let rec private pExprTags (e: ColExpr) : string list =
     | Now _ -> [ "Now" ]
     | Quotient(a, b, _) -> "Quotient" :: pExprTags a @ pExprTags b
     | Rounded(x, _) -> "Rounded" :: pExprTags x
+    | Convert(x, _) -> "Convert" :: pExprTags x
 
 type private PipeTally =
     {
@@ -1656,6 +1668,13 @@ let private pResolveWith (right: Table) : string -> Result<Table, EvalError> =
 
 /// The whole differential: the law vectors under `noResolve` and an empty env (as the law runs
 /// them), then `trials` generated pipelines at `seed`, each under the resolver and env above.
+/// The vectors the pipeline differential runs: every evalPipeline vector but the UNIT shapes (Phase
+/// 429). The model's frame carries no field metadata and its evaluator takes a RESOLVED expression,
+/// so a unit vector is the unit differential's below — `resolve_units` against production's check,
+/// and production's evaluation of the resolved expression against its evaluation of the original.
+let private pPipelineVectors () : (string * Transform list * Table * bool) list =
+    pLawVectors () |> List.filter (fun (id, _, _, _) -> not (id.Contains "-unit-"))
+
 let private pipelineDifferential
     (bridge: Transform list -> ModelPipe.transform list)
     (mkStep: (string -> Result<Table, EvalError>) -> Map<string, Cell> -> Transform list -> ModelPipe.other_fn)
@@ -1664,7 +1683,7 @@ let private pipelineDifferential
     : PipeTally =
     let mutable tally = pEmptyTally
 
-    for id, p, table, refuses in pLawVectors () do
+    for id, p, table, refuses in pPipelineVectors () do
         let verdict =
             DataFrame.evalPipelineWithInEnvCounted DataFrame.noResolve Map.empty p table
 
@@ -1714,7 +1733,8 @@ let rec private pUnderCountNodes (e: ColExpr) : int =
     | Cast(_, x)
     | IsNull x
     | InParam(x, _)
-    | Rounded(x, _) -> 1 + pUnderCountNodes x
+    | Rounded(x, _)
+    | Convert(x, _) -> 1 + pUnderCountNodes x
     | Quotient(a, b, _) -> 1 + pUnderCountNodes a + pUnderCountNodes b
     | Coalesce xs
     | ApplyFn(_, xs) -> 1 + List.sumBy pUnderCountNodes xs
@@ -1780,6 +1800,206 @@ let private pRowSample (seed: int) (trials: int) : (string * Schema * Cell list 
 
           for j, row in List.indexed rows do
               yield sprintf "expression %d row %d" i j, table.Schema, row, e ]
+// ---------------------------------------------------------------------------
+//  Phase 429 — the unit check: `resolve_units` against `DataFrame.resolveUnits`
+// ---------------------------------------------------------------------------
+
+/// The model's algebra parameter, instantiated at Core's `Unit` module over canonical texts — the
+/// premise `pipeline-unit-algebra-is-core` names, made concrete here.
+let private pUnitAlg: ModelPipe.unit_alg =
+    let parsed (text: string) = pUnitOfText text
+
+    { ModelPipe.unit_alg.u_mul = fun a b -> Unit.render (Unit.mul (parsed a) (parsed b))
+      ModelPipe.unit_alg.u_div = fun a b -> Unit.render (Unit.div (parsed a) (parsed b))
+      ModelPipe.unit_alg.u_one = Unit.render Unit.dimensionless
+      ModelPipe.unit_alg.u_factor =
+        fun a b ->
+            match Unit.conversionFactor (parsed a) (parsed b) with
+            | Ok r ->
+                // The factor as the float LITERAL the resolved expression carries, in the model's
+                // float carrier: production's `ratioToFloat`, crossed as a cell is.
+                match pCellToModel (Cell.Float(double r.Numerator / double r.Denominator)) with
+                | ModelPipe.Float text -> FStar_Pervasives_Native.Some text
+                | _ -> FStar_Pervasives_Native.None
+            | Error _ -> FStar_Pervasives_Native.None }
+
+/// The unit differential's schema: the generator's columns under units — `v` in metres, `w` in
+/// seconds, `m` in kilograms, `g` and the unknown column unconstrained.
+let private pUnitSchema: Schema =
+    [ Field.create "g" StringType
+      Field.create "v" IntType |> Field.withUnit (pUnitOfText "m")
+      Field.create "w" FloatType |> Field.withUnit (pUnitOfText "s")
+      Field.create "m" DecimalType |> Field.withUnit (pUnitOfText "kg") ]
+
+let private pUnitsOfSchema (schema: Schema) : ModelPipe.units =
+    schema
+    |> List.map (fun f ->
+        f.Name,
+        (match f.Unit with
+         | Some u -> FStar_Pervasives_Native.Some(Unit.render u)
+         | None -> FStar_Pervasives_Native.None))
+
+/// An expression of the generator's, with conversions grafted in: a conversion over the whole, over
+/// one operand of a binary, or none — so the sample reaches every rule with and without a `Convert`.
+let private pGenUnitExpr (rng: ConfRng.T) : ColExpr * ConfRng.T =
+    let e, r1 = pGenExpr 3 rng
+    let k, r2 = ConfRng.intBelow 4 r1
+    let target, r3 = pPick [ "m"; "km"; "s"; "kg"; "m/s"; "cm" ] r2
+
+    match k with
+    | 0 -> Convert(e, pUnitOfText target), r3
+    | 1 ->
+        let op, r4 = pPick [ Add; Sub; Mul; Div; Gt; Eq ] r3
+        let f, r5 = pGenExpr 2 r4
+        Binary(op, Convert(e, pUnitOfText target), f), r5
+    | _ -> e, r3
+
+let private pUnitResult
+    (r: Result<UnitOfMeasure option * ColExpr, EvalError>)
+    : Result<string option * ColExpr, EvalError> =
+    r |> Result.map (fun (u, e) -> u |> Option.map Unit.render, e)
+
+let private pModelUnitResult
+    (r: ModelPipe.outcome<FStar_Pervasives_Native.option<string> * ModelPipe.col_expr, ModelPipe.eval_error>)
+    : Result<string option * ColExpr, EvalError> =
+    match r with
+    | ModelPipe.Ok(u, e) ->
+        Ok(
+            (match u with
+             | FStar_Pervasives_Native.Some t -> Some t
+             | FStar_Pervasives_Native.None -> None),
+            pExprOfModel e
+        )
+    | ModelPipe.Error e -> Error(pErrOfModel e)
+
+type private UnitTally =
+    { UDiffs: string list
+      UCompared: int
+      UAccepted: int
+      URefused: int
+      UWithUnit: int
+      UConverts: int
+      UConvertRefused: int }
+
+/// The unit differential (Phase 429): over the unit vectors' expressions and a generated sample,
+/// production's `resolveUnits` and the model's `resolve_units` answer the same unit, the same
+/// resolved expression and the same refusal — and evaluating the ORIGINAL expression through
+/// production's derive gives exactly what evaluating the RESOLVED one gives, so resolution is the
+/// whole of a conversion's semantics.
+let private unitDifferential (seed: int) (trials: int) : UnitTally =
+    let mutable t =
+        { UDiffs = []
+          UCompared = 0
+          UAccepted = 0
+          URefused = 0
+          UWithUnit = 0
+          UConverts = 0
+          UConvertRefused = 0 }
+
+    let compare (label: string) (schema: Schema) (table: Table option) (e: ColExpr) =
+        let step = "derive 'd'"
+        let prod = pUnitResult (DataFrame.resolveUnits step schema e)
+
+        let model =
+            pModelUnitResult (ModelPipe.resolve_units pUnitAlg step (pUnitsOfSchema schema) (pExprToModel e))
+
+        let hasConvert = pExprTags e |> List.contains "Convert"
+        t <- { t with UCompared = t.UCompared + 1 }
+
+        if hasConvert then
+            t <- { t with UConverts = t.UConverts + 1 }
+
+        if prod <> model then
+            t <-
+                { t with
+                    UDiffs = sprintf "%s: %A | production %A | model %A" label e prod model :: t.UDiffs }
+
+        match prod with
+        | Ok(u, resolved) ->
+            t <- { t with UAccepted = t.UAccepted + 1 }
+
+            if u.IsSome then
+                t <- { t with UWithUnit = t.UWithUnit + 1 }
+
+            // Resolution is the whole of a conversion's VALUE semantics: the original, derived over the
+            // unit-bearing table, and the resolved expression, derived over the same table with its
+            // units STRIPPED (a resolved expression is arithmetic the check has already read — its
+            // factor literal is unconstrained, so re-checking it would read the source's unit, and
+            // production never re-checks it), give one column, cell for cell and type for type. The
+            // unit is the check's, not the arithmetic's, so the schemas are compared without it.
+            match table with
+            | Some table ->
+                let unitless (r: Result<Table, EvalError>) =
+                    r
+                    |> Result.map (fun (t: Table) ->
+                        { t with
+                            Schema = t.Schema |> List.map Field.withoutUnit })
+
+                let plain =
+                    { table with
+                        Schema = table.Schema |> List.map Field.withoutUnit }
+
+                let a = unitless (DataFrame.evalPipelineInEnv pEnv [ Derive("d", e) ] table)
+                let b = unitless (DataFrame.evalPipelineInEnv pEnv [ Derive("d", resolved) ] plain)
+
+                if a <> b then
+                    t <-
+                        { t with
+                            UDiffs =
+                                sprintf "%s: the original and the resolved derive differ: %A vs %A" label a b
+                                :: t.UDiffs }
+            | None -> ()
+        | Error(UnitMismatch(_, at, _, _)) ->
+            t <- { t with URefused = t.URefused + 1 }
+
+            match at with
+            | Convert _ ->
+                t <-
+                    { t with
+                        UConvertRefused = t.UConvertRefused + 1 }
+            | _ -> ()
+        | Error _ -> ()
+
+    // The unit vectors' own expressions, over their own tables.
+    for id, p, table, _ in pLawVectors () |> List.filter (fun (id, _, _, _) -> id.Contains "-unit-") do
+        for step in p do
+            match step with
+            | Filter e
+            | Derive(_, e) -> compare id table.Schema (Some table) e
+            | _ -> ()
+
+    let mutable rng = ConfRng.ofSeed seed
+
+    for i in 1..trials do
+        let e, r1 = pGenUnitExpr rng
+        let table, r2 = pGenTable r1
+        rng <- r2
+
+        // The generated table under the differential's units, where its columns are the schema's.
+        let typed =
+            if (table.Schema |> List.map _.Name) = (pUnitSchema |> List.map _.Name) then
+                Some
+                    { table with
+                        Schema =
+                            List.map2
+                                (fun (f: Field) (u: Field) ->
+                                    f
+                                    |> (match u.Unit with
+                                        | Some unit -> Field.withUnit unit
+                                        | None -> id))
+                                table.Schema
+                                pUnitSchema }
+            else
+                None
+
+        let schema =
+            match typed with
+            | Some t -> t.Schema
+            | None -> pUnitSchema
+
+        compare (sprintf "generated %d" i) schema typed e
+
+    t
 
 
 [<Tests>]
@@ -1951,6 +2171,66 @@ let proofOracleTests =
                       "the pre-existing column `a` would have GONE — what the guard now prevents"
 
 
+          // ---- Phase 429: the unit check (`proofs/Pipeline.fst` section 13) ----
+
+          testCase
+              "the unit check agrees with the model's resolve_units on the unit, the resolved expression and the refusal over the unit vectors and a generated sample, and resolution is the whole of a conversion's semantics"
+          <| fun _ ->
+              let t = unitDifferential 429 600
+              Expect.isEmpty t.UDiffs (sprintf "disagreements:\n%s" (String.concat "\n" (List.rev t.UDiffs)))
+
+              Expect.isGreaterThan
+                  t.UAccepted
+                  150
+                  (sprintf "expressions accepted on both sides (accepted=%d)" t.UAccepted)
+
+              Expect.isGreaterThan t.URefused 40 (sprintf "expressions refused on both sides (refused=%d)" t.URefused)
+
+              Expect.isGreaterThan
+                  t.UWithUnit
+                  80
+                  (sprintf "accepted expressions that carried a unit (withUnit=%d)" t.UWithUnit)
+
+              Expect.isGreaterThan
+                  t.UConverts
+                  100
+                  (sprintf "expressions carrying a conversion (converts=%d)" t.UConverts)
+
+              Expect.isGreaterThan
+                  t.UConvertRefused
+                  5
+                  (sprintf "conversions refused across dimensions (convertRefused=%d)" t.UConvertRefused)
+
+              printfn
+                  "unit differential: compared=%d accepted=%d refused=%d withUnit=%d converts=%d convertRefused=%d"
+                  t.UCompared
+                  t.UAccepted
+                  t.URefused
+                  t.UWithUnit
+                  t.UConverts
+                  t.UConvertRefused
+
+          testCase "a unitless schema leaves every convert-free expression unchanged, in production as in the model"
+          <| fun _ ->
+              let mutable rng = ConfRng.ofSeed 4291
+              let plain = pUnitSchema |> List.map Field.withoutUnit
+
+              for i in 1..200 do
+                  let e, r1 = pGenExpr 3 rng
+                  rng <- r1
+
+                  Expect.equal
+                      (DataFrame.resolveUnits "filter" plain e)
+                      (Ok(None, e))
+                      (sprintf "production, %d: %A" i e)
+
+                  Expect.equal
+                      (pModelUnitResult (
+                          ModelPipe.resolve_units pUnitAlg "filter" (pUnitsOfSchema plain) (pExprToModel e)
+                      ))
+                      (Ok(None, e))
+                      (sprintf "the model, %d: %A" i e)
+
           // ---- Phase 154: the counted pipeline driver (`proofs/Pipeline.fst`) ----
 
           testCase
@@ -1962,8 +2242,8 @@ let proofOracleTests =
 
               Expect.equal
                   t.PCompared
-                  (LawVectorExport.iterations + 400)
-                  "every vector and four hundred generated pipelines were compared"
+                  (List.length (pPipelineVectors ()) + 400)
+                  "every unit-free vector and four hundred generated pipelines were compared"
 
               Expect.isGreaterThan t.POk 120 (sprintf "pipelines evaluated to a table on both sides (ok=%d)" t.POk)
               Expect.isGreaterThan t.PErr 60 (sprintf "pipelines were refused on both sides (err=%d)" t.PErr)

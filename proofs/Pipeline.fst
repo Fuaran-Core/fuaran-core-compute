@@ -365,7 +365,9 @@ type data_source =
   | Embedded : frame -> data_source
   | Ref      : string -> data_source
 
-(* F#: `ColExpr`, all fifteen cases. *)
+(* F#: `ColExpr`, all sixteen cases. `Convert` carries its target unit as the unit's canonical
+   TEXT (`Unit.render`; Phase 429, section 13): one product is one text, so text equality is unit
+   equality, and the algebra the check composes units through is a parameter of the check. *)
 type col_expr =
   | Col      : string -> col_expr
   | Lit      : cell -> col_expr
@@ -382,6 +384,7 @@ type col_expr =
   | Now      : now_grain -> col_expr
   | Quotient : col_expr -> col_expr -> rounding -> col_expr
   | Rounded  : col_expr -> rounding -> col_expr
+  | Convert  : col_expr -> string -> col_expr
 
 (* F#: `Agg` — `{ Name; Fn; Of }`. *)
 type agg = { a_name : string; a_fn : agg_fn; a_of : string }
@@ -414,9 +417,10 @@ type transform =
   | Intersect : data_source -> transform
   | Except    : data_source -> transform
 
-(* F#: `EvalError`, all nine cases, in the DU's order. The evaluator's own arms raise four of them
-   (`UnknownColumn`, `TypeError`, `UnboundParam`, `UnpinnedClock`); the rest are the primitives'
-   and the twelve verbs' to raise, and the driver threads whichever it is handed. *)
+(* F#: `EvalError`, all ten cases, in the DU's order. The evaluator's own arms raise four of them
+   (`UnknownColumn`, `TypeError`, `UnboundParam`, `UnpinnedClock`); the unit check of section 13
+   raises `UnitMismatch` (Phase 429) before any row; the rest are the primitives' and the twelve
+   verbs' to raise, and the driver threads whichever it is handed. *)
 type eval_error =
   | UnknownColumn    : string -> list string -> eval_error
   | TypeError        : string -> eval_error
@@ -427,6 +431,7 @@ type eval_error =
   | OverflowError    : string -> eval_error
   | UnboundParam     : string -> list string -> eval_error
   | UnpinnedClock    : now_grain -> eval_error
+  | UnitMismatch     : string -> col_expr -> string -> string -> eval_error
 
 (* F#: `Map<string, Cell>` — the param environment, as the association list `Map.toList` renders
    it (sorted by key, keys distinct), which is exactly what `Map.tryFind` and the `UnboundParam`
@@ -567,6 +572,11 @@ let rec eval_expr (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols
        (match eval_expr pr env cols row a with
         | Error err -> Error err
         | Ok av -> pr.rounded r.r_mode n av))
+  (* A conversion is RESOLVED by substitution before evaluation (section 13, `resolve_units`): every
+     step entry point hands the evaluator a convert-free expression (`resolved_convert_free`), so
+     this arm is met by no expression a step evaluates. F#'s `resolveExpr` resolves a stray one the
+     same way at the point of resolution; the model keeps the evaluator over the alphabet. *)
+  | Convert _ _ -> Error (TypeError "convert: unresolved")
 
 (* `Coalesce`'s `go`: the first non-null value, `Null` when every one is null. *)
 and eval_coalesce (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols)) (xs:list col_expr)
@@ -899,6 +909,8 @@ let rec typing_of (cols:schema) (x:col_expr) : Tot typing (decreases x) =
   | InParam a _ -> typing_in_list (typing_of cols a)
   | Quotient a b _ -> typing_quotient (typing_of cols a) (typing_of cols b)
   | Rounded a _ -> typing_rounded (typing_of cols a)
+  (* Phase 429: a conversion answers a float — the typing of the cast it resolves to. *)
+  | Convert a _ -> typing_cast FloatType (typing_of cols a)
 and typings_of (cols:schema) (xs:list col_expr) : Tot (list typing) (decreases xs) =
   match xs with
   | [] -> []
@@ -965,6 +977,7 @@ let rec substitute (env:param_env) (x:col_expr) : Tot col_expr (decreases x) =
   | InParam a n -> InParam (substitute env a) n
   | Quotient a b r -> Quotient (substitute env a) (substitute env b) (bind_scale env r)
   | Rounded a r -> Rounded (substitute env a) (bind_scale env r)
+  | Convert a u -> Convert (substitute env a) u
 and substitute_list (env:param_env) (xs:list col_expr) : Tot (list col_expr) (decreases xs) =
   match xs with
   | [] -> []
@@ -1295,6 +1308,7 @@ let rec expr_nodes (e:col_expr) : Tot nat (decreases e) =
   | Case cases els -> 1 + pairs_nodes cases + expr_nodes els
   | Quotient a b _ -> 1 + expr_nodes a + expr_nodes b
   | Rounded a _ -> 1 + expr_nodes a
+  | Convert a _ -> 1 + expr_nodes a
 and exprs_nodes (l:list col_expr) : Tot nat (decreases l) =
   match l with
   | [] -> 0
@@ -1371,6 +1385,7 @@ let rec expr_visits (pr:prims) (env:param_env) (cols:schema) (row:row_of (len co
     1 + (match scale_of env r.r_scale with
          | Error _ -> 0
          | Ok _ -> expr_visits pr env cols row a)
+  | Convert _ _ -> 1
 
 and coalesce_visits (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols)) (xs:list col_expr)
   : Tot nat (decreases xs) =
@@ -1613,6 +1628,7 @@ let rec reads (x:col_expr) : Tot (list string) (decreases x) =
   | InList a items -> app (reads a) (reads_list items)
   | Quotient a b _ -> app (reads a) (reads b)
   | Rounded a _ -> reads a
+  | Convert a _ -> reads a
 and reads_list (xs:list col_expr) : Tot (list string) (decreases xs) =
   match xs with
   | [] -> []
@@ -1736,6 +1752,7 @@ let rec eval_extends (pr:prims) (env:param_env) (cols:schema) (row:row_of (len c
      | Error _ -> ()
      | Ok _ -> eval_extends pr env cols row cols' row' b)
   | Rounded a _ -> eval_extends pr env cols row cols' row' a
+  | Convert _ _ -> ()
 and extends_coalesce (pr:prims) (env:param_env) (cols:schema) (row:row_of (len cols))
   (cols':schema) (row':row_of (len cols')) (xs:list col_expr)
   : Lemma (requires agrees cols row cols' row' (reads_list xs))
@@ -2227,6 +2244,9 @@ let rec expr_total (cols:schema) (x:col_expr) : Tot bool (decreases x) =
     expr_total cols a && expr_total cols b && scale_admitted r
     && exact_or_absent (typing_of cols a) && exact_or_absent (typing_of cols b)
   | Rounded a r -> expr_total cols a && scale_admitted r && exact_or_absent (typing_of cols a)
+  (* Phase 429: conservative — the verdict reads the expression as written, and a conversion's
+     arithmetic is what it resolves to over the step's units. *)
+  | Convert _ _ -> false
 and all_total (cols:schema) (xs:list col_expr) : Tot bool (decreases xs) =
   match xs with
   | [] -> true
@@ -2415,6 +2435,7 @@ let rec verdict_sound (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (ro
     (match r.r_scale, eval_expr pr env cols row a with
      | SlotLit n, Ok av -> h.rounded_ok r.r_mode n (typing_of cols a) av
      | _ -> ())
+  | Convert _ _ -> ()
 and sound_coalesce (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (row:row_of (len cols)) (xs:list col_expr)
   : Lemma (requires all_total cols xs /\ row_typed cols row)
           (ensures (match eval_coalesce pr env cols row xs with
@@ -2560,3 +2581,563 @@ let planner_reorder_sound (pr:prims) (h:admits pr) (other:other_fn) (env:param_e
                    eval_uncounted pr other env [Filter p; Derive name x] f) =
   derive_total pr h env f.cols x f.rows;
   derive_then_filter pr other env f name x p
+
+
+(* ======================================================================================
+   13. The unit check (Phase 429, `DECISIONS.md` D29) — `DataFrame.resolveUnits` clause for
+       clause, over the unit algebra as a parameter; what it accepts carries the algebra's unit,
+       what it refuses the algebra rejects, and a unitless pipeline is untouched by it.
+
+   A column's unit is a fact of its FIELD (Phase 427), so the check is a static walk over the
+   expression and the step's schema's units — `units` below: each column's name with the canonical
+   TEXT of the unit it states, `None` where it states none. `None` is UNCONSTRAINED: a literal, a
+   param, a `now`, a column that states no unit; it composes with anything. The walk answers the
+   expression's unit and the expression with every `Convert` resolved into the cast and the
+   multiplication that perform it, so the evaluator of section 3 meets no `Convert`
+   (`resolved_convert_free`), and `eval_derive` / `eval_filter` evaluate what the walk hands them.
+
+   THE ALGEBRA IS A PARAMETER (`unit_alg`), as the cell primitives are: `Unit.mul`, `Unit.div`,
+   `Unit.dimensionless` and `Unit.conversionFactor` over canonical texts. Everything proved here
+   holds for any algebra; that the one meant is Core's — with text equality unit equality (one
+   product, one text) and `u_factor` `None` exactly between two dimensions — is the premise
+   `pipeline-unit-algebra-is-core` names (`proofs.json`), held by Core's own `proofs/Unit.fst`
+   (Phase 428) for the algebra and by `ProofOracleTests`' unit differential for the instantiation.
+
+   What is proved: `resolved_convert_free` (an accepted expression evaluates convert-free),
+   `unitless_unchanged` (over a schema stating no unit, a convert-free expression is accepted with
+   no unit and UNCHANGED — the unitless pipeline's answer is what it was), `refused_is_rejected`
+   (every refusal names two DIFFERENT units, and a refused conversion is one the algebra rejects),
+   the rule lemmas `add_rule` / `mul_rule` / `div_rule` / `cast_rule` / `comparison_rule` /
+   `convert_rule` (an accepted expression's unit is the algebra's derivation, constructor by
+   constructor), and `agg_unit_keeps` / `agg_unit_count` (an aggregate keeps its column's unit;
+   a count is dimensionless).
+   ====================================================================================== *)
+
+(* F#: the schema's units — `Field.Unit` rendered, by column. *)
+type units = list (string & option string)
+
+(* F#: the `Unit` module, over canonical texts. *)
+noeq type unit_alg = {
+  (* `Unit.mul`. *)
+  u_mul    : string -> string -> string;
+  (* `Unit.div`. *)
+  u_div    : string -> string -> string;
+  (* `Unit.render Unit.dimensionless`. *)
+  u_one    : string;
+  (* `Unit.conversionFactor source target`: `Some` the factor as the float literal's text the
+     resolved expression multiplies by, `None` where the two are of different dimensions. *)
+  u_factor : string -> string -> option string;
+}
+
+(* F#: `unitProduct` — an unconstrained factor contributes nothing. *)
+let unit_product (alg:unit_alg) (a b:option string) : Tot (option string) =
+  match a, b with
+  | None, _ -> b
+  | _, None -> a
+  | Some x, Some y -> Some (alg.u_mul x y)
+
+(* F#: `unitQuotient` — an unconstrained dividend is dimensionless over a stated divisor, an
+   unconstrained divisor leaves the dividend's unit. *)
+let unit_quotient (alg:unit_alg) (a b:option string) : Tot (option string) =
+  match a, b with
+  | None, None -> None
+  | Some x, None -> Some x
+  | None, Some y -> Some (alg.u_div alg.u_one y)
+  | Some x, Some y -> Some (alg.u_div x y)
+
+(* F#: `agree` — one unit among the stated ones: an unconstrained operand takes the other's, two
+   stated units must be ONE unit (one text). *)
+let agree (step:string) (at:col_expr) (a b:option string) : Tot (outcome (option string) eval_error) =
+  match a, b with
+  | None, _ -> Ok b
+  | _, None -> Ok a
+  | Some x, Some y -> if x = y then Ok (Some x) else Error (UnitMismatch step at x y)
+
+(* F#: `agreeAll`. *)
+let rec agree_all (step:string) (at:col_expr) (acc:option string) (us:list (option string))
+  : Tot (outcome (option string) eval_error) (decreases us) =
+  match us with
+  | [] -> Ok acc
+  | u :: rest ->
+    (match agree step at acc u with
+     | Ok acc' -> agree_all step at acc' rest
+     | Error e -> Error e)
+
+(* The first argument's unit (`Abs`, `Round`, `Floor`, `Ceil`). *)
+let first_unit (us:list (option string)) : Tot (option string) =
+  match us with
+  | [] -> None
+  | u :: _ -> u
+
+let rec fsts (#a #b:Type0) (l:list (a & b)) : Tot (list a) (decreases l) =
+  match l with
+  | [] -> []
+  | (x, _) :: rest -> x :: fsts rest
+
+let rec snds (#a #b:Type0) (l:list (a & b)) : Tot (list b) (decreases l) =
+  match l with
+  | [] -> []
+  | (_, y) :: rest -> y :: snds rest
+
+(* F#: `aggregateUnit` — a count is dimensionless, every other aggregate keeps its source's unit. *)
+let agg_unit (fn:agg_fn) (source:option string) : Tot (option string) =
+  match fn with
+  | Count | CountDistinct -> None
+  | _ -> source
+
+(* F#: `resolveUnitsIn step cols e`, clause for clause. The expression named by a mismatch is the
+   node the two units met in, as written. *)
+let rec resolve_units (alg:unit_alg) (step:string) (us:units) (x:col_expr)
+  : Tot (outcome (option string & col_expr) eval_error) (decreases x) =
+  match x with
+  | Col n -> Ok ((match assoc n us with Some u -> u | None -> None), x)
+  | Lit _ | Param _ | Now _ -> Ok (None, x)
+  | Binary op a b ->
+    (match resolve_units alg step us a with
+     | Error e -> Error e
+     | Ok (ua, a') ->
+       (match resolve_units alg step us b with
+        | Error e -> Error e
+        | Ok (ub, b') ->
+          let x' = Binary op a' b' in
+          (match op with
+           | Add | Sub ->
+             (match agree step x ua ub with
+              | Ok u -> Ok (u, x')
+              | Error e -> Error e)
+           | Mul -> Ok (unit_product alg ua ub, x')
+           | Div -> Ok (unit_quotient alg ua ub, x')
+           | Mod -> Ok (ua, x')
+           | Eq | Ne | Lt | Le | Gt | Ge ->
+             (match agree step x ua ub with
+              | Ok _ -> Ok (None, x')
+              | Error e -> Error e)
+           | And | Or | Contains | StartsWith | EndsWith -> Ok (None, x'))))
+  | Not a ->
+    (match resolve_units alg step us a with
+     | Ok (_, a') -> Ok (None, Not a')
+     | Error e -> Error e)
+  | IsNull a ->
+    (match resolve_units alg step us a with
+     | Ok (_, a') -> Ok (None, IsNull a')
+     | Error e -> Error e)
+  | InParam a n ->
+    (match resolve_units alg step us a with
+     | Ok (_, a') -> Ok (None, InParam a' n)
+     | Error e -> Error e)
+  | Coalesce xs ->
+    (match resolve_list alg step us xs with
+     | Error e -> Error e
+     | Ok rs ->
+       (match agree_all step x None (fsts rs) with
+        | Ok u -> Ok (u, Coalesce (snds rs))
+        | Error e -> Error e))
+  | Case cases els ->
+    (match resolve_cases alg step us cases with
+     | Error e -> Error e
+     | Ok cs ->
+       (match resolve_units alg step us els with
+        | Error e -> Error e
+        | Ok (ue, els') ->
+          (match agree_all step x ue (fsts cs) with
+           | Ok u -> Ok (u, Case (snds cs) els')
+           | Error e -> Error e)))
+  | Cast ty a ->
+    (match resolve_units alg step us a with
+     | Ok (u, a') -> Ok (u, Cast ty a')
+     | Error e -> Error e)
+  | ApplyFn fn args ->
+    (match resolve_list alg step us args with
+     | Error e -> Error e
+     | Ok rs ->
+       let x' = ApplyFn fn (snds rs) in
+       (match fn with
+        | Abs | Round | Floor | Ceil -> Ok (first_unit (fsts rs), x')
+        | Least | Greatest ->
+          (match agree_all step x None (fsts rs) with
+           | Ok u -> Ok (u, x')
+           | Error e -> Error e)
+        | _ -> Ok (None, x')))
+  | InList a items ->
+    (match resolve_units alg step us a with
+     | Error e -> Error e
+     | Ok (ua, a') ->
+       (match resolve_list alg step us items with
+        | Error e -> Error e
+        | Ok rs ->
+          (match agree_all step x ua (fsts rs) with
+           | Ok _ -> Ok (None, InList a' (snds rs))
+           | Error e -> Error e)))
+  | Quotient a b r ->
+    (match resolve_units alg step us a with
+     | Error e -> Error e
+     | Ok (ua, a') ->
+       (match resolve_units alg step us b with
+        | Error e -> Error e
+        | Ok (ub, b') -> Ok (unit_quotient alg ua ub, Quotient a' b' r)))
+  | Rounded a r ->
+    (match resolve_units alg step us a with
+     | Ok (u, a') -> Ok (u, Rounded a' r)
+     | Error e -> Error e)
+  | Convert a target ->
+    (match resolve_units alg step us a with
+     | Error e -> Error e
+     | Ok (ua, a') ->
+       let as_float = Cast FloatType a' in
+       (match ua with
+        | None -> Ok (Some target, as_float)
+        | Some source ->
+          if source = target then Ok (Some target, as_float)
+          else (match alg.u_factor source target with
+                | Some k -> Ok (Some target, Binary Mul as_float (Lit (Float k)))
+                | None -> Error (UnitMismatch step x source target))))
+(* `many`: every expression in order, the first refusal. *)
+and resolve_list (alg:unit_alg) (step:string) (us:units) (xs:list col_expr)
+  : Tot (outcome (list (option string & col_expr)) eval_error) (decreases xs) =
+  match xs with
+  | [] -> Ok []
+  | x :: rest ->
+    (match resolve_units alg step us x with
+     | Error e -> Error e
+     | Ok r ->
+       (match resolve_list alg step us rest with
+        | Error e -> Error e
+        | Ok rs -> Ok (r :: rs)))
+(* A `Case`'s arms, pair by pair: the condition's unit is read and dropped, the branch's kept
+   beside the resolved pair. *)
+and resolve_cases (alg:unit_alg) (step:string) (us:units) (cases:list (col_expr & col_expr))
+  : Tot (outcome (list (option string & (col_expr & col_expr))) eval_error) (decreases cases) =
+  match cases with
+  | [] -> Ok []
+  | (w, t) :: rest ->
+    (match resolve_units alg step us w with
+     | Error e -> Error e
+     | Ok (_, w') ->
+       (match resolve_units alg step us t with
+        | Error e -> Error e
+        | Ok (ut, t') ->
+          (match resolve_cases alg step us rest with
+           | Error e -> Error e
+           | Ok cs -> Ok ((ut, (w', t')) :: cs))))
+
+(* ---- 13.1 An accepted expression evaluates convert-free ---- *)
+
+let rec convert_free (x:col_expr) : Tot bool (decreases x) =
+  match x with
+  | Convert _ _ -> false
+  | Col _ | Lit _ | Param _ | Now _ -> true
+  | Binary _ a b | Quotient a b _ -> convert_free a && convert_free b
+  | Not a | IsNull a | InParam a _ | Cast _ a | Rounded a _ -> convert_free a
+  | Coalesce xs | ApplyFn _ xs -> convert_free_list xs
+  | InList a items -> convert_free a && convert_free_list items
+  | Case cases els -> convert_free_cases cases && convert_free els
+and convert_free_list (xs:list col_expr) : Tot bool (decreases xs) =
+  match xs with
+  | [] -> true
+  | x :: rest -> convert_free x && convert_free_list rest
+and convert_free_cases (cases:list (col_expr & col_expr)) : Tot bool (decreases cases) =
+  match cases with
+  | [] -> true
+  | (w, t) :: rest -> convert_free w && convert_free t && convert_free_cases rest
+
+let rec resolved_convert_free (alg:unit_alg) (step:string) (us:units) (x:col_expr)
+  : Lemma (ensures (match resolve_units alg step us x with
+                    | Ok (_, x') -> convert_free x'
+                    | Error _ -> True))
+          (decreases x) =
+  match x with
+  | Col _ | Lit _ | Param _ | Now _ -> ()
+  | Binary _ a b | Quotient a b _ ->
+    resolved_convert_free alg step us a; resolved_convert_free alg step us b
+  | Not a | IsNull a | InParam a _ | Cast _ a | Rounded a _ | Convert a _ ->
+    resolved_convert_free alg step us a
+  | Coalesce xs | ApplyFn _ xs -> resolved_list_convert_free alg step us xs
+  | InList a items ->
+    resolved_convert_free alg step us a; resolved_list_convert_free alg step us items
+  | Case cases els ->
+    resolved_cases_convert_free alg step us cases; resolved_convert_free alg step us els
+and resolved_list_convert_free (alg:unit_alg) (step:string) (us:units) (xs:list col_expr)
+  : Lemma (ensures (match resolve_list alg step us xs with
+                    | Ok rs -> convert_free_list (snds rs)
+                    | Error _ -> True))
+          (decreases xs) =
+  match xs with
+  | [] -> ()
+  | x :: rest -> resolved_convert_free alg step us x; resolved_list_convert_free alg step us rest
+and resolved_cases_convert_free (alg:unit_alg) (step:string) (us:units) (cases:list (col_expr & col_expr))
+  : Lemma (ensures (match resolve_cases alg step us cases with
+                    | Ok cs -> convert_free_cases (snds cs)
+                    | Error _ -> True))
+          (decreases cases) =
+  match cases with
+  | [] -> ()
+  | (w, t) :: rest ->
+    resolved_convert_free alg step us w;
+    resolved_convert_free alg step us t;
+    resolved_cases_convert_free alg step us rest
+
+(* ---- 13.2 A unitless pipeline is unchanged ---- *)
+
+(* A schema stating no unit anywhere. *)
+let rec unitless (us:units) : Tot bool =
+  match us with
+  | [] -> true
+  | (_, None) :: rest -> unitless rest
+  | (_, Some _) :: _ -> false
+
+let rec assoc_unitless (n:string) (us:units)
+  : Lemma (requires unitless us)
+          (ensures (match assoc n us with Some u -> u == None | None -> True)) =
+  match us with
+  | [] -> ()
+  | (m, _) :: rest -> if m = n then () else assoc_unitless n rest
+
+(* Every expression paired with no unit — what `resolve_list` answers over a unitless schema. *)
+let rec nones (xs:list col_expr) : Tot (list (option string & col_expr)) =
+  match xs with
+  | [] -> []
+  | x :: rest -> (None, x) :: nones rest
+
+let rec nones_cases (cases:list (col_expr & col_expr)) : Tot (list (option string & (col_expr & col_expr))) =
+  match cases with
+  | [] -> []
+  | c :: rest -> (None, c) :: nones_cases rest
+
+let rec snds_nones (xs:list col_expr) : Lemma (ensures snds (nones xs) == xs) =
+  match xs with
+  | [] -> ()
+  | _ :: rest -> snds_nones rest
+
+let rec snds_nones_cases (cases:list (col_expr & col_expr)) : Lemma (ensures snds (nones_cases cases) == cases) =
+  match cases with
+  | [] -> ()
+  | _ :: rest -> snds_nones_cases rest
+
+let rec agree_all_nones (step:string) (at:col_expr) (acc:option string) (xs:list col_expr)
+  : Lemma (ensures agree_all step at acc (fsts (nones xs)) == Ok acc) =
+  match xs with
+  | [] -> ()
+  | _ :: rest -> agree_all_nones step at acc rest
+
+let rec agree_all_nones_cases (step:string) (at:col_expr) (acc:option string) (cases:list (col_expr & col_expr))
+  : Lemma (ensures agree_all step at acc (fsts (nones_cases cases)) == Ok acc) =
+  match cases with
+  | [] -> ()
+  | _ :: rest -> agree_all_nones_cases step at acc rest
+
+let first_unit_nones (xs:list col_expr) : Lemma (ensures first_unit (fsts (nones xs)) == None) =
+  match xs with
+  | [] -> ()
+  | _ :: _ -> ()
+
+(* THE THEOREM: over a schema that states no unit, a convert-free expression is accepted, carries
+   no unit, and is handed to the evaluator exactly as written — so every step of a unitless
+   pipeline evaluates what it evaluated before the check existed. *)
+let rec unitless_unchanged (alg:unit_alg) (step:string) (us:units) (x:col_expr)
+  : Lemma (requires unitless us /\ convert_free x)
+          (ensures resolve_units alg step us x == Ok (None, x))
+          (decreases x) =
+  match x with
+  | Col n -> assoc_unitless n us
+  | Lit _ | Param _ | Now _ -> ()
+  | Binary _ a b | Quotient a b _ ->
+    unitless_unchanged alg step us a; unitless_unchanged alg step us b
+  | Not a | IsNull a | InParam a _ | Cast _ a | Rounded a _ -> unitless_unchanged alg step us a
+  | Coalesce xs ->
+    unitless_list_unchanged alg step us xs; snds_nones xs; agree_all_nones step x None xs
+  | ApplyFn fn xs ->
+    unitless_list_unchanged alg step us xs; snds_nones xs;
+    agree_all_nones step x None xs; first_unit_nones xs
+  | InList a items ->
+    unitless_unchanged alg step us a; unitless_list_unchanged alg step us items;
+    snds_nones items; agree_all_nones step x None items
+  | Case cases els ->
+    unitless_cases_unchanged alg step us cases; unitless_unchanged alg step us els;
+    snds_nones_cases cases; agree_all_nones_cases step x None cases
+and unitless_list_unchanged (alg:unit_alg) (step:string) (us:units) (xs:list col_expr)
+  : Lemma (requires unitless us /\ convert_free_list xs)
+          (ensures resolve_list alg step us xs == Ok (nones xs))
+          (decreases xs) =
+  match xs with
+  | [] -> ()
+  | x :: rest -> unitless_unchanged alg step us x; unitless_list_unchanged alg step us rest
+and unitless_cases_unchanged (alg:unit_alg) (step:string) (us:units) (cases:list (col_expr & col_expr))
+  : Lemma (requires unitless us /\ convert_free_cases cases)
+          (ensures resolve_cases alg step us cases == Ok (nones_cases cases))
+          (decreases cases) =
+  match cases with
+  | [] -> ()
+  | (w, t) :: rest ->
+    unitless_unchanged alg step us w; unitless_unchanged alg step us t;
+    unitless_cases_unchanged alg step us rest
+
+(* The step form — production's `evalFilter` / `evalDerive` shape: resolve over the schema's units,
+   then the evaluator of section 4 over the resolved expression; every other verb is untouched. *)
+let checked_step (alg:unit_alg) (us:units) (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (t:transform)
+  : Tot (outcome wframe eval_error) =
+  match t with
+  | Filter p ->
+    (match resolve_units alg "filter" us p with
+     | Ok (_, p') -> eval_step pr other env f (Filter p')
+     | Error e -> Error e)
+  | Derive name x ->
+    (match resolve_units alg ("derive '" ^ name ^ "'") us x with
+     | Ok (_, x') -> eval_step pr other env f (Derive name x')
+     | Error e -> Error e)
+  | _ -> eval_step pr other env f t
+
+(* A step that names no conversion. *)
+let step_convert_free (t:transform) : Tot bool =
+  match t with
+  | Filter p -> convert_free p
+  | Derive _ x -> convert_free x
+  | _ -> true
+
+(* THE COROLLARY: over a schema stating no unit, a step naming no conversion evaluates exactly as it
+   did before the check — the unitless pipeline's answer is unchanged, step by step. *)
+let checked_step_unitless (alg:unit_alg) (us:units) (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (t:transform)
+  : Lemma (requires unitless us /\ step_convert_free t)
+          (ensures checked_step alg us pr other env f t == eval_step pr other env f t) =
+  match t with
+  | Filter p -> unitless_unchanged alg "filter" us p
+  | Derive name x -> unitless_unchanged alg ("derive '" ^ name ^ "'") us x
+  | _ -> ()
+
+(* ---- 13.3 Every refusal is one the algebra rejects ---- *)
+
+(* A refusal names two DIFFERENT units at the node they met in; a refused conversion names its
+   source and its target, and the algebra has no factor between them. *)
+noextract
+let rejected (alg:unit_alg) (e:eval_error) : Tot prop =
+  match e with
+  | UnitMismatch _ at l r ->
+    l =!= r /\ (match at with
+                | Convert _ t -> t == r /\ alg.u_factor l r == None
+                | _ -> True)
+  | _ -> False
+
+let agree_rejected (alg:unit_alg) (step:string) (at:col_expr) (a b:option string)
+  : Lemma (requires ~(Convert? at))
+          (ensures (match agree step at a b with Error e -> rejected alg e | Ok _ -> True)) = ()
+
+let rec agree_all_rejected (alg:unit_alg) (step:string) (at:col_expr) (acc:option string) (us:list (option string))
+  : Lemma (requires ~(Convert? at))
+          (ensures (match agree_all step at acc us with Error e -> rejected alg e | Ok _ -> True))
+          (decreases us) =
+  match us with
+  | [] -> ()
+  | u :: rest ->
+    agree_rejected alg step at acc u;
+    (match agree step at acc u with
+     | Ok acc' -> agree_all_rejected alg step at acc' rest
+     | Error _ -> ())
+
+let rec refused_is_rejected (alg:unit_alg) (step:string) (us:units) (x:col_expr)
+  : Lemma (ensures (match resolve_units alg step us x with
+                    | Error e -> rejected alg e
+                    | Ok _ -> True))
+          (decreases x) =
+  match x with
+  | Col _ | Lit _ | Param _ | Now _ -> ()
+  | Binary _ a b ->
+    refused_is_rejected alg step us a; refused_is_rejected alg step us b;
+    (match resolve_units alg step us a, resolve_units alg step us b with
+     | Ok (ua, _), Ok (ub, _) -> agree_rejected alg step x ua ub
+     | _ -> ())
+  | Quotient a b _ -> refused_is_rejected alg step us a; refused_is_rejected alg step us b
+  | Not a | IsNull a | InParam a _ | Cast _ a | Rounded a _ -> refused_is_rejected alg step us a
+  | Coalesce xs | ApplyFn _ xs ->
+    refused_list_is_rejected alg step us xs;
+    (match resolve_list alg step us xs with
+     | Ok rs -> agree_all_rejected alg step x None (fsts rs)
+     | Error _ -> ())
+  | InList a items ->
+    refused_is_rejected alg step us a; refused_list_is_rejected alg step us items;
+    (match resolve_units alg step us a, resolve_list alg step us items with
+     | Ok (ua, _), Ok rs -> agree_all_rejected alg step x ua (fsts rs)
+     | _ -> ())
+  | Case cases els ->
+    refused_cases_is_rejected alg step us cases; refused_is_rejected alg step us els;
+    (match resolve_cases alg step us cases, resolve_units alg step us els with
+     | Ok cs, Ok (ue, _) -> agree_all_rejected alg step x ue (fsts cs)
+     | _ -> ())
+  | Convert a _ -> refused_is_rejected alg step us a
+and refused_list_is_rejected (alg:unit_alg) (step:string) (us:units) (xs:list col_expr)
+  : Lemma (ensures (match resolve_list alg step us xs with
+                    | Error e -> rejected alg e
+                    | Ok _ -> True))
+          (decreases xs) =
+  match xs with
+  | [] -> ()
+  | x :: rest -> refused_is_rejected alg step us x; refused_list_is_rejected alg step us rest
+and refused_cases_is_rejected (alg:unit_alg) (step:string) (us:units) (cases:list (col_expr & col_expr))
+  : Lemma (ensures (match resolve_cases alg step us cases with
+                    | Error e -> rejected alg e
+                    | Ok _ -> True))
+          (decreases cases) =
+  match cases with
+  | [] -> ()
+  | (w, t) :: rest ->
+    refused_is_rejected alg step us w; refused_is_rejected alg step us t;
+    refused_cases_is_rejected alg step us rest
+
+(* ---- 13.4 An accepted expression's unit is the algebra's derivation, constructor by constructor ---- *)
+
+let add_rule (alg:unit_alg) (step:string) (us:units) (op:bin_op{op = Add \/ op = Sub}) (a b:col_expr)
+  : Lemma (ensures (match resolve_units alg step us a, resolve_units alg step us b with
+                    | Ok (ua, a'), Ok (ub, b') ->
+                      (match agree step (Binary op a b) ua ub with
+                       | Ok u -> resolve_units alg step us (Binary op a b) == Ok (u, Binary op a' b')
+                       | Error e -> resolve_units alg step us (Binary op a b) == Error e)
+                    | _ -> True)) = ()
+
+let mul_rule (alg:unit_alg) (step:string) (us:units) (a b:col_expr)
+  : Lemma (ensures (match resolve_units alg step us a, resolve_units alg step us b with
+                    | Ok (ua, a'), Ok (ub, b') ->
+                      resolve_units alg step us (Binary Mul a b) == Ok (unit_product alg ua ub, Binary Mul a' b')
+                    | _ -> True)) = ()
+
+let div_rule (alg:unit_alg) (step:string) (us:units) (a b:col_expr)
+  : Lemma (ensures (match resolve_units alg step us a, resolve_units alg step us b with
+                    | Ok (ua, a'), Ok (ub, b') ->
+                      resolve_units alg step us (Binary Div a b) == Ok (unit_quotient alg ua ub, Binary Div a' b')
+                    | _ -> True)) = ()
+
+let cast_rule (alg:unit_alg) (step:string) (us:units) (ty:column_type) (a:col_expr)
+  : Lemma (ensures (match resolve_units alg step us a with
+                    | Ok (ua, a') -> resolve_units alg step us (Cast ty a) == Ok (ua, Cast ty a')
+                    | Error e -> resolve_units alg step us (Cast ty a) == Error e)) = ()
+
+let comparison_rule (alg:unit_alg) (step:string) (us:units)
+  (op:bin_op{op = Eq \/ op = Ne \/ op = Lt \/ op = Le \/ op = Gt \/ op = Ge}) (a b:col_expr)
+  : Lemma (ensures (match resolve_units alg step us a, resolve_units alg step us b with
+                    | Ok (ua, a'), Ok (ub, b') ->
+                      (match agree step (Binary op a b) ua ub with
+                       | Ok _ -> resolve_units alg step us (Binary op a b) == Ok (None, Binary op a' b')
+                       | Error e -> resolve_units alg step us (Binary op a b) == Error e)
+                    | _ -> True)) = ()
+
+(* A conversion: a TAG over an unconstrained operand, the identity over its own unit, the factor
+   between two units of one dimension, and the mismatch otherwise. *)
+let convert_rule (alg:unit_alg) (step:string) (us:units) (a:col_expr) (target:string)
+  : Lemma (ensures (match resolve_units alg step us a with
+                    | Ok (None, a') ->
+                      resolve_units alg step us (Convert a target) == Ok (Some target, Cast FloatType a')
+                    | Ok (Some source, a') ->
+                      (if source = target
+                       then resolve_units alg step us (Convert a target) == Ok (Some target, Cast FloatType a')
+                       else (match alg.u_factor source target with
+                             | Some k ->
+                               resolve_units alg step us (Convert a target)
+                               == Ok (Some target, Binary Mul (Cast FloatType a') (Lit (Float k)))
+                             | None ->
+                               resolve_units alg step us (Convert a target)
+                               == Error (UnitMismatch step (Convert a target) source target)))
+                    | Error e -> resolve_units alg step us (Convert a target) == Error e)) = ()
+
+(* An aggregate keeps its column's unit; a count carries none. *)
+let agg_unit_keeps (fn:agg_fn{fn <> Count /\ fn <> CountDistinct}) (source:option string)
+  : Lemma (ensures agg_unit fn source == source) = ()
+
+let agg_unit_count (fn:agg_fn{fn = Count \/ fn = CountDistinct}) (source:option string)
+  : Lemma (ensures agg_unit fn source == None) = ()
