@@ -178,38 +178,29 @@ let private tickFloorFactor = 0.03
 /// Figures: docs/incremental-evaluation.md, "The tick bound reads its own baseline (Phase 439)".
 let private tickBaselineFactor = 1.5
 
-/// Phase 439 — the named exceptions to the tick condition, each with its reason (operator rulings
-/// 2026-10-12 and 2026-10-13, the second, third, fifth and sixth; the last two named the two Phase 449
-/// cells): an excepted cell is held to its own recorded post-423 cost as a CEILING
-/// (`tickExceptionCeilings`), and to neither the ratio arm nor the baseline arm. Every entry is
-/// printed on every clock-leg run that judges it, and
-/// the main suite pins this list's exact contents ("the tick bound's named exceptions are exactly
-/// the ruled ones"), so a further exception cannot be added without that test moving with it. Every
-/// entry is removable only by Phase 448's acceptance (DECISIONS.md D19 and D22).
-let tickBaselineExceptions: (string * string * int * string) list =
-    [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns"
-      "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns"
-      "edit",
-      "window CumulSum",
-      20_000,
-      "one of the shapes Phase 448 owns: pre-423 median 1.201 ms, post-423 1.45–2.35 ms against a 1.95 ms allowance" ]
+/// Phase 448 — the corpus shapes the incremental seam DECLINES (`Incremental.plan` answers
+/// `ReferenceOnly`): a refresh of one is the full evaluation, and its footprint says so with the
+/// reason. The refresh-against-full case names each of these and asserts nothing of its time; the
+/// main suite pins the list against the plan ("the shapes the seam declines are exactly the named
+/// ones"), so a shape cannot come to be declined, or stop being declined, silently. Every other
+/// corpus shape is held to a refresh no dearer than the full evaluation it replaces
+/// (DECISIONS.md D27).
+let refreshDeclinedShapes: string list = [ "inner join"; "pivot" ]
 
-/// Phase 439 — each named exception's CEILING, per architecture, keyed (architecture, kind, node,
-/// rows), in calibration units: the cell's tick on a tree carrying Phase 423 and Phase 439's
-/// `Delta.fs` fix (each line names its commit), the median over three clean full legs of each leg's
-/// best (operator ruling 2026-10-12, the third). An excepted cell is held to `tickBaselineFactor` times this figure plus the floor,
-/// and to neither other arm: today's cost is its ceiling until Phase 448. Written only by
-/// `gates/record-tick-baselines.ps1 -Ceiling`; an architecture with no figure holds the cell to the
-/// ratio arm instead, the stricter condition, and says so on every run.
-let private tickExceptionCeilings: Map<string * string * string * int, float> =
-    Map.ofList
-        [
-          // Arm64 - recorded 2026-10-12 from 3caa557 (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
-          ("Arm64", "edit", "lines", 20000), 0.362989
-          // Arm64 - recorded 2026-10-13 from 12a825d (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
-          ("Arm64", "append", "lines", 20000), 0.388911
-          // Arm64 - recorded 2026-10-13 from 12a825d (post-423: the tree whose cost is the ceiling), the median of 3 runs' bests, by gates/record-tick-baselines.ps1 -Ceiling
-          ("Arm64", "edit", "window CumulSum", 20000), 0.371086 ]
+/// Phase 448 — the sizes the refresh-against-full case times, per tick kind: every size for the edit,
+/// and 1,000 and 100,000 rows for the append. At 20,000 rows an in-place append grows two per-row
+/// reference arrays (the row tokens and a step's cell cache) just past the runtime's large-object
+/// threshold, and the collections those allocations trigger, not the refresh's own work, decide
+/// a refresh timed alone against a full evaluation of a quarter of a millisecond: the same cell read
+/// 1.05 times the full from a large pool of sources and 1.3 to 2.4 times from one, with the
+/// collector's gen-2 count moving from 0 to 17 per 500 calls. The append tick case above still holds
+/// those cells, diff and refresh together, and the large-object bookkeeping is a later phase's
+/// (DECISIONS.md D27).
+let private refreshSizes (kind: string) : int list =
+    if kind = "edit" then
+        [ small; large; 100_000 ]
+    else
+        [ small; 100_000 ]
 
 /// Phase 439 — each corpus cell's one-row tick on the pre-423 tree (`ccbddc7`, the last whose full
 /// evaluation paid the `Table` boundary), per CPU architecture (`RuntimeInformation.ProcessArchitecture`),
@@ -876,7 +867,7 @@ let private batchedMs (runs: int) (f: unit -> unit) : float =
 /// ("The gate measures work, not the machine"). A literal, deliberately, and pinned against the list
 /// by a main-suite case: the leg's run count is checked against THIS number, so a case dropped from
 /// the list without the inventory moving is red in both places.
-let clockInventory = 16
+let clockInventory = 17
 
 let mutable private clockRuns = 0
 
@@ -1032,9 +1023,8 @@ let private tickBaselineArchitecture: string =
     string System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
 
 /// Phase 439 — the second arm's allowance for one corpus cell, in ms on this machine:
-/// `tickBaselineFactor` times the cell's recorded pre-423 tick (`tickBaselines`), or, where the cell
-/// is a named exception (`tickBaselineExceptions`) or this architecture or this cell has no recorded
-/// figure, the message saying so — which the cases print
+/// `tickBaselineFactor` times the cell's recorded pre-423 tick (`tickBaselines`), or, where this
+/// architecture or this cell has no recorded figure, the message saying so — which the cases print
 /// and carry into their failure, so a missing table is never a silent pass and never a silent
 /// loosening.
 let private tickBaselineAllowanceMs (kind: string) (node: string) (rows: int) : Result<float, string> =
@@ -1060,71 +1050,24 @@ let private tickBaselineAllowanceMs (kind: string) (node: string) (rows: int) : 
                     tickBound
             )
 
-/// What one corpus cell is held to (Phase 439): the two arms, or, for a named exception
-/// (`tickBaselineExceptions`), its recorded post-423 ceiling ALONE (operator ruling 2026-10-12, the
-/// third). A missing figure is the `Error` the cases print and carry into their failure.
-type private TickCondition =
-    | Arms of baseline: Result<float, string>
-    | ExceptionCeiling of ceiling: Result<float, string> * reason: string
-
-/// The condition one corpus cell is held to on this machine.
-let private tickConditionOf (kind: string) (node: string) (rows: int) : TickCondition =
-    match
-        tickBaselineExceptions
-        |> List.tryFind (fun (k, n, r, _) -> k = kind && n = node && r = rows)
-    with
-    | Some(_, _, _, reason) ->
-        let ceiling =
-            match Map.tryFind (tickBaselineArchitecture, kind, node, rows) tickExceptionCeilings with
-            | Some units -> Ok(tickBaselineFactor * units * Calibration.baselineMs ())
-            | None ->
-                Error(
-                    sprintf
-                        "NO CEILING for the named exception %s %s @ %d on architecture %s: held to the %.1f x full arm instead, the stricter condition; record one with gates/record-tick-baselines.ps1 -Ceiling (DECISIONS.md D19)"
-                        kind
-                        node
-                        rows
-                        tickBaselineArchitecture
-                        tickBound
-                )
-
-        ExceptionCeiling(ceiling, reason)
-    | None -> Arms(tickBaselineAllowanceMs kind node rows)
-
 /// Phase 439 — the two corpus tick cases' condition for one cell, printed and judged in one place:
-/// `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`, or, for a named exception,
-/// `tick <= tickBaselineFactor * ceiling + floor` with neither other arm. Answers the failure line
-/// for a red cell, `None` for a green one.
+/// `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`, every cell alike (Phase 448
+/// retired the named exceptions, DECISIONS.md D27). Answers the failure line for a red cell, `None`
+/// for a green one.
 let private judgeCorpusTick (kind: string) (node: string) (rows: int) (tickMs: float) (fullMs: float) : string option =
     let floorMs = tickFloorMs ()
     let ratioMs = tickBound * fullMs
 
     let allowedMs, shown, note =
-        match tickConditionOf kind node rows with
-        | Arms(Ok b) ->
+        match tickBaselineAllowanceMs kind node rows with
+        | Ok b ->
             max ratioMs b,
             sprintf "max(x%.1f full = %.3f ms, x%.1f baseline = %.3f ms)" tickBound ratioMs tickBaselineFactor b,
             None
-        | Arms(Error why) ->
+        | Error why ->
             ratioMs,
             sprintf "max(x%.1f full = %.3f ms, x%.1f baseline = NONE)" tickBound ratioMs tickBaselineFactor,
             Some why
-        | ExceptionCeiling(Ok c, reason) ->
-            c,
-            sprintf "x%.1f post-423 ceiling = %.3f ms" tickBaselineFactor c,
-            Some(
-                sprintf
-                    "NAMED EXCEPTION (DECISIONS.md D19, removable only by Phase 448's acceptance): %s %s @ %d is held to %.1f x its recorded post-423 tick alone, neither other arm applying - %s"
-                    kind
-                    node
-                    rows
-                    tickBaselineFactor
-                    reason
-            )
-        | ExceptionCeiling(Error why, reason) ->
-            ratioMs,
-            sprintf "x%.1f full = %.3f ms" tickBound ratioMs,
-            Some(sprintf "NAMED EXCEPTION (DECISIONS.md D19): %s - %s" reason why)
 
     printfn
         "  [%s tick] %-26s @ %6d: tick %8.3f ms vs full %8.3f ms (x%.2f; allowed %s + floor %.3f ms)"
@@ -1981,6 +1924,92 @@ let clockTests =
                       |> Option.iter (fun why -> failures.Add((sprintf "append %s @ %d" nd.Name n, why)))
 
               if failures.Count > 0 then
+                  raise (ClockCellsRed(List.ofSeq failures))
+
+          // ================= Phase 448 — the refresh against the evaluation it replaces =================
+
+          clockCase
+              "a refresh costs no more than the full evaluation it replaces on every corpus shape the seam accepts, plus a fixed per-call floor"
+          <| fun _ ->
+              // The two cases above hold the TICK, the diff and the refresh together, against a bound
+              // that admits up to 1.6 times the full evaluation or 1.5 times the cell's pre-423 tick.
+              // This one holds the claim the seam exists for: the REFRESH alone, handed the delta the
+              // diff built, costs no more than evaluating the same source from scratch, plus the
+              // per-call floor (`tickFloorMs`). Every corpus node, the one-row edit and the one-row
+              // append, at the sizes `refreshSizes` names, the full evaluation at one thread as above.
+              //
+              // Phase 439 found three shapes on which the refresh alone cost 2.1 to 3.4 times the full
+              // evaluation (`lines`, `window CumulSum`, `group-by high-card`): the refresh assembled its
+              // result through cells while the full evaluation had become a few passes over typed
+              // vectors. Phase 448 made each assemble its result from the prior one (DECISIONS.md D27;
+              // the figures are in docs/incremental-evaluation.md, "A refresh assembles its result from
+              // the prior one"). A shape the seam DECLINES (`refreshDeclinedShapes`) refreshes by the
+              // full evaluation, so it is named and printed here and not timed against itself; the main
+              // suite pins which shapes those are.
+              let failures = System.Collections.Generic.List<string * string>()
+              let floorMs = tickFloorMs ()
+
+              for nd in corpusNodes do
+                  if List.contains nd.Name refreshDeclinedShapes then
+                      printfn
+                          "  [refresh] %-26s declined by the seam: %s"
+                          nd.Name
+                          (match (Incremental.plan (nd.Pipe small)).Strategy with
+                           | ReferenceOnly why -> Incremental.reasonString why
+                           | _ -> "NOT DECLINED - the main suite's pin is red")
+                  else
+                      for kind in [ "edit"; "append" ] do
+                          for n in refreshSizes kind do
+                              let w = RowIdentity.byColumn nd.IdCol
+                              let before = nd.Mk n
+
+                              let after =
+                                  if kind = "edit" then
+                                      setCell nd.EditCol (n / 2) nd.EditTo before
+                                  else
+                                      appendTo nd 1 before
+
+                              let p = nd.Pipe n
+                              let state = ok (Incremental.prime DataFrame.noResolve nd.Env w p before)
+                              let d = ok (Delta.diff w before after)
+
+                              let refresh () =
+                                  ok (Incremental.refresh DataFrame.noResolve nd.Env w p state d after)
+
+                              Expect.equal
+                                  (Ok(Incremental.result (refresh ())))
+                                  (DataFrame.evalPipelineInEnv nd.Env p after)
+                                  (sprintf "%s %s @ %d: the refresh answers what the reference answers" kind nd.Name n)
+
+                              let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
+                              let refreshMs = batchedMs 5 (fun () -> refresh () |> ignore)
+
+                              printfn
+                                  "  [refresh] %-26s %-6s @ %6d: refresh %8.3f ms vs full %8.3f ms (x%.2f; allowed x1.0 full + floor %.3f ms)"
+                                  nd.Name
+                                  kind
+                                  n
+                                  refreshMs
+                                  fullMs
+                                  (refreshMs / fullMs)
+                                  floorMs
+
+                              Calibration.checkpoint ()
+
+                              if refreshMs > fullMs + floorMs then
+                                  failures.Add(
+                                      (sprintf "refresh %s %s @ %d" kind nd.Name n,
+                                       sprintf
+                                           "%s %s @ %d: the refresh cost %.3f ms against the full evaluation's %.3f ms + %.3f ms floor"
+                                           kind
+                                           nd.Name
+                                           n
+                                           refreshMs
+                                           fullMs
+                                           floorMs)
+                                  )
+
+              if failures.Count > 0 then
                   raise (ClockCellsRed(List.ofSeq failures)) ]
 
 /// `byColumn "id"`, counting every key it mints — the witness Phase 273 counted with.
@@ -2058,21 +2087,40 @@ let scalingTests =
 
               Expect.equal (clockCellVerdict (attempts [ [] ])) (Some ClockGreen) "a green attempt is green"
 
-          testCase "the tick bound's named exceptions are exactly the ruled ones"
+          testCase "the shapes the seam declines are exactly the named ones"
           <| fun _ ->
-              // Phase 439 and Phase 449 (operator rulings of 2026-10-12 and 2026-10-13;
-              // DECISIONS.md D19 and D22): three cells, and only these three, are held to their own
-              // recorded post-423 cost as a ceiling until Phase 448's acceptance removes them. A
-              // further exception is an operator decision, so adding one moves this test too.
+              // Phase 448 (DECISIONS.md D27): the refresh-against-full clock case names the declined
+              // shapes and holds every other one, so which shapes the seam declines is pinned here,
+              // against the plan itself, where no clock runs.
+              let declined =
+                  corpusNodes
+                  |> List.filter (fun nd -> not (Incremental.isIncremental (Incremental.plan (nd.Pipe small))))
+                  |> List.map _.Name
+
               Expect.equal
-                  tickBaselineExceptions
-                  [ "edit", "lines", 20_000, "a real 1.3–2× post-423 regression on a shape Phase 448 owns"
-                    "append", "lines", 20_000, "the same noisy post-423 shape as its edit tick, which Phase 448 owns"
-                    "edit",
-                    "window CumulSum",
-                    20_000,
-                    "one of the shapes Phase 448 owns: pre-423 median 1.201 ms, post-423 1.45–2.35 ms against a 1.95 ms allowance" ]
-                  "the named exceptions to the tick bound's baseline arm are the operator's ruling (D19), never added silently"
+                  declined
+                  refreshDeclinedShapes
+                  "the corpus shapes the seam declines are the named ones; a shape that comes to be declined, or stops being, moves this list and DECISIONS"
+
+              // A declined shape's refresh is the full evaluation, VISIBLY: its footprint says so,
+              // with the plan's reason.
+              for nd in corpusNodes do
+                  if List.contains nd.Name refreshDeclinedShapes then
+                      let w = RowIdentity.byColumn nd.IdCol
+                      let before = nd.Mk small
+                      let after = setCell nd.EditCol (small / 2) nd.EditTo before
+                      let p = nd.Pipe small
+                      let state = ok (Incremental.prime DataFrame.noResolve nd.Env w p before)
+                      let d = ok (Delta.diff w before after)
+
+                      let refreshed =
+                          ok (Incremental.refresh DataFrame.noResolve nd.Env w p state d after)
+
+                      match (Incremental.footprint refreshed).Recompute, (Incremental.plan p).Strategy with
+                      | FullRecompute(_, why), ReferenceOnly planned ->
+                          Expect.equal why planned (sprintf "%s: the refresh names the plan's reason" nd.Name)
+                      | other, _ ->
+                          failtestf "%s: a declined shape's refresh must report a full evaluation, got %A" nd.Name other
 
           testCase "the clock leg's saturation rule: above k times the baseline, or a bracket disagreeing by k"
           <| fun _ ->
