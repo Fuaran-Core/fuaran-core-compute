@@ -3753,12 +3753,6 @@ module DataFrame =
                           Detail = "sort then limit run as one stable top-n" }
                 | _ -> None)
 
-        /// Is the pair at the head of a pipeline the fused kernel's shape?
-        let isTopN (pipeline: Transform list) : bool =
-            match pipeline with
-            | Sort _ :: Limit _ :: _ -> true
-            | _ -> false
-
         /// The planner: reorder, then prune, then name the fusions the driver will take. Total —
         /// a pipeline it cannot read is emitted as written.
         let explain (cols: Schema) (pipeline: Transform list) : PlanReport =
