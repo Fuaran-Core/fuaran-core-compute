@@ -1,5 +1,78 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-15 — D34: the dense frame and its kernels are modelled in their own module over `Pipeline.fst`'s frame and Core's column; the read-back is the table's rows and the filter kernels are the row-major filter, as theorems; the native member, the morsel runner, the sort kernels and the rope are declared out
+
+**Context.** Phase 423 made the evaluator's frame a view over Core's typed column vectors, and Phases 280,
+376, 420, 422 and 440 gave it a decimal carrier, byte masks, a null-free column with no mask, integer
+temporal storage and a decimal view. `Frame.fs` and `Kernels.fs` had no model: every theorem of
+`Pipeline.fst` is stated over the ROW-MAJOR frame, and nothing said the dense frame the evaluator
+actually runs over is that frame. Core proved the matching fact for its own typed column (Phase 419,
+`ColumnRefinement.fst`); Phase 435 asked for the compute side's.
+
+**Decision.**
+
+1. **A module of its own, `proofs/Frame.fst`, opening `Pipeline`.** D31 and D32 are the precedent. It
+   reuses `Pipeline`'s `cell`, `frame`, `wframe`, `eval_expr`, `filter_rows`, `eval_step`, `index_of`
+   and `assoc` by name, and states its theorems against them: `logical` is the dense frame as the
+   `wframe` `Pipeline.fst` evaluates. It restates `List.tryItem` (`vnth`) because `Pipeline`'s is
+   `noextract`.
+2. **Core's column is restated to the minimum, and named.** `validity` (`AllValid | Mask`), the seven
+   `ColumnData` cases and `Column.cell` (`core_cell`) are written at `Pipeline.cell`; `core_cell` is the
+   Fuaran.Core repository's `ColumnRefinement.cell_at` with its `to_mask` unfolded, and that module's
+   `cells_of_nth` is what makes it the i-th of `Column.toCells`. Fuaran.Core is read, not edited; the
+   correspondence is stated in the module header and on the ladder row.
+3. **The theorems say what the code computes.** `of_table_reads_columns`: over a table whose columns
+   hold their fields' types and the table's length, cell `(i, j)` of `Frame.ofTable` IS
+   `Column.cell i` of column `j`, at every column type, with a mask or `AllValid` — the abstraction
+   theorem. `rows_of_reads`: the read-back is total and is the vectors through the selection.
+   `pack_reads` / `of_rows_exact`: the row door carries each cell as its type does, and rows carried
+   exactly come back as they went in. `to_table_reads`: `Frame.toTable` writes exactly the logical rows.
+   `filter_kernel_is_step`: where `filterBits` answers, the kernel branch of the filter IS
+   `Pipeline.eval_step`'s `Filter` over the read-back, never an error.
+4. **Every parameter is an assumption, listed.** The host record (the temporal texts and readers, an
+   int's float carrier and decimal text, `scaleOf` / `tryScaled`, `compareFloat`) is assumed NOTHING by
+   the read-back theorems — `Column.cell` and `Vec.cellAt` call the same functions. The kernel theorem
+   rests on `kernel_prims` (the comparison and Kleene primitives at exactly the cells a leaf meets,
+   ladder row `frame-kernel-primitives`) and, for the decimal leaf, on `decs_ok`, which the boundary
+   builds under one premise of `scaleOf` (`scale_admits`). Two representations are taken as given and
+   named on `frame-host-abstract`: the decimal carrier's float64s are exact integers (`Width`), and a
+   bitmap packs 32 rows to a word.
+5. **The acceptance's two perturbations, measured, one per prover run.** Reading a present bit as absent
+   in `Vec.cellAt`'s int arm fails `view_reads`; building `AllValid` as an all-absent mask (dropping the
+   null-free guard) fails `mask_of_reads`. A third, comparing a left-hand constant without `flip`, fails
+   `bits_eval`.
+
+**Declared out, with the reason.**
+
+- **The native kernel member** (`Kernels.Native`: 128-bit vectors, the thread pool). Its contract is the
+  portable member's answer; the suite runs the transform law vectors through both on one host, and the
+  differential runs `filterBits` through both against the model.
+- **The compiled filter path and the morsel runner** (`compileExpr`, `filterMorsel`, `keptInOrder`,
+  `RunMorsels`). It is the reference evaluator's per-row answer, the very evaluator `Pipeline.fst`
+  models; a model of the compiled tree would be a second model of `evalExpr`. The theorem covers the
+  kernel branch `filterBits` takes, which is the part of the filter with no other model.
+- **The keyed verbs' kernels** (`SortFinite`, `SortPositions`, `Partitions`, `RunPipelines`). They are
+  scheduling and sorting over verbs `Pipeline.fst` takes as a parameter (D32 narrowed it to the rows);
+  their contract — every correct sort answers one array — is stated on the record and held by the suite.
+- **`gatherOrNull`, `Vec.append` / `slice` / `concat` / `setAt` / `sameCells`, `ofTemporalTexts`,
+  `Frame.project` / `withColumn` / `appendColumn` / `concat`, the `Shared` allocator.** The verbs that
+  use them are parameters of `Pipeline.fst`; none is on the read-back's path or the filter's.
+- **The rope** (`Chunked`, Phase 268), whose edit `ColumnOps.fst` models, and the two boxed arms of
+  `Vec.toColumn` (a non-string string-family vector and `Cells`), which build through Core's
+  `Column.ofCells`, modelled in the Fuaran.Core repository (`to_cells_of_cells`).
+
+**No defect was found.** Two behaviours the model makes explicit and the theorems state rather than
+change: a column of another type or length than its schema field is read through `Vec.pack` of its cells
+padded or cut to the table's length (so an int column under a float field reads as floats); and a mask
+of another length than its column's values is read padded absent or cut, as Core's `Column.cell` reads
+it. Both are what the per-index reads always answered (Phase 423); `Table.validate` refuses both tables.
+
+**Consequences.** `proofs.json` gains three proved rows (`frame-read-back`, `frame-table-out`,
+`frame-kernel-agrees`), a tested row (`frame-differential`) and two assumed rows (`frame-host-abstract`,
+`frame-kernel-primitives`). The operation census loses `DataFrame.prepare`, `DataFrame.prepareRows` and
+`DataFrame.toTable`, now named by the read-back and table-out rows. `modules.json` budgets the module
+(120s, floor 26s); `check.ps1` and the oracle project register it. No production code changed.
+
 ## 2026-10-15 — D33: a declined shape's tick is held to what a declined refresh is — the diff and the reference evaluation it runs, timed beside the tick, plus the per-call floor; and a refresh no longer walks an embedded relation to learn that its pipeline did not move
 
 **Context.** Compute `v0.39.0` (`02d25fd`) failed its publish run (38554709427, attempt 1) in the

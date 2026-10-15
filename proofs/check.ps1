@@ -46,7 +46,10 @@ $ErrorActionPreference = 'Stop'
 #   walk — the walk is sound for the evaluator's schema, a join and a window over distinct names
 #   answer distinct names, every unknown column is refused in the arm's order, and the four
 #   verbs that can repeat a name are the finding (opens Pipeline).
-$modules = @('Limits', 'ColumnOps', 'Pipeline', 'Incremental', 'Relational')
+#   Frame: the dense frame and its kernels — read back cell by cell it is the table's logical
+#   rows at every column type, with and without a validity mask, and a filter the comparison
+#   kernels answer is Pipeline's row-major Filter step over the read-back (opens Pipeline).
+$modules = @('Limits', 'ColumnOps', 'Pipeline', 'Incremental', 'Relational', 'Frame')
 
 # ---- DECLARATION 2: the host families --------------------------------------------------------------
 # One entry per test-runner invocation, each with its own failure message. Separate invocations

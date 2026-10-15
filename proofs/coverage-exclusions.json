@@ -172,16 +172,6 @@
     },
     {
       "members": [
-        "DataFrame.prepare",
-        "DataFrame.prepareRows",
-        "DataFrame.toTable"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "Conversion between a table and the dense prepared frame (`Frame.fs`, whose members are all internal); round-tripped by example, and no model describes the dense representation.",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
         "DataFrame.noResolve"
       ],
       "class": "trivial",

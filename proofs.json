@@ -763,6 +763,121 @@
       "evidence": {
         "assumption": "the pivot's cell text, the int text, the string order and the join's suffix rule are host functions; the suffix rule is assumed injective in its index; the walk's declared sources are assumed to be the resolver's schemas"
       }
+    },
+    {
+      "id": "frame-read-back",
+      "level": "proved",
+      "claim": "THE DENSE FRAME MEANS EXACTLY ITS ROWS (Phase 435). The evaluator's columnar working form, read back cell by cell through `Frame.rowsOf` and `Vec.cellAt`, is the table it was built from: over a table every schema field of which holds its column at the field's type and the table's length (what Core's `Table.validate` admits), cell `(i, j)` of `Frame.ofTable` IS Core's `Column.cell i` of column `j` (`of_table_reads_columns`), at every column type (int, float, bool, string, date, timestamp at every unit, decimal whether or not its scaled carrier fits) and with or without a validity mask — a null-free column's `AllValid` read as every row present (`mask_of_reads`, `view_reads`). `Column.cell` is the Fuaran.Core repository's `ColumnRefinement.cell_at`, whose `cells_of_nth` makes it the i-th of `Column.toCells`. A column of another type or length, or none, reads back as `Vec.pack` carries its cells padded or cut to the table's length (`of_table_reads`, `of_column_reads`). The read-back is TOTAL: a well-formed frame reads back as its row count of rows, each as wide as its schema, cell `(i, j)` the vector `j` at the physical row the selection names (`rows_of_reads`). At the row door, `Frame.ofRows` reads back every cell as its column's type carries it — an int in a float or decimal column is that type's value, a temporal text the canonical text of what it parsed to, and a column holding any cell its type does not carry stays boxed, cell for cell (`pack_reads`, `of_rows_reads`) — so rows the types carry exactly come back from `ofRows` then `rowsOf` as they went in (`of_rows_exact`), and `DataFrame.prepareRows` refuses exactly a row of another width than the schema (`prepare_rows_reads`). Over every host function: the canonical temporal texts are called by `Column.cell` and `Vec.cellAt` alike, so nothing is assumed of them. MEASURED: reading a present bit as absent in `Vec.cellAt`'s int arm fails `view_reads`; building `AllValid` as an all-absent mask (dropping the null-free guard) fails `mask_of_reads` — one perturbation per prover run, each red.",
+      "phase": "fuaran-core#435",
+      "evidence": {
+        "theorem": "of_table_reads_columns",
+        "model": "proofs/Frame.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "view_reads",
+          "of_table_reads",
+          "of_column_reads",
+          "mask_of_reads",
+          "rows_of_reads",
+          "pack_reads",
+          "of_rows_reads",
+          "of_rows_exact",
+          "prepare_rows_reads",
+          "of_table_wf",
+          "of_rows_wf"
+        ],
+        "operations": [
+          "DataFrame.prepare",
+          "DataFrame.prepareRows"
+        ]
+      }
+    },
+    {
+      "id": "frame-table-out",
+      "level": "proved",
+      "claim": "THE BOUNDARY OUT WRITES THE LOGICAL ROWS (Phase 435). `Frame.toTable` of a well-formed frame of typed vectors answers a table under the frame's schema, one column per field, each the frame's row count long, whose column `j` reads through `Column.cell i` exactly the frame's read-back cell `(i, j)` — through the selection, by one typed gather per column (`gather_reads`), the column adopting the vector's storage with its mask normalised by `Validity.ofVector`, `AllValid` where every row is present (`to_column_reads`, `to_table_reads`). `Prepared.ofFrame` keeps the read-back (`of_frame_reads`), and `DataFrame.toTable (DataFrame.prepare t)` is `t` itself (`prepare_is_source`). The two boxed arms of `Vec.toColumn` (a non-string string-family vector and `Cells`) build through Core's `Column.ofCells`, modelled in the Fuaran.Core repository, and are outside this theorem; the differential tallies them.",
+      "phase": "fuaran-core#435",
+      "evidence": {
+        "theorem": "to_table_reads",
+        "model": "proofs/Frame.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "gather_reads",
+          "gather_shape",
+          "to_column_reads",
+          "of_frame_reads",
+          "prepare_is_source"
+        ],
+        "operations": [
+          "DataFrame.toTable"
+        ]
+      }
+    },
+    {
+      "id": "frame-kernel-agrees",
+      "level": "proved",
+      "claim": "THE FILTER KERNELS ARE THE ROW-MAJOR FILTER (Phase 435). Where `DataFrame.filterBits` answers a bitmap — `And` / `Or` over comparisons of an int, float or decimal vector with a constant (an int, a float, a decimal, a bound param), the constant on either side — the kernel branch of `evalFilterChecked` (the portable `cmpInts` / `cmpFloats` / `andBits` / `orBits`, the bitmap read back by `selection` under the identity and by `isSet` through a selection) is `Pipeline.fst`'s `Filter` step over the frame's read-back: the same rows, in the same order, under the same schema, and never an error (`filter_kernel_is_step`). Per row, the bitmap's bit is the evaluator's answer — `Bool true` on a set bit, `Bool false` or `Null` otherwise (`bits_eval`); per leaf, each of the five kernel arms in either operand order (`leaf_eval`). Conditional on `frame-kernel-primitives` (the comparison and Kleene primitives at the cells a leaf meets) and, for the decimal leaf, on the decimal vector carrying its texts' readings (`decs_ok`), which the boundary builds under `scaleOf`'s one premise (`of_table_wf`, `of_rows_wf`). MEASURED: comparing a constant on the LEFT without `flip` (`3 < x` read as `x < 3`) fails `bits_eval` — one perturbation run, red.",
+      "phase": "fuaran-core#435",
+      "evidence": {
+        "theorem": "filter_kernel_is_step",
+        "model": "proofs/Frame.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "bits_eval",
+          "leaf_eval",
+          "filter_rows_kernel",
+          "len_filter_bits",
+          "holds_neg",
+          "int_cmp_swap",
+          "of_decimal_texts_ok"
+        ],
+        "operations": [
+          "Transform.Filter"
+        ]
+      }
+    },
+    {
+      "id": "frame-differential",
+      "level": "tested",
+      "claim": "The extracted frame model agrees with the shipped `Frame.fs` and `Kernels.fs` over generated frames at every column type (300 trials): at the TABLE door, `Frame.ofTable` against `of_table` row for row, the vector each side chose per column (ints, floats, bools, strings, decimals scaled and boxed, dates, timestamps with and without a fraction vector, boxed cells), every production vector read at every physical row through `Vec.cellAt` against `cell_at`, and a column of its field's type and length against Core's `Column.toCells` — null-free columns, masked ones, masks of another length than the values, and columns of another type or length or missing; at the ROW door, `Frame.ofRows` against `of_rows` over cells the types carry, ints in float and decimal columns, non-canonical and coarser temporal texts and cells of another kind; at the boundary OUT, `Frame.toTable` through drawn selections (repeats, any order) against `to_table` and against the read-back, and `DataFrame.prepareRows` / `DataFrame.toTable` against `prepare_rows` / `prepared_table`, a refused width included; and at the KERNELS, `filterBits` through the portable and the host members against `filter_bits` bit for bit (read through `Kernels.isSet`), `selection` against `selection`, and the filter step through the host kernels against `filter_kernel` and against `Pipeline.fst`'s `filter_rows` over the model's read-back at production's primitives — the kernel theorem's conclusion at the instantiation its premise names — over int, float and decimal vectors. Two go-reds show the comparison can fail: a bridge reading every validity with its meaning flipped, and a float order reversed.",
+      "phase": "fuaran-core#435",
+      "evidence": {
+        "family": "Proofs.Oracle",
+        "model": "proofs/Frame.fst",
+        "cases": [
+          "the frame oracle agrees with Frame.fs at the table door, the row door and the boundary out, and with the kernels and Pipeline's filter where the kernels answer, over generated frames at every column type",
+          "a frame oracle whose bridge reads every validity with its meaning flipped DISAGREES with Frame.ofTable — the read-back measurement can fail",
+          "a frame oracle whose float order is reversed DISAGREES with the comparison kernels — the kernel measurement can fail"
+        ],
+        "operations": [
+          "DataFrame.prepare",
+          "DataFrame.prepareRows",
+          "DataFrame.toTable",
+          "Transform.Filter"
+        ]
+      }
+    },
+    {
+      "id": "frame-host-abstract",
+      "level": "assumed",
+      "claim": "THE FRAME'S HOST (Phase 435). `Frame.fst` takes the functions the frame calls and does not restate as a record (`host`), and two representations as given; each is listed with what the theorems assume of it. The canonical temporal texts and their readers (`TemporalText.dateText` / `instantText` / `tryDays` / `tryInstant`), the float carrier and decimal text of an int, and the decimal vector's scale scan and reader (`ScaledDecimal.scaleOf` / `tryScaled`): NOTHING is assumed by the read-back theorems, because `Column.cell` and `Vec.cellAt` call the same functions; the kernel theorem's decimal leaf reads the carried integers, which the boundary builds as the texts' readings under ONE premise of `scaleOf` (`scale_admits`: a scale it answers reads every present text). `Kernels.compareFloat` over carriers: assumed antisymmetric, inside `frame-kernel-primitives`. The two representations: a decimal vector's unscaled integers are float64s in production and integers in the model, which is the exactness `ScaledDecimal.Width` keeps (every value and its comparison constant at most 2^53 - 1 in magnitude); and a selection bitmap is one bit per row in the model where production packs 32 rows to a word, read back by `isSet` / `selection`. The differential instantiates the record at production's own functions and reads production's words through `Kernels.isSet`.",
+      "phase": "fuaran-core#435",
+      "class": "model-bridge",
+      "closes": "permanent",
+      "evidence": {
+        "assumption": "the temporal texts and readers, an int's float carrier and decimal text, scaleOf / tryScaled and compareFloat are host functions; a scale scaleOf answers reads every present text; a decimal vector's float64 carriers are exact integers; a bitmap word holds rows p at bit p % 32 of word p / 32"
+      }
+    },
+    {
+      "id": "frame-kernel-primitives",
+      "level": "assumed",
+      "claim": "THE KERNEL PREMISE (Phase 435). `filter_kernel_is_step` holds under one hypothesis on `Pipeline.fst`'s cell primitives, stated at exactly the cells a kernel leaf meets (`kernel_prims`): a comparison with `Null` on either side is `Null`; a comparison of two ints, two floats, a float and an int, two decimals at a scale both read at, or a decimal and an int is `Bool` of `Kernels.holds` over the ordering the kernel computes (`compare` over ints; `compareFloat` over the floats, an int read as its float; the decimals' unscaled integers, the int scaled to the column's scale); `compareFloat` is antisymmetric; and `And` / `Or` over `Bool` / `Null` operands are Kleene's. Each is production's `comparison` (over `compareCells`) or `logical` at those cells — the premise is that the kernels' pinned orderings ARE the primitives' — and nothing is assumed of any other cell. The differential tests the conclusion at production's own primitives (`pPrims`): the kernel step's rows against `Pipeline.fst`'s `filter_rows` over the read-back.",
+      "phase": "fuaran-core#435",
+      "class": "premise",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "the comparison primitive at Null, int, float, float-against-int, decimal and decimal-against-int cells answers Bool of holds over the kernel's ordering (Null where a side is Null); compareFloat is antisymmetric; And / Or over Bool and Null are Kleene's"
+      }
     }
   ]
 }

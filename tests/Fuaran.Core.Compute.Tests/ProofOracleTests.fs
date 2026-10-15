@@ -33,6 +33,10 @@ module ModelInc = Incremental
 // reading.
 module ModelRel = Relational
 
+// The dense frame and its kernels (`proofs/oracle/Frame.fs`), aliased before the opens: production
+// has a `Frame` type and module of its own in `Fuaran.Compute`.
+module ModelFrame = Frame
+
 open Fuaran.Core
 open Fuaran.Compute
 open Fuaran.Compute.Tests
@@ -3014,6 +3018,763 @@ let private pDropUnknownSortKeysStep
                 ))
         | _ -> faithful f t
 
+// ---- Phase 435 — the DENSE FRAME and its KERNELS (`proofs/Frame.fst`): the boundary in and out
+//      and the comparison kernels, against `Frame.fs` and `Kernels.fs` ----
+//
+// WHAT THE BRIDGE SAYS. The model reads a cell as `Pipeline.fst`'s (a float as its round-trip `R`
+// carrier) and a vector as the lists its arrays hold; its `host` is instantiated at production's
+// own functions (`TemporalText`, `ScaledDecimal`, `Kernels.compareFloat`) and its `prims` at the
+// pipeline differential's `pPrims`. Every comparison is cell by cell through `pCellToModel`.
+
+let private fUnit (u: TimeUnit) : ModelFrame.time_unit =
+    match u with
+    | TimeUnit.Seconds -> ModelFrame.Seconds
+    | TimeUnit.Milliseconds -> ModelFrame.Millis
+    | TimeUnit.Microseconds -> ModelFrame.Micros
+    | TimeUnit.Nanoseconds -> ModelFrame.Nanos
+
+let private fUnitOf (u: ModelFrame.time_unit) : TimeUnit =
+    match u with
+    | ModelFrame.Seconds -> TimeUnit.Seconds
+    | ModelFrame.Millis -> TimeUnit.Milliseconds
+    | ModelFrame.Micros -> TimeUnit.Microseconds
+    | ModelFrame.Nanos -> TimeUnit.Nanoseconds
+
+let private fType (t: ColumnType) : ModelFrame.ftype =
+    match t with
+    | IntType -> ModelFrame.TInt
+    | FloatType -> ModelFrame.TFloat
+    | BoolType -> ModelFrame.TBool
+    | StringType -> ModelFrame.TString
+    | DateType -> ModelFrame.TDate
+    | TimestampType u -> ModelFrame.TStamp(fUnit u)
+    | DecimalType -> ModelFrame.TDecimal
+
+let private fFloat (x: float) : string = x.ToString("R", inv)
+
+let private fParse (s: string) : float =
+    System.Double.Parse(s, System.Globalization.NumberStyles.Float, inv)
+
+let private fOpt (o: 'a option) : FStar_Pervasives_Native.option<'a> =
+    match o with
+    | Some x -> FStar_Pervasives_Native.Some x
+    | None -> FStar_Pervasives_Native.None
+
+/// The model's `host`, at production's own functions.
+let private fHostWith (compareFloat: float -> float -> int) : ModelFrame.host =
+    { ModelFrame.host.date_text = fun d -> TemporalText.dateText (int d)
+      ModelFrame.host.instant_text = fun u s f -> TemporalText.instantText (fUnitOf u) (float s) (int f)
+      ModelFrame.host.try_days = fun s -> TemporalText.tryDays s |> Option.map bigint |> fOpt
+      ModelFrame.host.try_instant =
+        fun u s ->
+            TemporalText.tryInstant (fUnitOf u) s
+            |> Option.map (fun (sec, frac) -> bigint sec, bigint frac)
+            |> fOpt
+      ModelFrame.host.float_of_int = fun x -> fFloat (float (int x))
+      ModelFrame.host.int_text = fun x -> string (int x)
+      ModelFrame.host.scale_of =
+        fun texts mask ->
+            ScaledDecimal.scaleOf (List.toArray texts) (Mask.ofBools (List.toArray mask))
+            |> Option.map bigint
+            |> fOpt
+      ModelFrame.host.try_scaled =
+        fun s t ->
+            match ScaledDecimal.tryScaled (int s) t with
+            | ValueSome k -> FStar_Pervasives_Native.Some(bigint k)
+            | ValueNone -> FStar_Pervasives_Native.None
+      ModelFrame.host.compare_float = fun a b -> bigint (compareFloat (fParse a) (fParse b)) }
+
+let private fHost = fHostWith Kernels.compareFloat
+
+let private fValidity (v: Validity) : ModelFrame.validity =
+    match v with
+    | AllValid -> ModelFrame.AllValid
+    | Validity.Mask m -> ModelFrame.VMask(Vector.toList m)
+
+/// The go-red's bridge: every validity read with its meaning FLIPPED — a set bit absent, and a
+/// null-free column's every row absent.
+let private fValidityFlipped (n: int) (v: Validity) : ModelFrame.validity =
+    match v with
+    | AllValid -> ModelFrame.VMask(List.replicate n false)
+    | Validity.Mask m -> ModelFrame.VMask(Vector.toList m |> List.map not)
+
+let private fColumnWith (validity: int -> Validity -> ModelFrame.validity) (c: Column) : ModelFrame.ccolumn =
+    let ints (v: Vector<int>) = Vector.toList v |> List.map bigint
+    let n = Column.length c
+
+    let data =
+        match c.Data with
+        | ColumnData.Ints(v, va) -> ModelFrame.DInts(ints v, validity n va)
+        | ColumnData.Floats(v, va) -> ModelFrame.DFloats(Vector.toList v |> List.map fFloat, validity n va)
+        | ColumnData.Bools(v, va) -> ModelFrame.DBools(Vector.toList v, validity n va)
+        | ColumnData.Strs(v, va) -> ModelFrame.DStrs(Vector.toList v, validity n va)
+        | ColumnData.Dates(v, va) -> ModelFrame.DDates(ints v, validity n va)
+        | ColumnData.Timestamps(u, s, f, va) ->
+            ModelFrame.DStamps(fUnit u, Vector.toList s |> List.map bigint, f |> Option.map ints |> fOpt, validity n va)
+        | ColumnData.Decimals(v, va) -> ModelFrame.DDecimals(Vector.toList v, validity n va)
+
+    { ModelFrame.ccolumn.cname = c.Name
+      ModelFrame.ccolumn.cdata = data }
+
+let private fTableWith (validity: int -> Validity -> ModelFrame.validity) (t: Table) : ModelFrame.ctable =
+    { ModelFrame.ctable.tschema = t.Schema |> List.map (fun fl -> fl.Name, fType fl.Type)
+      ModelFrame.ctable.tcolumns = t.Columns |> List.map (fColumnWith validity) }
+
+let private fTable = fTableWith (fun _ v -> fValidity v)
+
+let private fMaskOf (m: Mask) : bool list = Mask.toBools m |> List.ofArray
+
+/// Production's vector as the model's — the arrays as the lists they hold.
+let private fVec (v: Vec) : ModelFrame.vec =
+    let ints (a: int[]) = a |> Array.toList |> List.map bigint
+
+    match v with
+    | Ints(a, m) -> ModelFrame.VInts(ints a, fMaskOf m)
+    | Floats(a, m) -> ModelFrame.VFloats(a |> Array.toList |> List.map fFloat, fMaskOf m)
+    | Bools(a, m) -> ModelFrame.VBools(fMaskOf a, fMaskOf m)
+    | Strs(ty, a, m) -> ModelFrame.VStrs(fType ty, Array.toList a, fMaskOf m)
+    | Decs(a, s, t, m) -> ModelFrame.VDecs(a |> Array.toList |> List.map bigint, bigint s, Array.toList t, fMaskOf m)
+    | Dates(a, m) -> ModelFrame.VDates(ints a, fMaskOf m)
+    | Stamps(u, s, f, m) ->
+        ModelFrame.VStamps(
+            fUnit u,
+            s |> Array.toList |> List.map bigint,
+            (if isNull f then
+                 FStar_Pervasives_Native.None
+             else
+                 FStar_Pervasives_Native.Some(ints f)),
+            fMaskOf m
+        )
+    | Cells a -> ModelFrame.VCells(a |> Array.toList |> List.map pCellToModel)
+
+let private fFrame (f: Frame) : ModelFrame.dframe =
+    { ModelFrame.dframe.fcols = f.Cols |> List.map (fun fl -> fl.Name, fType fl.Type)
+      ModelFrame.dframe.vecs = f.Vecs |> Array.toList |> List.map fVec
+      ModelFrame.dframe.sel = f.Sel |> Option.map (Array.toList >> List.map bigint) |> fOpt
+      ModelFrame.dframe.count = bigint f.Count }
+
+/// The kind of vector — the representation both sides chose for a column.
+let private fKind (v: Vec) : string =
+    match v with
+    | Ints _ -> "ints"
+    | Floats _ -> "floats"
+    | Bools _ -> "bools"
+    | Strs _ -> "strs"
+    | Decs _ -> "decs"
+    | Dates _ -> "dates"
+    | Stamps(_, _, f, _) -> if isNull f then "stamps" else "stamps+fraction"
+    | Cells _ -> "cells"
+
+let private fModelKind (v: ModelFrame.vec) : string =
+    match v with
+    | ModelFrame.VInts _ -> "ints"
+    | ModelFrame.VFloats _ -> "floats"
+    | ModelFrame.VBools _ -> "bools"
+    | ModelFrame.VStrs _ -> "strs"
+    | ModelFrame.VDecs _ -> "decs"
+    | ModelFrame.VDates _ -> "dates"
+    | ModelFrame.VStamps(_, _, f, _) ->
+        match f with
+        | FStar_Pervasives_Native.None -> "stamps"
+        | FStar_Pervasives_Native.Some _ -> "stamps+fraction"
+    | ModelFrame.VCells _ -> "cells"
+
+type private FrameTally =
+    { FDiffs: string list
+      FCells: int
+      FKinds: Set<string>
+      FViews: int
+      FFallbacks: int
+      FAllValid: int
+      FMasked: int
+      FOddMasks: int
+      FTablesOut: int
+      FBoxedOut: int
+      FRowsRefused: int
+      FKernelSome: int
+      FKernelNone: int
+      FKernelRows: int
+      FKernelKinds: Set<string> }
+
+let private fEmptyTally =
+    { FDiffs = []
+      FCells = 0
+      FKinds = Set.empty
+      FViews = 0
+      FFallbacks = 0
+      FAllValid = 0
+      FMasked = 0
+      FOddMasks = 0
+      FTablesOut = 0
+      FBoxedOut = 0
+      FRowsRefused = 0
+      FKernelSome = 0
+      FKernelNone = 0
+      FKernelRows = 0
+      FKernelKinds = Set.empty }
+
+/// A generator over one RNG, threaded through a mutable cell.
+type private FDraw(seed: int) =
+    let mutable r = ConfRng.ofSeed seed
+
+    member _.Below(n: int) : int =
+        let v, r' = ConfRng.intBelow n r
+        r <- r'
+        v
+
+    member this.Pick(xs: 'a list) : 'a =
+        List.item (this.Below(List.length xs)) xs
+
+let private fUnits =
+    [ TimeUnit.Seconds
+      TimeUnit.Milliseconds
+      TimeUnit.Microseconds
+      TimeUnit.Nanoseconds ]
+
+let private fTypes =
+    [ IntType
+      FloatType
+      BoolType
+      StringType
+      DateType
+      TimestampType TimeUnit.Seconds
+      TimestampType TimeUnit.Milliseconds
+      TimestampType TimeUnit.Nanoseconds
+      DecimalType ]
+
+/// A decimal text: mostly at a scale the carrier holds, now and then too wide for it (the column
+/// then takes the text path, `Cells`).
+let private fDecimalText (d: FDraw) : string =
+    let whole = d.Below 2000 - 1000
+
+    match d.Below 6 with
+    | 0 -> string whole
+    | 1 -> sprintf "%d.%d" whole (d.Below 10)
+    | 2 -> sprintf "%d.%02d" whole (d.Below 100)
+    | 3 -> sprintf "%d.125" whole
+    | 4 ->
+        if d.Below 3 = 0 then
+            "1234567890123456.5"
+        else
+            sprintf "%d.5" whole
+    | _ -> sprintf "-0.%03d" (d.Below 1000 + 1)
+    |> fun s ->
+        Cell.decimal s
+        |> Option.map (fun c ->
+            match c with
+            | Cell.Decimal t -> t
+            | _ -> s)
+        |> Option.defaultValue s
+
+/// A Core column of `ty` and `n` rows: null-free (`AllValid`) a third of the time, else a mask with
+/// absent rows — now and then a mask of another length than the values, which a Core column can
+/// hold and the frame's `maskOf` reads padded absent or cut.
+let private fGenColumn (d: FDraw) (name: string) (ty: ColumnType) (n: int) : Column =
+    let validity =
+        match d.Below 3 with
+        | 0 -> AllValid
+        | _ ->
+            let len =
+                match d.Below 8 with
+                | 0 -> max 0 (n - 1)
+                | 1 -> n + 1
+                | _ -> n
+
+            let bits = Array.init len (fun _ -> d.Below 4 <> 0)
+
+            if Array.forall id bits && len = n then
+                AllValid
+            else
+                Validity.Mask(Vector.ofArray bits)
+
+    match ty with
+    | IntType -> Column.ofInts name (Vector.ofArray (Array.init n (fun _ -> d.Below 200 - 100))) validity
+    | FloatType ->
+        Column.ofFloats
+            name
+            (Vector.ofArray (
+                Array.init n (fun _ ->
+                    match d.Below 12 with
+                    | 0 -> -0.0
+                    | 1 -> 1e300
+                    | _ -> float (d.Below 400 - 200) / 4.0)
+            ))
+            validity
+    | BoolType -> Column.ofBools name (Vector.ofArray (Array.init n (fun _ -> d.Below 2 = 0))) validity
+    | StringType -> Column.ofStrs name (Vector.ofArray (Array.init n (fun _ -> d.Pick [ "a"; "b"; ""; "zz" ]))) validity
+    | DateType -> Column.ofDates name (Vector.ofArray (Array.init n (fun _ -> d.Below 40000 - 5000))) validity
+    | TimestampType u ->
+        let seconds = Array.init n (fun _ -> float (d.Below 2000000000))
+        let scale = TimeUnit.scale u
+
+        let fraction =
+            if u = TimeUnit.Seconds then
+                None
+            else
+                Some(Vector.ofArray (Array.init n (fun _ -> if d.Below 3 = 0 then 0 else d.Below scale)))
+
+        Column.ofTimestamps name u (Vector.ofArray seconds) fraction validity
+    | DecimalType -> Column.ofDecimals name (Vector.ofArray (Array.init n (fun _ -> fDecimalText d))) validity
+
+/// A table: one field per drawn type, its column usually of the field's type and the table's
+/// length, and now and then of another type (an int column under a float field, …), of another
+/// length, or missing — the fall-back the frame packs from the cells.
+let private fGenTable (d: FDraw) : Table =
+    let n = d.Below 7
+    let width = 1 + d.Below 5
+
+    let fields =
+        [ for j in 0 .. width - 1 ->
+              let ty = d.Pick fTypes
+              Field.create (sprintf "c%d" j) ty ]
+
+    let columns =
+        fields
+        |> List.choose (fun fl ->
+            match d.Below 10 with
+            | 0 -> None
+            | 1 ->
+                let other =
+                    match fl.Type with
+                    | FloatType -> IntType
+                    | DecimalType -> IntType
+                    | IntType -> StringType
+                    | _ -> IntType
+
+                Some(fGenColumn d fl.Name other n)
+            | 2 -> Some(fGenColumn d fl.Name fl.Type (n + 1))
+            | _ -> Some(fGenColumn d fl.Name fl.Type n))
+
+    // `Table.rowCount` reads the FIRST column, so a first column of another length moves the frame's
+    // length for every other column — drawn too, at the rate it comes.
+    { Schema = fields; Columns = columns }
+
+let private fCellText (c: ModelPipe.cell) : string = sprintf "%A" c
+
+/// Production's read-back of `f` and the model's of its image, cell by cell.
+let private fCompareRows (label: string) (prod: Cell[][]) (model: ModelPipe.cell list list) (acc: FrameTally) =
+    if prod.Length <> List.length model then
+        { acc with
+            FDiffs =
+                sprintf "%s: %d rows in production, %d in the model" label prod.Length (List.length model)
+                :: acc.FDiffs }
+    else
+        let mutable a = acc
+
+        List.iteri
+            (fun i (mr: ModelPipe.cell list) ->
+                let pr = prod[i] |> Array.toList |> List.map pCellToModel
+
+                if pr <> mr then
+                    a <-
+                        { a with
+                            FDiffs = sprintf "%s: row %d production %A model %A" label i pr mr :: a.FDiffs }
+                else
+                    a <-
+                        { a with
+                            FCells = a.FCells + List.length pr })
+            model
+
+        a
+
+/// The TABLE DOOR: `Frame.ofTable` against `of_table`, the vector each side chose per column, every
+/// vector read at every physical row through `Vec.cellAt` against `cell_at` over production's own
+/// vector, and — for a column of its field's type and the table's length — against Core's
+/// `Column.toCells` (the theorem `of_table_reads_columns` states: the frame reads the table's rows).
+let private fTableDoor (bridge: Table -> ModelFrame.ctable) (label: string) (t: Table) (acc: FrameTally) =
+    let f = Frame.ofTable t
+    let mf = ModelFrame.of_table fHost (bridge t)
+
+    let mutable a =
+        fCompareRows (label + " ofTable") (Frame.rowsOf f) (ModelFrame.rows_of fHost mf) acc
+
+    let n = Table.rowCount t
+
+    t.Schema
+    |> List.iteri (fun j fl ->
+        let pv = f.Vecs[j]
+        let mv = List.item j mf.vecs
+
+        a <-
+            { a with
+                FKinds = Set.add (fKind pv) a.FKinds }
+
+        if fKind pv <> fModelKind mv then
+            a <-
+                { a with
+                    FDiffs =
+                        sprintf
+                            "%s: column %s is %s in production, %s in the model"
+                            label
+                            fl.Name
+                            (fKind pv)
+                            (fModelKind mv)
+                        :: a.FDiffs }
+
+        for p in 0 .. Vec.length pv - 1 do
+            let pc = pCellToModel (Vec.cellAt pv p)
+            let mc = ModelFrame.cell_at fHost (fVec pv) (bigint p)
+
+            if pc <> mc then
+                a <-
+                    { a with
+                        FDiffs =
+                            sprintf "%s: cellAt %s[%d] production %A model %A" label fl.Name p pc mc
+                            :: a.FDiffs }
+
+        match Table.tryColumn fl.Name t with
+        | Some c when c.Type = fl.Type && Column.length c = n ->
+            let core = Column.toCells c |> List.map pCellToModel
+            let read = [ for i in 0 .. n - 1 -> pCellToModel (Vec.cellAt pv i) ]
+
+            if core <> read then
+                a <-
+                    { a with
+                        FDiffs =
+                            sprintf "%s: column %s reads %A, Core's toCells %A" label fl.Name read core
+                            :: a.FDiffs }
+
+            match c.Data.Validity with
+            | AllValid ->
+                a <-
+                    { a with
+                        FViews = a.FViews + 1
+                        FAllValid = a.FAllValid + 1 }
+            | Validity.Mask m ->
+                a <-
+                    { a with
+                        FViews = a.FViews + 1
+                        FMasked = a.FMasked + 1
+                        FOddMasks = a.FOddMasks + (if m.Length <> n then 1 else 0) }
+        | _ -> a <- { a with FFallbacks = a.FFallbacks + 1 })
+
+    a
+
+/// A cell for a column of `ty` as the ROW door hands one in: usually one the type carries, now and
+/// then an int in a float or decimal column, a temporal text at a coarser unit or not canonical, or
+/// a cell of another kind (the column then stays boxed).
+let private fGenRowCell (d: FDraw) (ty: ColumnType) : Cell =
+    match d.Below 14 with
+    | 0 -> Null
+    | 1 -> d.Pick [ Str "x"; Int 3; Bool true; Cell.Date "2020-01-01" ]
+    | _ ->
+        match ty with
+        | IntType -> Int(d.Below 100 - 50)
+        | FloatType ->
+            if d.Below 4 = 0 then
+                Int(d.Below 9)
+            else
+                Float(float (d.Below 100) / 8.0)
+        | BoolType -> Bool(d.Below 2 = 0)
+        | StringType -> Str(d.Pick [ "a"; "b"; "" ])
+        | DateType ->
+            Cell.Date(
+                if d.Below 9 = 0 then
+                    "2020-1-1"
+                else
+                    TemporalText.dateText (d.Below 30000)
+            )
+        | TimestampType u ->
+            let s = float (d.Below 1000000000)
+
+            match d.Below 4 with
+            | 0 -> Cell.Timestamp(TemporalText.instantText TimeUnit.Seconds s 0)
+            | 1 -> Cell.Timestamp "2020-01-01T00:00:00.5Z"
+            | _ -> Cell.Timestamp(TemporalText.instantText u s (d.Below(TimeUnit.scale u)))
+        | DecimalType ->
+            if d.Below 5 = 0 then
+                Int(d.Below 50)
+            else
+                Cell.Decimal(fDecimalText d)
+
+let private fRowsOf (rows: Cell[][]) : ModelPipe.cell list list =
+    rows |> Array.toList |> List.map (Array.toList >> List.map pCellToModel)
+
+/// The ROW door and the boundary OUT: `Frame.ofRows` against `of_rows` (and, under a drawn selection,
+/// `Frame.toTable` against `to_table` — and both against the read-back, `to_table_reads`), and
+/// `DataFrame.prepareRows` / `DataFrame.toTable` against `prepare_rows` / `prepared_table`, a row of
+/// the wrong width included.
+let private fRowDoor (d: FDraw) (label: string) (acc: FrameTally) =
+    let width = 1 + d.Below 4
+
+    let schema =
+        [ for j in 0 .. width - 1 -> Field.create (sprintf "r%d" j) (d.Pick fTypes) ]
+
+    let n = d.Below 6
+
+    let rows =
+        Array.init n (fun _ -> schema |> List.map (fun fl -> fGenRowCell d fl.Type) |> List.toArray)
+
+    let mcols = schema |> List.map (fun fl -> fl.Name, fType fl.Type)
+    let mrows = fRowsOf rows
+    let f = Frame.ofRows schema rows
+    let mf = ModelFrame.of_rows fHost mcols mrows
+
+    let mutable a =
+        fCompareRows (label + " ofRows") (Frame.rowsOf f) (ModelFrame.rows_of fHost mf) acc
+
+    for j in 0 .. width - 1 do
+        a <-
+            { a with
+                FKinds = Set.add (fKind f.Vecs[j]) a.FKinds }
+
+        if fKind f.Vecs[j] <> fModelKind (List.item j mf.vecs) then
+            a <-
+                { a with
+                    FDiffs = sprintf "%s: row-door column %d kinds differ" label j :: a.FDiffs }
+
+    // The boundary out, through a drawn selection (repeats and any order allowed).
+    let sel =
+        if n = 0 || d.Below 3 = 0 then
+            None
+        else
+            Some(Array.init (d.Below 6) (fun _ -> d.Below n))
+
+    let fs =
+        match sel with
+        | Some s -> Frame.select f s
+        | None -> f
+
+    let mfs = fFrame fs
+    let readBack = ModelFrame.rows_of fHost mfs
+
+    a <- fCompareRows (label + " select") (Frame.rowsOf fs) readBack a
+
+    match ModelFrame.to_table mfs with
+    | FStar_Pervasives_Native.None -> a <- { a with FBoxedOut = a.FBoxedOut + 1 }
+    | FStar_Pervasives_Native.Some mt ->
+        let pt = Frame.toTable fs
+        a <- { a with FTablesOut = a.FTablesOut + 1 }
+
+        List.iteri
+            (fun j (mc: ModelFrame.ccolumn) ->
+                let core = Column.toCells (List.item j pt.Columns) |> List.map pCellToModel
+                let model = ModelFrame.core_cells fHost mc
+                let fromRows = readBack |> List.map (List.item j)
+
+                if core <> model || model <> fromRows then
+                    a <-
+                        { a with
+                            FDiffs =
+                                sprintf
+                                    "%s: toTable column %d production %A model %A read-back %A"
+                                    label
+                                    j
+                                    core
+                                    model
+                                    fromRows
+                                :: a.FDiffs })
+            mt.tcolumns
+
+    // The prepared source: a refused width, or the frame and the table it stands for.
+    let handed =
+        if n > 0 && d.Below 4 = 0 then
+            Array.append rows [| Array.create (width + 1) Null |]
+        else
+            rows
+
+    match DataFrame.prepareRows schema handed, ModelFrame.prepare_rows fHost mcols (fRowsOf handed) with
+    | Error e, ModelPipe.Error me ->
+        a <-
+            { a with
+                FRowsRefused = a.FRowsRefused + 1 }
+
+        if pErrToModel e <> me then
+            a <-
+                { a with
+                    FDiffs = sprintf "%s: prepareRows refused %A, model %A" label e me :: a.FDiffs }
+    | Ok p, ModelPipe.Ok mp ->
+        match ModelFrame.prepared_table mp with
+        | FStar_Pervasives_Native.Some mt ->
+            let pt = DataFrame.toTable p
+
+            let prodCells = pt.Columns |> List.map (Column.toCells >> List.map pCellToModel)
+
+            let modelCells = mt.tcolumns |> List.map (ModelFrame.core_cells fHost)
+
+            if prodCells <> modelCells then
+                a <-
+                    { a with
+                        FDiffs =
+                            sprintf "%s: prepared toTable %A model %A" label prodCells modelCells
+                            :: a.FDiffs }
+        | FStar_Pervasives_Native.None -> ()
+    | pr, mr ->
+        a <-
+            { a with
+                FDiffs = sprintf "%s: prepareRows %A, model %A" label pr mr :: a.FDiffs }
+
+    a
+
+let private fCmpOps = [ Lt; Le; Gt; Ge; Eq; Ne ]
+
+/// A filter predicate over `t`'s columns: `And` / `Or` over comparisons of a column with a constant
+/// (an int, a float, a decimal, a null, a bound param) on either side — the shapes `filterBits`
+/// answers — and now and then one it declines (two columns, an arithmetic operator, an unknown
+/// column), which the compiled path answers.
+let rec private fGenPred (d: FDraw) (depth: int) (t: Table) : ColExpr =
+    let cols = t.Schema |> List.map (fun fl -> fl.Name)
+
+    // The numeric columns, where the kernels live, drawn three times in four when there are any.
+    let numeric =
+        t.Schema
+        |> List.filter (fun fl -> fl.Type = IntType || fl.Type = FloatType || fl.Type = DecimalType)
+        |> List.map (fun fl -> fl.Name)
+
+    let leafCols =
+        if List.isEmpty numeric || d.Below 4 = 0 then
+            cols
+        else
+            numeric
+
+    match (if depth = 0 then 2 + d.Below 8 else d.Below 10) with
+    | 0 -> Binary(And, fGenPred d (depth - 1) t, fGenPred d (depth - 1) t)
+    | 1 -> Binary(Or, fGenPred d (depth - 1) t, fGenPred d (depth - 1) t)
+    | 9 ->
+        d.Pick
+            [ Binary(Lt, Col(d.Pick cols), Col(d.Pick cols))
+              Binary(Add, Col(d.Pick cols), Lit(Int 1))
+              Binary(Gt, Col "nope", Lit(Int 0)) ]
+    | _ ->
+        let constant =
+            match d.Below 7 with
+            | 0 -> Lit(Int(d.Below 200 - 100))
+            | 1 -> Lit(Float(float (d.Below 400 - 200) / 4.0))
+            | 2 -> Lit(Cell.Decimal(fDecimalText d))
+            | 3 -> Lit Null
+            | 4 -> Param "k"
+            | 5 -> Lit(Float -0.0)
+            | _ -> Lit(Int(d.Below 20))
+
+        let column = Col(d.Pick leafCols)
+        let op = d.Pick fCmpOps
+
+        if d.Below 2 = 0 then
+            Binary(op, column, constant)
+        else
+            Binary(op, constant, column)
+
+let private fEnv: Map<string, Cell> = Map.ofList [ "k", Int 7 ]
+
+let private fBits (k: KernelSet) (f: Frame) (bits: uint32[]) : bool list =
+    ignore k
+    [ for p in 0 .. f.Count - 1 -> Kernels.isSet bits p ]
+
+/// The KERNELS: `filterBits` (portable and host members) against `filter_bits`, read through
+/// `Kernels.isSet`; `selection` against `selection`; and the filter step through the host kernels
+/// against `filter_kernel` where the kernels answer — and, there, against `Pipeline.fst`'s row-major
+/// `filter_rows` over the model's read-back at production's primitives: the kernel theorem's
+/// conclusion (`filter_kernel_is_step`) at the instantiation its premise names.
+let private fKernels (host: ModelFrame.host) (d: FDraw) (label: string) (t: Table) (acc: FrameTally) =
+    let f0 = Frame.ofTable t
+
+    let f =
+        if f0.Count > 0 && d.Below 3 = 0 then
+            Frame.select f0 (Array.init (d.Below 8) (fun _ -> d.Below f0.Count))
+        else
+            f0
+
+    let mf = fFrame f
+    let menv = pEnvToModel fEnv
+    let pred = fGenPred d 2 t
+    let mpred = pExprToModel pred
+    let resolved = DataFrame.resolveExpr fEnv f.Cols pred
+    let mutable a = acc
+
+    let modelBits = ModelFrame.filter_bits host menv mf mpred
+
+    for k in [ Kernels.portable; Kernels.host ] do
+        match DataFrame.filterBits k f resolved, modelBits with
+        | None, FStar_Pervasives_Native.None -> ()
+        | Some bits, FStar_Pervasives_Native.Some mb ->
+            if fBits k f bits <> mb then
+                a <-
+                    { a with
+                        FDiffs =
+                            sprintf "%s: %A bits production %A model %A" label pred (fBits k f bits) mb
+                            :: a.FDiffs }
+
+            let ps = k.Selection bits |> Array.toList |> List.map bigint
+
+            if ps <> ModelFrame.selection mb then
+                a <-
+                    { a with
+                        FDiffs =
+                            sprintf "%s: %A selection production %A model %A" label pred ps (ModelFrame.selection mb)
+                            :: a.FDiffs }
+        | pb, _ ->
+            a <-
+                { a with
+                    FDiffs =
+                        sprintf "%s: %A filterBits production %A model %A" label pred (Option.isSome pb) modelBits
+                        :: a.FDiffs }
+
+    match ModelFrame.filter_kernel host menv mf mpred with
+    | FStar_Pervasives_Native.None ->
+        a <-
+            { a with
+                FKernelNone = a.FKernelNone + 1 }
+    | FStar_Pervasives_Native.Some mf' ->
+        // The vectors the answered predicate's leaves read.
+        let rec reads (e: ColExpr) : string list =
+            match e with
+            | Binary(_, x, y) -> reads x @ reads y
+            | Col name -> [ name ]
+            | _ -> []
+
+        let kinds =
+            reads pred
+            |> List.choose (fun name -> f.Cols |> List.tryFindIndex (fun fl -> fl.Name = name))
+            |> List.map (fun j -> fKind f.Vecs[j])
+
+        a <-
+            { a with
+                FKernelSome = a.FKernelSome + 1
+                FKernelKinds = Set.union a.FKernelKinds (Set.ofList kinds) }
+
+        let kernelRows = ModelFrame.rows_of host mf'
+
+        match DataFrame.evalStepWith Kernels.host DataFrame.noResolve fEnv f (Filter pred) with
+        | Ok f' ->
+            a <- fCompareRows (sprintf "%s filter %A" label pred) (Frame.rowsOf f') kernelRows a
+
+            a <-
+                { a with
+                    FKernelRows = a.FKernelRows + List.length kernelRows }
+        | Error e ->
+            a <-
+                { a with
+                    FDiffs =
+                        sprintf "%s: %A production refused %A, the kernel did not" label pred e
+                        :: a.FDiffs }
+
+        let schema = ModelFrame.erase_schema mf.fcols
+
+        match ModelPipe.filter_rows pPrims menv schema (ModelFrame.rows_of host mf) mpred with
+        | ModelPipe.Ok rows when rows = kernelRows -> ()
+        | other ->
+            a <-
+                { a with
+                    FDiffs =
+                        sprintf "%s: %A Pipeline's filter %A, the kernel's rows %A" label pred other kernelRows
+                        :: a.FDiffs }
+
+    a
+
+let private frameDifferential (bridge: Table -> ModelFrame.ctable) (host: ModelFrame.host) (seed: int) (trials: int) =
+    let d = FDraw seed
+    let mutable a = fEmptyTally
+
+    for i in 1..trials do
+        let t = fGenTable d
+        a <- fTableDoor bridge (sprintf "trial %d" i) t a
+        a <- fRowDoor d (sprintf "trial %d" i) a
+
+        for _ in 1..3 do
+            a <- fKernels host d (sprintf "trial %d" i) t a
+
+    a
+
 [<Tests>]
 let proofOracleTests =
     testList
@@ -3889,4 +4650,98 @@ let proofOracleTests =
                       "a disagreement is production refusing what the model evaluated: %A"
                       (List.truncate 3 t.PDiffs))
 
-              printfn "relational go-red (412): %d disagreements, first: %s" (List.length t.PDiffs) (List.last t.PDiffs) ]
+              printfn "relational go-red (412): %d disagreements, first: %s" (List.length t.PDiffs) (List.last t.PDiffs)
+          // ---- Phase 435 — the DENSE FRAME and its KERNELS: the boundary in and out against
+          //      Frame.fs, the kernels against Kernels.fs and Pipeline's filter ----
+
+          testCase
+              "the frame oracle agrees with Frame.fs at the table door, the row door and the boundary out, and with the kernels and Pipeline's filter where the kernels answer, over generated frames at every column type"
+          <| fun _ ->
+              let t = frameDifferential fTable fHost 435 300
+
+              Expect.isEmpty
+                  t.FDiffs
+                  (sprintf "disagreements:\n%s" (String.concat "\n" (List.rev t.FDiffs |> List.truncate 20)))
+
+              for kind in
+                  [ "ints"
+                    "floats"
+                    "bools"
+                    "strs"
+                    "decs"
+                    "dates"
+                    "stamps"
+                    "stamps+fraction"
+                    "cells" ] do
+                  Expect.isTrue
+                      (Set.contains kind t.FKinds)
+                      (sprintf "the sample built a %s vector (built: %A)" kind t.FKinds)
+
+              Expect.isGreaterThan t.FCells 2000 (sprintf "cells compared (%d)" t.FCells)
+              Expect.isGreaterThan t.FAllValid 20 (sprintf "null-free views read (%d)" t.FAllValid)
+              Expect.isGreaterThan t.FMasked 20 (sprintf "masked views read (%d)" t.FMasked)
+              Expect.isGreaterThan t.FOddMasks 0 (sprintf "views over a mask of another length (%d)" t.FOddMasks)
+              Expect.isGreaterThan t.FFallbacks 20 (sprintf "fall-back columns packed (%d)" t.FFallbacks)
+              Expect.isGreaterThan t.FTablesOut 50 (sprintf "frames written out as tables (%d)" t.FTablesOut)
+              Expect.isGreaterThan t.FBoxedOut 0 (sprintf "boxed frames left to Column.ofCells (%d)" t.FBoxedOut)
+              Expect.isGreaterThan t.FRowsRefused 0 (sprintf "row widths refused (%d)" t.FRowsRefused)
+              Expect.isGreaterThan t.FKernelSome 150 (sprintf "filters the kernels answered (%d)" t.FKernelSome)
+
+              for kind in [ "ints"; "floats"; "decs" ] do
+                  Expect.isTrue
+                      (Set.contains kind t.FKernelKinds)
+                      (sprintf "a kernel answered over a %s vector (answered over: %A)" kind t.FKernelKinds)
+
+              Expect.isGreaterThan t.FKernelNone 100 (sprintf "filters left to the compiled path (%d)" t.FKernelNone)
+              Expect.isGreaterThan t.FKernelRows 150 (sprintf "rows the kernels kept (%d)" t.FKernelRows)
+
+              printfn
+                  "frame differential: cells=%d kinds=%d views=%d (allValid=%d masked=%d odd=%d) fallbacks=%d out=%d boxedOut=%d refused=%d kernel=%d/%d rows=%d"
+                  t.FCells
+                  t.FKinds.Count
+                  t.FViews
+                  t.FAllValid
+                  t.FMasked
+                  t.FOddMasks
+                  t.FFallbacks
+                  t.FTablesOut
+                  t.FBoxedOut
+                  t.FRowsRefused
+                  t.FKernelSome
+                  t.FKernelNone
+                  t.FKernelRows
+
+              Expect.equal (frameDifferential fTable fHost 435 300) t "same seed => identical tally"
+
+          testCase
+              "a frame oracle whose bridge reads every validity with its meaning flipped DISAGREES with Frame.ofTable — the read-back measurement can fail"
+          <| fun _ ->
+              let t = frameDifferential (fTableWith fValidityFlipped) fHost 435 60
+
+              Expect.isGreaterThan
+                  (List.length t.FDiffs)
+                  0
+                  "a model reading every mask inverted agreed with production everywhere — the differential cannot fail"
+
+              Expect.isTrue
+                  (t.FDiffs |> List.exists (fun s -> s.Contains "ofTable"))
+                  (sprintf "a disagreement is the table door's read-back: %A" (List.truncate 3 t.FDiffs))
+
+              printfn "frame go-red (validity): %d disagreements, first: %s" (List.length t.FDiffs) (List.last t.FDiffs)
+
+          testCase
+              "a frame oracle whose float order is reversed DISAGREES with the comparison kernels — the kernel measurement can fail"
+          <| fun _ ->
+              let t =
+                  frameDifferential fTable (fHostWith (fun x y -> -(Kernels.compareFloat x y))) 435 100
+
+              Expect.isGreaterThan
+                  (List.length t.FDiffs)
+                  0
+                  "a model with the float order reversed agreed with the kernels everywhere — the differential cannot fail"
+
+              Expect.isTrue
+                  (t.FDiffs |> List.exists (fun s -> s.Contains " bits "))
+                  (sprintf "a disagreement is a kernel bitmap: %A" (List.truncate 3 t.FDiffs))
+
+              printfn "frame go-red (kernels): %d disagreements, first: %s" (List.length t.FDiffs) (List.last t.FDiffs) ]

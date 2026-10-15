@@ -1,6 +1,6 @@
 # Proofs
 
-Four F\* models of this repository's code, each checked by a pinned prover, extracted to F#, and run
+Five F\* models of this repository's code, each checked by a pinned prover, extracted to F#, and run
 beside the production code it models. The claims ladder at the repository root,
 [`../proofs.json`](../proofs.json), says row by row what is **proved**, what is only **tested**,
 what is **assumed** and what is **policy**; this page says how the leg works. A claim that is not a
@@ -12,6 +12,7 @@ row in the ladder is not claimed.
 | [`Pipeline.fst`](Pipeline.fst) | `DataFrame.evalPipelineWithInEnvCounted`: the closed `ColExpr` / `Transform` algebra, the expression evaluator with its four loops, `evalFilter`, `evalDerive`, the step dispatch and the counted fold | totality, budget monotonicity in the pipeline prefix, the evaluator's visits bounded by the expression's nodes, the work bounded by the count under the section-21.8 expression limit taken as a hypothesis — and the finding that the limit is enforced nowhere; since Phase 269 also the planner's reorder (`derive_then_filter`: a total derive whose column type the schema decides — string-typed until Phase 338 — removed from a filtered row's path preserves the driver's result; and, since Phase 338, `derive_type_rows_free`: that type is the same over any two frames of a schema) and the totality verdict's soundness over the modelled evaluator (`verdict_sound`), under the one assumption `admits` names |
 | [`Incremental.fst`](Incremental.fst) | `Incremental.prime` / `Incremental.refresh` on the row-local path (Phase 433): the per-step cell caches `IncrementalEval` retains, the walk that reads a cached cell for every row the delta does not name and evaluates the rest, over pipelines of `Filter` and `Derive` — the two verbs `Pipeline.fst` models as clauses; the other verb classes are declared out in `DECISIONS.md` D31 | priming is full evaluation (`prime_is_full`); a refresh against a primed state under a truthful delta is the prime over the new source, output and caches (`refresh_is_prime`); and so the refreshed answer is the full evaluation over the updated source (`refresh_agrees`) — under the one premise the ladder names (`incremental-delta-truthful`), and on the lemma that the evaluator reads a schema's names and never its types (`eval_expr_names`) |
 | [`Relational.fst`](Relational.fst) | the twelve relational verbs `Pipeline.fst` takes as a parameter (Phase 434): each verb's OUTPUT SCHEMA and every refusal that reads the schema or the pipeline text (`step_schema` — `evalProject`'s pairs, `evalGroupBy`'s keys and aggregates, the join's `joinRightNames` suffix rule and `joinKeyIdx`, `windowRefusal` and the window's type rule, the pivot's data-named columns, the unpivot's `variable` and `value`, the sort's and the limit's slots, the union's type join and the set operations' name agreement), the source seam `evalSource`, and the static walk `SchemaWalk.ofTransform` over `SchemaKnowledge` (`walk`, all fourteen arms); row content is read only where a schema reads it (the pivot's `on` values, the unpivot's melted cells), and `other_of` builds Pipeline's twelve-verb parameter from the schema model and a ROW FUNCTION, which is all that stays assumed | the walk is sound for the evaluator's schema for every verb but `Union` (`walk_sound`: a closed walk reads the evaluator's names and types, an open one reads names and types it produces; the union's names agree, `union_sound_names`, and its types are a finding); a combining join over distinct-named operands answers distinct names (`join_no_dups`, D20 — re-introducing 411's defect fails the leg) and so does a window (`window_no_dups`, D28); every unknown column is refused with `UnknownColumn` in each arm's order (`sort_unknown_refused` — re-introducing 412's defect fails the leg — and seven more); and the finding, as theorems with witnesses: `Project`, `GroupBy`, `Unpivot` and `Pivot` answer `Ok` with a repeated name (`project_repeats_name`, …), and the walk keeps a union's left type where the evaluator widens it (`union_walk_type_drifts`) — `DECISIONS.md` D32 |
+| [`Frame.fst`](Frame.fst) | the evaluator's dense frame and its kernels (Phase 435): `Vec` and `Vec.cellAt` at every column type, the boundary in (`maskOf` — a null-free column's `AllValid` read as every row present — `ofColumn`, `ofDecimalTexts`, `pack`, `Frame.ofTable`, `Frame.ofRows`, `Frame.rowsOf`) and out (`gather`, `toColumn`, `Frame.toTable`), `DataFrame.prepare` / `prepareRows` / `toTable`, and the portable comparison kernels with `filterBits` and the filter's kernel branch; the native member, the morsel runner, the sort kernels and the rope are declared out in `DECISIONS.md` D34 | the frame means exactly its rows: over a table whose columns hold their fields' types and the table's length, cell `(i, j)` of `Frame.ofTable` is Core's `Column.cell i` of column `j`, with or without a mask (`of_table_reads_columns`; `view_reads`, `mask_of_reads`); the read-back is total (`rows_of_reads`); `ofRows` reads every cell as its type carries it and rows carried exactly come back as they went in (`pack_reads`, `of_rows_exact`); `Frame.toTable` writes exactly the logical rows (`to_table_reads`); and a filter the kernels answer is `Pipeline.fst`'s `Filter` step over the read-back, never an error (`filter_kernel_is_step`) — under the kernel premise the ladder names (`frame-kernel-primitives`) |
 | [`Limits.fst`](Limits.fst) | the wire format's section-21 resource limits as named premises | the relations between them; copied from the Fuaran.Core repository because `Pipeline` opens it |
 
 ## The leg
@@ -68,7 +69,7 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.ColumnOps` | `ColumnOps` | 17 | 5 | 1 | 0 | 0 | 0 | 11 |
 | `Fuaran.Compute.DataFrame` | `ColExpr` | 5 | 0 | 0 | 0 | 0 | 0 | 5 |
 | `Fuaran.Compute.DataFrame` | `ColumnKnowledge` | 6 | 0 | 6 | 0 | 0 | 0 | 0 |
-| `Fuaran.Compute.DataFrame` | `DataFrame` | 42 | 5 | 2 | 7 | 0 | 0 | 28 |
+| `Fuaran.Compute.DataFrame` | `DataFrame` | 42 | 8 | 2 | 7 | 0 | 0 | 25 |
 | `Fuaran.Compute.DataFrame` | `DataFrameCodec` | 7 | 0 | 0 | 0 | 0 | 0 | 7 |
 | `Fuaran.Compute.DataFrame` | `Delta` | 21 | 0 | 0 | 0 | 0 | 0 | 21 |
 | `Fuaran.Compute.DataFrame` | `DeltaCodec` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
@@ -82,7 +83,7 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `Slot` | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `Transform` | 22 | 14 | 0 | 0 | 0 | 0 | 8 |
 | `Fuaran.Compute.DataFrame` | `WorkerPool` | 5 | 0 | 0 | 0 | 0 | 2 | 3 |
-| **Total** |  | 190 | 29 | 14 | 7 | 0 | 5 | 135 |
+| **Total** |  | 190 | 32 | 14 | 7 | 0 | 5 | 132 |
 <!-- operation-coverage:end -->
 
 ## Adopted by copy

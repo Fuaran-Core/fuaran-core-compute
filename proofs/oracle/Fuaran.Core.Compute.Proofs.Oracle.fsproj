@@ -42,6 +42,11 @@
          walk (../Relational.fst): `step_schema` over the twelve verbs, `join_right_names`,
          `walk`. Opens `Pipeline`, so it follows it. -->
     <Compile Include="Relational.fs" />
+    <!-- The model of the DENSE FRAME and its KERNELS (../Frame.fst): `Vec` and `Vec.cellAt`, the
+         boundary in (`ofColumn`, `pack`, `ofTable`, `ofRows`) and out (`gather`, `toColumn`,
+         `toTable`), the prepared source, and the comparison kernels with `filterBits`. Opens
+         `Pipeline`, so it follows it. -->
+    <Compile Include="Frame.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
