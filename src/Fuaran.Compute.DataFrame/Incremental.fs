@@ -2282,6 +2282,63 @@ module Incremental =
     /// leaves `DataFrame.evalResolved` with the canonical NaN (Phase 404), the bits the batch
     /// evaluator's compiled roots put, so a refreshed cell and a fully evaluated one cannot differ
     /// in a NaN's sign or payload; a cached cell is one such answer, kept.
+    /// Phase 464 (D37) — a derived step's cells as the column of type `ty` carries them: an `Int`
+    /// under a float column is the float of its value, under a decimal column the decimal of its
+    /// value, as `Vec.packAt` admits them (Core `1.0.0`, Phase 423); every other cell is itself. The
+    /// array is shared where nothing widens, so a column that already carries its type costs no copy.
+    let private widenCells (ty: ColumnType) (step: Cell[]) : Cell[] =
+        // A slot the walk did not reach holds `null` (the step arrays are sparse over the slots),
+        // which no match may touch.
+        let isInt (c: Cell) : bool =
+            not (isNull (box c))
+            && (match c with
+                | Int _ -> true
+                | _ -> false)
+
+        let widen (c: Cell) : Cell =
+            if not (isInt c) then
+                c
+            else
+                match ty, c with
+                | FloatType, Int v -> Float(float v)
+                | DecimalType, Int v -> Decimal(string v)
+                | _ -> c
+
+        match ty with
+        | FloatType
+        | DecimalType ->
+            if Array.exists isInt step then
+                Array.map widen step
+            else
+                step
+        | _ -> step
+
+    /// Phase 464 (D37) — whether the column derived at evaluating step `evalIdx` is typed other than
+    /// the prior evaluation typed it, so that a stable row's frame cell may have moved under it. A
+    /// decided type is the same on every refresh (the env and the source's types are the state's,
+    /// and an earlier retype has already cleared stability); a type the cells decide is re-read off
+    /// the prior step's cells — the rows it reached are the rows it typed over — and compared.
+    /// Answers `false` where no row is stable (there is nothing to clear) and `true` where the prior
+    /// type cannot be read (no cached step, or cells the typing refuses).
+    let private retypedSince
+        (r: WalkRows)
+        (evalIdx: int)
+        (dt: DataFrame.DerivedTyping)
+        (name: string)
+        (ty: ColumnType)
+        : bool =
+        match dt with
+        | DataFrame.ByCells when Array.exists id r.Stable ->
+            if evalIdx >= r.PriorSteps.Length then
+                true
+            else
+                let reached = r.PriorSteps[evalIdx] |> Array.filter (fun c -> not (isNull (box c)))
+
+                match DataFrame.typeFromCells name reached.Length (fun i -> reached[i]) with
+                | Ok priorTy -> priorTy <> ty
+                | Error _ -> true
+        | _ -> false
+
     let private evalStep
         (r: WalkRows)
         (f: WalkFrame)
@@ -3537,6 +3594,32 @@ module Incremental =
                     // moment a filter downstream dropped the only typed row.
                     DataFrame.columnTypeBy dt name f.Order.Length (fun i -> step[f.Order[i]])
                     |> Result.bind (fun ty ->
+                        // Phase 464 (D37) — the cells the FRAME carries are the cells the reference's
+                        // packed column carries: an int under a column typed float or decimal is the
+                        // float or the decimal of its value (`Vec.packAt`, Core `1.0.0`). The cache
+                        // keeps the cell as evaluated — a later refresh may type the column back —
+                        // and the frame reads it as the column's type, so a step downstream that
+                        // tells an int from a float (`Mod`, the cells' typing of a later derive, a
+                        // group aggregate) reads what the reference reads.
+                        let column = widenCells ty step
+
+                        // Phase 464 (D37) — a column the CELLS type is a function of the whole
+                        // column, so a named row can retype it while every other row's cell stands:
+                        // the frame's cell for a stable row then moves (an int read as a float) with
+                        // no delta naming the row, and every cell cached DOWNSTREAM of this step, and
+                        // every reused group, was computed over the other reading. The type the
+                        // prior evaluation decided is read off its cells at this step (the rows it
+                        // reached are the rows it typed over); where it is not this one, no row is
+                        // stable from here on, exactly as a window clears stability — IN PLACE, as
+                        // the window does, because the group step after the prefix reads the same
+                        // array; and the in-place reading ends with it.
+                        let r2 =
+                            if not (retypedSince r evalIdx dt name ty) then
+                                r
+                            else
+                                Array.fill r.Stable 0 r.Stable.Length false
+                                { r with InPlace = null }
+
                         // The step's cells ARE the derived column: live at every slot in `Order`,
                         // and a slot outside it is never read again this walk.
                         let f2 =
@@ -3550,7 +3633,7 @@ module Incremental =
                                                 Field.create name ty |> DataFrame.stated unit
                                             else
                                                 fd)
-                                    Data = f.Data |> Array.mapi (fun j a -> if j = i then step else a)
+                                    Data = f.Data |> Array.mapi (fun j a -> if j = i then column else a)
                                     Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o)
                                     Tails =
                                         if isNull f.Tails then
@@ -3560,7 +3643,7 @@ module Incremental =
                             | None ->
                                 { f with
                                     Cols = f.Cols @ [ Field.create name ty |> DataFrame.stated unit ]
-                                    Data = Array.append f.Data [| step |]
+                                    Data = Array.append f.Data [| column |]
                                     Origins = Array.append f.Origins [| None |]
                                     Tails =
                                         if isNull f.Tails then
@@ -3568,7 +3651,7 @@ module Incremental =
                                         else
                                             Array.append f.Tails [| None |] }
 
-                        walk resolve env prior r f2 n caches rest))
+                        walk resolve env prior r2 f2 n caches rest))
 
     /// The frame's rows alive at its end, as a table under its schema — the transpose `tableOf`
     /// would do over row arrays, one column at a time. A column whose array is still the source's
@@ -4016,8 +4099,14 @@ module Incremental =
                 | Some ty, Some ci -> Some(a, ty, ci)
                 | _ -> None)
 
+        // Phase 464 (D37) — the in-place reading holds only while every slot it does not list is
+        // stable; a derive the prefix retyped cleared stability for every row, and the clean groups
+        // this path would keep were aggregated over the other reading of the column.
+        let stableSlots = r.Stable |> Array.sumBy (fun b -> if b then 1 else 0)
+
         if
             isNull r.InPlace
+            || stableSlots < r.Stable.Length - r.InPlace.Length
             || groupCount = 0
             || prior.RowGroups.Length <> r.PriorCount
             || r.PriorCount > r.Stable.Length
