@@ -3477,7 +3477,12 @@ module Incremental =
                 | None -> Error(EvalError.UnknownColumn(src, available f.Cols))
                 | Some i -> Ok(out, List.item i f.Cols, i)
 
+            // The reference's order: every source resolves, then the output names (Phase 468, D35).
             traverse resolveOne pairs
+            |> Result.bind (fun resolved ->
+                match DataFrame.projectRefusal pairs with
+                | Some e -> Error e
+                | None -> Ok resolved)
             |> Result.bind (fun resolved ->
                 let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
 
@@ -3704,7 +3709,12 @@ module Incremental =
                 | Some ty -> Ok(a, ty, colIndex cols a.Of |> Option.get)
                 | None -> Error(EvalError.UnknownColumn(a.Of, available cols))
 
+            // The reference's order: keys, aggregate sources, then the output names (Phase 468, D35).
             traverse resolveAgg aggs
+            |> Result.bind (fun resolvedAggs ->
+                match DataFrame.groupByRefusal keys aggs with
+                | Some e -> Error e
+                | None -> Ok resolvedAggs)
             |> Result.bind (fun resolvedAggs ->
                 let keyCols = keys |> List.map (fun k -> cols |> List.find (fun f -> f.Name = k))
 

@@ -593,7 +593,7 @@
     {
       "id": "relational-schema-agrees",
       "level": "proved",
-      "claim": "SCHEMA AGREEMENT (Phase 434). For every relational verb but `Union`, the static schema walk `SchemaWalk.ofTransform` is SOUND for the evaluator's output schema: over knowledge sound for the input frame's schema (a closed knowledge carries the schema's names in order and every type it knows is the schema's; an open one names columns the schema carries, with the types it knows), when `evalStepWith`'s arm answers `Ok`, the walk's answer is sound for the output schema it answers (`walk_sound`, one lemma per arm: `project_sound`, `group_by_sound`, `window_sound`, `pivot_sound` — the walk's open knowledge names the index columns the evaluator's output carries first — `unpivot_sound`, `join_sound` over a closed right source and, under the suffix rule's injectivity, over an undeclared `Ref`). So a planner, or the pipeline-query registry's agreement check, reading a CLOSED walk reads the evaluator's names and types, and reading an OPEN one reads names and types the evaluator produces. The union's names agree (`union_sound_names`); its TYPES are the finding `relational-repeated-name-finding` carries (`union_walk_type_drifts`). Conditional on the walk's declared sources agreeing with the evaluator's resolver (`sources_agree`) and on the suffix rule's injectivity (`cand_injective`), both named by `relational-primitives-abstract`; over `Pipeline.fst`'s unitless schema, so nothing about a unit is claimed.",
+      "claim": "SCHEMA AGREEMENT (Phase 434). For every relational verb but `Union`, the static schema walk `SchemaWalk.ofTransform` is SOUND for the evaluator's output schema: over knowledge sound for the input frame's schema (a closed knowledge carries the schema's names in order and every type it knows is the schema's; an open one names columns the schema carries, with the types it knows), when `evalStepWith`'s arm answers `Ok`, the walk's answer is sound for the output schema it answers (`walk_sound`, one lemma per arm: `project_sound`, `group_by_sound`, `window_sound`, `pivot_sound` — the walk's open knowledge names the index columns the evaluator's output carries first — `unpivot_sound`, `join_sound` over a closed right source and, under the suffix rule's injectivity, over an undeclared `Ref`). So a planner, or the pipeline-query registry's agreement check, reading a CLOSED walk reads the evaluator's names and types, and reading an OPEN one reads names and types the evaluator produces. The union's names agree (`union_sound_names`); its TYPES are the finding `relational-union-walk-finding` carries (`union_walk_type_drifts`). Conditional on the walk's declared sources agreeing with the evaluator's resolver (`sources_agree`) and on the suffix rule's injectivity (`cand_injective`), both named by `relational-primitives-abstract`; over `Pipeline.fst`'s unitless schema, so nothing about a unit is claimed.",
       "phase": "fuaran-core#434",
       "evidence": {
         "theorem": "walk_sound",
@@ -636,7 +636,7 @@
     {
       "id": "relational-names-distinct",
       "level": "proved",
-      "claim": "NAME DISTINCTNESS (Phase 434). A combining join (`Inner` / `Left` / `Right` / `Outer`) over two operands whose names are each distinct answers distinct output names (`join_no_dups`): the colliding right column's suffix is the first free against EVERY name the output carries — the left's, the right's own and the suffixes earlier colliding columns took — so re-introducing Phase 411's defect (a suffix checked against the left names only) leaves `join_no_dups` unprovable — `rename_right_no_dups`'s hypothesis that every right name is taken no longer holds — and the leg goes red (measured: one perturbation run, the theorem that fails is `join_no_dups`). `free_fresh` is the pigeonhole: with one more candidate than taken names, an injective suffix rule finds a free one. A window over distinct names answers distinct names (`window_no_dups`, Phase 450, D28: the taken output name is refused). The row-set verbs and the filtering joins answer the input schema (`keeps_schema`) and the union its names (`union_keeps_names`). What the other four verbs' names ARE is proved rather than their distinctness, because they are not distinct: `project_names` (the pairs' output names), `group_by_names` (the keys then the aggregate names), `unpivot_names` (the ids then `variable` and `value`), `pivot_names_prefix` (the index names first) — see the finding below. Conditional on the suffix rule's injectivity (`cand_injective`).",
+      "claim": "NAME DISTINCTNESS (Phase 434; the four name-listing verbs, Phase 468). No verb that names its output columns answers `Ok` with a name twice. A combining join (`Inner` / `Left` / `Right` / `Outer`) over two operands whose names are each distinct answers distinct output names (`join_no_dups`): the colliding right column's suffix is the first free against EVERY name the output carries — the left's, the right's own and the suffixes earlier colliding columns took — so re-introducing Phase 411's defect (a suffix checked against the left names only) leaves `join_no_dups` unprovable — `rename_right_no_dups`'s hypothesis that every right name is taken no longer holds — and the leg goes red (measured: one perturbation run, the theorem that fails is `join_no_dups`). `free_fresh` is the pigeonhole: with one more candidate than taken names, an injective suffix rule finds a free one. A window over distinct names answers distinct names (`window_no_dups`, Phase 450, D28: the taken output name is refused). A `Project`, a `GroupBy`, an `Unpivot` and a `Pivot` answer distinct names over ANY input (`project_no_dups`, `group_by_no_dups`, `unpivot_no_dups`, `pivot_no_dups`; Phase 468, D35): each asks the one check `repeated_output` (F# `DataFrame.repeatedOutput`), which refuses the first output name an earlier output took with a `TypeError` naming the verb, the name and both producers (`repeat_in_none`: an output list the check admits has distinct names), after the arm's unknown names and before any row is read — for the pivot, whose value names are its `on` values' text, before any value is aggregated, whatever `cell_string` answers. Removing the check from the group-by arm leaves `group_by_no_dups` unprovable (measured: one perturbation run). The four witnesses Phase 434 recorded answering `Ok` are refusals (`project_repeat_refused`, `group_by_repeat_refused`, `unpivot_repeat_refused`, `pivot_repeat_refused`), and the differential holds the shipped evaluator's refusal text to the model's on them (`468-*` among its shapes) and the shipped evaluator to refusing them (`the four repeated-name witnesses are refused on the shipped evaluator — …`). The row-set verbs and the filtering joins answer the input schema (`keeps_schema`) and the union its names (`union_keeps_names`). What the four verbs' names are is proved too: `project_names` (the pairs' output names), `group_by_names` (the keys then the aggregate names), `unpivot_names` (the ids then `variable` and `value`), `pivot_names_prefix` (the index names first). Conditional, for the join, on the suffix rule's injectivity (`cand_injective`).",
       "phase": "fuaran-core#434",
       "evidence": {
         "theorem": "join_no_dups",
@@ -644,6 +644,15 @@
         "prover": "proofs/fstar-pin.json",
         "supporting": [
           "window_no_dups",
+          "project_no_dups",
+          "group_by_no_dups",
+          "unpivot_no_dups",
+          "pivot_no_dups",
+          "repeat_in_none",
+          "project_repeat_refused",
+          "group_by_repeat_refused",
+          "unpivot_repeat_refused",
+          "pivot_repeat_refused",
           "keeps_schema",
           "union_keeps_names",
           "project_names",
@@ -657,30 +666,25 @@
         ],
         "operations": [
           "Transform.Join",
-          "Transform.Window"
+          "Transform.Window",
+          "Transform.Project",
+          "Transform.GroupBy",
+          "Transform.Unpivot",
+          "Transform.Pivot"
         ]
       }
     },
     {
-      "id": "relational-repeated-name-finding",
+      "id": "relational-union-walk-finding",
       "level": "proved",
-      "claim": "THE FINDING (Phase 434), carried as theorems with witnesses so that it goes red if the tree moves. Four verbs answer `Ok` with a REPEATED output name — the defect D20 closed for a join and D28 for a window, open in the four verbs whose output names the pipeline text (or, for a pivot, the data) chooses: `project_repeats_name` (`Project [a, x; a, x]` answers `x` twice), `group_by_repeats_name` (a key named as an aggregate), `unpivot_repeats_name` (an id column named `variable`), `pivot_repeats_name` (an index column whose name is an `on` value's canonical text, conditional on `cellString` of that string cell being the string, which it is). A table naming a column twice re-enters the evaluator by name as the first of the two (D25) and Core's `Table.validate` refuses it. And the union's walk: `union_walk_type_drifts` — `SchemaWalk.ofTransform` keeps the LEFT type for a `Union` where the evaluator widens the column to the join of the two sides' types (Phase 423, D18: `Int` beside `Float` is a `Float` column), so a planner reading the walk over such a union reads a type the evaluator does not produce. Both are recorded in `DECISIONS.md` D32 with the rulings they wait on; neither is fixed here, because each is a behaviour change to a public evaluator or walk that wants its own decision and `STABILITY.md` entry. The differential asserts the four repeated-name witnesses on the shipped evaluator (`the finding holds on the shipped evaluator — …`) and the union's walk on the shipped walk (`423-union-widens` among its shapes, where the walk comparison records production's and the model's answers agree with each other and the schema comparison records the evaluator's).",
+      "claim": "THE UNION WALK FINDING (Phase 434), carried as a theorem with a witness so that it goes red if the tree moves: `union_walk_type_drifts` — `SchemaWalk.ofTransform` keeps the LEFT type for a `Union` where the evaluator widens the column to the join of the two sides' types (Phase 423, D18: `Int` beside `Float` is a `Float` column), so a planner reading the walk over such a union reads a type the evaluator does not produce. Recorded in `DECISIONS.md` D32 (finding (b)) with the ruling it waits on; not fixed here, because it is a behaviour change to a public walk that wants its own decision and `STABILITY.md` entry. The differential asserts it on the shipped walk (`423-union-widens` among its shapes, where the walk comparison records production's and the model's answers agree with each other and the schema comparison records the evaluator's). D32's finding (a), four verbs answering a repeated name, was closed by Phase 468 (D35) and is the row `relational-names-distinct`.",
       "phase": "fuaran-core#434",
       "evidence": {
-        "theorem": "project_repeats_name",
+        "theorem": "union_walk_type_drifts",
         "model": "proofs/Relational.fst",
         "prover": "proofs/fstar-pin.json",
-        "supporting": [
-          "group_by_repeats_name",
-          "unpivot_repeats_name",
-          "pivot_repeats_name",
-          "union_walk_type_drifts"
-        ],
+        "supporting": [],
         "operations": [
-          "Transform.Project",
-          "Transform.GroupBy",
-          "Transform.Unpivot",
-          "Transform.Pivot",
           "Transform.Union"
         ]
       }
@@ -730,7 +734,7 @@
         "model": "proofs/Relational.fst",
         "cases": [
           "the relational oracle agrees with the evaluator on every verb's output schema and refusal, and with SchemaWalk.ofTransform on the knowledge, over the 411 and 412 shapes and generated pipelines",
-          "the finding holds on the shipped evaluator — a Project, a GroupBy, an Unpivot and a Pivot each answer a table naming a column twice",
+          "the four repeated-name witnesses are refused on the shipped evaluator — a Project, a GroupBy, an Unpivot and a Pivot each name the verb, the name and both producers",
           "the twelve-verb evaluator built from the model's schema and production's rows agrees with DataFrame.evalPipelineWithInEnvCounted — the narrowing measured end to end",
           "a relational oracle crossed the pre-D20 suffix rule DISAGREES with the evaluator on the 411 shapes — the measurement can fail",
           "a relational oracle whose bridge drops a sort key the schema does not carry DISAGREES with the evaluator on the 412 shape — the measurement can fail"

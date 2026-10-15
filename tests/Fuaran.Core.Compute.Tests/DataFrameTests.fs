@@ -366,6 +366,156 @@ let tests =
                           (Incremental.refresh DataFrame.noResolve Map.empty idw fresh state delta gained
                            |> Result.map ignore)
 
+          // Phase 468 (D35) — a `Project`, a `GroupBy`, an `Unpivot` and a `Pivot` could each answer a
+          // table naming one column twice (Phase 434's finding), which re-enters by name as the first
+          // of the two. Each refuses now, naming the verb, the name and both producers.
+          testCase
+              "A Project, a GroupBy, an Unpivot and a Pivot naming an output twice are refused, naming both producers"
+          <| fun _ ->
+              let refusedAs (expected: string) (what: string) (r: Result<Table, EvalError>) =
+                  match r with
+                  | Error(TypeError detail) ->
+                      Expect.equal detail (expected + "; give each output a name of its own") what
+                  | other -> failtestf "%s: a repeated output name must refuse, got %A" what other
+
+              let names (r: Result<Table, EvalError>) =
+                  (okTable r).Schema |> List.map (fun (f: Field) -> f.Name)
+
+              // Project: two pairs naming one output, whatever their sources.
+              let project = Project [ "name", "x"; "dept", "x" ]
+
+              refusedAs
+                  "project output 'x' is named twice, by the projection of 'name' and by the projection of 'dept'"
+                  "a project"
+                  (run [ project ])
+
+              refusedAs
+                  "project output 'name' is named twice, by the projection of 'name' and by the projection of 'name'"
+                  "a project repeating a pair"
+                  (run [ Project [ "name", "name"; "name", "name" ] ])
+
+              // GroupBy: a key named as an aggregate, two aggregates of one name, a key twice.
+              let groupBy =
+                  GroupBy(
+                      [ "dept" ],
+                      [ { Name = "dept"
+                          Fn = Sum
+                          Of = "salary" } ]
+                  )
+
+              refusedAs
+                  "groupBy output 'dept' is named twice, by the key 'dept' and by the aggregate over 'salary'"
+                  "a key named as an aggregate"
+                  (run [ groupBy ])
+
+              refusedAs
+                  "groupBy output 's' is named twice, by the aggregate over 'salary' and by the aggregate over 'bonus'"
+                  "two aggregates of one name"
+                  (run
+                      [ GroupBy(
+                            [ "dept" ],
+                            [ { Name = "s"; Fn = Sum; Of = "salary" }
+                              { Name = "s"; Fn = Max; Of = "bonus" } ]
+                        ) ])
+
+              refusedAs
+                  "groupBy output 'dept' is named twice, by the key 'dept' and by the key 'dept'"
+                  "a key twice"
+                  (run [ GroupBy([ "dept"; "dept" ], []) ])
+
+              // Unpivot: an id column named as one of the unpivot's own two.
+              let unpivot = [ Derive("value", Col "salary"); Unpivot([ "value" ], [ "salary" ]) ]
+
+              refusedAs
+                  "unpivot output 'value' is named twice, by the id column 'value' and by the unpivot's value column"
+                  "an id column named value"
+                  (run unpivot)
+
+              refusedAs
+                  "unpivot output 'name' is named twice, by the id column 'name' and by the id column 'name'"
+                  "an id column twice"
+                  (run [ Unpivot([ "name"; "name" ], [ "salary" ]) ])
+
+              // Pivot: an index column named as an `on` value's text — a collision the DATA makes.
+              let pivot =
+                  [ Derive("eng", Col "name")
+                    Pivot
+                        { Index = [ "eng" ]
+                          On = "dept"
+                          Values = "salary"
+                          Agg = Sum } ]
+
+              refusedAs
+                  "pivot output 'eng' is named twice, by the index column 'eng' and by the column for the on value 'eng'"
+                  "an index column named as an on value"
+                  (run pivot)
+
+              // ...so the same pipeline answers over rows that hold no such value, and an empty frame
+              // names only its index.
+              Expect.equal
+                  (names (run (Filter(Binary(Eq, Col "dept", Lit(Str "sales"))) :: pivot)))
+                  [ "eng"; "sales" ]
+                  "no `eng` row, no collision"
+
+              // Every unknown name is still named first.
+              match
+                  run [ Project [ "zz", "x"; "name", "x" ] ],
+                  run [ GroupBy([ "dept" ], [ { Name = "dept"; Fn = Sum; Of = "zz" } ]) ]
+              with
+              | Error(UnknownColumn("zz", _)), Error(UnknownColumn("zz", _)) -> ()
+              | other -> failtestf "an unknown source must be named ahead of the repeated output, got %A" other
+
+              // Before any row is read: a source with no rows refuses as one with rows does.
+              let empty =
+                  { people with
+                      Columns = people.Columns |> List.map (fun c -> col c.Name c.Type []) }
+
+              for what, p in [ "project", [ project ]; "groupBy", [ groupBy ]; "unpivot", unpivot ] do
+                  match DataFrame.evalPipeline p empty with
+                  | Error(TypeError detail) -> Expect.stringContains detail "is named twice" (what + " over no rows")
+                  | other -> failtestf "%s over no rows must refuse, got %A" what other
+
+              // A distinct name answers, as before.
+              Expect.equal (names (run [ Project [ "name", "x"; "dept", "y" ] ])) [ "x"; "y" ] "distinct project"
+
+              Expect.equal
+                  (names (
+                      run
+                          [ GroupBy(
+                                [ "dept" ],
+                                [ { Name = "total"
+                                    Fn = Sum
+                                    Of = "salary" } ]
+                            ) ]
+                  ))
+                  [ "dept"; "total" ]
+                  "distinct group-by"
+
+              // The incremental seam primes through the same checks — its own project and group-by walk
+              // included — and a pivot primes through the reference.
+              for what, p in
+                  [ "project", [ project ]
+                    "groupBy", [ groupBy ]
+                    "unpivot", unpivot
+                    "pivot", pivot ] do
+                  match Incremental.prime DataFrame.noResolve Map.empty (RowIdentity.byColumn "name") p people with
+                  | Error(TypeError detail) -> Expect.stringContains detail "is named twice" (what + ": the prime")
+                  | Error e -> failtestf "%s: the prime refused with %A" what e
+                  | Ok _ -> failtestf "%s: the prime answered a repeated name" what
+
+              // The planner agrees: a repeating projection is not total, and the planned pipeline
+              // refuses as the pipeline as written does.
+              Expect.isFalse (Plan.isTotal people.Schema project) "a repeating project is not total"
+
+              Expect.isTrue
+                  (Plan.isTotal people.Schema (Project [ "name", "x"; "dept", "y" ]))
+                  "a distinct project is total"
+
+              refusedAs
+                  "project output 'x' is named twice, by the projection of 'name' and by the projection of 'dept'"
+                  "the planned pipeline"
+                  (run (Plan.rewrite people.Schema [ Sort [ Slot.Lit "name", Asc ]; project ]))
+
           testCase "Distinct dedupes whole rows, first occurrence wins"
           <| fun _ ->
               let t = run [ Project [ "dept", "dept" ]; Distinct ] |> okTable
@@ -2612,12 +2762,23 @@ let private pivotOracle (t: Table) (index: string list) (on: string) (values: st
             | Some x, Some y -> (System.Double.IsNaN x && System.Double.IsNaN y) || x = y
             | _ -> a = b
 
+    // Phase 468 (D35): on-values of one text that `cellEq` equates are one column.
     let onValues =
         onCells
         |> Array.filter (fun c -> not (Cell.isNull c))
         |> List.ofArray
         |> List.distinct
         |> List.sortBy DataFrame.cellString
+        |> List.fold
+            (fun kept ov ->
+                if
+                    kept
+                    |> List.exists (fun k -> DataFrame.cellString k = DataFrame.cellString ov && cellEq k ov)
+                then
+                    kept
+                else
+                    kept @ [ ov ])
+            []
 
     let order = ResizeArray<string list>()
     let firstRow = System.Collections.Generic.Dictionary<string list, int>()
@@ -2780,8 +2941,9 @@ let pivotStreamLaws =
 
           testCase "the oracle has teeth: it tells a pivot that drops cellEq's merge from the real one"
           <| fun _ ->
-              // Two NaN on-values are two pivot columns that each collect BOTH rows under cellEq
-              // (NaN matches NaN); a pivot that matched by `=` would give each column no row. The
+              // Two NaN on-values are one pivot column (Phase 468, D35: one text, cellEq-equal) that
+              // collects BOTH rows under cellEq (NaN matches NaN); a pivot that matched by `=` would
+              // give it no row. The
               // lever was `Int 1` beside `Float 1.0` until Core `1.0.0` made the float column hold
               // the int as `1.0` (Phase 423) — one on-value, which no matching could split.
               let t =
@@ -2797,8 +2959,8 @@ let pivotStreamLaws =
               | Ok cols ->
                   Expect.equal
                       (cols |> List.map snd)
-                      [ [ Str "a" ]; [ Int 30 ]; [ Int 30 ] ]
-                      "each numerically-equal on-value collects every cellEq match"
+                      [ [ Str "a" ]; [ Int 30 ] ]
+                      "the one NaN column collects every cellEq match"
               | Error e -> failtestf "the oracle refused: %s" e ]
 
 [<Tests>]
@@ -3250,10 +3412,10 @@ let private oPivot1Sum: (string * Cell list) list =
 let private oPivotnumSum: (string * Cell list) list =
     // The pre-phase answer held TWO `1` columns: `Int 1` and `Float 1.0` were two on-values, each
     // collecting both rows under cellEq. Since Core `1.0.0` (Phase 423) the float column holds the
-    // int as `1.0`, so there is one on-value `1` and one column; the two NaN on-values stay two
-    // (distinct as values, each collecting both NaN rows under cellEq).
+    // int as `1.0`, so there is one on-value `1` and one column. The two NaN on-values were two
+    // identical columns of one name, each collecting both NaN rows under cellEq, until Phase 468
+    // (D35) made them the one column they name.
     [ "g", [ Str "a"; Str "b" ]
-      "\"NaN\"", [ Int 40; Int 50 ]
       "\"NaN\"", [ Int 40; Int 50 ]
       "1", [ Int 30; Null ]
       "2", [ Null; Int 30 ] ]
@@ -3451,7 +3613,8 @@ let phase264OracleTests =
               expectOracle "min" oPivot2Min (pivot [ "g"; "h" ] Min)
               expectOracle "one index column" oPivot1Sum (pivot [ "g" ] Sum)
 
-          testCase "Phase 264 — the one-pass pivot keeps the cellEq matching: Int 1 and Float 1.0, NaN and NaN"
+          testCase
+              "Phase 264 — the one-pass pivot keeps the cellEq matching: Int 1 and Float 1.0, NaN and NaN in one column"
           <| fun _ ->
               DataFrame.evalPipeline
                   [ Pivot
@@ -7279,12 +7442,25 @@ let private oraclePivot (t: Table) (index: string list) (on: string) : Table =
     let vi = pos "v"
     let rows = rowHashRows t
 
+    // Phase 468 (D35): on-values of one text that `cellEq` equates are one column.
     let onValues =
         rows
         |> List.map (List.item oi)
         |> List.filter (fun c -> not (Cell.isNull c))
         |> List.distinct
         |> List.sortBy DataFrame.cellString
+        |> List.fold
+            (fun kept ov ->
+                if
+                    kept
+                    |> List.exists (fun k ->
+                        DataFrame.cellString k = DataFrame.cellString ov
+                        && DataFrame.joinKeysMatch [ k ] [ ov ])
+                then
+                    kept
+                else
+                    kept @ [ ov ])
+            []
 
     let agg cells =
         DataFrame.aggregateCells Sum IntType cells

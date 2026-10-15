@@ -306,7 +306,10 @@ module LawVectorExport =
         + "rows - 1 rows (the union refusal's declares d in kilometres): a column's unit, label and "
         + "description ride every verb that keeps a column, a derive carries the unit the check derives "
         + "and a conversion resolves to a float, an aggregate and a window keep their source's unit or "
-        + "carry none, and two units met where the rule requires one are refused."
+        + "carry none, and two units met where the rule requires one are refused. From the iteration "
+        + "after the last unit shape, each takes the next REPEAT shape named in its vector id (Phase 468) "
+        + "over the decimal table: a project, a group-by, an unpivot and a pivot whose output would name "
+        + "one column twice are refused."
 
     let renderTransformVectors () : string =
         let sb = StringBuilder()

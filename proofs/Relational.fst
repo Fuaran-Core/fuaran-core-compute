@@ -1,6 +1,7 @@
 (*
    Relational — the twelve relational verbs' OUTPUT SCHEMA and REFUSALS, and the static schema walk
-   that reads them, modelled clause for clause and proved to agree (fuaran-core Phase 434).
+   that reads them, modelled clause for clause and proved to agree (fuaran-core Phase 434; the
+   repeated-name refusal, Phase 468).
 
    WHAT IS MODELLED. `src/Fuaran.Compute.DataFrame/DataFrame.fs`, for the twelve verbs
    `Pipeline.fst` takes as its second parameter (`other_fn`) — `Project`, `GroupBy`, `Join`,
@@ -20,7 +21,9 @@
        bucket count then read column then partition keys then order keys then output name,
        `evalPivot`'s index then `on` then `values`, …), the `Sort` and `Limit` slot resolutions
        (`resolveStrSlot` / `resolveIntSlot`: `UnboundParam`, then the `TypeError` naming the slot),
-       `unknownSortKey` (Phase 412, D21), the window's taken output name (Phase 450, D28), the two
+       `unknownSortKey` (Phase 412, D21), the window's taken output name (Phase 450, D28), the
+       repeated output name of a `Project`, a `GroupBy`, an `Unpivot` and a `Pivot` (`repeatedOutput`,
+       Phase 468, D35: after the arm's unknown names, before any row is read or aggregated), the two
        set operations' and the union's name agreement (`JoinError`), and the union's and the
        unpivot's type refusals (`typesBesideEachOther`, `floatBesideDecimal`);
      - the source seam the two-table verbs pass first, `evalSource` (`Embedded` is itself, `Ref`
@@ -41,8 +44,9 @@
 
    THE PARAMETERS, each an assumption, and what the theorems assume of each (`rprims`):
      - `cell_string` (F# `DataFrame.cellString`): the canonical text of a cell — names the pivot's
-       value columns. Nothing is assumed of it; `pivot_repeats_name` is conditional on its text for
-       one string cell being that string, which it is.
+       value columns. Nothing is assumed of it — `pivot_no_dups` holds whatever text it gives;
+       `pivot_repeat_refused` is conditional on its text for one string cell being that string,
+       which it is.
      - `int_text` (F# `string` over an `int`): the decimal text of the window's bucket count in
        the `NTile` refusal. Nothing is assumed.
      - `string_lt` (F# `compare` on strings, through `List.sortBy`): the order the pivot's value
@@ -72,18 +76,20 @@
        walk keeps the left type where the evaluator widens it (D18).
      - `keeps_schema`, `union_keeps_names`: the row-set verbs and the filtering joins answer the
        input schema; the union answers its names.
-     - `window_no_dups`, `join_no_dups`: a window over distinct names answers distinct names
-       (the taken output name is refused, D28); a combining join over two distinct-named operands
-       answers distinct names (D20: the suffix is free against the whole output).
+     - THE SIX `*_no_dups` THEOREMS — no verb that names its output answers `Ok` with a name
+       twice: `window_no_dups` (over distinct input names; the taken output name is refused, D28),
+       `join_no_dups` (over two distinct-named operands; D20's suffix is free against the whole
+       output), and, with no hypothesis on the input, `project_no_dups`, `group_by_no_dups`,
+       `unpivot_no_dups` and `pivot_no_dups` (Phase 468, D35: `repeated_output` refuses the first
+       name an earlier output took — for the pivot whatever the `on` column holds).
      - `project_names`, `group_by_names`, `unpivot_names`, `pivot_names_prefix`: what the other
        four verbs' names ARE — exactly the pipeline text's (`Project`'s output names; `GroupBy`'s
        keys then aggregate names; `Unpivot`'s id names then `variable` and `value`; a pivot's index
-       names first). THE FINDING, carried as four theorems with witnesses so that it goes red if
-       the tree moves: `project_repeats_name`, `group_by_repeats_name`, `unpivot_repeats_name`,
-       `pivot_repeats_name` — each of the four answers `Ok` with a repeated output name on a
-       witness (`Project [a, x; a, x]`; a key named as an aggregate; an id column named
-       `variable`; an index column whose name is an `on` value's text), the defect D28 closed for
-       a window and D20 for a join. The differential asserts the same on the shipped evaluator.
+       names first). Phase 434 found that each of the four answered `Ok` with a repeated name and
+       carried the finding as four witness theorems (`*_repeats_name`); Phase 468 closed it, and
+       the same four witnesses are now refusals (`project_repeat_refused`,
+       `group_by_repeat_refused`, `unpivot_repeat_refused`, `pivot_repeat_refused`), which the
+       differential asserts on the shipped evaluator.
      - `*_unknown_refused`, eight theorems: every name a verb takes from the pipeline that the
        schema does not carry is refused with `UnknownColumn` naming it, in the arm's own order —
        the sort's keys after its slots resolve (412's class), the join's left then right keys, the
@@ -284,6 +290,58 @@ let rec resolve_sort_keys (env:param_env) (sk:list (slot string & sort_dir))
    4. The verbs' schema computations and refusals, one function per arm.
    ====================================================================================== *)
 
+(* F#: `DataFrame.repeatedOutput` (Phase 468, D35) — THE ONE CHECK every verb that names its output
+   asks: `outs` is each output column's name beside what produced it, and the first name an earlier
+   output took is refused with a `TypeError` naming the verb, the name and both producers. *)
+let repeat_text (verb name first who:string) : Tot string =
+  verb ^ " output '" ^ name ^ "' is named twice, by " ^ first ^ " and by " ^ who ^ "; give each output a name of its own"
+
+let rec repeat_in (verb:string) (seen outs:list (string & string)) : Tot (option eval_error) (decreases outs) =
+  match outs with
+  | [] -> None
+  | (n, who) :: t ->
+    (match assoc n seen with
+     | Some first -> Some (TypeError (repeat_text verb n first who))
+     | None -> repeat_in verb ((n, who) :: seen) t)
+
+let repeated_output (verb:string) (outs:list (string & string)) : Tot (option eval_error) =
+  repeat_in verb [] outs
+
+(* The producers each verb names, in output order (F#: `projectRefusal`, `groupByRefusal`,
+   `unpivotRefusal`, `pivotRefusal`). *)
+let rec project_outs (pairs:list (string & string)) : Tot (list (string & string)) =
+  match pairs with
+  | [] -> []
+  | (src, out) :: t -> (out, "the projection of '" ^ src ^ "'") :: project_outs t
+
+let rec key_outs (keys:list string) : Tot (list (string & string)) =
+  match keys with
+  | [] -> []
+  | k :: t -> (k, "the key '" ^ k ^ "'") :: key_outs t
+
+let rec agg_outs (aggs:list agg) : Tot (list (string & string)) =
+  match aggs with
+  | [] -> []
+  | a :: t -> (a.a_name, "the aggregate over '" ^ a.a_of ^ "'") :: agg_outs t
+
+let rec id_outs (ids:list string) : Tot (list (string & string)) =
+  match ids with
+  | [] -> []
+  | n :: t -> (n, "the id column '" ^ n ^ "'") :: id_outs t
+
+let unpivot_outs (ids:list string) : Tot (list (string & string)) =
+  app (id_outs ids) [("variable", "the unpivot's variable column"); ("value", "the unpivot's value column")]
+
+let rec index_outs (ns:list string) : Tot (list (string & string)) =
+  match ns with
+  | [] -> []
+  | n :: t -> (n, "the index column '" ^ n ^ "'") :: index_outs t
+
+let rec value_outs (vs:schema) : Tot (list (string & string)) =
+  match vs with
+  | [] -> []
+  | (n, _) :: t -> (n, "the column for the on value '" ^ n ^ "'") :: value_outs t
+
 (* F#: `evalProject` — each pair's source resolved in order, the first unknown refused; the
    output is the pairs' output names under the sources' types. *)
 let rec project_cols (cols:schema) (pairs:list (string & string)) : Tot (outcome schema eval_error) =
@@ -296,6 +354,15 @@ let rec project_cols (cols:schema) (pairs:list (string & string)) : Tot (outcome
        (match project_cols cols rest with
         | Error e -> Error e
         | Ok tail -> Ok ((out, ty) :: tail)))
+
+(* F#: `evalProject` whole — the sources, then the output names (Phase 468, D35). *)
+let project_step (cols:schema) (pairs:list (string & string)) : Tot (outcome schema eval_error) =
+  match project_cols cols pairs with
+  | Error e -> Error e
+  | Ok out ->
+    (match repeated_output "project" (project_outs pairs) with
+     | Some e -> Error e
+     | None -> Ok out)
 
 (* F#: `evalGroupBy`'s `resolveAgg` over the aggregates — the first unknown source refused; each
    aggregate's column is its name under `aggType`. *)
@@ -310,15 +377,18 @@ let rec agg_cols (cols:schema) (aggs:list agg) : Tot (outcome schema eval_error)
         | Error e -> Error e
         | Ok tail -> Ok ((a.a_name, agg_type a.a_fn ty) :: tail)))
 
-(* F#: `evalGroupBy f keys aggs` — the first unknown key, then the aggregates; the key columns
-   then the aggregate columns. *)
+(* F#: `evalGroupBy f keys aggs` — the first unknown key, then the aggregates, then the output
+   names (Phase 468, D35); the key columns then the aggregate columns. *)
 let group_by_cols (cols:schema) (keys:list string) (aggs:list agg) : Tot (outcome schema eval_error) =
   match first_unknown cols keys with
   | Some k -> Error (UnknownColumn k (names cols))
   | None ->
     (match agg_cols cols aggs with
      | Error e -> Error e
-     | Ok ac -> Ok (app (lookup_cols cols keys) ac))
+     | Ok ac ->
+       (match repeated_output "groupBy" (app (key_outs keys) (agg_outs aggs)) with
+        | Some e -> Error e
+        | None -> Ok (app (lookup_cols cols keys) ac)))
 
 (* F#: `joinKeyIdx`'s refusal — the first unresolvable name, left names then right names, with
    both schemas' names listed. *)
@@ -469,7 +539,11 @@ let rec sort_by (rp:rprims) (cs:list cell) : Tot (list cell) =
   | [] -> []
   | c :: t -> insert_by rp c (sort_by rp t)
 
-(* F#: `evalPivot`'s `onValues` — the distinct present `on` cells in canonical text order. *)
+(* F#: `evalPivot`'s `onValues` — the distinct present `on` cells in canonical text order. Since
+   Phase 468 (D35) the host keeps one on-value of each text among the cells `cellEq` equates (two
+   `NaN`s were two identical columns of one name); the model's cell equality reads a float by its
+   round-trip text, so its `distinct` already keeps one `NaN`, and the two agree on every column of
+   one cell kind. *)
 let on_values (rp:rprims) (i:nat) (rows:list (list cell)) : Tot (list cell) =
   sort_by rp (distinct (present (col_cells i rows)))
 
@@ -478,7 +552,8 @@ let rec pivot_value_cols (rp:rprims) (ty:column_type) (vs:list cell) : Tot schem
   | [] -> []
   | v :: t -> (rp.cell_string v, ty) :: pivot_value_cols rp ty t
 
-(* F#: `evalPivot f spec` — index names then `on` then `values` refused in that order; the index
+(* F#: `evalPivot f spec` — index names then `on` then `values` refused in that order, then the
+   output names (Phase 468, D35: the value columns' names are the data's, read here); the index
    columns then one column per `on` value under `aggType`. *)
 let pivot_cols (rp:rprims) (cols:schema) (rows:list (list cell)) (spec:pivot_spec)
   : Tot (outcome schema eval_error) =
@@ -491,8 +566,10 @@ let pivot_cols (rp:rprims) (cols:schema) (rows:list (list cell)) (spec:pivot_spe
        (match assoc spec.p_values cols with
         | None -> Error (UnknownColumn spec.p_values (names cols))
         | Some vty ->
-          Ok (app (lookup_cols cols spec.p_index)
-                  (pivot_value_cols rp (agg_type spec.p_agg vty) (on_values rp on_i rows)))))
+          let vals = pivot_value_cols rp (agg_type spec.p_agg vty) (on_values rp on_i rows) in
+          (match repeated_output "pivot" (app (index_outs spec.p_index) (value_outs vals)) with
+           | Some e -> Error e
+           | None -> Ok (app (lookup_cols cols spec.p_index) vals))))
 
 (* The value columns' indexes, each known to resolve. *)
 let rec indexes_of (cols:schema) (ns:list string) : Tot (list nat) =
@@ -518,9 +595,9 @@ let rec melt (is:list nat) (rows:list (list cell)) : Tot (list cell) =
   | [] -> []
   | r :: t -> app (cells_at r is) (melt is t)
 
-(* F#: `evalUnpivot f idVars valueVars` — ids then values refused; the id columns, `variable` as
-   a string, `value` by the derived-column rule over the value columns' types and, where those
-   leave it to the cells, the melted cells. *)
+(* F#: `evalUnpivot f idVars valueVars` — ids then values refused, then the output names (Phase
+   468, D35); the id columns, `variable` as a string, `value` by the derived-column rule over the
+   value columns' types and, where those leave it to the cells, the melted cells. *)
 let unpivot_cols (cols:schema) (rows:list (list cell)) (ids vals:list string)
   : Tot (outcome schema eval_error) =
   match first_unknown cols ids with
@@ -529,13 +606,16 @@ let unpivot_cols (cols:schema) (rows:list (list cell)) (ids vals:list string)
     (match first_unknown cols vals with
      | Some n -> Error (UnknownColumn n (names cols))
      | None ->
-       let dt = unpivot_typing (snds (lookup_cols cols vals)) in
-       (match dt with
-        | Refused -> Error (float_beside_decimal "value")
-        | _ ->
-          (match column_type_by dt "value" (melt (indexes_of cols vals) rows) with
-           | Error e -> Error e
-           | Ok vty -> Ok (app (lookup_cols cols ids) [("variable", StringType); ("value", vty)]))))
+       (match repeated_output "unpivot" (unpivot_outs ids) with
+        | Some e -> Error e
+        | None ->
+          let dt = unpivot_typing (snds (lookup_cols cols vals)) in
+          (match dt with
+           | Refused -> Error (float_beside_decimal "value")
+           | _ ->
+             (match column_type_by dt "value" (melt (indexes_of cols vals) rows) with
+              | Error e -> Error e
+              | Ok vty -> Ok (app (lookup_cols cols ids) [("variable", StringType); ("value", vty)])))))
 
 (* F#: `evalUnion`'s per-column fold after the names agree — the left type where the two agree,
    their join where one exists, refused by name where none does. *)
@@ -575,7 +655,7 @@ let step_schema (rp:rprims) (resolve:resolver) (env:param_env) (f:wframe) (t:tra
   match t with
   | Filter _ -> Ok f.cols
   | Derive _ _ -> Error (TypeError "Derive is Pipeline.fst's clause, not the relational model's")
-  | Project pairs -> project_cols f.cols pairs
+  | Project pairs -> project_step f.cols pairs
   | GroupBy keys aggs -> group_by_cols f.cols keys aggs
   | Join src on how ->
     (match source_cols resolve src with
@@ -1382,7 +1462,7 @@ let walk_sound (rp:rprims) (srcs:sources) (resolve:resolver) (k:knowledge) (f:wf
           (ensures sound (walk rp srcs k t) (Ok?._0 (step_schema rp resolve [] f t))) =
   match t with
   | Filter _ | Sort _ | Distinct | Limit _ _ | Intersect _ | Except _ -> ()
-  | Project pairs -> project_sound k f.cols pairs
+  | Project pairs -> project_sound k f.cols pairs; assert (project_step f.cols pairs == project_cols f.cols pairs)
   | GroupBy keys aggs -> group_by_sound k f.cols keys aggs
   | Window spec -> window_sound rp k f.cols spec
   | Pivot spec -> pivot_sound rp k f spec
@@ -1486,31 +1566,120 @@ let pivot_names_prefix (rp:rprims) (f:wframe) (spec:pivot_spec)
   names_app (lookup_cols f.cols spec.p_index) vals;
   prefix_app spec.p_index (names vals)
 
-(* THE FINDING, as four witnesses: each answers `Ok` with a repeated name. *)
-let project_repeats_name (cols:schema)
-  : Lemma (requires cols == [("a", IntType)])
-          (ensures project_cols cols [("a", "x"); ("a", "x")] == Ok [("x", IntType); ("x", IntType)]
-                   /\ not (no_dups (names (Ok?._0 (project_cols cols [("a", "x"); ("a", "x")]))))) = ()
+(* ---- THE REPEATED NAME, closed (Phase 468, D35) ----
+   Phase 434 carried four witnesses here (`project_repeats_name`, `group_by_repeats_name`,
+   `unpivot_repeats_name`, `pivot_repeats_name`), each a verb answering `Ok` with a name twice. The
+   four verbs now ask `repeated_output`, so the witnesses are refusals (`*_repeat_refused`, below)
+   and the four `*_no_dups` theorems join `window_no_dups` and `join_no_dups`: none of the six verbs
+   that name their output answers `Ok` with a name twice. *)
 
-let group_by_repeats_name (cols:schema)
-  : Lemma (requires cols == [("k", StringType); ("v", IntType)])
-          (ensures group_by_cols cols ["k"] [{ a_name = "k"; a_fn = Sum; a_of = "v" }]
-                   == Ok [("k", StringType); ("k", IntType)]
-                   /\ not (no_dups (names (Ok?._0 (group_by_cols cols ["k"] [{ a_name = "k"; a_fn = Sum; a_of = "v" }]))))) = ()
+(* An output list the check admits has distinct names, none of them already seen. *)
+let rec repeat_in_none (verb:string) (seen outs:list (string & string))
+  : Lemma (requires None? (repeat_in verb seen outs))
+          (ensures no_dups (names outs) /\ (forall x. has x (names outs) ==> None? (assoc x seen)))
+          (decreases outs) =
+  match outs with
+  | [] -> ()
+  | (n, who) :: t -> repeat_in_none verb ((n, who) :: seen) t
 
-let unpivot_repeats_name (f:wframe)
-  : Lemma (requires f.cols == [("variable", StringType); ("v", IntType)] /\ f.rows == [])
-          (ensures unpivot_cols f.cols f.rows ["variable"] ["v"]
-                   == Ok [("variable", StringType); ("variable", StringType); ("value", IntType)]
-                   /\ not (no_dups (names (Ok?._0 (unpivot_cols f.cols f.rows ["variable"] ["v"]))))) = ()
+let rec names_project_outs (pairs:list (string & string)) : Lemma (ensures names (project_outs pairs) == snds pairs) =
+  match pairs with
+  | [] -> ()
+  | _ :: t -> names_project_outs t
 
-let pivot_repeats_name (rp:rprims) (f:wframe)
+let rec names_key_outs (keys:list string) : Lemma (ensures names (key_outs keys) == keys) =
+  match keys with
+  | [] -> ()
+  | _ :: t -> names_key_outs t
+
+let rec names_agg_outs (aggs:list agg) : Lemma (ensures names (agg_outs aggs) == agg_name_list aggs) =
+  match aggs with
+  | [] -> ()
+  | _ :: t -> names_agg_outs t
+
+let rec names_id_outs (ids:list string) : Lemma (ensures names (id_outs ids) == ids) =
+  match ids with
+  | [] -> ()
+  | _ :: t -> names_id_outs t
+
+let rec names_index_outs (ns:list string) : Lemma (ensures names (index_outs ns) == ns) =
+  match ns with
+  | [] -> ()
+  | _ :: t -> names_index_outs t
+
+let rec names_value_outs (vs:schema) : Lemma (ensures names (value_outs vs) == names vs) =
+  match vs with
+  | [] -> ()
+  | _ :: t -> names_value_outs t
+
+(* THE PROJECT THEOREM: a projection never answers a name twice. *)
+let project_no_dups (cols:schema) (pairs:list (string & string))
+  : Lemma (requires Ok? (project_step cols pairs))
+          (ensures no_dups (names (Ok?._0 (project_step cols pairs)))) =
+  repeat_in_none "project" [] (project_outs pairs);
+  names_project_outs pairs;
+  project_names cols pairs
+
+(* THE GROUP-BY THEOREM: the keys and the aggregates never share a name. *)
+let group_by_no_dups (cols:schema) (keys:list string) (aggs:list agg)
+  : Lemma (requires Ok? (group_by_cols cols keys aggs))
+          (ensures no_dups (names (Ok?._0 (group_by_cols cols keys aggs)))) =
+  repeat_in_none "groupBy" [] (app (key_outs keys) (agg_outs aggs));
+  names_app (key_outs keys) (agg_outs aggs);
+  names_key_outs keys;
+  names_agg_outs aggs;
+  group_by_names cols keys aggs
+
+(* THE UNPIVOT THEOREM: no id column is named twice, `variable` or `value`. *)
+let unpivot_no_dups (f:wframe) (ids vals:list string)
+  : Lemma (requires Ok? (unpivot_cols f.cols f.rows ids vals))
+          (ensures no_dups (names (Ok?._0 (unpivot_cols f.cols f.rows ids vals)))) =
+  repeat_in_none "unpivot" [] (unpivot_outs ids);
+  names_app (id_outs ids) [("variable", "the unpivot's variable column"); ("value", "the unpivot's value column")];
+  names_id_outs ids;
+  unpivot_names f ids vals
+
+(* THE PIVOT THEOREM: no index column takes a value column's name, and no two value columns share
+   one — whatever the `on` column holds and whatever text `cell_string` gives it. *)
+let pivot_no_dups (rp:rprims) (f:wframe) (spec:pivot_spec)
+  : Lemma (requires Ok? (pivot_cols rp f.cols f.rows spec))
+          (ensures no_dups (names (Ok?._0 (pivot_cols rp f.cols f.rows spec)))) =
+  let vals = pivot_value_cols rp (agg_type spec.p_agg (Some?.v (assoc spec.p_values f.cols))) (on_values rp (Some?.v (index_of spec.p_on f.cols)) f.rows) in
+  repeat_in_none "pivot" [] (app (index_outs spec.p_index) (value_outs vals));
+  names_app (index_outs spec.p_index) (value_outs vals);
+  names_index_outs spec.p_index;
+  names_value_outs vals;
+  names_lookup f.cols spec.p_index;
+  names_app (lookup_cols f.cols spec.p_index) vals
+
+(* The four witnesses Phase 434 recorded as `Ok`, each now the refusal naming the verb, the name
+   and both producers — the differential holds the shipped evaluator to the same answer. *)
+let project_repeat_refused (_:unit)
+  : Lemma (ensures project_step [("a", IntType)] [("a", "x"); ("a", "x")]
+                   == Error (TypeError (repeat_text "project" "x" "the projection of 'a'" "the projection of 'a'"))) =
+  assert_norm (project_step [("a", IntType)] [("a", "x"); ("a", "x")]
+               == Error (TypeError (repeat_text "project" "x" "the projection of 'a'" "the projection of 'a'")))
+
+let group_by_repeat_refused (_:unit)
+  : Lemma (ensures group_by_cols [("k", StringType); ("v", IntType)] ["k"] [{ a_name = "k"; a_fn = Sum; a_of = "v" }]
+                   == Error (TypeError (repeat_text "groupBy" "k" "the key 'k'" "the aggregate over 'v'"))) =
+  assert_norm (group_by_cols [("k", StringType); ("v", IntType)] ["k"] [{ a_name = "k"; a_fn = Sum; a_of = "v" }]
+               == Error (TypeError (repeat_text "groupBy" "k" "the key 'k'" "the aggregate over 'v'")))
+
+let unpivot_repeat_refused (_:unit)
+  : Lemma (ensures unpivot_cols [("variable", StringType); ("v", IntType)] [] ["variable"] ["v"]
+                   == Error (TypeError (repeat_text "unpivot" "variable" "the id column 'variable'" "the unpivot's variable column"))) =
+  assert_norm (unpivot_cols [("variable", StringType); ("v", IntType)] [] ["variable"] ["v"]
+               == Error (TypeError (repeat_text "unpivot" "variable" "the id column 'variable'" "the unpivot's variable column")))
+
+(* The pivot's witness reads the data, so it holds for any `cell_string` that gives the string cell
+   `i` the text `i`; the refusal's text is the oracle's to compare. *)
+let pivot_repeat_refused (rp:rprims) (f:wframe)
   : Lemma (requires rp.cell_string (Str "i") == "i"
                     /\ f.cols == [("i", IntType); ("g", StringType); ("w", IntType)]
                     /\ f.rows == [[Int 1; Str "i"; Int 2]])
-          (ensures pivot_cols rp f.cols f.rows { p_index = ["i"]; p_on = "g"; p_values = "w"; p_agg = Sum }
-                   == Ok [("i", IntType); ("i", IntType)]
-                   /\ not (no_dups (names (Ok?._0 (pivot_cols rp f.cols f.rows { p_index = ["i"]; p_on = "g"; p_values = "w"; p_agg = Sum }))))) = ()
+          (ensures Error? (pivot_cols rp f.cols f.rows { p_index = ["i"]; p_on = "g"; p_values = "w"; p_agg = Sum })
+                   /\ TypeError? (Error?._0 (pivot_cols rp f.cols f.rows { p_index = ["i"]; p_on = "g"; p_values = "w"; p_agg = Sum }))) = ()
 
 (* ======================================================================================
    10. Unknown-column refusal, verb by verb, in each arm's own order.

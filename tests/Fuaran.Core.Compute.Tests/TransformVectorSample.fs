@@ -118,8 +118,18 @@ module TransformVectorSample =
           "unit-join-key-refused"
           "unit-union-refused" ]
 
+    /// The repeated-name shapes (Phase 468, D35), one vector each after the unit ones, over the
+    /// decimal table: a `Project`, a `GroupBy`, an `Unpivot` and a `Pivot` whose output would name a
+    /// column twice, each refused.
+    let private repeatShapeNames =
+        [ "repeat-project-refused"
+          "repeat-group-by-refused"
+          "repeat-unpivot-refused"
+          "repeat-pivot-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
-    let private drawnShapeNames = decimalShapeNames @ typingShapeNames @ unitShapeNames
+    let private drawnShapeNames =
+        decimalShapeNames @ typingShapeNames @ unitShapeNames @ repeatShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -256,6 +266,16 @@ module TransformVectorSample =
         | "typed-unpivot-int-float" -> [ Unpivot([ "g" ], [ "v"; "w" ]) ]
         | "typed-unpivot-empty" -> [ Filter(Lit(Bool false)); Unpivot([ "g" ], [ "v"; "w" ]) ]
         | "typed-float-decimal-refused" -> [ Derive("t", Case([ Binary(Gt, Col "v", Lit(Int 0)), Col "w" ], m)) ]
+        | "repeat-project-refused" -> [ Project [ "m", "x"; "v", "x" ] ]
+        | "repeat-group-by-refused" -> [ GroupBy([ "g" ], [ agg "g" Sum "v" ]) ]
+        | "repeat-unpivot-refused" -> [ Derive("variable", Col "g"); Unpivot([ "variable" ], [ "v"; "w" ]) ]
+        | "repeat-pivot-refused" ->
+            [ Derive("a", Col "v")
+              Pivot
+                  { Index = [ "a" ]
+                    On = "g"
+                    Values = "w"
+                    Agg = Sum } ]
         | "decimal-rounded-float-refused" ->
             [ Derive(
                   "r",

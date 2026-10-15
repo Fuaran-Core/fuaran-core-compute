@@ -1,5 +1,90 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-15 — D35: a `Project`, a `GroupBy`, an `Unpivot` and a `Pivot` refuse an output that names a column twice, with a `TypeError` naming the verb, the name and both producers, through one check; the pivot refuses too, rather than suffixing, although its collision is the data's
+
+**Context.** D32 recorded finding (a): four verbs answer `Ok` with two columns of one name —
+`Project [a, x; a, x]`, a `GroupBy` key named as an aggregate, an `Unpivot` id column named `variable`, and a
+`Pivot` whose index column is named as an `on` value's text — and stated each as a theorem with a witness
+that the differential asserted on production. Such a table re-enters the evaluator by name as the first of
+its two columns (D25) and Core's `Table.validate` refuses it. D20 closed the join's way of producing one
+(a suffix) and D28 the window's (a refusal). The operator ruled (2026-10-12, applied 2026-10-15) that the
+four are fixed in production, not documented, and that the pivot's choice is made on correctness.
+
+**Decision.**
+
+1. **One check.** `DataFrame.repeatedOutput` takes each output column's name beside what produced it,
+   in output order, and refuses the first name an earlier output took:
+   `TypeError("<verb> output 'x' is named twice, by <first> and by <second>; give each output a name of
+   its own")`, where a producer reads `the projection of 'a'`, `the key 'k'`, `the aggregate over 'v'`,
+   `the id column 'n'`, `the unpivot's variable column`, `the index column 'i'` or `the column for the
+   on value 't'`. The four verbs ask it through `projectRefusal`, `groupByRefusal`, `unpivotRefusal`
+   and `pivotRefusal`. It covers every repeat a verb can make, not only the four witnesses: two pairs of
+   one output, a key twice, two aggregates of one name, an id column twice or named `value`, an index
+   column twice, and two value columns whose `on` values share a canonical text.
+   **Except where the two value columns are one column.** The pivot's on-values are `List.distinct`
+   over the cells, and two `NaN`s are distinct there while `cellEq` (Phase 325) equates them: the pivot
+   answered two columns named `"NaN"`, each collecting every `NaN` row — identical in name and content,
+   pinned by Phase 264's oracle. Refusing a float `on` column for holding two `NaN` rows would make
+   ordinary data fail; the two are the one column they name, so the pivot keeps one on-value of each
+   text among the cells `cellEq` equates, and refuses only a text shared by cells `cellEq` keeps apart.
+   No information is lost (each of the pair collected the same rows), and the model already read the two
+   `NaN`s as one cell (its floats are their round-trip text).
+2. **Where it sits.** After every name the arm resolves (an unknown name is still named first, as in
+   D28), and before any row is read: `Project`, `GroupBy` and `Unpivot` refuse over a source with no
+   rows exactly as over one with rows, and the unpivot refuses before its value column is typed. The
+   pivot's value names are its distinct present `on` values, so its check reads the `on` column and runs
+   after the on values are collected and before any value is aggregated: an aggregate refusal over a
+   colliding pivot is never reached.
+3. **No new `EvalError` case.** `TypeError` is what D28 answers for the window's collision; a new case
+   would break every exhaustive match over `EvalError` and the model's error type for a refusal a host
+   reports by its text (D25, D28).
+4. **Every evaluator path asks it.** The reference arms, the incremental seam's own `Project` and
+   maintained `GroupBy` walk (`Incremental.fs`, which would otherwise have answered the table the
+   reference refuses), and, through the reference, the pivot and the unpivot. The planner's totality
+   verdict counts a repeating `Project` as not total and stops tracking the schema at one, so no rewrite
+   moves a step across it.
+5. **The schema walk still names the column twice.** The shard asked that "the static walk refuses
+   the same pipelines"; that premise does not hold. `SchemaWalk.ofTransform` carries no refusal verdict
+   (D26, D28 item 5): it answers a knowledge for every pipeline, including ones the evaluator refuses for
+   an unknown key or a window's taken name. Over a refused `Project` it answers the closed knowledge with
+   the name twice, which is about a pipeline the evaluator refuses and is marked by the repeat; the
+   walk's soundness theorem is stated over steps that answer `Ok` and is untouched. The planner, which
+   does decide, decides as the evaluator does (item 4).
+6. **The model.** `proofs/Relational.fst` models the check clause for clause (`repeated_output`, the
+   producer lists, the refusal placed where each arm places it), and proves `project_no_dups`,
+   `group_by_no_dups`, `unpivot_no_dups` and `pivot_no_dups` with no hypothesis on the input, beside
+   `window_no_dups` and `join_no_dups`: none of the six verbs that name their output answers `Ok` with a
+   name twice. The four `*_repeats_name` witnesses become `*_repeat_refused`, the same inputs answering
+   the refusal; the differential compares production's refusal text to the model's on the four shapes
+   and over the generated sample. Removing the check from the group-by arm leaves `group_by_no_dups`
+   unprovable (one perturbation run).
+
+**Why the pivot refuses rather than suffixing.** D32 left the pivot open because its colliding name is
+the data's, like a join operand's, and D20 suffixes a join to keep it total when an operand gains a
+column. The pivot is not the join's case. A join's right column keeps its identity under a suffix —
+`x_right` is still "the right's `x`", every right name is suffixed by one rule, and `joinRightNames`
+lets a caller compute it. A pivot's value column has no identity BUT its name: the column for `on`
+value `eng` is found by reading `eng`, and every consumer of a pivot — a later step, a host rendering
+the table, a chart keyed on the on values — reads it that way. A suffix would rename exactly the one
+column whose name is its meaning, silently, and only when the data happens to hold the index's name: a
+later `Col "eng"` would read the index where it meant the value column (or the reverse, under the other
+suffix), a plausible wrong answer with no error anywhere — the outcome D28 rejected for the window.
+Suffixing the INDEX instead would break every read of the column the author named. A refusal is honest:
+the pipeline names a column that the data also names, so the reads of that name are ambiguous, and the
+author resolves it by renaming the index (a `Project` ahead of the pivot) or filtering the value. The
+cost is that the pivot becomes partial in its data — a pipeline that ran over a table refuses over one
+that gains such an `on` value. That is not new: the pivot already refuses by its cells through an
+aggregate, and the unpivot by its melted cells (Phase 338); and the static walk already declares the
+pivot's value names unknown, so no planner or registry relied on knowing them.
+
+**Consequences.** A behaviour change to a public evaluator, of D21's, D26's and D28's class: no public
+signature moves (the check and its four callers are internal), and `api/` is unchanged. `0.40.0` is
+tagged, so the change ADVANCES the slot to `0.41.0`, a new draft (`STABILITY.md`). Four refusal vectors
+join `conformance/laws/transform-laws.json` after the unit shapes (`repeat-*-refused`, over the decimal
+table); every earlier vector is byte-identical, the file's `kitVersion` stamp follows `<Version>`, and the
+corpus copy follows the release rule (D6 (4)) and is not re-stamped by a draft. A consumer whose pipeline
+named an output twice renames one of the two columns.
+
 ## 2026-10-15 — D34: the dense frame and its kernels are modelled in their own module over `Pipeline.fst`'s frame and Core's column; the read-back is the table's rows and the filter kernels are the row-major filter, as theorems; the native member, the morsel runner, the sort kernels and the rope are declared out
 
 **Context.** Phase 423 made the evaluator's frame a view over Core's typed column vectors, and Phases 280,

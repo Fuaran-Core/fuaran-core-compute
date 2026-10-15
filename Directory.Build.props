@@ -33,8 +33,10 @@
          advanced the slot to 0.39.0, released as `v0.39.0`. 0.39.0 is tagged, so Phase 429's breaking
          change (the evaluator propagates and checks units: `ColExpr` gains `Convert`, `EvalError` gains
          `UnitMismatch`, `ColumnKnowledge` carries the field's metadata) advanced the slot to 0.40.0,
-         released as `v0.40.0`. -->
-    <Version>0.40.0</Version>
+         released as `v0.40.0`. 0.40.0 is tagged, so Phase 468's breaking change (a `Project`, a
+         `GroupBy`, an `Unpivot` and a `Pivot` refuse a repeated output name, class `behaviour`)
+         advanced the slot to 0.41.0. -->
+    <Version>0.41.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

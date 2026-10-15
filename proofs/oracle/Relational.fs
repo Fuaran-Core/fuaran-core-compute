@@ -292,6 +292,84 @@ let rec resolve_sort_keys : Pipeline.param_env  ->  Prims.list<(Pipeline.slot<Pr
      end))
 
 
+let repeat_text : Prims.string  ->  Prims.string  ->  Prims.string  ->  Prims.string  ->  Prims.string = (fun ( verb  :  Prims.string ) ( name  :  Prims.string ) ( first  :  Prims.string ) ( who  :  Prims.string ) -> (Prims.strcat verb (Prims.strcat " output \'" (Prims.strcat name (Prims.strcat "\' is named twice, by " (Prims.strcat first (Prims.strcat " and by " (Prims.strcat who "; give each output a name of its own"))))))))
+
+
+let rec repeat_in : Prims.string  ->  Prims.list<(Prims.string * Prims.string)>  ->  Prims.list<(Prims.string * Prims.string)>  ->  FStar_Pervasives_Native.option<Pipeline.eval_error> = (fun ( verb  :  Prims.string ) ( seen  :  Prims.list<(Prims.string * Prims.string)> ) ( outs  :  Prims.list<(Prims.string * Prims.string)> ) -> (match (outs) with
+| [] -> begin
+     FStar_Pervasives_Native.None
+     end
+| ((n, who))::t -> begin
+     (match ((Pipeline.assoc n seen)) with
+| FStar_Pervasives_Native.Some (first) -> begin
+     FStar_Pervasives_Native.Some (Pipeline.TypeError ((repeat_text verb n first who)))
+     end
+| FStar_Pervasives_Native.None -> begin
+     (repeat_in verb ((((n), (who)))::seen) t)
+     end)
+     end))
+
+
+let repeated_output : Prims.string  ->  Prims.list<(Prims.string * Prims.string)>  ->  FStar_Pervasives_Native.option<Pipeline.eval_error> = (fun ( verb  :  Prims.string ) ( outs  :  Prims.list<(Prims.string * Prims.string)> ) -> (repeat_in verb [] outs))
+
+
+let rec project_outs : Prims.list<(Prims.string * Prims.string)>  ->  Prims.list<(Prims.string * Prims.string)> = (fun ( pairs  :  Prims.list<(Prims.string * Prims.string)> ) -> (match (pairs) with
+| [] -> begin
+     []
+     end
+| ((src, out))::t -> begin
+     (((out), ((Prims.strcat "the projection of \'" (Prims.strcat src "\'")))))::(project_outs t)
+     end))
+
+
+let rec key_outs : Prims.list<Prims.string>  ->  Prims.list<(Prims.string * Prims.string)> = (fun ( keys  :  Prims.list<Prims.string> ) -> (match (keys) with
+| [] -> begin
+     []
+     end
+| (k)::t -> begin
+     (((k), ((Prims.strcat "the key \'" (Prims.strcat k "\'")))))::(key_outs t)
+     end))
+
+
+let rec agg_outs : Prims.list<Pipeline.agg>  ->  Prims.list<(Prims.string * Prims.string)> = (fun ( aggs  :  Prims.list<Pipeline.agg> ) -> (match (aggs) with
+| [] -> begin
+     []
+     end
+| (a)::t -> begin
+     (((a.a_name), ((Prims.strcat "the aggregate over \'" (Prims.strcat a.a_of "\'")))))::(agg_outs t)
+     end))
+
+
+let rec id_outs : Prims.list<Prims.string>  ->  Prims.list<(Prims.string * Prims.string)> = (fun ( ids  :  Prims.list<Prims.string> ) -> (match (ids) with
+| [] -> begin
+     []
+     end
+| (n)::t -> begin
+     (((n), ((Prims.strcat "the id column \'" (Prims.strcat n "\'")))))::(id_outs t)
+     end))
+
+
+let unpivot_outs : Prims.list<Prims.string>  ->  Prims.list<(Prims.string * Prims.string)> = (fun ( ids  :  Prims.list<Prims.string> ) -> (Pipeline.app (id_outs ids) (((("variable"), ("the unpivot\'s variable column")))::((("value"), ("the unpivot\'s value column")))::[])))
+
+
+let rec index_outs : Prims.list<Prims.string>  ->  Prims.list<(Prims.string * Prims.string)> = (fun ( ns  :  Prims.list<Prims.string> ) -> (match (ns) with
+| [] -> begin
+     []
+     end
+| (n)::t -> begin
+     (((n), ((Prims.strcat "the index column \'" (Prims.strcat n "\'")))))::(index_outs t)
+     end))
+
+
+let rec value_outs : Pipeline.schema  ->  Prims.list<(Prims.string * Prims.string)> = (fun ( vs  :  Pipeline.schema ) -> (match (vs) with
+| [] -> begin
+     []
+     end
+| ((n, uu___))::t -> begin
+     (((n), ((Prims.strcat "the column for the on value \'" (Prims.strcat n "\'")))))::(value_outs t)
+     end))
+
+
 let rec project_cols : Pipeline.schema  ->  Prims.list<(Prims.string * Prims.string)>  ->  Pipeline.outcome<Pipeline.schema, Pipeline.eval_error> = (fun ( cols  :  Pipeline.schema ) ( pairs  :  Prims.list<(Prims.string * Prims.string)> ) -> (match (pairs) with
 | [] -> begin
      Pipeline.Ok ([])
@@ -309,6 +387,21 @@ let rec project_cols : Pipeline.schema  ->  Prims.list<(Prims.string * Prims.str
 | Pipeline.Ok (tail) -> begin
      Pipeline.Ok ((((out), (ty)))::tail)
      end)
+     end)
+     end))
+
+
+let project_step : Pipeline.schema  ->  Prims.list<(Prims.string * Prims.string)>  ->  Pipeline.outcome<Pipeline.schema, Pipeline.eval_error> = (fun ( cols  :  Pipeline.schema ) ( pairs  :  Prims.list<(Prims.string * Prims.string)> ) -> (match ((project_cols cols pairs)) with
+| Pipeline.Error (e) -> begin
+     Pipeline.Error (e)
+     end
+| Pipeline.Ok (out) -> begin
+     (match ((repeated_output "project" (project_outs pairs))) with
+| FStar_Pervasives_Native.Some (e) -> begin
+     Pipeline.Error (e)
+     end
+| FStar_Pervasives_Native.None -> begin
+     Pipeline.Ok (out)
      end)
      end))
 
@@ -344,7 +437,13 @@ let group_by_cols : Pipeline.schema  ->  Prims.list<Prims.string>  ->  Prims.lis
      Pipeline.Error (e)
      end
 | Pipeline.Ok (ac) -> begin
+     (match ((repeated_output "groupBy" (Pipeline.app (key_outs keys) (agg_outs aggs)))) with
+| FStar_Pervasives_Native.Some (e) -> begin
+     Pipeline.Error (e)
+     end
+| FStar_Pervasives_Native.None -> begin
      Pipeline.Ok ((Pipeline.app (lookup_cols cols keys) ac))
+     end)
      end)
      end))
 
@@ -707,7 +806,16 @@ let pivot_cols : rprims  ->  Pipeline.schema  ->  Prims.list<Prims.list<Pipeline
      Pipeline.Error (Pipeline.UnknownColumn (spec.p_values, (Pipeline.names cols)))
      end
 | FStar_Pervasives_Native.Some (vty) -> begin
-     Pipeline.Ok ((Pipeline.app (lookup_cols cols spec.p_index) (pivot_value_cols rp (agg_type spec.p_agg vty) (on_values rp on_i rows))))
+     (
+
+let vals = (pivot_value_cols rp (agg_type spec.p_agg vty) (on_values rp on_i rows))
+in (match ((repeated_output "pivot" (Pipeline.app (index_outs spec.p_index) (value_outs vals)))) with
+| FStar_Pervasives_Native.Some (e) -> begin
+     Pipeline.Error (e)
+     end
+| FStar_Pervasives_Native.None -> begin
+     Pipeline.Ok ((Pipeline.app (lookup_cols cols spec.p_index) vals))
+     end))
      end)
      end)
      end))
@@ -762,6 +870,11 @@ let unpivot_cols : Pipeline.schema  ->  Prims.list<Prims.list<Pipeline.cell>>  -
      Pipeline.Error (Pipeline.UnknownColumn (n, (Pipeline.names cols)))
      end
 | FStar_Pervasives_Native.None -> begin
+     (match ((repeated_output "unpivot" (unpivot_outs ids))) with
+| FStar_Pervasives_Native.Some (e) -> begin
+     Pipeline.Error (e)
+     end
+| FStar_Pervasives_Native.None -> begin
      (
 
 let dt = (unpivot_typing (snds (lookup_cols cols vals)))
@@ -778,6 +891,7 @@ in (match (dt) with
      Pipeline.Ok ((Pipeline.app (lookup_cols cols ids) (((("variable"), (Pipeline.StringType)))::((("value"), (vty)))::[])))
      end)
      end))
+     end)
      end)
      end))
 
@@ -841,7 +955,7 @@ let step_schema : rprims  ->  resolver  ->  Pipeline.param_env  ->  Pipeline.wfr
      Pipeline.Error (Pipeline.TypeError ("Derive is Pipeline.fst\'s clause, not the relational model\'s"))
      end
 | Pipeline.Project (pairs) -> begin
-     (project_cols f.cols pairs)
+     (project_step f.cols pairs)
      end
 | Pipeline.GroupBy (keys, aggs) -> begin
      (group_by_cols f.cols keys aggs)

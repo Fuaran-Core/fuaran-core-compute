@@ -3066,6 +3066,70 @@ module DataFrame =
         | ByCells -> typeFromCells column count cellAt
         | Refused -> Error(floatBesideDecimal column)
 
+    // ---- a repeated output name (Phase 468, D35) ----
+
+    /// THE ONE CHECK every verb that names its output columns asks (Phase 468, D35): `outs` is each
+    /// output column's name beside what produced it, in output order, and the first name an earlier
+    /// output already took is refused with a `TypeError` naming the verb, the name and both
+    /// producers. A table cannot hold two columns of one name, and one handed back by name reads
+    /// its second column as the first, the defect a join's suffix (D20) and a window's refusal (D28)
+    /// closed for those two verbs. `None` is an output whose names are distinct.
+    let internal repeatedOutput (verb: string) (outs: (string * string) list) : EvalError option =
+        let seen = System.Collections.Generic.Dictionary<string, string>()
+
+        let rec go =
+            function
+            | [] -> None
+            | (name: string, by: string) :: rest ->
+                match seen.TryGetValue name with
+                | true, first ->
+                    Some(
+                        TypeError(
+                            verb
+                            + " output '"
+                            + name
+                            + "' is named twice, by "
+                            + first
+                            + " and by "
+                            + by
+                            + "; give each output a name of its own"
+                        )
+                    )
+                | _ ->
+                    seen[name] <- by
+                    go rest
+
+        go outs
+
+    /// A `Project` whose pairs name one output twice — `Project [a, x; b, x]`.
+    let internal projectRefusal (pairs: (string * string) list) : EvalError option =
+        repeatedOutput "project" (pairs |> List.map (fun (src, out) -> out, "the projection of '" + src + "'"))
+
+    /// A `GroupBy` whose keys and aggregate names repeat one — a key named as an aggregate, or two
+    /// aggregates of one name.
+    let internal groupByRefusal (keys: string list) (aggs: Agg list) : EvalError option =
+        repeatedOutput
+            "groupBy"
+            ((keys |> List.map (fun k -> k, "the key '" + k + "'"))
+             @ (aggs |> List.map (fun a -> a.Name, "the aggregate over '" + a.Of + "'")))
+
+    /// An `Unpivot` whose id columns repeat a name or take one of its own two, `variable` and
+    /// `value`.
+    let internal unpivotRefusal (idVars: string list) : EvalError option =
+        repeatedOutput
+            "unpivot"
+            ((idVars |> List.map (fun n -> n, "the id column '" + n + "'"))
+             @ [ "variable", "the unpivot's variable column"
+                 "value", "the unpivot's value column" ])
+
+    /// A `Pivot` whose index columns repeat a name or take a value column's: `texts` are the value
+    /// columns' names, each the canonical text of an `on` value, so this check reads the data.
+    let internal pivotRefusal (index: string list) (texts: string list) : EvalError option =
+        repeatedOutput
+            "pivot"
+            ((index |> List.map (fun n -> n, "the index column '" + n + "'"))
+             @ (texts |> List.map (fun t -> t, "the column for the on value '" + t + "'")))
+
     // ---- the planner (Phase 269) ----
     //
     // Pipelines are data, so they can be rewritten before execution. The reference semantics are
@@ -3341,7 +3405,8 @@ module DataFrame =
         /// THE TOTALITY VERDICT over a step: `true` only where evaluating the step over ANY table
         /// of schema `cols` returns `Ok`. `Sort` refuses a key the schema does not carry (Phase
         /// 412), so a sort is total only where every key is a literal the schema carries; a `Limit`
-        /// clamps; `Distinct` compares tokens; a `Project` fails only on a source the schema lacks. A slot still holding a
+        /// clamps; `Distinct` compares tokens; a `Project` fails only on a source the schema lacks or an output
+        /// it names twice (Phase 468, D35). A slot still holding a
         /// param is resolved against an env the verdict does not have. Every other verb reaches
         /// a resolver, an aggregate or a comparison the schema alone cannot vouch for.
         /// Phase 429: a step whose expression the unit check refuses (D29) refuses on every frame.
@@ -3368,7 +3433,9 @@ module DataFrame =
                     | Some name -> Option.isSome (colType cols name)
                     | None -> false)
             | Limit(n, offset) -> not (Slot.isParam n) && not (Slot.isParam offset)
-            | Project pairs -> pairs |> List.forall (fun (src, _) -> Option.isSome (colType cols src))
+            | Project pairs ->
+                pairs |> List.forall (fun (src, _) -> Option.isSome (colType cols src))
+                && Option.isNone (projectRefusal pairs)
             | Distinct -> true
             | GroupBy _
             | Join _
@@ -3441,6 +3508,9 @@ module DataFrame =
                 | Sort _
                 | Limit _
                 | Distinct -> Some k
+                // A projection that names an output twice is refused (Phase 468, D35), so the
+                // planner stops knowing at it, as at a step whose reads it lacks.
+                | Project pairs when Option.isSome (projectRefusal pairs) -> None
                 | Project pairs ->
                     Some(
                         pairs
@@ -5191,10 +5261,14 @@ module DataFrame =
             | [] -> Ok(List.rev acc)
             | p :: rest -> resolve p |> Result.bind (fun r -> go (r :: acc) rest)
 
+        // Every source resolves first, then the output names are checked (Phase 468, D35).
         go [] pairs
-        |> Result.map (fun resolved ->
-            let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
-            Frame.project f idx (resolved |> List.map (fun (o, field, _) -> Fields.rename o field)))
+        |> Result.bind (fun resolved ->
+            match projectRefusal pairs with
+            | Some e -> Error e
+            | None ->
+                let idx = resolved |> List.map (fun (_, _, i) -> i) |> List.toArray
+                Ok(Frame.project f idx (resolved |> List.map (fun (o, field, _) -> Fields.rename o field))))
 
     /// A step's compiled tree has one shape: `compileExpr` is a function of the frame and the
     /// resolved expression, so every morsel's tree has the kind of root the first one has.
@@ -6674,7 +6748,13 @@ module DataFrame =
                 | [] -> Ok(List.rev acc)
                 | a :: rest -> resolveAgg a |> Result.bind (fun r -> resAll (r :: acc) rest)
 
+            // Every key and every aggregate's source resolves first, then the output names are
+            // checked (Phase 468, D35), before any row is read.
             resAll [] aggs
+            |> Result.bind (fun resolvedAggs ->
+                match groupByRefusal keys aggs with
+                | Some e -> Error e
+                | None -> Ok resolvedAggs)
             |> Result.bind (fun resolvedAggs ->
                 let keyCols =
                     keys |> List.map (fun k -> f.Cols |> List.find (fun fd -> fd.Name = k))
@@ -8451,153 +8531,170 @@ module DataFrame =
                     let onVec = f.Vecs[onIdx]
                     let valVec = f.Vecs[valIdx]
 
-                    // distinct on-values (sorted by canonical string for a deterministic column order)
+                    // The on-values' `cellEq` coder (Phase 325), read here and by the one pass below.
+                    let onCoder = RowHash.coder true
+
+                    // distinct on-values (sorted by canonical string for a deterministic column order).
+                    // Phase 468 (D35) — two on-values `List.distinct` keeps apart (two `NaN`s) that render
+                    // ONE text and that `cellEq` equates would be two identical columns of one name, each
+                    // collecting every row either matches: they are one column. Two of one text that
+                    // `cellEq` keeps apart are refused below with the other repeated names.
                     let onValues =
+                        let seen = System.Collections.Generic.HashSet<string>()
+
                         phys
                         |> Array.map (fun p -> Vec.cellAt onVec p)
                         |> Array.filter (fun c -> not (Cell.isNull c))
                         |> List.ofArray
                         |> List.distinct
                         |> List.sortBy cellString
+                        |> List.filter (fun ov ->
+                            seen.Add(string (RowHash.cellCode onCoder ov true) + ":" + cellString ov))
 
-                    // Phase 264 — ONE pass groups the value cells by (index group, pivot column). The
-                    // per-pair filter it replaces scanned the whole frame for every (group, on-value)
-                    // pair, re-minting the index token per row inside the filter: O(g × v × n).
-                    //
-                    // An on-value's column set, keyed by its `cellEq` code (Phase 325: the typed row
-                    // hasher's `cellEq` coder, where it was a token string per row): a row lands in
-                    // EVERY column whose on-value `cellEq` matches its own, which is what the filter
-                    // selected. Usually that is one column; two on-values `List.distinct` keeps apart
-                    // but `cellEq` equates (`Int 1` and `Float 1.0`, or two `NaN`s) share a code, are
-                    // two columns, and each collects every row either matches.
-                    let onCount = List.length onValues
-                    let onCoder = RowHash.coder true
-                    let onCodes = onValues |> List.map (fun ov -> RowHash.cellCode onCoder ov true)
-                    let columnsOf = Array.init onCoder.Count (fun _ -> ResizeArray<int>())
-
-                    onCodes
-                    |> List.iteri (fun c code ->
-                        if code >= 0 then
-                            columnsOf[code].Add c)
-
-                    let rowOn = RowHash.codesOf onCoder onVec phys false
-
-                    // Index groups in first-appearance order by TOKEN equality over the index cells
-                    // (Phase 41's canonical token — NOT the `cellEq` relation the on-values match by
-                    // above), through the typed row hasher (Phase 325). Each group's key is read from
-                    // its first physical row straight into the key column (`keyColumn`, Phase 344).
-                    let idxVecs = idxIdx |> List.map (fun i -> f.Vecs[i]) |> List.toArray
-                    let slotOf, firstPhys = keySlots idxVecs phys
-                    let groups = firstPhys.Length
-
-                    // Phase 353 — every (group, on-value) pair aggregated by Phase 323's streams: one
-                    // stream per pivot column, a slot per group, fed each row in frame order, which is
-                    // the order the per-pair cell list held. It replaced a boxed cell list per pair
-                    // and a `Column.aggregate` call per pair (5,000 of them over one-cell lists for
-                    // the corpus's 50-on-value pivot, and the most of its node profile). A pair a
-                    // stream defers — `Median`, `StdDev`, `CountDistinct`, a cell outside the column's
-                    // type, an int `Sum` past int32, a float overflow — is `Column.aggregate` over its
-                    // members, as before; the differential law (`pivotStreamLaws`) holds the two equal.
-                    let streams =
-                        Array.init onCount (fun _ ->
-                            GroupAgg.Stream(spec.Agg, valType, valVec, groups, GroupAgg.Exact))
-
-                    // The loop proves `i` for `phys`, and for `rowOn` and `slotOf` once each is checked to
-                    // hold a row per logical row; the slot and the code it reads are indexes it does not
-                    // prove (Phase 326).
-                    Raw.within phys.Length rowOn
-                    Raw.within phys.Length slotOf
-
-                    // An aggregate every stream defers (`Median`, `StdDev`, `CountDistinct`) is fed nothing.
-                    let fed =
-                        if onCount > 0 && not streams[0].DefersAll then
-                            phys.Length
-                        else
-                            0
-
-                    for i in 0 .. fed - 1 do
-                        let code = Raw.get i rowOn
-
-                        if code >= 0 then
-                            let g = Raw.get i slotOf
-                            let p = Raw.get i phys
-#if FABLE_COMPILER
-                            // A counted loop: `for` over a list compiles to an enumerator there.
-                            let targets = Raw.at code columnsOf
-
-                            for j in 0 .. targets.Count - 1 do
-                                streams[targets[j]].Feed(g, p)
-#else
-                            for c in columnsOf[code] do
-                                streams[c].Feed(g, p)
-#endif
-
-                    // A deferred pair's members — physical rows in frame order — built once, for
-                    // every pair, on the first deferral: the lists the step kept before this phase.
-                    let mutable members: ResizeArray<int>[][] = null
-
-                    let membersOf (g: int) (c: int) : ResizeArray<int> =
-                        if isNull members then
-                            members <- Array.init onCount (fun _ -> Array.init groups (fun _ -> ResizeArray<int>()))
-
-                            for i in 0 .. phys.Length - 1 do
-                                let code = rowOn[i]
-
-                                if code >= 0 then
-                                    let targets = columnsOf[code]
-
-                                    for j in 0 .. targets.Count - 1 do
-                                        let pair = members[targets[j]]
-                                        pair[slotOf[i]].Add phys[i]
-
-                        members[c][g]
-
-                    let outTy = aggType spec.Agg valType
-                    let outs = Array.init onCount (fun _ -> GroupAgg.Output(outTy, groups))
-
-                    // An absent pair aggregates the EMPTY list, exactly as a filter that matched no
-                    // row did — `Null` or `Int 0` by the aggregate's own rule; a stream that saw no
-                    // row answers just that. The first error, in group order then column order, is
-                    // the traverse's.
-                    let mutable failed = None
-                    let mutable g = 0
-
-                    while Option.isNone failed && g < groups do
-                        let mutable c = 0
-
-                        while Option.isNone failed && c < onCount do
-                            if not (streams[c].Emit(g, outs[c])) then
-                                match aggCells spec.Agg valType (columnOf valVec (membersOf g c)) with
-                                | Ok cell -> outs[c].Cell(g, cell)
-                                | Error e -> failed <- Some e
-
-                            c <- c + 1
-
-                        g <- g + 1
-
-                    match failed with
+                    // The output's names are the index names then the on values' texts, so they are
+                    // checked here, before any value is aggregated (Phase 468, D35).
+                    match pivotRefusal spec.Index (onValues |> List.map cellString) with
                     | Some e -> Error e
                     | None ->
-                        let idxCols =
-                            spec.Index |> List.map (fun n -> f.Cols |> List.find (fun fd -> fd.Name = n))
 
-                        // Every value column is one aggregate of `Values`, so each carries that
-                        // aggregate's unit (Phase 429, D29).
-                        let valueUnit = aggregateUnitOf spec.Agg (colUnit f.Cols spec.Values)
+                        // Phase 264 — ONE pass groups the value cells by (index group, pivot column). The
+                        // per-pair filter it replaces scanned the whole frame for every (group, on-value)
+                        // pair, re-minting the index token per row inside the filter: O(g × v × n).
+                        //
+                        // An on-value's column set, keyed by its `cellEq` code (Phase 325: the typed row
+                        // hasher's `cellEq` coder, where it was a token string per row): a row lands in
+                        // EVERY column whose on-value `cellEq` matches its own, which is what the filter
+                        // selected. Usually that is one column; two on-values `List.distinct` keeps apart
+                        // but `cellEq` equates under two texts (`Int 1` and `Float 1.0` in a mixed column)
+                        // share a code, are two columns, and each collects every row either matches.
+                        let onCount = List.length onValues
+                        let onCodes = onValues |> List.map (fun ov -> RowHash.cellCode onCoder ov true)
+                        let columnsOf = Array.init onCoder.Count (fun _ -> ResizeArray<int>())
 
-                        let pivotCols =
-                            onValues
-                            |> List.map (fun ov -> Field.create (cellString ov) outTy |> stated valueUnit)
+                        onCodes
+                        |> List.iteri (fun c code ->
+                            if code >= 0 then
+                                columnsOf[code].Add c)
 
-                        let cols = idxCols @ pivotCols
+                        let rowOn = RowHash.codesOf onCoder onVec phys false
 
-                        let keyOut = idxCols |> List.mapi (fun j f -> keyColumn f.Type idxVecs[j] firstPhys)
+                        // Index groups in first-appearance order by TOKEN equality over the index cells
+                        // (Phase 41's canonical token — NOT the `cellEq` relation the on-values match by
+                        // above), through the typed row hasher (Phase 325). Each group's key is read from
+                        // its first physical row straight into the key column (`keyColumn`, Phase 344).
+                        let idxVecs = idxIdx |> List.map (fun i -> f.Vecs[i]) |> List.toArray
+                        let slotOf, firstPhys = keySlots idxVecs phys
+                        let groups = firstPhys.Length
 
-                        Ok
-                            { Cols = cols
-                              Vecs = Array.append (List.toArray keyOut) (outs |> Array.map (fun o -> o.ToVec()))
-                              Sel = None
-                              Count = groups })))
+                        // Phase 353 — every (group, on-value) pair aggregated by Phase 323's streams: one
+                        // stream per pivot column, a slot per group, fed each row in frame order, which is
+                        // the order the per-pair cell list held. It replaced a boxed cell list per pair
+                        // and a `Column.aggregate` call per pair (5,000 of them over one-cell lists for
+                        // the corpus's 50-on-value pivot, and the most of its node profile). A pair a
+                        // stream defers — `Median`, `StdDev`, `CountDistinct`, a cell outside the column's
+                        // type, an int `Sum` past int32, a float overflow — is `Column.aggregate` over its
+                        // members, as before; the differential law (`pivotStreamLaws`) holds the two equal.
+                        let streams =
+                            Array.init onCount (fun _ ->
+                                GroupAgg.Stream(spec.Agg, valType, valVec, groups, GroupAgg.Exact))
+
+                        // The loop proves `i` for `phys`, and for `rowOn` and `slotOf` once each is checked to
+                        // hold a row per logical row; the slot and the code it reads are indexes it does not
+                        // prove (Phase 326).
+                        Raw.within phys.Length rowOn
+                        Raw.within phys.Length slotOf
+
+                        // An aggregate every stream defers (`Median`, `StdDev`, `CountDistinct`) is fed nothing.
+                        let fed =
+                            if onCount > 0 && not streams[0].DefersAll then
+                                phys.Length
+                            else
+                                0
+
+                        for i in 0 .. fed - 1 do
+                            let code = Raw.get i rowOn
+
+                            if code >= 0 then
+                                let g = Raw.get i slotOf
+                                let p = Raw.get i phys
+#if FABLE_COMPILER
+                                // A counted loop: `for` over a list compiles to an enumerator there.
+                                let targets = Raw.at code columnsOf
+
+                                for j in 0 .. targets.Count - 1 do
+                                    streams[targets[j]].Feed(g, p)
+#else
+                                for c in columnsOf[code] do
+                                    streams[c].Feed(g, p)
+#endif
+
+                        // A deferred pair's members — physical rows in frame order — built once, for
+                        // every pair, on the first deferral: the lists the step kept before this phase.
+                        let mutable members: ResizeArray<int>[][] = null
+
+                        let membersOf (g: int) (c: int) : ResizeArray<int> =
+                            if isNull members then
+                                members <-
+                                    Array.init onCount (fun _ -> Array.init groups (fun _ -> ResizeArray<int>()))
+
+                                for i in 0 .. phys.Length - 1 do
+                                    let code = rowOn[i]
+
+                                    if code >= 0 then
+                                        let targets = columnsOf[code]
+
+                                        for j in 0 .. targets.Count - 1 do
+                                            let pair = members[targets[j]]
+                                            pair[slotOf[i]].Add phys[i]
+
+                            members[c][g]
+
+                        let outTy = aggType spec.Agg valType
+                        let outs = Array.init onCount (fun _ -> GroupAgg.Output(outTy, groups))
+
+                        // An absent pair aggregates the EMPTY list, exactly as a filter that matched no
+                        // row did — `Null` or `Int 0` by the aggregate's own rule; a stream that saw no
+                        // row answers just that. The first error, in group order then column order, is
+                        // the traverse's.
+                        let mutable failed = None
+                        let mutable g = 0
+
+                        while Option.isNone failed && g < groups do
+                            let mutable c = 0
+
+                            while Option.isNone failed && c < onCount do
+                                if not (streams[c].Emit(g, outs[c])) then
+                                    match aggCells spec.Agg valType (columnOf valVec (membersOf g c)) with
+                                    | Ok cell -> outs[c].Cell(g, cell)
+                                    | Error e -> failed <- Some e
+
+                                c <- c + 1
+
+                            g <- g + 1
+
+                        match failed with
+                        | Some e -> Error e
+                        | None ->
+                            let idxCols =
+                                spec.Index |> List.map (fun n -> f.Cols |> List.find (fun fd -> fd.Name = n))
+
+                            // Every value column is one aggregate of `Values`, so each carries that
+                            // aggregate's unit (Phase 429, D29).
+                            let valueUnit = aggregateUnitOf spec.Agg (colUnit f.Cols spec.Values)
+
+                            let pivotCols =
+                                onValues
+                                |> List.map (fun ov -> Field.create (cellString ov) outTy |> stated valueUnit)
+
+                            let cols = idxCols @ pivotCols
+
+                            let keyOut = idxCols |> List.mapi (fun j f -> keyColumn f.Type idxVecs[j] firstPhys)
+
+                            Ok
+                                { Cols = cols
+                                  Vecs = Array.append (List.toArray keyOut) (outs |> Array.map (fun o -> o.ToVec()))
+                                  Sel = None
+                                  Count = groups })))
 
     let private evalUnpivot (f: Frame) (idVars: string list) (valueVars: string list) : Result<Frame, EvalError> =
         let need name =
@@ -8614,38 +8711,44 @@ module DataFrame =
         |> Result.bind (fun idIdx ->
             resolve [] valueVars
             |> Result.bind (fun valIdx ->
-                let idCols =
-                    idVars |> List.map (fun n -> f.Cols |> List.find (fun fd -> fd.Name = n))
+                // The output's names are checked once every name resolves, before the value
+                // column is typed or any row is read (Phase 468, D35).
+                match unpivotRefusal idVars with
+                | Some e -> Error e
+                | None ->
 
-                // The value column is typed by the one derived-column rule (Phase 338), the value
-                // columns being its arms: their declared types' join where the schema decides it —
-                // over an empty frame too — and the melted cells only where it does not.
-                let dt =
-                    unpivotTyping (valueVars |> List.map (fun n -> colType f.Cols n |> Option.get))
+                    let idCols =
+                        idVars |> List.map (fun n -> f.Cols |> List.find (fun fd -> fd.Name = n))
 
-                match dt with
-                | Refused -> Error(floatBesideDecimal "value")
-                | _ ->
-                    let out = ResizeArray<Cell[]>()
+                    // The value column is typed by the one derived-column rule (Phase 338), the value
+                    // columns being its arms: their declared types' join where the schema decides it —
+                    // over an empty frame too — and the melted cells only where it does not.
+                    let dt =
+                        unpivotTyping (valueVars |> List.map (fun n -> colType f.Cols n |> Option.get))
 
-                    for row in Frame.rowsOf f do
-                        let idCells = idIdx |> List.map (fun i -> row[i]) |> List.toArray
+                    match dt with
+                    | Refused -> Error(floatBesideDecimal "value")
+                    | _ ->
+                        let out = ResizeArray<Cell[]>()
 
-                        List.iter2
-                            (fun name vi -> out.Add(Array.append idCells [| Str name; row[vi] |]))
-                            valueVars
-                            valIdx
+                        for row in Frame.rowsOf f do
+                            let idCells = idIdx |> List.map (fun i -> row[i]) |> List.toArray
 
-                    let rows = out.ToArray()
-                    let valueAt = List.length idCols + 1
+                            List.iter2
+                                (fun name vi -> out.Add(Array.append idCells [| Str name; row[vi] |]))
+                                valueVars
+                                valIdx
 
-                    columnTypeBy dt "value" rows.Length (fun i -> rows[i][valueAt])
-                    |> Result.map (fun valType ->
-                        Frame.ofRows
-                            (idCols
-                             @ [ Field.create "variable" StringType
-                                 Field.create "value" valType |> stated (sharedUnit f.Cols valueVars) ])
-                            rows)))
+                        let rows = out.ToArray()
+                        let valueAt = List.length idCols + 1
+
+                        columnTypeBy dt "value" rows.Length (fun i -> rows[i][valueAt])
+                        |> Result.map (fun valType ->
+                            Frame.ofRows
+                                (idCols
+                                 @ [ Field.create "variable" StringType
+                                     Field.create "value" valType |> stated (sharedUnit f.Cols valueVars) ])
+                                rows)))
 
     // ---- pipeline driver ----
 

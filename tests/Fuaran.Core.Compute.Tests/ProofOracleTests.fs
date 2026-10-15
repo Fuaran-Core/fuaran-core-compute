@@ -2813,7 +2813,7 @@ let private rTable (cols: (string * ColumnType * Cell list) list) : Table =
 
 /// The shapes the phase names, each with the table it runs over: the 411 collisions, the 412
 /// unknown sort keys, the window's taken output (D28), the union's widening (D18), and the four
-/// repeated-name witnesses the finding names.
+/// repeated-name witnesses Phase 434 found answering `Ok` and Phase 468 (D35) made refusals.
 let private rShapes: (string * Table * Transform list) list =
     let xr = rTable [ "x", IntType, [ Int 1 ]; "x_right", IntType, [ Int 2 ] ]
     let x = rTable [ "x", IntType, [ Int 1 ] ]
@@ -2890,14 +2890,14 @@ let private rShapes: (string * Table * Transform list) list =
       "except-keeps-left", people, [ Except(Embedded people) ]
       "limit-param-not-an-int", people, [ Limit(Slot.Param "s", Slot.Lit 0) ]
       "limit-offset-unbound", people, [ Limit(Slot.Lit 1, Slot.Param "absent") ]
-      "finding-project-repeats", rTable [ "a", IntType, [ Int 1 ] ], [ Project [ "a", "x"; "a", "x" ] ]
-      "finding-group-by-repeats",
+      "468-project-repeats", rTable [ "a", IntType, [ Int 1 ] ], [ Project [ "a", "x"; "a", "x" ] ]
+      "468-group-by-repeats",
       rTable [ "k", StringType, [ Str "a" ]; "v", IntType, [ Int 1 ] ],
       [ GroupBy([ "k" ], [ pAgg "k" Sum "v" ]) ]
-      "finding-unpivot-repeats",
+      "468-unpivot-repeats",
       rTable [ "variable", StringType, [ Str "a" ]; "v", IntType, [ Int 1 ] ],
       [ Unpivot([ "variable" ], [ "v" ]) ]
-      "finding-pivot-repeats",
+      "468-pivot-repeats",
       rTable
           [ "i", IntType, [ Int 1 ]
             "g", StringType, [ Str "i" ]
@@ -4588,28 +4588,29 @@ let proofOracleTests =
               Expect.equal (rDifferential rPrims 434 400) t "same seed => identical tally"
 
           testCase
-              "the finding holds on the shipped evaluator — a Project, a GroupBy, an Unpivot and a Pivot each answer a table naming a column twice"
+              "the four repeated-name witnesses are refused on the shipped evaluator — a Project, a GroupBy, an Unpivot and a Pivot each name the verb, the name and both producers"
           <| fun _ ->
-              // The four witnesses `Relational.fst`'s `*_repeats_name` theorems state, on production:
-              // each evaluates to `Ok` with a repeated name, the defect D28 closed for a window and
-              // D20 for a join. When production refuses one of these, this test and the theorem go
-              // red together, and the model's arm moves with the evaluator's.
-              let shapes =
-                  rShapes |> List.filter (fun (label, _, _) -> label.StartsWith "finding-")
+              // The four witnesses Phase 434 recorded answering `Ok` with a name twice, which
+              // `Relational.fst`'s `*_repeat_refused` theorems now state as refusals (Phase 468, D35).
+              // The differential above compares production's refusal to the model's text; this case
+              // goes red, naming the verb, the moment one of the four answers a table again.
+              let shapes = rShapes |> List.filter (fun (label, _, _) -> label.StartsWith "468-")
 
               Expect.equal (List.length shapes) 4 "the four witnesses are among the shapes"
 
               for label, table, p in shapes do
                   match DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p table with
                   | Ok t' ->
-                      let ns = t'.Schema |> List.map _.Name
-
-                      Expect.notEqual
-                          (List.length (List.distinct ns))
-                          (List.length ns)
-                          (sprintf "%s: the evaluator answered %A — a repeated name" label ns)
-                  | Error e ->
-                      failtestf "%s: the evaluator now REFUSES (%A) — the finding has closed; move the theorem" label e
+                      failtestf
+                          "%s: the evaluator answered %A — a repeated name is no longer refused"
+                          label
+                          (t'.Schema |> List.map _.Name)
+                  | Error(TypeError detail) ->
+                      Expect.stringContains
+                          detail
+                          "is named twice, by "
+                          (sprintf "%s: the refusal names both producers" label)
+                  | Error e -> failtestf "%s: refused with %A, not the repeated-name TypeError" label e
 
           testCase
               "the twelve-verb evaluator built from the model's schema and production's rows agrees with DataFrame.evalPipelineWithInEnvCounted — the narrowing measured end to end"
