@@ -410,3 +410,47 @@ boundary saves one per row. The two even out on the derive copy on .NET and on t
 What remains above the float arm is the text scan at the boundary. Under node that is about 5.6 ms of
 the 9.6 ms filter, and on both hosts the join, whose decimal key is still coded by its canonical token
 per row. That join cost is Phase 280's finding and is unchanged in kind.
+
+## A declined shape's tick is measured for what it is (Phase 459)
+
+Compute `v0.39.0`'s publish run read `append pivot @ 100000` at 1.79 to 1.82 times the one-thread full
+evaluation on all three counted attempts of its first try, against a bound of 1.6, and passed on its
+second. Both cells that flap on the corpus tick cases belong to the two shapes the seam declines,
+`inner join` and `pivot`, whose refresh is the full evaluation by design. Phase 459 measured the
+declined path, removed the one avoidable cost it found, and changed how a declined shape's tick is
+judged (`DECISIONS.md` D31).
+
+**Where a declined tick's time goes.** Release, Arm64, 100,000 rows, the corpus's one-row edit and
+append, before the change, in ms. The refresh is the boundary plus the reference evaluation on the
+default kernel set plus a preamble; the full evaluation is the clock leg's denominator, on
+`Kernels.oneThread`.
+
+| Cell | Tick | Diff | Refresh | Reference evaluation | Full, one thread | Pipeline compared |
+|---|---:|---:|---:|---:|---:|---:|
+| `inner join` edit | 6.7–9.1 | 1.31–1.39 | 6.66–6.79 | 4.7–5.5 | 5.6–5.8 | 1.19–1.22 |
+| `inner join` append | 7.4–8.6 | 0.60–0.91 | 6.2–7.1 | 5.0–5.8 | 5.6 | 1.19–1.23 |
+| `pivot` edit | 13.9–16.0 | 1.75–2.08 | 13.9–15.7 | 13.3–16.7 | 13.9–16.3 | 0 |
+| `pivot` append | 15.1–17.1 | 1.09–1.22 | 14.4–15.1 | 13.7–14.5 | 13.5–15.4 | 0 |
+
+- **The kernel set is not the cost.** `evalJoin` and `evalPivot` take no kernel set, so the default set
+  and `oneThread` run the same code for both shapes; their measured evaluations agree within noise.
+- **The boundary is walked once,** and since Phase 423 it is a view: a second `prepare` injected into the
+  declined path moved no cell of a clock leg (every declined cell x0.97 to x1.02).
+- **The join paid for comparing its pipeline.** The refresh's staleness test compared the pipeline it was
+  handed with the state's by structural equality, which walked the join's embedded 100,000-row right
+  relation cell by cell on every refresh: 1.2 ms, a fifth of the full evaluation. The test now asks
+  identity first (`samePipeline`, Phase 333's test, which Phase 355 had stopped calling). Timed beside
+  "diff plus reference evaluation" in one window, the join's excess fell from 0.95 to 1.42 ms at 100,000
+  rows (0.23 to 0.28 ms at 20,000) to within 0.13 ms either way.
+
+**The rule.** A declined shape's edit and append ticks are held to `diff + reference evaluation + floor`,
+the reference evaluation on the kernel set the declined refresh runs on, over the same fresh source
+object the tick is handed, both timed in one interleaved window (`pairedBatchedMs`: one call a sample at
+this size, the best of 25 rounds each). What remains above that is the refresh's own preamble, which the
+floor bounds. Every other shape keeps `max(1.6 x full, 1.5 x baseline) + floor`; no factor moved.
+
+**On the clock leg** (Arm64, Release, the fixed tree), every declined cell read x0.93 to x1.04 of its diff
+and reference evaluation on two legs at calibration 6.20 ms; a third leg at 7.67 ms (a loaded machine)
+read the `pivot` edit cells x1.09 to x1.17 on two attempts and x1.00 on the third, so green under the
+same-cell rule. With the pipeline walk put back, the `inner join` cells at 20,000 and 100,000 rows read
+x1.24 to x1.33 and were red on all three attempts of both cases, where the old ratio arm had passed them.

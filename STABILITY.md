@@ -51,9 +51,10 @@ meant to move by name.
 `0.39.0` is tagged, so the change below ADVANCED the slot to `0.40.0`. It is a draft until it is
 tagged: an additive change rides it, a breaking one advances it.
 
-This version carries two changes over `0.39.0`. One is BREAKING: the evaluator propagates and checks
-units of measure (Phase 429, `DECISIONS.md` D29). The other moves no surface and no answer: a decimal
-column enters the frame as a view (Phase 440). The substrate is unchanged: Core `0.37.0`.
+This version carries three changes over `0.39.0`. One is BREAKING: the evaluator propagates and
+checks units of measure (Phase 429, `DECISIONS.md` D29). The other two move no surface and no answer: a
+decimal column enters the frame as a view (Phase 440), and a refresh stops walking an embedded relation
+to learn that its pipeline did not move (Phase 459). The substrate is unchanged: Core `0.37.0`.
 
 ### The evaluator propagates and checks units (Phase 429, `DECISIONS.md` D29) — BREAKING, `surface` + `behaviour`
 
@@ -133,6 +134,29 @@ before.
 prepared decimal column's frame holds 1.1 MB where it held 5.1 MB on .NET and 11.5 MB under node.
 `prepare` costs 1.8 ms where it cost 8.2 ms on .NET, and 5.9 ms where it cost 10.4 ms under node. The
 typed family's decimal filter, group-and-sum, sort and join each fell on both hosts.
+
+**The class.** `none`: no signature, no answer and no wire byte moves. It rides the `0.40.0` draft.
+
+**What a consumer does.** Nothing.
+
+### A refresh no longer walks an embedded relation to learn its pipeline did not move (Phase 459, `DECISIONS.md` D31) — `none`, `performance`
+
+**What changed.** A refresh asks whether the pipeline it is handed is the one the state was built for.
+Since Phase 355 that question was answered by structural equality alone, so a pipeline that embeds a
+relation (`Join(Embedded t, …)`, `Union(Embedded t)`) was compared cell by cell on every refresh, even
+when the caller handed back the very pipeline object the state holds. It is now asked identity first,
+through the test Phase 333 wrote for it, and structurally only when the objects differ. The answer is the
+one structural equality gives in every case but one, where it is safer: a pipeline object holding a NaN
+literal now reads as unchanged against itself rather than as moved, and either reading refreshes to the
+same result.
+
+**Measured** (`DECISIONS.md` D31, `docs/performance.md`, "A declined shape's tick is measured for what
+it is"). The corpus `inner join` at 100,000 rows paid 1.2 ms a refresh for the walk, a fifth of its full
+evaluation; its tick now costs its diff and its reference evaluation and nothing measurable beside them.
+
+**The clock leg.** A shape the seam declines (`inner join`, `pivot`) has its edit and append ticks held
+to its diff and reference evaluation plus the per-call floor, timed beside the tick, rather than to 1.6
+times the one-thread full evaluation; no bound factor moved. This is the gate, not the package.
 
 **The class.** `none`: no signature, no answer and no wire byte moves. It rides the `0.40.0` draft.
 

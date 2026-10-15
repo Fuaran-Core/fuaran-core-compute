@@ -184,7 +184,9 @@ let private tickBaselineFactor = 1.5
 /// main suite pins the list against the plan ("the shapes the seam declines are exactly the named
 /// ones"), so a shape cannot come to be declined, or stop being declined, silently. Every other
 /// corpus shape is held to a refresh no dearer than the full evaluation it replaces
-/// (DECISIONS.md D27).
+/// (DECISIONS.md D27). Phase 459: the edit and append tick cases read this list too, and hold a
+/// declined shape's tick to its diff and reference evaluation (`judgeDeclinedTick`, D31), so this is
+/// the one list all three cases read.
 let refreshDeclinedShapes: string list = [ "inner join"; "pivot" ]
 
 /// Phase 448 — the sizes the refresh-against-full case times, per tick kind: every size for the edit,
@@ -839,6 +841,57 @@ let private batchedMs (runs: int) (f: unit -> unit) : float =
           sample calls / float calls ]
     |> List.min
 
+/// Phase 459 — the rounds and the shortest sample of `pairedBatchedMs`.
+let private pairedRounds = 25
+
+let private pairedSpanMs = 2.0
+
+/// Phase 459 — `batchedMs` for TWO closures timed against each other: one call count for both
+/// (calibrated on the first, so each sample spans at least `pairedSpanMs`), the samples INTERLEAVED,
+/// the order alternating from one round to the next, and the best of `pairedRounds` taken for each.
+/// Two figures read this way share every window the machine passes through, so a load that slows one
+/// slows the other, and their difference is the work one does and the other does not. Short samples
+/// and many rounds rather than `batchedMs`'s five 20 ms samples: a 100,000-row pivot is 15 ms a call,
+/// so a 20 ms sample is two calls and the best of five still moved by 3% between runs, against a floor
+/// of 1%; one call a sample, the best of 25, read within the floor (DECISIONS.md D31).
+let private pairedBatchedMs (f: unit -> unit) (g: unit -> unit) : float * float =
+    f ()
+    g ()
+    f ()
+    g ()
+
+    let sample (h: unit -> unit) (calls: int) =
+        let sw = Stopwatch.StartNew()
+
+        for _ in 1..calls do
+            h ()
+
+        sw.Stop()
+        sw.Elapsed.TotalMilliseconds
+
+    let rec calibrate (calls: int) =
+        if calls >= 100_000 || sample f calls >= pairedSpanMs then
+            calls
+        else
+            calibrate (calls * 2)
+
+    let calls = calibrate 1
+    let fs = ResizeArray<float>()
+    let gs = ResizeArray<float>()
+
+    for round in 1..pairedRounds do
+        let first, second, firstOut, secondOut =
+            if round % 2 = 1 then f, g, fs, gs else g, f, gs, fs
+
+        System.GC.Collect()
+        System.GC.WaitForPendingFinalizers()
+        firstOut.Add(sample first calls / float calls)
+        System.GC.Collect()
+        System.GC.WaitForPendingFinalizers()
+        secondOut.Add(sample second calls / float calls)
+
+    Seq.min fs, Seq.min gs
+
 // ---------------------------------------------------------------------------
 //  Phase 282 — the clock leg.
 //
@@ -1051,8 +1104,9 @@ let private tickBaselineAllowanceMs (kind: string) (node: string) (rows: int) : 
             )
 
 /// Phase 439 — the two corpus tick cases' condition for one cell, printed and judged in one place:
-/// `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`, every cell alike (Phase 448
-/// retired the named exceptions, DECISIONS.md D27). Answers the failure line for a red cell, `None`
+/// `tick <= max(tickBound * full, tickBaselineFactor * baseline) + floor`, every cell of a shape the
+/// seam accepts alike (Phase 448 retired the named exceptions, DECISIONS.md D27; a declined shape is
+/// `judgeDeclinedTick`'s, Phase 459). Answers the failure line for a red cell, `None`
 /// for a green one.
 let private judgeCorpusTick (kind: string) (node: string) (rows: int) (tickMs: float) (fullMs: float) : string option =
     let floorMs = tickFloorMs ()
@@ -1099,6 +1153,48 @@ let private judgeCorpusTick (kind: string) (node: string) (rows: int) (tickMs: f
     else
         None
 
+/// Phase 459 (operator ruling 2026-10-14, DECISIONS.md D31) — the condition for one corpus cell of a
+/// shape the seam DECLINES (`refreshDeclinedShapes`): `tick <= declined + floor`, `declined` what a
+/// declined refresh is, the diff followed by the reference evaluation the refresh falls back to
+/// (`DataFrame.evalPreparedCounted`, the kernel set the refresh runs on, over the same fresh source the
+/// tick is handed), timed beside the tick in one interleaved window (`pairedBatchedMs`). A declined tick
+/// cannot be cheaper than recomputing, by design, so `tickBound` (maintaining no dearer than 1.6
+/// recomputations) is not its claim; what it can be is dearer than the fall-back it reports, and that
+/// excess, the refresh's own preamble, is what this holds to the per-call floor. Answers the failure
+/// line for a red cell, `None` for a green one.
+let private judgeDeclinedTick
+    (kind: string)
+    (node: string)
+    (rows: int)
+    (tickMs: float)
+    (declinedMs: float)
+    : string option =
+    let floorMs = tickFloorMs ()
+
+    printfn
+        "  [%s tick] %-26s @ %6d: tick %8.3f ms vs diff + reference %8.3f ms (x%.2f; declined by the seam: allowed diff + reference + floor %.3f ms)"
+        (if kind = "edit" then "corpus" else kind)
+        node
+        rows
+        tickMs
+        declinedMs
+        (tickMs / declinedMs)
+        floorMs
+
+    if tickMs > declinedMs + floorMs then
+        Some(
+            sprintf
+                "%s %s @ %d: a declined tick cost %.3f ms against the %.3f ms its diff and reference evaluation cost + %.3f ms floor"
+                kind
+                node
+                rows
+                tickMs
+                declinedMs
+                floorMs
+        )
+    else
+        None
+
 /// Phase 371 — the kernels the full evaluation runs on when a tick is held against it: the native
 /// member at ONE thread. Its comparisons and selection are the native member's vectors, so the
 /// arithmetic is the host's; its morsels run in order on the caller's thread (the portable runner),
@@ -1120,6 +1216,37 @@ let private oneThread: KernelSet = Kernels.oneThread
 let private fullAtOneThread (env: Map<string, Cell>) (p: Transform list) (t: Table) : Result<Table, EvalError> =
     DataFrame.evalPreparedCountedWith oneThread DataFrame.noResolve env p (DataFrame.prepare t)
     |> Result.map fst
+
+/// The two corpus tick cases' timing and verdict for one cell: a shape the seam accepts is held by
+/// `judgeCorpusTick` against the one-thread full evaluation (Phase 371); a shape it declines by
+/// `judgeDeclinedTick` against its diff and reference evaluation (Phase 459), timed beside the tick.
+let private judgeCorpusCell
+    (kind: string)
+    (nd: CorpusNode)
+    (rows: int)
+    (w: RowIdentity<'Id>)
+    (before: Table)
+    (after: Table)
+    (p: Transform list)
+    (tick: unit -> unit)
+    : string option =
+    if List.contains nd.Name refreshDeclinedShapes then
+        // What the declined refresh does after the diff: prepare the source it is handed and evaluate
+        // the pipeline over it (`Incremental.runReference`). A fresh table object, as the tick's is.
+        let declined () =
+            let a = { after with Columns = after.Columns }
+            Delta.diff w before a |> ok |> ignore
+
+            DataFrame.evalPreparedCounted DataFrame.noResolve nd.Env p (DataFrame.prepare a)
+            |> ok
+            |> ignore
+
+        let tickMs, declinedMs = pairedBatchedMs tick declined
+        judgeDeclinedTick kind nd.Name rows tickMs declinedMs
+    else
+        let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
+        let tickMs = batchedMs 5 tick
+        judgeCorpusTick kind nd.Name rows tickMs fullMs
 
 /// Raised by a clock case that stayed saturated past its budget: NOT an assertion failure, so it is
 /// never read as a timing red, and the entry point turns it into the leg's distinct exit code.
@@ -1802,7 +1929,7 @@ let clockTests =
           // ================= Phase 283 — the tick on every corpus node =================
 
           clockCase
-              "the table-fed tick on every corpus node costs at most 1.6 times the full evaluation, or 1.5 times its recorded pre-423 tick, plus a fixed per-call floor"
+              "the table-fed tick on every corpus node costs at most 1.6 times the full evaluation, or 1.5 times its recorded pre-423 tick, or on a declined shape its diff and reference evaluation, plus a fixed per-call floor"
           <| fun _ ->
               // The case above holds the three `Scaling` pipelines; this one holds EVERY Phase 262
               // corpus node (the shapes the doc's tables measure) at 1,000, 20,000 and 100,000 rows,
@@ -1831,6 +1958,12 @@ let clockTests =
               // floor`, the baseline the cell's own pre-423 tick (`tickBaselines`). Phase 423 made the
               // full evaluation 2 to 5 times cheaper on `lines`, `window CumulSum` and `group-by
               // high-card` and the ratio alone read x2.4 to x4.5 there on ticks no dearer than before.
+              //
+              // Phase 459 (operator ruling 2026-10-14, `DECISIONS.md` D31): a shape the seam DECLINES
+              // (`refreshDeclinedShapes`) refreshes by the full evaluation, so its tick is judged by
+              // `judgeDeclinedTick`, `tick <= diff + reference evaluation + floor`, both timed in one
+              // interleaved window. Held to 1.6 times the one-thread full it flapped by runner: the
+              // `v0.39.0` publish read `append pivot @ 100000` at x1.79 to x1.82.
               //
               // Every cell is measured and printed before any is asserted, so a red attempt still
               // leaves the whole table in the log.
@@ -1863,10 +1996,8 @@ let clockTests =
                               nd.Name
                               n)
 
-                      let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
-
-                      let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
-                      let verdict = judgeCorpusTick "edit" nd.Name n tickMs fullMs
+                      let verdict =
+                          judgeCorpusCell "edit" nd n w before after p (fun () -> tick () |> ignore)
 
                       // Phase 285: a calibration reading between cells (see the case above).
                       Calibration.checkpoint ()
@@ -1882,7 +2013,7 @@ let clockTests =
           // ================= Phase 359 — the append tick on every corpus node =================
 
           clockCase
-              "an append tick on every corpus node costs at most 1.6 times the full evaluation, or 1.5 times its recorded pre-423 tick, plus a fixed per-call floor"
+              "an append tick on every corpus node costs at most 1.6 times the full evaluation, or 1.5 times its recorded pre-423 tick, or on a declined shape its diff and reference evaluation, plus a fixed per-call floor"
           <| fun _ ->
               // The case above with the commonest delta a live table makes in place of the edit: ONE
               // ROW APPENDED, the way `ColumnOps.AppendRows` appends it (every column's list is the
@@ -1893,7 +2024,8 @@ let clockTests =
               // pipeline's append tick cost 8 to 18 of its own evaluations (Phase 333's results file).
               // Now the diff reads each column's prefix once, by reference, and keys the appended row
               // alone, and the refresh evaluates it alone; the figures are in
-              // docs/incremental-evaluation.md, "An append costs the appended rows".
+              // docs/incremental-evaluation.md, "An append costs the appended rows". A declined shape is
+              // judged as in the case above (Phase 459, `judgeCorpusCell`).
               let failures = System.Collections.Generic.List<string * string>()
 
               for nd in corpusNodes do
@@ -1914,9 +2046,8 @@ let clockTests =
                           (DataFrame.evalPipelineInEnv nd.Env p after)
                           (sprintf "%s @ %d: the append tick answers what the reference answers" nd.Name n)
 
-                      let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
-                      let tickMs = batchedMs 5 (fun () -> tick () |> ignore)
-                      let verdict = judgeCorpusTick "append" nd.Name n tickMs fullMs
+                      let verdict =
+                          judgeCorpusCell "append" nd n w before after p (fun () -> tick () |> ignore)
 
                       Calibration.checkpoint ()
 

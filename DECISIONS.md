@@ -1,11 +1,12 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-10-15 — D30: a declined shape's tick is held to what a declined refresh is — the diff and the reference evaluation it runs, timed beside the tick, plus the per-call floor; and a refresh no longer walks an embedded relation to learn that its pipeline did not move
+## 2026-10-15 — D31: a declined shape's tick is held to what a declined refresh is — the diff and the reference evaluation it runs, timed beside the tick, plus the per-call floor; and a refresh no longer walks an embedded relation to learn that its pipeline did not move
 
 **Context.** Compute `v0.39.0` (`02d25fd`) failed its publish run (38554709427, attempt 1) in the
 Release clock leg: `append pivot @ 100000` read tick 10.07 to 10.34 ms against a one-thread full
-evaluation of 5.53 to 5.76 ms (x1.79 to x1.82, bound x1.6) on all three counted attempts. Nothing was
-published. The same cell had been red on `ci` at `fc0ef74` and `3142469`, and read x1.08 on the same
+evaluation of 5.53 to 5.76 ms (x1.79 to x1.82, bound x1.6) on all three counted attempts. The run's second attempt
+read the same cell at x1.19 and x1.29, passed and published `0.39.0` to nuget.org, so the release
+stands; the gate had flapped, not caught a regression. The same cell had been red on `ci` at `fc0ef74` and `3142469`, and read x1.08 on the same
 commit's `ci` run; `ci` attempt 1 at `02d25fd` was red on `append inner join` instead. Both cells that
 flap are the two shapes the seam DECLINES (`ScalingTests.refreshDeclinedShapes`, D27): a refresh of
 either is `Incremental.runReference`, the full evaluation through `DataFrame.evalPreparedCounted` on the
@@ -67,6 +68,53 @@ x1.38. `ci` at `02d25fd` (calibration 4.56 ms): `pivot` x1.08 to x1.24, `inner j
 pivot's full evaluation read 8.13 ms in the edit loop and 5.53 to 5.76 ms in the append loop of one leg,
 over sources one row apart: the denominator itself moves by 1.4 times between two windows on that
 runner, which a tick and a denominator timed in separate windows cannot cancel.
+
+**Decision 1 — the avoidable cost goes (459.B).** `pipelineMoved` reads the in-process case through
+`samePipeline`: identity first, structural equality only when the objects differ. A decoded state still
+compares canonical hashes. The answer is the one `=` gives except for a pipeline object holding a NaN
+literal, which now reads as unchanged against itself instead of moved; both readings refresh to the same
+result, and the declined footprint and its reason are unchanged (the main suite's pin and the law
+families are green). After it, the join's excess over "diff plus reference evaluation" read within 0.13
+ms either way at every size. Nothing else in the declined path was avoidable: the boundary is a view
+since Phase 423 (a second `prepare` injected into `runReference` moved no clock-leg cell), and the
+kernel set is not read by either shape.
+
+**Decision 2 — how a declined shape's tick is judged (459.C; operator ruling 2026-10-14).** A shape
+in `refreshDeclinedShapes` has its edit and append ticks held to what a declined refresh is:
+`tick <= diff + reference evaluation + floor`. The reference evaluation is `DataFrame.evalPreparedCounted`,
+the kernel set the declined refresh itself runs on, over a fresh table object as the tick receives one,
+and the diff is the same `Delta.diff`; both are timed beside the tick in one interleaved window
+(`ScalingTests.pairedBatchedMs`: one call count for both, the order alternating, the best of 25 rounds
+of samples of at least 2 ms each), so a load or a collection that reaches one reaches the other. That is
+Phase 371's like-with-like rule applied to what a declined tick actually replaces. A declined tick cannot
+be cheaper than recomputing, so `1.6 x one-thread full` was never its claim; what it can be is dearer
+than the fall-back it reports, and that excess is the refresh's preamble, which the per-call floor
+bounds. Every other corpus shape keeps D19's `max(1.6 x full, 1.5 x baseline) + floor`. `tickBound`,
+`tickBaselineFactor` and `tickFloorFactor` did not move, no x64 baseline table was recorded, and
+`refreshDeclinedShapes` stays the one list the edit tick case, the append tick case and D27's refresh
+case read, still pinned against `Incremental.plan` by the main suite. The Arm64 table's rows for the two
+declined shapes are now unread and are kept: the table is the recording script's verbatim output, and a
+shape that stops being declined returns to the baseline arm with them.
+
+Why 25 short samples rather than `batchedMs`'s five of 20 ms: at 100,000 rows a pivot call is about
+15 ms, so a 20 ms sample is two calls, and the best of five of each arm still moved by up to 3% between
+runs, three times the floor. One call a sample and the best of 25 read within the floor on the clock leg.
+
+**Held.** On the fixed tree, three Arm64 clock legs (Release, `dotnet <dll>`) were green, 17 of 17 cases.
+On the two at calibration 6.20 ms every declined cell read x0.93 to x1.04 of its diff and reference
+evaluation; on the third, at 7.67 ms (the machine was loaded by other work), the `pivot` edit cells read
+x1.09 to x1.17 on two attempts and x1.00 on the third, green under D22's same-cell rule. **Go-red:**
+with the structural pipeline comparison put back, the `inner join` cells at 20,000 and 100,000 rows read
+x1.24 to x1.33 and both tick cases were red on all three counted attempts, the same cells each time, while
+the accepted shapes' cells kept their verdicts; under the old condition those cells had passed at 1.6
+times the full evaluation. A redundant boundary walk, the perturbation the phase proposed, does not
+redden it, because it costs nothing measurable since Phase 423, which is the finding rather than a gap in
+the condition.
+
+**Release record.** `0.39.0` was published (the publish run's second attempt, verified on nuget.org's
+flat-container index), so its `STABILITY.md` heading stands as released and is not retitled; this
+phase's entry rides the `0.40.0` draft. No public signature, answer or wire byte moves (class `none`,
+`performance`).
 
 ## 2026-10-14 — D29: the evaluator propagates and checks units — a column's unit rides every verb that keeps the column, addition and comparison require one unit, multiplication and division compose through Core's algebra, a conversion is explicit and answers a float, and a column that states no unit is unconstrained, so a unitless pipeline is untouched
 
