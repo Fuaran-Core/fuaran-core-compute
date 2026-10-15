@@ -1,5 +1,73 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-15 — D30: a declined shape's tick is held to what a declined refresh is — the diff and the reference evaluation it runs, timed beside the tick, plus the per-call floor; and a refresh no longer walks an embedded relation to learn that its pipeline did not move
+
+**Context.** Compute `v0.39.0` (`02d25fd`) failed its publish run (38554709427, attempt 1) in the
+Release clock leg: `append pivot @ 100000` read tick 10.07 to 10.34 ms against a one-thread full
+evaluation of 5.53 to 5.76 ms (x1.79 to x1.82, bound x1.6) on all three counted attempts. Nothing was
+published. The same cell had been red on `ci` at `fc0ef74` and `3142469`, and read x1.08 on the same
+commit's `ci` run; `ci` attempt 1 at `02d25fd` was red on `append inner join` instead. Both cells that
+flap are the two shapes the seam DECLINES (`ScalingTests.refreshDeclinedShapes`, D27): a refresh of
+either is `Incremental.runReference`, the full evaluation through `DataFrame.evalPreparedCounted` on the
+default kernel set, while the tick bound's denominator is the full evaluation on `Kernels.oneThread`
+(Phase 371). D27 already leaves those two shapes out of the refresh-against-full case for that reason;
+the edit and append tick cases still held them to `1.6 x full`, and on x64, which has no recorded
+baseline table (D19), to that arm alone. The operator chose (2026-10-14): first measure the declined
+path and remove any avoidable cost, then rule how a declined shape's tick is judged.
+
+**Measured first (Phase 459, before any change).** Release, `dotnet <dll>`, Arm64 (12 logical
+processors, calibration baseline 4.91 ms), the corpus nodes and deltas exactly as the clock leg builds
+them, each figure the best of five batched samples, two probe runs; the probe split the tick into the
+diff, the boundary (`DataFrame.prepare`) and the reference evaluation, and timed the evaluation on the
+default set beside `Kernels.oneThread`. At 100,000 rows, in ms:
+
+| Cell | tick | diff | refresh | prepare | eval, default set | eval, `oneThread` | full, `oneThread` | pipeline `=` |
+|---|---|---|---|---|---|---|---|---|
+| `inner join` edit | 6.7–9.1 | 1.31–1.39 | 6.66–6.79 | 0.12 | 4.7–5.5 | 5.6 | 5.6–5.8 | 1.19–1.22 |
+| `inner join` append | 7.4–8.6 | 0.60–0.91 | 6.2–7.1 | 0.14 | 5.0–5.8 | 5.6 | 5.6 | 1.19–1.23 |
+| `pivot` edit | 13.9–16.0 | 1.75–2.08 | 13.9–15.7 | 0.25 | 13.3–16.7 | 13.2–13.8 | 13.9–16.3 | 0 |
+| `pivot` append | 15.1–17.1 | 1.09–1.22 | 14.4–15.1 | 0.21 | 13.7–14.5 | 13.2 | 13.5–15.4 | 0 |
+
+Timed against each other in one interleaved window (the tick, and the diff followed by the reference
+evaluation over a fresh source object, as the tick receives it), the tick's excess over "diff plus
+reference evaluation" read 0.95 to 1.42 ms on the join at 100,000 rows (once 0.11), 0.23 to 0.28 ms at
+20,000 and 0.015 ms at 1,000; on the pivot it read -1.48 to +0.38 ms at 100,000 and within 0.2 ms at the
+other sizes, which is the reading's noise. The refresh allocates what the full evaluation allocates to
+within 0.01 MB a call (join 7.58 against 7.57 MB, pivot 9.35 against 9.35 MB at 100,000 rows). The diff
+allocates 0.19 MB a call for the edit and 1.63 MB for the append.
+
+So the declined tick costs one diff, one reference evaluation and a preamble, and the three suspected
+costs read as follows:
+
+1. **A second boundary walk: none.** `runReference` prepares the source once (or takes the state's
+   prepared form) and evaluates over it; the boundary is 0.12 to 0.25 ms at 100,000 rows either way.
+2. **A kernel set that loses on few cores: none, for these shapes, by construction.** `evalPivot` and
+   `evalJoin` take no kernel set, so the default set and `oneThread` run the same code for both; the
+   measured evaluations agree within their noise. The x64 publish runner's x1.8 is therefore not the
+   kernel set.
+3. **Work the full evaluation does not do: found, on the join.** The refresh's staleness test asked
+   whether the pipeline moved with structural equality (`pipelineMoved`, Phase 355), not through
+   `samePipeline`, the identity-first test Phase 333 wrote for exactly this, which had been left
+   unreferenced. The join EMBEDS its right relation in the pipeline, so every refresh walked 100,000
+   rows of it cell by cell to learn that a pipeline held across ticks had not moved: 1.2 ms at 100,000
+   rows, a fifth of the full evaluation, and 0.25 ms at 20,000. That is the join's whole measured
+   excess.
+
+The tick is not "one full evaluation plus a one-row diff" for an edit, and is not meant to be: an edit's
+diff keys every row of both tables (Phase 272's floor of any diff by identity), 1.3 to 2.1 ms at 100,000
+rows. That is the diff's cost for every shape, accepted or declined, and it is no part of the declined
+path.
+
+**x64, from the `ci` and publish logs** (no x64 machine here; `ci` runs on a push to `main` and on pull
+requests only, so a branch push takes no x64 reading, and the split above was not repeated there). At
+100,000 rows: publish attempt 1 (calibration 3.74 ms), `pivot` edit tick 7.00 ms against full 8.13 ms
+(x0.86) and append 10.07 to 10.34 against 5.53 to 5.76 (x1.79 to x1.82); `inner join` edit x1.46, append
+x1.19 to x1.39. Publish attempt 2 (calibration 4.71 ms): `pivot` x1.19 to x1.29, `inner join` x1.18 to
+x1.38. `ci` at `02d25fd` (calibration 4.56 ms): `pivot` x1.08 to x1.24, `inner join` x1.28 to x1.63. The
+pivot's full evaluation read 8.13 ms in the edit loop and 5.53 to 5.76 ms in the append loop of one leg,
+over sources one row apart: the denominator itself moves by 1.4 times between two windows on that
+runner, which a tick and a denominator timed in separate windows cannot cancel.
+
 ## 2026-10-14 — D29: the evaluator propagates and checks units — a column's unit rides every verb that keeps the column, addition and comparison require one unit, multiplication and division compose through Core's algebra, a conversion is explicit and answers a float, and a column that states no unit is unconstrained, so a unitless pipeline is untouched
 
 **Context.** Since Phase 427 a schema entry is a `Field` that can carry a unit of measure (Core's
