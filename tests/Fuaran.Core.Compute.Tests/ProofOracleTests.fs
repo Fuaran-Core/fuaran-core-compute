@@ -3074,7 +3074,9 @@ let private fHostWith (compareFloat: float -> float -> int) : ModelFrame.host =
       ModelFrame.host.int_text = fun x -> string (int x)
       ModelFrame.host.scale_of =
         fun texts mask ->
-            ScaledDecimal.scaleOf (List.toArray texts) (Mask.ofBools (List.toArray mask))
+            // On .NET a `Mask` is the `bool[]` itself; the inline `Mask.ofBools` does not inline
+            // across the assembly boundary under the Release build.
+            ScaledDecimal.scaleOf (List.toArray texts) (List.toArray mask)
             |> Option.map bigint
             |> fOpt
       ModelFrame.host.try_scaled =
@@ -3122,7 +3124,7 @@ let private fTableWith (validity: int -> Validity -> ModelFrame.validity) (t: Ta
 
 let private fTable = fTableWith (fun _ v -> fValidity v)
 
-let private fMaskOf (m: Mask) : bool list = Mask.toBools m |> List.ofArray
+let private fMaskOf (m: Mask) : bool list = List.ofArray m
 
 /// Production's vector as the model's — the arrays as the lists they hold.
 let private fVec (v: Vec) : ModelFrame.vec =
