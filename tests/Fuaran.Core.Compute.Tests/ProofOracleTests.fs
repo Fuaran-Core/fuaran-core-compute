@@ -29,6 +29,10 @@ module ModelPipe = Pipeline
 // the same reason: production has an `Incremental` module of its own.
 module ModelInc = Incremental
 
+// The relational verbs' schema and refusals (`proofs/oracle/Relational.fs`), aliased for the same
+// reading.
+module ModelRel = Relational
+
 open Fuaran.Core
 open Fuaran.Compute
 open Fuaran.Compute.Tests
@@ -2539,6 +2543,477 @@ let private iFaithful (named: FStar_Pervasives_Native.option<string list>) : Mod
 /// answers with the cell it had.
 let private iReuseAll (_: FStar_Pervasives_Native.option<string list>) : ModelInc.reuse_fn = fun _ -> true
 
+// ---- Phase 434 — the RELATIONAL verbs' output schema and refusals (`proofs/Relational.fst`),
+//      against the evaluator step by step and against `SchemaWalk.ofTransform` ----
+
+/// The relational primitives instantiated at production's own: the canonical cell text, an int's
+/// text, the string order `List.sortBy` sorts under, and the join's suffix rule as `DECISIONS.md`
+/// D20 states it.
+let private rPrims: ModelRel.rprims =
+    { ModelRel.rprims.cell_string = fun c -> DataFrame.cellString (pCellOfModel c)
+      ModelRel.rprims.int_text = fun n -> string (int n)
+      ModelRel.rprims.string_lt = fun a b -> compare a b < 0
+      ModelRel.rprims.candidate =
+        fun name n ->
+            if n = 1I then
+                name + "_right"
+            else
+                name + "_right_" + string (int n) }
+
+/// The go-red's suffix rule: the pre-D20 one, every collision to `_right` whatever is taken.
+let private rPrimsPreD20: ModelRel.rprims =
+    { rPrims with
+        ModelRel.rprims.candidate = fun name _ -> name + "_right" }
+
+/// The model's resolver — production's, with the table crossed to a frame.
+let private rResolver (resolve: string -> Result<Table, EvalError>) : ModelRel.resolver =
+    fun name ->
+        match resolve name with
+        | Ok t -> ModelPipe.Ok(pFrameOfTable t)
+        | Error e -> ModelPipe.Error(pErrToModel e)
+
+/// The walk's sources — the declared schemas, as the model reads them.
+let private rSources (sources: string -> Schema option) : ModelRel.sources =
+    fun name ->
+        match sources name with
+        | Some s -> FStar_Pervasives_Native.Some(s |> List.map (fun f -> f.Name, pColToModel f.Type))
+        | None -> FStar_Pervasives_Native.None
+
+let private rSchemaOfModel (s: ModelPipe.schema) : (string * ColumnType) list =
+    s |> List.map (fun (n, ty) -> n, pColOfModel ty)
+
+let private rSchemaOfProd (s: Schema) : (string * ColumnType) list = s |> List.map (fun f -> f.Name, f.Type)
+
+/// A knowledge read for comparison: closed?, then each column's name and known type. The reason
+/// text and the unit are outside the model.
+let private rKnowledgeOfProd (k: SchemaKnowledge) : bool * (string * ColumnType option) list =
+    SchemaWalk.isClosed k, SchemaWalk.columns k |> List.map (fun c -> c.Name, c.Type)
+
+let private rKnowledgeOfModel (k: ModelRel.knowledge) : bool * (string * ColumnType option) list =
+    let closed =
+        match k with
+        | ModelRel.Closed _ -> true
+        | ModelRel.AtLeast _ -> false
+
+    closed,
+    ModelRel.columns k
+    |> List.map (fun (n, ty) ->
+        n,
+        match ty with
+        | FStar_Pervasives_Native.Some t -> Some(pColOfModel t)
+        | FStar_Pervasives_Native.None -> None)
+
+let private rKnowledgeToModel (k: SchemaKnowledge) : ModelRel.knowledge =
+    let cols =
+        SchemaWalk.columns k
+        |> List.map (fun c ->
+            c.Name,
+            match c.Type with
+            | Some t -> FStar_Pervasives_Native.Some(pColToModel t)
+            | None -> FStar_Pervasives_Native.None)
+
+    if SchemaWalk.isClosed k then
+        ModelRel.Closed cols
+    else
+        ModelRel.AtLeast cols
+
+type private RelTally =
+    { RDiffs: string list
+      RSteps: int
+      ROk: int
+      RErr: int
+      RRowRefused: int
+      RWalks: int
+      RVerbs: Set<string> }
+
+let private rEmptyTally =
+    { RDiffs = []
+      RSteps = 0
+      ROk = 0
+      RErr = 0
+      RRowRefused = 0
+      RWalks = 0
+      RVerbs = Set.empty }
+
+/// ONE step: production's evaluator against the model's schema and refusal, and production's walk
+/// against the model's, over one input table and one knowledge. Answers the next table (where both
+/// evaluated) and the next pair of knowledges.
+let private rCompareStep
+    (label: string)
+    (rp: ModelRel.rprims)
+    (resolve: string -> Result<Table, EvalError>)
+    (sources: string -> Schema option)
+    (env: Map<string, Cell>)
+    (table: Table)
+    (kProd: SchemaKnowledge)
+    (kModel: ModelRel.knowledge)
+    (t: Transform)
+    (tally: RelTally)
+    : Table option * SchemaKnowledge * ModelRel.knowledge * RelTally =
+    let frame = pFrameOfTable table
+    let prod = DataFrame.evalPipelineWithInEnv resolve env [ t ] table
+
+    let model =
+        match t with
+        // Pipeline.fst's two clauses, not this model's: production's answer carries the table
+        // forward and the walk is still compared, the schema is not.
+        | Filter _
+        | Derive _ -> None
+        | _ -> Some(ModelRel.step_schema rp (rResolver resolve) (pEnvToModel env) frame (pTransformToModel t))
+
+    let diff, ok, err, rowRefused, next =
+        match prod, model with
+        | Ok t', None -> None, 0, 0, 0, Some t'
+        | Error _, None -> None, 0, 0, 0, None
+        | Ok t', Some(ModelPipe.Ok out) ->
+            let a = rSchemaOfProd t'.Schema
+            let b = rSchemaOfModel out
+
+            if a <> b then
+                Some(sprintf "%s: %s — schema differs: production %A, model %A" label (pVerbTag t) a b),
+                1,
+                0,
+                0,
+                Some t'
+            else
+                None, 1, 0, 0, Some t'
+        | Error e, Some(ModelPipe.Error me) ->
+            (if pErrToModel e <> me then
+                 Some(
+                     sprintf
+                         "%s: %s — refusal differs: production %s, model %s"
+                         label
+                         (pVerbTag t)
+                         (pRenderError e)
+                         (pRenderError (pErrOfModel me))
+                 )
+             else
+                 None),
+            0,
+            1,
+            0,
+            None
+        | Error(AggError _), Some(ModelPipe.Ok _) ->
+            // A refusal that read the cells: an aggregate over a column it cannot aggregate. The
+            // row function's, outside the schema model by its header.
+            None, 0, 0, 1, None
+        | Error(TypeError detail), Some(ModelPipe.Ok _) when detail.Contains "which no column type holds together" ->
+            // Outside the model's domain (Phase 423, D18), exactly as the pipeline differential
+            // excuses it: the list model's column holds any cells side by side.
+            None, 0, 0, 1, None
+        | Ok t', Some(ModelPipe.Error me) ->
+            Some(
+                sprintf
+                    "%s: %s — production evaluated to %A, model refused %s"
+                    label
+                    (pVerbTag t)
+                    (rSchemaOfProd t'.Schema)
+                    (pRenderError (pErrOfModel me))
+            ),
+            1,
+            0,
+            0,
+            None
+        | Error e, Some(ModelPipe.Ok out) ->
+            Some(
+                sprintf
+                    "%s: %s — production refused %s, model evaluated to %A"
+                    label
+                    (pVerbTag t)
+                    (pRenderError e)
+                    (rSchemaOfModel out)
+            ),
+            0,
+            1,
+            0,
+            None
+
+    let kProd' = SchemaWalk.ofTransform sources kProd t
+    let kModel' = ModelRel.walk rp (rSources sources) kModel (pTransformToModel t)
+    let wp = rKnowledgeOfProd kProd'
+    let wm = rKnowledgeOfModel kModel'
+
+    let walkDiff =
+        if wp <> wm then
+            Some(sprintf "%s: %s — the walk differs: production %A, model %A" label (pVerbTag t) wp wm)
+        else
+            None
+
+    next,
+    kProd',
+    kModel',
+    { tally with
+        RDiffs = (Option.toList walkDiff @ Option.toList diff) @ tally.RDiffs
+        RSteps = tally.RSteps + 1
+        ROk = tally.ROk + ok
+        RErr = tally.RErr + err
+        RRowRefused = tally.RRowRefused + rowRefused
+        RWalks = tally.RWalks + 1
+        RVerbs = Set.add (pVerbTag t) tally.RVerbs }
+
+/// A whole pipeline step by step from a table, stopping at the first step both sides refuse; the
+/// walk continues to the end, as `SchemaWalk.ofPipeline` does.
+let private rComparePipeline
+    (label: string)
+    (rp: ModelRel.rprims)
+    (resolve: string -> Result<Table, EvalError>)
+    (sources: string -> Schema option)
+    (env: Map<string, Cell>)
+    (table: Table)
+    (p: Transform list)
+    (tally: RelTally)
+    : RelTally =
+    let rec go (table: Table option) kProd kModel steps tally i =
+        match steps with
+        | [] -> tally
+        | t :: rest ->
+            match table with
+            | Some table ->
+                let next, kProd', kModel', tally' =
+                    rCompareStep (sprintf "%s/%d" label i) rp resolve sources env table kProd kModel t tally
+
+                go next kProd' kModel' rest tally' (i + 1)
+            | None ->
+                // the evaluation stopped; the walk alone goes on
+                let kProd' = SchemaWalk.ofTransform sources kProd t
+                let kModel' = ModelRel.walk rp (rSources sources) kModel (pTransformToModel t)
+
+                let d =
+                    if rKnowledgeOfProd kProd' <> rKnowledgeOfModel kModel' then
+                        [ sprintf
+                              "%s/%d: %s — the walk differs past a refusal: production %A, model %A"
+                              label
+                              i
+                              (pVerbTag t)
+                              (rKnowledgeOfProd kProd')
+                              (rKnowledgeOfModel kModel') ]
+                    else
+                        []
+
+                go
+                    None
+                    kProd'
+                    kModel'
+                    rest
+                    { tally with
+                        RDiffs = d @ tally.RDiffs
+                        RWalks = tally.RWalks + 1 }
+                    (i + 1)
+
+    let k0 = SchemaWalk.ofSchema table.Schema
+    go (Some table) k0 (rKnowledgeToModel k0) p tally 0
+
+let private rTable (cols: (string * ColumnType * Cell list) list) : Table =
+    { Schema = cols |> List.map (fun (n, ty, _) -> Field.create n ty)
+      Columns = cols |> List.map (fun (n, ty, cells) -> KitColumn.create n ty cells) }
+
+/// The shapes the phase names, each with the table it runs over: the 411 collisions, the 412
+/// unknown sort keys, the window's taken output (D28), the union's widening (D18), and the four
+/// repeated-name witnesses the finding names.
+let private rShapes: (string * Table * Transform list) list =
+    let xr = rTable [ "x", IntType, [ Int 1 ]; "x_right", IntType, [ Int 2 ] ]
+    let x = rTable [ "x", IntType, [ Int 1 ] ]
+
+    let xr2 =
+        rTable
+            [ "x", IntType, [ Int 1 ]
+              "x_right", IntType, [ Int 2 ]
+              "x_right_2", IntType, [ Int 3 ] ]
+
+    let people =
+        rTable [ "g", StringType, [ Str "a"; Str "b" ]; "v", IntType, [ Int 1; Int 2 ] ]
+
+    [ "411-left-carries-x-and-x_right", xr, [ Join(Embedded x, [ "x", "x" ], Inner) ]
+      "411-right-carries-x-and-x_right", x, [ Join(Embedded xr, [ "x", "x" ], Left) ]
+      "411-both-carry-three", xr2, [ Join(Embedded xr2, [ "x", "x" ], Outer) ]
+      "411-right-join", x, [ Join(Embedded xr, [ "x", "x" ], Right) ]
+      "411-semi-keeps-left", xr, [ Join(Embedded x, [ "x", "x" ], Semi) ]
+      "411-unknown-left-key", xr, [ Join(Embedded x, [ "nope", "x" ], Inner) ]
+      "411-unknown-right-key", xr, [ Join(Embedded x, [ "x", "nope" ], Inner) ]
+      "412-literal-unknown-key", people, [ Sort [ Slot.Lit "nope", Asc ] ]
+      "412-second-key-unknown", people, [ Sort [ Slot.Lit "g", Asc; Slot.Lit "zz", Desc ] ]
+      "412-param-unknown-key", people, [ Sort [ Slot.Param "sortcol", Asc; Slot.Lit "zz", Asc ] ]
+      "412-unbound-param", people, [ Sort [ Slot.Param "absent", Asc ] ]
+      "412-param-not-a-string", people, [ Sort [ Slot.Param "n", Asc ] ]
+      "412-window-order-key-unknown",
+      people,
+      [ Window
+            { PartitionBy = [ "g" ]
+              OrderBy = [ "zz", Asc ]
+              Fn = RowNumber
+              Of = "v"
+              As = "r" } ]
+      "412-window-partition-key-unknown",
+      people,
+      [ Window
+            { PartitionBy = [ "zz" ]
+              OrderBy = [ "v", Asc ]
+              Fn = RowNumber
+              Of = "v"
+              As = "r" } ]
+      "450-window-output-taken",
+      people,
+      [ Window
+            { PartitionBy = []
+              OrderBy = [ "v", Asc ]
+              Fn = RowNumber
+              Of = "v"
+              As = "g" } ]
+      "441-window-ntile-zero",
+      people,
+      [ Window
+            { PartitionBy = []
+              OrderBy = [ "v", Asc ]
+              Fn = NTile 0
+              Of = "v"
+              As = "r" } ]
+      "window-lag-keeps-source-type",
+      people,
+      [ Window
+            { PartitionBy = []
+              OrderBy = [ "v", Asc ]
+              Fn = Lag
+              Of = "g"
+              As = "r" } ]
+      "423-union-widens",
+      rTable [ "a", IntType, [ Int 1 ] ],
+      [ Union(Embedded(rTable [ "a", FloatType, [ Float 1.5 ] ])) ]
+      "423-union-refuses-unrelated",
+      rTable [ "a", IntType, [ Int 1 ] ],
+      [ Union(Embedded(rTable [ "a", StringType, [ Str "s" ] ])) ]
+      "union-names-differ", people, [ Union(Embedded x) ]
+      "intersect-names-differ", people, [ Intersect(Embedded x) ]
+      "except-keeps-left", people, [ Except(Embedded people) ]
+      "limit-param-not-an-int", people, [ Limit(Slot.Param "s", Slot.Lit 0) ]
+      "limit-offset-unbound", people, [ Limit(Slot.Lit 1, Slot.Param "absent") ]
+      "finding-project-repeats", rTable [ "a", IntType, [ Int 1 ] ], [ Project [ "a", "x"; "a", "x" ] ]
+      "finding-group-by-repeats",
+      rTable [ "k", StringType, [ Str "a" ]; "v", IntType, [ Int 1 ] ],
+      [ GroupBy([ "k" ], [ pAgg "k" Sum "v" ]) ]
+      "finding-unpivot-repeats",
+      rTable [ "variable", StringType, [ Str "a" ]; "v", IntType, [ Int 1 ] ],
+      [ Unpivot([ "variable" ], [ "v" ]) ]
+      "finding-pivot-repeats",
+      rTable
+          [ "i", IntType, [ Int 1 ]
+            "g", StringType, [ Str "i" ]
+            "w", IntType, [ Int 2 ] ],
+      [ Pivot
+            { Index = [ "i" ]
+              On = "g"
+              Values = "w"
+              Agg = Sum } ]
+      "unpivot-by-cells",
+      rTable
+          [ "k", StringType, [ Str "a" ]
+            "v", IntType, [ Int 1 ]
+            "w", FloatType, [ Float 2.0 ] ],
+      [ Unpivot([ "k" ], [ "v"; "w" ]) ]
+      "unpivot-float-beside-decimal",
+      rTable
+          [ "k", StringType, [ Str "a" ]
+            "v", DecimalType, [ Cell.decimal "1.5" |> Option.get ]
+            "w", FloatType, [ Float 2.0 ] ],
+      [ Unpivot([ "k" ], [ "v"; "w" ]) ]
+      "pivot-unknown-on",
+      people,
+      [ Pivot
+            { Index = [ "g" ]
+              On = "zz"
+              Values = "v"
+              Agg = Sum } ]
+      "pivot-unknown-values",
+      people,
+      [ Pivot
+            { Index = [ "g" ]
+              On = "g"
+              Values = "zz"
+              Agg = Count } ]
+      "pivot-unknown-index",
+      people,
+      [ Pivot
+            { Index = [ "zz" ]
+              On = "g"
+              Values = "v"
+              Agg = Max } ]
+      "group-by-unknown-agg-source", people, [ GroupBy([ "g" ], [ pAgg "s" Sum "zz" ]) ]
+      "project-unknown-source", people, [ Project [ "g", "g"; "zz", "z" ] ]
+      "join-ref-undeclared-opens-walk", people, [ Join(Ref "r", [ "g", "g" ], Inner); Project [ "g", "g" ] ]
+      "join-ref-missing", people, [ Join(Ref "missing", [ "g", "g" ], Inner) ]
+      "pivot-then-project-over-open",
+      people,
+      [ Pivot
+            { Index = [ "g" ]
+              On = "g"
+              Values = "v"
+              Agg = Sum }
+        Project [ "g", "g" ] ] ]
+
+/// The whole relational differential: the named shapes, then `trials` generated pipelines at
+/// `seed`, each compared step by step — and, for the walk, past the first refusal.
+let private rDifferential (rp: ModelRel.rprims) (seed: int) (trials: int) : RelTally =
+    let right, _ = pGenTable (ConfRng.ofSeed 7)
+    let resolve = pResolveWith right
+    let sources = fun r -> if r = "r" then Some right.Schema else None
+    let mutable tally = rEmptyTally
+
+    for label, table, p in rShapes do
+        tally <- rComparePipeline label rp resolve sources pEnv table p tally
+
+    let mutable r = ConfRng.ofSeed seed
+
+    for i in 1..trials do
+        let table, r1 = pGenTable r
+        let p, r2 = pGenPipeline r1
+        r <- r2
+        tally <- rComparePipeline (sprintf "trial %d" i) rp resolve sources pEnv table p tally
+
+    tally
+
+/// The model's twelve-verb evaluator built from its own schema and production's ROWS: the step
+/// evaluator `Relational.other_of` builds, with the row function reading production's answer
+/// for the rows alone. Run through the pipeline differential, it is the narrowing measured end to
+/// end — the schema is the model's, and the table still has to agree byte for byte.
+let private pRelationalStep
+    (resolve: string -> Result<Table, EvalError>)
+    (env: Map<string, Cell>)
+    (_: Transform list)
+    : ModelPipe.other_fn =
+    let rows: ModelRel.row_fn =
+        fun f t _ ->
+            match DataFrame.evalPipelineWithInEnv resolve env [ pTransformOfModel t ] (pTableOfFrame f) with
+            | Ok t' -> ModelPipe.Ok((pFrameOfTable t').rows)
+            | Error e -> ModelPipe.Error(pErrToModel e)
+
+    ModelRel.other_of rPrims (rResolver resolve) (pEnvToModel env) rows
+
+/// The 412 go-red's step evaluator: `pRelationalStep` handed a `Sort` WITHOUT the literal keys the
+/// frame's schema does not carry — the pre-412 evaluator, which dropped an unknown key, as the
+/// model's twelve-verb parameter. A generated `Sort` names `w` after a step that projected or
+/// aggregated it away, which production refuses and this evaluates.
+let private pDropUnknownSortKeysStep
+    (resolve: string -> Result<Table, EvalError>)
+    (env: Map<string, Cell>)
+    (p: Transform list)
+    : ModelPipe.other_fn =
+    let faithful = pRelationalStep resolve env p
+
+    fun f t ->
+        match t with
+        | ModelPipe.Sort by ->
+            let known = f.cols |> List.map fst
+
+            faithful
+                f
+                (ModelPipe.Sort(
+                    by
+                    |> List.filter (fun (c, _) ->
+                        match c with
+                        | ModelPipe.SlotLit n -> List.contains n known
+                        | ModelPipe.SlotParam _ -> true)
+                ))
+        | _ -> faithful f t
+
 [<Tests>]
 let proofOracleTests =
     testList
@@ -3292,4 +3767,126 @@ let proofOracleTests =
                   0
                   "a walk that reuses a named row's cached cell agreed with production everywhere — the differential cannot fail"
 
-              printfn "incremental go-red: %d disagreements, first: %s" (List.length t.IDiffs) (List.head t.IDiffs) ]
+              printfn "incremental go-red: %d disagreements, first: %s" (List.length t.IDiffs) (List.head t.IDiffs)
+
+          // ---- Phase 434 — the RELATIONAL verbs: output schema and refusals against the
+          //      evaluator, the walk against SchemaWalk ----
+
+          testCase
+              "the relational oracle agrees with the evaluator on every verb's output schema and refusal, and with SchemaWalk.ofTransform on the knowledge, over the 411 and 412 shapes and generated pipelines"
+          <| fun _ ->
+              let t = rDifferential rPrims 434 400
+
+              Expect.isEmpty t.RDiffs (sprintf "disagreements:\n%s" (String.concat "\n" (List.rev t.RDiffs)))
+
+              Expect.isGreaterThan t.ROk 300 (sprintf "steps evaluated on both sides (ok=%d)" t.ROk)
+              Expect.isGreaterThan t.RErr 150 (sprintf "steps refused on both sides (err=%d)" t.RErr)
+              Expect.isGreaterThan t.RWalks 600 (sprintf "walk steps compared (walks=%d)" t.RWalks)
+
+              for verb in
+                  [ "Project"
+                    "GroupBy"
+                    "Join"
+                    "Window"
+                    "Pivot"
+                    "Unpivot"
+                    "Sort"
+                    "Distinct"
+                    "Limit"
+                    "Union"
+                    "Intersect"
+                    "Except" ] do
+                  Expect.isTrue
+                      (Set.contains verb t.RVerbs)
+                      (sprintf "the sample reached the %s verb (reached: %A)" verb t.RVerbs)
+
+              // The join's names, through the public function the evaluator and the walk share,
+              // against the model's over the 411 shapes and a few more.
+              for left, right in
+                  [ [ "x"; "x_right" ], [ "x" ]
+                    [ "x" ], [ "x"; "x_right" ]
+                    [ "x"; "x_right"; "x_right_2" ], [ "x"; "x_right"; "x_right_2" ]
+                    [ "a"; "b" ], [ "b"; "a"; "c" ]
+                    [ "a" ], [ "a"; "a_right_2"; "a_right" ] ] do
+                  Expect.equal
+                      (ModelRel.join_right_names rPrims left right)
+                      (DataFrame.joinRightNames left right)
+                      (sprintf "joinRightNames %A %A" left right)
+
+              printfn
+                  "relational differential: steps=%d ok=%d err=%d rowRefused=%d walks=%d verbs=%d"
+                  t.RSteps
+                  t.ROk
+                  t.RErr
+                  t.RRowRefused
+                  t.RWalks
+                  t.RVerbs.Count
+
+              Expect.equal (rDifferential rPrims 434 400) t "same seed => identical tally"
+
+          testCase
+              "the finding holds on the shipped evaluator — a Project, a GroupBy, an Unpivot and a Pivot each answer a table naming a column twice"
+          <| fun _ ->
+              // The four witnesses `Relational.fst`'s `*_repeats_name` theorems state, on production:
+              // each evaluates to `Ok` with a repeated name, the defect D28 closed for a window and
+              // D20 for a join. When production refuses one of these, this test and the theorem go
+              // red together, and the model's arm moves with the evaluator's.
+              let shapes =
+                  rShapes |> List.filter (fun (label, _, _) -> label.StartsWith "finding-")
+
+              Expect.equal (List.length shapes) 4 "the four witnesses are among the shapes"
+
+              for label, table, p in shapes do
+                  match DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p table with
+                  | Ok t' ->
+                      let ns = t'.Schema |> List.map _.Name
+
+                      Expect.notEqual
+                          (List.length (List.distinct ns))
+                          (List.length ns)
+                          (sprintf "%s: the evaluator answered %A — a repeated name" label ns)
+                  | Error e ->
+                      failtestf "%s: the evaluator now REFUSES (%A) — the finding has closed; move the theorem" label e
+
+          testCase
+              "the twelve-verb evaluator built from the model's schema and production's rows agrees with DataFrame.evalPipelineWithInEnvCounted — the narrowing measured end to end"
+          <| fun _ ->
+              let t = pipelineDifferential pPipelineToModel pRelationalStep 434 400
+
+              Expect.isEmpty t.PDiffs (sprintf "disagreements:\n%s" (String.concat "\n" (List.rev t.PDiffs)))
+              Expect.isGreaterThan t.POk 120 (sprintf "pipelines evaluated to a table on both sides (ok=%d)" t.POk)
+              Expect.isGreaterThan t.PErr 60 (sprintf "pipelines were refused on both sides (err=%d)" t.PErr)
+
+          testCase
+              "a relational oracle crossed the pre-D20 suffix rule DISAGREES with the evaluator on the 411 shapes — the measurement can fail"
+          <| fun _ ->
+              let t = rDifferential rPrimsPreD20 434 0
+
+              Expect.isGreaterThan
+                  (List.length t.RDiffs)
+                  0
+                  "a suffix rule that answers `_right` for every collision agreed with production everywhere — the differential cannot fail"
+
+              Expect.isTrue
+                  (t.RDiffs |> List.exists (fun d -> d.StartsWith "411-"))
+                  (sprintf "the disagreement is on a 411 shape: %A" t.RDiffs)
+
+              printfn "relational go-red (411): %d disagreements, first: %s" (List.length t.RDiffs) (List.last t.RDiffs)
+
+          testCase
+              "a relational oracle whose bridge drops a sort key the schema does not carry DISAGREES with the evaluator on the 412 shape — the measurement can fail"
+          <| fun _ ->
+              let t = pipelineDifferential pPipelineToModel pDropUnknownSortKeysStep 434 400
+
+              Expect.isGreaterThan
+                  (List.length t.PDiffs)
+                  0
+                  "a model that drops an unknown sort key agreed with production everywhere — the differential cannot fail"
+
+              Expect.isTrue
+                  (t.PDiffs |> List.exists (fun d -> d.Contains "production refused"))
+                  (sprintf
+                      "a disagreement is production refusing what the model evaluated: %A"
+                      (List.truncate 3 t.PDiffs))
+
+              printfn "relational go-red (412): %d disagreements, first: %s" (List.length t.PDiffs) (List.last t.PDiffs) ]

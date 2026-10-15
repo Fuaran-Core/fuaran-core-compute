@@ -73,6 +73,19 @@
       "floorPhase": "fuaran-core#433",
       "phase": "fuaran-core#433",
       "note": "The row-local incremental refresh over Pipeline's frame (Phase 433): the per-step cell caches, the walk that reuses an unnamed row's cell, `prime` and `refresh`, with `prime_is_full`, `refresh_is_prime` and `refresh_agrees` proved. Opens `Pipeline` (so its checked module must be in the cache first), default context, no scoped options, every type parameter `Type0`: the whole module discharges at the leg's own rlimit of 40 under `--quake 3` with no query needing a second attempt, and verified on the first prover run after two spec-typing repairs (a projector spelling, and a width guard on the lemmas that read a row out of `assoc`). SEEDED BY PHASE 433: two cold runs of the leg on this machine beside a concurrent test build, 101s and 76s, and the prover invoked directly on the file with the leg's own flags against a cache holding `Limits` and `Pipeline`, 59s — so the budget is 2x the slowest kit run rounded up to the next 10s (210s) and the floor is half the fastest genuine cold run rounded down (29s from 59s), per the two rules above. The two proof shapes that cost anything are `eval_expr_names` (a five-way mutual induction over the expression, every arm of `eval_expr` and its four loops, proving the evaluator reads a schema's names and never its types) and `walk_reuse` (the induction over the pipeline that threads the delta premise through a filter and a derive). If this entry overshoots, look first at `eval_expr_names`: a constructor added to `col_expr` widens it as it widens Pipeline's five, and the walk's two arms are structural."
+    },
+    {
+      "module": "Relational",
+      "packages": [
+        "Fuaran.Compute.DataFrame"
+      ],
+      "budgetSeconds": 120,
+      "measuredSeconds": 57,
+      "floorSeconds": 15,
+      "fastestSeconds": 30,
+      "floorPhase": "fuaran-core#434",
+      "phase": "fuaran-core#434",
+      "note": "The twelve relational verbs' output schema and refusals, and the static schema walk (Phase 434): `step_schema` over the twelve arms, `join_right_names` with its fuel-bounded suffix search, `walk` over all fourteen, with `walk_sound`, `join_no_dups`, `window_no_dups`, the eight unknown-column refusal lemmas and the four repeated-name witnesses proved. Opens `Pipeline` (so its checked module must be in the cache first), default context, no scoped options, every type parameter `Type0`: the whole module discharges at the leg's own rlimit of 40 under `--quake 3` with no query needing a second attempt. SEEDED BY PHASE 434: three cold runs of the leg on this machine with a gigabyte of free memory and other sessions building, 30s, 45s, 45s, and the prover invoked directly on the file with the leg's own flags against a cache holding `Limits` and `Pipeline` while a test build ran beside it, 54s to 57s — so the budget is 2x the slowest observed cold run rounded up to the next 10s (120s from 57s) and the floor is half the fastest genuine cold run rounded down (15s from 30s), per the two rules above. The proof shapes that cost anything are `free_fresh` (the pigeonhole: with one more candidate than taken names an injective suffix rule finds a free one, an induction on the fuel that removes one taken name per step through `free_ext`), `rename_right_no_dups` and `rename_right_mem` (the invariant that every chosen suffix is outside the taken list, threaded through the right columns), and `join_sound`'s open-right case (`renamed_assoc_kept`, `kept_right_at_least`). If this entry overshoots, look first at the join lemmas: a change to the suffix rule's shape or to `rename_right`'s fold re-prices all of them at once, where every other arm's lemma is one computation."
     }
   ]
 }
