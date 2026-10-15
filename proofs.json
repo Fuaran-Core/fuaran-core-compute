@@ -42,7 +42,10 @@
       "evidence": {
         "theorem": "apply_total",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "proofs/fstar-pin.json",
+        "operations": [
+          "ColumnOps.apply"
+        ]
       }
     },
     {
@@ -64,7 +67,10 @@
       "evidence": {
         "theorem": "canapply_agrees",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "proofs/fstar-pin.json",
+        "operations": [
+          "ColumnOps.canApply"
+        ]
       }
     },
     {
@@ -86,7 +92,10 @@
       "evidence": {
         "theorem": "invert_roundtrip",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "proofs/fstar-pin.json",
+        "operations": [
+          "ColumnOps.invert"
+        ]
       }
     },
     {
@@ -119,7 +128,10 @@
       "evidence": {
         "theorem": "diff_applicable",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "proofs/fstar-pin.json",
+        "operations": [
+          "ColumnOps.toOps"
+        ]
       }
     },
     {
@@ -146,6 +158,13 @@
           "the columnar oracle agrees with ColumnOps.toOps and applyAll, and the diff reconstructs on well-formed pairs",
           "a columnar oracle handed a BLIND cell bridge DISAGREES with ColumnOps.apply — the measurement can fail",
           "a REFUSED insert has no inverse — `refused_insert_inverse_is_live` is now about `invert_pre181`"
+        ],
+        "operations": [
+          "ColumnOps.apply",
+          "ColumnOps.applyAll",
+          "ColumnOps.canApply",
+          "ColumnOps.invert",
+          "ColumnOps.toOps"
         ]
       }
     },
@@ -191,6 +210,11 @@
           "eval_expr",
           "filter_rows",
           "eval_derive"
+        ],
+        "operations": [
+          "DataFrame.evalPipelineWithInEnvCounted",
+          "Transform.Derive",
+          "Transform.Filter"
         ]
       }
     },
@@ -271,6 +295,9 @@
         "prover": "proofs/fstar-pin.json",
         "supporting": [
           "uncounted_ok_iff"
+        ],
+        "operations": [
+          "DataFrame.evalPipelineWithInEnv"
         ]
       }
     },
@@ -333,6 +360,11 @@
           "the concrete expression evaluator agrees with DataFrame.evalExprInRow cell for cell and error for error over generated expressions and rows, and its visit count never exceeds the node count",
           "a model that under-counts a nested expression's nodes DISAGREES with the evaluator's visit count — the node bound can fail",
           "`work_bounded` on the shipped primitives — over every generated pipeline within the limit the evaluator's visits are at most the count times `Limits.max_expr_nodes`, and exceed the count where an expression has more than one node"
+        ],
+        "operations": [
+          "DataFrame.evalExprInRow",
+          "DataFrame.evalPipelineWithInEnv",
+          "DataFrame.evalPipelineWithInEnvCounted"
         ]
       }
     },
@@ -375,6 +407,9 @@
           "snds_nones",
           "first_unit_nones",
           "checked_step_unitless"
+        ],
+        "operations": [
+          "DataFrame.resolveUnits"
         ]
       }
     },
@@ -398,6 +433,9 @@
           "resolved_convert_free",
           "resolved_list_convert_free",
           "resolved_cases_convert_free"
+        ],
+        "operations": [
+          "DataFrame.resolveUnits"
         ]
       }
     },
@@ -415,6 +453,9 @@
           "agree_all_rejected",
           "refused_list_is_rejected",
           "refused_cases_is_rejected"
+        ],
+        "operations": [
+          "DataFrame.resolveUnits"
         ]
       }
     },
@@ -429,6 +470,9 @@
         "cases": [
           "the unit check agrees with the model's resolve_units on the unit, the resolved expression and the refusal over the unit vectors and a generated sample, and resolution is the whole of a conversion's semantics",
           "a unitless schema leaves every convert-free expression unchanged, in production as in the model"
+        ],
+        "operations": [
+          "DataFrame.resolveUnits"
         ]
       }
     },

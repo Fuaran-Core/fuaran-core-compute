@@ -21,5 +21,729 @@
       "note": "The law families over the dataframe layer, split out of the kit by Phase 257 (the Fuaran.Core repository's DECISIONS.md D68), and excused for the kit's own reason: a family states an obligation, so a model of `columnarOpLaws` would be a model of the statement of one. The computation those families certify is modelled where it lives — `proofs/ColumnOps.fst` for `Fuaran.Compute.ColumnOps` and `proofs/Pipeline.fst` for `Fuaran.Compute.DataFrame` — and what can be checked about the families themselves (that the roster is complete, that each runs at a reference witness, that each forward reaches its home) `ConformanceFamiliesTests` and `ConformanceVacuityTests` check."
     }
   ],
-  "$retired": "Phase 154 RETIRED the `Fuaran.Compute.DataFrame` entry (`law-tested-by-design`, citing `Conformance.incrementalLaws`, filed by Phase 203): the package has a model now — `proofs/Pipeline.fst`, the counted pipeline driver over an abstract step evaluator — and clause 1's second direction fails an exclusion for a package that has since gained one. What that entry declined is still declined and is still a recorded decision, only now it is the model's own: the fourteen verb SEMANTICS are the step evaluator, a parameter, and stay with the laws the entry named (`incrementalLaws`, `schemaWalkLaws`, `aggregateParityLaws`) rather than with a theorem — see `pipeline-step-evaluator-abstract` in `../proofs.json` and theorem 14 in `README.md`. The supersession of D14's reading for this package is `DECISIONS.md` D57 (operator decision 2026-09-25), which is where the decision lives; an operator who wants a verb proved reads that row and that entry, not this file."
+  "$retired": "Phase 154 RETIRED the `Fuaran.Compute.DataFrame` entry (`law-tested-by-design`, citing `Conformance.incrementalLaws`, filed by Phase 203): the package has a model now — `proofs/Pipeline.fst`, the counted pipeline driver over an abstract step evaluator — and clause 1's second direction fails an exclusion for a package that has since gained one. What that entry declined is still declined and is still a recorded decision, only now it is the model's own: the fourteen verb SEMANTICS are the step evaluator, a parameter, and stay with the laws the entry named (`incrementalLaws`, `schemaWalkLaws`, `aggregateParityLaws`) rather than with a theorem — see `pipeline-step-evaluator-abstract` in `../proofs.json` and theorem 14 in `README.md`. The supersession of D14's reading for this package is `DECISIONS.md` D57 (operator decision 2026-09-25), which is where the decision lives; an operator who wants a verb proved reads that row and that entry, not this file.",
+  "operationClasses": {
+    "trivial": "The operation constructs, projects or looks up a value and computes nothing a law could be wrong about: a record builder, an accessor, a `List.tryFind` over declared data. The entry says what it does in one line so a reader can disagree.",
+    "forward": "The operation delegates to ONE other public operation, adding only a default argument, a renamed spelling or a sentence rendering. It names that operation in `forwardsTo`, which must itself be mapped, so a forward's coverage is its target's and a forward to nothing is refused.",
+    "obsolete": "The operation carries `System.Obsolete` and forwards to its replacement, which it names in `forwardsTo`. The clause reads the attribute by reflection, so an entry for an operation that is NOT marked obsolete is refused.",
+    "host-seam": "The operation is a boundary whose content a host supplies: an interface member, a tool's entry point, an export another language's host diffs. What Core owns at that boundary is certified where the host meets it.",
+    "measured-elsewhere": "The operation has behaviour and no theorem or law family states its contract; tests stand in. The entry names the test file in `standIn`, and the clause holds that file to mentioning the operation (`<Owner>.<member>`) or the `through` token naming the measured operation it is reached by, so a stand-in cannot point at a file that never touches it."
+  },
+  "$operationsComment": "Phase 432. The OPERATION clause of `Proofs.Coverage`, ported from the Fuaran.Core repository's file, where Phase 335 wrote it: the `operationClasses` vocabulary above is that file's, carried verbatim, so the two repositories have ONE vocabulary and a term means the same thing on either side (read its `Core` as this repository). The census is every public method of each packable package a model in `modules.json` names (the `method` lines of `../api/<package>.txt`), plus the relational verbs, the `union-case` lines of `Transform` in the `Fuaran.Compute.DataFrame` baseline, spelled `Transform.<Verb>` — the verbs are this layer's operations although the compiler publishes them as union cases, and a census of methods alone would never name the twelve `proofs/Pipeline.fst` takes as a parameter. A package with no model is not censused: its package-level entry above is already the recorded decision for all of it. Each censused operation maps to a `../proofs.json` row (`proved` or `tested`) whose `evidence.operations` names it, or to an entry below with a class from `operationClasses` and a one-line reason; this repository ships no law-family operation roster, so Core's second route is empty here. An operation is spelled `<Owner>.<member>` with the `Fuaran.Compute.` prefix, generic arity and the compiler's `Module` suffix dropped. The baselines are the census, so a newly published operation reds the suite at the commit that adds it and names itself. The check runs both ways: an entry for an operation that is no longer published, or that has since gained a ladder row, fails, as a member listed twice does — so a phase that models an operation adds it to a row and deletes its entry here in the same commit. `proofs/README.md`'s \"What is not proved\" table is generated from this block and the ladder (`CORE_APPROVE_LADDER=1` rewrites it). `Frame` and `Kernels` publish no operation (every member is `internal`), so they appear here only through the public operations that reach them.",
+  "operations": [
+    {
+      "members": [
+        "Transform.Project"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Project` verb renames and selects columns. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Project",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.GroupBy"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `GroupBy` verb groups rows by key and aggregates each group. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "GroupBy",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Join"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Join` verb pairs the rows of two tables on key columns. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Join",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Window"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Window` verb computes a window function over each ordered partition. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Window",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Pivot"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Pivot` verb spreads a key column's values into columns. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Pivot",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Unpivot"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Unpivot` verb folds columns into key and value rows. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Unpivot",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Sort"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Sort` verb orders rows under the pinned multi-key ordering. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Sort",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Distinct"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Distinct` verb drops repeated rows. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Distinct",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Limit"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Limit` verb keeps a window of rows by count and offset. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Limit",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Union"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Union` verb appends a second source's rows. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Union",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Intersect"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Intersect` verb keeps the rows a second source also holds. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Intersect",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.Except"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The `Except` verb drops the rows a second source holds. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
+      "through": "Except",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "ColumnOps.applyPrepared",
+        "ColumnOps.canApplyPrepared",
+        "ColumnOps.invertPrepared"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The op algebra over a prepared frame rather than a table: the clauses `proofs/ColumnOps.fst` models for `apply`, `canApply` and `invert`, run over the dense representation the model does not describe; held to the table path by example and sampled by `Conformance.columnarOpLaws`.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/ColumnOpsTests.fs"
+    },
+    {
+      "members": [
+        "ColumnOps.deltaOf",
+        "ColumnOps.deltaOfPrepared"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The row-set delta an op produces under a row identity; no model states it, and the column-op tests and `Conformance.incrementalLaws` sample it.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/ColumnOpsTests.fs"
+    },
+    {
+      "members": [
+        "ColumnOps.changeOf",
+        "ColumnOps.changedColumns"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The change class and the columns an op touches, which the incremental engine reads to decide what to recompute; example-tested where propagation composes.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PropagationCompositionTests.fs"
+    },
+    {
+      "members": [
+        "ColumnOps.decode",
+        "ColumnOps.encode"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The op wire codec; round trips and the law vectors pin it, no theorem.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/ColumnOpsTests.fs"
+    },
+    {
+      "members": [
+        "ColumnOps.decodeJson"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The JSON-value half of `ColumnOps.decode`, which parses the text and calls it; measured through that round trip.",
+      "through": "ColumnOps.decode",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/ColumnOpsTests.fs"
+    },
+    {
+      "members": [
+        "ColumnOps.encodeJson"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The JSON-value half of `ColumnOps.encode`, which renders it; measured through that round trip.",
+      "through": "ColumnOps.encode",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/ColumnOpsTests.fs"
+    },
+    {
+      "members": [
+        "ColumnOps.rejectionString"
+      ],
+      "class": "trivial",
+      "reason": "Renders a rejection as its sentence; computes nothing a law could be wrong about."
+    },
+    {
+      "members": [
+        "DataFrame.evalPipeline",
+        "DataFrame.evalPipelineInEnv",
+        "DataFrame.evalPipelineWith"
+      ],
+      "class": "forward",
+      "reason": "Default spellings of the modelled entry point: no resolver, an empty environment, or both.",
+      "forwardsTo": "DataFrame.evalPipelineWithInEnv"
+    },
+    {
+      "members": [
+        "DataFrame.evalPipelineAsWritten"
+      ],
+      "class": "forward",
+      "reason": "The unplanned entry point with no resolver and an empty environment.",
+      "forwardsTo": "DataFrame.evalPipelineWithInEnvAsWritten"
+    },
+    {
+      "members": [
+        "DataFrame.evalPipelineWithInEnvAsWritten"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The pipeline folded exactly as written, without the planner: the reference `Conformance.plannerLaws` holds the planned evaluation to; example-tested against the planned path.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PlanTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.evalPipelineAt",
+        "DataFrame.evalPipelineInEnvAt"
+      ],
+      "class": "forward",
+      "reason": "Default spellings of the clock-pinning entry point: no resolver, an empty environment, or both.",
+      "forwardsTo": "DataFrame.evalPipelineWithInEnvAt"
+    },
+    {
+      "members": [
+        "DataFrame.evalPipelineWithInEnvAt"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "`Transform.substituteNow` followed by the modelled entry point; the clock pinning is what `Conformance.nowLaws` states, and it drives this through `evalPipelineAt`.",
+      "through": "Conformance.nowLaws",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.evalFrom"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Re-evaluation from a prior result under a declared change, reusing the prior where the pipeline cannot read the change; example-tested, no model.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.evalPrepared",
+        "DataFrame.evalToPrepared"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The evaluator over a prepared frame, the dense representation `proofs/Pipeline.fst` does not describe; held to the table path by the prepared-result law.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.evalToPreparedAsync"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The asynchronous prepared evaluation over the worker pool; the pooled law holds it to the synchronous result.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PooledLaw.fs"
+    },
+    {
+      "members": [
+        "DataFrame.evalManyToPrepared"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Several pipelines over one prepared source, sharing its preparation; the concurrent-pipeline tests hold each result to its own evaluation.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/ConcurrentPipelinesTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.prepare",
+        "DataFrame.prepareRows",
+        "DataFrame.toTable"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Conversion between a table and the dense prepared frame (`Frame.fs`, whose members are all internal); round-tripped by example, and no model describes the dense representation.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.noResolve"
+      ],
+      "class": "trivial",
+      "reason": "The resolver that refuses every reference; a constant."
+    },
+    {
+      "members": [
+        "DataFrame.evalSource"
+      ],
+      "class": "trivial",
+      "reason": "Answers an embedded table, or the resolver's answer for a reference; one match, no computation."
+    },
+    {
+      "members": [
+        "DataFrame.aggregateCells",
+        "DataFrame.aggregateType"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The reference aggregation and its result type, exposed so an incremental evaluator recomputes a group exactly; `Conformance.aggregateParityLaws` and the group-by tests sample it.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.aggregateUnit"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The unit an aggregate carries (Phase 429); the unit-propagation tests pin each function's rule.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/UnitPropagationTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.windowUnit",
+        "DataFrame.unpivotUnit"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The unit a window output or an unpivot's value column carries (Phase 429); the unit-propagation tests read it through the schema walk, which states it.",
+      "through": "SchemaWalk.unitOf",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/UnitPropagationTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.unitOf",
+        "DataFrame.unitOfColumn"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The unit of an expression or a column over a schema, the unit check's reading side (its refusal half is the modelled `resolveUnits`); example-tested.",
+      "through": "unitOf",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/UnitPropagationTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.cellString",
+        "DataFrame.cellToken",
+        "DataFrame.rowTokenString"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The cell and row token encodings that row identity, de-duplication and the incremental state key on; injectivity is pinned by example.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.rowToken"
+      ],
+      "class": "forward",
+      "reason": "Maps `cellToken` over a row.",
+      "forwardsTo": "DataFrame.cellToken"
+    },
+    {
+      "members": [
+        "DataFrame.errorString"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Renders an evaluation error as the sentence hosts and tests compare; the sentences are pinned by example.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.typeOf"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The exact expression typer `Plan.isTotal` and the schema walk read; `proofs/Pipeline.fst` takes a typer as given, and the derive-typing tests and `Conformance.schemaWalkLaws` sample this one.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.inferCellType"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The type a derived column takes where only its cells decide it; the derive-typing tests read it through the derive.",
+      "through": "Derive",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DeriveTypingTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.joinKeysMatch"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Join key equality, exposed for incremental joins; example-tested.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.joinKeyIndices",
+        "DataFrame.joinRightNames",
+        "DataFrame.rowCompareBy",
+        "DataFrame.windowFrameBounded"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Reference primitives exposed (Phase 99) so the incremental engine recomputes a join, a sort or a window exactly as the full evaluation does; measured through the incremental evaluator's parity with it, which `Conformance.incrementalLaws` samples.",
+      "through": "Incremental.refresh",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalTests.fs"
+    },
+    {
+      "members": [
+        "DataFrame.windowStep"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "One window step over a partition, exposed for the incremental engine; example-tested beside the full evaluation.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "ColExpr.paramsOf",
+        "ColExpr.substitute"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Parameter census and substitution over one expression; `Conformance.paramLaws` samples it and the decimal tests pin examples.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DecimalTests.fs"
+    },
+    {
+      "members": [
+        "ColExpr.substituteListParams",
+        "ColExpr.substituteNow",
+        "ColExpr.usesNow"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The expression halves of the pipeline-level operations of the same name, which map them over every step; measured through those.",
+      "through": "Transform.substituteNow",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.paramsOf",
+        "Transform.substitute",
+        "Transform.substituteListParams",
+        "Transform.substituteNow",
+        "Transform.usesNow"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Parameter and clock substitution over a pipeline; `Conformance.paramLaws`, `slotParamLaws` and `nowLaws` sample them.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.slotParamsOf"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The slot parameters a pipeline reads; `DataFrame.evalFrom` declines its reuse on any, which the evaluation tests exercise.",
+      "through": "DataFrame.evalFrom",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Transform.limit",
+        "Transform.sortBy"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Builders for the `Limit` and `Sort` steps with literal slots; example-tested, and the planner's top-N rule reads what they build.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "Slot.isParam",
+        "Slot.paramName",
+        "Slot.tryLit"
+      ],
+      "class": "trivial",
+      "reason": "Projects a slot's literal or its parameter name; one match each."
+    },
+    {
+      "members": [
+        "NowGrain.ofTag",
+        "NowGrain.tag"
+      ],
+      "class": "trivial",
+      "reason": "The grain's wire tag and its inverse over a two-case table."
+    },
+    {
+      "members": [
+        "ColumnKnowledge.named",
+        "ColumnKnowledge.ofField",
+        "ColumnKnowledge.renamed",
+        "ColumnKnowledge.withUnit"
+      ],
+      "class": "trivial",
+      "reason": "Builds or copies a column-knowledge record; no computation."
+    },
+    {
+      "members": [
+        "ColumnKnowledge.toField",
+        "ColumnKnowledge.toFieldAs"
+      ],
+      "class": "trivial",
+      "reason": "Builds the field a column's knowledge states, under its own type or a default; no computation."
+    },
+    {
+      "members": [
+        "DataFrameCodec.decodePipeline",
+        "DataFrameCodec.encodePipeline"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The pipeline wire codec; round trips, the law vectors and the wire-surface pins hold it, no theorem.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrameCodec.decodePipelineJson",
+        "DataFrameCodec.decodeTransform",
+        "DataFrameCodec.decodeExpr"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The JSON-value layers `DataFrameCodec.decodePipeline` parses into; measured through that round trip.",
+      "through": "DataFrameCodec.decodePipeline",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DataFrameCodec.encodeTransform",
+        "DataFrameCodec.encodeExpr"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The JSON-value layers `DataFrameCodec.encodePipeline` renders; measured through that round trip.",
+      "through": "DataFrameCodec.encodePipeline",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "DeltaCodec.decode",
+        "DeltaCodec.encode"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The delta wire codec; round trips pin it, no theorem.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DeltaTests.fs"
+    },
+    {
+      "members": [
+        "DeltaCodec.decodeJson"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The JSON-value half of `DeltaCodec.decode`; measured through that round trip.",
+      "through": "DeltaCodec.decode",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DeltaTests.fs"
+    },
+    {
+      "members": [
+        "DeltaCodec.encodeJson"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The JSON-value half of `DeltaCodec.encode`; measured through that round trip.",
+      "through": "DeltaCodec.encode",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DeltaTests.fs"
+    },
+    {
+      "members": [
+        "IncrementalCodec.decode",
+        "IncrementalCodec.decodeOver",
+        "IncrementalCodec.encode",
+        "IncrementalCodec.encodeDetached",
+        "IncrementalCodec.keyOf",
+        "IncrementalCodec.pipelineHash",
+        "IncrementalCodec.sourceFingerprint"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The incremental state codec and its keys; the round trip and the refusal of a mismatched key are example-tested, and `Conformance.stateLaws` samples the round trip.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalStateCodecTests.fs"
+    },
+    {
+      "members": [
+        "Delta.compose",
+        "Delta.composeAll",
+        "Delta.composeChange",
+        "Delta.composeChecked",
+        "Delta.defectString",
+        "Delta.defects",
+        "Delta.empty",
+        "Delta.isFullRefresh",
+        "Delta.normalise",
+        "Delta.ofChange",
+        "Delta.ofColumns",
+        "Delta.ofRows",
+        "Delta.refToken",
+        "Delta.resolve",
+        "Delta.toChange",
+        "Delta.tryRowSet",
+        "Delta.validate"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The table-delta algebra (`Delta.fs`): construction, composition, normalisation and validation. No model states its laws; the delta tests pin them by example and `Conformance.incrementalLaws` samples the deltas the engine composes.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DeltaTests.fs"
+    },
+    {
+      "members": [
+        "Delta.diff",
+        "Delta.diffByOrdinal",
+        "Delta.isQuiet",
+        "Delta.rowsWith"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The delta between two tables under a row identity, and its readers; example-tested and sampled by `Conformance.incrementalLaws`.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DeltaTests.fs"
+    },
+    {
+      "members": [
+        "Incremental.prime",
+        "Incremental.primeOn",
+        "Incremental.primePrepared",
+        "Incremental.primeOnPrepared",
+        "Incremental.refresh",
+        "Incremental.refreshOn",
+        "Incremental.refreshPrepared",
+        "Incremental.refreshOnPrepared",
+        "Incremental.result",
+        "Incremental.resultPrepared",
+        "Incremental.strategy",
+        "Incremental.chunksTouched",
+        "Incremental.rowsEvaluated",
+        "Incremental.source",
+        "Incremental.pipelineOf",
+        "Incremental.plan'"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The incremental engine (`Incremental.fs`): priming, refreshing under a delta, and the readers of its state. No model states that a refresh equals a recomputation; `Conformance.incrementalLaws` samples it, and the refresh-cost tests pin what a refresh evaluates.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalRefreshCostTests.fs"
+    },
+    {
+      "members": [
+        "Incremental.footprint",
+        "Incremental.footprintString",
+        "Incremental.isIncremental",
+        "Incremental.joinKindName",
+        "Incremental.plan",
+        "Incremental.reasonString"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The incremental planner's per-step classification and its sentences; example-tested.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalTests.fs"
+    },
+    {
+      "members": [
+        "Incremental.planOver",
+        "Incremental.plannedOf"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The incremental plan over a known schema with the planner's report, and the planned pipeline it runs; example-tested beside `Plan.explain`.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PlanTests.fs"
+    },
+    {
+      "members": [
+        "Incremental.windowFnName"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "A window function's name in a plan reason; example-tested.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalWindowTests.fs"
+    },
+    {
+      "members": [
+        "Plan.rewrite",
+        "Plan.isTotal",
+        "Plan.explain"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The planner (`Plan.fs`). `proofs/Pipeline.fst` proves the premise the derive-filter reorder rests on (`derive_then_filter`) and the verdict's expression half (`verdict_sound`), but not the planner's other rules nor `isTotal` over the twelve unmodelled verbs, so these are not on the ladder; `Conformance.plannerLaws` samples planned against as-written evaluation.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PlanTests.fs"
+    },
+    {
+      "members": [
+        "RowIdentity.byColumn",
+        "RowIdentity.byColumns",
+        "RowIdentity.checkKeyEquality",
+        "RowIdentity.withKeyEquality"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The row identities the delta and incremental layers key on; example-tested.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalRefreshCostTests.fs"
+    },
+    {
+      "members": [
+        "SchemaWalk.has",
+        "SchemaWalk.isClosed",
+        "SchemaWalk.names",
+        "SchemaWalk.noSources",
+        "SchemaWalk.ofMap",
+        "SchemaWalk.ofPipeline",
+        "SchemaWalk.ofPipelineFrom",
+        "SchemaWalk.ofSchema",
+        "SchemaWalk.ofTransform",
+        "SchemaWalk.reason",
+        "SchemaWalk.typeOf"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The static schema walk; `Conformance.schemaWalkLaws` certifies it against the evaluator, and the examples pin its open and closed answers.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "SchemaWalk.ofSource"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "A source's schema knowledge, which the walk reads for a join's right-hand side; measured through that.",
+      "through": "SchemaWalk.ofTransform",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "SchemaWalk.columns",
+        "SchemaWalk.unitOf"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The columns the walk knows and the unit it states for one (Phase 429); example-tested where units propagate.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/UnitPropagationTests.fs"
+    },
+    {
+      "members": [
+        "MorselWorker.Listen",
+        "MorselWorker.Post",
+        "MorselWorker.Stop"
+      ],
+      "class": "host-seam",
+      "reason": "Members of the worker interface a host implements over its own threads or web workers."
+    },
+    {
+      "members": [
+        "WorkerPool.optIn",
+        "WorkerPool.serve"
+      ],
+      "class": "host-seam",
+      "reason": "The host's opt-in with its worker factory, and the entry point a host's worker runs; what Compute owns behind them, the morsel hand-off, is certified by the hand-off law."
+    },
+    {
+      "members": [
+        "WorkerPool.isActive",
+        "WorkerPool.optOut"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The pool's state; the pooled law opts in and out around its comparison.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PooledLawTests.fs"
+    },
+    {
+      "members": [
+        "WorkerPool.warm"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Starts the pool's workers ahead of the first job; the pooled law warms it before it measures.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PooledLaw.fs"
+    }
+  ]
 }

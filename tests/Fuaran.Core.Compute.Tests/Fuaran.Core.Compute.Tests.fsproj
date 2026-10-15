@@ -78,10 +78,13 @@
     <!-- The F* oracles as hosts: the extracted ColumnOps and Pipeline models run beside production
          (the Proofs.Oracle family the proof leg's host step runs). -->
     <Compile Include="ProofOracleTests.fs" />
-    <!-- The claims ladder and the coverage declaration held to the tree (Proofs.Ladder,
-         Proofs.Coverage). After ProofOracleTests.fs, whose case names the ladder reads, and
-         PackageRosterTests.fs, whose roster the coverage rule reads. -->
+    <!-- The claims ladder held to the tree (Proofs.Ladder). After ProofOracleTests.fs, whose case
+         names the ladder reads. -->
     <Compile Include="ProofsLadderTests.fs" />
+    <!-- The coverage declaration held to the tree, package by package and operation by operation
+         (Proofs.Coverage, Phase 432). After PackageRosterTests.fs, whose roster the package clause
+         reads. -->
+    <Compile Include="ProofCoverageTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

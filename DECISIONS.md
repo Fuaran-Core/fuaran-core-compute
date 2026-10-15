@@ -1,5 +1,50 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-15 — D30: the operation census is ported from Fuaran.Core, and the two repositories have one coverage vocabulary; the census is the modelled packages' operations and the relational verbs
+
+**Context.** Phase 259 carried only the package half of Fuaran.Core's coverage file into this
+repository: every packable package is modelled or excluded. A modelled package therefore read as
+covered whole, although `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a
+parameter and nothing models the delta algebra, the incremental engine or the planner's rules. Those
+gaps were recorded nowhere a check reads. Fuaran.Core closed the same gap for itself with an operation
+census (its Phase 335): every public operation maps to a ladder row, a law family's roster or a recorded
+exclusion with a class from a closed vocabulary.
+
+**Decision.** Port that census (Phase 432), keeping Core's vocabulary and check shape.
+
+1. **One vocabulary.** `proofs/coverage-exclusions.json` carries Core's `operationClasses` verbatim
+   (`trivial`, `forward`, `obsolete`, `host-seam`, `measured-elsewhere`), with the same entry fields
+   (`members`, `class`, `reason`, `forwardsTo`, `standIn`, `through`) and the same both-ways check:
+   an unmapped operation fails, and so does an entry for an operation that is no longer published or
+   that a ladder row now names. A term means the same thing in either repository. A change to the
+   vocabulary is made in Core first and re-copied here. It is never edited here alone.
+2. **The census.** It covers the packages a model in `proofs/modules.json` names. Their `method` lines
+   in `api/*.txt` are censused, plus the `union-case` lines of `Transform`, spelled `Transform.<Verb>`.
+   The verbs are this layer's operations even though the compiler publishes them as union cases, and a
+   census of methods alone would never name them. A package with no model is not censused. Its
+   package-level exclusion already records the decision for the whole package.
+3. **The model route is the ladder.** A modelled operation is named in a `proved` or `tested` row's
+   `evidence.operations` in `proofs.json`, as in Core. This repository ships no law-family operation
+   roster, so Core's roster route is omitted from the check rather than carried empty. The law
+   families that sample an operation are named in its entry's reason.
+4. **The planner is not on the ladder.** `Pipeline.fst` proves the premise of the derive-filter
+   reorder and the expression half of the totality verdict. It does not prove `Plan.rewrite`'s other
+   rules or `Plan.isTotal` over the twelve unmodelled verbs. `Plan.rewrite`, `Plan.isTotal` and
+   `Plan.explain` are therefore `measured-elsewhere`, and the entry says which half is proved.
+5. **What the census says today** is generated into `proofs/README.md` ("What is not proved") by the
+   `Proofs.Coverage` family (`CORE_APPROVE_LADDER=1` rewrites it). No count is written by hand. The
+   phases that add models delete their entries in the commit that adds the ladder row.
+
+**A premise that proved false.** The phase asked for entries for the public members of `Frame` and
+`Kernels`. Neither has any: every module and type in `Frame.fs` and `Kernels.fs` is `internal`, and the
+baseline publishes nothing from them. They reach the census only through the public operations that
+call them, such as `DataFrame.prepare`, `DataFrame.evalPrepared` and `ColumnOps.applyPrepared`, whose
+entries say that no model describes the dense representation.
+
+**Consequences.** A newly published operation of a modelled package, or a new verb, reds the suite at
+the commit that adds it and names itself. The code moves from `ProofsLadderTests.fs` to
+`ProofCoverageTests.fs` together with the package clause, so `Proofs.Coverage` has one home, as in Core.
+
 ## 2026-10-14 — D29: the evaluator propagates and checks units — a column's unit rides every verb that keeps the column, addition and comparison require one unit, multiplication and division compose through Core's algebra, a conversion is explicit and answers a float, and a column that states no unit is unconstrained, so a unitless pipeline is untouched
 
 **Context.** Since Phase 427 a schema entry is a `Field` that can carry a unit of measure (Core's
