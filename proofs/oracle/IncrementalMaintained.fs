@@ -741,30 +741,30 @@ in (match ((groups_out mp reuse prior cols aggs gs)) with
      end))
      end))
 
-type entry = {e_cells : Incremental.step_cache; e_type : FStar_Pervasives_Native.option<Pipeline.column_type>; e_keys : FStar_Pervasives_Native.option<Prims.list<Prims.list<Pipeline.cell>>>}
+type entry = {e_cells : Incremental.step_cache; e_pack : FStar_Pervasives_Native.option<Incremental.pack_key>; e_keys : FStar_Pervasives_Native.option<Prims.list<Prims.list<Pipeline.cell>>>}
 
 
 let __proj__Mkentry__item__e_cells : entry  ->  Incremental.step_cache = (fun ( projectee  :  entry ) -> (match (projectee) with
-| {e_cells = e_cells; e_type = e_type; e_keys = e_keys} -> begin
+| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys} -> begin
      e_cells
      end))
 
 
-let __proj__Mkentry__item__e_type : entry  ->  FStar_Pervasives_Native.option<Pipeline.column_type> = (fun ( projectee  :  entry ) -> (match (projectee) with
-| {e_cells = e_cells; e_type = e_type; e_keys = e_keys} -> begin
-     e_type
+let __proj__Mkentry__item__e_pack : entry  ->  FStar_Pervasives_Native.option<Incremental.pack_key> = (fun ( projectee  :  entry ) -> (match (projectee) with
+| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys} -> begin
+     e_pack
      end))
 
 
 let __proj__Mkentry__item__e_keys : entry  ->  FStar_Pervasives_Native.option<Prims.list<Prims.list<Pipeline.cell>>> = (fun ( projectee  :  entry ) -> (match (projectee) with
-| {e_cells = e_cells; e_type = e_type; e_keys = e_keys} -> begin
+| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys} -> begin
      e_keys
      end))
 
 
 let prior_head : Prims.list<entry>  ->  entry = (fun ( prior  :  Prims.list<entry> ) -> (match (prior) with
 | [] -> begin
-     {e_cells = []; e_type = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None}
+     {e_cells = []; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None}
      end
 | (e)::uu___ -> begin
      e
@@ -863,7 +863,7 @@ let rec mwalk : mprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relationa
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = cs; e_type = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None})::st.r_entries; r_switched = st.r_switched})
+     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None})::st.r_entries; r_switched = st.r_switched})
      end)
      end)
      end
@@ -885,10 +885,13 @@ let rec mwalk : mprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relationa
 | Pipeline.Ok (ty) -> begin
      (
 
+let k = (Incremental.pack_key_of pr ty cs)
+in (
+
 let i = (Pipeline.index_of name cols)
 in (
 
-let same = (Prims.op_Equals (prior_head prior).e_type (FStar_Pervasives_Native.Some (ty)))
+let same = (Prims.op_Equals (prior_head prior).e_pack (FStar_Pervasives_Native.Some (k)))
 in (
 
 let reuse' =  
@@ -897,13 +900,13 @@ if same then begin
      end else begin
      Incremental.no_reuse
      end
-in (match ((mwalk mp rp pr resolve env reuse' (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a cs) rest)) with
+in (match ((mwalk mp rp pr resolve env reuse' (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = cs; e_type = FStar_Pervasives_Native.Some (ty); e_keys = FStar_Pervasives_Native.None})::st.r_entries; r_switched = (st.r_switched || (not (same)))})
-     end))))
+     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.Some (k); e_keys = FStar_Pervasives_Native.None})::st.r_entries; r_switched = (st.r_switched || (not (same)))})
+     end)))))
      end)
      end)
      end)
@@ -990,7 +993,7 @@ in (match ((mwalk mp rp pr resolve env reuse (prior_rest prior) cols (Incrementa
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = vs; e_type = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.Some (rks)})::st.r_entries; r_switched = st.r_switched})
+     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = vs; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.Some (rks)})::st.r_entries; r_switched = st.r_switched})
      end)))))
      end)
      end)

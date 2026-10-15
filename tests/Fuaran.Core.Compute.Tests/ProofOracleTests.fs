@@ -1170,7 +1170,18 @@ let private pPrims: ModelPipe.prims =
                     { Scale = Slot.Lit(int n)
                       Mode = pBack pModes m }
                 )
-            ) }
+            )
+      // Phase 470 (D38) — the packing's three parameters, at the functions `Vec.packAt` calls, as the
+      // frame model's host (`fHost`) carries them: the float carrier of `float v`, `string v`, and
+      // `ScaledDecimal.scaleOf` (on .NET a `Mask` is the `bool[]` itself).
+      ModelPipe.prims.float_of_int =
+        fun x -> (float (int x)).ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+      ModelPipe.prims.int_text = fun x -> string (int x)
+      ModelPipe.prims.scale_of =
+        fun texts mask ->
+            match ScaledDecimal.scaleOf (List.toArray texts) (List.toArray mask) with
+            | Some scale -> FStar_Pervasives_Native.Some(bigint scale)
+            | None -> FStar_Pervasives_Native.None }
 
 /// The model's SECOND parameter — the twelve verbs that evaluate no expression — instantiated at
 /// production's own, one verb through the public entry point, over the frame crossed back to a
@@ -1360,12 +1371,6 @@ let private pCompare
             0
         | Ok(_, n), ModelPipe.Error me ->
             Some(sprintf "%s: production evaluated, model refused %s" label (pRenderError (pErrOfModel me))), 1, 0, n
-        | Error(TypeError detail), ModelPipe.Ok _ when detail.Contains "which no column type holds together" ->
-            // Outside the model's domain (Phase 423): the list model's column holds any cells side by
-            // side, so it evaluates a derive whose cells span two unrelated types; Core `1.0.0`'s typed
-            // column cannot hold them, and production refuses by name (`DECISIONS.md` D18). The pair is
-            // compared on nothing — a refusal the model has no object for is not a disagreement.
-            None, 0, 1, 0
         | Error e, ModelPipe.Ok _ ->
             Some(sprintf "%s: production refused %s, model evaluated" label (pRenderError e)), 0, 1, 0
 
@@ -2068,22 +2073,48 @@ let private iStepsOf (p: Transform list) : ModelInc.wstep list =
         | Derive(name, e) -> ModelInc.WDerive(name, pExprToModel e)
         | other -> failwithf "not a row-local step: %A" other)
 
-/// One to four `Filter` / `Derive` steps over the pipeline differential's expression generator.
+/// Phase 470 (D38) — the retype corner: a derived column the cells type, retyped by a row whose `v`
+/// a mutation moves over a threshold, read on the rows that STAND by a step that tells the packing
+/// apart. A `Mod` over the float reading refuses where the int reading answers; an `Add` of a float
+/// over the decimal reading refuses where the int reading answers; and a decimal text past the
+/// scaled carrier's width abandons the typed pass, so the int reads as it was — on the reference,
+/// on the walk, and on the models. The old raw reference answered the first two where production
+/// refuses (`pRawReferenceFails` shows it once).
+let private pCornerShapes: Transform list list =
+    let crosses = Binary(Gt, Col "v", Lit(Int 9))
+    let read inner = Case([ crosses, Lit(Int 0) ], inner)
+
+    [ [ Derive("d", Case([ crosses, Lit(Float 0.5) ], Col "v"))
+        Derive("m", read (Binary(Mod, Col "d", Lit(Int 2)))) ]
+      [ Derive("d", Case([ crosses, Lit(Cell.Decimal "0.5") ], Col "v"))
+        Derive("m", read (Binary(Add, Col "d", Lit(Float 0.5)))) ]
+      [ Derive("d", Case([ crosses, Lit(Cell.Decimal "1234567890123456789012345.1234567") ], Col "v"))
+        Derive("m", read (Binary(Add, Col "d", Lit(Float 0.5)))) ] ]
+
+/// One to four `Filter` / `Derive` steps over the pipeline differential's expression generator, or,
+/// one time in four, a retype corner (Phase 470).
 let private iGenPipeline (rng: ConfRng.T) : Transform list * ConfRng.T =
-    let n, r = ConfRng.intBelow 4 rng
+    let corner, r0 = ConfRng.intBelow 4 rng
 
-    let rec draw k acc r =
-        if k = 0 then
-            List.rev acc, r
-        else
-            let kind, r1 = ConfRng.intBelow 2 r
-            let e, r2 = pGenExpr 2 r1
+    if corner = 0 then
+        let which, r1 = ConfRng.intBelow pCornerShapes.Length r0
+        pCornerShapes[which], r1
+    else
 
-            let s = if kind = 0 then Filter e else Derive("d", e)
+        let n, r = ConfRng.intBelow 4 r0
 
-            draw (k - 1) (s :: acc) r2
+        let rec draw k acc r =
+            if k = 0 then
+                List.rev acc, r
+            else
+                let kind, r1 = ConfRng.intBelow 2 r
+                let e, r2 = pGenExpr 2 r1
 
-    draw (n + 1) [] r
+                let s = if kind = 0 then Filter e else Derive("d", e)
+
+                draw (k - 1) (s :: acc) r2
+
+        draw (n + 1) [] r
 
 /// A cell of the column's own type (never another type, so a mutation keeps the column typed and
 /// the schema fixed, which is what keeps `Delta.diff` on the keyed path rather than `FullRefresh`),
@@ -2369,7 +2400,7 @@ let private iTrial
         let cols = (pFrameOfTable after).cols
 
         let model =
-            ModelInc.walk pPrims menv (reuseFor named) modelState.s_caches cols (iAliveOf after) steps
+            ModelInc.walk pPrims menv (reuseFor named) modelState.s_entries cols (iAliveOf after) steps
 
         prod, model, named
 
@@ -2468,7 +2499,7 @@ let private iTrial
                                  pPrims
                                  menv
                                  (reuseFor named2)
-                                 mp1.s_caches
+                                 mp1.s_entries
                                  (pFrameOfTable t2).cols
                                  (iAliveOf t2)
                                  steps
@@ -2722,10 +2753,12 @@ let private mGenStep (rng: ConfRng.T) : Transform * ConfRng.T =
         let j, r2 = ConfRng.intBelow 2 r1
         Join(Ref "r", [ "g", "g" ], (if j = 0 then Semi else Anti)), r2
 
-/// A pipeline of the maintained classes: a prefix of up to two steps, a `GroupBy` over `g` one
+/// A pipeline of the maintained classes: a prefix of up to two steps — one time in four a retype
+/// corner (Phase 470), whose derived column the aggregates may then read — a `GroupBy` over `g` one
 /// time in two with one or two aggregates, and a tail of up to two steps over the group table.
 let private mGenPipeline (rng: ConfRng.T) : Transform list * ConfRng.T =
-    let n, r1 = ConfRng.intBelow 3 rng
+    let corner, r0 = ConfRng.intBelow 4 rng
+    let n, r1 = ConfRng.intBelow 3 r0
 
     let rec draw k acc r =
         if k = 0 then
@@ -2734,7 +2767,13 @@ let private mGenPipeline (rng: ConfRng.T) : Transform list * ConfRng.T =
             let s, r' = mGenStep r
             draw (k - 1) (s :: acc) r'
 
-    let prefix, r2 = draw n [] r1
+    let prefix, r2 =
+        if corner = 0 then
+            let which, r' = ConfRng.intBelow pCornerShapes.Length r1
+            pCornerShapes[which], r'
+        else
+            draw n [] r1
+
     let grouped, r3 = ConfRng.intBelow 2 r2
 
     if grouped = 0 then
@@ -2743,7 +2782,12 @@ let private mGenPipeline (rng: ConfRng.T) : Transform list * ConfRng.T =
         let fns =
             [| Sum; Mean; Min; Max; Count; Median; StdDev; First; Last; CountDistinct |]
 
-        let ofs = [| "v"; "w"; "m" |]
+        let ofs =
+            if corner = 0 then
+                [| "v"; "w"; "m"; "d" |]
+            else
+                [| "v"; "w"; "m" |]
+
         let f1, r4 = ConfRng.intBelow fns.Length r3
         let o1, r5 = ConfRng.intBelow ofs.Length r4
         let two, r6 = ConfRng.intBelow 2 r5
@@ -3210,6 +3254,193 @@ let private mRetypeTables: Table * Table =
 
     // row 3 (group B) moves x to 11: its d is now Float 0.5, the column widens to float; group A stands.
     table [ 1; 2; 3 ], table [ 1; 2; 11 ]
+
+/// Phase 470 (D38) — the shapes the probe found production's walk diverging from the reference on
+/// AFTER D37: the reference's typed pass abandoned for the boxed cells (a decimal text past the scaled
+/// carrier's width among the column's), so an int reads as it was where the walk widened it. The
+/// first retypes the column from int to decimal and boxes it in one move; the second keeps the type
+/// and flips the verdict alone — `retypedSince` compared the type and saw nothing move. Each is a
+/// pipeline, the table before and the table after; the test holds the refresh to the full evaluation.
+let private pBoxedShapes: (string * Transform list * Table * Table) list =
+    let wide = Cell.Decimal "1234567890123456789012345.1234567"
+
+    let table (xs: int list) : Table =
+        { Schema =
+            [ Field.create "id" IntType
+              Field.create "g" StringType
+              Field.create "x" IntType ]
+          Columns =
+            [ KitColumn.create "id" IntType [ Int 1; Int 2; Int 3 ]
+              KitColumn.create "g" StringType [ Str "A"; Str "A"; Str "B" ]
+              KitColumn.create "x" IntType (xs |> List.map Int) ] }
+
+    let onA inner =
+        Case([ Binary(Eq, Col "g", Lit(Str "A")), inner ], Lit(Int 0))
+
+    [ "int to decimal, boxed by the width: an Add of a float over the standing rows",
+      [ Derive("d", Case([ Binary(Gt, Col "x", Lit(Int 10)), Lit wide ], Col "x"))
+        Derive("m", onA (Binary(Add, Col "d", Lit(Float 0.5)))) ],
+      table [ 1; 2; 3 ],
+      table [ 1; 2; 11 ]
+      "decimal on both, the verdict alone flips: a Mod over the standing rows",
+      [ Derive(
+            "d",
+            Case(
+                [ Binary(Gt, Col "x", Lit(Int 10)), Lit wide
+                  Binary(Eq, Col "g", Lit(Str "B")), Lit(Cell.Decimal "0.25") ],
+                Col "x"
+            )
+        )
+        Derive("m", onA (Binary(Mod, Col "d", Lit(Int 2)))) ],
+      table [ 1; 2; 3 ],
+      table [ 1; 2; 11 ] ]
+
+/// Production's refresh held to its full evaluation over the mutated table, result or refusal.
+let private pHoldRefreshToFull (label: string) (p: Transform list) (before: Table) (after: Table) : unit =
+    let full = DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p after
+
+    let refreshed =
+        match Fuaran.Compute.Incremental.prime DataFrame.noResolve Map.empty iIdw p before with
+        | Error e -> failtestf "%s: the prime refused %s" label (pRenderError e)
+        | Ok st ->
+            match Delta.diff iIdw before after with
+            | Error e -> failtestf "%s: the diff refused %A" label e
+            | Ok d -> Fuaran.Compute.Incremental.refresh DataFrame.noResolve Map.empty iIdw p st d after
+
+    match full, refreshed with
+    | Ok f, Ok r ->
+        Expect.equal
+            (iRender (Fuaran.Compute.Incremental.result r))
+            (iRender f)
+            (sprintf "%s: the refresh differs from the full evaluation" label)
+    | Error fe, Error re ->
+        Expect.equal re fe (sprintf "%s: the refresh's error differs from the full evaluation's" label)
+    | Ok f, Error re ->
+        failtestf "%s: the full evaluation answered %s, the refresh refused %s" label (iRender f) (pRenderError re)
+    | Error fe, Ok r ->
+        failtestf
+            "%s: the full evaluation refused %s, the refresh answered %s"
+            label
+            (pRenderError fe)
+            (iRender (Fuaran.Compute.Incremental.result r))
+
+/// Phase 470 — the reference's derive BEFORE this phase: the cells held raw, appended under the
+/// decided type (D37 item 4). Kept once, to show the corner the old reference answered where
+/// production refuses; nothing else calls it.
+let private pRawDerive
+    (env: ModelPipe.param_env)
+    (f: ModelPipe.frame)
+    (name: string)
+    (x: ModelPipe.col_expr)
+    : ModelPipe.outcome<ModelPipe.frame, ModelPipe.eval_error> =
+    match ModelPipe.derived_typing_in env f.cols x with
+    | ModelPipe.Refused -> ModelPipe.Error(ModelPipe.float_beside_decimal name)
+    | dt ->
+        match ModelPipe.derive_cells pPrims env f.cols f.rows x with
+        | ModelPipe.Error e -> ModelPipe.Error e
+        | ModelPipe.Ok cells ->
+            match ModelPipe.column_type_by dt name cells with
+            | ModelPipe.Error e -> ModelPipe.Error e
+            | ModelPipe.Ok ty ->
+                ModelPipe.Ok
+                    { ModelPipe.frame.cols = f.cols @ [ name, ty ]
+                      ModelPipe.frame.rows = ModelPipe.zip_append f.rows cells }
+
+/// The three models beside production on one corner: the full evaluation, production's prime and
+/// refresh, the row-local model's prime and refresh, and the maintained model's — every pair held
+/// equal, result or refusal.
+let private pCornerAgrees (label: string) (p: Transform list) (before: Table) (after: Table) : unit =
+    let menv = pEnvToModel Map.empty
+
+    // The row-local model takes only its own two verbs; a shape with a `GroupBy` is the maintained
+    // model's alone.
+    let rowLocal =
+        p
+        |> List.forall (function
+            | Filter _
+            | Derive _ -> true
+            | _ -> false)
+
+    let steps = if rowLocal then iStepsOf p else []
+    let pipe = mPipeOf p
+    let resolve = rResolver DataFrame.noResolve
+
+    let named =
+        match Delta.diff iIdw before after with
+        | Error e -> failtestf "%s: the diff refused %A" label e
+        | Ok d -> d, iNamedOf d
+
+    let delta, namedTokens = named
+    let full = DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p after
+
+    let prodPrime =
+        Fuaran.Compute.Incremental.prime DataFrame.noResolve Map.empty iIdw p before
+
+    let prodRefresh =
+        prodPrime
+        |> Result.bind (fun st ->
+            Fuaran.Compute.Incremental.refresh DataFrame.noResolve Map.empty iIdw p st delta after)
+
+    let incPrime =
+        ModelInc.prime pPrims menv (pFrameOfTable before).cols (iAliveOf before) steps
+
+    let incRefresh =
+        match incPrime with
+        | ModelPipe.Ok st ->
+            ModelInc.refresh pPrims menv st namedTokens (pFrameOfTable after).cols (iAliveOf after) steps
+        | ModelPipe.Error e -> ModelPipe.Error e
+
+    let maintRun (st: ModelMaint.mstate) (reuseFn: ModelInc.reuse_fn) (t: Table) =
+        ModelMaint.mrun mPrims rPrims pPrims resolve menv reuseFn st (pFrameOfTable t).cols (iAliveOf t) pipe
+
+    let maintPrime =
+        maintRun (ModelMaint.empty_state (pFrameOfTable before).cols) ModelInc.no_reuse before
+
+    let maintRefresh =
+        match maintPrime with
+        | ModelPipe.Ok st -> maintRun st (ModelInc.reuse_of namedTokens) after
+        | ModelPipe.Error e -> ModelPipe.Error e
+
+    let fullText =
+        match full with
+        | Ok t -> iRender t
+        | Error e -> "refused " + pRenderError e
+
+    let hold (what: string) (text: string) =
+        Expect.equal text fullText (sprintf "%s: %s differs from the full evaluation" label what)
+
+    hold
+        "production's refresh"
+        (match prodRefresh with
+         | Ok r -> iRender (Fuaran.Compute.Incremental.result r)
+         | Error e -> "refused " + pRenderError e)
+
+    if rowLocal then
+        hold
+            "the row-local model's refresh"
+            (match incRefresh with
+             | ModelPipe.Ok st -> iRenderModel st
+             | ModelPipe.Error e -> "refused " + pRenderError (pErrOfModel e))
+
+    hold
+        "the maintained model's refresh"
+        (match maintRefresh with
+         | ModelPipe.Ok st -> mRenderModel st
+         | ModelPipe.Error e -> "refused " + pRenderError (pErrOfModel e))
+
+    // And the full evaluation over the MUTATED table on the models' own reference.
+    hold
+        "the reference model"
+        (match
+            ModelPipe.eval_uncounted
+                pPrims
+                (pStepOfProduction DataFrame.noResolve Map.empty)
+                menv
+                (p |> List.map pTransformToModel)
+                (pFrameOfTable after)
+         with
+         | ModelPipe.Ok f -> iRender (pTableOfFrame f)
+         | ModelPipe.Error e -> "refused " + pRenderError (pErrOfModel e))
 
 let private rSchemaOfModel (s: ModelPipe.schema) : (string * ColumnType) list =
     s |> List.map (fun (n, ty) -> n, pColOfModel ty)
@@ -5293,36 +5524,115 @@ let proofOracleTests =
               let before, after = mRetypeTables
 
               for (label, p) in mRetypeShapes do
-                  let full = DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p after
+                  pHoldRefreshToFull label p before after
 
-                  let refreshed =
-                      match Fuaran.Compute.Incremental.prime DataFrame.noResolve Map.empty iIdw p before with
-                      | Error e -> failtestf "%s: the prime refused %s" label (pRenderError e)
-                      | Ok st ->
-                          match Delta.diff iIdw before after with
-                          | Error e -> failtestf "%s: the diff refused %A" label e
-                          | Ok d -> Fuaran.Compute.Incremental.refresh DataFrame.noResolve Map.empty iIdw p st d after
+          testCase
+              "a derived column whose typed pass the reference abandons is read by the walk as it was, and a verdict that flips under one type clears stability (Phase 470, D38)"
+          <| fun _ ->
+              // After D37 the walk widened an int under a float or decimal column unconditionally, where
+              // the reference's `Vec.packAt` abandons the typed pass for the boxed cells — a decimal text
+              // past the scaled carrier's width among them — and reads the int as it was; and
+              // `retypedSince` compared the TYPE alone, so a verdict flipping under one type reused every
+              // cell computed over the other reading.
+              for (label, p, before, after) in pBoxedShapes do
+                  pHoldRefreshToFull label p before after
 
-                  match full, refreshed with
-                  | Ok f, Ok r ->
-                      Expect.equal
-                          (iRender (Fuaran.Compute.Incremental.result r))
-                          (iRender f)
-                          (sprintf "%s: the refresh differs from the full evaluation" label)
-                  | Error fe, Error re ->
-                      Expect.equal re fe (sprintf "%s: the refresh's error differs from the full evaluation's" label)
-                  | Ok f, Error re ->
-                      failtestf
-                          "%s: the full evaluation answered %s, the refresh refused %s"
-                          label
-                          (iRender f)
-                          (pRenderError re)
-                  | Error fe, Ok r ->
-                      failtestf
-                          "%s: the full evaluation refused %s, the refresh answered %s"
-                          label
-                          (pRenderError fe)
-                          (iRender (Fuaran.Compute.Incremental.result r))
+          testCase
+              "the reference model, the row-local walk and the maintained walk pack a derived column as production does on every retype corner, and the three refuse two types no column type holds together as production does (Phase 470, D38)"
+          <| fun _ ->
+              let before, after = mRetypeTables
+
+              for (label, p) in mRetypeShapes do
+                  pCornerAgrees ("retype: " + label) p before after
+
+              for (label, p, before, after) in pBoxedShapes do
+                  pCornerAgrees ("boxed: " + label) p before after
+
+              // The cells' typing refuses a pair no column type holds together (D18), by name, on
+              // every side — the model's `column_type_by` carries the refusal since this phase.
+              let beside =
+                  [ Derive("d", Case([ Binary(Eq, Col "g", Lit(Str "A")), Lit(Str "s") ], Col "x")) ]
+
+              pCornerAgrees "beside: a string beside an int" beside before after
+
+              match DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty beside after with
+              | Error(TypeError detail) ->
+                  Expect.stringContains detail "which no column type holds together" "production's refusal"
+              | other -> failtestf "production answered %A" other
+
+          testCase
+              "the raw reference of D37 item 4 answered the retype corner production refuses — shown once, on the old derive (Phase 470)"
+          <| fun _ ->
+              // The first retype shape over the mutated table: `d` is a float column holding the standing
+              // rows' ints, which the reference packs as floats and the old reference held raw, so the
+              // `Mod` downstream refused on production and answered on the model.
+              let _, after = mRetypeTables
+              let menv = pEnvToModel Map.empty
+
+              let dStep, mStep =
+                  match snd (List.head mRetypeShapes) with
+                  | [ Derive(dn, dx); m ] -> (dn, pExprToModel dx), pTransformToModel m
+                  | other -> failtestf "unexpected shape %A" other
+
+              let raw =
+                  match pRawDerive menv (pFrameOfTable after) (fst dStep) (snd dStep) with
+                  | ModelPipe.Error e -> failtestf "the raw derive refused %s" (pRenderError (pErrOfModel e))
+                  | ModelPipe.Ok f ->
+                      ModelPipe.eval_uncounted pPrims (pStepOfProduction DataFrame.noResolve Map.empty) menv [ mStep ] f
+
+              match
+                  DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty (snd (List.head mRetypeShapes)) after,
+                  raw
+              with
+              | Error(TypeError detail), ModelPipe.Ok _ ->
+                  Expect.stringContains detail "mod requires integer operands" "production refuses the float reading"
+              | full, raw ->
+                  failtestf "expected production to refuse and the raw reference to answer; got %A and %A" full raw
+
+              // The corrected reference refuses as production does.
+              match
+                  ModelPipe.eval_uncounted
+                      pPrims
+                      (pStepOfProduction DataFrame.noResolve Map.empty)
+                      menv
+                      (snd (List.head mRetypeShapes) |> List.map pTransformToModel)
+                      (pFrameOfTable after)
+              with
+              | ModelPipe.Error(ModelPipe.TypeError detail) ->
+                  Expect.stringContains detail "mod requires integer operands" "the reference refuses the float reading"
+              | other -> failtestf "the corrected reference answered %A" other
+
+          testCase
+              "under production's primitives a decided derive's cells carry the decided type — `derive_then_filter`'s packing premise, instantiated (Phase 470)"
+          <| fun _ ->
+              // `derive_then_filter` is stated over any primitives, and under the packing it needs the
+              // decided column to pack as it is (no int under a float or a decimal column); the planner's
+              // corollary discharges that from the verdict (`derive_cells_fit`). This reads the premise
+              // off production's own primitives over drawn tables and expressions.
+              let mutable r = ConfRng.ofSeed 470
+              let mutable decided = 0
+              let menv = pEnvToModel pEnv
+
+              for _ in 1..600 do
+                  let t, r1 = pGenTable r
+                  let x, r2 = pGenExpr 2 r1
+                  r <- r2
+                  let f = pFrameOfTable t
+                  let mx = pExprToModel x
+
+                  match ModelPipe.derived_typing_of f.cols mx with
+                  | ModelPipe.Decided ty ->
+                      match ModelPipe.derive_cells pPrims menv f.cols f.rows mx with
+                      | ModelPipe.Ok cells ->
+                          decided <- decided + 1
+
+                          Expect.isTrue
+                              (ModelPipe.packs_as_is ty cells)
+                              (sprintf "%A: a decided %A column holds an int among %A" x ty cells)
+                      | ModelPipe.Error _ -> ()
+                  | _ -> ()
+
+              Expect.isGreaterThan decided 60 (sprintf "decided derives evaluated (decided=%d)" decided)
 
           // ---- Phase 434 — the RELATIONAL verbs: output schema and refusals against the
           //      evaluator, the walk against SchemaWalk ----

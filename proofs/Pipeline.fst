@@ -487,6 +487,14 @@ noeq type prims = {
   quotient  : rounding_mode -> int -> cell -> cell -> outcome cell eval_error;
   (* `roundedCell` (Phase 277). *)
   rounded   : rounding_mode -> int -> cell -> outcome cell eval_error;
+  (* Phase 470 (D38) — what `Vec.packAt` writes for an int in a float or a decimal column (Core
+     `1.0.0`, Phase 423): the float carrier of `float v`, and `string v`; and `ScaledDecimal.scaleOf`,
+     the one scale a decimal column's present texts are carried at, or none where they cannot be (a
+     text outside the grammar, a column past the width). The three `Frame.fst`'s host carries under
+     the same names, so the differential instantiates both models from one production function. *)
+  float_of_int : int -> string;
+  int_text     : int -> string;
+  scale_of     : list string -> list bool -> option nat;
 }
 
 (* F#: `resolveScale` (Phase 277) — a rounding's scale against the env. A literal is itself; a
@@ -1012,16 +1020,142 @@ let rec has_type (ty:column_type) (cells:list cell) : Tot bool =
   | [] -> false
   | c :: rest -> type_of c = Some ty || has_type ty rest
 
+(* F#: `ColumnType.tag` (the model's unitless timestamp is the seconds one). *)
+let type_tag (ty:column_type) : Tot string =
+  match ty with
+  | IntType -> "int"
+  | FloatType -> "float"
+  | BoolType -> "bool"
+  | StringType -> "string"
+  | DateType -> "date"
+  | TimestampType -> "timestamp"
+  | DecimalType -> "decimal"
+
+(* F#: `typesBesideEachOther column a b` (D18) — the refusal, its text byte for byte. *)
+let types_beside (column:string) (a b:column_type) : Tot eval_error =
+  TypeError ("derived column '" ^ column ^ "' holds a " ^ type_tag a ^ " beside a " ^ type_tag b ^ ", which no column type holds together: cast one to the other's type first")
+
+(* F#: `joinColumnType a b` answers nothing — a pair no widening relates either way. *)
+let disjoint_types (a b:column_type) : Tot bool = not (widens a b) && not (widens b a)
+
+(* F#: `typeFromCells`' `disjoint` — the FIRST pair of the fold the join does not relate: the type
+   so far beside the present cell's, in row order. *)
+let rec first_disjoint (acc:option column_type) (cells:list cell)
+  : Tot (option (column_type & column_type)) (decreases cells) =
+  match cells with
+  | [] -> None
+  | v :: t ->
+    (match type_of v, acc with
+     | Some ty, Some a -> if disjoint_types a ty then Some (a, ty) else first_disjoint (step_type acc v) t
+     | _ -> first_disjoint (step_type acc v) t)
+
 (* F#: `columnTypeBy dt column count cellAt` — the decided type, or the cells' widening join
-   refusing a float beside a decimal (`typeFromCells`). *)
+   refusing a float beside a decimal, then (D18, modelled by Phase 470) two types no column type
+   holds together — the first such pair, named as the fold met it (`typeFromCells`). *)
 let column_type_by (dt:derived_typing) (column:string) (cells:list cell)
   : Tot (outcome column_type eval_error) =
   match dt with
   | Decided ty -> Ok ty
   | ByCells ->
     if has_type FloatType cells && has_type DecimalType cells then Error (float_beside_decimal column)
-    else Ok (infer_type cells)
+    else
+      (match first_disjoint None cells with
+       | Some (a, b) -> Error (types_beside column a b)
+       | None -> Ok (infer_type cells))
   | Refused -> Error (float_beside_decimal column)
+
+(* ======================================================================================
+   The packing (Phase 470, D38) — F#: `Vec.packAt ty count posOf cells`, as the column it builds
+   reads back through `Vec.cellAt`. One pass fills the typed carrier; the first present cell the
+   type does not carry abandons it for the boxed cells, as they are. An int in a float column is
+   carried as the float of its value, in a decimal column as the decimal of its value (Core `1.0.0`,
+   Phase 423); every other cell the carrier holds reads back as itself. A decimal column is carried
+   at the one scale `scaleOf` answers over its present texts (an int's rendered as `string v`), and
+   boxed where it answers none. The twin of `Frame.fst`'s `pack` / `pack_cell` on the list column.
+
+   One thing this reads as a cell's own text, by the premise `pipeline-temporal-cells-canonical`
+   (`proofs.json`): a date or a timestamp the typed carrier reads back as the canonical text of
+   its value, which IS the cell's text when that text is canonical — every primitive produces a
+   canonical one, and only a literal can carry another into a derive — so `pack_admits` carries a
+   temporal cell as itself where `packAt` consults `TemporalText`. *)
+
+(* F#: `packAt`'s per-type test of one cell: does a column of `ty` carry it typed? (`Null` is an
+   absent row, carried by every type.) *)
+let pack_admits (ty:column_type) (c:cell) : Tot bool =
+  match c with
+  | Null -> true
+  | Int _ -> ty = IntType || ty = FloatType || ty = DecimalType
+  | _ -> type_of c = Some ty
+
+let rec all_admitted (ty:column_type) (cells:list cell) : Tot bool =
+  match cells with
+  | [] -> true
+  | c :: rest -> pack_admits ty c && all_admitted ty rest
+
+(* F#: the text a decimal column's loop writes for a present cell, and the mask `scaleOf` reads. *)
+let dec_text (pr:prims) (c:cell) : Tot string =
+  match c with
+  | Decimal s -> s
+  | Int v -> pr.int_text v
+  | _ -> ""
+
+let rec dec_texts (pr:prims) (cells:list cell) : Tot (list string) =
+  match cells with
+  | [] -> []
+  | c :: rest -> dec_text pr c :: dec_texts pr rest
+
+let rec dec_mask (cells:list cell) : Tot (list bool) =
+  match cells with
+  | [] -> []
+  | c :: rest -> (match c with Null -> false | _ -> true) :: dec_mask rest
+
+(* THE VERDICT: is the column carried typed — every present cell admitted, and a decimal column
+   at a scale `scaleOf` answers — or boxed? *)
+let typed_pack (pr:prims) (ty:column_type) (cells:list cell) : Tot bool =
+  all_admitted ty cells
+  && (match ty with
+      | DecimalType -> Some? (pr.scale_of (dec_texts pr cells) (dec_mask cells))
+      | _ -> true)
+
+(* The cell as the typed carrier reads it back. *)
+let pack_cell (pr:prims) (ty:column_type) (c:cell) : Tot cell =
+  match ty, c with
+  | FloatType, Int v -> Float (pr.float_of_int v)
+  | DecimalType, Int v -> Decimal (pr.int_text v)
+  | _ -> c
+
+(* One cell under the verdict: as the typed carrier reads it, or boxed as it was. *)
+let pack_one (pr:prims) (ty:column_type) (typed:bool) (c:cell) : Tot cell =
+  if typed then pack_cell pr ty c else c
+
+let rec pack_with (pr:prims) (ty:column_type) (typed:bool) (cells:list cell)
+  : Tot (l:list cell{len l = len cells}) (decreases cells) =
+  match cells with
+  | [] -> []
+  | c :: rest -> pack_one pr ty typed c :: pack_with pr ty typed rest
+
+(* THE PACKING: `packAt` read back cell by cell, the verdict taken once over the whole column. The
+   ONE definition every derive in every model packs through (`eval_derive` here, the walks'
+   `Incremental.pack_cache`). *)
+let pack_cells (pr:prims) (ty:column_type) (cells:list cell) : Tot (l:list cell{len l = len cells}) =
+  pack_with pr ty (typed_pack pr ty cells) cells
+
+(* A column the carrier reads back as it was: no int under a float or a decimal column. Under it
+   the packing is the identity, verdict or no verdict. *)
+let packs_as_is (ty:column_type) (cells:list cell) : Tot bool =
+  match ty with
+  | FloatType | DecimalType -> not (has_type IntType cells)
+  | _ -> true
+
+let rec pack_with_as_is (pr:prims) (ty:column_type) (typed:bool) (cells:list cell)
+  : Lemma (requires packs_as_is ty cells) (ensures pack_with pr ty typed cells == cells) (decreases cells) =
+  match cells with
+  | [] -> ()
+  | _ :: rest -> pack_with_as_is pr ty typed rest
+
+let pack_cells_as_is (pr:prims) (ty:column_type) (cells:list cell)
+  : Lemma (requires packs_as_is ty cells) (ensures pack_cells pr ty cells == cells) =
+  pack_with_as_is pr ty (typed_pack pr ty cells) cells
 
 (* F#: `f.Cols |> List.mapi (fun j (n, t) -> if j = i then n, ty else n, t)`. *)
 let rec retype_at (i:nat) (ty:column_type) (cols:schema) : Tot schema (decreases cols) =
@@ -1066,7 +1200,9 @@ let rec width_append (n:nat) (rows:list (list cell)) (cells:list cell{len cells 
 
 (* F#: `evalDerive env f name expr` — the static refusal before any row (Phase 338), then the
    expression once per row, the column's type by `derivedTyping` (the decided type, or the cells'),
-   then replace the named column in place or append it. *)
+   the cells PACKED under that type as the frame's column carries them (`Vec.packAt`, Phase 470 —
+   until then the model held them raw, D37 item 4), then replace the named column in place or
+   append it. *)
 let eval_derive (pr:prims) (env:param_env) (f:wframe) (name:string) (x:col_expr)
   : Tot (outcome wframe eval_error) =
   let dt = derived_typing_in env f.cols x in
@@ -1079,15 +1215,16 @@ let eval_derive (pr:prims) (env:param_env) (f:wframe) (name:string) (x:col_expr)
   match column_type_by dt name cells with
   | Error err -> Error err
   | Ok ty ->
+    let vs = pack_cells pr ty cells in
     (match index_of name f.cols with
      | Some i ->
        len_retype_at i ty f.cols;
-       width_replace (len f.cols) i f.rows cells;
-       Ok ({ cols = retype_at i ty f.cols; rows = zip_replace i f.rows cells })
+       width_replace (len f.cols) i f.rows vs;
+       Ok ({ cols = retype_at i ty f.cols; rows = zip_replace i f.rows vs })
      | None ->
        len_app f.cols [(name, ty)];
-       width_append (len f.cols) f.rows cells;
-       Ok ({ cols = app f.cols [(name, ty)]; rows = zip_append f.rows cells }))
+       width_append (len f.cols) f.rows vs;
+       Ok ({ cols = app f.cols [(name, ty)]; rows = zip_append f.rows vs }))
 
 (* THE SECOND PARAMETER. `evalStep resolve env` restricted to the twelve verbs that evaluate no
    expression, the resolver and the env closed over as the F# closure closes over them. Its TYPE
@@ -1936,11 +2073,29 @@ let rec filter_ext (pr:prims) (env:param_env) (cols:schema) (k:ext_kind) (name:s
         | Ok _ -> filter_ext pr env cols k name ty p x rt vt)
      | Error _ -> ())
 
+(* The derive over the rows a filter keeps draws its cells from the derive over all the rows: a
+   type a kept cell carries, a cell of the whole column carries. What `derive_then_filter`'s packing
+   premise needs of the filtered side (Phase 470). *)
+let rec kept_cells_has_type (pr:prims) (env:param_env) (cols:schema) (p x:col_expr) (ty:column_type)
+  (rows:list (list cell){all_width (len cols) rows})
+  : Lemma (requires Ok? (derive_cells pr env cols rows x) /\ Ok? (filter_rows pr env cols rows p))
+          (ensures (match derive_cells pr env cols (Ok?._0 (filter_rows pr env cols rows p)) x with
+                    | Ok vs' -> has_type ty vs' ==> has_type ty (Ok?._0 (derive_cells pr env cols rows x))
+                    | Error _ -> True))
+          (decreases rows) =
+  match rows with
+  | [] -> ()
+  | r :: rest ->
+    (match eval_expr pr env cols r p with
+     | Error _ -> ()
+     | Ok _ -> kept_cells_has_type pr env cols p x ty rest)
+
 #push-options "--fuel 4 --ifuel 2 --z3rlimit 120"
 (* The theorem, one extension shape at a time: the derived column replaced in place ... *)
 let derive_then_filter_replace (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr) (i:nat)
   : Lemma (requires Ok? (derive_cells pr env f.cols f.rows x)
                     /\ Decided? (derived_typing_of f.cols x)
+                    /\ packs_as_is (Decided?._0 (derived_typing_of f.cols x)) (Ok?._0 (derive_cells pr env f.cols f.rows x))
                     /\ closed_not f.cols name (reads p)
                     /\ index_of name f.cols == Some i)
           (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
@@ -1948,6 +2103,7 @@ let derive_then_filter_replace (pr:prims) (other:other_fn) (env:param_env) (f:wf
   let ty = Decided?._0 (derived_typing_of f.cols x) in
   match derive_cells pr env f.cols f.rows x with
   | Ok vs ->
+    pack_cells_as_is pr ty vs;
     len_retype_at i ty f.cols;
     width_replace (len f.cols) i f.rows vs;
     zip_replace_is_ext i f.rows vs;
@@ -1963,6 +2119,8 @@ let derive_then_filter_replace (pr:prims) (other:other_fn) (env:param_env) (f:wf
        assert (eval_step pr other env f (Filter p) == Ok f2);
        (match derive_cells pr env f.cols rs x with
         | Ok vs' ->
+          kept_cells_has_type pr env f.cols p x IntType f.rows;
+          pack_cells_as_is pr ty vs';
           zip_replace_is_ext i rs vs';
           len_retype_at i ty f.cols;
           width_replace (len f.cols) i rs vs';
@@ -1977,6 +2135,7 @@ let derive_then_filter_replace (pr:prims) (other:other_fn) (env:param_env) (f:wf
 let derive_then_filter_append (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr)
   : Lemma (requires Ok? (derive_cells pr env f.cols f.rows x)
                     /\ Decided? (derived_typing_of f.cols x)
+                    /\ packs_as_is (Decided?._0 (derived_typing_of f.cols x)) (Ok?._0 (derive_cells pr env f.cols f.rows x))
                     /\ closed_not f.cols name (reads p)
                     /\ None? (index_of name f.cols))
           (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
@@ -1984,6 +2143,7 @@ let derive_then_filter_append (pr:prims) (other:other_fn) (env:param_env) (f:wfr
   let ty = Decided?._0 (derived_typing_of f.cols x) in
   match derive_cells pr env f.cols f.rows x with
   | Ok vs ->
+    pack_cells_as_is pr ty vs;
     len_app f.cols [(name, ty)];
     width_append (len f.cols) f.rows vs;
     zip_append_is_ext f.rows vs;
@@ -1999,6 +2159,8 @@ let derive_then_filter_append (pr:prims) (other:other_fn) (env:param_env) (f:wfr
        assert (eval_step pr other env f (Filter p) == Ok f2);
        (match derive_cells pr env f.cols rs x with
         | Ok vs' ->
+          kept_cells_has_type pr env f.cols p x IntType f.rows;
+          pack_cells_as_is pr ty vs';
           zip_append_is_ext rs vs';
           width_append (len f.cols) rs vs';
           let f3 : wframe = { cols = app f.cols [(name, ty)]; rows = zip_append rs vs' } in
@@ -2016,6 +2178,7 @@ let derive_then_filter_append (pr:prims) (other:other_fn) (env:param_env) (f:wfr
 let derive_then_filter (pr:prims) (other:other_fn) (env:param_env) (f:wframe) (name:string) (x p:col_expr)
   : Lemma (requires Ok? (derive_cells pr env f.cols f.rows x)
                     /\ Decided? (derived_typing_of f.cols x)
+                    /\ packs_as_is (Decided?._0 (derived_typing_of f.cols x)) (Ok?._0 (derive_cells pr env f.cols f.rows x))
                     /\ closed_not f.cols name (reads p))
           (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
                    eval_uncounted pr other env [Filter p; Derive name x] f) =
@@ -2042,6 +2205,7 @@ let reorder_in_context (pr:prims) (other:other_fn) (env:param_env) (pre post:lis
                      | Ok f ->
                        Ok? (derive_cells pr env f.cols f.rows x)
                        /\ Decided? (derived_typing_of f.cols x)
+                       /\ packs_as_is (Decided?._0 (derived_typing_of f.cols x)) (Ok?._0 (derive_cells pr env f.cols f.rows x))
                        /\ closed_not f.cols name (reads p)
                      | Error _ -> True))
           (ensures eval_uncounted pr other env (app pre (app [Derive name x; Filter p] post)) input ==
@@ -2574,9 +2738,28 @@ let derive_type_rows_free (pr:prims) (env:param_env) (f g:wframe) (name:string) 
                     | Ok f', Ok g' -> f'.cols == g'.cols
                     | _ -> True)) = ()
 
+(* Under the verdict every derived cell carries the typing's type (`verdict_sound`, row by row), so
+   a DECIDED column packs as it is: no int under a float or a decimal column. What discharges
+   `derive_then_filter`'s packing premise for the planner (Phase 470). *)
+let rec derive_cells_fit (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (x:col_expr)
+  (rows:list (list cell){all_width (len cols) rows})
+  : Lemma (requires expr_total cols x /\ rows_typed cols rows
+                    /\ Decided? (derived_typing_of cols x) /\ Ok? (derive_cells pr env cols rows x))
+          (ensures packs_as_is (Decided?._0 (derived_typing_of cols x)) (Ok?._0 (derive_cells pr env cols rows x)))
+          (decreases rows) =
+  match rows with
+  | [] -> ()
+  | r :: rest ->
+    verdict_sound pr h env cols r x;
+    (match eval_expr pr env cols r x with
+     | Ok _ -> derive_cells_fit pr h env cols x rest
+     | Error _ -> ())
+
 (* THE COROLLARY. The planner's admission of `Filter p` ahead of `Derive name x` — the derive
    total by the verdict (its expression total and its column type decided), the filter closed over
-   the schema less the derived name — preserves the driver's result over every typed frame. *)
+   the schema less the derived name — preserves the driver's result over every typed frame. The
+   verdict is also what makes the decided column pack as it is (`derive_cells_fit`), so the
+   corollary's statement is Phase 338's, unchanged by the packing. *)
 let planner_reorder_sound (pr:prims) (h:admits pr) (other:other_fn) (env:param_env) (f:wframe)
   (name:string) (x p:col_expr)
   : Lemma (requires expr_total f.cols x
@@ -2586,6 +2769,7 @@ let planner_reorder_sound (pr:prims) (h:admits pr) (other:other_fn) (env:param_e
           (ensures eval_uncounted pr other env [Derive name x; Filter p] f ==
                    eval_uncounted pr other env [Filter p; Derive name x] f) =
   derive_total pr h env f.cols x f.rows;
+  derive_cells_fit pr h env f.cols x f.rows;
   derive_then_filter pr other env f name x p
 
 

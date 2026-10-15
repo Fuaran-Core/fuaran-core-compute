@@ -206,6 +206,32 @@ let ext_schema : FStar_Pervasives_Native.option<Prims.nat>  ->  Prims.string  ->
      (Pipeline.app cols ((((name), (ty)))::[]))
      end))
 
+type pack_key = {k_type : Pipeline.column_type; k_typed : Prims.bool}
+
+
+let __proj__Mkpack_key__item__k_type : pack_key  ->  Pipeline.column_type = (fun ( projectee  :  pack_key ) -> (match (projectee) with
+| {k_type = k_type; k_typed = k_typed} -> begin
+     k_type
+     end))
+
+
+let __proj__Mkpack_key__item__k_typed : pack_key  ->  Prims.bool = (fun ( projectee  :  pack_key ) -> (match (projectee) with
+| {k_type = k_type; k_typed = k_typed} -> begin
+     k_typed
+     end))
+
+
+let pack_key_of : Pipeline.prims  ->  Pipeline.column_type  ->  step_cache  ->  pack_key = (fun ( pr  :  Pipeline.prims ) ( ty  :  Pipeline.column_type ) ( cs  :  step_cache ) -> {k_type = ty; k_typed = (Pipeline.typed_pack pr ty (cells_of cs))})
+
+
+let rec pack_cache : Pipeline.prims  ->  pack_key  ->  step_cache  ->  step_cache = (fun ( pr  :  Pipeline.prims ) ( k  :  pack_key ) ( cs  :  step_cache ) -> (match (cs) with
+| [] -> begin
+     []
+     end
+| ((t, v))::rest -> begin
+     (((t), ((Pipeline.pack_one pr k.k_type k.k_typed v))))::(pack_cache pr k rest)
+     end))
+
 type walked =
 | W of Pipeline.schema * alive
 
@@ -230,57 +256,80 @@ let frame_of_walked : walked  ->  Pipeline.wframe = (fun ( w  :  walked ) -> (ma
      (frame_of cols a)
      end))
 
-type state = {s_out : walked; s_caches : Prims.list<step_cache>}
+type entry = {e_cells : step_cache; e_pack : FStar_Pervasives_Native.option<pack_key>}
+
+
+let __proj__Mkentry__item__e_cells : entry  ->  step_cache = (fun ( projectee  :  entry ) -> (match (projectee) with
+| {e_cells = e_cells; e_pack = e_pack} -> begin
+     e_cells
+     end))
+
+
+let __proj__Mkentry__item__e_pack : entry  ->  FStar_Pervasives_Native.option<pack_key> = (fun ( projectee  :  entry ) -> (match (projectee) with
+| {e_cells = e_cells; e_pack = e_pack} -> begin
+     e_pack
+     end))
+
+type state = {s_out : walked; s_entries : Prims.list<entry>}
 
 
 let __proj__Mkstate__item__s_out : state  ->  walked = (fun ( projectee  :  state ) -> (match (projectee) with
-| {s_out = s_out; s_caches = s_caches} -> begin
+| {s_out = s_out; s_entries = s_entries} -> begin
      s_out
      end))
 
 
-let __proj__Mkstate__item__s_caches : state  ->  Prims.list<step_cache> = (fun ( projectee  :  state ) -> (match (projectee) with
-| {s_out = s_out; s_caches = s_caches} -> begin
-     s_caches
+let __proj__Mkstate__item__s_entries : state  ->  Prims.list<entry> = (fun ( projectee  :  state ) -> (match (projectee) with
+| {s_out = s_out; s_entries = s_entries} -> begin
+     s_entries
      end))
 
 
-let rec walk : Pipeline.prims  ->  Pipeline.param_env  ->  reuse_fn  ->  Prims.list<step_cache>  ->  Pipeline.schema  ->  alive  ->  Prims.list<wstep>  ->  Pipeline.outcome<state, Pipeline.eval_error> = (fun ( pr  :  Pipeline.prims ) ( env  :  Pipeline.param_env ) ( reuse  :  reuse_fn ) ( prior  :  Prims.list<step_cache> ) ( cols  :  Pipeline.schema ) ( a  :  alive ) ( p  :  Prims.list<wstep> ) -> (match (p) with
+let prior_cells : Prims.list<entry>  ->  step_cache = (fun ( prior  :  Prims.list<entry> ) -> (match (prior) with
 | [] -> begin
-     Pipeline.Ok ({s_out = W (cols, a); s_caches = []})
+     []
+     end
+| (e)::uu___ -> begin
+     e.e_cells
+     end))
+
+
+let prior_pack : Prims.list<entry>  ->  FStar_Pervasives_Native.option<pack_key> = (fun ( prior  :  Prims.list<entry> ) -> (match (prior) with
+| [] -> begin
+     FStar_Pervasives_Native.None
+     end
+| (e)::uu___ -> begin
+     e.e_pack
+     end))
+
+
+let prior_rest : Prims.list<entry>  ->  Prims.list<entry> = (fun ( prior  :  Prims.list<entry> ) -> (match (prior) with
+| [] -> begin
+     []
+     end
+| (uu___)::rest -> begin
+     rest
+     end))
+
+
+let rec walk : Pipeline.prims  ->  Pipeline.param_env  ->  reuse_fn  ->  Prims.list<entry>  ->  Pipeline.schema  ->  alive  ->  Prims.list<wstep>  ->  Pipeline.outcome<state, Pipeline.eval_error> = (fun ( pr  :  Pipeline.prims ) ( env  :  Pipeline.param_env ) ( reuse  :  reuse_fn ) ( prior  :  Prims.list<entry> ) ( cols  :  Pipeline.schema ) ( a  :  alive ) ( p  :  Prims.list<wstep> ) -> (match (p) with
+| [] -> begin
+     Pipeline.Ok ({s_out = W (cols, a); s_entries = []})
      end
 | (s)::rest -> begin
-     (
-
-let prior_k = (match (prior) with
-| [] -> begin
-     []
-     end
-| (c)::uu___ -> begin
-     c
-     end)
-in (
-
-let prior_rest = (match (prior) with
-| [] -> begin
-     []
-     end
-| (uu___)::cr -> begin
-     cr
-     end)
-in (match (s) with
+     (match (s) with
 | WFilter (pred) -> begin
-     (match ((step_cells pr env cols pred reuse prior_k a)) with
+     (match ((step_cells pr env cols pred reuse (prior_cells prior) a)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
 | Pipeline.Ok (cs) -> begin
-     (match ((walk pr env reuse prior_rest cols (keep_true a cs) rest)) with
+     (match ((walk pr env reuse (prior_rest prior) cols (keep_true a cs) rest)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({s_out = st.s_out; s_caches = (cs)::st.s_caches})
+     Pipeline.Ok ({s_out = st.s_out; s_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.None})::st.s_entries})
      end)
      end)
      end
@@ -290,7 +339,7 @@ in (match (s) with
      Pipeline.Error ((Pipeline.float_beside_decimal name))
      end
 | dt -> begin
-     (match ((step_cells pr env cols x reuse prior_k a)) with
+     (match ((step_cells pr env cols x reuse (prior_cells prior) a)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
@@ -302,25 +351,36 @@ in (match (s) with
 | Pipeline.Ok (ty) -> begin
      (
 
+let k = (pack_key_of pr ty cs)
+in (
+
 let i = (Pipeline.index_of name cols)
-in (match ((walk pr env reuse prior_rest (ext_schema i name ty cols) (extend i a cs) rest)) with
+in (
+
+let reuse' =  
+if (Prims.op_Equals (prior_pack prior) (FStar_Pervasives_Native.Some (k))) then begin
+     reuse
+     end else begin
+     no_reuse
+     end
+in (match ((walk pr env reuse' (prior_rest prior) (ext_schema i name ty cols) (extend i a (pack_cache pr k cs)) rest)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({s_out = st.s_out; s_caches = (cs)::st.s_caches})
-     end))
+     Pipeline.Ok ({s_out = st.s_out; s_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.Some (k)})::st.s_entries})
+     end))))
      end)
      end)
      end)
-     end)))
+     end)
      end))
 
 
 let prime : Pipeline.prims  ->  Pipeline.param_env  ->  Pipeline.schema  ->  alive  ->  Prims.list<wstep>  ->  Pipeline.outcome<state, Pipeline.eval_error> = (fun ( pr  :  Pipeline.prims ) ( env  :  Pipeline.param_env ) ( cols  :  Pipeline.schema ) ( a  :  alive ) ( p  :  Prims.list<wstep> ) -> (walk pr env no_reuse [] cols a p))
 
 
-let refresh : Pipeline.prims  ->  Pipeline.param_env  ->  state  ->  FStar_Pervasives_Native.option<Prims.list<token>>  ->  Pipeline.schema  ->  alive  ->  Prims.list<wstep>  ->  Pipeline.outcome<state, Pipeline.eval_error> = (fun ( pr  :  Pipeline.prims ) ( env  :  Pipeline.param_env ) ( st  :  state ) ( named  :  FStar_Pervasives_Native.option<Prims.list<token>> ) ( cols  :  Pipeline.schema ) ( a  :  alive ) ( p  :  Prims.list<wstep> ) -> (walk pr env (reuse_of named) st.s_caches cols a p))
+let refresh : Pipeline.prims  ->  Pipeline.param_env  ->  state  ->  FStar_Pervasives_Native.option<Prims.list<token>>  ->  Pipeline.schema  ->  alive  ->  Prims.list<wstep>  ->  Pipeline.outcome<state, Pipeline.eval_error> = (fun ( pr  :  Pipeline.prims ) ( env  :  Pipeline.param_env ) ( st  :  state ) ( named  :  FStar_Pervasives_Native.option<Prims.list<token>> ) ( cols  :  Pipeline.schema ) ( a  :  alive ) ( p  :  Prims.list<wstep> ) -> (walk pr env (reuse_of named) st.s_entries cols a p))
 
 
 let rec unchanged : reuse_fn  ->  alive  ->  alive  ->  Prims.bool = (fun ( reuse  :  reuse_fn ) ( a  :  alive ) ( a0  :  alive ) -> (match (a) with

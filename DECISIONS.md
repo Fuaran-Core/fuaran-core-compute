@@ -1,5 +1,104 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-15 — D38: the reference model packs a derived column as production does — `Vec.packAt` read back, verdict and all, as one definition the three models share; the cells' typing refuses two types beside each other as production does; the planner's reorder theorem names the packing premise its corollary discharges; and the walk's switch compares the PACK KEY, which closes a second production divergence (the typed pass abandoned)
+
+**Context.** D37 item 4 named a gap in the REFERENCE model: `Pipeline.fst`'s `eval_derive` held a derived
+column's cells raw (`zip_append f.rows cells`) where production packs them under the decided type
+(`Vec.packAt`: an int under a float column is the float of its value, under a decimal column the decimal
+of its value), and `Incremental.fst`'s `extend` held them raw too, so the pipeline differential and Phase
+433's `prime_is_full` were stated against a reference that differs from production exactly where D37's
+production defect lived. Phase 470 was cut to close it: the packing modelled on production's, as ONE
+definition the three models reuse, every theorem over the derive re-proved with its statement unchanged,
+the differential's generators reaching the corner, and the old raw reference shown failing on it once.
+
+**Decision.**
+
+1. **The packing, modelled concretely on `Vec.packAt` as the column reads back through `Vec.cellAt`**
+   (`Pipeline.fst`, `pack_cells`): one pass over the whole column decides a VERDICT — carried typed when
+   every present cell is one the type carries (`pack_admits`: its own type, or an int under a float or a
+   decimal column) and, for a decimal column, when `ScaledDecimal.scaleOf` answers a scale over the
+   column's present texts (an int's rendered as `string v`); else the typed pass is abandoned and the
+   column is BOXED, every cell as it was. Under the verdict an int in a float column reads back as the
+   float of its value and in a decimal column as the decimal of its value (`pack_cell`); every other cell
+   reads back as itself. `eval_derive` packs its cells under the type `column_type_by` decides, and the
+   two walks pack the same cells through `Incremental.pack_cache` (the cache's cells under the key, each
+   under its token), whose cells ARE `pack_cells` over the raw cells (`pack_cache_is_pack_cells`) — the
+   one definition the shard asked for. The verdict being a function of the WHOLE column is what the rest
+   of this record is about. It is the twin of `Frame.fst`'s `pack` / `pack_cell` on the list column; the
+   two cannot be one definition because `Frame.fst` opens `Pipeline` and not the reverse.
+
+2. **Three parameters more, each an assumption the theorems make nothing of beyond its type:** the float
+   carrier of `float v` (`float_of_int`), `string v` (`int_text`) and `ScaledDecimal.scaleOf`
+   (`scale_of`), carried on `prims` under the names `Frame.fst`'s host carries them, so the differential
+   instantiates both models from one production function (`pPrims` beside `fHost`). What `scaleOf`
+   answers — the width, the grammar — is neither modelled nor claimed: a decimal text is an opaque
+   carrier here as it has been since Phase 277. One thing is read as the cell's own text by a NAMED
+   premise (`pipeline-temporal-cells-canonical`): a date or a timestamp the typed carrier reads back as
+   the canonical text of its value, which is the cell's text when that text is canonical — every
+   primitive produces one, and only a literal can carry another into a derive — so `pack_admits` carries
+   a temporal cell as itself where `packAt` consults `TemporalText`.
+
+3. **The cells' typing refuses two types no column type holds together, as production has since D18.**
+   `typeFromCells` refuses a derived column whose present cells span two types the widening join does
+   not relate (`typesBesideEachOther`, D18 item 2), and the model's `column_type_by` did not — the
+   differential excused the pair as outside the model's domain. Modelled now (`first_disjoint`: the first
+   pair the fold met, the type so far beside the cell's, named in the refusal's own text), and the excuse
+   is gone from the pipeline differential. It matters to the packing: with it, a column the cells type
+   holds one family only, so the typed pass is abandoned on exactly one reachable corner — a decimal
+   column past the scaled carrier's width — and that corner is where item 5 found production diverging.
+
+4. **The planner's reorder theorem names a packing premise; the corollary does not.** Under the
+   column-wide verdict `derive_then_filter` is FALSE as Phase 269 stated it, over arbitrary primitives:
+   a primitive that yields, for a derive the typer decides `float`, an int on one row and a string on
+   another, with the filter dropping the string's row, boxes the column on the derive-then-filter side
+   (the int reads raw) and carries it typed on the filter-then-derive side (the int reads as a float).
+   The theorem (`derive_then_filter`, `reorder_in_context`) now requires `packs_as_is`: the decided type
+   carries the derived cells as they are — no int under a float or a decimal column — under which the
+   packing is the identity on the whole column and on the kept rows alike (`pack_cells_as_is`,
+   `kept_cells_has_type`). **The corollary `planner_reorder_sound` keeps Phase 338's statement exactly**:
+   the verdict's premise `admits` already gives every derived cell the typing's type (`verdict_sound`),
+   from which the packing premise follows (`derive_cells_fit`), so the planner's admission is proved as
+   before. The premise is also read off production's own primitives by a `Proofs.Oracle` case over drawn
+   tables and expressions. Stated here rather than weakened silently, per the phase's own rule.
+
+5. **The walk's switch compares the PACK KEY — the decided type AND the verdict — and so does production's
+   `retypedSince`; a second production divergence, found and fixed.** D37 recorded the type: a derive
+   whose decided type is not the prior evaluation's reuses nothing from there on. The verdict is a
+   function of the whole column as the type is, so a named row can flip it under ONE type — a decimal
+   text past the width arriving, or leaving — and every stable row's int then reads the other way
+   (`Decimal "1"` on the typed pass, `Int 1` on the boxed one) with no delta naming the row. The models
+   record the key per derive (`Incremental.entry.e_pack`, `IncrementalMaintained.entry.e_pack`) and
+   switch to `no_reuse` where it moved (`walk_reuse`'s two arms: `unchanged_extend` under one key,
+   `walk_no_reuse` past another; `mwalk_reuse` likewise). Production's walk (`Incremental.fs`) widened an
+   int under a float or decimal column UNCONDITIONALLY (D37's `widenCells`) where `Vec.packAt` abandons
+   the typed pass, and compared the type alone: a probe (`pBoxedShapes` in `ProofOracleTests`) showed
+   the full evaluation answering `Float 1.5` where the refresh refused `arithmetic between a decimal and
+   a float`, on a derived column a named row retyped from int to decimal and boxed in one move. Fixed
+   under the operator's 2026-10-12 ruling: `widenCells` widens only under `typedPack`'s verdict, which
+   mirrors `packAt`'s (admission, and `ScaledDecimal.scaleOf` over the rendered texts for a decimal
+   column), and `retypedSince` compares the type beside the verdict. A `behaviour` change on the open
+   `0.41.0` draft (`STABILITY.md`). The faithful alternative — widening every int in the boxed carrier
+   too, in `Vec.packAt` and Core's `Column.ofCells`, so that an int under a float column is ALWAYS the
+   float of its value and the verdict vanishes — would make item 4's premise unnecessary and the key the
+   type alone; it changes the full evaluation's answer on a degenerate column in two repositories and is
+   the operator's to decide, not this phase's.
+
+6. **Cost and evidence.** Every theorem over the derive is re-proved with its statement unchanged
+   (`prime_is_full`, `refresh_is_prime`, `refresh_agrees`, `mprime_is_full`, `mrefresh_is_prime`,
+   `mrefresh_agrees`, `eval_total`, `budget_monotone`, `work_bounded`, `verdict_sound`,
+   `planner_reorder_sound`) except the two of item 4, whose premise is new. The differential's generators
+   draw the corner one pipeline in four (`pCornerShapes`: a float retype read by a `Mod`, a decimal
+   retype read by an `Add` of a float, and a decimal retype past the width, each on the rows that stand);
+   the three models are held to production on every retype shape (`pCornerAgrees`); the old raw derive
+   is kept once (`pRawDerive`) to show it answering the first shape where production refuses. The
+   module budgets stand: the re-measured cold runs are recorded on each entry in `modules.json`.
+
+**Consequences.** D37 item 4 is closed; the two incremental models are faithful to production on a
+retyped derived column read by a type-sensitive step, and on a boxed one. `Incremental.prime` and
+`Incremental.refresh` read a derived column exactly as `DataFrame.evalPipelineWithInEnv` carries it,
+typed or boxed. The pipeline differential no longer excuses the D18 refusal. `proofs.json` gains the
+premise row `pipeline-temporal-cells-canonical` and the rows over the derive name the packing.
+
 ## 2026-10-15 — D37: the incremental refresh is modelled and proved past the row-local class — the maintained `GroupBy`, `Project`, `Limit`, `Window` and the filtering joins — in a module of its own over `Incremental.fst`; a derived column the cells retype is read as the reference packs it and reuses nothing downstream (a production defect, fixed); `Sort`, the resumed prefix fold, the fast paths, the guards, the chunked path and the codec stay declared out
 
 **Context.** D31 proved the refresh for `Filter` and `Derive` and declared the other classes out, each
