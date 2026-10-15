@@ -1,5 +1,127 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-15 — D37: the incremental refresh is modelled and proved past the row-local class — the maintained `GroupBy`, `Project`, `Limit`, `Window` and the filtering joins — in a module of its own over `Incremental.fst`; a derived column the cells retype is read as the reference packs it and reuses nothing downstream (a production defect, fixed); `Sort`, the resumed prefix fold, the fast paths, the guards, the chunked path and the codec stay declared out
+
+**Context.** D31 proved the refresh for `Filter` and `Derive` and declared the other classes out, each
+with its reason; Phase 433's deferral carried them to Phase 464. Each class keeps state a delta must
+update rather than recompute — the group table and its aggregate cells, a join's key index, a window's
+column — and each is where a silent divergence from the full evaluation is most likely. The shard asked
+for a scope note before modelling, the model, the agreement and state theorems per covered class
+composed with 433's walk, a differential with a go-red per class, any production divergence fixed
+under the operator's 2026-10-12 ruling, and the classes still out named.
+
+**Decision.**
+
+1. **The classes covered, and each aggregate's maintenance rule.** The walk production runs on the
+   general refresh path (`runIncremental`) is modelled for `PropagateRows` (`Project` beside the two
+   row-local verbs), `MaintainGroups`, `TruncateOrder`, `RecomputeFrame` and `FilterByRelation`:
+   - the maintained `GroupBy` — the groups of the rows alive at the step in first-appearance order of
+     the key cells, the partition `evalGroupBy` builds; a group's aggregates REUSED exactly when every
+     member is stable and the group's member tokens are the prior group's in order (`groupStable`,
+     `sameMembers`), and RECOMPUTED over its members in member order otherwise by the reference's own
+     aggregate function. **Every aggregate is maintained by recompute on this path** — `Sum`, `Mean`,
+     `Min`, `Max`, `Count`, `Median`, `StdDev`, `First`, `Last` and `CountDistinct` alike — because a
+     touched group is recomputed whole rather than updated; the invertible `Count` and int `Sum` of
+     the in-place and append fast path (`groupStepInPlace`, `maintained`) are that path's, which is
+     declared out with it. A group with no member vanishes; the group table walks on under one token
+     per key, a group reusable downstream exactly when its aggregates were (`Stable[g] = existed &&
+     not RecomputedAt[g]`);
+   - `Project` — a column permutation and renaming that touches no row and caches nothing, refused on
+     an unknown source and then on a repeated output (D35);
+   - `Limit` — the positional slice (`max 0 offset`, `max 0 n`, clamped) over the frame the walk holds,
+     which is the reference's frame; a row re-entering the slice has no cached cells past where it
+     left and is evaluated fresh — the model's cache misses it;
+   - `Window` — the column the reference computes over the rows alive at the step in their order,
+     appended, with NOTHING reused after it (`Array.fill r.Stable … false`); the resumed prefix fold
+     of Phase 333, which keeps the stable prefix of each partition, reuses MORE than the model and is
+     declared out (its output is the same column; what is unproved is that its reuse is sound);
+   - the filtering joins (`Semi`, `Anti`) — a verdict per left row, kept iff some right key matches or
+     none does, cached as a filter's cells are and reused for a stable row exactly when the joined
+     relation's key index is the prior one (`relationMoved`); the relation is resolved afresh on every
+     refresh.
+   **Declared out, with its reason:** `Sort` (`MergeOrder`) — its refresh merges the named rows into
+   the prior PRODUCED order by binary insertion, valid while the stable rows' arrival order stands
+   (`arrivedAsBefore`); proving that equal to the full stable sort needs the uniqueness of a sorted
+   permutation under the comparator read as a strict total order with the arrival position as the
+   tie-break, and a comparator premise (`compareResolved` is a total preorder within a typed column;
+   across cell types `compareCells` answers `None`, read as `0`, which is not transitive) — a proof of
+   its own size, which this phase did not start rather than ship half of; the operator decides whether
+   it gets a successor.
+2. **A module of its own, `proofs/IncrementalMaintained.fst`, opening `Pipeline`, `Incremental` and
+   `Relational`.** On proof cost, per the shard: `Incremental.fst` checks in 101s and its two
+   theorems would have been re-priced by every arm added to its walk, where a sibling keeps each
+   module's cold check its own (Phase 458's lesson). The row-local arms are `Incremental.fst`'s
+   definitions by name (`step_cells` restated over any cell function as `step_cells_by`, so a join's
+   verdicts are the same step; `keep_true`, `extend`, `ext_schema`); the reference is `Pipeline.fst`'s
+   driver over `Relational.fst`'s `other_of`, narrowed to this module's row functions (`mrows`), so the
+   schema and every refusal are the relational model's and only the rows are new. Four parameters,
+   each an assumption and each instantiated at production's own by the differential: the aggregate
+   function (`Column.aggregate`, which the streamed accumulators equal by law), the join key match
+   (`joinKeysMatch`), the window column (`windowStep`) and the group token. Three theorems:
+   `mprime_is_full`, `mrefresh_is_prime` (output, every entry, the group table and the tail),
+   `mrefresh_agrees`. The delta premise is 433's read one row at a time (`wk`): a reusable row the
+   prior source held under its token has the cells it had, and one it did NOT hold is admitted — the
+   cache misses it, as production reads it unstable — so the premise is strictly weaker than
+   `Incremental.unchanged`, and it is what a `Limit` needs (a row re-entering the slice). Two premises
+   are added: the prior source's tokens are distinct (production's witness refuses a duplicate
+   identity, `RowIdentityUnusable`) and the group token is one per key (production mints it so). The
+   theorems are stated for a new source of the prior's SCHEMA, types included — a source whose schema
+   moved is `SourceSchemaMoved` in production and evaluates in full; a DERIVED column's retype is
+   inside the walk and is item 3.
+3. **The defect, and the fix.** A derived column typed by its cells (`ByCells`: an int arm beside a
+   float arm in a `Case`, a `Coalesce` of an int column and a float literal) is a function of the
+   WHOLE column, so one named row can retype it from int to float while every other row's cell stands.
+   The reference packs the column under its decided type (`Vec.packAt`: an int under a float column is
+   the float of its value, under a decimal column the decimal of its value, Core `1.0.0`); the walk held
+   the step's cells RAW. The probe (`mRetypeShapes` in `ProofOracleTests`) showed the refresh — and the
+   PRIME — answering where the full evaluation refused: a `Mod` over the retyped column read `Int 1`
+   where the reference read `Float 1.0`; a reused group's `Sum` stood at `Int 3` beside a fresh
+   `Float 3.0`; a recomputed `Min` answered the raw int. Production's own contract ("The result equals
+   a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every delta") was false on
+   these, and the operator's ruling (2026-10-12) is that it is fixed, not documented. Three changes in
+   `Incremental.fs`, all internal:
+   - the FRAME's column after a derive is the step's cells widened to the decided type (`widenCells`);
+     the CACHE keeps the cell as evaluated, because a later refresh may type the column back and the
+     column's type is decided over the raw cells on every refresh, as the reference decides it;
+   - a derive whose decided type is not the prior evaluation's (`retypedSince`: the prior type re-read
+     off the prior step's reached cells for a `ByCells` typing; a decided type is the same on every
+     refresh) clears stability for every row, in place as a window does, and ends the in-place
+     reading — every cell cached downstream and every reused group was computed over the other reading
+     of the column;
+   - the in-place group path (`groupStepInPlace`) refuses a frame whose unlisted slots are not all
+     stable, which is its own invariant made a precondition.
+   The model carries the rule (`entry.e_type`, the switch to `no_reuse`), so `mrefresh_is_prime` is
+   stated over a retype rather than around it. A `behaviour` change on the open `0.41.0` draft
+   (`STABILITY.md`): a consumer whose pipeline retyped a derived column between refreshes read a result
+   the full evaluation would not have given, and now reads the full evaluation's.
+4. **A gap in the REFERENCE model, named and not closed here.** `Pipeline.fst`'s `eval_derive` holds
+   the derived cells raw (`zip_append f.rows cells`) where production packs them, so the pipeline
+   differential and Phase 433's `prime_is_full` were stated against a reference that differs from
+   production on exactly the corner of item 3 — the pools drawn never reached it, and the comparison
+   through `ColumnCodec.encode` packs the output, which hides a raw cell unless a type-sensitive step
+   reads it first. The correct closure is a widening in `eval_derive` (and in `Incremental.fst`'s
+   `extend`), which re-prices every theorem over the derive in three modules; `Pipeline.fst` is outside
+   this phase's files, and the work is a phase of its own, named in Phase 464's outcome as a successor
+   need. Until it lands the two incremental models are faithful to production everywhere but a
+   retyped derived column read by a type-sensitive step, which the differential's generators do not
+   draw and the regression case pins on production directly.
+5. **Still declared out, each with its reason (the rest of D31 item 3):** the staleness guards
+   (`PipelineChanged`, `EnvChanged`, `SourceSchemaMoved`, `DeltaIsFullRefresh`, `OrdinalAddressing`,
+   `RowIdentityUnusable`) send a refresh to a full evaluation, which `Pipeline.fst` already models — what
+   is unmodelled is the decision, a comparison of the state's keys with the inputs; the quiet-delta
+   shortcut (`ReusedPrior`) returns the prior output under `Delta.isQuiet` and an unmoved source, a
+   claim about `Delta.isQuiet`, which is `Delta.fs`'s; the in-place and append fast paths (Phases 323,
+   359) compute the same caches from the prior arrays, with their invertible `Count` and int `Sum` and
+   the `patchedColumn` output; the chunked path (Phase 268, `refreshPrepared`) is a second evaluator
+   over a `Derive`-only pipeline; the state's wire form (`IncrementalCodec`) is a codec.
+
+**Consequences.** `Transform.Project`, `Transform.GroupBy`, `Transform.Limit`, `Transform.Window` and
+`Transform.Join` join `Incremental.prime` and `Incremental.refresh` on the ladder's proved rows for the
+incremental seam, and `DataFrame.aggregateCells`, `DataFrame.joinKeysMatch` and `DataFrame.windowStep`
+leave the census for the differential's tested row, as the parameters it instantiates. The
+`Incremental` census entry's reason names what the two models now cover and what remains. The proof leg
+gains its seventh module, costed in `modules.json`.
+
 ## 2026-10-15 — D36: the static walk types a `Union` as the evaluator does, through the evaluator's own per-column function; a pair the evaluator refuses reads as a column of undecided type, an undeclared right decides no type, and `walk_sound` holds for every verb
 
 **Context.** D32 recorded finding (b): `SchemaWalk.ofTransform`'s `Union` arm answered its input, so

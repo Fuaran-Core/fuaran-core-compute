@@ -49,7 +49,11 @@ $ErrorActionPreference = 'Stop'
 #   Frame: the dense frame and its kernels — read back cell by cell it is the table's logical
 #   rows at every column type, with and without a validity mask, and a filter the comparison
 #   kernels answer is Pipeline's row-major Filter step over the read-back (opens Pipeline).
-$modules = @('Limits', 'ColumnOps', 'Pipeline', 'Incremental', 'Relational', 'Frame')
+#   IncrementalMaintained: the incremental refresh past the row-local class — the maintained
+#   GroupBy, Project, Limit, Window and the filtering joins — priming is full evaluation over
+#   the relational model's reference, a refresh against a primed state is the prime, output and
+#   state, and so agrees with full evaluation (opens Pipeline, Incremental and Relational).
+$modules = @('Limits', 'ColumnOps', 'Pipeline', 'Incremental', 'Relational', 'Frame', 'IncrementalMaintained')
 
 # ---- DECLARATION 2: the host families --------------------------------------------------------------
 # One entry per test-runner invocation, each with its own failure message. Separate invocations

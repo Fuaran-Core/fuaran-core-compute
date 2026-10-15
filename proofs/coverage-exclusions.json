@@ -186,7 +186,6 @@
     },
     {
       "members": [
-        "DataFrame.aggregateCells",
         "DataFrame.aggregateType"
       ],
       "class": "measured-elsewhere",
@@ -266,14 +265,6 @@
     },
     {
       "members": [
-        "DataFrame.joinKeysMatch"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "Join key equality, exposed for incremental joins; example-tested.",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
         "DataFrame.joinKeyIndices",
         "DataFrame.rowCompareBy",
         "DataFrame.windowFrameBounded"
@@ -282,14 +273,6 @@
       "reason": "Reference primitives exposed (Phase 99) so the incremental engine recomputes a join, a sort or a window exactly as the full evaluation does; measured through the incremental evaluator's parity with it, which `Conformance.incrementalLaws` samples.",
       "through": "Incremental.refresh",
       "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalTests.fs"
-    },
-    {
-      "members": [
-        "DataFrame.windowStep"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "One window step over a partition, exposed for the incremental engine; example-tested beside the full evaluation.",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
     },
     {
       "members": [
@@ -499,7 +482,7 @@
         "Incremental.plan'"
       ],
       "class": "measured-elsewhere",
-      "reason": "The incremental engine (`Incremental.fs`) beyond the row-local walk `proofs/Incremental.fst` models (Phase 433, D31): the prepared and `-On` entry points (the chunked path of Phase 268, the resolver-bearing variants), and the readers of a state. `prime`, `refresh` and `result` are on the ladder for pipelines of `Filter` and `Derive` alone; the maintained `GroupBy`, the merged `Sort`, `Limit`, `Window`, the filtering joins, `Project`, the staleness guards and the fast paths are stated by no model, and `Conformance.incrementalLaws` samples them while the refresh-cost tests pin what a refresh evaluates.",
+      "reason": "The incremental engine (`Incremental.fs`) beyond the two walks `proofs/Incremental.fst` (Phase 433, D31) and `proofs/IncrementalMaintained.fst` (Phase 464, D37) model: the prepared and `-On` entry points (the chunked path of Phase 268, the resolver-bearing variants), and the readers of a state. `prime`, `refresh` and `result` are on the ladder for pipelines of `Filter`, `Derive`, `Project`, `Limit`, `Window`, the filtering joins and one maintained `GroupBy` on the general refresh path; the merged `Sort`, the resumed prefix-fold window, the staleness guards, the quiet-delta shortcut, the in-place and append fast paths and the chunked path are stated by no model (D37 names each with its reason), and `Conformance.incrementalLaws` samples them while the refresh-cost tests pin what a refresh evaluates.",
       "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalRefreshCostTests.fs"
     },
     {

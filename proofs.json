@@ -591,6 +591,151 @@
       }
     },
     {
+      "id": "incremental-maintained-prime-is-full",
+      "level": "proved",
+      "claim": "Priming the incremental walk past the row-local class computes what the reference evaluator computes. Over a pipeline of a prefix, at most one `GroupBy` and a tail, every step of which is a `Filter`, a `Derive`, a `Project`, a `Limit` with literal slots, a `Window` or a filtering join (`Semi` / `Anti`) — the classes `Incremental.classifyStep` admits beside `Sort` (D37) — `mprime` (the walk with no prior state and the group step reusing nothing) returns the frame `Pipeline.eval_uncounted` returns over the same source, or the error it returns, where the twelve-verb parameter is `Relational.other_of` instantiated at this module's row functions (`mrows`: `evalProject`'s columns, `evalGroupBy`'s groups in first-appearance order with each aggregate over the members in order, `evalLimit`'s slice, `evalWindow`'s column, `evalJoin`'s filtering kinds) — over every cell primitive, every relational primitive, every resolver, every param environment and every well-formed source. The walk's own step shape is the reference's step: the row-local arms by `Incremental.fst`'s own lemmas (`cells_filter`, `cells_derive`, `rows_of_extend`, bridged through `step_cells_by_is`), a projection, a slice, an appended window column and a kept verdict read off the tokened rows (`rows_of_proj`, `rows_of_take`, `rows_of_drop`, `rows_of_pair_extend`, `rows_of_keep_by`), and the group step the reference's `GroupBy` over the walked frame's rows (`group_step_is_other`: the groups of the rows under any tokens have the rows' groups, `groups_acc_retok`, and with nothing to reuse a group's output reads its member rows alone, `groups_out_retok`). The theorem composes with Phase 433's: the row-local class is this walk restricted to two of its six arms.",
+      "phase": "fuaran-core#464",
+      "evidence": {
+        "theorem": "mprime_is_full",
+        "model": "proofs/IncrementalMaintained.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "mwalk_is_go",
+          "group_step_is_other",
+          "go_app",
+          "step_cells_by_is",
+          "rows_of_proj",
+          "rows_of_take",
+          "rows_of_drop",
+          "rows_of_pair_extend",
+          "rows_of_keep_by",
+          "groups_acc_retok",
+          "groups_out_retok",
+          "rows_of_galive",
+          "mwalk",
+          "group_step",
+          "mrun",
+          "mprime",
+          "mrows",
+          "mother"
+        ],
+        "operations": [
+          "Incremental.prime",
+          "Transform.Project",
+          "Transform.GroupBy",
+          "Transform.Limit",
+          "Transform.Window",
+          "Transform.Join"
+        ]
+      }
+    },
+    {
+      "id": "incremental-maintained-refresh-state-equals-primed",
+      "level": "proved",
+      "claim": "THE STATE THEOREM PAST THE ROW-LOCAL CLASS. A refresh against a state primed over the prior source, under a delta that names every row that moved, IS the prime over the new source — the output frame, every evaluating step's cells and recorded type, every join's key index, the group table (each group's key, member tokens and aggregate cells) and the tail's caches — so a state a refresh leaves is indistinguishable from one a prime leaves. Over the classes of D37, every cell primitive, every relational primitive, every resolver, every param environment, every prior and new source of ONE schema (a source whose schema moved is `SourceSchemaMoved` in production and evaluates in full) and every delta read as the tokens it names or as every row. Under the premise read one row at a time (`wk`): a row the delta does not name that the prior source held under its token has the cells it had, and a row it did not hold is admitted — the cache misses it, as production reads it unstable — which is strictly weaker than Phase 433's `unchanged` and is what a `Limit` needs (a row re-entering the slice has no cached cells past where it left); and under two premises the ladder names in `incremental-maintained-primitives`: the prior source's tokens are distinct, and the group token is one per key. The proof is the walk's induction (`mwalk_reuse`) threading the premise, the distinct-token invariant and the switch through six arms — the reused cells are the fresh cells (`step_cells_by_reuse`), the premise survives a keep, an extension, a projection and a slice (`wk_keep_by`, `wk_extend_by`, `wk_proj`, `wk_slice`), a derive typed as before keeps reusing and a retyped one reuses nothing from there on (D37; `mwalk_no_reuse`: a walk reusing nothing reads no prior), a window reuses nothing — and the group step's (`groups_out_reuse`): a group every member of which is reusable and whose member tokens are the prior group's HAS the prior group's member rows (`members_eq`, from the premise and the distinct tokens), so its reused aggregates are the recomputed ones (`group_aggs_reuse`, `find_key_sound`); and the tail walks under the premise again (`tail_premise`: a reused group's row is the prior group table's row under its token, the group tokens distinct by `nodup_keys` and injectivity). A model that reused a group whose member tokens changed, or a join's verdicts under a moved relation, fails the differential's go-reds; a model that kept reusing after a retyped derive would fail this theorem at the `Derive` arm, where the prior aggregates were computed over the other reading of the column.",
+      "phase": "fuaran-core#464",
+      "evidence": {
+        "theorem": "mrefresh_is_prime",
+        "model": "proofs/IncrementalMaintained.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "mwalk_reuse",
+          "mwalk_no_reuse",
+          "step_cells_by_reuse",
+          "assoc_cells_by",
+          "wk_keep_by",
+          "wk_extend_by",
+          "wk_proj",
+          "wk_slice",
+          "assoc_of_mem",
+          "distinct_keep",
+          "distinct_extend",
+          "distinct_proj",
+          "distinct_take",
+          "distinct_drop",
+          "groups_out_reuse",
+          "group_aggs_reuse",
+          "members_eq",
+          "find_key_sound",
+          "groups_of_in",
+          "groups_out_no_reuse",
+          "tail_premise",
+          "reused_from_prior",
+          "found_in_galive",
+          "galive_row",
+          "distinct_galive",
+          "groups_acc_nodup",
+          "walk_eq",
+          "wk",
+          "mrefresh"
+        ],
+        "operations": [
+          "Incremental.refresh",
+          "Transform.Project",
+          "Transform.GroupBy",
+          "Transform.Limit",
+          "Transform.Window",
+          "Transform.Join"
+        ]
+      }
+    },
+    {
+      "id": "incremental-maintained-refresh-agrees-with-full",
+      "level": "proved",
+      "claim": "THE AGREEMENT THEOREM PAST THE ROW-LOCAL CLASS. The refreshed answer is the full evaluation of the pipeline over the updated source: `mrefresh` against a primed state, under the premise, returns the frame `Pipeline.eval_uncounted` returns over the new source through `mother`, or the error it returns — the two theorems above composed (`mrefresh_is_prime`, then `mprime_is_full` over the new source). Over the classes of D37 — the maintained `GroupBy` with every aggregate recomputed or reused, `Project`, `Limit`, `Window` recomputed whole, the filtering joins — composed end to end with the row-local class in one walk, every cell and relational primitive, every resolver, every param environment, every prior and new source of one schema and every delta, under `wk` and `incremental-maintained-primitives`. This is the property production's `refresh` states of itself (\"The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every delta, whichever path was taken\"), proved for the general refresh path over these classes; `Sort`, the resumed prefix-fold window, the in-place and append fast paths, the staleness guards, the quiet-delta shortcut, the chunked path and the codec are named in D37 and remain `measured-elsewhere` in the census.",
+      "phase": "fuaran-core#464",
+      "evidence": {
+        "theorem": "mrefresh_agrees",
+        "model": "proofs/IncrementalMaintained.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "mrefresh_is_prime",
+          "mprime_is_full",
+          "embed_pipe"
+        ],
+        "operations": [
+          "Incremental.refresh",
+          "Incremental.prime"
+        ]
+      }
+    },
+    {
+      "id": "incremental-maintained-differential",
+      "level": "tested",
+      "claim": "The extracted walk agrees with the shipped `Incremental.prime` and `Incremental.refresh` on the RESULT (byte for byte through `ColumnCodec.encode`, read through `Incremental.result`), or on the named `EvalError`, with the model's four parameters instantiated at production's own — `DataFrame.aggregateCells` for the aggregate function, `DataFrame.joinKeysMatch` for the key match, `DataFrame.windowStep` for the window column, a rendering of the key cells for the group token — and the cell and relational primitives as the pipeline and relational differentials instantiate them, over generated pipelines of the maintained classes (a prefix of up to two steps drawn from `Filter`, `Derive`, `Project`, `Limit`, `Window` over the group column and a filtering join against a relation `r` read through the resolver; a `GroupBy` over `g` one time in two with one or two aggregates drawn from all ten over the int, float and decimal columns; a tail of up to two steps over the group table), a generated prior table keyed by `id`, deltas built by `Delta.diff` to a mutated table — cells changed (a window's partition key and a group key among them), rows appended and rows removed (a group's last row among them, a row leaving or entering a limit's slice among them) — and a relation moved between the prime and the refresh one time in two. Three comparisons per trial: the prime and the refresh against production, the refresh against the reference `DataFrame.evalPipelineWithInEnv` over the mutated table, and — the state theorem read observably — a second refresh of the refreshed state against a second refresh of a state primed over the first mutation. Three go-reds: a walk whose prior group's member tokens are overwritten with the current group's (so a group that lost or gained a member reuses its prior aggregates — a `Max` over a removed row among them) must disagree with production; a walk whose prior key index is overwritten with the relation's index at the refresh (so a stable row's verdict is reused under a relation that moved) must disagree; and a walk that reuses every row's cells, the delta ignored, must disagree through a limit, a projection and a window. Beside them, the three shapes the Phase 464 probe found production diverging on (D37) — a derived column the cells retype between refreshes read by a `Mod`, by a reused group `Sum`, by a recomputed `Min` and `First` — are pinned on production directly: the refresh equals the full evaluation, result or refusal, and the case fails on the pre-D37 walk. Agreement is over the pools drawn, never over all inputs.",
+      "phase": "fuaran-core#464",
+      "evidence": {
+        "family": "Proofs.Oracle",
+        "model": "proofs/IncrementalMaintained.fst",
+        "cases": [
+          "the maintained incremental oracle agrees with Incremental.prime and Incremental.refresh on the result over generated pipelines of the maintained classes, priors, deltas and a moving relation, and a refreshed state refreshes as a primed one",
+          "a maintained oracle that reuses a group whose members changed DISAGREES with Incremental.refresh — the group measurement can fail",
+          "a maintained oracle that reuses a join's verdicts under a moved relation DISAGREES with Incremental.refresh — the join measurement can fail",
+          "a maintained oracle that reuses a NAMED row's cells DISAGREES with Incremental.refresh through a limit, a projection and a window — the measurement can fail",
+          "a derived column the cells retype between refreshes is read by the walk as the reference packs it, and the refresh agrees with the full evaluation (Phase 464, D37)"
+        ],
+        "operations": [
+          "Incremental.prime",
+          "Incremental.refresh",
+          "Incremental.result",
+          "DataFrame.aggregateCells",
+          "DataFrame.joinKeysMatch",
+          "DataFrame.windowStep"
+        ]
+      }
+    },
+    {
+      "id": "incremental-maintained-primitives",
+      "level": "assumed",
+      "claim": "THE PARAMETERS OF THE MAINTAINED WALK (Phase 464, D37). The three theorems above hold over four parameters, each an assumption instantiated at production's own by the differential and none proved here: the aggregate function (`agg_eval` — F#: `Column.aggregate` over a group's members in order, which `DataFrame.aggregateCells` applies and the streamed accumulators equal by the suite's `streamedAggregateLaws`), the join's key match (`key_eq` — F#: `DataFrame.joinKeysMatch`), the window column (`win_cells` — F#: `windowStep`'s appended cell per row, over the rows alive at the step in their order) and the group token (`key_token`). What the theorems assume of them: nothing of the first three beyond their types — the reference `mrows` builds from the same parameters, so the agreement is between the walk and the reference AS PARAMETERISED, and the differential is what ties each parameter to production; of the fourth, that it is injective (`key_token_injective`: one token per distinct key cells), which is how production mints a group's token. Two premises on the inputs, beside the delta premise `wk` the rows above state: the prior source's tokens are distinct (`distinct` — production's row-identity witness refuses a duplicate identity before the walk, `RowIdentityUnusable`), and the new source has the prior source's schema, types included (a source whose schema moved is `SourceSchemaMoved` in production and evaluates in full, outside the walk). `unscheduled`: the aggregate function has a model of its own to be written in Core (`Column.aggregate`), the key match and the window column would each retire into a clause of `Pipeline.fst`'s twelve-verb parameter, and nobody has taken either.",
+      "phase": "fuaran-core#464",
+      "class": "premise",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "the aggregate function, the join key match and the window column are production's own and the group token is one per key; the prior source's tokens are distinct and the new source keeps its schema"
+      }
+    },
+    {
       "id": "relational-schema-agrees",
       "level": "proved",
       "claim": "SCHEMA AGREEMENT (Phase 434; the union, Phase 469). For every relational verb, the static schema walk `SchemaWalk.ofTransform` is SOUND for the evaluator's output schema: over knowledge sound for the input frame's schema (a closed knowledge carries the schema's names in order and every type it knows is the schema's; an open one names columns the schema carries, with the types it knows), when `evalStepWith`'s arm answers `Ok`, the walk's answer is sound for the output schema it answers (`walk_sound`, one lemma per arm: `project_sound`, `group_by_sound`, `window_sound`, `pivot_sound` — the walk's open knowledge names the index columns the evaluator's output carries first — `unpivot_sound`, `join_sound` over a closed right source and, under the suffix rule's injectivity, over an undeclared `Ref`, `union_sound` over a closed right — two closed operands zipped by position, an open left read by name — and over an undeclared `Ref`, where the walk decides no type). So a planner, or the pipeline-query registry's agreement check, reading a CLOSED walk reads the evaluator's names and types, and reading an OPEN one reads names and types the evaluator produces. Since Phase 469 (D36) the walk's `Union` arm types each column through the evaluator's own per-column rule (F# `DataFrame.unionField`, modelled as `union_ty`, which `union_types` and the walk's `union_k` both read), so Phase 434's finding — the walk kept the LEFT type where the evaluator widens it (D18), `union_walk_type_drifts` — is closed: its witness is restated as agreement (`union_walk_widens`), and re-introducing the old arm leaves `union_sound` unprovable (measured: one perturbation run). A column pair the evaluator refuses reads as a column of undecided type (the walk carries no refusal verdict, D26). The differential holds the shipped walk to the model's `sound` on every step production answers. Conditional on the walk's declared sources agreeing with the evaluator's resolver (`sources_agree`) and on the suffix rule's injectivity (`cand_injective`), both named by `relational-primitives-abstract`; over `Pipeline.fst`'s unitless schema, so nothing about a unit is claimed.",

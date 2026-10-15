@@ -37,6 +37,10 @@ module ModelRel = Relational
 // has a `Frame` type and module of its own in `Fuaran.Compute`.
 module ModelFrame = Frame
 
+// The incremental refresh past the row-local class (`proofs/oracle/IncrementalMaintained.fs`),
+// aliased for the same reading as `ModelInc`.
+module ModelMaint = IncrementalMaintained
+
 open Fuaran.Core
 open Fuaran.Compute
 open Fuaran.Compute.Tests
@@ -2583,6 +2587,630 @@ let private rSources (sources: string -> Schema option) : ModelRel.sources =
         | Some s -> FStar_Pervasives_Native.Some(s |> List.map (fun f -> f.Name, pColToModel f.Type))
         | None -> FStar_Pervasives_Native.None
 
+// ---- Phase 464 — the INCREMENTAL REFRESH PAST THE ROW-LOCAL CLASS against the model ----
+//
+// `proofs/IncrementalMaintained.fst` models `Incremental.prime` / `Incremental.refresh` over the
+// maintained `GroupBy`, `Project`, `Limit`, `Window` and the filtering joins, beside `Filter` and
+// `Derive`: the walk reusing an unnamed row's cells, a group's aggregates reused exactly when every
+// member is reusable and its member tokens are the prior group's, a join's verdicts reused under the
+// prior key index, nothing reused after a window or a retyped derive. `proofs/oracle/
+// IncrementalMaintained.fs` is that model extracted. This runs it BESIDE production over generated
+// pipelines of those classes, a prior table keyed by `id`, deltas `Delta.diff` builds to a mutated
+// table — rows removed (a group's last row among them), cells moved (a partition key among them),
+// rows appended and removed across a limit's window — and a relation `r` the join reads through the
+// resolver, moved between the prime and the refresh one time in two. The model's parameters are
+// production's own: `DataFrame.aggregateCells`, `DataFrame.joinKeysMatch`, `DataFrame.windowStep`.
+
+/// The aggregate function, the join key match, the window column and the group token, at
+/// production's own.
+let private mPrims: ModelMaint.mprims =
+    { ModelMaint.mprims.agg_eval =
+        fun fn ty cells ->
+            match DataFrame.aggregateCells (pBack pAggFns fn) (pColOfModel ty) (cells |> List.map pCellOfModel) with
+            | Ok c -> ModelPipe.Ok(pCellToModel c)
+            | Error e -> ModelPipe.Error(pErrToModel e)
+      ModelMaint.mprims.key_eq =
+        fun lk rk -> DataFrame.joinKeysMatch (lk |> List.map pCellOfModel) (rk |> List.map pCellOfModel)
+      ModelMaint.mprims.win_cells =
+        fun cols spec rows ->
+            let schema = cols |> List.map (fun (n, ty) -> Field.create n (pColOfModel ty))
+
+            let wspec: WindowSpec =
+                { PartitionBy = spec.partition_by
+                  OrderBy = spec.order_by |> List.map (fun (c, d) -> c, pBack pSortDirs d)
+                  Fn = pWindowFnOfModel spec.w_fn
+                  Of = spec.w_of
+                  As = spec.w_as }
+
+            match DataFrame.windowStep schema (rows |> List.map (List.map pCellOfModel)) wspec with
+            | Ok(_, out) -> ModelPipe.Ok(out |> List.map (fun r -> pCellToModel (List.last r)))
+            | Error e -> ModelPipe.Error(pErrToModel e)
+      ModelMaint.mprims.key_token =
+        fun cells ->
+            "group:"
+            + (cells |> List.map (fun c -> sprintf "%A" c) |> String.concat "\u001f") }
+
+/// The walk's step alphabet, from the model's transform.
+let private mStepOf (t: ModelPipe.transform) : ModelMaint.mstep =
+    match t with
+    | ModelPipe.Filter e -> ModelMaint.MFilter e
+    | ModelPipe.Derive(name, e) -> ModelMaint.MDerive(name, e)
+    | ModelPipe.Project pairs -> ModelMaint.MProject pairs
+    | ModelPipe.Limit(ModelPipe.SlotLit n, ModelPipe.SlotLit off) -> ModelMaint.MLimit(n, off)
+    | ModelPipe.Window spec -> ModelMaint.MWindow spec
+    | ModelPipe.Join(src, on, ModelPipe.Semi) -> ModelMaint.MJoin(src, on, true)
+    | ModelPipe.Join(src, on, ModelPipe.Anti) -> ModelMaint.MJoin(src, on, false)
+    | other -> failwithf "not a step the maintained walk takes: %A" other
+
+/// A pipeline split as production splits it: a prefix, at most one `GroupBy`, a tail.
+let private mPipeOf (p: Transform list) : ModelMaint.mpipe =
+    let rec split acc rest =
+        match rest with
+        | [] ->
+            { ModelMaint.mpipe.prefix = List.rev acc
+              ModelMaint.mpipe.grouped = FStar_Pervasives_Native.None }
+        | GroupBy(keys, aggs) :: tail ->
+            match pTransformToModel (GroupBy(keys, aggs)) with
+            | ModelPipe.GroupBy(mkeys, maggs) ->
+                { ModelMaint.mpipe.prefix = List.rev acc
+                  ModelMaint.mpipe.grouped =
+                    FStar_Pervasives_Native.Some(mkeys, maggs, tail |> List.map (pTransformToModel >> mStepOf)) }
+            | _ -> failwith "unreachable"
+        | t :: more -> split (mStepOf (pTransformToModel t) :: acc) more
+
+    split [] p
+
+/// The relation the join reads, through the resolver production and the model are both handed.
+let private mResolveOf (relation: Table) : string -> Result<Table, EvalError> =
+    fun name ->
+        if name = "r" then
+            Ok relation
+        else
+            Error(UnresolvedSource name)
+
+/// A relation over `g`: some of the three group keys, each once.
+let private mGenRelation (rng: ConfRng.T) : Table * ConfRng.T =
+    let mask, r1 = ConfRng.intBelow 8 rng
+
+    let keys =
+        [ "a"; "b"; "c" ]
+        |> List.indexed
+        |> List.filter (fun (i, _) -> (mask >>> i) &&& 1 = 1)
+        |> List.map snd
+
+    { Schema = [ Field.create "g" StringType; Field.create "n" IntType ]
+      Columns =
+        [ KitColumn.create "g" StringType (keys |> List.map Str)
+          KitColumn.create "n" IntType (keys |> List.mapi (fun i _ -> Int i)) ] },
+    r1
+
+/// One prefix step of the maintained classes beside the row-local two.
+let private mGenStep (rng: ConfRng.T) : Transform * ConfRng.T =
+    let k, r1 = ConfRng.intBelow 7 rng
+
+    match k with
+    | 0 ->
+        let e, r2 = pGenExpr 2 r1
+        Filter e, r2
+    | 1 ->
+        let e, r2 = pGenExpr 2 r1
+        Derive("d", e), r2
+    | 2 ->
+        let j, r2 = ConfRng.intBelow 2 r1
+
+        (if j = 0 then
+             Project [ "id", "id"; "g", "g"; "v", "v"; "w", "w"; "m", "m" ]
+         else
+             Project [ "g", "g"; "v", "v2"; "w", "w"; "id", "id" ]),
+        r2
+    | 3 ->
+        let n, r2 = ConfRng.intBelow 5 r1
+        let off, r3 = ConfRng.intBelow 3 r2
+        Limit(Slot.Lit n, Slot.Lit off), r3
+    | 4 ->
+        let f, r2 = ConfRng.intBelow 5 r1
+        let fn = [| RowNumber; Rank; Lag; CumulSum; RollingMean |].[f]
+
+        Window
+            { PartitionBy = [ "g" ]
+              OrderBy = [ "v", Asc ]
+              Fn = fn
+              Of = "v"
+              As = "wn" },
+        r2
+    | _ ->
+        let j, r2 = ConfRng.intBelow 2 r1
+        Join(Ref "r", [ "g", "g" ], (if j = 0 then Semi else Anti)), r2
+
+/// A pipeline of the maintained classes: a prefix of up to two steps, a `GroupBy` over `g` one
+/// time in two with one or two aggregates, and a tail of up to two steps over the group table.
+let private mGenPipeline (rng: ConfRng.T) : Transform list * ConfRng.T =
+    let n, r1 = ConfRng.intBelow 3 rng
+
+    let rec draw k acc r =
+        if k = 0 then
+            List.rev acc, r
+        else
+            let s, r' = mGenStep r
+            draw (k - 1) (s :: acc) r'
+
+    let prefix, r2 = draw n [] r1
+    let grouped, r3 = ConfRng.intBelow 2 r2
+
+    if grouped = 0 then
+        prefix, r3
+    else
+        let fns =
+            [| Sum; Mean; Min; Max; Count; Median; StdDev; First; Last; CountDistinct |]
+
+        let ofs = [| "v"; "w"; "m" |]
+        let f1, r4 = ConfRng.intBelow fns.Length r3
+        let o1, r5 = ConfRng.intBelow ofs.Length r4
+        let two, r6 = ConfRng.intBelow 2 r5
+        let f2, r7 = ConfRng.intBelow fns.Length r6
+        let o2, r8 = ConfRng.intBelow ofs.Length r7
+
+        let aggs =
+            [ pAgg "a1" fns[f1] ofs[o1] ]
+            @ (if two = 1 then [ pAgg "a2" fns[f2] ofs[o2] ] else [])
+
+        let tailKind, r9 = ConfRng.intBelow 4 r8
+
+        let tail =
+            match tailKind with
+            | 0 -> []
+            | 1 -> [ Derive("t", Binary(Add, Col "a1", Lit(Int 1))) ]
+            | 2 -> [ Filter(Binary(Gt, Col "a1", Lit(Int 0))); Limit(Slot.Lit 2, Slot.Lit 0) ]
+            | _ ->
+                [ Derive("t", Binary(Mul, Col "a1", Lit(Int 2)))
+                  Filter(Binary(Ne, Col "t", Lit(Int 4))) ]
+
+        prefix @ [ GroupBy([ "g" ], aggs) ] @ tail, r9
+
+let private mRenderModel (st: ModelMaint.mstate) : string =
+    iRender (pTableOfFrame (ModelInc.frame_of_walked st.m_out))
+
+/// Production's outcome and the model's, compared on the table or on the error.
+let private mCompare
+    (label: string)
+    (prod: Result<Fuaran.Compute.IncrementalEval, EvalError>)
+    (model: ModelPipe.outcome<ModelMaint.mstate, ModelPipe.eval_error>)
+    : string option =
+    match prod, model with
+    | Ok ps, ModelPipe.Ok ms ->
+        let a = iRender (Fuaran.Compute.Incremental.result ps)
+        let b = mRenderModel ms
+
+        if a = b then
+            None
+        else
+            Some(sprintf "%s: result differs — production %s, model %s" label a b)
+    | Error pe, ModelPipe.Error me when pErrToModel pe = me -> None
+    | Error pe, ModelPipe.Error me ->
+        Some(
+            sprintf
+                "%s: error differs — production %s, model %s"
+                label
+                (pRenderError pe)
+                (pRenderError (pErrOfModel me))
+        )
+    | Ok _, ModelPipe.Error me ->
+        Some(sprintf "%s: production evaluated, model refused %s" label (pRenderError (pErrOfModel me)))
+    | Error pe, ModelPipe.Ok _ -> Some(sprintf "%s: production refused %s, model evaluated" label (pRenderError pe))
+
+/// The model's refresh against the reference evaluator over the same table — `mrefresh_agrees`
+/// read numerically.
+let private mAgainstReference
+    (label: string)
+    (resolve: string -> Result<Table, EvalError>)
+    (p: Transform list)
+    (t: Table)
+    (model: ModelPipe.outcome<ModelMaint.mstate, ModelPipe.eval_error>)
+    : string option =
+    match DataFrame.evalPipelineWithInEnv resolve pEnv p t, model with
+    | Ok rt, ModelPipe.Ok ms ->
+        let a = iRender rt
+        let b = mRenderModel ms
+
+        if a = b then
+            None
+        else
+            Some(sprintf "%s: the model's refresh differs from the reference — reference %s, model %s" label a b)
+    | Error re, ModelPipe.Error me when pErrToModel re = me -> None
+    | Error re, ModelPipe.Error me ->
+        Some(
+            sprintf
+                "%s: the model's refresh error differs from the reference's — reference %s, model %s"
+                label
+                (pRenderError re)
+                (pRenderError (pErrOfModel me))
+        )
+    | Ok _, ModelPipe.Error me ->
+        Some(
+            sprintf "%s: the reference evaluated, the model's refresh refused %s" label (pRenderError (pErrOfModel me))
+        )
+    | Error re, ModelPipe.Ok _ ->
+        Some(sprintf "%s: the reference refused %s, the model's refresh evaluated" label (pRenderError re))
+
+type private MaintTally =
+    {
+        /// Every disagreement, rendered — the tally's verdict is that this is empty.
+        MDiffs: string list
+        /// Trials whose prime both sides evaluated to a table.
+        MPrimed: int
+        /// Trials both sides refused at the prime, with the same error.
+        MRefused: int
+        /// Refreshes compared.
+        MRefreshed: int
+        /// Primed trials whose pipeline carried a `GroupBy`.
+        MGrouped: int
+        /// Refreshes of a grouped pipeline whose delta removed a group's last row (the group table shrank).
+        MGroupVanished: int
+        /// Refreshes of a pipeline with a `Limit` whose kept rows moved (the slice differs from the prior's).
+        MSliceMoved: int
+        /// Refreshes of a pipeline with a `Window` whose delta changed a row's partition key.
+        MPartitionMoved: int
+        /// Refreshes of a pipeline with a filtering join whose relation moved between the prime and the refresh.
+        MRelationMoved: int
+        /// Refreshes of a pipeline with a `Project`.
+        MProjected: int
+    }
+
+let private mEmptyTally =
+    { MDiffs = []
+      MPrimed = 0
+      MRefused = 0
+      MRefreshed = 0
+      MGrouped = 0
+      MGroupVanished = 0
+      MSliceMoved = 0
+      MPartitionMoved = 0
+      MRelationMoved = 0
+      MProjected = 0 }
+
+/// A perturbation of the model's prior state before a refresh — the faithful run leaves it as it
+/// is; a go-red breaks one maintenance rule. Handed the prior state, the pipeline, the new table
+/// and the relation at the refresh.
+type private MaintPerturb = ModelMaint.mstate -> Transform list -> Table -> Table -> ModelMaint.mstate
+
+let private mFaithful: MaintPerturb = fun st _ _ _ -> st
+
+/// The row count of a production result, where it is one.
+let private mRowsOf (r: Result<Fuaran.Compute.IncrementalEval, EvalError>) : int option =
+    match r with
+    | Ok s -> Some(Table.rowCount (Fuaran.Compute.Incremental.result s))
+    | Error _ -> None
+
+/// The `g` cell of the row under a key, where the table holds it.
+let private mGroupKeyOf (t: Table) (key: string) : Cell option =
+    let gs =
+        t.Columns |> List.tryFind (fun c -> c.Name = "g") |> Option.map Column.toCells
+
+    let n = Table.rowCount t
+
+    [ for i in 0 .. n - 1 do
+          match iIdw.KeyOf t i, gs with
+          | Some k, Some cells when Delta.refToken (ByKey(iIdw.KeyString k)) = key -> yield cells[i]
+          | _ -> () ]
+    |> List.tryHead
+
+/// One trial: a prime, a refresh under the diff to a mutated table (the relation moved one time
+/// in two), compared to production and to the reference; and the state theorem read observably,
+/// a second refresh of the refreshed state against a second refresh of a state primed over the
+/// first mutation, on the model.
+let private mTrial
+    (label: string)
+    (reuse: FStar_Pervasives_Native.option<string list> -> ModelInc.reuse_fn)
+    (perturb: MaintPerturb)
+    (rng: ConfRng.T)
+    (t: MaintTally)
+    : MaintTally * ConfRng.T =
+    let p, r1 = mGenPipeline rng
+    let t0, r2 = iGenTable r1
+    let rel0, r3 = mGenRelation r2
+    let moveRel, r4 = ConfRng.intBelow 2 r3
+    let rel1, r5 = if moveRel = 0 then rel0, r4 else mGenRelation r4
+    let pipe = mPipeOf p
+    let menv = pEnvToModel pEnv
+
+    let hasGroup =
+        p
+        |> List.exists (function
+            | GroupBy _ -> true
+            | _ -> false)
+
+    let has (f: Transform -> bool) = p |> List.exists f
+
+    let diffs = ResizeArray<string>()
+    let add (d: string option) = d |> Option.iter diffs.Add
+
+    let modelRun (resolve) (reuseFn: ModelInc.reuse_fn) (st: ModelMaint.mstate) (table: Table) =
+        ModelMaint.mrun
+            mPrims
+            rPrims
+            pPrims
+            (rResolver resolve)
+            menv
+            reuseFn
+            st
+            (pFrameOfTable table).cols
+            (iAliveOf table)
+            pipe
+
+    let prod0 = Fuaran.Compute.Incremental.prime (mResolveOf rel0) pEnv iIdw p t0
+
+    let model0 =
+        modelRun (mResolveOf rel0) ModelInc.no_reuse (ModelMaint.empty_state (pFrameOfTable t0).cols) t0
+
+    add (mCompare (label + " prime") prod0 model0)
+    add (mAgainstReference (label + " prime") (mResolveOf rel0) p t0 model0)
+
+    match prod0, model0 with
+    | Ok ps0, ModelPipe.Ok ms0 ->
+        let t1, r6 = iMutateSome t0 r5
+
+        match Delta.diff iIdw t0 t1 with
+        | Error _ ->
+            { t with
+                MDiffs = List.rev (List.ofSeq diffs) @ t.MDiffs
+                MPrimed = t.MPrimed + 1 },
+            r6
+        | Ok d1 ->
+            let named1 = iNamedOf d1
+
+            let prod1 =
+                Fuaran.Compute.Incremental.refresh (mResolveOf rel1) pEnv iIdw p ps0 d1 t1
+
+            let model1 = modelRun (mResolveOf rel1) (reuse named1) (perturb ms0 p t1 rel1) t1
+            add (mCompare (label + " refresh") prod1 model1)
+            add (mAgainstReference (label + " refresh") (mResolveOf rel1) p t1 model1)
+
+            let vanished =
+                match hasGroup, mRowsOf prod0, mRowsOf prod1 with
+                | true, Some a, Some b when b < a -> 1
+                | _ -> 0
+
+            let sliceMoved =
+                match
+                    has (function
+                        | Limit _ -> true
+                        | _ -> false),
+                    prod0,
+                    prod1
+                with
+                | true, Ok a, Ok b when
+                    iRender (Fuaran.Compute.Incremental.result a)
+                    <> iRender (Fuaran.Compute.Incremental.result b)
+                    ->
+                    1
+                | _ -> 0
+
+            let partitionMoved =
+                match
+                    has (function
+                        | Window _ -> true
+                        | _ -> false),
+                    d1
+                with
+                | true, RowSet r ->
+                    if
+                        r.Rows
+                        |> List.exists (fun (ref, kind) ->
+                            kind = RowChanged
+                            && mGroupKeyOf t0 (Delta.refToken ref) <> mGroupKeyOf t1 (Delta.refToken ref))
+                    then
+                        1
+                    else
+                        0
+                | _ -> 0
+
+            let relationMoved =
+                if
+                    has (function
+                        | Join _ -> true
+                        | _ -> false)
+                    && moveRel = 1
+                then
+                    1
+                else
+                    0
+
+            let projected =
+                if
+                    has (function
+                        | Project _ -> true
+                        | _ -> false)
+                then
+                    1
+                else
+                    0
+
+            // The state theorem, observably, on the model: a refresh of the refreshed state is a
+            // refresh of a state primed over the first mutation.
+            (match prod1, model1 with
+             | Ok _, ModelPipe.Ok ms1 ->
+                 let t2, _ = iMutateSome t1 r6
+
+                 match Delta.diff iIdw t1 t2 with
+                 | Ok d2 ->
+                     let named2 = iNamedOf d2
+
+                     let fromRefreshed =
+                         modelRun (mResolveOf rel1) (reuse named2) (perturb ms1 p t2 rel1) t2
+
+                     let modelPrimed1 =
+                         modelRun
+                             (mResolveOf rel1)
+                             ModelInc.no_reuse
+                             (ModelMaint.empty_state (pFrameOfTable t1).cols)
+                             t1
+
+                     (match modelPrimed1 with
+                      | ModelPipe.Ok mp1 ->
+                          let fromPrimed =
+                              modelRun (mResolveOf rel1) (reuse named2) (perturb mp1 p t2 rel1) t2
+
+                          match fromRefreshed, fromPrimed with
+                          | ModelPipe.Ok a, ModelPipe.Ok b when mRenderModel a <> mRenderModel b ->
+                              diffs.Add(
+                                  sprintf
+                                      "%s: the model's second refresh differs between a refreshed and a primed state"
+                                      label
+                              )
+                          | ModelPipe.Ok _, ModelPipe.Error _
+                          | ModelPipe.Error _, ModelPipe.Ok _ ->
+                              diffs.Add(
+                                  sprintf "%s: the model's second refresh and its primed twin disagree on refusal" label
+                              )
+                          | _ -> ()
+                      | ModelPipe.Error _ -> ())
+                 | Error _ -> ()
+             | _ -> ())
+
+            { t with
+                MDiffs = List.rev (List.ofSeq diffs) @ t.MDiffs
+                MPrimed = t.MPrimed + 1
+                MRefreshed = t.MRefreshed + 1
+                MGrouped = t.MGrouped + (if hasGroup then 1 else 0)
+                MGroupVanished = t.MGroupVanished + vanished
+                MSliceMoved = t.MSliceMoved + sliceMoved
+                MPartitionMoved = t.MPartitionMoved + partitionMoved
+                MRelationMoved = t.MRelationMoved + relationMoved
+                MProjected = t.MProjected + projected },
+            r6
+    | Error _, ModelPipe.Error _ ->
+        { t with
+            MDiffs = List.rev (List.ofSeq diffs) @ t.MDiffs
+            MRefused = t.MRefused + 1 },
+        r5
+    | _ ->
+        { t with
+            MDiffs = List.rev (List.ofSeq diffs) @ t.MDiffs },
+        r5
+
+let private mDifferential
+    (reuse: FStar_Pervasives_Native.option<string list> -> ModelInc.reuse_fn)
+    (perturb: MaintPerturb)
+    (seed: int)
+    (trials: int)
+    : MaintTally =
+    let mutable r = ConfRng.ofSeed seed
+    let mutable tally = mEmptyTally
+
+    for i in 1..trials do
+        let t, r' = mTrial (sprintf "maintained %d" i) reuse perturb r tally
+        tally <- t
+        r <- r'
+
+    { tally with
+        MDiffs = List.rev tally.MDiffs }
+
+/// The go-red for the group class: the prior state's member tokens are overwritten with the
+/// CURRENT groups' member tokens, so `sameMembers` can no longer tell that a member left or joined,
+/// and a group every remaining member of which is unnamed reuses its prior aggregates — a `Max`
+/// over a removed row among them. The prefix is walked as the refresh would walk it to read the
+/// groups the refresh will form.
+let private mStaleMembers: MaintPerturb =
+    fun st p t1 rel1 ->
+        let pipe = mPipeOf p
+
+        match pipe.grouped with
+        | FStar_Pervasives_Native.None -> st
+        | FStar_Pervasives_Native.Some(keys, _, _) ->
+            let cols = (pFrameOfTable t1).cols
+
+            match
+                ModelMaint.mwalk
+                    mPrims
+                    rPrims
+                    pPrims
+                    (rResolver (mResolveOf rel1))
+                    (pEnvToModel pEnv)
+                    ModelInc.no_reuse
+                    []
+                    cols
+                    (iAliveOf t1)
+                    pipe.prefix
+            with
+            | ModelPipe.Error _ -> st
+            | ModelPipe.Ok res ->
+                match res.r_out with
+                | ModelInc.W(cols1, a1) ->
+                    let groups = ModelMaint.groups_of cols1 keys a1
+
+                    let stale =
+                        st.m_groups
+                        |> List.map (fun pg ->
+                            match groups |> List.tryFind (fun g -> g.g_key = pg.p_key) with
+                            | Some g ->
+                                { pg with
+                                    ModelMaint.pgroup.p_tokens = ModelMaint.tokens_of g.g_members }
+                            | None -> pg)
+
+                    { st with
+                        ModelMaint.mstate.m_groups = stale }
+
+/// The go-red for the filtering-join class: every join entry's key index is overwritten with the
+/// index of the relation AT THE REFRESH, so `relationMoved` reads as false and a stable row's prior
+/// verdict is reused under a relation that no longer holds its key.
+let private mStaleRelation: MaintPerturb =
+    fun st _ _ rel1 ->
+        let rframe = pFrameOfTable rel1
+        let rks = ModelMaint.proj_rows rframe.cols [ "g" ] rframe.rows
+
+        let stale =
+            st.m_entries
+            |> List.map (fun e ->
+                match e.e_keys with
+                | FStar_Pervasives_Native.Some _ ->
+                    { e with
+                        ModelMaint.entry.e_keys = FStar_Pervasives_Native.Some rks }
+                | FStar_Pervasives_Native.None -> e)
+
+        { st with
+            ModelMaint.mstate.m_entries = stale }
+
+/// The go-red every class shares with Phase 433's: every row's cached cell is reused, the delta
+/// ignored — a named row that moved answers with the cells it had, through a limit's slice, a
+/// projection, a window's partition and a group's members alike.
+let private mReuseAll (_: FStar_Pervasives_Native.option<string list>) : ModelInc.reuse_fn = fun _ -> true
+
+/// Phase 464 (D37) — the three shapes the probe found production diverging on before the fix: a
+/// derived column the cells type, retyped from int to float by ONE named row, read raw by the walk
+/// where the reference packs it. Each is a table, a pipeline and the mutation; the test holds the
+/// refresh equal to the full evaluation over the mutated table, result or refusal.
+let private mRetypeShapes: (string * Transform list) list =
+    // d = Case [ x > 10 -> 0.5 ] else x: an int arm beside a float arm, typed by the cells.
+    let d = Case([ Binary(Gt, Col "x", Lit(Int 10)), Lit(Float 0.5) ], Col "x")
+
+    let onA inner =
+        Case([ Binary(Eq, Col "g", Lit(Str "A")), inner ], Lit(Int 0))
+
+    [ "row-local: a Mod over the retyped column, on the unnamed rows",
+      [ Derive("d", d); Derive("m", onA (Binary(Mod, Col "d", Lit(Int 2)))) ]
+      "group: a reused Sum over the retyped column, read by a Mod in the tail",
+      [ Derive("d", d)
+        GroupBy([ "g" ], [ pAgg "s" Sum "d" ])
+        Derive("m", onA (Binary(Mod, Col "s", Lit(Int 2)))) ]
+      "group: Min and First over the retyped column, recomputed, read by a Mod in the tail",
+      [ Derive("d", d)
+        GroupBy([ "g" ], [ pAgg "mn" Min "d"; pAgg "fs" First "d" ])
+        Derive("m", onA (Binary(Mod, Col "mn", Lit(Int 2)))) ] ]
+
+let private mRetypeTables: Table * Table =
+    let table (xs: int list) : Table =
+        { Schema =
+            [ Field.create "id" IntType
+              Field.create "g" StringType
+              Field.create "x" IntType ]
+          Columns =
+            [ KitColumn.create "id" IntType [ Int 1; Int 2; Int 3 ]
+              KitColumn.create "g" StringType [ Str "A"; Str "A"; Str "B" ]
+              KitColumn.create "x" IntType (xs |> List.map Int) ] }
+
+    // row 3 (group B) moves x to 11: its d is now Float 0.5, the column widens to float; group A stands.
+    table [ 1; 2; 3 ], table [ 1; 2; 11 ]
+
 let private rSchemaOfModel (s: ModelPipe.schema) : (string * ColumnType) list =
     s |> List.map (fun (n, ty) -> n, pColOfModel ty)
 
@@ -4549,6 +5177,152 @@ let proofOracleTests =
                   "a walk that reuses a named row's cached cell agreed with production everywhere — the differential cannot fail"
 
               printfn "incremental go-red: %d disagreements, first: %s" (List.length t.IDiffs) (List.head t.IDiffs)
+
+          // ---- Phase 464 — the INCREMENTAL REFRESH PAST THE ROW-LOCAL CLASS: prime and refresh
+          //      against the model over the maintained GroupBy, Project, Limit, Window and the
+          //      filtering joins ----
+
+          testCase
+              "the maintained incremental oracle agrees with Incremental.prime and Incremental.refresh on the result over generated pipelines of the maintained classes, priors, deltas and a moving relation, and a refreshed state refreshes as a primed one"
+          <| fun _ ->
+              let t = mDifferential iFaithful mFaithful 464 500
+
+              match t.MDiffs with
+              | d :: _ ->
+                  failtestf
+                      "the maintained incremental oracle and production DISAGREE (%d disagreements)\n%s"
+                      (List.length t.MDiffs)
+                      d
+              | [] ->
+                  // Adequacy: the sample primes, refreshes, reaches every class, removes a group's
+                  // last row, moves a limit's slice, moves a window's partition key and moves the
+                  // joined relation. Each threshold sits under its measured figure with room; they
+                  // catch a generator that stops reaching a shape, not pin the numbers.
+                  Expect.isGreaterThan t.MPrimed 100 (sprintf "primes evaluated on both sides (primed=%d)" t.MPrimed)
+                  Expect.isGreaterThan t.MRefreshed 100 (sprintf "refreshes compared (refreshed=%d)" t.MRefreshed)
+                  Expect.isGreaterThan t.MGrouped 40 (sprintf "grouped pipelines primed (grouped=%d)" t.MGrouped)
+
+                  Expect.isGreaterThan
+                      t.MGroupVanished
+                      3
+                      (sprintf "refreshes whose delta removed a group's last row (vanished=%d)" t.MGroupVanished)
+
+                  Expect.isGreaterThan
+                      t.MSliceMoved
+                      3
+                      (sprintf "refreshes whose limit's slice moved (sliceMoved=%d)" t.MSliceMoved)
+
+                  Expect.isGreaterThan
+                      t.MPartitionMoved
+                      3
+                      (sprintf
+                          "refreshes whose delta changed a window's partition key (partitionMoved=%d)"
+                          t.MPartitionMoved)
+
+                  Expect.isGreaterThan
+                      t.MRelationMoved
+                      3
+                      (sprintf "refreshes whose joined relation moved (relationMoved=%d)" t.MRelationMoved)
+
+                  Expect.isGreaterThan
+                      t.MProjected
+                      3
+                      (sprintf "refreshes through a projection (projected=%d)" t.MProjected)
+
+                  printfn
+                      "maintained differential: primed=%d refused=%d refreshed=%d grouped=%d vanished=%d sliceMoved=%d partitionMoved=%d relationMoved=%d projected=%d"
+                      t.MPrimed
+                      t.MRefused
+                      t.MRefreshed
+                      t.MGrouped
+                      t.MGroupVanished
+                      t.MSliceMoved
+                      t.MPartitionMoved
+                      t.MRelationMoved
+                      t.MProjected
+
+          testCase
+              "a maintained oracle that reuses a group whose members changed DISAGREES with Incremental.refresh — the group measurement can fail"
+          <| fun _ ->
+              // The broken maintenance rule: the prior group's member tokens are overwritten with the
+              // current group's, so a group that lost or gained a member reuses its prior aggregates.
+              let t = mDifferential iFaithful mStaleMembers 464 500
+
+              Expect.isGreaterThan
+                  (List.length t.MDiffs)
+                  0
+                  "a walk that reuses a group whose members changed agreed with production everywhere — the group differential cannot fail"
+
+              printfn "maintained group go-red: %d disagreements, first: %s" (List.length t.MDiffs) (List.head t.MDiffs)
+
+          testCase
+              "a maintained oracle that reuses a join's verdicts under a moved relation DISAGREES with Incremental.refresh — the join measurement can fail"
+          <| fun _ ->
+              // The broken maintenance rule: the prior key index is overwritten with the relation's
+              // index at the refresh, so a stable row's verdict is reused under a relation that moved.
+              let t = mDifferential iFaithful mStaleRelation 464 500
+
+              Expect.isGreaterThan
+                  (List.length t.MDiffs)
+                  0
+                  "a walk that reuses a join's verdicts under a moved relation agreed with production everywhere — the join differential cannot fail"
+
+              printfn "maintained join go-red: %d disagreements, first: %s" (List.length t.MDiffs) (List.head t.MDiffs)
+
+          testCase
+              "a maintained oracle that reuses a NAMED row's cells DISAGREES with Incremental.refresh through a limit, a projection and a window — the measurement can fail"
+          <| fun _ ->
+              let t = mDifferential mReuseAll mFaithful 464 500
+
+              Expect.isGreaterThan
+                  (List.length t.MDiffs)
+                  0
+                  "a walk that reuses a named row's cells agreed with production everywhere — the maintained differential cannot fail"
+
+              printfn
+                  "maintained reuse-all go-red: %d disagreements, first: %s"
+                  (List.length t.MDiffs)
+                  (List.head t.MDiffs)
+
+          testCase
+              "a derived column the cells retype between refreshes is read by the walk as the reference packs it, and the refresh agrees with the full evaluation (Phase 464, D37)"
+          <| fun _ ->
+              // Before D37 the walk held the retyped column's cells raw (an int under a float
+              // column) where the reference packs them, so a Mod downstream — or a group whose
+              // aggregates were reused from the int reading — answered where the reference refused.
+              let before, after = mRetypeTables
+
+              for (label, p) in mRetypeShapes do
+                  let full = DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p after
+
+                  let refreshed =
+                      match Fuaran.Compute.Incremental.prime DataFrame.noResolve Map.empty iIdw p before with
+                      | Error e -> failtestf "%s: the prime refused %s" label (pRenderError e)
+                      | Ok st ->
+                          match Delta.diff iIdw before after with
+                          | Error e -> failtestf "%s: the diff refused %A" label e
+                          | Ok d -> Fuaran.Compute.Incremental.refresh DataFrame.noResolve Map.empty iIdw p st d after
+
+                  match full, refreshed with
+                  | Ok f, Ok r ->
+                      Expect.equal
+                          (iRender (Fuaran.Compute.Incremental.result r))
+                          (iRender f)
+                          (sprintf "%s: the refresh differs from the full evaluation" label)
+                  | Error fe, Error re ->
+                      Expect.equal re fe (sprintf "%s: the refresh's error differs from the full evaluation's" label)
+                  | Ok f, Error re ->
+                      failtestf
+                          "%s: the full evaluation answered %s, the refresh refused %s"
+                          label
+                          (iRender f)
+                          (pRenderError re)
+                  | Error fe, Ok r ->
+                      failtestf
+                          "%s: the full evaluation refused %s, the refresh answered %s"
+                          label
+                          (pRenderError fe)
+                          (iRender (Fuaran.Compute.Incremental.result r))
 
           // ---- Phase 434 — the RELATIONAL verbs: output schema and refusals against the
           //      evaluator, the walk against SchemaWalk ----

@@ -47,6 +47,11 @@
          `toTable`), the prepared source, and the comparison kernels with `filterBits`. Opens
          `Pipeline`, so it follows it. -->
     <Compile Include="Frame.fs" />
+    <!-- The model of the INCREMENTAL REFRESH PAST THE ROW-LOCAL CLASS (../IncrementalMaintained.fst):
+         the walk over Project, Limit, Window and the filtering joins, the maintained GroupBy's
+         groups and aggregate reuse, `mprime` and `mrefresh`. Opens `Pipeline`, `Incremental` and
+         `Relational`, so it follows them. -->
+    <Compile Include="IncrementalMaintained.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
