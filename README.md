@@ -59,6 +59,7 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `Binary` | `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`, `And`, `Or`, `Contains`, `StartsWith`, `EndsWith` |
 | `Not`, `Coalesce`, `Case`, `Cast`, `IsNull`, `InList`, `InParam` | logic, null handling, branching, typing, membership |
 | `ApplyFn` | `Abs`, `Round`, `Floor`, `Ceil`, `Sqrt`, `Least`, `Greatest`, `Length`, `Lower`, `Upper`, `Substr`, `Trim`, `Replace`, `Concat`, `IndexOf`, `DatePart`, `DateDiffDays` |
+| `Convert` | an explicit unit conversion: the operand under a target `UnitOfMeasure`, refused across dimensions |
 | `Quotient`, `Rounded` | an exact (decimal) quotient, and an exact number brought to a stated `Rounding` — a scale slot and a `RoundingMode` |
 
 ## Adoption, in five lines

@@ -32,7 +32,8 @@
          list` and the typed `Column` on every signature that carried one, class `retype`)
          advanced the slot to 0.39.0, released as `v0.39.0`. 0.39.0 is tagged, so Phase 429's breaking
          change (the evaluator propagates and checks units: `ColExpr` gains `Convert`, `EvalError` gains
-         `UnitMismatch`, `ColumnKnowledge` carries the field's metadata) advanced the slot to 0.40.0. -->
+         `UnitMismatch`, `ColumnKnowledge` carries the field's metadata) advanced the slot to 0.40.0,
+         released as `v0.40.0`. -->
     <Version>0.40.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
