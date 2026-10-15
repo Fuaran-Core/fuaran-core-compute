@@ -1,5 +1,5 @@
-/// The claims ladder (`proofs.json`) and the coverage declaration (`proofs/modules.json` +
-/// `proofs/coverage-exclusions.json`) held to the tree (Phase 259).
+/// The claims ladder (`proofs.json`) held to the tree (Phase 259). The coverage declaration
+/// (`proofs/modules.json` + `proofs/coverage-exclusions.json`) is `ProofCoverageTests.fs`'s.
 ///
 /// The proof-leg kit ships the leg that RUNS these families and deliberately not the families
 /// themselves, because what a row must be held to is a property of the adopting repository's tree
@@ -17,9 +17,7 @@
 ///   * a TESTED row on the `Proofs.Oracle` family names a model with a proved row, and every case it
 ///     lists is a test of that family, word for word.
 ///
-/// `Proofs.Coverage`: coverage is TOTAL OR DECLARED — every packable package is named by a model's
-/// `packages` in `modules.json` or carries an entry in `coverage-exclusions.json`, never both, and no
-/// entry names a package that is not packable or a reason the file does not declare.
+/// `Proofs.Coverage` lives in `ProofCoverageTests.fs` (Phase 432), beside the operation census.
 ///
 /// Each rule is a pure function with a go-red over synthetic input beside the live reading, because
 /// every live case reads files that are expected to be correct, and a checker that matched nothing
@@ -171,27 +169,6 @@ let internal treeFindings
           if not (provedModels.Contains m) then
               yield sprintf "checked model %s carries no proved row" m ]
 
-/// The coverage findings: packable packages against the modelled and the excluded sets.
-let internal coverageFindings
-    (packable: Set<string>)
-    (modelled: Set<string>)
-    (excluded: (string * string) list)
-    (reasons: Set<string>)
-    : string list =
-    let excludedSet = excluded |> List.map fst |> Set.ofList
-
-    [ for p in packable do
-          match modelled.Contains p, excludedSet.Contains p with
-          | false, false -> yield sprintf "%s: packable, named by no model and carrying no exclusion" p
-          | true, true -> yield sprintf "%s: named by a model AND excluded — the exclusion outlived its reason" p
-          | _ -> ()
-      for p, reason in excluded do
-          if not (packable.Contains p) then
-              yield sprintf "%s: excluded but not a packable package" p
-
-          if not (reasons.Contains reason) then
-              yield sprintf "%s: reason `%s` is not one the file declares" p reason ]
-
 // ---- the live readings ------------------------------------------------------------------------
 
 let private root () = Snapshots.repoFile ""
@@ -311,59 +288,3 @@ let ladderTests =
                   "the literal line, not a comment naming it"
 
               Expect.isEmpty (checkedModulesOf "no declaration here") "no line reads as no models" ]
-
-[<Tests>]
-let coverageTests =
-    testList
-        "Proofs.Coverage"
-        [
-
-          testCase "every packable package is modelled or excluded, never both, and every exclusion is live"
-          <| fun _ ->
-              let packable =
-                  PackageRosterTests.packableProjects (root ())
-                  |> List.map _.PackageId
-                  |> Set.ofList
-
-              Expect.isNonEmpty (Set.toList packable) "the roster found packable projects"
-
-              use modules =
-                  JsonDocument.Parse(File.ReadAllText(Path.Combine(root (), "proofs", "modules.json")))
-
-              let modelled =
-                  [ for m in modules.RootElement.GetProperty("modules").EnumerateArray() do
-                        match m.TryGetProperty "packages" with
-                        | true, ps -> yield! [ for p in ps.EnumerateArray() -> p.GetString() ]
-                        | _ -> () ]
-                  |> Set.ofList
-
-              use excl =
-                  JsonDocument.Parse(File.ReadAllText(Path.Combine(root (), "proofs", "coverage-exclusions.json")))
-
-              let excluded =
-                  [ for e in excl.RootElement.GetProperty("exclusions").EnumerateArray() ->
-                        e.GetProperty("package").GetString(), e.GetProperty("reason").GetString() ]
-
-              let reasons =
-                  [ for p in excl.RootElement.GetProperty("reasons").EnumerateObject() -> p.Name ]
-                  |> Set.ofList
-
-              Expect.isEmpty (coverageFindings packable modelled excluded reasons) "coverage is total or declared"
-
-          testCase "the coverage rule goes red in both directions"
-          <| fun _ ->
-              let packable = set [ "A"; "B"; "C" ]
-              let reasons = set [ "facade" ]
-
-              let findings =
-                  coverageFindings packable (set [ "A"; "B" ]) [ "B", "facade"; "Gone", "facade"; "C", "whim" ] reasons
-
-              Expect.equal
-                  (List.length findings)
-                  3
-                  "B modelled and excluded, Gone not packable, C an undeclared reason — and nothing for A"
-
-              Expect.equal
-                  (coverageFindings packable (set [ "A" ]) [ "B", "facade" ] reasons)
-                  [ "C: packable, named by no model and carrying no exclusion" ]
-                  "an uncovered package is named" ]
