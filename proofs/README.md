@@ -1,6 +1,6 @@
 # Proofs
 
-Two F\* models of this repository's code, each checked by a pinned prover, extracted to F#, and run
+Three F\* models of this repository's code, each checked by a pinned prover, extracted to F#, and run
 beside the production code it models. The claims ladder at the repository root,
 [`../proofs.json`](../proofs.json), says row by row what is **proved**, what is only **tested**,
 what is **assumed** and what is **policy**; this page says how the leg works. A claim that is not a
@@ -10,6 +10,7 @@ row in the ladder is not claimed.
 |---|---|---|
 | [`ColumnOps.fst`](ColumnOps.fst) | `ColumnOps.apply` / `canApply` / `invert` / `Diff.toOps` over a table with a validity mask, clause for clause; and, since Phase 268, a column held as a rope of chunks with `Chunked.setCell` over it | totality and its rejection characterisation, all-or-nothing rejection, the dry run's agreement, well-formedness preserved by every accepted structural operation, `invert`'s round trip and its partial cases, `Diff.toOps`'s script reconstructing its target, and chunk sharing — the edit through the rope is `apply`'s flat edit, and every chunk before and after the one holding the row is the chunk it was |
 | [`Pipeline.fst`](Pipeline.fst) | `DataFrame.evalPipelineWithInEnvCounted`: the closed `ColExpr` / `Transform` algebra, the expression evaluator with its four loops, `evalFilter`, `evalDerive`, the step dispatch and the counted fold | totality, budget monotonicity in the pipeline prefix, the evaluator's visits bounded by the expression's nodes, the work bounded by the count under the section-21.8 expression limit taken as a hypothesis — and the finding that the limit is enforced nowhere; since Phase 269 also the planner's reorder (`derive_then_filter`: a total derive whose column type the schema decides — string-typed until Phase 338 — removed from a filtered row's path preserves the driver's result; and, since Phase 338, `derive_type_rows_free`: that type is the same over any two frames of a schema) and the totality verdict's soundness over the modelled evaluator (`verdict_sound`), under the one assumption `admits` names |
+| [`Incremental.fst`](Incremental.fst) | `Incremental.prime` / `Incremental.refresh` on the row-local path (Phase 433): the per-step cell caches `IncrementalEval` retains, the walk that reads a cached cell for every row the delta does not name and evaluates the rest, over pipelines of `Filter` and `Derive` — the two verbs `Pipeline.fst` models as clauses; the other verb classes are declared out in `DECISIONS.md` D31 | priming is full evaluation (`prime_is_full`); a refresh against a primed state under a truthful delta is the prime over the new source, output and caches (`refresh_is_prime`); and so the refreshed answer is the full evaluation over the updated source (`refresh_agrees`) — under the one premise the ladder names (`incremental-delta-truthful`), and on the lemma that the evaluator reads a schema's names and never its types (`eval_expr_names`) |
 | [`Limits.fst`](Limits.fst) | the wire format's section-21 resource limits as named premises | the relations between them; copied from the Fuaran.Core repository because `Pipeline` opens it |
 
 ## The leg
@@ -70,7 +71,7 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `DataFrameCodec` | 7 | 0 | 0 | 0 | 0 | 0 | 7 |
 | `Fuaran.Compute.DataFrame` | `Delta` | 21 | 0 | 0 | 0 | 0 | 0 | 21 |
 | `Fuaran.Compute.DataFrame` | `DeltaCodec` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
-| `Fuaran.Compute.DataFrame` | `Incremental` | 25 | 0 | 0 | 0 | 0 | 0 | 25 |
+| `Fuaran.Compute.DataFrame` | `Incremental` | 25 | 3 | 0 | 0 | 0 | 0 | 22 |
 | `Fuaran.Compute.DataFrame` | `IncrementalCodec` | 7 | 0 | 0 | 0 | 0 | 0 | 7 |
 | `Fuaran.Compute.DataFrame` | `MorselWorker` | 3 | 0 | 0 | 0 | 0 | 3 | 0 |
 | `Fuaran.Compute.DataFrame` | `NowGrain` | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
@@ -80,7 +81,7 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `Slot` | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `Transform` | 22 | 2 | 0 | 0 | 0 | 0 | 20 |
 | `Fuaran.Compute.DataFrame` | `WorkerPool` | 5 | 0 | 0 | 0 | 0 | 2 | 3 |
-| **Total** |  | 190 | 11 | 14 | 7 | 0 | 5 | 153 |
+| **Total** |  | 190 | 14 | 14 | 7 | 0 | 5 | 150 |
 <!-- operation-coverage:end -->
 
 ## Adopted by copy

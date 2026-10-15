@@ -1,6 +1,6 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-10-15 — D31: a declined shape's tick is held to what a declined refresh is — the diff and the reference evaluation it runs, timed beside the tick, plus the per-call floor; and a refresh no longer walks an embedded relation to learn that its pipeline did not move
+## 2026-10-15 — D33: a declined shape's tick is held to what a declined refresh is — the diff and the reference evaluation it runs, timed beside the tick, plus the per-call floor; and a refresh no longer walks an embedded relation to learn that its pipeline did not move
 
 **Context.** Compute `v0.39.0` (`02d25fd`) failed its publish run (38554709427, attempt 1) in the
 Release clock leg: `append pivot @ 100000` read tick 10.07 to 10.34 ms against a one-thread full
@@ -115,6 +115,76 @@ the condition.
 flat-container index), so its `STABILITY.md` heading stands as released and is not retitled; this
 phase's entry rides the `0.40.0` draft. No public signature, answer or wire byte moves (class `none`,
 `performance`).
+
+## 2026-10-15 — D31: the incremental refresh is modelled and proved for the row-local class — `Filter` and `Derive` — over `Pipeline.fst`'s frame; every other verb class is declared out, by name and with its reason, and the model's one premise is the delta's truthfulness
+
+**Context.** `Incremental.fs` is about seven thousand lines and `Delta.fs` two thousand: a refresh walks
+the pipeline step by step over a frame whose per-step cells it keeps (`StepCells`, aligned with the
+source's row tokens), reads a cached cell for every row the delta does not name and evaluates the rest,
+maintains a `GroupBy`'s groups, merges a `Sort`'s order, slices a `Limit`, resumes a `Window`'s run and
+re-checks a filtering join's key index. Its agreement with full evaluation was sampled
+(`Conformance.incrementalLaws`, the refresh-cost tests) and stated by no model (D30's census said so,
+operation by operation). Phase 433 asked for the theorem, allowing a split by verb class provided the
+split is recorded rather than implied.
+
+**Decision.**
+
+1. **The covered class is the pipeline every step of which is a `Filter` or a `Derive`** — the two verbs
+   `Incremental.classifyStep` reads as `PropagateRows` AND `Pipeline.fst` models as a clause. The model
+   (`proofs/Incremental.fst`) is the walk at the level production's comments state it: one cell cache per
+   evaluating step keyed by the row's token, a step evaluated row by row in frame order with a reused row's
+   cell read from the prior cache and every other row's evaluated by `Pipeline.eval_expr`, the first error
+   winning; a `Filter` keeping the rows whose cell is `Bool true`; a `Derive` replacing or appending its
+   column, typed over the rows alive at the step by `derived_typing_in` and `column_type_by` — the
+   reference's own rule, re-run on every refresh, exactly as `walk`'s `WDerive` arm re-runs it
+   (`Incremental.fs`, "Reading it off a cache would type the column differently from the reference the
+   moment a filter downstream dropped the only typed row"). `prime` is the walk reusing nothing;
+   `refresh` is the walk reusing every unnamed row against the primed caches. Three theorems:
+   `prime_is_full` (priming is `Pipeline.eval_uncounted`, frame for frame and error for error),
+   `refresh_is_prime` (the state theorem: output AND caches), `refresh_agrees` (the agreement theorem).
+   The lemma that carries them is `eval_expr_names`: the evaluator reads a schema's names and never its
+   types, so a cell cached under one column typing is the cell under another — which is what makes a
+   per-row cache sound under a column typing that is a function of the whole column.
+2. **The one premise beyond `Pipeline.fst`'s is the delta's truthfulness**, as the walk reads it:
+   every row the delta does not name is a row of the prior source, under its token, with the cells it had
+   (`unchanged`). It is the ladder's `incremental-delta-truthful` row, and it is production's own
+   contract ("The delta must truthfully describe the change (`Delta.diff` produces exactly that)"). The
+   theorems are stated for a new source that renames no column; a source whose schema moved is
+   `SourceSchemaMoved` in production and evaluates in full, outside the walk.
+3. **Declared out, each a follow-up of its own, each still a `measured-elsewhere` entry in the census:**
+   - `Project` — row-local in production, but a parameter (`other_fn`) in `Pipeline.fst`; covering it
+     needs a concrete `Project` clause there and a bridge row saying the parameter agrees with it;
+   - the maintained `GroupBy` — the group table, the per-group member order and aggregate caches
+     (`GroupMembers`, `GroupAggs`, `GroupOrder`, `TailCells`), and the rule that a touched group is
+     recomputed over its members in order while an untouched one is reused; `GroupBy` is a parameter
+     in `Pipeline.fst`, so the model needs the verb's own clause first;
+   - top-N — `Sort` (`MergeOrder`: the arrival and produced orders, a merge of the named rows into the
+     produced order, valid only while the unnamed rows' arrival order stands) and `Limit`
+     (`TruncateOrder`: a slice over the maintained order); both parameters in `Pipeline.fst`;
+   - `Window` (`RecomputeFrame`, the resumed prefix-fold runs of Phase 333) and the filtering joins
+     (`FilterByRelation`, the cached key index of Phase 120);
+   - the staleness guards (`PipelineChanged`, `EnvChanged`, `SourceSchemaMoved`, `DeltaIsFullRefresh`,
+     `OrdinalAddressing`, `RowIdentityUnusable`), the quiet-delta shortcut (`ReusedPrior`), the in-place
+     and append fast paths (Phases 323, 359 — the same caches reached from the prior arrays), the chunked
+     path (Phase 268) and the state's wire form (`IncrementalCodec`).
+   Row-local first because it is the class the other classes' walks run THROUGH — every admitted step
+   after a `GroupBy` or a `Sort` is this same restricted walk one frame along — so its theorem is the
+   base the others extend, and because it is the class `Pipeline.fst` already models concretely: nothing
+   had to be assumed of a verb to state it.
+
+**What the model is not.** It is not `Incremental.fs` clause for clause: the slot arrays, the `Order`
+array, the sparse reads, the `WalkFrame`'s origins and tails are representation, and the model carries
+the relation they implement — a row's cell at a step, found under its token. The differential
+(`Proofs.Oracle`, the incremental cases) is what ties the two: production's `prime` and `refresh` beside
+the extracted `prime` and `refresh` over generated row-local pipelines, priors and deltas built by
+`Delta.diff`, with the delta's named rows read off the delta production was handed.
+
+**Consequences.** `Incremental.prime` and `Incremental.refresh` move from the census to the ladder's
+proved rows and `Incremental.result` to its tested row; the rest of the `Incremental` entry stands, its
+reason now naming the row-local theorem and the classes still outside it. No production source changed:
+the model found no defect. A later phase that covers a class above extends `Incremental.fst` (a new
+`wstep` case, or a clause in `Pipeline.fst` first) and deletes that class's census members in the same
+commit, as D30 requires.
 
 ## 2026-10-15 — D30: the operation census is ported from Fuaran.Core, and the two repositories have one coverage vocabulary; the census is the modelled packages' operations and the relational verbs
 

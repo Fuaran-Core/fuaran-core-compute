@@ -603,15 +603,12 @@
     },
     {
       "members": [
-        "Incremental.prime",
         "Incremental.primeOn",
         "Incremental.primePrepared",
         "Incremental.primeOnPrepared",
-        "Incremental.refresh",
         "Incremental.refreshOn",
         "Incremental.refreshPrepared",
         "Incremental.refreshOnPrepared",
-        "Incremental.result",
         "Incremental.resultPrepared",
         "Incremental.strategy",
         "Incremental.chunksTouched",
@@ -621,7 +618,7 @@
         "Incremental.plan'"
       ],
       "class": "measured-elsewhere",
-      "reason": "The incremental engine (`Incremental.fs`): priming, refreshing under a delta, and the readers of its state. No model states that a refresh equals a recomputation; `Conformance.incrementalLaws` samples it, and the refresh-cost tests pin what a refresh evaluates.",
+      "reason": "The incremental engine (`Incremental.fs`) beyond the row-local walk `proofs/Incremental.fst` models (Phase 433, D31): the prepared and `-On` entry points (the chunked path of Phase 268, the resolver-bearing variants), and the readers of a state. `prime`, `refresh` and `result` are on the ladder for pipelines of `Filter` and `Derive` alone; the maintained `GroupBy`, the merged `Sort`, `Limit`, `Window`, the filtering joins, `Project`, the staleness guards and the fast paths are stated by no model, and `Conformance.incrementalLaws` samples them while the refresh-cost tests pin what a refresh evaluates.",
       "standIn": "tests/Fuaran.Core.Compute.Tests/IncrementalRefreshCostTests.fs"
     },
     {

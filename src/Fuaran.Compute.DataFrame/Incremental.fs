@@ -5599,7 +5599,7 @@ module Incremental =
     /// Phase 459 — the in-process reading goes through `samePipeline`, the identity test first. It
     /// had been written with `<>` since Phase 355, which left `samePipeline` unreferenced and put the
     /// walk Phase 333 removed back on every refresh: a join's embedded 100,000-row relation compared
-    /// cell by cell, 1.2 ms a tick, a fifth of the full evaluation (DECISIONS.md D31).
+    /// cell by cell, 1.2 ms a tick, a fifth of the full evaluation (DECISIONS.md D33).
     let private pipelineMoved (pipeline: Transform list) (state: IncrementalEval) : bool =
         if state.PipelineKey = "" then
             not (samePipeline pipeline state.Pipeline)

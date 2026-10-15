@@ -418,7 +418,7 @@ evaluation on all three counted attempts of its first try, against a bound of 1.
 second. Both cells that flap on the corpus tick cases belong to the two shapes the seam declines,
 `inner join` and `pivot`, whose refresh is the full evaluation by design. Phase 459 measured the
 declined path, removed the one avoidable cost it found, and changed how a declined shape's tick is
-judged (`DECISIONS.md` D31).
+judged (`DECISIONS.md` D33).
 
 **Where a declined tick's time goes.** Release, Arm64, 100,000 rows, the corpus's one-row edit and
 append, before the change, in ms. The refresh is the boundary plus the reference evaluation on the

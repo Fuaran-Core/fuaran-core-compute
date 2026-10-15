@@ -25,6 +25,10 @@ module ModelCol = ColumnOps
 // no `Pipeline` module, but the alias keeps every model read the same way here).
 module ModelPipe = Pipeline
 
+// The row-local incremental refresh (`proofs/oracle/Incremental.fs`), aliased before the opens for
+// the same reason: production has an `Incremental` module of its own.
+module ModelInc = Incremental
+
 open Fuaran.Core
 open Fuaran.Compute
 open Fuaran.Compute.Tests
@@ -2002,6 +2006,539 @@ let private unitDifferential (seed: int) (trials: int) : UnitTally =
     t
 
 
+
+// ---- Phase 433 — the ROW-LOCAL INCREMENTAL REFRESH against the model ----
+//
+// `proofs/Incremental.fst` models `Incremental.prime` / `Incremental.refresh` on the row-local path:
+// one cell cache per evaluating step keyed by the row's identity token, a walk that reads a cached
+// cell for every row the delta does not name and evaluates the rest, over pipelines of `Filter` and
+// `Derive`. `proofs/oracle/Incremental.fs` is that model extracted. This runs it BESIDE production
+// over generated row-local pipelines, a prior table keyed by an `id` column, and deltas `Delta.diff`
+// builds to a mutated table — the delta's named rows read off the delta production was handed, the
+// source's tokens minted by the same witness — and compares the RESULT byte for byte, or the error.
+// The cell primitives are production's own (`pPrims`), as the pipeline differential instantiates
+// them; the twelve verbs are never reached.
+
+/// The identity every incremental trial keys by: an `id` column the mutations never touch.
+let private iIdw = RowIdentity.byColumn "id"
+
+/// A row's token as production's witness mints it and as `Delta.diff` names it (`ByKey` of the
+/// witness's `KeyString`, rendered by `Delta.refToken`). A row with no identity (a `Null` id, which
+/// the trials never draw) takes a token no delta can name, so it is always evaluated.
+let private iTokens (t: Table) : string list =
+    let keyOf = iIdw.KeyOf t
+
+    [ for i in 0 .. Table.rowCount t - 1 ->
+          match keyOf i with
+          | Some k -> Delta.refToken (ByKey(iIdw.KeyString k))
+          | None -> sprintf "none:%d" i ]
+
+/// The model's walked source: the frame's rows, each under its token.
+let private iAliveOf (t: Table) : ModelInc.alive =
+    List.zip (iTokens t) (pFrameOfTable t).rows
+
+/// The model's reading of a delta: the tokens it names, or every row (`None`) where it invalidates a
+/// column or is a full refresh — exactly `namedTokens` and the `InvalidatedColumns` clause.
+let private iNamedOf (d: TableDelta) : FStar_Pervasives_Native.option<string list> =
+    match d with
+    | FullRefresh -> FStar_Pervasives_Native.None
+    | RowSet r ->
+        if List.isEmpty r.InvalidatedColumns then
+            FStar_Pervasives_Native.Some(r.Rows |> List.map (fst >> Delta.refToken))
+        else
+            FStar_Pervasives_Native.None
+
+/// A row-local pipeline crossed to the model's own step alphabet.
+let private iStepsOf (p: Transform list) : ModelInc.wstep list =
+    p
+    |> List.map (function
+        | Filter e -> ModelInc.WFilter(pExprToModel e)
+        | Derive(name, e) -> ModelInc.WDerive(name, pExprToModel e)
+        | other -> failwithf "not a row-local step: %A" other)
+
+/// One to four `Filter` / `Derive` steps over the pipeline differential's expression generator.
+let private iGenPipeline (rng: ConfRng.T) : Transform list * ConfRng.T =
+    let n, r = ConfRng.intBelow 4 rng
+
+    let rec draw k acc r =
+        if k = 0 then
+            List.rev acc, r
+        else
+            let kind, r1 = ConfRng.intBelow 2 r
+            let e, r2 = pGenExpr 2 r1
+
+            let s = if kind = 0 then Filter e else Derive("d", e)
+
+            draw (k - 1) (s :: acc) r2
+
+    draw (n + 1) [] r
+
+/// A cell of the column's own type (never another type, so a mutation keeps the column typed and
+/// the schema fixed, which is what keeps `Delta.diff` on the keyed path rather than `FullRefresh`),
+/// null one time in five on the nullable columns.
+let private iGenCell (ty: ColumnType) (rng: ConfRng.T) : Cell * ConfRng.T =
+    let v, r1 = ConfRng.intBelow 40 rng
+    let roll, r2 = ConfRng.intBelow 5 r1
+
+    let cell =
+        match ty with
+        | StringType -> Str [| "a"; "b"; "c" |].[v % 3]
+        | IntType -> if roll = 0 then Null else Int(v - 7)
+        | FloatType -> Float(float v / 2.0)
+        | DecimalType ->
+            if roll = 0 then
+                Null
+            else
+                Cell.decimal (sprintf "%d.25" (v - 7)) |> Option.defaultValue Null
+        | other -> failwithf "the incremental trials draw no %A column" other
+
+    cell, r2
+
+/// The prior table: the pipeline differential's recipe (`g`, `v`, `w`, `m`) under an `id` column.
+let private iGenTable (rng: ConfRng.T) : Table * ConfRng.T =
+    let plain, r1 = pGenTable rng
+    let n = Table.rowCount plain
+    let ids = KitColumn.create "id" IntType [ for i in 0 .. n - 1 -> Int(100 + i) ]
+
+    { Schema = Field.create "id" IntType :: plain.Schema
+      Columns = ids :: plain.Columns },
+    r1
+
+/// One mutation of a table: a cell changed in place, a row appended under a fresh id, or a row
+/// removed. The `id` column is never written.
+let private iMutate (t: Table) (rng: ConfRng.T) : Table * ConfRng.T =
+    let n = Table.rowCount t
+    let cols = t.Columns |> List.map (fun c -> c.Name, c.Type, Column.toCells c)
+    let kind, r1 = ConfRng.intBelow (if n = 0 then 1 else 3) rng
+
+    let rebuilt (cols: (string * ColumnType * Cell list) list) : Table =
+        { Schema = cols |> List.map (fun (name, ty, _) -> Field.create name ty)
+          Columns = cols |> List.map (fun (name, ty, cells) -> KitColumn.create name ty cells) }
+
+    match kind with
+    | 0 ->
+        // append a row under an id past every id in the table
+        let maxId =
+            cols
+            |> List.pick (fun (name, _, cells) -> if name = "id" then Some cells else None)
+            |> List.fold
+                (fun acc c ->
+                    match c with
+                    | Int i -> max acc i
+                    | _ -> acc)
+                99
+
+        let mutable r = r1
+
+        let cols' =
+            cols
+            |> List.map (fun (name, ty, cells) ->
+                if name = "id" then
+                    name, ty, cells @ [ Int(maxId + 1) ]
+                else
+                    let c, r' = iGenCell ty r
+                    r <- r'
+                    name, ty, cells @ [ c ])
+
+        rebuilt cols', r
+    | 1 ->
+        // change one cell of one non-id column in one row
+        let row, r2 = ConfRng.intBelow n r1
+        let which, r3 = ConfRng.intBelow (List.length cols - 1) r2
+        let mutable r = r3
+
+        let cols' =
+            cols
+            |> List.mapi (fun ci (name, ty, cells) ->
+                if ci = which + 1 then
+                    let c, r' = iGenCell ty r
+                    r <- r'
+                    name, ty, cells |> List.mapi (fun i x -> if i = row then c else x)
+                else
+                    name, ty, cells)
+
+        rebuilt cols', r
+    | _ ->
+        // remove one row
+        let row, r2 = ConfRng.intBelow n r1
+
+        let cols' =
+            cols
+            |> List.map (fun (name, ty, cells) ->
+                name, ty, cells |> List.indexed |> List.filter (fun (i, _) -> i <> row) |> List.map snd)
+
+        rebuilt cols', r2
+
+/// One to three mutations.
+let private iMutateSome (t: Table) (rng: ConfRng.T) : Table * ConfRng.T =
+    let k, r = ConfRng.intBelow 3 rng
+
+    let rec go i t r =
+        if i = 0 then
+            t, r
+        else
+            let t', r' = iMutate t r
+            go (i - 1) t' r'
+
+    go (k + 1) t r
+
+/// The model's result rendered as production renders a table — the comparison the pipeline
+/// differential makes, byte for byte through `ColumnCodec.encode`.
+let private iRender (t: Table) : string = ColumnCodec.encode (Embedded t)
+
+let private iRenderModel (st: ModelInc.state) : string =
+    iRender (pTableOfFrame (ModelInc.frame_of_walked st.s_out))
+
+type private IncTally =
+    {
+        /// Every disagreement, rendered — the tally's verdict is that this is empty.
+        IDiffs: string list
+        /// Trials whose prime both sides evaluated to a table.
+        IPrimed: int
+        /// Trials both sides refused at the prime, with the same error.
+        IRefused: int
+        /// Refreshes compared (first and second).
+        IRefreshed: int
+        /// Rows the model REUSED across every refresh — the sum of unnamed tokens the prior held.
+        /// Zero would mean the tokens never matched and every comparison was a full walk in disguise.
+        IReused: int
+        /// Rows the model evaluated at a refresh because the delta named them.
+        INamed: int
+        /// Refreshes under a column-invalidating delta (every row evaluated).
+        IInvalidated: int
+        /// Refreshes under a hand-built delta naming every row (over-named, still truthful).
+        IOverNamed: int
+    }
+
+let private iEmptyTally =
+    { IDiffs = []
+      IPrimed = 0
+      IRefused = 0
+      IRefreshed = 0
+      IReused = 0
+      INamed = 0
+      IInvalidated = 0
+      IOverNamed = 0 }
+
+/// Production's outcome and the model's, compared on the table or on the error.
+let private iCompare
+    (label: string)
+    (prod: Result<Fuaran.Compute.IncrementalEval, EvalError>)
+    (model: ModelPipe.outcome<ModelInc.state, ModelPipe.eval_error>)
+    : string option =
+    match prod, model with
+    | Ok ps, ModelPipe.Ok ms ->
+        let a = iRender (Fuaran.Compute.Incremental.result ps)
+        let b = iRenderModel ms
+
+        if a = b then
+            None
+        else
+            Some(sprintf "%s: result differs — production %s, model %s" label a b)
+    | Error pe, ModelPipe.Error me ->
+        if pErrToModel pe = me then
+            None
+        else
+            Some(
+                sprintf
+                    "%s: error differs — production %s, model %s"
+                    label
+                    (pRenderError pe)
+                    (pRenderError (pErrOfModel me))
+            )
+    | Ok _, ModelPipe.Error me ->
+        Some(sprintf "%s: production evaluated, model refused %s" label (pRenderError (pErrOfModel me)))
+    | Error pe, ModelPipe.Ok _ -> Some(sprintf "%s: production refused %s, model evaluated" label (pRenderError pe))
+
+/// The model's result against the reference evaluator over the same table — `refresh_agrees` read
+/// numerically.
+let private iAgainstReference
+    (label: string)
+    (p: Transform list)
+    (t: Table)
+    (model: ModelPipe.outcome<ModelInc.state, ModelPipe.eval_error>)
+    : string option =
+    match DataFrame.evalPipelineWithInEnv DataFrame.noResolve pEnv p t, model with
+    | Ok rt, ModelPipe.Ok ms ->
+        let a = iRender rt
+        let b = iRenderModel ms
+
+        if a = b then
+            None
+        else
+            Some(sprintf "%s: the model's refresh differs from the reference — reference %s, model %s" label a b)
+    | Error re, ModelPipe.Error me when pErrToModel re = me -> None
+    | Error re, ModelPipe.Error me ->
+        Some(
+            sprintf
+                "%s: the model's refresh error differs from the reference's — reference %s, model %s"
+                label
+                (pRenderError re)
+                (pRenderError (pErrOfModel me))
+        )
+    | Ok _, ModelPipe.Error me ->
+        Some(
+            sprintf "%s: the reference evaluated, the model's refresh refused %s" label (pRenderError (pErrOfModel me))
+        )
+    | Error re, ModelPipe.Ok _ ->
+        Some(sprintf "%s: the reference refused %s, the model's refresh evaluated" label (pRenderError re))
+
+/// How a refresh's delta is built for a trial: the diff, the diff plus every prior row named, or a
+/// column invalidation beside the diff's row changes.
+type private IncDeltaShape =
+    | Diffed
+    | OverNamed
+    | Invalidated
+
+let private iDeltaOf (shape: IncDeltaShape) (before: Table) (after: Table) : TableDelta option =
+    match Delta.diff iIdw before after with
+    | Error _ -> None
+    | Ok d ->
+        match shape, d with
+        | Diffed, _ -> Some d
+        | OverNamed, RowSet r ->
+            let named = r.Rows |> List.map fst |> Set.ofList
+
+            let every =
+                [ for i in 0 .. Table.rowCount after - 1 do
+                      match iIdw.KeyOf after i with
+                      | Some k -> yield ByKey(iIdw.KeyString k)
+                      | None -> () ]
+                |> List.filter (fun ref -> not (Set.contains ref named))
+                |> List.map (fun ref -> ref, RowChanged)
+
+            Some(Delta.ofRows r.Scheme (r.Rows @ every))
+        | Invalidated, RowSet r -> Some(RowSet { r with InvalidatedColumns = [ "v" ] })
+        | _, FullRefresh -> Some d
+
+/// Rows of `after` the model reuses under `named`: unnamed, and held by the prior.
+let private iReusedCount (before: Table) (after: Table) (named: FStar_Pervasives_Native.option<string list>) : int =
+    match named with
+    | FStar_Pervasives_Native.None -> 0
+    | FStar_Pervasives_Native.Some ns ->
+        let prior = iTokens before |> Set.ofList
+
+        iTokens after
+        |> List.filter (fun t -> not (List.contains t ns) && Set.contains t prior)
+        |> List.length
+
+/// One trial: a prime, a refresh under one delta, and a second refresh — each compared to
+/// production, the refreshes also to the reference and the second to a refresh of a primed state.
+/// `reuse` is the model's walk: the faithful one reuses every unnamed row; the go-red reuses all.
+let private iTrial
+    (label: string)
+    (reuseFor: FStar_Pervasives_Native.option<string list> -> ModelInc.reuse_fn)
+    (shape: IncDeltaShape)
+    (rng: ConfRng.T)
+    (t: IncTally)
+    : IncTally * ConfRng.T =
+    let p, r1 = iGenPipeline rng
+    let t0, r2 = iGenTable r1
+    let steps = iStepsOf p
+    let menv = pEnvToModel pEnv
+    let prod0 = Fuaran.Compute.Incremental.prime DataFrame.noResolve pEnv iIdw p t0
+    let model0 = ModelInc.prime pPrims menv (pFrameOfTable t0).cols (iAliveOf t0) steps
+    let diffs = ResizeArray<string>()
+    let add (d: string option) = d |> Option.iter diffs.Add
+    add (iCompare (label + " prime") prod0 model0)
+
+    let refreshWith
+        (prodState: Fuaran.Compute.IncrementalEval)
+        (modelState: ModelInc.state)
+        (before: Table)
+        (after: Table)
+        (delta: TableDelta)
+        =
+        let named = iNamedOf delta
+
+        let prod =
+            Fuaran.Compute.Incremental.refresh DataFrame.noResolve pEnv iIdw p prodState delta after
+
+        let cols = (pFrameOfTable after).cols
+
+        let model =
+            ModelInc.walk pPrims menv (reuseFor named) modelState.s_caches cols (iAliveOf after) steps
+
+        prod, model, named
+
+    match prod0, model0 with
+    | Ok ps0, ModelPipe.Ok ms0 ->
+        let t1, r3 = iMutateSome t0 r2
+
+        match iDeltaOf shape t0 t1 with
+        | None ->
+            { t with
+                IDiffs = List.rev (List.ofSeq diffs) @ t.IDiffs
+                IPrimed = t.IPrimed + 1 },
+            r3
+        | Some d1 ->
+            let prod1, model1, named1 = refreshWith ps0 ms0 t0 t1 d1
+            add (iCompare (label + " refresh 1") prod1 model1)
+            add (iAgainstReference (label + " refresh 1") p t1 model1)
+            let reused1 = iReusedCount t0 t1 named1
+
+            let named1Count =
+                match named1 with
+                | FStar_Pervasives_Native.Some ns -> List.length ns
+                | FStar_Pervasives_Native.None -> Table.rowCount t1
+
+            let invalidated1 =
+                match d1 with
+                | RowSet r when not (List.isEmpty r.InvalidatedColumns) -> 1
+                | _ -> 0
+
+            let t' =
+                { t with
+                    IPrimed = t.IPrimed + 1
+                    IRefreshed = t.IRefreshed + 1
+                    IReused = t.IReused + reused1
+                    INamed = t.INamed + named1Count
+                    IInvalidated = t.IInvalidated + invalidated1
+                    IOverNamed = t.IOverNamed + (if shape = OverNamed then 1 else 0) }
+
+            match prod1, model1 with
+            | Ok ps1, ModelPipe.Ok ms1 ->
+                let t2, r4 = iMutateSome t1 r3
+
+                match iDeltaOf shape t1 t2 with
+                | None ->
+                    { t' with
+                        IDiffs = List.rev (List.ofSeq diffs) @ t'.IDiffs },
+                    r4
+                | Some d2 ->
+                    let prod2, model2, named2 = refreshWith ps1 ms1 t1 t2 d2
+                    add (iCompare (label + " refresh 2") prod2 model2)
+                    add (iAgainstReference (label + " refresh 2") p t2 model2)
+
+                    // The state theorem, observably: a refresh of the REFRESHED state is a refresh
+                    // of a state PRIMED over the first mutation — on the model and on production.
+                    (match Fuaran.Compute.Incremental.prime DataFrame.noResolve pEnv iIdw p t1 with
+                     | Ok primed1 ->
+                         let prodFromPrimed =
+                             Fuaran.Compute.Incremental.refresh DataFrame.noResolve pEnv iIdw p primed1 d2 t2
+
+                         (match prod2, prodFromPrimed with
+                          | Ok a, Ok b when
+                              iRender (Fuaran.Compute.Incremental.result a)
+                              <> iRender (Fuaran.Compute.Incremental.result b)
+                              ->
+                              diffs.Add(
+                                  sprintf
+                                      "%s: production's second refresh differs between a refreshed and a primed state — refreshed %s, primed %s"
+                                      label
+                                      (iRender (Fuaran.Compute.Incremental.result a))
+                                      (iRender (Fuaran.Compute.Incremental.result b))
+                              )
+                          | Ok _, Error e ->
+                              diffs.Add(
+                                  sprintf "%s: production's refresh of a primed state refused %s" label (pRenderError e)
+                              )
+                          | Error e, Ok _ ->
+                              diffs.Add(
+                                  sprintf
+                                      "%s: production's refresh of a refreshed state refused %s"
+                                      label
+                                      (pRenderError e)
+                              )
+                          | _ -> ())
+                     | Error e ->
+                         diffs.Add(
+                             sprintf "%s: production's prime over the first mutation refused %s" label (pRenderError e)
+                         ))
+
+                    let modelPrimed1 =
+                        ModelInc.prime pPrims menv (pFrameOfTable t1).cols (iAliveOf t1) steps
+
+                    (match modelPrimed1 with
+                     | ModelPipe.Ok mp1 ->
+                         let modelFromPrimed =
+                             ModelInc.walk
+                                 pPrims
+                                 menv
+                                 (reuseFor named2)
+                                 mp1.s_caches
+                                 (pFrameOfTable t2).cols
+                                 (iAliveOf t2)
+                                 steps
+
+                         (match model2, modelFromPrimed with
+                          | ModelPipe.Ok a, ModelPipe.Ok b when iRenderModel a <> iRenderModel b ->
+                              diffs.Add(
+                                  sprintf
+                                      "%s: the model's second refresh differs between a refreshed and a primed state"
+                                      label
+                              )
+                          | ModelPipe.Ok _, ModelPipe.Error _
+                          | ModelPipe.Error _, ModelPipe.Ok _ ->
+                              diffs.Add(
+                                  sprintf "%s: the model's second refresh and its primed twin disagree on refusal" label
+                              )
+                          | _ -> ())
+                     | ModelPipe.Error me ->
+                         diffs.Add(
+                             sprintf
+                                 "%s: the model's prime over the first mutation refused %s"
+                                 label
+                                 (pRenderError (pErrOfModel me))
+                         ))
+
+                    let reused2 = iReusedCount t1 t2 named2
+
+                    let named2Count =
+                        match named2 with
+                        | FStar_Pervasives_Native.Some ns -> List.length ns
+                        | FStar_Pervasives_Native.None -> Table.rowCount t2
+
+                    { t' with
+                        IDiffs = List.rev (List.ofSeq diffs) @ t'.IDiffs
+                        IRefreshed = t'.IRefreshed + 1
+                        IReused = t'.IReused + reused2
+                        INamed = t'.INamed + named2Count },
+                    r4
+            | _ ->
+                { t' with
+                    IDiffs = List.rev (List.ofSeq diffs) @ t'.IDiffs },
+                r3
+    | Error _, ModelPipe.Error _ ->
+        { t with
+            IDiffs = List.rev (List.ofSeq diffs) @ t.IDiffs
+            IRefused = t.IRefused + 1 },
+        r2
+    | _ ->
+        { t with
+            IDiffs = List.rev (List.ofSeq diffs) @ t.IDiffs },
+        r2
+
+let private iDifferential
+    (reuseFor: FStar_Pervasives_Native.option<string list> -> ModelInc.reuse_fn)
+    (seed: int)
+    (trials: int)
+    : IncTally =
+    let mutable r = ConfRng.ofSeed seed
+    let mutable tally = iEmptyTally
+
+    for i in 1..trials do
+        let shape =
+            match i % 5 with
+            | 0 -> OverNamed
+            | 1 -> Invalidated
+            | _ -> Diffed
+
+        let t, r' = iTrial (sprintf "incremental %d (%A)" i shape) reuseFor shape r tally
+        tally <- t
+        r <- r'
+
+    { tally with
+        IDiffs = List.rev tally.IDiffs }
+
+/// The faithful walk: `reuse_of named` — an unnamed row's cached cell is reused, a named one's
+/// is evaluated.
+let private iFaithful (named: FStar_Pervasives_Native.option<string list>) : ModelInc.reuse_fn = ModelInc.reuse_of named
+
+/// The go-red: every row's cached cell is reused, the delta ignored — a named row that changed
+/// answers with the cell it had.
+let private iReuseAll (_: FStar_Pervasives_Native.option<string list>) : ModelInc.reuse_fn = fun _ -> true
+
 [<Tests>]
 let proofOracleTests =
     testList
@@ -2688,4 +3225,71 @@ let proofOracleTests =
                   checkedCount
                   exceeding
                   workTotal
-                  costTotal ]
+                  costTotal
+
+          // ---- Phase 433 — the ROW-LOCAL INCREMENTAL REFRESH: prime and refresh against the model ----
+
+          testCase
+              "the incremental oracle agrees with Incremental.prime and Incremental.refresh on the result over generated row-local pipelines, priors and deltas, and a refreshed state refreshes as a primed one"
+          <| fun _ ->
+              let t = iDifferential iFaithful 433 600
+
+              match t.IDiffs with
+              | d :: _ ->
+                  failtestf
+                      "the incremental oracle and production DISAGREE (%d disagreements)\n%s"
+                      (List.length t.IDiffs)
+                      d
+              | [] ->
+                  // Adequacy: the sample primes, refuses, refreshes, REUSES cached rows (a zero here
+                  // would mean the tokens never matched and every refresh was a full walk in
+                  // disguise), evaluates named rows, and reaches both delta shapes. Measured at 600
+                  // trials, seed 433: primed 280, refused 320 (the generator draws expressions that
+                  // type-error at the prime, and both sides refuse alike), refreshed 560, reused 848,
+                  // named 1380, invalidated 55, over-named 55. Each threshold sits under its figure
+                  // with room; they catch a generator that stops reaching a shape, not pin the numbers.
+                  Expect.isGreaterThan t.IPrimed 150 (sprintf "primes evaluated on both sides (primed=%d)" t.IPrimed)
+                  Expect.isGreaterThan t.IRefreshed 300 (sprintf "refreshes compared (refreshed=%d)" t.IRefreshed)
+
+                  Expect.isGreaterThan
+                      t.IReused
+                      400
+                      (sprintf "rows reused from the prior state across the refreshes (reused=%d)" t.IReused)
+
+                  Expect.isGreaterThan t.INamed 600 (sprintf "rows named by the deltas (named=%d)" t.INamed)
+
+                  Expect.isGreaterThan
+                      t.IInvalidated
+                      25
+                      (sprintf "refreshes under a column invalidation (invalidated=%d)" t.IInvalidated)
+
+                  Expect.isGreaterThan
+                      t.IOverNamed
+                      25
+                      (sprintf "refreshes under an over-named delta (overNamed=%d)" t.IOverNamed)
+
+                  printfn
+                      "incremental differential: primed=%d refused=%d refreshed=%d reused=%d named=%d invalidated=%d overNamed=%d"
+                      t.IPrimed
+                      t.IRefused
+                      t.IRefreshed
+                      t.IReused
+                      t.INamed
+                      t.IInvalidated
+                      t.IOverNamed
+
+          testCase
+              "an incremental oracle that reuses a NAMED row's cached cell DISAGREES with Incremental.refresh — the measurement can fail"
+          <| fun _ ->
+              // The broken maintenance rule: every token's cached cell is reused, the delta ignored —
+              // so a named row whose cells changed answers with the cell it had. Over the same
+              // sample, this must lose on the result on some trial. The faithful case above is what
+              // says the sample's deltas are honoured; this is what says the comparison can fail.
+              let t = iDifferential iReuseAll 433 600
+
+              Expect.isGreaterThan
+                  (List.length t.IDiffs)
+                  0
+                  "a walk that reuses a named row's cached cell agreed with production everywhere — the differential cannot fail"
+
+              printfn "incremental go-red: %d disagreements, first: %s" (List.length t.IDiffs) (List.head t.IDiffs) ]

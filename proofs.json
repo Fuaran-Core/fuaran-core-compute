@@ -486,6 +486,109 @@
       "evidence": {
         "assumption": "the model's unit algebra is a parameter; that production's is Core's `Unit` module, canonical in its texts and exact in its factors, is Core's `proofs/Unit.fst`'s to prove and the unit differential's to instantiate, not proved here"
       }
+    },
+    {
+      "id": "incremental-prime-is-full",
+      "level": "proved",
+      "claim": "Priming the row-local incremental walk computes what the reference evaluator computes. Over a pipeline every step of which is a `Filter` or a `Derive` — the class `Incremental.classifyStep` reads as `PropagateRows` and `Pipeline.fst` models as a clause (D31) — `prime` (the walk with no prior state: every row evaluated, every step's cells written) returns the frame `Pipeline.eval_uncounted` returns over the same source, or the error it returns, over every cell primitive, every twelve-verb evaluator (never reached), every param environment and every well-formed source. The walk's own step shape — the step's cells first, row by row in frame order with the first error winning, then keep the `Bool true` rows or replace-or-append the derived column typed over the rows alive at the step (`derived_typing_in` before any row, `column_type_by` over the step's cells) — IS `filter_rows` and `eval_derive` (`cells_filter`, `cells_derive`, `rows_of_extend`, `walk_is_go`). The theorem is the base of the state theorem below and of every later verb class: every admitted step after a maintained `GroupBy` or a merged `Sort` is this walk one frame along.",
+      "phase": "fuaran-core#433",
+      "evidence": {
+        "theorem": "prime_is_full",
+        "model": "proofs/Incremental.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "walk_is_go",
+          "cells_filter",
+          "cells_derive",
+          "rows_of_extend",
+          "walk",
+          "step_cells",
+          "keep_true",
+          "extend",
+          "prime"
+        ],
+        "operations": [
+          "Incremental.prime"
+        ]
+      }
+    },
+    {
+      "id": "incremental-refresh-state-equals-primed",
+      "level": "proved",
+      "claim": "THE STATE THEOREM. A refresh against a state primed over the prior source, under a delta that names every row that moved, IS the prime over the new source — the output frame AND every step's cell cache, so a state a refresh leaves is indistinguishable from one a prime leaves, and the next refresh stands on it as on a prime. Over the row-local class (D31), every cell primitive, every param environment, every prior and new source over schemas of the same NAMES (a source whose schema moved is `SourceSchemaMoved` in production and evaluates in full, outside the walk), and every delta read as the set of tokens it names (`namedTokens`) or as every row when it invalidates a column. Under one premise beyond `Pipeline.fst`'s, `incremental-delta-truthful`: every row the delta does not name is a row of the prior source, under its token, with the cells it had (`unchanged`). The proof is the walk's induction (`walk_reuse`): at each step the reused step's cells are the fresh step's (`step_cells_reuse`, because a fresh cache answers every prior token with that row's evaluation — `assoc_step_cells`), and the premise survives the step (`unchanged_keep_true`, `unchanged_extend`). The lemma with content is `eval_expr_names`: the evaluator reads a schema's names and never its types, so a cell cached when a derived column was typed one way is the cell when a named row's change retypes that column — what makes a per-row cache sound under a column typing (`column_type_by`) that is a function of the whole column, and why the walk re-types every derived column on every refresh rather than reading the type off a cache. A model that typed the column off the prior cache fails `walk_is_go` at the `Derive` arm (shown in the phase's envelope).",
+      "phase": "fuaran-core#433",
+      "evidence": {
+        "theorem": "refresh_is_prime",
+        "model": "proofs/Incremental.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "walk_reuse",
+          "step_cells_reuse",
+          "assoc_step_cells",
+          "unchanged_keep_true",
+          "unchanged_extend",
+          "assoc_keep_true",
+          "assoc_extend",
+          "eval_expr_names",
+          "index_of_names",
+          "names_ext_schema",
+          "unchanged",
+          "refresh"
+        ],
+        "operations": [
+          "Incremental.refresh"
+        ]
+      }
+    },
+    {
+      "id": "incremental-refresh-agrees-with-full",
+      "level": "proved",
+      "claim": "THE AGREEMENT THEOREM. The refreshed answer is the full evaluation of the pipeline over the updated source: `refresh` against a primed state, under a truthful delta, returns the frame `Pipeline.eval_uncounted` returns over the new source, or the error it returns — the two theorems above composed (`refresh_is_prime`, then `prime_is_full` over the new source). Over the row-local class (D31), every cell primitive, every twelve-verb evaluator (never reached), every param environment, every prior and new source of one schema's names and every delta, under `incremental-delta-truthful`. This is the property production's `refresh` states of itself (\"The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every delta, whichever path was taken\"), proved for the one path the model covers; the classes outside it are named in D31 and remain `measured-elsewhere` in the census.",
+      "phase": "fuaran-core#433",
+      "evidence": {
+        "theorem": "refresh_agrees",
+        "model": "proofs/Incremental.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "refresh_is_prime",
+          "prime_is_full",
+          "embed"
+        ],
+        "operations": [
+          "Incremental.refresh",
+          "Incremental.prime"
+        ]
+      }
+    },
+    {
+      "id": "incremental-differential",
+      "level": "tested",
+      "claim": "The extracted walk agrees with the shipped `Incremental.prime` and `Incremental.refresh` on the RESULT (byte for byte through `ColumnCodec.encode`, read through `Incremental.result`), or on the named `EvalError`, with the cell primitives instantiated at production's own exactly as the pipeline differential instantiates them, over generated row-local pipelines (one to four `Filter` and `Derive` steps over the pipeline differential's expression generator), a generated prior table keyed by an `id` column (`RowIdentity.byColumn`), and deltas built by `Delta.diff` from that table to a mutated one — cells changed, rows appended, rows removed, a run of mutations — with the delta's named rows read off the delta production was handed (`ByKey` tokens) and the source's tokens minted by the same witness; plus deltas that invalidate a column (every row suspect) and hand-built deltas that name more rows than moved. Three comparisons per trial: the refreshed result against production's, against the reference `DataFrame.evalPipelineWithInEnv` over the mutated table, and — the state theorem read observably — a second refresh of the refreshed state against a second refresh of a state primed over the first mutation. One go-red: a walk that reuses a NAMED row's cached cell (every token reused, the delta ignored) must disagree with production on the result on some trial whose named row changed. Agreement is over the pools drawn, never over all inputs; the twelve verbs are never reached and the cell primitives are shared with production by construction rather than compared.",
+      "phase": "fuaran-core#433",
+      "evidence": {
+        "family": "Proofs.Oracle",
+        "model": "proofs/Incremental.fst",
+        "cases": [
+          "the incremental oracle agrees with Incremental.prime and Incremental.refresh on the result over generated row-local pipelines, priors and deltas, and a refreshed state refreshes as a primed one",
+          "an incremental oracle that reuses a NAMED row's cached cell DISAGREES with Incremental.refresh — the measurement can fail"
+        ],
+        "operations": [
+          "Incremental.prime",
+          "Incremental.refresh",
+          "Incremental.result"
+        ]
+      }
+    },
+    {
+      "id": "incremental-delta-truthful",
+      "level": "assumed",
+      "claim": "THE DELTA PREMISE (Phase 433). The two incremental theorems hold under one hypothesis beyond `Pipeline.fst`'s: the delta names every row that moved — every row of the new source the delta does not name is a row of the prior source, under its token, with the cells it had (`Incremental.unchanged`). It is production's own contract for a refresh (\"The delta must truthfully describe the change (`Delta.diff` produces exactly that). Anything the incremental path cannot honour degrades to a full evaluation\"), and it is a premise rather than a theorem because the delta is an INPUT: a consumer may hand a hand-built one, and the walk cannot tell a truthful delta from a lying one without re-reading every row, which is the work the refresh exists to avoid. What is NOT assumed: that the delta names only rows that moved (over-naming costs evaluations and never the answer, and the differential hands over-named deltas), that the tokens are distinct (no theorem needs it; production's witness refuses a duplicate identity before the walk), or anything of the delta's other readers (`isQuiet`, the in-place and append recognisers of Phases 323 and 359), which are outside the model. That `Delta.diff` produces a truthful delta is its own claim, sampled by `DeltaTests` and `Conformance.incrementalLaws`, and the differential instantiates the premise at `Delta.diff`'s deltas. `unscheduled`: a model of `Delta.diff` proving its deltas truthful would retire the row into a theorem, and nobody has taken one.",
+      "phase": "fuaran-core#433",
+      "class": "premise",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "a refresh's delta names every row that moved: an unnamed row of the new source is a row of the prior source, under its token, with the cells it had; that `Delta.diff` produces such a delta is sampled, not proved"
+      }
     }
   ]
 }

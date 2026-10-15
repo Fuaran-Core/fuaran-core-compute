@@ -185,7 +185,7 @@ let private tickBaselineFactor = 1.5
 /// ones"), so a shape cannot come to be declined, or stop being declined, silently. Every other
 /// corpus shape is held to a refresh no dearer than the full evaluation it replaces
 /// (DECISIONS.md D27). Phase 459: the edit and append tick cases read this list too, and hold a
-/// declined shape's tick to its diff and reference evaluation (`judgeDeclinedTick`, D31), so this is
+/// declined shape's tick to its diff and reference evaluation (`judgeDeclinedTick`, D33), so this is
 /// the one list all three cases read.
 let refreshDeclinedShapes: string list = [ "inner join"; "pivot" ]
 
@@ -853,7 +853,7 @@ let private pairedSpanMs = 2.0
 /// slows the other, and their difference is the work one does and the other does not. Short samples
 /// and many rounds rather than `batchedMs`'s five 20 ms samples: a 100,000-row pivot is 15 ms a call,
 /// so a 20 ms sample is two calls and the best of five still moved by 3% between runs, against a floor
-/// of 1%; one call a sample, the best of 25, read within the floor (DECISIONS.md D31).
+/// of 1%; one call a sample, the best of 25, read within the floor (DECISIONS.md D33).
 let private pairedBatchedMs (f: unit -> unit) (g: unit -> unit) : float * float =
     f ()
     g ()
@@ -1153,7 +1153,7 @@ let private judgeCorpusTick (kind: string) (node: string) (rows: int) (tickMs: f
     else
         None
 
-/// Phase 459 (operator ruling 2026-10-14, DECISIONS.md D31) — the condition for one corpus cell of a
+/// Phase 459 (operator ruling 2026-10-14, DECISIONS.md D33) — the condition for one corpus cell of a
 /// shape the seam DECLINES (`refreshDeclinedShapes`): `tick <= declined + floor`, `declined` what a
 /// declined refresh is, the diff followed by the reference evaluation the refresh falls back to
 /// (`DataFrame.evalPreparedCounted`, the kernel set the refresh runs on, over the same fresh source the
@@ -1959,7 +1959,7 @@ let clockTests =
               // full evaluation 2 to 5 times cheaper on `lines`, `window CumulSum` and `group-by
               // high-card` and the ratio alone read x2.4 to x4.5 there on ticks no dearer than before.
               //
-              // Phase 459 (operator ruling 2026-10-14, `DECISIONS.md` D31): a shape the seam DECLINES
+              // Phase 459 (operator ruling 2026-10-14, `DECISIONS.md` D33): a shape the seam DECLINES
               // (`refreshDeclinedShapes`) refreshes by the full evaluation, so its tick is judged by
               // `judgeDeclinedTick`, `tick <= diff + reference evaluation + floor`, both timed in one
               // interleaved window. Held to 1.6 times the one-thread full it flapped by runner: the

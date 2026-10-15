@@ -34,6 +34,10 @@
     <!-- The model of the COUNTED PIPELINE DRIVER and its expression evaluator (../Pipeline.fst).
          Opens `Limits`, so it follows it. -->
     <Compile Include="Pipeline.fs" />
+    <!-- The model of the ROW-LOCAL INCREMENTAL REFRESH (../Incremental.fst): the per-step cell
+         caches, the walk that reuses an unnamed row's cell, `prime` and `refresh`. Opens
+         `Pipeline`, so it follows it. -->
+    <Compile Include="Incremental.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

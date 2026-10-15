@@ -139,7 +139,7 @@ typed family's decimal filter, group-and-sum, sort and join each fell on both ho
 
 **What a consumer does.** Nothing.
 
-### A refresh no longer walks an embedded relation to learn its pipeline did not move (Phase 459, `DECISIONS.md` D31) — `none`, `performance`
+### A refresh no longer walks an embedded relation to learn its pipeline did not move (Phase 459, `DECISIONS.md` D33) — `none`, `performance`
 
 **What changed.** A refresh asks whether the pipeline it is handed is the one the state was built for.
 Since Phase 355 that question was answered by structural equality alone, so a pipeline that embeds a
@@ -150,7 +150,7 @@ one structural equality gives in every case but one, where it is safer: a pipeli
 literal now reads as unchanged against itself rather than as moved, and either reading refreshes to the
 same result.
 
-**Measured** (`DECISIONS.md` D31, `docs/performance.md`, "A declined shape's tick is measured for what
+**Measured** (`DECISIONS.md` D33, `docs/performance.md`, "A declined shape's tick is measured for what
 it is"). The corpus `inner join` at 100,000 rows paid 1.2 ms a refresh for the walk, a fifth of its full
 evaluation; its tick now costs its diff and its reference evaluation and nothing measurable beside them.
 
