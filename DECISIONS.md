@@ -116,6 +116,88 @@ flat-container index), so its `STABILITY.md` heading stands as released and is n
 phase's entry rides the `0.40.0` draft. No public signature, answer or wire byte moves (class `none`,
 `performance`).
 
+## 2026-10-15 — D32: the relational verbs' output schema and refusals are modelled in their own module over `Pipeline.fst`'s frame, the twelve-verb parameter is narrowed to the rows, the static walk's soundness is a theorem; and two findings are recorded with their witnesses, not fixed — four verbs answer a repeated name, and the walk keeps a union's left type
+
+**Context.** `proofs/Pipeline.fst` models the expression evaluator, `Filter`, `Derive`, the dispatch and
+the counted driver, and takes the other twelve verbs as a parameter typed only to answer a well-formed
+frame or a named error. Phase 411 (a join emitting two columns of one name) and Phase 412 (a sort key
+naming no column dropped in silence) both sat in that assumption; a model of each verb's output schema
+and refusals would have stated both, and Phase 434 asked for it, leaving open whether the model extends
+`Pipeline.fst` or stands beside it.
+
+**Decision.**
+
+1. **A module of its own, `proofs/Relational.fst`, opening `Pipeline`.** `Pipeline.fst` verifies in
+   about a minute cold and its budget is 530s; the relational model is sixteen hundred lines of
+   definitions and lemmas and verifies in about a minute of its own. Folding it in would double the
+   module every later phase re-verifies and put the two models' costs under one number. The new module
+   reuses `Pipeline`'s types and helpers by name (`schema`, `frame`, the verbs, `eval_error`, `assoc`,
+   `index_of`, `names`, `app`, `column_type_by`, `derived_typing_of`) and re-models nothing; it restates
+   `List.tryItem` and `List.contains` only because `Pipeline`'s are `noextract`. `Incremental.fst` (D31)
+   is the precedent for a model opening `Pipeline` rather than growing it.
+2. **The narrowing is a construction, not an edit.** `Pipeline.fst`'s `other_fn` stays as it is;
+   `Relational.other_of` builds one from `step_schema` — each verb's schema and schema-level refusals,
+   clause for clause from `evalStepWith`'s arms — and a ROW FUNCTION, which answers the rows under the
+   schema the model computed, as wide as it, or a refusal that read a cell (`AggError`). Every theorem
+   of `Pipeline.fst` holds for `other_of` because it holds for every `other_fn`; what the ladder's
+   twelve-verb row now assumes is the row function and nothing about a schema. The differential runs the
+   pipeline comparison with `other_of` over production's rows as the parameter, so the narrowing is
+   measured over four hundred generated pipelines, not only stated.
+3. **Row content is read exactly where a schema reads it, and the header says where.** The pivot's
+   distinct present `on` values name its columns; the unpivot's melted cells type `value` where the
+   declared types leave it to them (Phase 338). Nothing else reads a cell. The parameters are a record of
+   four host functions (the canonical cell text, an int's text, the string order, the join's suffix rule)
+   and the resolver; each is listed with what the theorems assume of it, and only two assumptions are
+   load-bearing: the suffix rule is injective in its index (`cand_injective`, a string fact the prover
+   has no axiom for, on which `join_no_dups` rests and which the 411 go-red measures by crossing the
+   pre-D20 rule), and the walk's declared sources are the resolver's schemas (`sources_agree`, the
+   contract a caller of `SchemaWalk.ofPipelineFrom` with `ofMap` takes on).
+4. **The walk's soundness is the agreement theorem, stated for open knowledge too.** `walk_sound`:
+   over knowledge sound for the input's schema, when a verb answers `Ok`, `SchemaWalk.ofTransform`'s
+   answer is sound for the output — a closed knowledge has the output's names in order and every type it
+   knows is the output's; an open one names columns the output carries with the types it knows. The
+   pivot's open answer is the index columns the evaluator's output carries first; a join over an
+   undeclared `Ref` keeps the left columns and the right columns that keep their own names. The union's
+   NAMES agree; its types are finding (b) below. A join's open-right case needs the left's names
+   distinct: with a name repeated, the walk's second column of that name claims a type a by-name read
+   never finds — which is finding (a) seen from the walk's side.
+5. **Two findings, recorded with witnesses and not fixed here.** The acceptance allows either; these are
+   filed, because each is a behaviour change to a public evaluator or walk of D21's, D26's and D28's
+   class, which wants its own decision and `STABILITY.md` entry, and the files that carry the change are
+   outside this phase's declared key files.
+   - **(a) Four verbs answer `Ok` with a repeated output name.** `Project [a, x; a, x]` answers `x`
+     twice; `GroupBy [k] [Sum v as k]` answers `k` twice; `Unpivot [variable] [v]` answers `variable`
+     twice; a `Pivot` whose index column is named as an `on` value's canonical text answers that name
+     twice. D20 closed this for a join (the suffix) and D28 for a window (the refusal); the four were
+     not considered then. The model states each as a theorem (`project_repeats_name`, …) and the
+     differential asserts each on the shipped evaluator, so a fix moves both. **The ruling this waits on**
+     is D28's reasoning applied: in `Project`, `GroupBy` and `Unpivot` the repeated name is the author's
+     own choice written into the pipeline, so D28's refusal — a `TypeError` naming the column, before any
+     row is read — is the candidate; in `Pivot` the colliding name is the data's, like a join operand's,
+     so D20's suffix or a refusal are both candidates and the choice is an operator's.
+   - **(b) `SchemaWalk.ofTransform` keeps the left type for a `Union` where the evaluator widens it.**
+     Since Phase 423 (D18) a union's column takes the join of the two sides' types — `Int` beside `Float`
+     is a `Float` column — and the walk's `Union` arm is `input`. Over `Union` of an `Int` column with a
+     `Float` one the walk says `Int` and the evaluator answers `Float`; a planner, or the registry's
+     agreement check, reading the walk reads a type the evaluator does not produce. The model states it
+     (`union_walk_type_drifts`), the walk comparison in the differential holds production's walk to the
+     model's over the shape (`423-union-widens`), and the schema comparison records the evaluator's
+     answer beside. The fix is the walk's `Union` arm reading the source as `Join` does and joining the
+     types where both are known; it is one arm and one `schemaWalkLaws` law, and it is not this phase's.
+6. **The census moves.** The twelve `Transform.<Verb>` entries D30 wrote leave
+   `coverage-exclusions.json` for the ladder's rows, with `SchemaWalk.ofTransform`, `SchemaWalk.ofSource`
+   and `DataFrame.joinRightNames`; the `SchemaWalk` entry's reason names what moved.
+
+**Consequences.** No production source changed: the model found the two findings above and no
+disagreement with the evaluator's schema over the generated sample or the named shapes. The proof leg
+gains a module (`Relational`, budgeted in `modules.json` from this phase's runs) and the oracle project
+its extraction. Re-introducing 411's defect in the model (a suffix free against the left names only)
+leaves `join_no_dups` unprovable (`rename_right_no_dups`'s hypothesis that every right name is taken no longer holds) and the leg red — measured by one perturbation run; re-introducing 412's (an unknown sort key
+dropped) makes the `Sort` arm answer `Ok` and `sort_unknown_refused` fails. A later phase that closes
+finding (a) changes the four `*_repeats_name` theorems into refusal theorems and deletes the
+`finding-*` shapes from the differential in the same commit; one that closes (b) removes
+`union_walk_type_drifts` and extends `walk_sound` to the `Union` arm.
+
 ## 2026-10-15 — D31: the incremental refresh is modelled and proved for the row-local class — `Filter` and `Derive` — over `Pipeline.fst`'s frame; every other verb class is declared out, by name and with its reason, and the model's one premise is the delta's truthfulness
 
 **Context.** `Incremental.fs` is about seven thousand lines and `Delta.fs` two thousand: a refresh walks

@@ -57,6 +57,12 @@
        NO expression — which is a fact about the source (`evalStep`'s twelve other arms carry no
        `ColExpr` and reach neither `evalExpr` nor `evalExprInRow`), and is what `costOf` charging
        them nothing already asserts. `work` below charges them no expression work for that reason.
+       SINCE PHASE 434 the parameter is NARROWED, not here but in `Relational.fst`, which opens
+       this module: each of the twelve verbs' output schema and every refusal that reads the
+       schema or the pipeline text is a clause there (`step_schema`), and `Relational.other_of`
+       builds an `other_fn` from those clauses and a row function — so what is assumed of the
+       twelve is their ROWS, and the schema-level assumption this paragraph records is discharged
+       by construction for every `other_fn` built that way.
 
    Everything else — the expression evaluator, the filter, the derive, the dispatch, the driver,
    the cost model, the two entry points — is a clause, and the theorems about EXPRESSION WORK are

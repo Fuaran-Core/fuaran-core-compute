@@ -42,7 +42,11 @@ $ErrorActionPreference = 'Stop'
 #   Incremental: the row-local incremental refresh over Pipeline's frame — priming is full
 #   evaluation, a refresh against a primed state under a truthful delta is the prime over the new
 #   source, and so agrees with full evaluation (opens Pipeline).
-$modules = @('Limits', 'ColumnOps', 'Pipeline', 'Incremental')
+#   Relational: the twelve relational verbs' output schema and refusals, and the static schema
+#   walk — the walk is sound for the evaluator's schema, a join and a window over distinct names
+#   answer distinct names, every unknown column is refused in the arm's order, and the four
+#   verbs that can repeat a name are the finding (opens Pipeline).
+$modules = @('Limits', 'ColumnOps', 'Pipeline', 'Incremental', 'Relational')
 
 # ---- DECLARATION 2: the host families --------------------------------------------------------------
 # One entry per test-runner invocation, each with its own failure message. Separate invocations

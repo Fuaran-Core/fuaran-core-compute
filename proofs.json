@@ -371,12 +371,12 @@
     {
       "id": "pipeline-step-evaluator-abstract",
       "level": "assumed",
-      "claim": "THE TWELVE-VERB PREMISE (the id predates Phase 234, when the whole step evaluator was the parameter). `evalStep resolve env`'s twelve arms that evaluate no expression — `Project`, `GroupBy`, `Join`, `Window`, `Pivot`, `Unpivot`, `Sort`, `Distinct`, `Limit`, `Union`, `Intersect`, `Except`: group aggregation, windows, pivots, joins, the set operations — are the model's parameter (`other_fn : wframe -> transform -> outcome wframe eval_error`, the resolver and the env closed over), exactly as Phase 176 made the pipeline evaluator one and Phase 186 the node evaluator; the `Filter` and `Derive` arms are clauses since Phase 234. What is ASSUMED of the twelve is their type — on a well-formed frame each returns a well-formed frame or a named error — and that each evaluates NO expression, which is a fact about the source (those arms carry no `ColExpr` and reach neither `evalExpr` nor `evalExprInRow`) and what `costOf` already asserts in charging them nothing; `work` charges them no expression work on that basis, so `work_bounded` rests on this row for those steps and on nothing for the other two. Every theorem holds for every such evaluator, so nothing here is a claim about any of the twelve verbs' semantics; those stay with the laws the retired `Fuaran.Core.DataFrame` coverage exclusion named (`incrementalLaws`, `schemaWalkLaws`, `aggregateParityLaws`) and with `Conformance.transformLaws` at every host. The differential instantiates the parameter at production's own primitives, so the verbs are exercised and shared, not modelled. `unscheduled` rather than `permanent`: a model of a verb is possible verb by verb (the Phase 176 precedent modelled a table algebra with a validity mask; Phase 234 is the precedent for the two that evaluate an expression), and nobody has taken one.",
-      "phase": "fuaran-core#234",
+      "claim": "THE TWELVE-VERB PREMISE, NARROWED TO ROW CONTENT (Phase 434; the id predates Phase 234, when the whole step evaluator was the parameter). `evalStep resolve env`'s twelve arms that evaluate no expression — `Project`, `GroupBy`, `Join`, `Window`, `Pivot`, `Unpivot`, `Sort`, `Distinct`, `Limit`, `Union`, `Intersect`, `Except` — are `Pipeline.fst`'s parameter (`other_fn : wframe -> transform -> outcome wframe eval_error`, the resolver and the env closed over); the `Filter` and `Derive` arms are clauses since Phase 234. Since Phase 434 each verb's OUTPUT SCHEMA and every refusal that reads the schema or the pipeline text are CLAUSES of `proofs/Relational.fst` (`step_schema`), and `Relational.other_of` builds an `other_fn` from them and a ROW FUNCTION (`row_fn`): so what remains ASSUMED of the twelve is exactly what the row function is — the rows a verb answers, as wide as the schema the model computed, and any refusal that reads a cell (an aggregate over a column it cannot aggregate, `AggError`; a union whose cells no column type holds together, D18) — plus `Pipeline.fst`'s standing two: that each evaluates NO expression, a fact about the source (those arms carry no `ColExpr` and reach neither `evalExpr` nor `evalExprInRow`) and what `costOf` asserts in charging them nothing, on which `work_bounded` rests for those steps; and that each answers a well-formed frame, which `other_of` now makes a fact of the row function's type. What a verb does to the ROWS — what a `GroupBy` aggregates, what a `Join` fans out to, which rows a `Sort` orders first — is neither modelled nor claimed, and stays with `Conformance.transformLaws` at every host and the laws the retired `Fuaran.Core.DataFrame` coverage exclusion named (`incrementalLaws`, `schemaWalkLaws`, `aggregateParityLaws`). The pipeline differential instantiates the parameter at production's own verbs, and since Phase 434 also at `other_of` over the model's schema and production's rows, so the narrowing is measured end to end. `unscheduled`: a model of a verb's rows is possible verb by verb, and nobody has taken one.",
+      "phase": "fuaran-core#434",
       "class": "model-bridge",
       "closes": "unscheduled",
       "evidence": {
-        "assumption": "the twelve verbs that evaluate no expression are a parameter typed to return a well-formed frame or an error; their semantics are neither modelled nor claimed, and that they evaluate no expression is read off the source, not proved"
+        "assumption": "the twelve verbs' ROWS are a parameter (`Relational.row_fn`): the rows a verb answers under the schema `Relational.step_schema` computes, and any refusal that reads a cell; their schema and schema-level refusals are clauses, that they evaluate no expression is read off the source, and well-formedness is the row function's type"
       }
     },
     {
@@ -588,6 +588,180 @@
       "closes": "unscheduled",
       "evidence": {
         "assumption": "a refresh's delta names every row that moved: an unnamed row of the new source is a row of the prior source, under its token, with the cells it had; that `Delta.diff` produces such a delta is sampled, not proved"
+      }
+    },
+    {
+      "id": "relational-schema-agrees",
+      "level": "proved",
+      "claim": "SCHEMA AGREEMENT (Phase 434). For every relational verb but `Union`, the static schema walk `SchemaWalk.ofTransform` is SOUND for the evaluator's output schema: over knowledge sound for the input frame's schema (a closed knowledge carries the schema's names in order and every type it knows is the schema's; an open one names columns the schema carries, with the types it knows), when `evalStepWith`'s arm answers `Ok`, the walk's answer is sound for the output schema it answers (`walk_sound`, one lemma per arm: `project_sound`, `group_by_sound`, `window_sound`, `pivot_sound` — the walk's open knowledge names the index columns the evaluator's output carries first — `unpivot_sound`, `join_sound` over a closed right source and, under the suffix rule's injectivity, over an undeclared `Ref`). So a planner, or the pipeline-query registry's agreement check, reading a CLOSED walk reads the evaluator's names and types, and reading an OPEN one reads names and types the evaluator produces. The union's names agree (`union_sound_names`); its TYPES are the finding `relational-repeated-name-finding` carries (`union_walk_type_drifts`). Conditional on the walk's declared sources agreeing with the evaluator's resolver (`sources_agree`) and on the suffix rule's injectivity (`cand_injective`), both named by `relational-primitives-abstract`; over `Pipeline.fst`'s unitless schema, so nothing about a unit is claimed.",
+      "phase": "fuaran-core#434",
+      "evidence": {
+        "theorem": "walk_sound",
+        "model": "proofs/Relational.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "union_sound_names",
+          "project_sound",
+          "group_by_sound",
+          "window_sound",
+          "pivot_sound",
+          "unpivot_sound",
+          "join_sound",
+          "renamed_assoc_kept",
+          "sound_type",
+          "step_schema",
+          "walk",
+          "of_source",
+          "source_cols"
+        ],
+        "operations": [
+          "Transform.Project",
+          "Transform.GroupBy",
+          "Transform.Join",
+          "Transform.Window",
+          "Transform.Pivot",
+          "Transform.Unpivot",
+          "Transform.Sort",
+          "Transform.Distinct",
+          "Transform.Limit",
+          "Transform.Union",
+          "Transform.Intersect",
+          "Transform.Except",
+          "SchemaWalk.ofTransform",
+          "SchemaWalk.ofSource",
+          "DataFrame.joinRightNames"
+        ]
+      }
+    },
+    {
+      "id": "relational-names-distinct",
+      "level": "proved",
+      "claim": "NAME DISTINCTNESS (Phase 434). A combining join (`Inner` / `Left` / `Right` / `Outer`) over two operands whose names are each distinct answers distinct output names (`join_no_dups`): the colliding right column's suffix is the first free against EVERY name the output carries — the left's, the right's own and the suffixes earlier colliding columns took — so re-introducing Phase 411's defect (a suffix checked against the left names only) leaves `join_no_dups` unprovable — `rename_right_no_dups`'s hypothesis that every right name is taken no longer holds — and the leg goes red (measured: one perturbation run, the theorem that fails is `join_no_dups`). `free_fresh` is the pigeonhole: with one more candidate than taken names, an injective suffix rule finds a free one. A window over distinct names answers distinct names (`window_no_dups`, Phase 450, D28: the taken output name is refused). The row-set verbs and the filtering joins answer the input schema (`keeps_schema`) and the union its names (`union_keeps_names`). What the other four verbs' names ARE is proved rather than their distinctness, because they are not distinct: `project_names` (the pairs' output names), `group_by_names` (the keys then the aggregate names), `unpivot_names` (the ids then `variable` and `value`), `pivot_names_prefix` (the index names first) — see the finding below. Conditional on the suffix rule's injectivity (`cand_injective`).",
+      "phase": "fuaran-core#434",
+      "evidence": {
+        "theorem": "join_no_dups",
+        "model": "proofs/Relational.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "window_no_dups",
+          "keeps_schema",
+          "union_keeps_names",
+          "project_names",
+          "group_by_names",
+          "unpivot_names",
+          "pivot_names_prefix",
+          "rename_right_no_dups",
+          "rename_right_mem",
+          "free_fresh",
+          "join_right_names"
+        ],
+        "operations": [
+          "Transform.Join",
+          "Transform.Window"
+        ]
+      }
+    },
+    {
+      "id": "relational-repeated-name-finding",
+      "level": "proved",
+      "claim": "THE FINDING (Phase 434), carried as theorems with witnesses so that it goes red if the tree moves. Four verbs answer `Ok` with a REPEATED output name — the defect D20 closed for a join and D28 for a window, open in the four verbs whose output names the pipeline text (or, for a pivot, the data) chooses: `project_repeats_name` (`Project [a, x; a, x]` answers `x` twice), `group_by_repeats_name` (a key named as an aggregate), `unpivot_repeats_name` (an id column named `variable`), `pivot_repeats_name` (an index column whose name is an `on` value's canonical text, conditional on `cellString` of that string cell being the string, which it is). A table naming a column twice re-enters the evaluator by name as the first of the two (D25) and Core's `Table.validate` refuses it. And the union's walk: `union_walk_type_drifts` — `SchemaWalk.ofTransform` keeps the LEFT type for a `Union` where the evaluator widens the column to the join of the two sides' types (Phase 423, D18: `Int` beside `Float` is a `Float` column), so a planner reading the walk over such a union reads a type the evaluator does not produce. Both are recorded in `DECISIONS.md` D32 with the rulings they wait on; neither is fixed here, because each is a behaviour change to a public evaluator or walk that wants its own decision and `STABILITY.md` entry. The differential asserts the four repeated-name witnesses on the shipped evaluator (`the finding holds on the shipped evaluator — …`) and the union's walk on the shipped walk (`423-union-widens` among its shapes, where the walk comparison records production's and the model's answers agree with each other and the schema comparison records the evaluator's).",
+      "phase": "fuaran-core#434",
+      "evidence": {
+        "theorem": "project_repeats_name",
+        "model": "proofs/Relational.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "group_by_repeats_name",
+          "unpivot_repeats_name",
+          "pivot_repeats_name",
+          "union_walk_type_drifts"
+        ],
+        "operations": [
+          "Transform.Project",
+          "Transform.GroupBy",
+          "Transform.Unpivot",
+          "Transform.Pivot",
+          "Transform.Union"
+        ]
+      }
+    },
+    {
+      "id": "relational-unknown-column-refused",
+      "level": "proved",
+      "claim": "UNKNOWN-COLUMN REFUSAL (Phase 434). Every name a relational verb takes from the pipeline that the input schema does not carry is refused with `UnknownColumn` naming it and listing the schema's names, in the arm's own order: a `Sort`'s keys once every slot resolves — the first key the schema lacks (`sort_unknown_refused`; `sort_literal_unknown_refused` is the Phase 412 shape itself, a literal key the schema does not carry, under any env), so re-introducing 412's defect (the key dropped) makes the arm answer `Ok` and the lemma fails; a join's left keys then its right keys, both schemas' names listed (`join_unknown_refused`); a window's read column where the function reads one, then the first partition or order key it lacks (`window_of_unknown_refused`, `window_key_unknown_refused`; after the bucket count, D26); a pivot's index names, then `on`, then `values` (`pivot_unknown_refused`); an unpivot's ids then its values (`unpivot_unknown_refused`); a project's sources (`project_unknown_refused`); a group-by's keys then its aggregate sources (`group_by_key_unknown_refused`, `group_by_agg_unknown_refused`). The slot refusals in front of a sort's keys and a limit's bounds (`UnboundParam`, the `TypeError` naming the slot) are clauses the differential holds to production (`resolve_str_slot`, `resolve_int_slot`).",
+      "phase": "fuaran-core#434",
+      "evidence": {
+        "theorem": "sort_unknown_refused",
+        "model": "proofs/Relational.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "sort_literal_unknown_refused",
+          "join_unknown_refused",
+          "window_of_unknown_refused",
+          "window_key_unknown_refused",
+          "pivot_unknown_refused",
+          "unpivot_unknown_refused",
+          "project_unknown_refused",
+          "group_by_key_unknown_refused",
+          "group_by_agg_unknown_refused",
+          "resolve_str_slot",
+          "resolve_int_slot",
+          "window_refusal"
+        ],
+        "operations": [
+          "Transform.Project",
+          "Transform.GroupBy",
+          "Transform.Join",
+          "Transform.Window",
+          "Transform.Pivot",
+          "Transform.Unpivot",
+          "Transform.Sort",
+          "Transform.Limit"
+        ]
+      }
+    },
+    {
+      "id": "relational-differential",
+      "level": "tested",
+      "claim": "The extracted schema model agrees with the shipped evaluator on every verb's OUTPUT SCHEMA (names and types, through the `Table` the step answers) or on the named `EvalError`, and the extracted walk with the shipped `SchemaWalk.ofTransform` on the knowledge (closed or open, names and known types; the reason text and the unit are outside the model), step by step over the pipeline differential's generated pipelines and tables — every one of the twelve verbs reached, under the same resolver, declared sources and param env — and over the named shapes: the 411 collisions (a left carrying `x` and `x_right`, a right carrying both, a three-way), the 412 unknown sort keys (literal, second, param-bound, unbound, bound to a non-string), the window's unknown keys, taken output name and zero buckets, the union's widening and its refusal, the two set operations' name agreement, the limit's slot refusals, the four repeated-name witnesses, an unpivot typed by its cells and one refused, the pivot's three unknown names, an undeclared and a missing `Ref`. A refusal that read the cells (`AggError`; D18's unrelated-types refusal) is the row function's by the model's header and is tallied, not compared. `joinRightNames` is compared directly on the 411 name lists. THE NARROWING MEASURED END TO END: the pipeline differential run with `Relational.other_of` — the model's schema over production's ROWS — as the twelve-verb parameter agrees with `evalPipelineWithInEnvCounted` on table and count over four hundred generated pipelines. Two go-reds: the pre-D20 suffix rule (every collision to `_right`) crossed as the model's `candidate` parameter disagrees on the 411 shapes; a step evaluator that drops a sort key the schema does not carry — the pre-412 evaluator as the model's twelve-verb parameter — disagrees on the 412 shape, production refusing the key the model dropped. Agreement is over the pools drawn, never over all inputs.",
+      "phase": "fuaran-core#434",
+      "evidence": {
+        "family": "Proofs.Oracle",
+        "model": "proofs/Relational.fst",
+        "cases": [
+          "the relational oracle agrees with the evaluator on every verb's output schema and refusal, and with SchemaWalk.ofTransform on the knowledge, over the 411 and 412 shapes and generated pipelines",
+          "the finding holds on the shipped evaluator — a Project, a GroupBy, an Unpivot and a Pivot each answer a table naming a column twice",
+          "the twelve-verb evaluator built from the model's schema and production's rows agrees with DataFrame.evalPipelineWithInEnvCounted — the narrowing measured end to end",
+          "a relational oracle crossed the pre-D20 suffix rule DISAGREES with the evaluator on the 411 shapes — the measurement can fail",
+          "a relational oracle whose bridge drops a sort key the schema does not carry DISAGREES with the evaluator on the 412 shape — the measurement can fail"
+        ],
+        "operations": [
+          "Transform.Project",
+          "Transform.GroupBy",
+          "Transform.Join",
+          "Transform.Window",
+          "Transform.Pivot",
+          "Transform.Unpivot",
+          "Transform.Sort",
+          "Transform.Distinct",
+          "Transform.Limit",
+          "Transform.Union",
+          "Transform.Intersect",
+          "Transform.Except",
+          "SchemaWalk.ofTransform",
+          "DataFrame.joinRightNames"
+        ]
+      }
+    },
+    {
+      "id": "relational-primitives-abstract",
+      "level": "assumed",
+      "claim": "THE RELATIONAL PRIMITIVES (Phase 434). `Relational.fst` takes four primitives as a record (`rprims`) and the resolver as a function, and every parameter is an assumption stated here: `cell_string` (`DataFrame.cellString`, the canonical text that names a pivot's value columns) — nothing assumed, one theorem conditional on its text for one string cell; `int_text` (the decimal text of an int, in the `NTile` refusal) — nothing assumed; `string_lt` (the string order `List.sortBy` sorts under, the pivot's value-column order) — nothing assumed and no theorem reads the order; `candidate` (the join's suffix rule, `name + \"_right\"` then `name + \"_right_\" + string n`) — ASSUMED INJECTIVE in `n` for a fixed name (`cand_injective`), a fact about string concatenation and decimal rendering the prover has no axiom for, on which `join_no_dups` and the open-right half of `walk_sound` rest, and which the 411 go-red measures by crossing a non-injective rule. The resolver and the walk's declared sources are ASSUMED TO AGREE (`sources_agree`: a declared schema is the resolved table's), which is the contract a caller of `SchemaWalk.ofPipelineFrom` with `ofMap` takes on; `walk_sound` rests on it for a `Join` over a declared `Ref`. The differential instantiates the record at production's own functions and the resolver at the pipeline differential's. `permanent`: the first three are host text and ordering, the fourth is a string fact, and the fifth is a caller's contract.",
+      "phase": "fuaran-core#434",
+      "class": "model-bridge",
+      "closes": "permanent",
+      "evidence": {
+        "assumption": "the pivot's cell text, the int text, the string order and the join's suffix rule are host functions; the suffix rule is assumed injective in its index; the walk's declared sources are assumed to be the resolver's schemas"
       }
     }
   ]

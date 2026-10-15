@@ -38,6 +38,10 @@
          caches, the walk that reuses an unnamed row's cell, `prime` and `refresh`. Opens
          `Pipeline`, so it follows it. -->
     <Compile Include="Incremental.fs" />
+    <!-- The model of the RELATIONAL VERBS' output schema and refusals and of the static schema
+         walk (../Relational.fst): `step_schema` over the twelve verbs, `join_right_names`,
+         `walk`. Opens `Pipeline`, so it follows it. -->
+    <Compile Include="Relational.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

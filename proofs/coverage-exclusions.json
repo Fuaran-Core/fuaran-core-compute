@@ -33,114 +33,6 @@
   "operations": [
     {
       "members": [
-        "Transform.Project"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Project` verb renames and selects columns. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Project",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.GroupBy"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `GroupBy` verb groups rows by key and aggregates each group. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "GroupBy",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Join"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Join` verb pairs the rows of two tables on key columns. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Join",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Window"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Window` verb computes a window function over each ordered partition. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Window",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Pivot"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Pivot` verb spreads a key column's values into columns. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Pivot",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Unpivot"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Unpivot` verb folds columns into key and value rows. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Unpivot",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Sort"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Sort` verb orders rows under the pinned multi-key ordering. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Sort",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Distinct"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Distinct` verb drops repeated rows. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Distinct",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Limit"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Limit` verb keeps a window of rows by count and offset. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Limit",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Union"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Union` verb appends a second source's rows. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Union",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Intersect"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Intersect` verb keeps the rows a second source also holds. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Intersect",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "Transform.Except"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "The `Except` verb drops the rows a second source holds. `proofs/Pipeline.fst` takes the twelve verbs that evaluate no expression as a parameter (`pipeline-step-evaluator-abstract`), so no theorem states its semantics; the reference evaluator's examples pin it, and `Conformance.transformLaws`, `incrementalLaws` and `schemaWalkLaws` sample it.",
-      "through": "Except",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
         "ColumnOps.applyPrepared",
         "ColumnOps.canApplyPrepared",
         "ColumnOps.invertPrepared"
@@ -393,7 +285,6 @@
     {
       "members": [
         "DataFrame.joinKeyIndices",
-        "DataFrame.joinRightNames",
         "DataFrame.rowCompareBy",
         "DataFrame.windowFrameBounded"
       ],
@@ -682,21 +573,11 @@
         "SchemaWalk.ofPipeline",
         "SchemaWalk.ofPipelineFrom",
         "SchemaWalk.ofSchema",
-        "SchemaWalk.ofTransform",
         "SchemaWalk.reason",
         "SchemaWalk.typeOf"
       ],
       "class": "measured-elsewhere",
-      "reason": "The static schema walk; `Conformance.schemaWalkLaws` certifies it against the evaluator, and the examples pin its open and closed answers.",
-      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
-    },
-    {
-      "members": [
-        "SchemaWalk.ofSource"
-      ],
-      "class": "measured-elsewhere",
-      "reason": "A source's schema knowledge, which the walk reads for a join's right-hand side; measured through that.",
-      "through": "SchemaWalk.ofTransform",
+      "reason": "The static walk's readers and its pipeline fold; `Conformance.schemaWalkLaws` certifies the walk against the evaluator, and the examples pin its open and closed answers. The one-step walk itself (`SchemaWalk.ofTransform`, with `ofSource`) is modelled and proved sound for the evaluator's schema by `proofs/Relational.fst` (`relational-schema-agrees`).",
       "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
     },
     {
