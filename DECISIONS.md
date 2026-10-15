@@ -115,6 +115,7 @@ the condition.
 flat-container index), so its `STABILITY.md` heading stands as released and is not retitled; this
 phase's entry rides the `0.40.0` draft. No public signature, answer or wire byte moves (class `none`,
 `performance`).
+
 ## 2026-10-15 — D30: the operation census is ported from Fuaran.Core, and the two repositories have one coverage vocabulary; the census is the modelled packages' operations and the relational verbs
 
 **Context.** Phase 259 carried only the package half of Fuaran.Core's coverage file into this
