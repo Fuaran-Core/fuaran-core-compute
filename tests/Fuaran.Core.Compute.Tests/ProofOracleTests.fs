@@ -2743,11 +2743,29 @@ let private rCompareStep
         else
             None
 
+    // `walk_sound` measured on the shipped evaluator (Phase 469, every verb, the union included):
+    // where production answers a table, the walk's knowledge is sound for the schema it answers,
+    // read by the model's own `sound`.
+    let soundDiff =
+        match prod with
+        | Ok t' when not (ModelRel.sound kModel' (pFrameOfTable t').cols) ->
+            Some(
+                sprintf
+                    "%s: %s — the walk is not sound for the evaluator's output: walk %A, evaluator %A"
+                    label
+                    (pVerbTag t)
+                    wm
+                    (rSchemaOfProd t'.Schema)
+            )
+        | _ -> None
+
     next,
     kProd',
     kModel',
     { tally with
-        RDiffs = (Option.toList walkDiff @ Option.toList diff) @ tally.RDiffs
+        RDiffs =
+            (Option.toList soundDiff @ Option.toList walkDiff @ Option.toList diff)
+            @ tally.RDiffs
         RSteps = tally.RSteps + 1
         ROk = tally.ROk + ok
         RErr = tally.RErr + err
@@ -4611,6 +4629,33 @@ let proofOracleTests =
                           "is named twice, by "
                           (sprintf "%s: the refusal names both producers" label)
                   | Error e -> failtestf "%s: refused with %A, not the repeated-name TypeError" label e
+
+          testCase
+              "a walk that keeps a union's LEFT type is not sound for the evaluator on 423-union-widens, and the shipped walk is — the soundness measurement can fail"
+          <| fun _ ->
+              // The pre-469 `Union` arm answered its input knowledge (D32 finding (b)). Over the
+              // widening shape the evaluator answers a float column; the old arm's knowledge says
+              // int, and the model's `sound` must say so. The differential above holds the shipped
+              // walk to the same `sound` on every step; this is what says that check has teeth.
+              let label, table, p =
+                  rShapes |> List.find (fun (label, _, _) -> label = "423-union-widens")
+
+              let out =
+                  match DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p table with
+                  | Ok t' -> (pFrameOfTable t').cols
+                  | Error e -> failtestf "%s: the evaluator refused the widening union: %A" label e
+
+              let input = SchemaWalk.ofSchema table.Schema
+
+              Expect.isFalse
+                  (ModelRel.sound (rKnowledgeToModel input) out)
+                  "the left-type answer is sound for the widened output — the check cannot fail"
+
+              let shipped = SchemaWalk.ofPipelineFrom SchemaWalk.noSources input p
+
+              Expect.isTrue
+                  (ModelRel.sound (rKnowledgeToModel shipped) out)
+                  (sprintf "the shipped walk %A is not sound for %A" (rKnowledgeOfProd shipped) out)
 
           testCase
               "the twelve-verb evaluator built from the model's schema and production's rows agrees with DataFrame.evalPipelineWithInEnvCounted — the narrowing measured end to end"

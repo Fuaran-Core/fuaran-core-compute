@@ -896,35 +896,29 @@ in (match (dt) with
      end))
 
 
+let union_ty : Pipeline.column_type  ->  Pipeline.column_type  ->  FStar_Pervasives_Native.option<Pipeline.column_type> = (fun ( lt  :  Pipeline.column_type ) ( rt  :  Pipeline.column_type ) ->  
+if (Prims.op_Equals lt rt) then begin
+     FStar_Pervasives_Native.Some (lt)
+     end else begin
+     (join_column_type lt rt)
+     end)
+
+
 let rec union_types : Pipeline.schema  ->  Pipeline.schema  ->  Pipeline.outcome<Pipeline.schema, Pipeline.eval_error> = (fun ( l  :  Pipeline.schema ) ( r  :  Pipeline.schema ) -> (match (((l), (r))) with
 | (((n, lt))::lrest, ((uu___, rt))::rrest) -> begin
-     (
-
-let ty =  
-if (Prims.op_Equals lt rt) then begin
-     Pipeline.Ok (lt)
-     end else begin
-     (match ((join_column_type lt rt)) with
-| FStar_Pervasives_Native.Some (j) -> begin
-     Pipeline.Ok (j)
-     end
+     (match ((union_ty lt rt)) with
 | FStar_Pervasives_Native.None -> begin
      Pipeline.Error ((types_beside_each_other n lt rt))
-     end)
      end
-in (match (ty) with
-| Pipeline.Error (e) -> begin
-     Pipeline.Error (e)
-     end
-| Pipeline.Ok (ty1) -> begin
+| FStar_Pervasives_Native.Some (ty) -> begin
      (match ((union_types lrest rrest)) with
 | Pipeline.Error (e) -> begin
      Pipeline.Error (e)
      end
 | Pipeline.Ok (rest) -> begin
-     Pipeline.Ok ((((n), (ty1)))::rest)
+     Pipeline.Ok ((((n), (ty)))::rest)
      end)
-     end))
+     end)
      end
 | (uu___, uu___1) -> begin
      Pipeline.Ok ([])
@@ -1397,6 +1391,48 @@ let rec renamed_k : Prims.list<Prims.string>  ->  Prims.list<col_knowledge>  -> 
      end))
 
 
+let union_k : FStar_Pervasives_Native.option<Pipeline.column_type>  ->  FStar_Pervasives_Native.option<Pipeline.column_type>  ->  FStar_Pervasives_Native.option<Pipeline.column_type> = (fun ( lt  :  FStar_Pervasives_Native.option<Pipeline.column_type> ) ( rt  :  FStar_Pervasives_Native.option<Pipeline.column_type> ) -> (match (((lt), (rt))) with
+| (FStar_Pervasives_Native.Some (a), FStar_Pervasives_Native.Some (b)) -> begin
+     (union_ty a b)
+     end
+| (uu___, uu___1) -> begin
+     FStar_Pervasives_Native.None
+     end))
+
+
+let rec union_known_pos : Prims.list<col_knowledge>  ->  Prims.list<col_knowledge>  ->  Prims.list<col_knowledge> = (fun ( l  :  Prims.list<col_knowledge> ) ( r  :  Prims.list<col_knowledge> ) -> (match (((l), (r))) with
+| (((n, lt))::lrest, ((uu___, rt))::rrest) -> begin
+     (((n), ((union_k lt rt))))::(union_known_pos lrest rrest)
+     end
+| (uu___, uu___1) -> begin
+     []
+     end))
+
+
+let rec union_known_by_name : Prims.list<col_knowledge>  ->  Prims.list<col_knowledge>  ->  Prims.list<col_knowledge> = (fun ( cs  :  Prims.list<col_knowledge> ) ( r  :  Prims.list<col_knowledge> ) -> (match (cs) with
+| [] -> begin
+     []
+     end
+| ((n, lt))::rest -> begin
+     (((n), ((match ((Pipeline.assoc n r)) with
+| FStar_Pervasives_Native.Some (rt) -> begin
+     (union_k lt rt)
+     end
+| FStar_Pervasives_Native.None -> begin
+     lt
+     end))))::(union_known_by_name rest r)
+     end))
+
+
+let rec untyped : Prims.list<col_knowledge>  ->  Prims.list<col_knowledge> = (fun ( cs  :  Prims.list<col_knowledge> ) -> (match (cs) with
+| [] -> begin
+     []
+     end
+| ((n, uu___))::rest -> begin
+     (((n), (FStar_Pervasives_Native.None)))::(untyped rest)
+     end))
+
+
 let walk : rprims  ->  sources  ->  knowledge  ->  Pipeline.transform  ->  knowledge = (fun ( rp  :  rprims ) ( srcs  :  sources ) ( k  :  knowledge ) ( t  :  Pipeline.transform ) -> (match (t) with
 | Pipeline.Filter (uu___) -> begin
      k
@@ -1410,14 +1446,28 @@ let walk : rprims  ->  sources  ->  knowledge  ->  Pipeline.transform  ->  knowl
 | Pipeline.Limit (uu___, uu___1) -> begin
      k
      end
-| Pipeline.Union (uu___) -> begin
-     k
-     end
 | Pipeline.Intersect (uu___) -> begin
      k
      end
 | Pipeline.Except (uu___) -> begin
      k
+     end
+| Pipeline.Union (src) -> begin
+     (match ((((of_source srcs src)), (k))) with
+| (AtLeast (uu___), uu___1) -> begin
+     (with_columns (untyped (columns k)) k)
+     end
+| (Closed (rcs), Closed (left)) -> begin
+      
+if (Prims.op_Equals (Pipeline.names left) (Pipeline.names rcs)) then begin
+     Closed ((union_known_pos left rcs))
+     end else begin
+     k
+     end
+     end
+| (Closed (rcs), AtLeast (cs)) -> begin
+     AtLeast ((union_known_by_name cs rcs))
+     end)
      end
 | Pipeline.Project (pairs) -> begin
      Closed ((renamed_known pairs k))

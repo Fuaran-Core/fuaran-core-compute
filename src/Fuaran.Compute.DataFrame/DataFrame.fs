@@ -7730,28 +7730,32 @@ module DataFrame =
             | Error e -> Some e
             | Ok _ -> None)
 
+    /// One column of a union, from the left side's field and the right side's: the left field under
+    /// the one unit the pair states and the JOIN of the two types, or the refusal. Phase 423: an int
+    /// column over a float one is a float column, and a pair no column type holds together is
+    /// refused by name — Core `1.0.0`'s typed column cannot hold a bool beside a float (D18). Phase
+    /// 429 (D29): the unit is the left's, the right's where only the right states one, and two
+    /// stated units are refused. The evaluator (`evalUnion`) and the static walk's `Union` arm both
+    /// read this one function (Phase 469, D36), so the walk cannot type a union the evaluator does
+    /// not produce.
+    let internal unionField (left: Field) (right: Field) : Result<Field, EvalError> =
+        unitsAgree "union column" left right
+        |> Result.bind (fun left ->
+            if left.Type = right.Type then
+                Ok left
+            else
+                match joinColumnType left.Type right.Type with
+                | Some ty -> Ok(Field.withType ty left)
+                | None -> Error(typesBesideEachOther left.Name left.Type right.Type))
+
     let private evalUnion (f: Frame) (other: Frame) : Result<Frame, EvalError> =
         if available f.Cols <> available other.Cols then
             Error(JoinError "union requires matching column names")
         else
-            // Phase 423: a column of the union takes the JOIN of the two sides' types where one exists
-            // (an int column over a float one is a float column, and the appended cells are packed
-            // under it), and is refused by name where none does — Core `1.0.0`'s typed column cannot
-            // hold a bool beside a float, which the cell list carried under the left side's type
-            // (`DECISIONS.md` D18). The common case, both sides of one type, is the plain append.
+            // The appended cells are packed under the joined type; the common case, both sides of
+            // one type, is the plain append.
             let joined =
-                List.zip f.Cols other.Cols
-                |> traverseResult (fun (left: Field, right: Field) ->
-                    // Phase 429 (D29): a column of the union carries one unit — the left's, the
-                    // right's where only the right states one — and two stated units are refused.
-                    unitsAgree "union column" left right
-                    |> Result.bind (fun left ->
-                        if left.Type = right.Type then
-                            Ok left
-                        else
-                            match joinColumnType left.Type right.Type with
-                            | Some ty -> Ok(Field.withType ty left)
-                            | None -> Error(typesBesideEachOther left.Name left.Type right.Type)))
+                List.zip f.Cols other.Cols |> traverseResult (fun (l, r) -> unionField l r)
 
             joined
             |> Result.map (fun cols ->
@@ -9956,20 +9960,69 @@ module SchemaWalk =
             | First
             | Last -> None
 
+    /// One column of a union, from the left's knowledge and the right's, read through the evaluator's
+    /// `unionField` (Phase 469, D36): its type where both sides' types are known and join, unknown
+    /// where either is not — a join with an unknown type is no type the walk can name. A pair the
+    /// evaluator refuses (two types no column holds, two units) reads as a column of unknown type:
+    /// the walk carries no refusal verdict (D26), and the evaluator is where the refusal is met.
+    let private unionColumn (left: ColumnKnowledge) (right: ColumnKnowledge) : ColumnKnowledge =
+        match ColumnKnowledge.toField left, ColumnKnowledge.toField right with
+        | Some l, Some r ->
+            match DataFrame.unionField l r with
+            | Ok f -> ColumnKnowledge.ofField f
+            | Error _ -> { left with Type = None }
+        | _ ->
+            // The unit is still decided: the unit rule reads units, never types, so both sides
+            // stand in under one type for it, as the unit check's schema does.
+            let untyped (c: ColumnKnowledge) =
+                ColumnKnowledge.toFieldAs StringType { c with Type = None }
+
+            match DataFrame.unionField (untyped left) (untyped right) with
+            | Ok f -> { left with Type = None; Unit = f.Unit }
+            | Error _ -> { left with Type = None }
+
     /// The output knowledge of ONE transform step over an input knowledge. Total, and evaluates
     /// nothing: every case is a rearrangement of names and declared types.
     let ofTransform (sources: string -> Schema option) (input: SchemaKnowledge) (step: Transform) : SchemaKnowledge =
         match step with
-        // Row-set verbs: they drop, reorder or dedup ROWS and touch no column. The three set ops
+        // Row-set verbs: they drop, reorder or dedup ROWS and touch no column. The two set ops
         // take the LEFT schema through unchanged — the evaluator requires the two column-name lists
         // to agree before it gets here, so a disagreement is an `EvalError`, never a schema.
         | Filter _
         | Sort _
         | Distinct
         | Limit _
-        | Union _
         | Intersect _
         | Except _ -> input
+
+        // A union keeps the left's names and joins each column's type with the right's, through the
+        // evaluator's own `unionField` (Phase 469, D36). The right is read as a join reads it.
+        | Union source ->
+            match input, ofSource sources source with
+            // An undeclared right: every name stays (an answer has the left's names), and every
+            // type is unknown, because the right's type may widen it.
+            | _, SchemaKnowledge.AtLeast _ ->
+                input
+                |> withColumns (columns input |> List.map (fun c -> { c with Type = None }))
+            // Both closed: the evaluator zips the two schemas by position once their names agree,
+            // and so does the walk. Names that disagree are the evaluator's refusal; the walk
+            // carries no refusal verdict (D26) and answers the input.
+            | SchemaKnowledge.Closed left, SchemaKnowledge.Closed right ->
+                if List.map _.Name left = List.map _.Name right then
+                    SchemaKnowledge.Closed(List.map2 unionColumn left right)
+                else
+                    input
+            // An open left names columns, not positions: each visible column meets the right's
+            // first column of its name, which is the one it is zipped with when the names agree.
+            | SchemaKnowledge.AtLeast(cols, r), SchemaKnowledge.Closed right ->
+                SchemaKnowledge.AtLeast(
+                    cols
+                    |> List.map (fun c ->
+                        match right |> List.tryFind (fun rc -> rc.Name = c.Name) with
+                        | Some rc -> unionColumn c rc
+                        | None -> c),
+                    r
+                )
 
         // Project CLOSES the set however open the input was: the output is exactly the listed
         // columns, under their output names, in the listed order, whatever else the input carried.

@@ -1,7 +1,7 @@
 (*
    Relational — the twelve relational verbs' OUTPUT SCHEMA and REFUSALS, and the static schema walk
    that reads them, modelled clause for clause and proved to agree (fuaran-core Phase 434; the
-   repeated-name refusal, Phase 468).
+   repeated-name refusal, Phase 468; the union's walk, Phase 469).
 
    WHAT IS MODELLED. `src/Fuaran.Compute.DataFrame/DataFrame.fs`, for the twelve verbs
    `Pipeline.fst` takes as its second parameter (`other_fn`) — `Project`, `GroupBy`, `Join`,
@@ -66,14 +66,15 @@
    carries.
 
    WHAT IS PROVED.
-     - `walk_sound` (SCHEMA AGREEMENT): for every verb but `Union`, over knowledge SOUND for the
+     - `walk_sound` (SCHEMA AGREEMENT): for every verb, over knowledge SOUND for the
        input frame's schema (`sound`: a closed knowledge has the schema's names in order and every
        type it knows is the schema's; an open knowledge names columns the schema carries, with the
        types it knows), when the verb answers `Ok out` the walk's answer is sound for `out` — so a
        planner reading a closed walk reads the evaluator's names and types, and reading an open
-       one reads names and types the evaluator produces. `union_sound_names` is the union's half:
-       the names agree. The union's TYPES do not, and `union_walk_type_drifts` is the finding: the
-       walk keeps the left type where the evaluator widens it (D18).
+       one reads names and types the evaluator produces. The union's arm (`union_sound`, Phase 469,
+       D36) reads the evaluator's own per-column rule (`union_ty`); Phase 434's finding that the
+       walk kept the left type where the evaluator widens it (D18) is closed, and its witness is
+       restated as agreement (`union_walk_widens`).
      - `keeps_schema`, `union_keeps_names`: the row-set verbs and the filtering joins answer the
        input schema; the union answers its names.
      - THE SIX `*_no_dups` THEOREMS — no verb that names its output answers `Ok` with a name
@@ -617,18 +618,21 @@ let unpivot_cols (cols:schema) (rows:list (list cell)) (ids vals:list string)
               | Error e -> Error e
               | Ok vty -> Ok (app (lookup_cols cols ids) [("variable", StringType); ("value", vty)])))))
 
-(* F#: `evalUnion`'s per-column fold after the names agree — the left type where the two agree,
-   their join where one exists, refused by name where none does. *)
+(* F#: `unionField`'s type (Phase 469, D36) — the left type where the two agree, their join where
+   one exists, and `None` where no column type holds the two. The evaluator's fold (`union_types`)
+   and the walk's union arm (`union_k`) both read this one function, as F#'s `evalUnion` and
+   `SchemaWalk.ofTransform` both read `unionField`. *)
+let union_ty (lt rt:column_type) : Tot (option column_type) =
+  if lt = rt then Some lt else join_column_type lt rt
+
+(* F#: `evalUnion`'s per-column fold after the names agree — `union_ty`, refused by name where it
+   answers `None`. *)
 let rec union_types (l r:schema) : Tot (outcome schema eval_error) =
   match l, r with
   | (n, lt) :: lrest, (_, rt) :: rrest ->
-    let ty = if lt = rt then Ok lt
-             else (match join_column_type lt rt with
-                   | Some j -> Ok j
-                   | None -> Error (types_beside_each_other n lt rt)) in
-    (match ty with
-     | Error e -> Error e
-     | Ok ty ->
+    (match union_ty lt rt with
+     | None -> Error (types_beside_each_other n lt rt)
+     | Some ty ->
        (match union_types lrest rrest with
         | Error e -> Error e
         | Ok rest -> Ok ((n, ty) :: rest)))
@@ -880,10 +884,43 @@ let rec renamed_k (ns:list string) (cs:list col_knowledge) : Tot (list col_knowl
   | n :: nt, (_, t) :: ct -> (n, t) :: renamed_k nt ct
   | _, _ -> []
 
+(* F#: `unionColumn`'s type (Phase 469, D36) — `union_ty` where both sides' types are known,
+   unknown where either is not, and unknown for a pair the evaluator refuses (the walk carries no
+   refusal verdict, D26). *)
+let union_k (lt rt:option column_type) : Tot (option column_type) =
+  match lt, rt with
+  | Some a, Some b -> union_ty a b
+  | _, _ -> None
+
+(* F#: the union arm over two closed operands — zipped by position, as `evalUnion` zips them. *)
+let rec union_known_pos (l r:list col_knowledge) : Tot (list col_knowledge) =
+  match l, r with
+  | (n, lt) :: lrest, (_, rt) :: rrest -> (n, union_k lt rt) :: union_known_pos lrest rrest
+  | _, _ -> []
+
+(* F#: the union arm over an open left and a closed right — by name: each visible column meets the
+   right's first column of its name. *)
+let rec union_known_by_name (cs r:list col_knowledge) : Tot (list col_knowledge) =
+  match cs with
+  | [] -> []
+  | (n, lt) :: rest ->
+    (n, (match assoc n r with Some rt -> union_k lt rt | None -> lt)) :: union_known_by_name rest r
+
+(* F#: the union arm over an undeclared right — every name stays, no type is known. *)
+let rec untyped (cs:list col_knowledge) : Tot (list col_knowledge) =
+  match cs with
+  | [] -> []
+  | (n, _) :: rest -> (n, None) :: untyped rest
+
 (* F#: `SchemaWalk.ofTransform sources input step`, all fourteen arms. *)
 let walk (rp:rprims) (srcs:sources) (k:knowledge) (t:transform) : Tot knowledge =
   match t with
-  | Filter _ | Sort _ | Distinct | Limit _ _ | Union _ | Intersect _ | Except _ -> k
+  | Filter _ | Sort _ | Distinct | Limit _ _ | Intersect _ | Except _ -> k
+  | Union src ->
+    (match of_source srcs src, k with
+     | AtLeast _, _ -> with_columns (untyped (columns k)) k
+     | Closed rcs, Closed left -> if names left = names rcs then Closed (union_known_pos left rcs) else k
+     | Closed rcs, AtLeast cs -> AtLeast (union_known_by_name cs rcs))
   | Project pairs -> Closed (renamed_known pairs k)
   | Derive name x -> upsert (name, derived_column_type (known_fields (columns k)) x) k
   | GroupBy keys aggs -> Closed (app (known_each keys k) (agg_known aggs k))
@@ -1454,23 +1491,8 @@ let join_sound (rp:rprims) (srcs:sources) (resolve:resolver) (k:knowledge) (f:wf
           at_least_app_left left f.cols (renamed rn rcols);
           at_least_app left (kept_right ln rcs) (app f.cols (renamed rn rcols))))
 
-(* THE AGREEMENT THEOREM. *)
-let walk_sound (rp:rprims) (srcs:sources) (resolve:resolver) (k:knowledge) (f:wframe) (t:transform)
-  : Lemma (requires cand_injective rp /\ sources_agree srcs resolve /\ sound k f.cols
-                    /\ (Join? t ==> no_dups (names f.cols))
-                    /\ not (Union? t) /\ Ok? (step_schema rp resolve [] f t))
-          (ensures sound (walk rp srcs k t) (Ok?._0 (step_schema rp resolve [] f t))) =
-  match t with
-  | Filter _ | Sort _ | Distinct | Limit _ _ | Intersect _ | Except _ -> ()
-  | Project pairs -> project_sound k f.cols pairs; assert (project_step f.cols pairs == project_cols f.cols pairs)
-  | GroupBy keys aggs -> group_by_sound k f.cols keys aggs
-  | Window spec -> window_sound rp k f.cols spec
-  | Pivot spec -> pivot_sound rp k f spec
-  | Unpivot ids vals -> unpivot_sound k f ids vals
-  | Join src on how -> join_sound rp srcs resolve k f src on how
+(* ---- the union's soundness (Phase 469, D36) ---- *)
 
-(* The theorem holds under any param env — `step_schema` reads the env only for the `Sort` and
-   `Limit` slots, which keep the schema. *)
 let rec union_types_names (l r:schema)
   : Lemma (requires Ok? (union_types l r) /\ len l == len r) (ensures names (Ok?._0 (union_types l r)) == names l) =
   match l, r with
@@ -1482,26 +1504,104 @@ let rec len_names_eq (l r:schema) : Lemma (requires names l == names r) (ensures
   | _ :: lt, _ :: rt -> len_names_eq lt rt
   | _, _ -> ()
 
-(* The union's half of the agreement: the NAMES. *)
-let union_sound_names (srcs:sources) (resolve:resolver) (rp:rprims) (k:knowledge) (f:wframe) (src:data_source)
-  : Lemma (requires sound k f.cols /\ Ok? (step_schema rp resolve [] f (Union src)) /\ Closed? k)
-          (ensures names (columns (walk rp srcs k (Union src))) == names (Ok?._0 (step_schema rp resolve [] f (Union src)))) =
-  let rcols = Ok?._0 (source_cols resolve src) in
-  cols_agree_names (columns k) f.cols;
-  len_names_eq f.cols rcols;
-  union_types_names f.cols rcols
+(* Two closed operands: the walk's positional zip is sound for the evaluator's. *)
+let rec union_pos_sound (left:list col_knowledge) (l r:schema)
+  : Lemma (requires cols_agree left l /\ Ok? (union_types l r) /\ len l == len r)
+          (ensures cols_agree (union_known_pos left (known_of r)) (Ok?._0 (union_types l r))) =
+  match left, l, r with
+  | _ :: ct, _ :: lt, _ :: rt -> union_pos_sound ct lt rt
+  | _, _, _ -> ()
 
+(* By name: the evaluator's column of a name is `union_ty` of the two sides' first columns of it. *)
+let rec union_types_assoc (l r:schema) (n:string)
+  : Lemma (requires Ok? (union_types l r) /\ names l == names r /\ Some? (assoc n l))
+          (ensures Some? (assoc n r) /\ Some? (assoc n (Ok?._0 (union_types l r)))
+                   /\ union_ty (Some?.v (assoc n l)) (Some?.v (assoc n r)) == assoc n (Ok?._0 (union_types l r))) =
+  match l, r with
+  | (k, _) :: lt, _ :: rt -> if k = n then () else union_types_assoc lt rt n
+  | _, _ -> ()
+
+let rec assoc_known_of (s:schema) (n:string)
+  : Lemma (ensures assoc n (known_of s) == (match assoc n s with Some t -> Some (Some t) | None -> None)) =
+  match s with
+  | [] -> ()
+  | (m, _) :: t -> if m = n then () else assoc_known_of t n
+
+(* An open left against a closed right: the walk's by-name reading is sound for the evaluator's. *)
+let rec union_by_name_sound (cs:list col_knowledge) (l r:schema)
+  : Lemma (requires at_least cs l /\ Ok? (union_types l r) /\ names l == names r)
+          (ensures at_least (union_known_by_name cs (known_of r)) (Ok?._0 (union_types l r))) =
+  match cs with
+  | [] -> ()
+  | (n, _) :: ct ->
+    union_types_assoc l r n;
+    assoc_known_of r n;
+    union_by_name_sound ct l r
+
+(* An undeclared right: names only, which the evaluator's answer has. *)
+let rec untyped_agree (cs:list col_knowledge) (s:schema)
+  : Lemma (requires names cs == names s) (ensures cols_agree (untyped cs) s) =
+  match cs, s with
+  | _ :: ct, _ :: st -> untyped_agree ct st
+  | _, _ -> ()
+
+let rec untyped_at_least (cs:list col_knowledge) (l out:schema)
+  : Lemma (requires at_least cs l /\ names l == names out) (ensures at_least (untyped cs) out) =
+  match cs with
+  | [] -> ()
+  | (n, _) :: ct -> has_names_assoc n l; has_names_assoc n out; untyped_at_least ct l out
+
+let union_sound (rp:rprims) (srcs:sources) (resolve:resolver) (k:knowledge) (f:wframe) (src:data_source)
+  : Lemma (requires sources_agree srcs resolve /\ sound k f.cols /\ Ok? (step_schema rp resolve [] f (Union src)))
+          (ensures sound (walk rp srcs k (Union src)) (Ok?._0 (step_schema rp resolve [] f (Union src)))) =
+  let rcols = Ok?._0 (source_cols resolve src) in
+  let out = Ok?._0 (union_types f.cols rcols) in
+  len_names_eq f.cols rcols;
+  union_types_names f.cols rcols;
+  match of_source srcs src with
+  | AtLeast _ ->
+    (match k with
+     | Closed cs -> cols_agree_names cs f.cols; untyped_agree cs out
+     | AtLeast cs -> untyped_at_least cs f.cols out)
+  | Closed rcs ->
+    (* the closed right IS the resolved schema *)
+    assert (rcs == known_of rcols);
+    names_known_of rcols;
+    (match k with
+     | Closed left -> cols_agree_names left f.cols; union_pos_sound left f.cols rcols
+     | AtLeast cs -> union_by_name_sound cs f.cols rcols)
+
+(* THE AGREEMENT THEOREM — every verb, the union included (Phase 469, D36). *)
+let walk_sound (rp:rprims) (srcs:sources) (resolve:resolver) (k:knowledge) (f:wframe) (t:transform)
+  : Lemma (requires cand_injective rp /\ sources_agree srcs resolve /\ sound k f.cols
+                    /\ (Join? t ==> no_dups (names f.cols))
+                    /\ Ok? (step_schema rp resolve [] f t))
+          (ensures sound (walk rp srcs k t) (Ok?._0 (step_schema rp resolve [] f t))) =
+  match t with
+  | Filter _ | Sort _ | Distinct | Limit _ _ | Intersect _ | Except _ -> ()
+  | Project pairs -> project_sound k f.cols pairs; assert (project_step f.cols pairs == project_cols f.cols pairs)
+  | GroupBy keys aggs -> group_by_sound k f.cols keys aggs
+  | Window spec -> window_sound rp k f.cols spec
+  | Pivot spec -> pivot_sound rp k f spec
+  | Unpivot ids vals -> unpivot_sound k f ids vals
+  | Join src on how -> join_sound rp srcs resolve k f src on how
+  | Union src -> union_sound rp srcs resolve k f src
+
+(* The theorem holds under any param env — `step_schema` reads the env only for the `Sort` and
+   `Limit` slots, which keep the schema. *)
 let union_keeps_names (l r:schema)
   : Lemma (requires Ok? (union_cols l r)) (ensures names (Ok?._0 (union_cols l r)) == names l) =
   len_names_eq l r; union_types_names l r
 
-(* THE UNION FINDING: the walk keeps the left type where the evaluator widens it (D18). *)
-let union_walk_type_drifts (rp:rprims) (srcs:sources)
+(* D32's witness, closed (Phase 469, D36): over an int column beside a float one, the walk and the
+   evaluator both answer a float column. Phase 434 stated it as `union_walk_type_drifts`, the walk
+   answering the left's int; that theorem is retired with the arm it described. *)
+let union_walk_widens (rp:rprims) (srcs:sources)
   : Lemma (ensures (let l = [("a", IntType)] in
                     let r = [("a", FloatType)] in
                     union_cols l r == Ok [("a", FloatType)]
                     /\ walk rp srcs (Closed (known_of l)) (Union (Embedded ({ cols = r; rows = [] })))
-                       == Closed [("a", Some IntType)])) = ()
+                       == Closed [("a", Some FloatType)])) = ()
 
 (* ======================================================================================
    9. What the row-set verbs and the four name-listing verbs answer.

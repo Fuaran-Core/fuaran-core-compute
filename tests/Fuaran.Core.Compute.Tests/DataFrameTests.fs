@@ -1635,6 +1635,97 @@ let tests =
                       [ "dept"; "name"; "salary"; "bonus" ]
                       (sprintf "%A leaves the column set alone" step)
 
+          testCase "Phase 469 — the walk types a Union as the evaluator widens it, and leaves a refused pair undecided"
+          <| fun _ ->
+              let operand (vType: ColumnType) (key: string) (cell: Cell) =
+                  tbl
+                      [ Field.create "k" StringType; Field.create "v" vType ]
+                      [ col "k" StringType [ Str key ]; col "v" vType [ cell ] ]
+
+              let left = operand IntType "a" (Int 1)
+              let floats = operand FloatType "b" (Float 2.5)
+              let walked = SchemaWalk.ofPipeline left.Schema [ Union(Embedded floats) ]
+              let evaluated = DataFrame.evalPipeline [ Union(Embedded floats) ] left |> okTable
+              Expect.isTrue (SchemaWalk.isClosed walked) "two closed operands answer a closed union"
+
+              Expect.equal
+                  (SchemaWalk.typeOf "v" walked)
+                  (Some FloatType)
+                  "an int column over a float one is a float column"
+
+              Expect.equal
+                  (SchemaWalk.columns walked |> List.map (fun c -> c.Name, c.Type))
+                  (evaluated.Schema |> List.map (fun f -> f.Name, Some f.Type))
+                  "the walk reads the evaluator's names and types"
+
+              // A pair no column type holds together: the evaluator refuses it, and the walk, which
+              // carries no refusal verdict (D26), answers the column with no decided type.
+              let bools = operand BoolType "b" (Bool true)
+              let refused = SchemaWalk.ofPipeline left.Schema [ Union(Embedded bools) ]
+
+              Expect.isError
+                  (DataFrame.evalPipeline [ Union(Embedded bools) ] left)
+                  "the evaluator refuses an int beside a bool"
+
+              Expect.equal (SchemaWalk.names refused) [ "k"; "v" ] "the names stay"
+              Expect.equal (SchemaWalk.typeOf "v" refused) None "and the refused column's type is undecided"
+              Expect.equal (SchemaWalk.typeOf "k" refused) (Some StringType) "a column of one type keeps it"
+
+              // An undeclared right may widen any column, so no type is decided; the names are still
+              // the left's, because an answer has them.
+              let undeclared = SchemaWalk.ofPipeline left.Schema [ Union(Ref "elsewhere") ]
+              Expect.isTrue (SchemaWalk.isClosed undeclared) "the names are the left's whatever the right is"
+              Expect.equal (SchemaWalk.columns undeclared |> List.map _.Type) [ None; None ] "no type is decided"
+
+              // A declared right reads as an embedded one.
+              let declared =
+                  SchemaWalk.ofPipelineFrom
+                      (SchemaWalk.ofMap (Map.ofList [ "elsewhere", floats.Schema ]))
+                      (SchemaWalk.ofSchema left.Schema)
+                      [ Union(Ref "elsewhere") ]
+
+              Expect.equal
+                  (SchemaWalk.typeOf "v" declared)
+                  (Some FloatType)
+                  "a declared right widens as an embedded one"
+
+          testCase
+              "Phase 469 — a pipeline query declaring a widening union's LEFT type is refused at registration; the joined type registers"
+          <| fun _ ->
+              let ints = [ Field.create "k" StringType; Field.create "v" IntType ]
+              let floats = [ Field.create "k" StringType; Field.create "v" FloatType ]
+
+              let registered (result: Schema) (right: Schema) : PipelineQuery =
+                  { Query =
+                      { Id = "unioned"
+                        Params = []
+                        ResultSchema = result
+                        Effect =
+                          { Host = ReadsHost
+                            Determinism = Effect.network }
+                        Source = Ref "left"
+                        TimeoutMs = None
+                        PageSize = None
+                        Where = []
+                        OrderBy = [] }
+                    Pipeline = [ Union(Ref "right") ]
+                    Sources = Map.ofList [ "left", ints; "right", right ] }
+
+              Expect.equal
+                  (PipelineQuery.check (registered ints floats))
+                  (Error(ResultColumn("v", ResultDisagreement.TypeDiffers(IntType, FloatType))))
+                  "the left side's type is not what the evaluator produces"
+
+              Expect.equal (PipelineQuery.check (registered floats floats)) (Ok()) "the joined type is"
+
+              // A pair the evaluator refuses on every frame has no type to declare.
+              let bools = [ Field.create "k" StringType; Field.create "v" BoolType ]
+
+              Expect.equal
+                  (PipelineQuery.check (registered ints bools))
+                  (Error(ResultColumn("v", ResultDisagreement.TypeUndecidable IntType)))
+                  "an int beside a bool is undecidable"
+
           testCase "Phase 112 — Derive names the column, and (Phase 338) states the type its expression decides"
           <| fun _ ->
               let added =

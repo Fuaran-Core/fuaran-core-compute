@@ -1,5 +1,67 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-15 — D36: the static walk types a `Union` as the evaluator does, through the evaluator's own per-column function; a pair the evaluator refuses reads as a column of undecided type, an undeclared right decides no type, and `walk_sound` holds for every verb
+
+**Context.** D32 recorded finding (b): `SchemaWalk.ofTransform`'s `Union` arm answered its input, so
+the walk kept a union column's LEFT type where the evaluator, since Phase 423 (D18), widens the column
+to the join of the two sides' types — an `int` beside a `float` is a `float` column. A planner, or the
+pipeline-query registry's agreement check, reading the walk read a type the evaluator does not produce;
+`walk_sound` carried `Union` as its one exception and `union_walk_type_drifts` stated the drift. The
+operator ruled (2026-10-15) that it is fixed, not documented.
+
+**Decision.**
+
+1. **One function.** The evaluator's per-column rule is lifted out of `evalUnion` into
+   `DataFrame.unionField` (internal): the left field under the one unit the pair states (D29) and the
+   join of the two types (`joinColumnType`, D18), or the refusal — the `UnitMismatch` first, then
+   `typesBesideEachOther`. `evalUnion` folds it over the zipped schemas exactly as before, and the
+   walk's `Union` arm reads the same function, so the two cannot drift again by one being edited.
+2. **The walk's arm reads the right as a join does** (`ofSource`), and answers in three cases:
+   - both operands closed, with the same names: the left's columns zipped by position with the right's
+     (as the evaluator zips them), each typed through `unionField` — so the column's type, unit and
+     metadata are the evaluator's;
+   - an open left against a closed right: each visible column meets the right's first column of its
+     name, which is the column it is zipped with whenever the evaluator answers;
+   - an undeclared right (`Ref` with no declared schema): every name stays — any answer has the left's
+     names — and no type is decided, because the right's type may widen any of them (`int` widens to
+     `float` or `decimal`, a coarse timestamp to a finer unit). Keeping the types that no widening can
+     move would need the walk to enumerate Core's widening relation, which a new column type would
+     silently outgrow; an undeclared source already costs the walk certainty elsewhere (a join's right
+     columns), and the registry refuses an undeclared source before it reads the walk.
+3. **A refused pair is a column of undecided type, not a refusal.** The shard asked that "a pair the
+   evaluator refuses, the walk refuses with the same typed error"; that premise does not hold.
+   `SchemaKnowledge` has no refusal channel (D26, D28 item 5, D35 item 5) — the walk answers a knowledge
+   for every pipeline, including the ones the evaluator refuses — and inventing one for a single arm
+   would be a second, partial refusal surface beside the evaluator's. So: two closed operands whose
+   names disagree answer the input, unchanged (the evaluator's `JoinError`); a column pair no type holds
+   together (an `int` beside a `bool`) or whose units disagree answers the column with no decided type,
+   as the unpivot's refused value column already does (Phase 338). The typed refusal lives where it
+   always has, in the evaluator (`unionField`'s error, through `evalUnion`); a registered pipeline query
+   meets the undecided column as `TypeUndecidable`, whose doc now names this case.
+4. **The unit under an undeclared right is the left's.** `ColumnKnowledge.Unit` has no "unknown" (a unit
+   is a fact of the schema); where the left states none and the right is undeclared, the evaluator may
+   adopt the right's unit and the walk cannot say which. The arm keeps the left's, as the old arm did for
+   every case. This is outside the proof (the model is unitless) and unreachable from the registry
+   (every source declared); a closed right decides the unit exactly, through `unionField`.
+5. **The model.** `proofs/Relational.fst` lifts `union_ty` out of `union_types` (the shared function's
+   type half), models the arm's three cases (`union_known_pos`, `union_known_by_name`, `untyped`), and
+   proves `union_sound`; `walk_sound` now holds for all fourteen arms with no `Union` exception.
+   `union_walk_type_drifts` is retired with the arm it described, and its witness is restated as
+   agreement (`union_walk_widens`: over `int` beside `float` both answer `float`); `union_sound_names`,
+   the names-only half, is subsumed and retired. Re-introducing the old arm (the input, unchanged) leaves
+   `union_sound` unprovable, and so `walk_sound` — measured, one perturbation run. The differential now
+   also holds the shipped walk to the model's `sound` on every step production answers, and a go-red shows
+   the old arm's knowledge is not sound on the widening shape.
+
+**Consequences.** A behaviour change to a public walk, of D21's, D26's and D28's class: no public
+signature moves (`unionField` is internal) and `api/` is unchanged. It rides the open `0.41.0` draft
+(`STABILITY.md`). A consumer that read the left type off a walk over a widening union now reads the
+joined type; one over a refused pair or an undeclared right reads an undecided type. A registered
+pipeline query that declared the left type of a widening union column is now refused at registration
+with `TypeDiffers` (declare the joined type), and one over a refused pair with `TypeUndecidable` (it was
+refused by the evaluator on every frame already). The caller survey (Phase 469's record) found no
+in-workspace consumer whose behaviour moves at its current pin.
+
 ## 2026-10-15 — D35: a `Project`, a `GroupBy`, an `Unpivot` and a `Pivot` refuse an output that names a column twice, with a `TypeError` naming the verb, the name and both producers, through one check; the pivot refuses too, rather than suffixing, although its collision is the data's
 
 **Context.** D32 recorded finding (a): four verbs answer `Ok` with two columns of one name —

@@ -77,8 +77,12 @@ type ResultDisagreement =
     /// `Now` (the clock's), or a column the walk cannot type (an open schema's); a derive joining
     /// two types the exact typer keeps apart, such as a `Case` of an `int` and a `float` (the cells
     /// decide, by the widening join); and a derive the evaluator refuses on every frame because its
-    /// arms put a `float` beside a `decimal`, which has no type to declare. `Project` or `GroupBy`
-    /// over a declared-type column, or a decided derivation, is what can agree.
+    /// arms put a `float` beside a `decimal`, which has no type to declare; and (Phase 469, D36) a
+    /// `Union` column whose two sides' types no column type holds together, which the evaluator
+    /// refuses on every frame. A union column whose sides' types join is produced at the join — an
+    /// `int` beside a `float` is a `float` — so a declaration of the left side's type there is
+    /// `TypeDiffers`. `Project` or `GroupBy` over a declared-type column, or a decided derivation, is
+    /// what can agree.
     | TypeUndecidable of declared: ColumnType
     /// Produced under a unit other than the declared one (Phase 429) — the declaration states a
     /// unit the pipeline does not produce, or none where the pipeline states one. A unit is a fact
