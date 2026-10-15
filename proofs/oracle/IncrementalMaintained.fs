@@ -32,6 +32,7 @@ type mstep =
 | MLimit of Prims.int * Prims.int
 | MWindow of Pipeline.window_spec
 | MJoin of Pipeline.data_source * Prims.list<(Prims.string * Prims.string)> * Prims.bool
+| MSort of Prims.list<(Prims.string * Pipeline.sort_dir)>
 
 
 let uu___is_MFilter : mstep  ->  Prims.bool = (fun ( projectee  :  mstep ) -> (match (projectee) with
@@ -148,6 +149,30 @@ let __proj__MJoin__item___2 : mstep  ->  Prims.bool = (fun ( projectee  :  mstep
      end))
 
 
+let uu___is_MSort : mstep  ->  Prims.bool = (fun ( projectee  :  mstep ) -> (match (projectee) with
+| MSort (_0) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let __proj__MSort__item___0 : mstep  ->  Prims.list<(Prims.string * Pipeline.sort_dir)> = (fun ( projectee  :  mstep ) -> (match (projectee) with
+| MSort (_0) -> begin
+     _0
+     end))
+
+
+let rec lit_keys : Prims.list<(Prims.string * Pipeline.sort_dir)>  ->  Prims.list<(Pipeline.slot<Prims.string> * Pipeline.sort_dir)> = (fun ( ks  :  Prims.list<(Prims.string * Pipeline.sort_dir)> ) -> (match (ks) with
+| [] -> begin
+     []
+     end
+| ((c, d))::rest -> begin
+     (((Pipeline.SlotLit (c)), (d)))::(lit_keys rest)
+     end))
+
+
 let embed_mstep : mstep  ->  Pipeline.transform = (fun ( s  :  mstep ) -> (match (s) with
 | MFilter (pred) -> begin
      Pipeline.Filter (pred)
@@ -171,6 +196,9 @@ if keep then begin
      end else begin
      Pipeline.Anti
      end)
+     end
+| MSort (ks) -> begin
+     Pipeline.Sort ((lit_keys ks))
      end))
 
 
@@ -203,33 +231,6 @@ let embed_pipe : mpipe  ->  Prims.list<Pipeline.transform> = (fun ( p  :  mpipe 
      end
 | FStar_Pervasives_Native.Some (keys, aggs, tail) -> begin
      (Pipeline.app (embed_steps p.prefix) ((Pipeline.GroupBy (keys, aggs))::(embed_steps tail)))
-     end))
-
-
-let rec tokens_of : Incremental.alive  ->  Prims.list<Incremental.token> = (fun ( a  :  Incremental.alive ) -> (match (a) with
-| [] -> begin
-     []
-     end
-| ((t, uu___))::rest -> begin
-     (t)::(tokens_of rest)
-     end))
-
-
-let rec distinct : Incremental.alive  ->  Prims.bool = (fun ( a  :  Incremental.alive ) -> (match (a) with
-| [] -> begin
-     true
-     end
-| ((t, uu___))::rest -> begin
-     ((not ((Incremental.mem_token t (tokens_of rest)))) && (distinct rest))
-     end))
-
-
-let rec mem_a : (Incremental.token * Prims.list<Pipeline.cell>)  ->  Incremental.alive  ->  Prims.bool = (fun ( x  :  (Incremental.token * Prims.list<Pipeline.cell>) ) ( a  :  Incremental.alive ) -> (match (a) with
-| [] -> begin
-     false
-     end
-| (y)::rest -> begin
-     ((Prims.op_Equals y x) || (mem_a x rest))
      end))
 
 
@@ -378,30 +379,6 @@ in (match (here) with
      end)
      end))
      end))
-
-
-let rec wk : Incremental.reuse_fn  ->  Incremental.alive  ->  Incremental.alive  ->  Prims.bool = (fun ( reuse  :  Incremental.reuse_fn ) ( a  :  Incremental.alive ) ( a0  :  Incremental.alive ) -> (match (a) with
-| [] -> begin
-     true
-     end
-| ((t, r))::rest -> begin
-     (((not ((reuse t))) || (match ((Pipeline.assoc t a0)) with
-| FStar_Pervasives_Native.Some (r0) -> begin
-     (Prims.op_Equals r0 r)
-     end
-| FStar_Pervasives_Native.None -> begin
-     true
-     end)) && (wk reuse rest a0))
-     end))
-
-
-let ok_row : Incremental.reuse_fn  ->  Incremental.alive  ->  Incremental.token  ->  Prims.list<Pipeline.cell>  ->  Prims.bool = (fun ( reuse  :  Incremental.reuse_fn ) ( a0  :  Incremental.alive ) ( t  :  Incremental.token ) ( r  :  Prims.list<Pipeline.cell> ) -> ((not ((reuse t))) || (match ((Pipeline.assoc t a0)) with
-| FStar_Pervasives_Native.Some (r0) -> begin
-     (Prims.op_Equals r0 r)
-     end
-| FStar_Pervasives_Native.None -> begin
-     true
-     end)))
 
 
 let rec mem_a_gen = (fun ( x  :  'b ) ( l  :  Prims.list<'b> ) -> (match (l) with
@@ -555,7 +532,7 @@ if (all_reuse reuse g.g_members) then begin
 in (match (found) with
 | FStar_Pervasives_Native.Some (pg) -> begin
       
-if ((Prims.op_Equals pg.p_tokens (tokens_of g.g_members)) && (Prims.op_Equals (Pipeline.len pg.p_aggs) (Pipeline.len aggs))) then begin
+if ((Prims.op_Equals pg.p_tokens (MaintainedSort.tokens_of g.g_members)) && (Prims.op_Equals (Pipeline.len pg.p_aggs) (Pipeline.len aggs))) then begin
      Pipeline.Ok (((pg.p_aggs), (true)))
      end else begin
      (match ((agg_cells_of mp cols aggs g.g_members)) with
@@ -628,7 +605,7 @@ let rec groups_out : mprims  ->  Incremental.reuse_fn  ->  Prims.list<pgroup>  -
      Pipeline.Error (e)
      end
 | Pipeline.Ok (os) -> begin
-     Pipeline.Ok (({o_key = g.g_key; o_tokens = (tokens_of g.g_members); o_aggs = cs; o_reused = reused})::os)
+     Pipeline.Ok (({o_key = g.g_key; o_tokens = (MaintainedSort.tokens_of g.g_members); o_aggs = cs; o_reused = reused})::os)
      end)
      end)
      end))
@@ -741,30 +718,36 @@ in (match ((groups_out mp reuse prior cols aggs gs)) with
      end))
      end))
 
-type entry = {e_cells : Incremental.step_cache; e_pack : FStar_Pervasives_Native.option<Incremental.pack_key>; e_keys : FStar_Pervasives_Native.option<Prims.list<Prims.list<Pipeline.cell>>>}
+type entry = {e_cells : Incremental.step_cache; e_pack : FStar_Pervasives_Native.option<Incremental.pack_key>; e_keys : FStar_Pervasives_Native.option<Prims.list<Prims.list<Pipeline.cell>>>; e_order : FStar_Pervasives_Native.option<MaintainedSort.sort_cache>}
 
 
 let __proj__Mkentry__item__e_cells : entry  ->  Incremental.step_cache = (fun ( projectee  :  entry ) -> (match (projectee) with
-| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys} -> begin
+| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys; e_order = e_order} -> begin
      e_cells
      end))
 
 
 let __proj__Mkentry__item__e_pack : entry  ->  FStar_Pervasives_Native.option<Incremental.pack_key> = (fun ( projectee  :  entry ) -> (match (projectee) with
-| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys} -> begin
+| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys; e_order = e_order} -> begin
      e_pack
      end))
 
 
 let __proj__Mkentry__item__e_keys : entry  ->  FStar_Pervasives_Native.option<Prims.list<Prims.list<Pipeline.cell>>> = (fun ( projectee  :  entry ) -> (match (projectee) with
-| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys} -> begin
+| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys; e_order = e_order} -> begin
      e_keys
+     end))
+
+
+let __proj__Mkentry__item__e_order : entry  ->  FStar_Pervasives_Native.option<MaintainedSort.sort_cache> = (fun ( projectee  :  entry ) -> (match (projectee) with
+| {e_cells = e_cells; e_pack = e_pack; e_keys = e_keys; e_order = e_order} -> begin
+     e_order
      end))
 
 
 let prior_head : Prims.list<entry>  ->  entry = (fun ( prior  :  Prims.list<entry> ) -> (match (prior) with
 | [] -> begin
-     {e_cells = []; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None}
+     {e_cells = []; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None; e_order = FStar_Pervasives_Native.None}
      end
 | (e)::uu___ -> begin
      e
@@ -848,7 +831,7 @@ let __proj__Mkmres__item__r_switched : mres  ->  Prims.bool = (fun ( projectee  
 let prior_rest_window : Prims.list<entry>  ->  Prims.list<entry> = (fun ( prior  :  Prims.list<entry> ) -> prior)
 
 
-let rec mwalk : mprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Incremental.reuse_fn  ->  Prims.list<entry>  ->  Pipeline.schema  ->  Incremental.alive  ->  Prims.list<mstep>  ->  Pipeline.outcome<mres, Pipeline.eval_error> = (fun ( mp  :  mprims ) ( rp  :  Relational.rprims ) ( pr  :  Pipeline.prims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( reuse  :  Incremental.reuse_fn ) ( prior  :  Prims.list<entry> ) ( cols  :  Pipeline.schema ) ( a  :  Incremental.alive ) ( p  :  Prims.list<mstep> ) -> (match (p) with
+let rec mwalk : mprims  ->  MaintainedSort.sprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Incremental.reuse_fn  ->  Prims.list<entry>  ->  Pipeline.schema  ->  Incremental.alive  ->  Prims.list<mstep>  ->  Pipeline.outcome<mres, Pipeline.eval_error> = (fun ( mp  :  mprims ) ( sp  :  MaintainedSort.sprims ) ( rp  :  Relational.rprims ) ( pr  :  Pipeline.prims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( reuse  :  Incremental.reuse_fn ) ( prior  :  Prims.list<entry> ) ( cols  :  Pipeline.schema ) ( a  :  Incremental.alive ) ( p  :  Prims.list<mstep> ) -> (match (p) with
 | [] -> begin
      Pipeline.Ok ({r_out = Incremental.W (cols, a); r_entries = []; r_switched = false})
      end
@@ -858,12 +841,12 @@ let rec mwalk : mprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relationa
      Pipeline.Error (err)
      end
 | Pipeline.Ok (cs) -> begin
-     (match ((mwalk mp rp pr resolve env reuse (prior_rest prior) cols (Incremental.keep_true a cs) rest)) with
+     (match ((mwalk mp sp rp pr resolve env reuse (prior_rest prior) cols (Incremental.keep_true a cs) rest)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None})::st.r_entries; r_switched = st.r_switched})
+     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None; e_order = FStar_Pervasives_Native.None})::st.r_entries; r_switched = st.r_switched})
      end)
      end)
      end
@@ -900,15 +883,36 @@ if same then begin
      end else begin
      Incremental.no_reuse
      end
-in (match ((mwalk mp rp pr resolve env reuse' (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest)) with
+in (match ((mwalk mp sp rp pr resolve env reuse' (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.Some (k); e_keys = FStar_Pervasives_Native.None})::st.r_entries; r_switched = (st.r_switched || (not (same)))})
+     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.Some (k); e_keys = FStar_Pervasives_Native.None; e_order = FStar_Pervasives_Native.None})::st.r_entries; r_switched = (st.r_switched || (not (same)))})
      end)))))
      end)
      end)
+     end)
+     end
+| (MSort (ks))::rest -> begin
+     (match ((Relational.first_unknown cols (Pipeline.names ks))) with
+| FStar_Pervasives_Native.Some (n) -> begin
+     Pipeline.Error (Pipeline.UnknownColumn (n, (Pipeline.names cols)))
+     end
+| FStar_Pervasives_Native.None -> begin
+     (
+
+let cmp = (sp.row_cmp cols ks)
+in (
+
+let ordered = (MaintainedSort.sort_step cmp reuse (prior_head prior).e_order a)
+in (match ((mwalk mp sp rp pr resolve env reuse (prior_rest prior) cols ordered rest)) with
+| Pipeline.Error (err) -> begin
+     Pipeline.Error (err)
+     end
+| Pipeline.Ok (st) -> begin
+     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = []; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.None; e_order = FStar_Pervasives_Native.Some ((MaintainedSort.sort_record a ordered))})::st.r_entries; r_switched = st.r_switched})
+     end)))
      end)
      end
 | (MProject (pairs))::rest -> begin
@@ -917,11 +921,11 @@ in (match ((mwalk mp rp pr resolve env reuse' (prior_rest prior) (Incremental.ex
      Pipeline.Error (e)
      end
 | Pipeline.Ok (out) -> begin
-     (mwalk mp rp pr resolve env reuse prior out (proj_alive cols (Pipeline.names pairs) a) rest)
+     (mwalk mp sp rp pr resolve env reuse prior out (proj_alive cols (Pipeline.names pairs) a) rest)
      end)
      end
 | (MLimit (n, off))::rest -> begin
-     (mwalk mp rp pr resolve env reuse prior cols (slice off n a) rest)
+     (mwalk mp sp rp pr resolve env reuse prior cols (slice off n a) rest)
      end
 | (MWindow (spec))::rest -> begin
      (match ((Relational.window_cols rp cols spec)) with
@@ -937,7 +941,7 @@ in (match ((mwalk mp rp pr resolve env reuse' (prior_rest prior) (Incremental.ex
      (
 
 let cs = (pair_cells a ws)
-in (match ((mwalk mp rp pr resolve env Incremental.no_reuse (prior_rest_window prior) out (Incremental.extend FStar_Pervasives_Native.None a cs) rest)) with
+in (match ((mwalk mp sp rp pr resolve env Incremental.no_reuse (prior_rest_window prior) out (Incremental.extend FStar_Pervasives_Native.None a cs) rest)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
@@ -988,12 +992,12 @@ let vs = (match ((step_cells_by (Pipeline.len cols) (bool_fn (Pipeline.len cols)
 | Pipeline.Ok (_0) -> begin
      _0
      end)
-in (match ((mwalk mp rp pr resolve env reuse (prior_rest prior) cols (Incremental.keep_true a vs) rest)) with
+in (match ((mwalk mp sp rp pr resolve env reuse (prior_rest prior) cols (Incremental.keep_true a vs) rest)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = vs; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.Some (rks)})::st.r_entries; r_switched = st.r_switched})
+     Pipeline.Ok ({r_out = st.r_out; r_entries = ({e_cells = vs; e_pack = FStar_Pervasives_Native.None; e_keys = FStar_Pervasives_Native.Some (rks); e_order = FStar_Pervasives_Native.None})::st.r_entries; r_switched = st.r_switched})
      end)))))
      end)
      end)
@@ -1030,7 +1034,7 @@ let __proj__Mkmstate__item__m_tail : mstate  ->  Prims.list<entry> = (fun ( proj
 let empty_state : Pipeline.schema  ->  mstate = (fun ( cols  :  Pipeline.schema ) -> {m_out = Incremental.W (cols, []); m_entries = []; m_groups = []; m_tail = []})
 
 
-let mrun : mprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Incremental.reuse_fn  ->  mstate  ->  Pipeline.schema  ->  Incremental.alive  ->  mpipe  ->  Pipeline.outcome<mstate, Pipeline.eval_error> = (fun ( mp  :  mprims ) ( rp  :  Relational.rprims ) ( pr  :  Pipeline.prims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( reuse  :  Incremental.reuse_fn ) ( prior  :  mstate ) ( cols  :  Pipeline.schema ) ( a  :  Incremental.alive ) ( p  :  mpipe ) -> (match ((mwalk mp rp pr resolve env reuse prior.m_entries cols a p.prefix)) with
+let mrun : mprims  ->  MaintainedSort.sprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Incremental.reuse_fn  ->  mstate  ->  Pipeline.schema  ->  Incremental.alive  ->  mpipe  ->  Pipeline.outcome<mstate, Pipeline.eval_error> = (fun ( mp  :  mprims ) ( sp  :  MaintainedSort.sprims ) ( rp  :  Relational.rprims ) ( pr  :  Pipeline.prims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( reuse  :  Incremental.reuse_fn ) ( prior  :  mstate ) ( cols  :  Pipeline.schema ) ( a  :  Incremental.alive ) ( p  :  mpipe ) -> (match ((mwalk mp sp rp pr resolve env reuse prior.m_entries cols a p.prefix)) with
 | Pipeline.Error (e) -> begin
      Pipeline.Error (e)
      end
@@ -1066,7 +1070,7 @@ in (match (uu___1) with
      (
 
 let os = gr.gs_os
-in (match ((mwalk mp rp pr resolve env (tail_reuse mp os) prior.m_tail gcols ga tail)) with
+in (match ((mwalk mp sp rp pr resolve env (tail_reuse mp os) prior.m_tail gcols ga tail)) with
 | Pipeline.Error (e) -> begin
      Pipeline.Error (e)
      end
@@ -1080,10 +1084,10 @@ in (match ((mwalk mp rp pr resolve env (tail_reuse mp os) prior.m_tail gcols ga 
      end))
 
 
-let mprime : mprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Pipeline.schema  ->  Incremental.alive  ->  mpipe  ->  Pipeline.outcome<mstate, Pipeline.eval_error> = (fun ( mp  :  mprims ) ( rp  :  Relational.rprims ) ( pr  :  Pipeline.prims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( cols  :  Pipeline.schema ) ( a  :  Incremental.alive ) ( p  :  mpipe ) -> (mrun mp rp pr resolve env Incremental.no_reuse (empty_state cols) cols a p))
+let mprime : mprims  ->  MaintainedSort.sprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Pipeline.schema  ->  Incremental.alive  ->  mpipe  ->  Pipeline.outcome<mstate, Pipeline.eval_error> = (fun ( mp  :  mprims ) ( sp  :  MaintainedSort.sprims ) ( rp  :  Relational.rprims ) ( pr  :  Pipeline.prims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( cols  :  Pipeline.schema ) ( a  :  Incremental.alive ) ( p  :  mpipe ) -> (mrun mp sp rp pr resolve env Incremental.no_reuse (empty_state cols) cols a p))
 
 
-let mrefresh : mprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relational.resolver  ->  Pipeline.param_env  ->  mstate  ->  FStar_Pervasives_Native.option<Prims.list<Incremental.token>>  ->  Pipeline.schema  ->  Incremental.alive  ->  mpipe  ->  Pipeline.outcome<mstate, Pipeline.eval_error> = (fun ( mp  :  mprims ) ( rp  :  Relational.rprims ) ( pr  :  Pipeline.prims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( st  :  mstate ) ( named  :  FStar_Pervasives_Native.option<Prims.list<Incremental.token>> ) ( cols  :  Pipeline.schema ) ( a  :  Incremental.alive ) ( p  :  mpipe ) -> (mrun mp rp pr resolve env (Incremental.reuse_of named) st cols a p))
+let mrefresh : mprims  ->  MaintainedSort.sprims  ->  Relational.rprims  ->  Pipeline.prims  ->  Relational.resolver  ->  Pipeline.param_env  ->  mstate  ->  FStar_Pervasives_Native.option<Prims.list<Incremental.token>>  ->  Pipeline.schema  ->  Incremental.alive  ->  mpipe  ->  Pipeline.outcome<mstate, Pipeline.eval_error> = (fun ( mp  :  mprims ) ( sp  :  MaintainedSort.sprims ) ( rp  :  Relational.rprims ) ( pr  :  Pipeline.prims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( st  :  mstate ) ( named  :  FStar_Pervasives_Native.option<Prims.list<Incremental.token>> ) ( cols  :  Pipeline.schema ) ( a  :  Incremental.alive ) ( p  :  mpipe ) -> (mrun mp sp rp pr resolve env (Incremental.reuse_of named) st cols a p))
 
 
 let rec untok : Prims.list<Prims.list<Pipeline.cell>>  ->  Incremental.alive = (fun ( rows  :  Prims.list<Prims.list<Pipeline.cell>> ) -> (match (rows) with
@@ -1103,7 +1107,7 @@ if (Pipeline.all_width n rs) then begin
      end)
 
 
-let mrows : mprims  ->  Relational.resolver  ->  Relational.row_fn = (fun ( mp  :  mprims ) ( resolve  :  Relational.resolver ) ( f  :  Pipeline.wframe ) ( t  :  Pipeline.transform ) ( out  :  Pipeline.schema ) -> (match (t) with
+let mrows : mprims  ->  MaintainedSort.sprims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Relational.row_fn = (fun ( mp  :  mprims ) ( sp  :  MaintainedSort.sprims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) ( f  :  Pipeline.wframe ) ( t  :  Pipeline.transform ) ( out  :  Pipeline.schema ) -> (match (t) with
 | Pipeline.Project (pairs) -> begin
      (fit (Pipeline.len out) (proj_rows f.cols (Pipeline.names pairs) f.rows))
      end
@@ -1152,12 +1156,21 @@ let mrows : mprims  ->  Relational.resolver  ->  Relational.row_fn = (fun ( mp  
      Pipeline.Error (e)
      end)
      end
+| Pipeline.Sort (sk) -> begin
+     (match ((Relational.resolve_sort_keys env sk)) with
+| Pipeline.Error (e) -> begin
+     Pipeline.Error (e)
+     end
+| Pipeline.Ok (ks) -> begin
+     (fit (Pipeline.len out) (MaintainedSort.sort_rows (sp.row_cmp f.cols ks) f.rows))
+     end)
+     end
 | uu___ -> begin
      Pipeline.Error (Pipeline.TypeError ("a verb this model does not reach"))
      end))
 
 
-let mother : mprims  ->  Relational.rprims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Pipeline.other_fn = (fun ( mp  :  mprims ) ( rp  :  Relational.rprims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) -> (Relational.other_of rp resolve env (mrows mp resolve)))
+let mother : mprims  ->  MaintainedSort.sprims  ->  Relational.rprims  ->  Relational.resolver  ->  Pipeline.param_env  ->  Pipeline.other_fn = (fun ( mp  :  mprims ) ( sp  :  MaintainedSort.sprims ) ( rp  :  Relational.rprims ) ( resolve  :  Relational.resolver ) ( env  :  Pipeline.param_env ) -> (Relational.other_of rp resolve env (mrows mp sp resolve env)))
 
 
 let rec retok_groups : Prims.list<group>  ->  Prims.list<group> = (fun ( gs  :  Prims.list<group> ) -> (match (gs) with
@@ -1183,7 +1196,7 @@ let rec sub_a : Incremental.alive  ->  Incremental.alive  ->  Prims.bool = (fun 
      true
      end
 | (m)::rest -> begin
-     ((mem_a m a) && (sub_a rest a))
+     ((MaintainedSort.mem_a m a) && (sub_a rest a))
      end))
 
 

@@ -1,5 +1,156 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-15 — D39: the maintained `Sort` is modelled and proved — the merge of the moved rows into the prior produced order by binary insertion, under `arrivedAsBefore`, answers the full stable sort, in a module of its own under `IncrementalMaintained.fst`; the comparator is modelled concretely and proved a total preorder within a typed column, so the incomparable-pair lead of D37 item 1 does not arise and no production code moves; D37 item 1 is closed
+
+**Context.** D37 declared `Sort` out of the maintained walk's model by name: production's refresh of a `Sort`
+(`Incremental.fs`, `MergeOrder`) merges the rows the delta moved into the prior PRODUCED order by binary
+insertion (`mergeOrders`, Phase 274), reusing that order only while the stable rows arrived in the same
+relative order as before (`arrivedAsBefore`, Phase 215), and proving that equal to the full stable sort
+needed two things Phase 464 did not start — the uniqueness of a sorted permutation under the comparator
+read as a strict total order with the arrival position as the tie-break, and a comparator premise, since
+across cell types `compareCells` answers `None`, which `compareResolved` reads as `0`, and a tie that is
+not transitive makes a sort depend on its input order. Phase 471 was cut to do both: the premise check
+first, against production, then the model composed with 464's walk and 470's packing reference, the
+agreement and state theorems, a differential with a go-red, and the census moved.
+
+**Decision.**
+
+1. **The premise check: a column reaching a `Sort` holds one family, and within one family the
+   comparator is a total preorder — the lead does not arise, and nothing in production moves.** The
+   shard asked whether a column reaching `Sort` can hold cells of more than one type, and the driver
+   named the lead: after D38 a BOXED column under a float or decimal type (the typed pass abandoned)
+   holds `Int` cells beside `Float` / `Decimal` ones. Established against `DataFrame.compareCells`
+   (`DataFrame.fs`) and Core's `Cell.compare`: an int against a float compares in the float carrier
+   (`Kernels.compareFloat` over `numOf`), an int against a decimal EXACTLY (`Cell.compare`:
+   `DecimalText.compare` over `string i` and the canonical text), an int against an int in the float
+   carrier — and **`Cell.Int` carries a 32-bit int, exact in a float and in a decimal alike**, so the
+   three readings of a mixed pair agree with the exact numeric order and the boxed column is one total
+   preorder whichever cells stayed raw. `compareCells` answers `None` on exactly three shapes: two
+   families (a string beside an int), a float beside a decimal, or a `Decimal` whose text is not decimal
+   text — and no frame a `Sort` reaches holds any of them: `typeFromCells` refuses two families and a
+   float beside a decimal (D18, D38 item 3), `Vec.packAt` carries an int under a float or decimal column
+   as that type or raw, every decimal primitive and `castCell` refuse a text outside the grammar, and a
+   temporal cell's text is canonical (`pipeline-temporal-cells-canonical`). So the cross-type case does
+   not arise from the ints Phase 472 will widen, and it does not arise any other way: there is no
+   production defect to fix here, `Incremental.fs`, `DataFrame.fs`, `STABILITY.md` and `api/` are
+   untouched, and the typing fact is stated as the premise the two theorems compose through (item 3).
+   Pinned on production directly (`ProofOracleTests`): a boxed decimal column holding `Int32.MaxValue`,
+   `Int32.MinValue`, `0`, `5`, `-7`, `2147483646` and a decimal past the scaled carrier's width sorts to
+   ONE value sequence — the exact numeric order — from every one of ten arrival orders; and the two sort
+   paths production runs, the order codes where every key's vector codes (`Ordering.codesAll`) and the
+   comparator otherwise, answer one order over three hundred generated tables under drawn keys.
+
+2. **A module of its own, `proofs/MaintainedSort.fst`, opening `Pipeline` and `Incremental`, under
+   `IncrementalMaintained.fst`.** `IncrementalMaintained` was 229s of a 400s budget after D38, and the
+   sort's lemmas are a theory of their own — a strict total order over a list's members (`sto_on`),
+   sortedness, the insertion sort (`isort`, F#: `List.sortWith` as the reference's `evalSort`), the
+   uniqueness of a sorted permutation (`sorted_unique`), the bisection (`bisect`, the `while a < b` loop
+   with its invariant `bisect_cut`) and the merge (`merge_bin`, F#: `mergeOrders` — each moved row placed
+   in the cached run by bisection under "goes out before", the run before it copied whole, the search
+   continuing from there), positions (`indexed`, F#: `posOf`) and the order `lt_of` they make with a
+   total preorder (F#: `before`, and `sortSlots`'s comparison: the comparator, then the position) — so
+   they live where `IncrementalMaintained` can open them by name and cost nothing to its budget. The
+   definitions the sort's theorem is stated over — `tokens_of`, `distinct`, `mem_a`, `wk`, `ok_row`,
+   `wk_mem`, `wk_of_rows`, `mem_tokens`, `assoc_of_mem`, `assoc_mem` — MOVED down from
+   `IncrementalMaintained.fst` verbatim, so there is one `wk` and one `distinct`. The step is modelled
+   concretely (`sort_step`): the cached order merged where `arrived_as_before` holds — the stable tokens
+   of the prior arrival still here, read in step with the stable tokens now, equal (F#: `arrivedAsBefore`
+   compares the two sequences without building either) — with the cached run the prior produced order's
+   tokens read through the rows that hold them now (`lookup_order`, F#: `prevOrder` through
+   `stableNow`) and the moved rows sorted among themselves (`unstable`, F#: `arrival |> Array.filter
+   (fun s -> not r.Stable[s])` then `sortSlots`); the whole arrival sorted from scratch where it does
+   not (F#: `reusable = None`); and the step records its arrival and what it produced (`sort_record`,
+   F#: `SortOrders[sortIdx] = (arrival, ordered)`). `IncrementalMaintained`'s alphabet gains `MSort`
+   (F#: `WSort`, its keys literal — `split` refuses a param key and the walk never sees one), `entry`
+   gains `e_order`, `mwalk` gains the arm (the reference's unknown-key refusal first, Phase 412),
+   `mrows` the row function (`sort_rows`: the stable sort under the comparator over the frame's rows),
+   and `mwalk_is_go`, `mwalk_no_reuse` and `mwalk_reuse` the arm each: a prime sorts from scratch and
+   its rows are the reference's with the tokens riding along (`rows_of_sort_alive`), a walk reusing
+   nothing sorts from scratch whatever record it was handed (`sort_step_no_reuse` — the merge of no
+   cached row with every row moved IS the sort, F#: an empty `kept`), and a refresh answers the prime's
+   sort (item 3).
+
+3. **The theorems, and what each assumes.** `sort_step_reuse` (THE STEP THEOREM): a `Sort` refreshed
+   against the record a prime left — the prior arrival and the prior full sort, as tokens — under the
+   delta premise read one row at a time (`wk`), the prior source's tokens distinct, and the row
+   comparator a total preorder, answers the full stable sort of the rows that arrived; `mrefresh_is_prime`
+   and `mrefresh_agrees` carry it through the walk with their statements as D37 left them plus the one
+   premise (`row_cmp_preorder sp`). The proof is the one the shard named: the merge of two sorted,
+   disjoint runs is sorted with their union's members (`merge_bin_sorted`, over `bisect_cut`), and a
+   sorted permutation under a strict total order is unique (`sorted_unique`), so the merge is the
+   insertion sort of the arrival (`merge_is_isort`) — provided the cached run IS sorted under the order
+   NOW, which is where `arrivedAsBefore` earns its keep (`lookup_sorted`, through `relabel_lt`): a prior
+   stable row ordered before another is, read now, still before it, because its cells are the cells it
+   had (`stable_cells`, from `wk` and the distinct tokens) and its position in the arrival now is on
+   the same side of the other's as it was — a filter keeps the relative order of what it keeps
+   (`filter_order`), and the two stable sequences `arrived_as_before` asserts equal are two such filters
+   (`pos_is_idx`, `stable_pos`, `distinct_pos`). The cached run's members are exactly the stable rows
+   now (`cached_memb`: the stable tokens now are distinct, `stable_now_nodup`, so a token finds one row,
+   `find_tok_unique`), the moved rows the rest, and the premise survives the permutation on both sides
+   (`sort_alive_wk`, through `assoc_perm`). `compare_resolved_preorder` (THE COMPARATOR THEOREM):
+   `compare_resolved` — `compareResolved` restated arm for arm over `compare_cells`, `compareCells`
+   arm for arm — is a total preorder over rows whose cell at each key is what a column of that key's
+   type holds (`typed_row` through `fits`: its own type, an int under a float or a decimal column, a
+   decimal whose text is decimal text, or `Null`), from the primitives' laws alone (`sprims_laws`,
+   item 4): the per-key comparison is one (`key_cc_refl` / `key_cc_anti` / `key_cc_trans`, from
+   `cells_preorder` — the decimal family through one key `dkey`, `cc_decimal`; the float family through
+   the carrier, `cc_float`) and the lexicographic composition of preorders is one (`lex_preorder`).
+   `compare_cells_none` names the pairs read as a tie, which is item 1's list. **What the two theorems
+   compose through, and do not prove:** the models do not track cell typing through the walk (`wf` is
+   the frame's width alone), so the step theorem is stated for a comparator that is a preorder
+   everywhere (`row_cmp_preorder`) and the comparator theorem for the rows a typed frame holds; the
+   composition is production's typing fact of item 1, carried as the premise row
+   `incremental-maintained-sort-primitives` with `unscheduled` the typing invariant through
+   `Pipeline.fst`'s evaluator that would discharge it. Stated rather than weakened silently.
+
+4. **The parameters, each an assumption, and what the differential checks of each.** `sprims`: the row
+   comparator the walk and the reference both call (`row_cmp` — F#: `compareResolved (resolveSortKeys
+   cols by)`), the float carrier's order (`cmp_float` — `Kernels.compareFloat`), the decimal order and
+   canonical form (`cmp_dec`, `canon_dec` — `DecimalText.compare`, `tryCanonical`), the ordinal order
+   (`cmp_ord` — `String.CompareOrdinal`), beside Phase 470's `float_of_int` and `int_text` on `prims`.
+   `sprims_laws`: the float and ordinal orders are total preorders; the decimal order is one over
+   canonical decimal texts, where it always answers; an int's text is canonical, a canonical text is its
+   own canonical form; and `compareFloat (float i) (float j)` IS `DecimalText.compare (string i)
+   (string j)` — the 32-bit fact of item 1 as a law. Every one is instantiated at production's own and
+   checked there on pools that include `NaN`, `-0.0`, the infinities, the int extremes and a decimal past
+   the width; the model's `compare_resolved` under them answers what production's `compareResolved`
+   answers on every pair of rows of three hundred generated typed tables under drawn keys.
+
+5. **The differential, its go-red, and the acceptance's perturbation.** The maintained generator draws a
+   `Sort` among the prefix steps — over the group column, where ties are the rule and the arrival
+   position decides; over the int or the decimal column descending, nulls among them; over two keys —
+   and, one time in three, REORDERS two rows of the mutated table after the mutations: `Delta.diff`
+   reports a reordering as quiet, so a stable sort's answer moves while no row is named, the case
+   `arrivedAsBefore` exists for; the tally counts sorted pipelines, produced orders that moved and
+   refreshes under a reordering, and holds each above a floor. The go-red (`mStaleArrival`): every sort
+   record's arrival overwritten with the arrival the refresh sees, so `arrived_as_before` never fails and
+   the merge reads the prior produced order under the new positions — it disagrees with production where
+   the stable rows were reordered. The acceptance's perturbation, made in the model and run once: a
+   binary insertion that ignores the arrival position on a tie (`lt_of` as the comparator alone) — the
+   prover refuses `lt_of_sto_indexed` (two rows that tie are neither before the other, so there is no
+   total order over the arrival) and `sort_step_reuse` with it: SEMANTIC, `MaintainedSort.fst(493)`, "Failed to prove: sto_on (lt_of cmp) l" — the totality clause,
+   two rows that tie being neither before the other; restored, the module verifies.
+
+6. **Cost and evidence.** `MaintainedSort.fst` is seeded in `modules.json` from one cold run of the leg on this
+   machine, 50s under `--quake 3` (a contended pass by the kit's own label, x0.93, the kit's self-tests
+   and a test build beside it), and a direct run under `--quake 1` during authoring, 36s — a 100s budget
+   and an 18s floor by the file's two rules. `IncrementalMaintained.fst`, re-measured with the arm: 185s
+   under `--quake 3` in the same leg against the 198s recorded and the 400s budget, 104s direct — neither
+   number moves. Every theorem D37 and D38 stated is re-proved with its statement unchanged but for the
+   one premise (`row_cmp_preorder`); the oracle gains `MaintainedSort.fs` (726 lines extracted) and the
+   suite's `Proofs.Oracle` family gains four cases (item 5), the maintained differential's tally reading
+   155 sorted pipelines, 92 produced orders moved and 33 refreshes under a reordering over 700 trials,
+   with the sort go-red disagreeing 21 times. Raised to 700 trials from 500 so the existing adequacy
+   floors (a window's partition key moved among them) keep their room beside the new draws.
+
+**Consequences.** D37 item 1 is closed: `Transform.Sort` joins `Incremental.prime` and `Incremental.refresh`
+on the ladder's proved rows for the maintained walk, and the `Incremental` census entry's reason no longer
+names the merged `Sort` among what no model states. Still declared out, each with D37's reason: the resumed
+prefix-fold window, the in-place and append fast paths, the staleness guards, the quiet-delta shortcut, the
+chunked path and the codec. Phase 472's widening (D38 item 5's faithful alternative) stands on its own
+grounds — cell-locality of a column's reading — and not on this phase's: the sort is sound over the raw ints
+too.
+
 ## 2026-10-15 — D38: the reference model packs a derived column as production does — `Vec.packAt` read back, verdict and all, as one definition the three models share; the cells' typing refuses two types beside each other as production does; the planner's reorder theorem names the packing premise its corollary discharges; and the walk's switch compares the PACK KEY, which closes a second production divergence (the typed pass abandoned)
 
 **Context.** D37 item 4 named a gap in the REFERENCE model: `Pipeline.fst`'s `eval_derive` held a derived

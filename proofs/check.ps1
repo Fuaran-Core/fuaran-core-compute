@@ -49,11 +49,16 @@ $ErrorActionPreference = 'Stop'
 #   Frame: the dense frame and its kernels — read back cell by cell it is the table's logical
 #   rows at every column type, with and without a validity mask, and a filter the comparison
 #   kernels answer is Pipeline's row-major Filter step over the read-back (opens Pipeline).
+#   MaintainedSort: the maintained Sort — the binary-insertion merge of the moved rows into the
+#   prior produced order, under the comparator with the arrival position as the tie-break, is the
+#   full stable sort (the unique sorted permutation); and the comparator is a total preorder over
+#   the cells a typed column holds (opens Pipeline and Incremental).
 #   IncrementalMaintained: the incremental refresh past the row-local class — the maintained
-#   GroupBy, Project, Limit, Window and the filtering joins — priming is full evaluation over
+#   GroupBy, Project, Limit, Window, Sort and the filtering joins — priming is full evaluation over
 #   the relational model's reference, a refresh against a primed state is the prime, output and
-#   state, and so agrees with full evaluation (opens Pipeline, Incremental and Relational).
-$modules = @('Limits', 'ColumnOps', 'Pipeline', 'Incremental', 'Relational', 'Frame', 'IncrementalMaintained')
+#   state, and so agrees with full evaluation (opens Pipeline, Incremental, Relational and
+#   MaintainedSort).
+$modules = @('Limits', 'ColumnOps', 'Pipeline', 'Incremental', 'Relational', 'Frame', 'MaintainedSort', 'IncrementalMaintained')
 
 # ---- DECLARATION 2: the host families --------------------------------------------------------------
 # One entry per test-runner invocation, each with its own failure message. Separate invocations

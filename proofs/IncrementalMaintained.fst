@@ -1,12 +1,12 @@
 (*
    IncrementalMaintained — the incremental refresh past the row-local class: the maintained
-   `GroupBy`, `Project`, `Limit`, `Window` and the filtering joins, and their agreement with full
-   evaluation (fuaran-core Phase 464, extending Phase 433's `Incremental.fst`).
+   `GroupBy`, `Project`, `Limit`, `Window`, the filtering joins and (Phase 471) `Sort`, and their
+   agreement with full evaluation (fuaran-core Phase 464, extending Phase 433's `Incremental.fst`).
 
    WHAT IS MODELLED. `src/Fuaran.Compute.DataFrame/Incremental.fs`'s walk over the step classes it
    admits beside `Filter` and `Derive` (`classifyStep`: `PropagateRows` for `Project`, `MaintainGroups`,
-   `TruncateOrder`, `RecomputeFrame`, `FilterByRelation`), at the level `Incremental.fst` states the
-   row-local walk — a row's cell at a step, found under its token:
+   `TruncateOrder`, `RecomputeFrame`, `FilterByRelation`, and since Phase 471 `MergeOrder`), at the
+   level `Incremental.fst` states the row-local walk — a row's cell at a step, found under its token:
 
      - the walk (`mwalk`) threads a REUSE predicate over tokens (F#: `Stable`): a `Filter`'s and a
        `Derive`'s cells are `Incremental.fst`'s `step_cells` (restated over any cell function, `step_cells_by`,
@@ -17,7 +17,12 @@
        `Array.fill r.Stable … false` — the resumed prefix fold of Phase 333 keeps more and is declared
        out); a filtering join records a verdict per row — kept iff some right key matches (`Semi`) or none
        does (`Anti`) — reusing a stable row's verdict exactly when the joined relation's key index is the
-       prior one (F#: `relationMoved`);
+       prior one (F#: `relationMoved`); a `Sort` with literal keys (F#: `WSort`, Phase 471) answers
+       `MaintainedSort.sort_step` — the moved rows merged by binary insertion into the prior PRODUCED
+       order where the stable rows arrived as before (F#: `arrivedAsBefore`, `mergeOrders`), the whole
+       arrival sorted from scratch otherwise — and records its arrival and what it produced
+       (`entry.e_order`, F#: `SortOrders[sortIdx]`); the comparator is the parameter `sprims.row_cmp`
+       (F#: `compareResolved` over `resolveSortKeys`), which `MaintainedSort.fst` restates concretely;
      - the derived column is PACKED as the frame carries it (`Incremental.pack_cache`, through
        `Pipeline.pack_cells`, Phase 470) and its pack KEY — the decided type and the pack's verdict —
        is recorded per evaluating step (`entry.e_pack`); a `Derive` whose key is not the prior
@@ -40,7 +45,8 @@
 
      - `mprime_is_full`: priming computes what `Pipeline.eval_uncounted` computes over the reference
        `Relational.other_of` builds from the relational schema model and this module's row functions
-       (`mrows`) — the same frame, or the same error;
+       (`mrows`, the sort's being `MaintainedSort.sort_rows`, the stable sort under the comparator) —
+       the same frame, or the same error;
      - `mrefresh_is_prime` (THE STATE THEOREM): a refresh against a state primed over the prior source,
        under a delta that names every row that moved, is the prime over the new source — output, every
        step's cache and type, the group table and the tail's caches;
@@ -61,17 +67,21 @@
    join's key match (`key_eq` — F#: `joinKeysMatch`), the window column (`win_cells` — F#:
    `windowColumnOf`, one cell per row in the frame's order) and the group token (`key_token`). Every
    theorem is conditional on them only through the reference `mrows` builds from the same parameters;
-   `mrefresh_is_prime` needs `key_token` injective. With `Pipeline.fst`'s `prims` and `Relational.fst`'s
-   `rprims`, nothing else is assumed. Every type parameter is `Type0`.
+   `mrefresh_is_prime` needs `key_token` injective, and (Phase 471) the row comparator `sprims.row_cmp`
+   a total preorder (`MaintainedSort.row_cmp_preorder`) — what `MaintainedSort.compare_resolved_preorder`
+   proves of production's over the rows a typed frame holds. With `Pipeline.fst`'s `prims`,
+   `Relational.fst`'s `rprims` and `MaintainedSort.fst`'s `sprims`, nothing else is assumed. Every type
+   parameter is `Type0`.
 
-   WHAT IS NOT MODELLED, and recorded in `DECISIONS.md` (D37): `Sort` (`MergeOrder` — the merge of the
-   named rows into the prior produced order), the resumed prefix-fold window (Phase 333), the in-place
-   and append fast paths (Phases 323 and 359, with their invertible `Count` and int `Sum`), the
-   staleness guards, the quiet-delta shortcut, the chunked path and the state's wire form.
+   WHAT IS NOT MODELLED, and recorded in `DECISIONS.md` (D37, D39): the resumed prefix-fold window
+   (Phase 333), the in-place and append fast paths (Phases 323 and 359, with their invertible `Count`
+   and int `Sum`), the staleness guards, the quiet-delta shortcut, the chunked path and the state's
+   wire form.
 *)
 module IncrementalMaintained
 
 open Pipeline
+open MaintainedSort
 
 (* ======================================================================================
    1. The parameters.
@@ -92,8 +102,8 @@ let key_token_injective (mp:mprims) : prop =
   forall (k1 k2:list cell). mp.key_token k1 = mp.key_token k2 ==> k1 == k2
 
 (* ======================================================================================
-   2. The step alphabet — F#: `PrefixStep` less `WSort`, and `split`'s shape: a prefix, at most one
-      `GroupBy`, a tail.
+   2. The step alphabet — F#: `PrefixStep`, and `split`'s shape: a prefix, at most one `GroupBy`,
+      a tail.
    ====================================================================================== *)
 
 type mstep =
@@ -103,6 +113,15 @@ type mstep =
   | MLimit   : int -> int -> mstep
   | MWindow  : window_spec -> mstep
   | MJoin    : data_source -> list (string & string) -> bool -> mstep
+  (* Phase 471 — F#: `WSort`, its keys resolved to literals (`split` refuses a pipeline whose sort
+     key is a param, so the walk never sees one). *)
+  | MSort    : list (string & sort_dir) -> mstep
+
+(* The literal keys back as the transform's slots. *)
+let rec lit_keys (ks:list (string & sort_dir)) : Tot (list (slot string & sort_dir)) =
+  match ks with
+  | [] -> []
+  | (c, d) :: rest -> (SlotLit c, d) :: lit_keys rest
 
 let embed_mstep (s:mstep) : Tot transform =
   match s with
@@ -112,6 +131,7 @@ let embed_mstep (s:mstep) : Tot transform =
   | MLimit n off -> Limit (SlotLit n) (SlotLit off)
   | MWindow spec -> Window spec
   | MJoin src on keep -> Join src on (if keep then Semi else Anti)
+  | MSort ks -> Sort (lit_keys ks)
 
 let rec embed_steps (p:list mstep) : Tot (list transform) =
   match p with
@@ -129,20 +149,9 @@ let embed_pipe (p:mpipe) : Tot (list transform) =
    3. List helpers over the walked frame.
    ====================================================================================== *)
 
-let rec tokens_of (a:Incremental.alive) : Tot (list Incremental.token) =
-  match a with
-  | [] -> []
-  | (t, _) :: rest -> t :: tokens_of rest
-
-let rec distinct (a:Incremental.alive) : Tot bool =
-  match a with
-  | [] -> true
-  | (t, _) :: rest -> not (Incremental.mem_token t (tokens_of rest)) && distinct rest
-
-let rec mem_a (x:Incremental.token & list cell) (a:Incremental.alive) : Tot bool =
-  match a with
-  | [] -> false
-  | y :: rest -> y = x || mem_a x rest
+(* `tokens_of`, `distinct` and `mem_a` are `MaintainedSort.fst`'s since Phase 471, as are `wk`,
+   `ok_row`, `wk_mem`, `wk_of_rows`, `mem_tokens`, `assoc_of_mem` and `assoc_mem`: the sort step's
+   theorem is stated over them, and that module sits under this one. *)
 
 let rec take_a (#b:Type0) (n:nat) (l:list b) : Tot (list b) (decreases l) =
   match l with
@@ -329,29 +338,9 @@ let rec rows_of_keep_by (n:nat) (vf:list cell -> bool) (a:Incremental.alive{Incr
    5. The delta premise, read one row at a time (`wk`), and its survival through every step.
    ====================================================================================== *)
 
-(* A reusable row the prior source held under its token has the cells it had; one it did not hold is
-   admitted (the cache misses it). Weaker than `Incremental.unchanged`. *)
-let rec wk (reuse:Incremental.reuse_fn) (a:Incremental.alive) (a0:Incremental.alive) : Tot bool (decreases a) =
-  match a with
-  | [] -> true
-  | (t, r) :: rest ->
-    (not (reuse t) || (match assoc t a0 with Some r0 -> r0 = r | None -> true)) && wk reuse rest a0
-
-let ok_row (reuse:Incremental.reuse_fn) (a0:Incremental.alive) (t:Incremental.token) (r:list cell) : Tot bool =
-  not (reuse t) || (match assoc t a0 with Some r0 -> r0 = r | None -> true)
-
-let rec wk_mem (reuse:Incremental.reuse_fn) (a a0:Incremental.alive) (t:Incremental.token) (r:list cell)
-  : Lemma (requires wk reuse a a0 /\ mem_a (t, r) a) (ensures ok_row reuse a0 t r) (decreases a) =
-  match a with
-  | [] -> ()
-  | y :: rest -> if y = (t, r) then () else wk_mem reuse rest a0 t r
-
-let rec wk_of_rows (reuse:Incremental.reuse_fn) (a a0:Incremental.alive)
-  : Lemma (requires forall (t:Incremental.token) (r:list cell). mem_a (t, r) a ==> ok_row reuse a0 t r)
-          (ensures wk reuse a a0) (decreases a) =
-  match a with
-  | [] -> ()
-  | _ :: rest -> wk_of_rows reuse rest a0
+(* The delta premise `wk` — a reusable row the prior source held under its token has the cells it
+   had; one it did not hold is admitted — and its row-wise readings `ok_row`, `wk_mem`, `wk_of_rows`
+   are `MaintainedSort.fst`'s. *)
 
 (* A fresh step's cache answers exactly the prior source's tokens, each with that row's cell. *)
 let rec assoc_cells_by (#n:nat) (cf:cell_fn n) (a0:Incremental.alive{Incremental.awidth n a0}) (t:Incremental.token)
@@ -453,21 +442,6 @@ let rec wk_proj (cols:schema) (ns:list string) (reuse:Incremental.reuse_fn) (a a
 
 (* The premise survives a slice — over a prior source of distinct tokens, whose every sublist answers
    `assoc` as the source does. *)
-let rec mem_tokens (a:Incremental.alive) (t:Incremental.token) (r:list cell)
-  : Lemma (requires mem_a (t, r) a) (ensures Incremental.mem_token t (tokens_of a)) =
-  match a with
-  | [] -> ()
-  | y :: rest -> if y = (t, r) then () else mem_tokens rest t r
-
-let rec assoc_of_mem (a0:Incremental.alive) (t:Incremental.token) (r:list cell)
-  : Lemma (requires distinct a0 /\ mem_a (t, r) a0) (ensures assoc t a0 == Some r) =
-  match a0 with
-  | [] -> ()
-  | (t0, r0) :: rest ->
-    if (t0, r0) = (t, r) then ()
-    else if t0 = t then mem_tokens rest t r
-    else assoc_of_mem rest t r
-
 let rec mem_a_gen (#b:eqtype) (x:b) (l:list b) : Tot bool =
   match l with
   | [] -> false
@@ -511,12 +485,6 @@ let rec distinct_drop (k:nat) (a:Incremental.alive)
   match a with
   | [] -> ()
   | _ :: rest -> if k = 0 then () else distinct_drop (k - 1) rest
-
-let rec assoc_mem (a:Incremental.alive) (t:Incremental.token) (r:list cell)
-  : Lemma (requires assoc t a == Some r) (ensures mem_a (t, r) a) =
-  match a with
-  | [] -> ()
-  | (t0, _) :: rest -> if t0 = t then () else assoc_mem rest t r
 
 (* A row of a slice of a distinct source is found by `assoc` in the slice exactly as in the source. *)
 let wk_slice (off n:int) (reuse:Incremental.reuse_fn) (a a0:Incremental.alive)
@@ -805,11 +773,13 @@ let group_step (mp:mprims) (reuse:Incremental.reuse_fn) (prior:list pgroup) (col
 (* One evaluating step's retained state: its cells under the rows' tokens (F#: `StepCells[k]`), the
    key a `Derive` packed them under — the type it decided and the pack's verdict (D37, D38) — and
    the joined relation's key index where a join (F#: `JoinKeys`). *)
-type entry = { e_cells : Incremental.step_cache; e_pack : option Incremental.pack_key; e_keys : option (list (list cell)) }
+type entry = { e_cells : Incremental.step_cache; e_pack : option Incremental.pack_key; e_keys : option (list (list cell));
+               (* Phase 471 — F#: `SortOrders[sortIdx]`, the arrival and the produced order, as tokens. *)
+               e_order : option sort_cache }
 
 let prior_head (prior:list entry) : Tot entry =
   match prior with
-  | [] -> { e_cells = []; e_pack = None; e_keys = None }
+  | [] -> { e_cells = []; e_pack = None; e_keys = None; e_order = None }
   | e :: _ -> e
 
 let prior_rest (prior:list entry) : Tot (list entry) =
@@ -861,7 +831,7 @@ let rec len_names (#b:Type0) (l:list (string & b)) : Lemma (ensures len (names l
 (* A window records no entry (F#: no `Steps` array), so the prior entries pass through it. *)
 let prior_rest_window (prior:list entry) : Tot (list entry) = prior
 
-let rec mwalk (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let rec mwalk (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (reuse:Incremental.reuse_fn) (prior:list entry) (cols:schema) (a:Incremental.alive{Incremental.awidth (len cols) a}) (p:list mstep)
   : Tot (outcome mres eval_error) (decreases p) =
   match p with
@@ -871,9 +841,9 @@ let rec mwalk (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.
      | Error err -> Error err
      | Ok cs ->
        Incremental.awidth_keep_true (len cols) a cs;
-       (match mwalk mp rp pr resolve env reuse (prior_rest prior) cols (Incremental.keep_true a cs) rest with
+       (match mwalk mp sp rp pr resolve env reuse (prior_rest prior) cols (Incremental.keep_true a cs) rest with
         | Error err -> Error err
-        | Ok st -> Ok ({ st with r_entries = ({ e_cells = cs; e_pack = None; e_keys = None } :: st.r_entries) })))
+        | Ok st -> Ok ({ st with r_entries = ({ e_cells = cs; e_pack = None; e_keys = None; e_order = None } :: st.r_entries) })))
   | MDerive name x :: rest ->
     (match derived_typing_in env cols x with
      | Refused -> Error (float_beside_decimal name)
@@ -891,10 +861,24 @@ let rec mwalk (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.
                 nothing is reused from here. *)
              let same = ((prior_head prior).e_pack = Some k) in
              let reuse' = if same then reuse else Incremental.no_reuse in
-             (match mwalk mp rp pr resolve env reuse' (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest with
+             (match mwalk mp sp rp pr resolve env reuse' (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest with
               | Error err -> Error err
-              | Ok st -> Ok ({ st with r_entries = ({ e_cells = cs; e_pack = Some k; e_keys = None } :: st.r_entries);
+              | Ok st -> Ok ({ st with r_entries = ({ e_cells = cs; e_pack = Some k; e_keys = None; e_order = None } :: st.r_entries);
                                        r_switched = (st.r_switched || not same) })))))
+  | MSort ks :: rest ->
+    (* Phase 412 — the reference `Sort` refuses a key the frame does not carry, so the walk does. *)
+    (match Relational.first_unknown cols (names ks) with
+     | Some n -> Error (UnknownColumn n (names cols))
+     | None ->
+       (* F#: the `WSort` arm — the cached order merged where the stable rows arrived as before
+          (`arrivedAsBefore`, `mergeOrders`), the whole arrival sorted otherwise; the step records
+          its arrival and what it produced. *)
+       let cmp = sp.row_cmp cols ks in
+       let ordered = sort_step cmp reuse (prior_head prior).e_order a in
+       sort_step_width (len cols) cmp reuse (prior_head prior).e_order a;
+       (match mwalk mp sp rp pr resolve env reuse (prior_rest prior) cols ordered rest with
+        | Error err -> Error err
+        | Ok st -> Ok ({ st with r_entries = ({ e_cells = []; e_pack = None; e_keys = None; e_order = Some (sort_record a ordered) } :: st.r_entries) })))
   | MProject pairs :: rest ->
     (match Relational.project_step cols pairs with
      | Error e -> Error e
@@ -902,11 +886,11 @@ let rec mwalk (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.
        len_project_cols cols pairs;
        awidth_proj cols (names pairs) a;
        len_names pairs;
-       mwalk mp rp pr resolve env reuse prior out (proj_alive cols (names pairs) a) rest)
+       mwalk mp sp rp pr resolve env reuse prior out (proj_alive cols (names pairs) a) rest)
   | MLimit n off :: rest ->
     awidth_drop (len cols) (max0 off) a;
     awidth_take (len cols) (max0 n) (drop_a (max0 off) a);
-    mwalk mp rp pr resolve env reuse prior cols (slice off n a) rest
+    mwalk mp sp rp pr resolve env reuse prior cols (slice off n a) rest
   | MWindow spec :: rest ->
     (match Relational.window_cols rp cols spec with
      | Error e -> Error e
@@ -919,7 +903,7 @@ let rec mwalk (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.
           Incremental.awidth_extend (len cols) None a cs;
           len_app cols [(spec.w_as, Relational.window_type cols spec)];
           (* F#: `Array.fill r.Stable 0 r.Stable.Length false` — nothing is reused after a window. *)
-          (match mwalk mp rp pr resolve env Incremental.no_reuse (prior_rest_window prior) out (Incremental.extend None a cs) rest with
+          (match mwalk mp sp rp pr resolve env Incremental.no_reuse (prior_rest_window prior) out (Incremental.extend None a cs) rest with
            | Error err -> Error err
            | Ok st -> Ok ({ st with r_switched = true }))))
   | MJoin src on keep :: rest ->
@@ -939,9 +923,9 @@ let rec mwalk (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.
              bool_step_ok (len cols) vf reuse' (prior_head prior).e_cells a;
              let vs = Ok?._0 (step_cells_by (bool_fn (len cols) vf) reuse' (prior_head prior).e_cells a) in
              Incremental.awidth_keep_true (len cols) a vs;
-             (match mwalk mp rp pr resolve env reuse (prior_rest prior) cols (Incremental.keep_true a vs) rest with
+             (match mwalk mp sp rp pr resolve env reuse (prior_rest prior) cols (Incremental.keep_true a vs) rest with
               | Error err -> Error err
-              | Ok st -> Ok ({ st with r_entries = ({ e_cells = vs; e_pack = None; e_keys = Some rks } :: st.r_entries) })))))
+              | Ok st -> Ok ({ st with r_entries = ({ e_cells = vs; e_pack = None; e_keys = Some rks; e_order = None } :: st.r_entries) })))))
 
 (* The whole pipeline — F#: `runIncremental`: the prefix, the group step, the tail. *)
 type mstate = { m_out : Incremental.walked; m_entries : list entry; m_groups : list pgroup; m_tail : list entry }
@@ -949,10 +933,10 @@ type mstate = { m_out : Incremental.walked; m_entries : list entry; m_groups : l
 let empty_state (cols:schema) : Tot mstate =
   { m_out = Incremental.W cols []; m_entries = []; m_groups = []; m_tail = [] }
 
-let mrun (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let mrun (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (reuse:Incremental.reuse_fn) (prior:mstate) (cols:schema) (a:Incremental.alive{Incremental.awidth (len cols) a}) (p:mpipe)
   : Tot (outcome mstate eval_error) =
-  match mwalk mp rp pr resolve env reuse prior.m_entries cols a p.prefix with
+  match mwalk mp sp rp pr resolve env reuse prior.m_entries cols a p.prefix with
   | Error e -> Error e
   | Ok st ->
     (match p.grouped with
@@ -965,20 +949,20 @@ let mrun (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resol
         | Ok gr ->
           let Incremental.W gcols ga = gr.gs_out in
           let os = gr.gs_os in
-          (match mwalk mp rp pr resolve env (tail_reuse mp os) prior.m_tail gcols ga tail with
+          (match mwalk mp sp rp pr resolve env (tail_reuse mp os) prior.m_tail gcols ga tail with
            | Error e -> Error e
            | Ok ts -> Ok ({ m_out = ts.r_out; m_entries = st.r_entries; m_groups = pgroups_of os; m_tail = ts.r_entries }))))
 
 (* F#: `Incremental.prime` — no prior state, every row evaluated. *)
-let mprime (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let mprime (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (cols:schema) (a:Incremental.alive{Incremental.awidth (len cols) a}) (p:mpipe) : Tot (outcome mstate eval_error) =
-  mrun mp rp pr resolve env Incremental.no_reuse (empty_state cols) cols a p
+  mrun mp sp rp pr resolve env Incremental.no_reuse (empty_state cols) cols a p
 
 (* F#: `Incremental.refresh` — reusing every unnamed row against the prior state. *)
-let mrefresh (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let mrefresh (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (st:mstate) (named:option (list Incremental.token))
   (cols:schema) (a:Incremental.alive{Incremental.awidth (len cols) a}) (p:mpipe) : Tot (outcome mstate eval_error) =
-  mrun mp rp pr resolve env (Incremental.reuse_of named) st cols a p
+  mrun mp sp rp pr resolve env (Incremental.reuse_of named) st cols a p
 
 (* ======================================================================================
    8. The reference — Pipeline's driver over `Relational.other_of` with this module's row functions.
@@ -994,7 +978,7 @@ let fit (n:nat) (rs:list (list cell)) : Tot (outcome (rs':list (list cell){all_w
 
 (* THE ROW FUNCTIONS: `evalProject`'s columns, `evalGroupBy`'s groups and aggregates, `evalWindow`'s
    column, `evalLimit`'s slice, `evalJoin`'s filtering kinds — each over the frame's rows. *)
-let mrows (mp:mprims) (resolve:Relational.resolver) : Tot Relational.row_fn =
+let mrows (mp:mprims) (sp:sprims) (resolve:Relational.resolver) (env:param_env) : Tot Relational.row_fn =
   fun f t out ->
     match t with
     | Project pairs -> fit (len out) (proj_rows f.cols (names pairs) f.rows)
@@ -1015,10 +999,15 @@ let mrows (mp:mprims) (resolve:Relational.resolver) : Tot Relational.row_fn =
                            | Ok rrows, Ok rcols -> fit (len out) (keep_rows_by (verdict mp f.cols on (proj_rows rcols (rnames on) rrows) false) f.rows)
                            | Error e, _ -> Error e
                            | _, Error e -> Error e)
+    (* Phase 471 — F#: `evalSort`, the stable sort under `compareResolved` over the resolved keys. *)
+    | Sort sk ->
+      (match Relational.resolve_sort_keys env sk with
+       | Error e -> Error e
+       | Ok ks -> fit (len out) (sort_rows (sp.row_cmp f.cols ks) f.rows))
     | _ -> Error (TypeError "a verb this model does not reach")
 
-let mother (mp:mprims) (rp:Relational.rprims) (resolve:Relational.resolver) (env:param_env) : Tot other_fn =
-  Relational.other_of rp resolve env (mrows mp resolve)
+let mother (mp:mprims) (sp:sprims) (rp:Relational.rprims) (resolve:Relational.resolver) (env:param_env) : Tot other_fn =
+  Relational.other_of rp resolve env (mrows mp sp resolve env)
 
 (* ======================================================================================
    9. Priming is full evaluation — `mprime_is_full`.
@@ -1125,10 +1114,17 @@ let rec rows_of_pair_extend (a:Incremental.alive) (ws:list cell{len ws = len a})
   | [], [] -> ()
   | _ :: ar, _ :: wr -> rows_of_pair_extend ar wr
 
-let rec mwalk_is_go (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+(* The literal keys resolve to themselves, under any env (F#: `resolveStrSlot` on a `Lit`). *)
+let rec resolve_lit_keys (env:param_env) (ks:list (string & sort_dir))
+  : Lemma (ensures Relational.resolve_sort_keys env (lit_keys ks) == Ok ks) =
+  match ks with
+  | [] -> ()
+  | _ :: rest -> resolve_lit_keys env rest
+
+let rec mwalk_is_go (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (cols:schema) (a:Incremental.alive{Incremental.awidth (len cols) a}) (p:list mstep) (n:nat)
-  : Lemma (ensures (match mwalk mp rp pr resolve env Incremental.no_reuse [] cols a p,
-                          go (eval_step pr (mother mp rp resolve env) env) (Incremental.frame_of cols a) n (embed_steps p) with
+  : Lemma (ensures (match mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a p,
+                          go (eval_step pr (mother mp sp rp resolve env) env) (Incremental.frame_of cols a) n (embed_steps p) with
                     | Ok st, Ok (f, _) -> Incremental.frame_of_walked st.r_out == f
                     | Error e, Error e' -> e == e'
                     | _ -> False))
@@ -1144,7 +1140,7 @@ let rec mwalk_is_go (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
      | Error _ -> ()
      | Ok cs ->
        Incremental.awidth_keep_true (len cols) a cs;
-       mwalk_is_go mp rp pr resolve env cols (Incremental.keep_true a cs) rest (n + cost_of f0 (Filter pred)))
+       mwalk_is_go mp sp rp pr resolve env cols (Incremental.keep_true a cs) rest (n + cost_of f0 (Filter pred)))
   | MDerive name x :: rest ->
     (match derived_typing_in env cols x with
      | Refused -> ()
@@ -1162,8 +1158,18 @@ let rec mwalk_is_go (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
              Incremental.pack_cache_is_pack_cells pr ty cs;
              Incremental.rows_of_extend i a (Incremental.pack_cache pr k cs);
              Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr k cs);
-             mwalk_is_go mp rp pr resolve env (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
+             mwalk_is_go mp sp rp pr resolve env (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
                (n + cost_of f0 (Derive name x)))))
+  | MSort ks :: rest ->
+    resolve_lit_keys env ks;
+    (match Relational.first_unknown cols (names ks) with
+     | Some _ -> ()
+     | None ->
+       let cmp = sp.row_cmp cols ks in
+       sort_step_width (len cols) cmp Incremental.no_reuse None a;
+       rows_of_sort_alive cmp a;
+       sort_rows_width (len cols) cmp (Incremental.rows_of a);
+       mwalk_is_go mp sp rp pr resolve env cols (sort_step cmp Incremental.no_reuse None a) rest (n + cost_of f0 (Sort (lit_keys ks))))
   | MProject pairs :: rest ->
     (match Relational.project_step cols pairs with
      | Error _ -> ()
@@ -1173,7 +1179,7 @@ let rec mwalk_is_go (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
        awidth_proj cols (names pairs) a;
        rows_of_proj cols (names pairs) a;
        all_width_proj cols (names pairs) (Incremental.rows_of a);
-       mwalk_is_go mp rp pr resolve env out (proj_alive cols (names pairs) a) rest (n + cost_of f0 (Project pairs)))
+       mwalk_is_go mp sp rp pr resolve env out (proj_alive cols (names pairs) a) rest (n + cost_of f0 (Project pairs)))
   | MLimit k off :: rest ->
     awidth_drop (len cols) (max0 off) a;
     awidth_take (len cols) (max0 k) (drop_a (max0 off) a);
@@ -1181,7 +1187,7 @@ let rec mwalk_is_go (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
     rows_of_take (max0 k) (drop_a (max0 off) a);
     all_width_drop (len cols) (max0 off) (Incremental.rows_of a);
     all_width_take (len cols) (max0 k) (drop_a (max0 off) (Incremental.rows_of a));
-    mwalk_is_go mp rp pr resolve env cols (slice off k a) rest (n + cost_of f0 (Limit (SlotLit k) (SlotLit off)))
+    mwalk_is_go mp sp rp pr resolve env cols (slice off k a) rest (n + cost_of f0 (Limit (SlotLit k) (SlotLit off)))
   | MWindow spec :: rest ->
     (match Relational.window_cols rp cols spec with
      | Error _ -> ()
@@ -1195,7 +1201,7 @@ let rec mwalk_is_go (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
           len_app cols [(spec.w_as, Relational.window_type cols spec)];
           rows_of_pair_extend a ws;
           width_append (len cols) (Incremental.rows_of a) ws;
-          mwalk_is_go mp rp pr resolve env out (Incremental.extend None a cs) rest (n + cost_of f0 (Window spec))))
+          mwalk_is_go mp sp rp pr resolve env out (Incremental.extend None a cs) rest (n + cost_of f0 (Window spec))))
   | MJoin src on keep :: rest ->
     (match Relational.source_cols resolve src with
      | Error _ -> ()
@@ -1213,13 +1219,13 @@ let rec mwalk_is_go (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
              rows_of_keep_by (len cols) vf a;
              all_width_keep_rows (len cols) vf (Incremental.rows_of a);
              Incremental.awidth_keep_true (len cols) a vs;
-             mwalk_is_go mp rp pr resolve env cols (Incremental.keep_true a vs) rest (n + cost_of f0 (Join src on (if keep then Semi else Anti))))))
+             mwalk_is_go mp sp rp pr resolve env cols (Incremental.keep_true a vs) rest (n + cost_of f0 (Join src on (if keep then Semi else Anti))))))
 
 (* The group step is the reference's `GroupBy` over the walked frame's rows. *)
-let group_step_is_other (mp:mprims) (rp:Relational.rprims) (resolve:Relational.resolver) (env:param_env)
+let group_step_is_other (mp:mprims) (sp:sprims) (rp:Relational.rprims) (resolve:Relational.resolver) (env:param_env)
   (cols:schema) (keys:list string) (aggs:list agg) (a:Incremental.alive{Incremental.awidth (len cols) a})
   : Lemma (ensures (match group_step mp Incremental.no_reuse [] cols keys aggs a,
-                          mother mp rp resolve env (Incremental.frame_of cols a) (GroupBy keys aggs) with
+                          mother mp sp rp resolve env (Incremental.frame_of cols a) (GroupBy keys aggs) with
                     | Ok gr, Ok f -> Incremental.frame_of_walked gr.gs_out == f
                     | Error e, Error e' -> e == e'
                     | _ -> False)) =
@@ -1241,43 +1247,43 @@ let group_step_is_other (mp:mprims) (rp:Relational.rprims) (resolve:Relational.r
 
 (* THEOREM. Priming computes what the reference evaluator computes over `mother`: the same frame,
    or the same error, over every cell primitive, every environment and every well-formed source. *)
-let mprime_is_full (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let mprime_is_full (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (cols:schema) (a:Incremental.alive{Incremental.awidth (len cols) a}) (p:mpipe)
-  : Lemma (ensures (match mprime mp rp pr resolve env cols a p,
-                          eval_uncounted pr (mother mp rp resolve env) env (embed_pipe p) (Incremental.frame_of cols a) with
+  : Lemma (ensures (match mprime mp sp rp pr resolve env cols a p,
+                          eval_uncounted pr (mother mp sp rp resolve env) env (embed_pipe p) (Incremental.frame_of cols a) with
                     | Ok st, Ok f -> Incremental.frame_of_walked st.m_out == f
                     | Error e, Error e' -> e == e'
                     | _ -> False)) =
-  let other = mother mp rp resolve env in
+  let other = mother mp sp rp resolve env in
   let step = eval_step pr other env in
   let f0 = Incremental.frame_of cols a in
-  mwalk_is_go mp rp pr resolve env cols a p.prefix 0;
+  mwalk_is_go mp sp rp pr resolve env cols a p.prefix 0;
   assert (eval_uncounted pr other env (embed_pipe p) f0 == result_map fst (go step f0 0 (embed_pipe p)));
   match p.grouped with
   | None ->
     assert (embed_pipe p == embed_steps p.prefix);
-    (match mwalk mp rp pr resolve env Incremental.no_reuse [] cols a p.prefix, go step f0 0 (embed_steps p.prefix) with
-     | Ok st, Ok (f, _) -> assert (mprime mp rp pr resolve env cols a p == Ok ({ m_out = st.r_out; m_entries = st.r_entries; m_groups = []; m_tail = [] }))
-     | Error e, Error e' -> assert (mprime mp rp pr resolve env cols a p == Error e)
+    (match mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a p.prefix, go step f0 0 (embed_steps p.prefix) with
+     | Ok st, Ok (f, _) -> assert (mprime mp sp rp pr resolve env cols a p == Ok ({ m_out = st.r_out; m_entries = st.r_entries; m_groups = []; m_tail = [] }))
+     | Error e, Error e' -> assert (mprime mp sp rp pr resolve env cols a p == Error e)
      | _ -> ())
   | Some (keys, aggs, tail) ->
     assert (embed_pipe p == app (embed_steps p.prefix) (GroupBy keys aggs :: embed_steps tail));
     go_app step f0 0 (embed_steps p.prefix) (GroupBy keys aggs :: embed_steps tail);
-    (match mwalk mp rp pr resolve env Incremental.no_reuse [] cols a p.prefix, go step f0 0 (embed_steps p.prefix) with
-     | Error e, Error e' -> assert (mprime mp rp pr resolve env cols a p == Error e)
+    (match mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a p.prefix, go step f0 0 (embed_steps p.prefix) with
+     | Error e, Error e' -> assert (mprime mp sp rp pr resolve env cols a p == Error e)
      | Ok st, Ok (f1, n1) ->
        let Incremental.W cols1 a1 = st.r_out in
        assert (f1 == Incremental.frame_of cols1 a1);
-       group_step_is_other mp rp resolve env cols1 keys aggs a1;
+       group_step_is_other mp sp rp resolve env cols1 keys aggs a1;
        assert (step f1 (GroupBy keys aggs) == other f1 (GroupBy keys aggs));
        (match group_step mp Incremental.no_reuse [] cols1 keys aggs a1, other f1 (GroupBy keys aggs) with
-        | Error e, Error e' -> assert (mprime mp rp pr resolve env cols a p == Error e)
+        | Error e, Error e' -> assert (mprime mp sp rp pr resolve env cols a p == Error e)
         | Ok gr, Ok f2 ->
           let Incremental.W gcols ga = gr.gs_out in
           let os = gr.gs_os in
           assert (f2 == Incremental.frame_of gcols ga);
-          mwalk_is_go mp rp pr resolve env gcols ga tail (n1 + cost_of f1 (GroupBy keys aggs));
-          (match mwalk mp rp pr resolve env (tail_reuse mp os) [] gcols ga tail with
+          mwalk_is_go mp sp rp pr resolve env gcols ga tail (n1 + cost_of f1 (GroupBy keys aggs));
+          (match mwalk mp sp rp pr resolve env (tail_reuse mp os) [] gcols ga tail with
            | Error _ -> all_unreused_fresh mp cols1 aggs (groups_of cols1 keys a1)
            | Ok _ -> all_unreused_fresh mp cols1 aggs (groups_of cols1 keys a1))
         | _ -> ())
@@ -1302,9 +1308,9 @@ let rec step_cells_no_reuse (#n:nat) (cf:cell_fn n) (prior:Incremental.step_cach
   | [] -> ()
   | _ :: rest -> step_cells_no_reuse cf prior rest
 
-let rec mwalk_no_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let rec mwalk_no_reuse (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (prior:list entry) (cols:schema) (a:Incremental.alive{Incremental.awidth (len cols) a}) (p:list mstep)
-  : Lemma (ensures walk_eq (mwalk mp rp pr resolve env Incremental.no_reuse prior cols a p) (mwalk mp rp pr resolve env Incremental.no_reuse [] cols a p))
+  : Lemma (ensures walk_eq (mwalk mp sp rp pr resolve env Incremental.no_reuse prior cols a p) (mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a p))
           (decreases p) =
   match p with
   | [] -> ()
@@ -1312,7 +1318,7 @@ let rec mwalk_no_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Re
     step_cells_no_reuse (expr_fn pr env cols pred) (prior_head prior).e_cells a;
     (match step_cells_by (expr_fn pr env cols pred) Incremental.no_reuse [] a with
      | Error _ -> ()
-     | Ok cs -> Incremental.awidth_keep_true (len cols) a cs; mwalk_no_reuse mp rp pr resolve env (prior_rest prior) cols (Incremental.keep_true a cs) rest)
+     | Ok cs -> Incremental.awidth_keep_true (len cols) a cs; mwalk_no_reuse mp sp rp pr resolve env (prior_rest prior) cols (Incremental.keep_true a cs) rest)
   | MDerive name x :: rest ->
     (match derived_typing_in env cols x with
      | Refused -> ()
@@ -1327,15 +1333,23 @@ let rec mwalk_no_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Re
              let k = Incremental.pack_key_of pr ty cs in
              let i = index_of name cols in
              Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr k cs);
-             mwalk_no_reuse mp rp pr resolve env (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest)))
+             mwalk_no_reuse mp sp rp pr resolve env (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest)))
+  | MSort ks :: rest ->
+    (match Relational.first_unknown cols (names ks) with
+     | Some _ -> ()
+     | None ->
+       let cmp = sp.row_cmp cols ks in
+       sort_step_no_reuse cmp (prior_head prior).e_order a;
+       sort_step_width (len cols) cmp Incremental.no_reuse None a;
+       mwalk_no_reuse mp sp rp pr resolve env (prior_rest prior) cols (sort_step cmp Incremental.no_reuse None a) rest)
   | MProject pairs :: rest ->
     (match Relational.project_step cols pairs with
      | Error _ -> ()
-     | Ok out -> len_project_cols cols pairs; len_names pairs; awidth_proj cols (names pairs) a; mwalk_no_reuse mp rp pr resolve env prior out (proj_alive cols (names pairs) a) rest)
+     | Ok out -> len_project_cols cols pairs; len_names pairs; awidth_proj cols (names pairs) a; mwalk_no_reuse mp sp rp pr resolve env prior out (proj_alive cols (names pairs) a) rest)
   | MLimit k off :: rest ->
     awidth_drop (len cols) (max0 off) a;
     awidth_take (len cols) (max0 k) (drop_a (max0 off) a);
-    mwalk_no_reuse mp rp pr resolve env prior cols (slice off k a) rest
+    mwalk_no_reuse mp sp rp pr resolve env prior cols (slice off k a) rest
   | MWindow spec :: rest ->
     (match Relational.window_cols rp cols spec with
      | Error _ -> ()
@@ -1347,7 +1361,7 @@ let rec mwalk_no_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Re
           let cs = pair_cells a ws in
           Incremental.awidth_extend (len cols) None a cs;
           len_app cols [(spec.w_as, Relational.window_type cols spec)];
-          mwalk_no_reuse mp rp pr resolve env (prior_rest_window prior) out (Incremental.extend None a cs) rest))
+          mwalk_no_reuse mp sp rp pr resolve env (prior_rest_window prior) out (Incremental.extend None a cs) rest))
   | MJoin src on keep :: rest ->
     (match Relational.source_cols resolve src with
      | Error _ -> ()
@@ -1365,7 +1379,7 @@ let rec mwalk_no_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Re
              step_cells_no_reuse (bool_fn (len cols) vf) (prior_head prior).e_cells a;
              let vs = Ok?._0 (step_cells_by (bool_fn (len cols) vf) Incremental.no_reuse [] a) in
              Incremental.awidth_keep_true (len cols) a vs;
-             mwalk_no_reuse mp rp pr resolve env (prior_rest prior) cols (Incremental.keep_true a vs) rest)))
+             mwalk_no_reuse mp sp rp pr resolve env (prior_rest prior) cols (Incremental.keep_true a vs) rest)))
 
 (* The prime's entries at a step: what the state theorem threads through the walk. *)
 let entries_of (r:outcome mres eval_error) : Tot (list entry) =
@@ -1376,14 +1390,15 @@ let entries_of (r:outcome mres eval_error) : Tot (list entry) =
 (* THE WALK'S STATE THEOREM. The walk reusing against a prior walk's entries, over a source of
    distinct tokens and under the premise, is the walk reusing nothing — and leaves the premise standing
    for the step after it, or switched reuse off. *)
-let rec mwalk_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let rec mwalk_reuse (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (reuse:Incremental.reuse_fn) (cols:schema) (a0:Incremental.alive{Incremental.awidth (len cols) a0})
   (a:Incremental.alive{Incremental.awidth (len cols) a}) (p:list mstep)
-  : Lemma (requires Ok? (mwalk mp rp pr resolve env Incremental.no_reuse [] cols a0 p) /\ wk reuse a a0 /\ distinct a0)
-          (ensures (let fresh = mwalk mp rp pr resolve env Incremental.no_reuse [] cols a p in
-                    let refreshed = mwalk mp rp pr resolve env reuse (entries_of (mwalk mp rp pr resolve env Incremental.no_reuse [] cols a0 p)) cols a p in
+  : Lemma (requires Ok? (mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a0 p) /\ wk reuse a a0 /\ distinct a0
+                    /\ row_cmp_preorder sp)
+          (ensures (let fresh = mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a p in
+                    let refreshed = mwalk mp sp rp pr resolve env reuse (entries_of (mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a0 p)) cols a p in
                     walk_eq refreshed fresh
-                    /\ (match refreshed, mwalk mp rp pr resolve env Incremental.no_reuse [] cols a0 p with
+                    /\ (match refreshed, mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a0 p with
                         | Ok st, Ok st0 ->
                           st.r_switched \/
                           (let Incremental.W c1 a1 = st.r_out in
@@ -1404,7 +1419,7 @@ let rec mwalk_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
        distinct_keep a0 cs0;
        Incremental.awidth_keep_true (len cols) a0 cs0;
        Incremental.awidth_keep_true (len cols) a cs;
-       mwalk_reuse mp rp pr resolve env reuse cols (Incremental.keep_true a0 cs0) (Incremental.keep_true a cs) rest)
+       mwalk_reuse mp sp rp pr resolve env reuse cols (Incremental.keep_true a0 cs0) (Incremental.keep_true a cs) rest)
   | MDerive name x :: rest ->
     (match derived_typing_in env cols x with
      | Refused -> ()
@@ -1427,11 +1442,24 @@ let rec mwalk_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
              if k0 = k then begin
                wk_extend_by cf pr k reuse i a0 a;
                distinct_extend i a0 (Incremental.pack_cache pr k0 cs0);
-               mwalk_reuse mp rp pr resolve env reuse (Incremental.ext_schema i name ty cols) (Incremental.extend i a0 (Incremental.pack_cache pr k0 cs0)) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
+               mwalk_reuse mp sp rp pr resolve env reuse (Incremental.ext_schema i name ty cols) (Incremental.extend i a0 (Incremental.pack_cache pr k0 cs0)) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
              end else begin
-               let prior' = entries_of (mwalk mp rp pr resolve env Incremental.no_reuse [] (Incremental.ext_schema i name ty0 cols) (Incremental.extend i a0 (Incremental.pack_cache pr k0 cs0)) rest) in
-               mwalk_no_reuse mp rp pr resolve env prior' (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
+               let prior' = entries_of (mwalk mp sp rp pr resolve env Incremental.no_reuse [] (Incremental.ext_schema i name ty0 cols) (Incremental.extend i a0 (Incremental.pack_cache pr k0 cs0)) rest) in
+               mwalk_no_reuse mp sp rp pr resolve env prior' (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
              end)))
+  | MSort ks :: rest ->
+    (match Relational.first_unknown cols (names ks) with
+     | Some _ -> ()
+     | None ->
+       (* the prime recorded its arrival and the full sort; the refresh, merging against them or
+          sorting from scratch, answers that same full sort over the rows now (`sort_step_reuse`),
+          and the premise survives the permutation on both sides *)
+       let cmp = sp.row_cmp cols ks in
+       sort_step_reuse cmp reuse a0 a;
+       sort_alive_wk cmp reuse a a0;
+       sort_step_width (len cols) cmp Incremental.no_reuse None a0;
+       sort_step_width (len cols) cmp Incremental.no_reuse None a;
+       mwalk_reuse mp sp rp pr resolve env reuse cols (sort_alive cmp a0) (sort_alive cmp a) rest)
   | MProject pairs :: rest ->
     (match Relational.project_step cols pairs with
      | Error _ -> ()
@@ -1440,13 +1468,13 @@ let rec mwalk_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
        awidth_proj cols (names pairs) a0; awidth_proj cols (names pairs) a;
        wk_proj cols (names pairs) reuse a a0;
        distinct_proj cols (names pairs) a0;
-       mwalk_reuse mp rp pr resolve env reuse out (proj_alive cols (names pairs) a0) (proj_alive cols (names pairs) a) rest)
+       mwalk_reuse mp sp rp pr resolve env reuse out (proj_alive cols (names pairs) a0) (proj_alive cols (names pairs) a) rest)
   | MLimit k off :: rest ->
     awidth_drop (len cols) (max0 off) a0; awidth_take (len cols) (max0 k) (drop_a (max0 off) a0);
     awidth_drop (len cols) (max0 off) a; awidth_take (len cols) (max0 k) (drop_a (max0 off) a);
     wk_slice off k reuse a a0;
     distinct_drop (max0 off) a0; distinct_take (max0 k) (drop_a (max0 off) a0);
-    mwalk_reuse mp rp pr resolve env reuse cols (slice off k a0) (slice off k a) rest
+    mwalk_reuse mp sp rp pr resolve env reuse cols (slice off k a0) (slice off k a) rest
   | MWindow spec :: rest ->
     (match Relational.window_cols rp cols spec with
      | Error _ -> ()
@@ -1462,8 +1490,8 @@ let rec mwalk_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
           Incremental.len_rows_of a0;
           let cs0 = pair_cells a0 ws0 in
           Incremental.awidth_extend (len cols) None a0 cs0;
-          let prior' = entries_of (mwalk mp rp pr resolve env Incremental.no_reuse [] out (Incremental.extend None a0 cs0) rest) in
-          mwalk_no_reuse mp rp pr resolve env prior' out (Incremental.extend None a cs) rest))
+          let prior' = entries_of (mwalk mp sp rp pr resolve env Incremental.no_reuse [] out (Incremental.extend None a0 cs0) rest) in
+          mwalk_no_reuse mp sp rp pr resolve env prior' out (Incremental.extend None a cs) rest))
   | MJoin src on keep :: rest ->
     (match Relational.source_cols resolve src with
      | Error _ -> ()
@@ -1487,7 +1515,7 @@ let rec mwalk_reuse (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relat
              distinct_keep a0 vs0;
              Incremental.awidth_keep_true (len cols) a0 vs0;
              Incremental.awidth_keep_true (len cols) a vs;
-             mwalk_reuse mp rp pr resolve env reuse cols (Incremental.keep_true a0 vs0) (Incremental.keep_true a vs) rest)))
+             mwalk_reuse mp sp rp pr resolve env reuse cols (Incremental.keep_true a0 vs0) (Incremental.keep_true a vs) rest)))
 
 (* ---- the group step reuses soundly ---- *)
 
@@ -1800,19 +1828,19 @@ let tail_premise (mp:mprims) (reuse:Incremental.reuse_fn) (cols:schema) (aggs:li
    delta that names every row that moved, over a prior source of distinct tokens and a group token
    one per key, is the prime over the new source — output, every entry, the group table and the
    tail. *)
-let mrefresh_is_prime (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let mrefresh_is_prime (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (cols:schema) (a0:Incremental.alive{Incremental.awidth (len cols) a0}) (a:Incremental.alive{Incremental.awidth (len cols) a})
   (named:option (list Incremental.token)) (p:mpipe)
-  : Lemma (requires Ok? (mprime mp rp pr resolve env cols a0 p) /\ wk (Incremental.reuse_of named) a a0 /\ distinct a0
-                    /\ key_token_injective mp)
-          (ensures mrefresh mp rp pr resolve env (Ok?._0 (mprime mp rp pr resolve env cols a0 p)) named cols a p
-                   == mprime mp rp pr resolve env cols a p) =
+  : Lemma (requires Ok? (mprime mp sp rp pr resolve env cols a0 p) /\ wk (Incremental.reuse_of named) a a0 /\ distinct a0
+                    /\ key_token_injective mp /\ row_cmp_preorder sp)
+          (ensures mrefresh mp sp rp pr resolve env (Ok?._0 (mprime mp sp rp pr resolve env cols a0 p)) named cols a p
+                   == mprime mp sp rp pr resolve env cols a p) =
   let reuse = Incremental.reuse_of named in
-  let prime0 = Ok?._0 (mprime mp rp pr resolve env cols a0 p) in
-  let st0 = Ok?._0 (mwalk mp rp pr resolve env Incremental.no_reuse [] cols a0 p.prefix) in
+  let prime0 = Ok?._0 (mprime mp sp rp pr resolve env cols a0 p) in
+  let st0 = Ok?._0 (mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a0 p.prefix) in
   assert (prime0.m_entries == st0.r_entries);
-  mwalk_reuse mp rp pr resolve env reuse cols a0 a p.prefix;
-  match mwalk mp rp pr resolve env reuse st0.r_entries cols a p.prefix, mwalk mp rp pr resolve env Incremental.no_reuse [] cols a p.prefix with
+  mwalk_reuse mp sp rp pr resolve env reuse cols a0 a p.prefix;
+  match mwalk mp sp rp pr resolve env reuse st0.r_entries cols a p.prefix, mwalk mp sp rp pr resolve env Incremental.no_reuse [] cols a p.prefix with
   | Error _, Error _ -> ()
   | Ok st, Ok st' ->
     (match p.grouped with
@@ -1835,7 +1863,7 @@ let mrefresh_is_prime (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Rel
                groups_out_key_width mp Incremental.no_reuse [] c1 keys aggs gs;
                awidth_galive mp keys aggs os;
                all_unreused_fresh mp c1 aggs gs;
-               mwalk_no_reuse mp rp pr resolve env prime0.m_tail gcols (galive mp os) tail)
+               mwalk_no_reuse mp sp rp pr resolve env prime0.m_tail gcols (galive mp os) tail)
           end else begin
             let gs0 = groups_of c0 keys a01 in
             let os0 = Ok?._0 (groups_out mp Incremental.no_reuse [] c0 aggs gs0) in
@@ -1860,28 +1888,28 @@ let mrefresh_is_prime (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Rel
                assert (tail_reuse mp os0 == Incremental.no_reuse);
                assert (Relational.group_by_cols c0 keys aggs == Ok gcols);
                assert (group_step mp Incremental.no_reuse [] c0 keys aggs a01 == Ok ({ gs_out = Incremental.W gcols (galive mp os0); gs_os = os0 }));
-               assert (prime0.m_tail == entries_of (mwalk mp rp pr resolve env Incremental.no_reuse [] gcols (galive mp os0) tail));
+               assert (prime0.m_tail == entries_of (mwalk mp sp rp pr resolve env Incremental.no_reuse [] gcols (galive mp os0) tail));
                if all_unreused os then
-                 mwalk_no_reuse mp rp pr resolve env prime0.m_tail gcols (galive mp os') tail
+                 mwalk_no_reuse mp sp rp pr resolve env prime0.m_tail gcols (galive mp os') tail
                else begin
                  groups_acc_nodup c0 keys [] a01;
                  tail_premise mp reuse c1 aggs gs gs0;
-                 mwalk_reuse mp rp pr resolve env (Incremental.reuse_of (Some (unreused_tokens mp os))) gcols (galive mp os0) (galive mp os') tail
+                 mwalk_reuse mp sp rp pr resolve env (Incremental.reuse_of (Some (unreused_tokens mp os))) gcols (galive mp os0) (galive mp os') tail
                end)
           end))
   | _ -> ()
 
 (* THEOREM (the agreement theorem). The refreshed answer is the full evaluation of the pipeline
    over the updated source — the same frame, or the same error. *)
-let mrefresh_agrees (mp:mprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
+let mrefresh_agrees (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve:Relational.resolver) (env:param_env)
   (cols:schema) (a0:Incremental.alive{Incremental.awidth (len cols) a0}) (a:Incremental.alive{Incremental.awidth (len cols) a})
   (named:option (list Incremental.token)) (p:mpipe)
-  : Lemma (requires Ok? (mprime mp rp pr resolve env cols a0 p) /\ wk (Incremental.reuse_of named) a a0 /\ distinct a0
-                    /\ key_token_injective mp)
-          (ensures (match mrefresh mp rp pr resolve env (Ok?._0 (mprime mp rp pr resolve env cols a0 p)) named cols a p,
-                          eval_uncounted pr (mother mp rp resolve env) env (embed_pipe p) (Incremental.frame_of cols a) with
+  : Lemma (requires Ok? (mprime mp sp rp pr resolve env cols a0 p) /\ wk (Incremental.reuse_of named) a a0 /\ distinct a0
+                    /\ key_token_injective mp /\ row_cmp_preorder sp)
+          (ensures (match mrefresh mp sp rp pr resolve env (Ok?._0 (mprime mp sp rp pr resolve env cols a0 p)) named cols a p,
+                          eval_uncounted pr (mother mp sp rp resolve env) env (embed_pipe p) (Incremental.frame_of cols a) with
                     | Ok st, Ok f -> Incremental.frame_of_walked st.m_out == f
                     | Error e, Error e' -> e == e'
                     | _ -> False)) =
-  mrefresh_is_prime mp rp pr resolve env cols a0 a named p;
-  mprime_is_full mp rp pr resolve env cols a p
+  mrefresh_is_prime mp sp rp pr resolve env cols a0 a named p;
+  mprime_is_full mp sp rp pr resolve env cols a p

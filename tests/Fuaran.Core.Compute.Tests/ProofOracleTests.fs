@@ -41,6 +41,10 @@ module ModelFrame = Frame
 // aliased for the same reading as `ModelInc`.
 module ModelMaint = IncrementalMaintained
 
+// The maintained sort (`proofs/oracle/MaintainedSort.fs`): the stable sort, the binary-insertion
+// merge and the comparator, aliased for the same reading.
+module ModelSort = MaintainedSort
+
 open Fuaran.Core
 open Fuaran.Compute
 open Fuaran.Compute.Tests
@@ -2225,6 +2229,40 @@ let private iMutateSome (t: Table) (rng: ConfRng.T) : Table * ConfRng.T =
 
     go (k + 1) t r
 
+/// Phase 471 — one to three mutations (one time in three), the same followed by a REORDERING of two
+/// rows (one time in three), or that reordering alone (one time in three): `Delta.diff` reports a
+/// reordering as quiet, so a stable sort's answer moves while the delta names no row — the case
+/// `arrivedAsBefore` exists for.
+let private mMutateSome (t: Table) (rng: ConfRng.T) : Table * ConfRng.T =
+    let kind, r0 = ConfRng.intBelow 3 rng
+    let t1, r1 = if kind = 2 then t, r0 else iMutateSome t r0
+    let n = Table.rowCount t1
+    let r2 = r1
+
+    if kind = 0 || n < 2 then
+        t1, r2
+    else
+        let i, r3 = ConfRng.intBelow n r2
+        let j, r4 = ConfRng.intBelow n r3
+
+        if i = j then
+            t1, r4
+        else
+            let order =
+                [ 0 .. n - 1 ]
+                |> List.map (fun k ->
+                    if k = i then j
+                    elif k = j then i
+                    else k)
+
+            let cols =
+                t1.Columns
+                |> List.map (fun c ->
+                    let cells = Column.toCells c
+                    KitColumn.create c.Name c.Type (order |> List.map (fun k -> cells[k])))
+
+            { t1 with Columns = cols }, r4
+
 /// The model's result rendered as production renders a table — the comparison the pipeline
 /// differential makes, byte for byte through `ColumnCodec.encode`.
 let private iRender (t: Table) : string = ColumnCodec.encode (Embedded t)
@@ -2661,6 +2699,40 @@ let private mPrims: ModelMaint.mprims =
             "group:"
             + (cells |> List.map (fun c -> sprintf "%A" c) |> String.concat "\u001f") }
 
+/// Phase 471 — the sort's parameters at production's own: the row comparator `compareResolved`
+/// over `resolveSortKeys`, the float carrier's order `Kernels.compareFloat`, `DecimalText.compare`
+/// and `tryCanonical`, and `String.CompareOrdinal`.
+let private sPrims: ModelSort.sprims =
+    { ModelSort.sprims.row_cmp =
+        fun cols ks r1 r2 ->
+            let schema = cols |> List.map (fun (n, ty) -> Field.create n (pColOfModel ty))
+            let by = ks |> List.map (fun (c, d) -> c, pBack pSortDirs d)
+            let keys = DataFrame.resolveSortKeys schema by
+
+            bigint (
+                DataFrame.compareResolved
+                    keys
+                    (r1 |> List.map pCellOfModel |> List.toArray)
+                    (r2 |> List.map pCellOfModel |> List.toArray)
+            )
+      ModelSort.sprims.cmp_float =
+        fun a b ->
+            let parse (x: string) =
+                System.Double.Parse(x, System.Globalization.NumberStyles.Float, inv)
+
+            bigint (Kernels.compareFloat (parse a) (parse b))
+      ModelSort.sprims.cmp_dec =
+        fun a b ->
+            match DecimalText.compare a b with
+            | Some c -> FStar_Pervasives_Native.Some(bigint c)
+            | None -> FStar_Pervasives_Native.None
+      ModelSort.sprims.canon_dec =
+        fun a ->
+            match DecimalText.tryCanonical a with
+            | Some c -> FStar_Pervasives_Native.Some c
+            | None -> FStar_Pervasives_Native.None
+      ModelSort.sprims.cmp_ord = fun a b -> bigint (System.String.CompareOrdinal(a, b)) }
+
 /// The walk's step alphabet, from the model's transform.
 let private mStepOf (t: ModelPipe.transform) : ModelMaint.mstep =
     match t with
@@ -2671,6 +2743,14 @@ let private mStepOf (t: ModelPipe.transform) : ModelMaint.mstep =
     | ModelPipe.Window spec -> ModelMaint.MWindow spec
     | ModelPipe.Join(src, on, ModelPipe.Semi) -> ModelMaint.MJoin(src, on, true)
     | ModelPipe.Join(src, on, ModelPipe.Anti) -> ModelMaint.MJoin(src, on, false)
+    | ModelPipe.Sort keys ->
+        ModelMaint.MSort(
+            keys
+            |> List.map (fun (c, d) ->
+                match c with
+                | ModelPipe.SlotLit n -> n, d
+                | ModelPipe.SlotParam p -> failwithf "a sort key the walk never sees, the param %s" p)
+        )
     | other -> failwithf "not a step the maintained walk takes: %A" other
 
 /// A pipeline split as production splits it: a prefix, at most one `GroupBy`, a tail.
@@ -2717,7 +2797,7 @@ let private mGenRelation (rng: ConfRng.T) : Table * ConfRng.T =
 
 /// One prefix step of the maintained classes beside the row-local two.
 let private mGenStep (rng: ConfRng.T) : Transform * ConfRng.T =
-    let k, r1 = ConfRng.intBelow 7 rng
+    let k, r1 = ConfRng.intBelow 10 rng
 
     match k with
     | 0 ->
@@ -2749,9 +2829,22 @@ let private mGenStep (rng: ConfRng.T) : Transform * ConfRng.T =
               Of = "v"
               As = "wn" },
         r2
-    | _ ->
+    | 5 ->
         let j, r2 = ConfRng.intBelow 2 r1
         Join(Ref "r", [ "g", "g" ], (if j = 0 then Semi else Anti)), r2
+    | _ ->
+        // Phase 471 — a `Sort`, three draws in ten: over the group column (three values, so ties
+        // are the rule and the arrival position decides) two times in five, over the int or the
+        // decimal column descending (nulls among them), or over two keys.
+        let j, r2 = ConfRng.intBelow 5 r1
+
+        (match j with
+         | 0 -> Transform.sortBy [ "g", Asc ]
+         | 1 -> Transform.sortBy [ "g", Desc ]
+         | 2 -> Transform.sortBy [ "v", Desc ]
+         | 3 -> Transform.sortBy [ "m", Asc ]
+         | _ -> Transform.sortBy [ "g", Desc; "w", Asc ]),
+        r2
 
 /// A pipeline of the maintained classes: a prefix of up to two steps — one time in four a retype
 /// corner (Phase 470), whose derived column the aggregates may then read — a `GroupBy` over `g` one
@@ -2898,6 +2991,13 @@ type private MaintTally =
         MRelationMoved: int
         /// Refreshes of a pipeline with a `Project`.
         MProjected: int
+        /// Refreshes of a pipeline with a `Sort` (Phase 471).
+        MSorted: int
+        /// Refreshes of a sorted pipeline whose produced order moved (a key changed, a row arrived
+        /// or left, the stable rows reordered).
+        MOrderMoved: int
+        /// Refreshes of a sorted pipeline under a mutation that reordered the source's rows.
+        MReordered: int
     }
 
 let private mEmptyTally =
@@ -2910,7 +3010,10 @@ let private mEmptyTally =
       MSliceMoved = 0
       MPartitionMoved = 0
       MRelationMoved = 0
-      MProjected = 0 }
+      MProjected = 0
+      MSorted = 0
+      MOrderMoved = 0
+      MReordered = 0 }
 
 /// A perturbation of the model's prior state before a refresh — the faithful run leaves it as it
 /// is; a go-red breaks one maintenance rule. Handed the prior state, the pipeline, the new table
@@ -2971,6 +3074,7 @@ let private mTrial
     let modelRun (resolve) (reuseFn: ModelInc.reuse_fn) (st: ModelMaint.mstate) (table: Table) =
         ModelMaint.mrun
             mPrims
+            sPrims
             rPrims
             pPrims
             (rResolver resolve)
@@ -2991,7 +3095,7 @@ let private mTrial
 
     match prod0, model0 with
     | Ok ps0, ModelPipe.Ok ms0 ->
-        let t1, r6 = iMutateSome t0 r5
+        let t1, r6 = mMutateSome t0 r5
 
         match Delta.diff iIdw t0 t1 with
         | Error _ ->
@@ -3069,11 +3173,40 @@ let private mTrial
                 else
                     0
 
+            let sorted =
+                if
+                    has (function
+                        | Sort _ -> true
+                        | _ -> false)
+                then
+                    1
+                else
+                    0
+
+            let orderMoved =
+                match sorted, prod0, prod1 with
+                | 1, Ok a, Ok b when
+                    iRender (Fuaran.Compute.Incremental.result a)
+                    <> iRender (Fuaran.Compute.Incremental.result b)
+                    ->
+                    1
+                | _ -> 0
+
+            let reordered =
+                if
+                    sorted = 1
+                    && iTokens t0 <> iTokens t1
+                    && Set.ofList (iTokens t0) = Set.ofList (iTokens t1)
+                then
+                    1
+                else
+                    0
+
             // The state theorem, observably, on the model: a refresh of the refreshed state is a
             // refresh of a state primed over the first mutation.
             (match prod1, model1 with
              | Ok _, ModelPipe.Ok ms1 ->
-                 let t2, _ = iMutateSome t1 r6
+                 let t2, _ = mMutateSome t1 r6
 
                  match Delta.diff iIdw t1 t2 with
                  | Ok d2 ->
@@ -3120,7 +3253,10 @@ let private mTrial
                 MSliceMoved = t.MSliceMoved + sliceMoved
                 MPartitionMoved = t.MPartitionMoved + partitionMoved
                 MRelationMoved = t.MRelationMoved + relationMoved
-                MProjected = t.MProjected + projected },
+                MProjected = t.MProjected + projected
+                MSorted = t.MSorted + sorted
+                MOrderMoved = t.MOrderMoved + orderMoved
+                MReordered = t.MReordered + reordered },
             r6
     | Error _, ModelPipe.Error _ ->
         { t with
@@ -3166,6 +3302,7 @@ let private mStaleMembers: MaintPerturb =
             match
                 ModelMaint.mwalk
                     mPrims
+                    sPrims
                     rPrims
                     pPrims
                     (rResolver (mResolveOf rel1))
@@ -3188,7 +3325,7 @@ let private mStaleMembers: MaintPerturb =
                             match groups |> List.tryFind (fun g -> g.g_key = pg.p_key) with
                             | Some g ->
                                 { pg with
-                                    ModelMaint.pgroup.p_tokens = ModelMaint.tokens_of g.g_members }
+                                    ModelMaint.pgroup.p_tokens = ModelSort.tokens_of g.g_members }
                             | None -> pg)
 
                     { st with
@@ -3213,6 +3350,49 @@ let private mStaleRelation: MaintPerturb =
 
         { st with
             ModelMaint.mstate.m_entries = stale }
+
+/// Phase 471 — the go-red for the sort class: every sort entry's recorded ARRIVAL is overwritten
+/// with the arrival the refresh will see (read off a fresh walk of the prefix over the new table),
+/// so `arrivedAsBefore` can no longer tell that the stable rows arrived in another order, and the
+/// merge reads the prior produced order under the new positions — a tie now broken the other way
+/// stays as it was. The reordering mutation is what makes it fire.
+let private mStaleArrival: MaintPerturb =
+    fun st p t1 rel1 ->
+        let pipe = mPipeOf p
+        let cols = (pFrameOfTable t1).cols
+
+        match
+            ModelMaint.mwalk
+                mPrims
+                sPrims
+                rPrims
+                pPrims
+                (rResolver (mResolveOf rel1))
+                (pEnvToModel pEnv)
+                ModelInc.no_reuse
+                []
+                cols
+                (iAliveOf t1)
+                pipe.prefix
+        with
+        | ModelPipe.Error _ -> st
+        | ModelPipe.Ok res ->
+            let stale =
+                List.zip
+                    st.m_entries
+                    (if List.length res.r_entries = List.length st.m_entries then
+                         res.r_entries
+                     else
+                         st.m_entries)
+                |> List.map (fun (old, fresh) ->
+                    match old.e_order, fresh.e_order with
+                    | FStar_Pervasives_Native.Some(_, order), FStar_Pervasives_Native.Some(arrival, _) ->
+                        { old with
+                            ModelMaint.entry.e_order = FStar_Pervasives_Native.Some(arrival, order) }
+                    | _ -> old)
+
+            { st with
+                ModelMaint.mstate.m_entries = stale }
 
 /// The go-red every class shares with Phase 433's: every row's cached cell is reused, the delta
 /// ignored — a named row that moved answers with the cells it had, through a limit's slice, a
@@ -3391,7 +3571,7 @@ let private pCornerAgrees (label: string) (p: Transform list) (before: Table) (a
         | ModelPipe.Error e -> ModelPipe.Error e
 
     let maintRun (st: ModelMaint.mstate) (reuseFn: ModelInc.reuse_fn) (t: Table) =
-        ModelMaint.mrun mPrims rPrims pPrims resolve menv reuseFn st (pFrameOfTable t).cols (iAliveOf t) pipe
+        ModelMaint.mrun mPrims sPrims rPrims pPrims resolve menv reuseFn st (pFrameOfTable t).cols (iAliveOf t) pipe
 
     let maintPrime =
         maintRun (ModelMaint.empty_state (pFrameOfTable before).cols) ModelInc.no_reuse before
@@ -4654,6 +4834,12 @@ let private frameDifferential (bridge: Table -> ModelFrame.ctable) (host: ModelF
 
     a
 
+/// Phase 471 — a table's rows as the array rows `compareResolved` reads.
+let private sRowsOf (t: Table) : Cell[] list =
+    let cols = t.Columns |> List.map Column.toCells
+
+    [ for i in 0 .. Table.rowCount t - 1 -> cols |> List.map (fun c -> c[i]) |> List.toArray ]
+
 [<Tests>]
 let proofOracleTests =
     testList
@@ -5416,7 +5602,7 @@ let proofOracleTests =
           testCase
               "the maintained incremental oracle agrees with Incremental.prime and Incremental.refresh on the result over generated pipelines of the maintained classes, priors, deltas and a moving relation, and a refreshed state refreshes as a primed one"
           <| fun _ ->
-              let t = mDifferential iFaithful mFaithful 464 500
+              let t = mDifferential iFaithful mFaithful 464 700
 
               match t.MDiffs with
               | d :: _ ->
@@ -5460,8 +5646,22 @@ let proofOracleTests =
                       3
                       (sprintf "refreshes through a projection (projected=%d)" t.MProjected)
 
+                  // Phase 471 — the sort class: sorted pipelines, produced orders that moved, and
+                  // refreshes under a pure reordering of the source (the `arrivedAsBefore` fall-back).
+                  Expect.isGreaterThan t.MSorted 20 (sprintf "refreshes through a sort (sorted=%d)" t.MSorted)
+
+                  Expect.isGreaterThan
+                      t.MOrderMoved
+                      3
+                      (sprintf "refreshes whose produced order moved (orderMoved=%d)" t.MOrderMoved)
+
+                  Expect.isGreaterThan
+                      t.MReordered
+                      3
+                      (sprintf "refreshes of a sorted pipeline under a reordered source (reordered=%d)" t.MReordered)
+
                   printfn
-                      "maintained differential: primed=%d refused=%d refreshed=%d grouped=%d vanished=%d sliceMoved=%d partitionMoved=%d relationMoved=%d projected=%d"
+                      "maintained differential: primed=%d refused=%d refreshed=%d grouped=%d vanished=%d sliceMoved=%d partitionMoved=%d relationMoved=%d projected=%d sorted=%d orderMoved=%d reordered=%d"
                       t.MPrimed
                       t.MRefused
                       t.MRefreshed
@@ -5471,13 +5671,16 @@ let proofOracleTests =
                       t.MPartitionMoved
                       t.MRelationMoved
                       t.MProjected
+                      t.MSorted
+                      t.MOrderMoved
+                      t.MReordered
 
           testCase
               "a maintained oracle that reuses a group whose members changed DISAGREES with Incremental.refresh — the group measurement can fail"
           <| fun _ ->
               // The broken maintenance rule: the prior group's member tokens are overwritten with the
               // current group's, so a group that lost or gained a member reuses its prior aggregates.
-              let t = mDifferential iFaithful mStaleMembers 464 500
+              let t = mDifferential iFaithful mStaleMembers 464 700
 
               Expect.isGreaterThan
                   (List.length t.MDiffs)
@@ -5491,7 +5694,7 @@ let proofOracleTests =
           <| fun _ ->
               // The broken maintenance rule: the prior key index is overwritten with the relation's
               // index at the refresh, so a stable row's verdict is reused under a relation that moved.
-              let t = mDifferential iFaithful mStaleRelation 464 500
+              let t = mDifferential iFaithful mStaleRelation 464 700
 
               Expect.isGreaterThan
                   (List.length t.MDiffs)
@@ -5503,7 +5706,7 @@ let proofOracleTests =
           testCase
               "a maintained oracle that reuses a NAMED row's cells DISAGREES with Incremental.refresh through a limit, a projection and a window — the measurement can fail"
           <| fun _ ->
-              let t = mDifferential mReuseAll mFaithful 464 500
+              let t = mDifferential mReuseAll mFaithful 464 700
 
               Expect.isGreaterThan
                   (List.length t.MDiffs)
@@ -5514,6 +5717,226 @@ let proofOracleTests =
                   "maintained reuse-all go-red: %d disagreements, first: %s"
                   (List.length t.MDiffs)
                   (List.head t.MDiffs)
+
+          // ---- Phase 471 — the maintained SORT: the merge against the prior produced order, the
+          //      comparator, and the premise check ----
+
+          testCase
+              "a maintained oracle that merges against a prior order whose recorded arrival is overwritten with the arrival now DISAGREES with Incremental.refresh — the sort measurement can fail"
+          <| fun _ ->
+              // The broken reuse condition: `arrivedAsBefore` reads the arrival now on both sides, so
+              // a reordering among the stable rows is never seen and the merge keeps the prior
+              // order's tie-break where the reference breaks the tie the other way.
+              let t = mDifferential iFaithful mStaleArrival 464 700
+
+              Expect.isGreaterThan
+                  (List.length t.MDiffs)
+                  0
+                  "a walk that merges the prior produced order under a stale arrival record agreed with production everywhere — the sort differential cannot fail"
+
+              printfn "maintained sort go-red: %d disagreements, first: %s" (List.length t.MDiffs) (List.head t.MDiffs)
+
+          testCase
+              "the model's compareResolved is production's over typed rows, and production's two sort paths — the order codes and the comparator — answer one order (Phase 471)"
+          <| fun _ ->
+              let keyPool = [ "g", Asc; "v", Desc; "w", Asc; "m", Desc; "g", Desc; "v", Asc ]
+              let mutable rng = ConfRng.ofSeed 471
+              let mutable pairs = 0
+              let mutable sorts = 0
+
+              for _ in 1..300 do
+                  let table, r1 = pGenTable rng
+                  let mask, r2 = ConfRng.intBelow 63 r1
+                  rng <- r2
+
+                  let keys =
+                      keyPool
+                      |> List.indexed
+                      |> List.filter (fun (i, _) -> ((mask + 1) >>> i) &&& 1 = 1)
+                      |> List.map snd
+
+                  let resolved = DataFrame.resolveSortKeys table.Schema keys
+                  let mkeys = resolved |> List.map (fun (i, d) -> bigint i, pFwd pSortDirs d)
+                  let rows = sRowsOf table
+
+                  for a in rows do
+                      for b in rows do
+                          pairs <- pairs + 1
+                          let prod = DataFrame.compareResolved resolved a b
+
+                          let model =
+                              ModelSort.compare_resolved
+                                  sPrims
+                                  pPrims
+                                  mkeys
+                                  (a |> Array.toList |> List.map pCellToModel)
+                                  (b |> Array.toList |> List.map pCellToModel)
+
+                          if bigint prod <> model then
+                              failtestf "compareResolved %A: production %d, model %A on %A / %A" keys prod model a b
+
+                  // the typed path (order codes where the keys allow) against the comparator path,
+                  // the stable `List.sortWith` production's row form documents
+                  sorts <- sorts + 1
+
+                  match
+                      DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty [ Transform.sortBy keys ] table
+                  with
+                  | Error e -> failtestf "the sort refused %A" e
+                  | Ok sortedTable ->
+                      let coded = sRowsOf sortedTable |> List.map Array.toList
+
+                      let viaComparator =
+                          rows
+                          |> List.sortWith (fun a b -> DataFrame.compareResolved resolved a b)
+                          |> List.map Array.toList
+
+                      Expect.equal coded viaComparator (sprintf "the two sort paths disagree under %A" keys)
+
+              printfn "sort comparator: %d row pairs compared, %d sorts cross-checked" pairs sorts
+
+          testCase
+              "production's comparison primitives satisfy the laws the sort theorems assume — `sprims_laws` instantiated at Kernels.compareFloat, DecimalText.compare and String.CompareOrdinal (Phase 471)"
+          <| fun _ ->
+              let preorder (label: string) (cmp: 'a -> 'a -> int) (pool: 'a list) =
+                  for x in pool do
+                      Expect.equal (cmp x x) 0 (sprintf "%s: reflexive at %A" label x)
+
+                      for y in pool do
+                          Expect.equal (cmp x y < 0) (cmp y x > 0) (sprintf "%s: sign-antisymmetric at %A %A" label x y)
+                          Expect.equal (cmp x y = 0) (cmp y x = 0) (sprintf "%s: tie-symmetric at %A %A" label x y)
+
+                          for z in pool do
+                              if cmp x y <= 0 && cmp y z <= 0 then
+                                  Expect.isTrue (cmp x z <= 0) (sprintf "%s: transitive at %A %A %A" label x y z)
+
+              let floats =
+                  [ nan
+                    -0.0
+                    0.0
+                    infinity
+                    -infinity
+                    1.5
+                    -1.5
+                    2147483647.0
+                    2147483648.0
+                    -2147483648.0
+                    1e300
+                    5e-324 ]
+
+              preorder "compareFloat" Kernels.compareFloat floats
+
+              preorder
+                  "CompareOrdinal"
+                  (fun (a: string) b -> System.String.CompareOrdinal(a, b))
+                  [ ""; "a"; "A"; "ab"; "b"; "é"; "z0" ]
+
+              let ints =
+                  [ 0
+                    1
+                    -1
+                    7
+                    2147483647
+                    -2147483648
+                    2147483646
+                    -2147483647
+                    1000000
+                    999999 ]
+
+              let decimals =
+                  (ints |> List.map string)
+                  @ [ "0.5"
+                      "-0.5"
+                      "2147483647.25"
+                      "-2147483648.5"
+                      "1234567890123456789012345.1234567"
+                      "1.50"
+                      "1.5" ]
+                  |> List.choose DecimalText.tryCanonical
+
+              for d in decimals do
+                  Expect.equal
+                      (DecimalText.tryCanonical d)
+                      (Some d)
+                      (sprintf "the canonical form of a canonical text is itself: %s" d)
+
+              for i in ints do
+                  Expect.equal
+                      (DecimalText.tryCanonical (string i))
+                      (Some(string i))
+                      (sprintf "an int's text is canonical decimal text: %d" i)
+
+              let decCmp (a: string) (b: string) =
+                  match DecimalText.compare a b with
+                  | Some c -> c
+                  | None -> failtestf "DecimalText.compare answered None on canonical texts %s / %s" a b
+
+              preorder "DecimalText.compare" decCmp decimals
+
+              for i in ints do
+                  for j in ints do
+                      Expect.equal
+                          (Kernels.compareFloat (float i) (float j))
+                          (decCmp (string i) (string j))
+                          (sprintf "an int reads the same way in the float carrier and the decimal one: %d %d" i j)
+
+          testCase
+              "a boxed decimal column holding ints beside a decimal past the width sorts to ONE order from every arrival order — the comparator is a total preorder on the corner Phase 472 closes, so no incomparable pair reaches a Sort (Phase 471 premise check)"
+          <| fun _ ->
+              // D38 item 5's corner: a derived decimal column whose typed pass `Vec.packAt` abandons
+              // (a text past the scaled carrier's width among the cells), so the ints stay raw beside
+              // the decimal. `compareCells` reads an int against an int in the float carrier — exact
+              // for every 32-bit int — and an int against a decimal exactly, so the pairs agree and the
+              // sort is one order whatever the arrival. The lead the shard named (an incomparable pair
+              // read as a tie) needs a float beside a decimal, which the typer refuses (D18).
+              let wide = Cell.Decimal "1234567890123456789012345.1234567"
+
+              let xs = [ 2147483647; -2147483648; 5; 11; 0; 2147483646; -7 ]
+
+              let table (order: int list) : Table =
+                  { Schema = [ Field.create "id" IntType; Field.create "x" IntType ]
+                    Columns =
+                      [ KitColumn.create "id" IntType (order |> List.map Int)
+                        KitColumn.create "x" IntType (order |> List.map (fun i -> Int xs[i])) ] }
+
+              let p =
+                  [ Derive("d", Case([ Binary(Eq, Col "x", Lit(Int 11)), Lit wide ], Col "x"))
+                    Transform.sortBy [ "d", Asc ] ]
+
+              let sortedValues (order: int list) =
+                  match DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p (table order) with
+                  | Error e -> failtestf "the sort refused %A" e
+                  | Ok t ->
+                      t.Columns
+                      |> List.find (fun c -> c.Name = "d")
+                      |> Column.toCells
+                      |> List.map Cell.token
+
+              let n = List.length xs
+              let expected = sortedValues [ 0 .. n - 1 ]
+
+              let orders =
+                  [ for k in 0 .. n - 1 -> [ 0 .. n - 1 ] |> List.map (fun i -> (i + k) % n) ]
+                  @ [ [ n - 1 .. -1 .. 0 ]; [ 3; 0; 5; 1; 6; 2; 4 ]; [ 6; 5; 0; 4; 1; 3; 2 ] ]
+
+              for order in orders do
+                  Expect.equal
+                      (sortedValues order)
+                      expected
+                      (sprintf "the sort answered another order from arrival %A" order)
+
+              // the exact numeric order, the wide decimal last; the cells read back as decimals at the
+              // frame's boundary (`Frame.toTable`), which says nothing of the carrier the sort compared
+              Expect.equal
+                  expected
+                  [ "m:-2147483648"
+                    "m:-7"
+                    "m:0"
+                    "m:5"
+                    "m:2147483646"
+                    "m:2147483647"
+                    "m:1234567890123456789012345.1234567" ]
+                  "the boxed column's order is the exact numeric order over its ints and its decimal"
 
           testCase
               "a derived column the cells retype between refreshes is read by the walk as the reference packs it, and the refresh agrees with the full evaluation (Phase 464, D37)"

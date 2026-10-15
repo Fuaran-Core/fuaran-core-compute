@@ -47,10 +47,15 @@
          `toTable`), the prepared source, and the comparison kernels with `filterBits`. Opens
          `Pipeline`, so it follows it. -->
     <Compile Include="Frame.fs" />
+    <!-- The model of the MAINTAINED SORT (../MaintainedSort.fst): the stable sort as the unique sorted
+         permutation, the binary-insertion merge into the prior produced order, the reuse condition,
+         and the comparator `compareResolved` over `compareCells`. Opens `Pipeline` and `Incremental`,
+         so it follows them. -->
+    <Compile Include="MaintainedSort.fs" />
     <!-- The model of the INCREMENTAL REFRESH PAST THE ROW-LOCAL CLASS (../IncrementalMaintained.fst):
-         the walk over Project, Limit, Window and the filtering joins, the maintained GroupBy's
-         groups and aggregate reuse, `mprime` and `mrefresh`. Opens `Pipeline`, `Incremental` and
-         `Relational`, so it follows them. -->
+         the walk over Project, Limit, Window, Sort and the filtering joins, the maintained GroupBy's
+         groups and aggregate reuse, `mprime` and `mrefresh`. Opens `Pipeline`, `Incremental`,
+         `Relational` and `MaintainedSort`, so it follows them. -->
     <Compile Include="IncrementalMaintained.fs" />
   </ItemGroup>
   <ItemGroup>

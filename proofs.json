@@ -616,7 +616,7 @@
     {
       "id": "incremental-maintained-prime-is-full",
       "level": "proved",
-      "claim": "Priming the incremental walk past the row-local class computes what the reference evaluator computes. Over a pipeline of a prefix, at most one `GroupBy` and a tail, every step of which is a `Filter`, a `Derive`, a `Project`, a `Limit` with literal slots, a `Window` or a filtering join (`Semi` / `Anti`) — the classes `Incremental.classifyStep` admits beside `Sort` (D37) — `mprime` (the walk with no prior state and the group step reusing nothing) returns the frame `Pipeline.eval_uncounted` returns over the same source, or the error it returns, where the twelve-verb parameter is `Relational.other_of` instantiated at this module's row functions (`mrows`: `evalProject`'s columns, `evalGroupBy`'s groups in first-appearance order with each aggregate over the members in order, `evalLimit`'s slice, `evalWindow`'s column, `evalJoin`'s filtering kinds) — over every cell primitive, every relational primitive, every resolver, every param environment and every well-formed source. The walk's own step shape is the reference's step: the row-local arms by `Incremental.fst`'s own lemmas (`cells_filter`, `cells_derive`, `rows_of_extend`, bridged through `step_cells_by_is`), a projection, a slice, an appended window column and a kept verdict read off the tokened rows (`rows_of_proj`, `rows_of_take`, `rows_of_drop`, `rows_of_pair_extend`, `rows_of_keep_by`), and the group step the reference's `GroupBy` over the walked frame's rows (`group_step_is_other`: the groups of the rows under any tokens have the rows' groups, `groups_acc_retok`, and with nothing to reuse a group's output reads its member rows alone, `groups_out_retok`). The theorem composes with Phase 433's: the row-local class is this walk restricted to two of its six arms.",
+      "claim": "Priming the incremental walk past the row-local class computes what the reference evaluator computes. Over a pipeline of a prefix, at most one `GroupBy` and a tail, every step of which is a `Filter`, a `Derive`, a `Project`, a `Limit` with literal slots, a `Window`, a filtering join (`Semi` / `Anti`) or, since Phase 471, a `Sort` with literal keys (`MergeOrder`) — every class `Incremental.classifyStep` admits (D37, D39) — `mprime` (the walk with no prior state and the group step reusing nothing) returns the frame `Pipeline.eval_uncounted` returns over the same source, or the error it returns, where the twelve-verb parameter is `Relational.other_of` instantiated at this module's row functions (`mrows`: `evalProject`'s columns, `evalGroupBy`'s groups in first-appearance order with each aggregate over the members in order, `evalLimit`'s slice, `evalWindow`'s column, `evalJoin`'s filtering kinds, `evalSort`'s stable sort under the row comparator — `MaintainedSort.sort_rows`, the insertion sort with the arrival position as the tie-break) — over every cell primitive, every relational primitive, every resolver, every param environment and every well-formed source. The walk's own step shape is the reference's step: the row-local arms by `Incremental.fst`'s own lemmas (`cells_filter`, `cells_derive`, `rows_of_extend`, bridged through `step_cells_by_is`), a projection, a slice, an appended window column and a kept verdict read off the tokened rows (`rows_of_proj`, `rows_of_take`, `rows_of_drop`, `rows_of_pair_extend`, `rows_of_keep_by`, and a sort from scratch is the reference's sort of the rows with the tokens riding along, `rows_of_sort_alive`), and the group step the reference's `GroupBy` over the walked frame's rows (`group_step_is_other`: the groups of the rows under any tokens have the rows' groups, `groups_acc_retok`, and with nothing to reuse a group's output reads its member rows alone, `groups_out_retok`). The theorem composes with Phase 433's: the row-local class is this walk restricted to two of its six arms.",
       "phase": "fuaran-core#464",
       "evidence": {
         "theorem": "mprime_is_full",
@@ -632,6 +632,7 @@
           "rows_of_drop",
           "rows_of_pair_extend",
           "rows_of_keep_by",
+          "resolve_lit_keys",
           "groups_acc_retok",
           "groups_out_retok",
           "rows_of_galive",
@@ -648,14 +649,15 @@
           "Transform.GroupBy",
           "Transform.Limit",
           "Transform.Window",
-          "Transform.Join"
+          "Transform.Join",
+          "Transform.Sort"
         ]
       }
     },
     {
       "id": "incremental-maintained-refresh-state-equals-primed",
       "level": "proved",
-      "claim": "THE STATE THEOREM PAST THE ROW-LOCAL CLASS. A refresh against a state primed over the prior source, under a delta that names every row that moved, IS the prime over the new source — the output frame, every evaluating step's cells and recorded pack key (the decided type and `Vec.packAt`'s verdict, Phase 470, D38), every join's key index, the group table (each group's key, member tokens and aggregate cells) and the tail's caches — so a state a refresh leaves is indistinguishable from one a prime leaves. Over the classes of D37, every cell primitive, every relational primitive, every resolver, every param environment, every prior and new source of ONE schema (a source whose schema moved is `SourceSchemaMoved` in production and evaluates in full) and every delta read as the tokens it names or as every row. Under the premise read one row at a time (`wk`): a row the delta does not name that the prior source held under its token has the cells it had, and a row it did not hold is admitted — the cache misses it, as production reads it unstable — which is strictly weaker than Phase 433's `unchanged` and is what a `Limit` needs (a row re-entering the slice has no cached cells past where it left); and under two premises the ladder names in `incremental-maintained-primitives`: the prior source's tokens are distinct, and the group token is one per key. The proof is the walk's induction (`mwalk_reuse`) threading the premise, the distinct-token invariant and the switch through six arms — the reused cells are the fresh cells (`step_cells_by_reuse`), the premise survives a keep, an extension, a projection and a slice (`wk_keep_by`, `wk_extend_by`, `wk_proj`, `wk_slice`), a derive packed under the prior's key keeps reusing and one packed under another key — retyped, or carried the other way — reuses nothing from there on (D37, D38; `mwalk_no_reuse`: a walk reusing nothing reads no prior), a window reuses nothing — and the group step's (`groups_out_reuse`): a group every member of which is reusable and whose member tokens are the prior group's HAS the prior group's member rows (`members_eq`, from the premise and the distinct tokens), so its reused aggregates are the recomputed ones (`group_aggs_reuse`, `find_key_sound`); and the tail walks under the premise again (`tail_premise`: a reused group's row is the prior group table's row under its token, the group tokens distinct by `nodup_keys` and injectivity). A model that reused a group whose member tokens changed, or a join's verdicts under a moved relation, fails the differential's go-reds; a model that kept reusing after a retyped derive — or after one whose pack verdict flipped under one type — would fail this theorem at the `Derive` arm, where the prior aggregates were computed over the other reading of the column.",
+      "claim": "THE STATE THEOREM PAST THE ROW-LOCAL CLASS. A refresh against a state primed over the prior source, under a delta that names every row that moved, IS the prime over the new source — the output frame, every evaluating step's cells and recorded pack key (the decided type and `Vec.packAt`'s verdict, Phase 470, D38), every join's key index, every sort's record (its arrival and the order it produced, as tokens — Phase 471), the group table (each group's key, member tokens and aggregate cells) and the tail's caches — so a state a refresh leaves is indistinguishable from one a prime leaves. Over the classes of D37, every cell primitive, every relational primitive, every resolver, every param environment, every prior and new source of ONE schema (a source whose schema moved is `SourceSchemaMoved` in production and evaluates in full) and every delta read as the tokens it names or as every row. Under the premise read one row at a time (`wk`): a row the delta does not name that the prior source held under its token has the cells it had, and a row it did not hold is admitted — the cache misses it, as production reads it unstable — which is strictly weaker than Phase 433's `unchanged` and is what a `Limit` needs (a row re-entering the slice has no cached cells past where it left); and under two premises the ladder names in `incremental-maintained-primitives`: the prior source's tokens are distinct, and the group token is one per key. The proof is the walk's induction (`mwalk_reuse`) threading the premise, the distinct-token invariant and the switch through six arms — the reused cells are the fresh cells (`step_cells_by_reuse`), the premise survives a keep, an extension, a projection and a slice (`wk_keep_by`, `wk_extend_by`, `wk_proj`, `wk_slice`), a derive packed under the prior's key keeps reusing and one packed under another key — retyped, or carried the other way — reuses nothing from there on (D37, D38; `mwalk_no_reuse`: a walk reusing nothing reads no prior), a window reuses nothing, and a sort refreshed against the record a prime left answers the full stable sort of the rows that arrived (`MaintainedSort.sort_step_reuse`, under the row comparator being a total preorder — `incremental-maintained-sort-primitives`) with the premise surviving the permutation on both sides (`sort_alive_wk`) — and the group step's (`groups_out_reuse`): a group every member of which is reusable and whose member tokens are the prior group's HAS the prior group's member rows (`members_eq`, from the premise and the distinct tokens), so its reused aggregates are the recomputed ones (`group_aggs_reuse`, `find_key_sound`); and the tail walks under the premise again (`tail_premise`: a reused group's row is the prior group table's row under its token, the group tokens distinct by `nodup_keys` and injectivity). A model that reused a group whose member tokens changed, or a join's verdicts under a moved relation, fails the differential's go-reds; a model that kept reusing after a retyped derive — or after one whose pack verdict flipped under one type — would fail this theorem at the `Derive` arm, where the prior aggregates were computed over the other reading of the column.",
       "phase": "fuaran-core#464",
       "evidence": {
         "theorem": "mrefresh_is_prime",
@@ -705,7 +707,7 @@
     {
       "id": "incremental-maintained-refresh-agrees-with-full",
       "level": "proved",
-      "claim": "THE AGREEMENT THEOREM PAST THE ROW-LOCAL CLASS. The refreshed answer is the full evaluation of the pipeline over the updated source: `mrefresh` against a primed state, under the premise, returns the frame `Pipeline.eval_uncounted` returns over the new source through `mother`, or the error it returns — the two theorems above composed (`mrefresh_is_prime`, then `mprime_is_full` over the new source). Over the classes of D37 — the maintained `GroupBy` with every aggregate recomputed or reused, `Project`, `Limit`, `Window` recomputed whole, the filtering joins — composed end to end with the row-local class in one walk, every cell and relational primitive, every resolver, every param environment, every prior and new source of one schema and every delta, under `wk` and `incremental-maintained-primitives`. This is the property production's `refresh` states of itself (\"The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every delta, whichever path was taken\"), proved for the general refresh path over these classes; `Sort`, the resumed prefix-fold window, the in-place and append fast paths, the staleness guards, the quiet-delta shortcut, the chunked path and the codec are named in D37 and remain `measured-elsewhere` in the census.",
+      "claim": "THE AGREEMENT THEOREM PAST THE ROW-LOCAL CLASS. The refreshed answer is the full evaluation of the pipeline over the updated source: `mrefresh` against a primed state, under the premise, returns the frame `Pipeline.eval_uncounted` returns over the new source through `mother`, or the error it returns — the two theorems above composed (`mrefresh_is_prime`, then `mprime_is_full` over the new source). Over the classes of D37 and the maintained `Sort` of D39 — the maintained `GroupBy` with every aggregate recomputed or reused, `Project`, `Limit`, `Window` recomputed whole, the filtering joins, the sort merged into its prior produced order — composed end to end with the row-local class in one walk, every cell and relational primitive, every resolver, every param environment, every prior and new source of one schema and every delta, under `wk` and `incremental-maintained-primitives`. This is the property production's `refresh` states of itself (\"The result equals a full `DataFrame.evalPipelineWithInEnv` over `source` — always, for every delta, whichever path was taken\"), proved for the general refresh path over these classes; the resumed prefix-fold window, the in-place and append fast paths, the staleness guards, the quiet-delta shortcut, the chunked path and the codec are named in D37 and remain `measured-elsewhere` in the census.",
       "phase": "fuaran-core#464",
       "evidence": {
         "theorem": "mrefresh_agrees",
@@ -725,7 +727,7 @@
     {
       "id": "incremental-maintained-differential",
       "level": "tested",
-      "claim": "The extracted walk agrees with the shipped `Incremental.prime` and `Incremental.refresh` on the RESULT (byte for byte through `ColumnCodec.encode`, read through `Incremental.result`), or on the named `EvalError`, with the model's four parameters instantiated at production's own — `DataFrame.aggregateCells` for the aggregate function, `DataFrame.joinKeysMatch` for the key match, `DataFrame.windowStep` for the window column, a rendering of the key cells for the group token — and the cell and relational primitives as the pipeline and relational differentials instantiate them, over generated pipelines of the maintained classes (a prefix of up to two steps drawn from `Filter`, `Derive`, `Project`, `Limit`, `Window` over the group column and a filtering join against a relation `r` read through the resolver — one pipeline in four since Phase 470 the retype corner the row-local differential draws, its derived column then among the aggregates' columns; a `GroupBy` over `g` one time in two with one or two aggregates drawn from all ten over the int, float and decimal columns; a tail of up to two steps over the group table), a generated prior table keyed by `id`, deltas built by `Delta.diff` to a mutated table — cells changed (a window's partition key and a group key among them), rows appended and rows removed (a group's last row among them, a row leaving or entering a limit's slice among them) — and a relation moved between the prime and the refresh one time in two. Three comparisons per trial: the prime and the refresh against production, the refresh against the reference `DataFrame.evalPipelineWithInEnv` over the mutated table, and — the state theorem read observably — a second refresh of the refreshed state against a second refresh of a state primed over the first mutation. Three go-reds: a walk whose prior group's member tokens are overwritten with the current group's (so a group that lost or gained a member reuses its prior aggregates — a `Max` over a removed row among them) must disagree with production; a walk whose prior key index is overwritten with the relation's index at the refresh (so a stable row's verdict is reused under a relation that moved) must disagree; and a walk that reuses every row's cells, the delta ignored, must disagree through a limit, a projection and a window. Beside them, the three shapes the Phase 464 probe found production diverging on (D37) — a derived column the cells retype between refreshes read by a `Mod`, by a reused group `Sum`, by a recomputed `Min` and `First` — are pinned on production directly: the refresh equals the full evaluation, result or refusal, and the case fails on the pre-D37 walk; so are the two shapes Phase 470 found production diverging on AFTER D37 (D38) — a derived column a named row retypes from int to decimal and boxes in one move (a text past the scaled carrier's width), and one whose pack verdict flips under one type — which fail on the pre-D38 walk. Agreement is over the pools drawn, never over all inputs.",
+      "claim": "The extracted walk agrees with the shipped `Incremental.prime` and `Incremental.refresh` on the RESULT (byte for byte through `ColumnCodec.encode`, read through `Incremental.result`), or on the named `EvalError`, with the model's four parameters instantiated at production's own — `DataFrame.aggregateCells` for the aggregate function, `DataFrame.joinKeysMatch` for the key match, `DataFrame.windowStep` for the window column, a rendering of the key cells for the group token — and the cell and relational primitives as the pipeline and relational differentials instantiate them, over generated pipelines of the maintained classes (a prefix of up to two steps drawn from `Filter`, `Derive`, `Project`, `Limit`, `Window` over the group column and a filtering join against a relation `r` read through the resolver — one pipeline in four since Phase 470 the retype corner the row-local differential draws, its derived column then among the aggregates' columns; a `GroupBy` over `g` one time in two with one or two aggregates drawn from all ten over the int, float and decimal columns; a tail of up to two steps over the group table; since Phase 471 a `Sort` among the prefix steps, over the group column where ties are the rule, over the int or the decimal column descending with nulls among them, or over two keys), a generated prior table keyed by `id`, deltas built by `Delta.diff` to a mutated table — cells changed (a window's partition key, a group key and a sort key among them), rows appended and rows removed (a group's last row among them, a row leaving or entering a limit's slice among them), and one time in three two rows REORDERED after the mutations, which `Delta.diff` reports as quiet and which moves a stable sort's answer while naming no row — and a relation moved between the prime and the refresh one time in two. Three comparisons per trial: the prime and the refresh against production, the refresh against the reference `DataFrame.evalPipelineWithInEnv` over the mutated table, and — the state theorem read observably — a second refresh of the refreshed state against a second refresh of a state primed over the first mutation. Three go-reds: a walk whose prior group's member tokens are overwritten with the current group's (so a group that lost or gained a member reuses its prior aggregates — a `Max` over a removed row among them) must disagree with production; a walk whose prior key index is overwritten with the relation's index at the refresh (so a stable row's verdict is reused under a relation that moved) must disagree; a walk that reuses every row's cells, the delta ignored, must disagree through a limit, a projection and a window; and a walk whose every sort record's arrival is overwritten with the arrival the refresh sees (so `arrivedAsBefore` never fails and the merge reads the prior produced order under the new positions) must disagree where the stable rows were reordered. Beside them, the comparator is held to production by name: the extracted `compare_resolved` under production's primitives answers what `DataFrame.compareResolved` answers on every pair of rows of a generated typed table under drawn keys, and the two sort paths production runs — the order codes where every key's vector codes, the comparator otherwise — answer one order; the laws the sort theorems assume of the primitives are checked on production's own (`sprims_laws` instantiated), and the premise check of D39 is pinned: a boxed decimal column holding raw ints beside a decimal past the width sorts to one order from every arrival order. Beside them, the three shapes the Phase 464 probe found production diverging on (D37) — a derived column the cells retype between refreshes read by a `Mod`, by a reused group `Sum`, by a recomputed `Min` and `First` — are pinned on production directly: the refresh equals the full evaluation, result or refusal, and the case fails on the pre-D37 walk; so are the two shapes Phase 470 found production diverging on AFTER D37 (D38) — a derived column a named row retypes from int to decimal and boxes in one move (a text past the scaled carrier's width), and one whose pack verdict flips under one type — which fail on the pre-D38 walk. Agreement is over the pools drawn, never over all inputs.",
       "phase": "fuaran-core#464",
       "evidence": {
         "family": "Proofs.Oracle",
@@ -736,7 +738,11 @@
           "a maintained oracle that reuses a join's verdicts under a moved relation DISAGREES with Incremental.refresh — the join measurement can fail",
           "a maintained oracle that reuses a NAMED row's cells DISAGREES with Incremental.refresh through a limit, a projection and a window — the measurement can fail",
           "a derived column the cells retype between refreshes is read by the walk as the reference packs it, and the refresh agrees with the full evaluation (Phase 464, D37)",
-          "a derived column whose typed pass the reference abandons is read by the walk as it was, and a verdict that flips under one type clears stability (Phase 470, D38)"
+          "a derived column whose typed pass the reference abandons is read by the walk as it was, and a verdict that flips under one type clears stability (Phase 470, D38)",
+          "a maintained oracle that merges against a prior order whose recorded arrival is overwritten with the arrival now DISAGREES with Incremental.refresh — the sort measurement can fail",
+          "the model's compareResolved is production's over typed rows, and production's two sort paths — the order codes and the comparator — answer one order (Phase 471)",
+          "production's comparison primitives satisfy the laws the sort theorems assume — `sprims_laws` instantiated at Kernels.compareFloat, DecimalText.compare and String.CompareOrdinal (Phase 471)",
+          "a boxed decimal column holding ints beside a decimal past the width sorts to ONE order from every arrival order — the comparator is a total preorder on the corner Phase 472 closes, so no incomparable pair reaches a Sort (Phase 471 premise check)"
         ],
         "operations": [
           "Incremental.prime",
@@ -744,7 +750,8 @@
           "Incremental.result",
           "DataFrame.aggregateCells",
           "DataFrame.joinKeysMatch",
-          "DataFrame.windowStep"
+          "DataFrame.windowStep",
+          "Transform.Sort"
         ]
       }
     },
@@ -757,6 +764,86 @@
       "closes": "unscheduled",
       "evidence": {
         "assumption": "the aggregate function, the join key match and the window column are production's own and the group token is one per key; the prior source's tokens are distinct and the new source keeps its schema"
+      }
+    },
+    {
+      "id": "incremental-maintained-sort-step",
+      "level": "proved",
+      "claim": "THE MAINTAINED SORT IS THE FULL STABLE SORT (Phase 471, D39). A `Sort` refreshed against the record a prime left — the prior arrival and the order it produced, as tokens (F#: `SortOrders[sortIdx]`) — answers the full stable sort of the rows that arrived: where the stable rows of the prior arrival still here, read in step with the stable rows now, are the same sequence (`arrived_as_before`, F#: `arrivedAsBefore`), the moved rows sorted among themselves are merged into the prior produced order read through the rows that hold its tokens now, each by BINARY INSERTION under the comparator with the arrival position as the tie-break (`merge_sort`, F#: `mergeOrders` with `prevOrder` through `stableNow`), and where it is not, the whole arrival is sorted from scratch; either answer is `sort_alive`, the insertion sort under that same strict total order (F#: `sortSlots`, the reference's `List.sortWith`). Under the delta premise read one row at a time (`wk`), the prior source's tokens distinct, and the row comparator a total preorder. The proof: the merge of two sorted, disjoint runs is sorted with their union's members (`merge_bin_sorted`, over the bisection's cut `bisect_cut`), and a sorted permutation is unique (`sorted_unique`), so the merge is the insertion sort of the arrival (`merge_is_isort`); the cached run IS sorted now (`lookup_sorted`) because a prior stable row ordered before another is, read now, still before it (`relabel_lt`): its cells are the cells it had (`stable_cells`, from `wk`) and its position in the arrival now is on the same side of the other's as it was (`pos_is_idx`, `filter_order` — a filter keeps the relative order of what it keeps, applied to the equal stable sequences `arrived_as_before` asserts); the cached run's members are exactly the stable rows now (`cached_memb`, with the stable tokens now distinct, `stable_now_nodup`, so a token finds one row, `find_tok_unique`); the premise survives the permutation on both sides (`sort_alive_wk`, through `assoc_perm`). A merge whose tie-break ignored the arrival position fails `lt_of_sto_indexed` (no total order over two rows that tie) and with it this theorem — shown once (D39 item 5).",
+      "phase": "fuaran-core#471",
+      "evidence": {
+        "theorem": "sort_step_reuse",
+        "model": "proofs/MaintainedSort.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "merge_is_isort",
+          "merge_bin_sorted",
+          "bisect_cut",
+          "sorted_unique",
+          "isort_sorted",
+          "lt_of_sto_indexed",
+          "lookup_sorted",
+          "relabel_lt",
+          "stable_cells",
+          "pos_is_idx",
+          "filter_order",
+          "cached_memb",
+          "stable_now_nodup",
+          "find_tok_unique",
+          "sort_alive_wk",
+          "assoc_perm",
+          "sort_step_no_reuse",
+          "sort_step",
+          "merge_sort",
+          "sort_alive",
+          "arrived_as_before",
+          "bisect",
+          "merge_bin"
+        ],
+        "operations": [
+          "Incremental.refresh",
+          "Transform.Sort"
+        ]
+      }
+    },
+    {
+      "id": "incremental-maintained-sort-comparator",
+      "level": "proved",
+      "claim": "THE COMPARATOR IS A TOTAL PREORDER WITHIN A TYPED COLUMN (Phase 471, D39 — the premise check). `compare_resolved` is `DataFrame.compareResolved` restated concretely — multi-key, `Null` last whichever the direction, the direction flipping the sign, an incomparable pair read as a tie — over `compare_cells`, `DataFrame.compareCells` arm for arm: an int or a float against an int or a float in the float carrier (`Kernels.compareFloat` over `float v`, Phase 470's `float_of_int`); a decimal against a decimal or an int exactly (Core `Cell.compare`: `DecimalText.compare` over the canonical texts, an int's text being `string v`); a bool, a string, a date, a timestamp against its own type; anything else `None`. Over rows whose cell at each key is what a column of that key's type holds (`typed_row` through `fits`: its own type, an int under a float or a decimal column — typed or boxed, D38 — a decimal whose text is decimal text, or `Null`), it is reflexive, sign-antisymmetric and transitive (`total_preorder_on`), from the primitives' laws alone (`sprims_laws`): the per-key comparison is one (`key_cc_preorder`, from `cells_preorder` — the decimal family through one key, `cc_decimal`, the float family through the carrier, `cc_float`) and the lexicographic composition of preorders is one (`lex_preorder`). What makes the mixed families one family: a 32-bit int is exact in the float carrier AND in the decimal one, so `compareFloat (float i) (float j)` is `DecimalText.compare (string i) (string j)` — the law the differential checks on production's own ints, the extremes included. `compare_cells_none` names exactly the pairs read as a tie: two families, a float beside a decimal (`ColumnType.widens` refuses that retype, D18), or a decimal whose text is not decimal text — none of which a typed column holds. So the lead D37 item 1 named — an incomparable pair read as `0`, making the full sort depend on its input order — does not arise from the ints `Vec.packAt` leaves raw under a boxed float or decimal column (Phase 472's corner): those pairs compare exactly, and the differential pins the corner sorting to one order from every arrival order.",
+      "phase": "fuaran-core#471",
+      "evidence": {
+        "theorem": "compare_resolved_preorder",
+        "model": "proofs/MaintainedSort.fst",
+        "prover": "proofs/fstar-pin.json",
+        "supporting": [
+          "lex_preorder",
+          "key_cc_preorder",
+          "cells_preorder",
+          "cc_decimal",
+          "cc_float",
+          "cells_some",
+          "compare_cells_none",
+          "compare_resolved_is_lex",
+          "compare_resolved",
+          "compare_cells",
+          "typed_row",
+          "fits",
+          "sprims_laws"
+        ],
+        "operations": [
+          "Transform.Sort"
+        ]
+      }
+    },
+    {
+      "id": "incremental-maintained-sort-primitives",
+      "level": "assumed",
+      "claim": "THE PARAMETERS OF THE MAINTAINED SORT (Phase 471, D39). The sort step's theorem holds over one parameter the walk and the reference both call, the row comparator (`row_cmp` — F#: `compareResolved (resolveSortKeys cols by)`), and assumes of it that it is a total preorder over every pair of rows (`row_cmp_preorder`). The comparator theorem proves that of the concrete `compare_resolved` over TYPED rows, from four more parameters and their laws (`sprims_laws`, each instantiated at production's own by the differential and checked there): the float carrier's order (`cmp_float` — F#: `Kernels.compareFloat`, a total preorder — `NaN` one value above every other, `-0 = 0`), the ordinal order (`cmp_ord` — F#: `String.CompareOrdinal`, a total preorder), the decimal order over canonical decimal texts (`cmp_dec` — F#: `DecimalText.compare`, a total preorder where it always answers) with its canonical form (`canon_dec` — F#: `DecimalText.tryCanonical`: an int's text is canonical, a canonical text is its own canonical form), and the agreement of an int's two readings (`compareFloat (float i) (float j)` is `DecimalText.compare (string i) (string j)`: a 32-bit int is exact in both carriers). THE TYPING FACT the two theorems compose through is production's and is stated here, not proved: every column of a frame a `Sort` reaches holds the cells its type holds — `typeFromCells` refuses two families beside each other (D18, D38 item 3), `Vec.packAt` carries an int under a float or a decimal column as that type or raw (one family either way), a `Decimal` cell's text is decimal text (`castCell` and every decimal primitive refuse one that is not, and a literal's is read by the same grammar), and a temporal cell's text is canonical (`pipeline-temporal-cells-canonical`). The models do not track cell typing through the walk (`wf` is the frame's width alone), so the step theorem is stated for a comparator that is a preorder everywhere and the comparator theorem for the rows a typed frame holds; `unscheduled`: a typing invariant carried through `Pipeline.fst`'s evaluator would discharge the composition and retire the universal premise, and nobody has taken it.",
+      "phase": "fuaran-core#471",
+      "class": "premise",
+      "closes": "unscheduled",
+      "evidence": {
+        "assumption": "the row comparator is a total preorder over the rows a sort reaches; production's comparison primitives are total preorders on their carriers and an int reads the same way in the float and the decimal carrier; every frame a sort reaches is typed"
       }
     },
     {
