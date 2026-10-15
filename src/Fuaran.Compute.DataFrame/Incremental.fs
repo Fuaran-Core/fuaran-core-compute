@@ -2282,21 +2282,74 @@ module Incremental =
     /// leaves `DataFrame.evalResolved` with the canonical NaN (Phase 404), the bits the batch
     /// evaluator's compiled roots put, so a refreshed cell and a fully evaluated one cannot differ
     /// in a NaN's sign or payload; a cached cell is one such answer, kept.
+    /// A step's cell at a slot the walk reached: `null` is a slot it did not reach (the step arrays
+    /// are sparse over the slots), which no match may touch.
+    let private reachedInt (c: Cell) : bool =
+        not (isNull (box c))
+        && (match c with
+            | Int _ -> true
+            | _ -> false)
+
+    /// Phase 470 (D38) — `Vec.packAt`'s verdict over a step's reached cells under a float or a
+    /// decimal column: is the column CARRIED TYPED, so that an int in it reads as the float or the
+    /// decimal of its value, or does the typed pass abandon the column for the boxed cells, which read
+    /// as they are? The typed pass is abandoned by a present cell the type does not carry, and for a
+    /// decimal column by texts `ScaledDecimal.scaleOf` cannot carry at one scale — an int's text
+    /// beside one past the width among them. The reference packs its derived column exactly so
+    /// (`Vec.packAt`, through `evalDerive`), and only an int under one of these two types reads
+    /// differently typed and boxed, so the question is asked of no other type.
+    let private typedPack (ty: ColumnType) (step: Cell[]) : bool =
+        let present (c: Cell) : bool =
+            not (isNull (box c))
+            && (match c with
+                | Null -> false
+                | _ -> true)
+
+        match ty with
+        | FloatType ->
+            step
+            |> Array.forall (fun c ->
+                not (present c)
+                || (match c with
+                    | Float _
+                    | Int _ -> true
+                    | _ -> false))
+        | DecimalType ->
+            let carried =
+                step
+                |> Array.forall (fun c ->
+                    not (present c)
+                    || (match c with
+                        | Decimal _
+                        | Int _ -> true
+                        | _ -> false))
+
+            carried
+            && (let texts =
+                    step
+                    |> Array.map (fun c ->
+                        if present c then
+                            match c with
+                            | Decimal t -> t
+                            | Int v -> string v
+                            | _ -> ""
+                        else
+                            "")
+
+                let mask = step |> Array.map present |> Mask.ofBools
+                ScaledDecimal.scaleOf texts mask |> Option.isSome)
+        | _ -> true
+
     /// Phase 464 (D37) — a derived step's cells as the column of type `ty` carries them: an `Int`
     /// under a float column is the float of its value, under a decimal column the decimal of its
     /// value, as `Vec.packAt` admits them (Core `1.0.0`, Phase 423); every other cell is itself. The
     /// array is shared where nothing widens, so a column that already carries its type costs no copy.
+    /// Phase 470 (D38) — and NOTHING widens where the reference's typed pass is abandoned
+    /// (`typedPack`): the reference then reads every cell as it was, an int included, and so does the
+    /// walk.
     let private widenCells (ty: ColumnType) (step: Cell[]) : Cell[] =
-        // A slot the walk did not reach holds `null` (the step arrays are sparse over the slots),
-        // which no match may touch.
-        let isInt (c: Cell) : bool =
-            not (isNull (box c))
-            && (match c with
-                | Int _ -> true
-                | _ -> false)
-
         let widen (c: Cell) : Cell =
-            if not (isInt c) then
+            if not (reachedInt c) then
                 c
             else
                 match ty, c with
@@ -2307,7 +2360,7 @@ module Incremental =
         match ty with
         | FloatType
         | DecimalType ->
-            if Array.exists isInt step then
+            if Array.exists reachedInt step && typedPack ty step then
                 Array.map widen step
             else
                 step
@@ -2320,12 +2373,17 @@ module Incremental =
     /// the prior step's cells — the rows it reached are the rows it typed over — and compared.
     /// Answers `false` where no row is stable (there is nothing to clear) and `true` where the prior
     /// type cannot be read (no cached step, or cells the typing refuses).
+    /// Phase 470 (D38) — the comparison is of the PACK KEY, the type beside `typedPack`'s verdict:
+    /// a column of one type on both evaluations whose typed pass was abandoned on one of them (a
+    /// decimal past the width brought by a named row, or taken away by one) reads a stable row's int
+    /// as the decimal of its value on one and as the int on the other, with no delta naming the row.
     let private retypedSince
         (r: WalkRows)
         (evalIdx: int)
         (dt: DataFrame.DerivedTyping)
         (name: string)
         (ty: ColumnType)
+        (step: Cell[])
         : bool =
         match dt with
         | DataFrame.ByCells when Array.exists id r.Stable ->
@@ -2335,7 +2393,7 @@ module Incremental =
                 let reached = r.PriorSteps[evalIdx] |> Array.filter (fun c -> not (isNull (box c)))
 
                 match DataFrame.typeFromCells name reached.Length (fun i -> reached[i]) with
-                | Ok priorTy -> priorTy <> ty
+                | Ok priorTy -> priorTy <> ty || typedPack priorTy reached <> typedPack ty step
                 | Error _ -> true
         | _ -> false
 
@@ -3614,7 +3672,7 @@ module Incremental =
                         // the window does, because the group step after the prefix reads the same
                         // array; and the in-place reading ends with it.
                         let r2 =
-                            if not (retypedSince r evalIdx dt name ty) then
+                            if not (retypedSince r evalIdx dt name ty step) then
                                 r
                             else
                                 Array.fill r.Stable 0 r.Stable.Length false
