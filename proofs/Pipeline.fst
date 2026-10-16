@@ -1071,8 +1071,8 @@ let column_type_by (dt:derived_typing) (column:string) (cells:list cell)
    cell and the column's type ALONE; every other cell reads back as itself. (Until Phase 472 the
    packing decided a VERDICT over the whole column — typed, or boxed with every cell as it was —
    so one unrelated row changed how every stable int read; the verdict, its premise
-   `packs_as_is` on the reorder theorem, and the walks' tracking of it are gone.) The twin of
-   `Frame.fst`'s `pack` / `pack_cell` on the list column.
+   `packs_as_is` on the reorder theorem, and the walks' tracking of it are gone.) `Frame.fst`'s
+   `pack_cell` is proved equal to this one (`pack_cell_is_pipeline`, D41).
 
    One thing this reads as a cell's own text, by the premise `pipeline-temporal-cells-canonical`
    (`proofs.json`): a date or a timestamp the typed carrier reads back as the canonical text of
