@@ -1278,6 +1278,24 @@ let pack_mask : Prims.list<Pipeline.cell>  ->  Prims.list<Prims.bool> = (fun ( c
 let pack_texts : host  ->  Prims.list<Pipeline.cell>  ->  Prims.list<Prims.string> = (fun ( h  :  host ) ( cells  :  Prims.list<Pipeline.cell> ) -> (lmap (pk_dec h cells) (upto (Pipeline.len cells))))
 
 
+let widen_cell : host  ->  ftype  ->  Pipeline.cell  ->  Pipeline.cell = (fun ( h  :  host ) ( ty  :  ftype ) ( c  :  Pipeline.cell ) -> (match (((ty), (c))) with
+| (TFloat, Pipeline.Int (v)) -> begin
+     Pipeline.Float ((h.float_of_int v))
+     end
+| (TDecimal, Pipeline.Int (v)) -> begin
+     Pipeline.Decimal ((h.int_text v))
+     end
+| uu___ -> begin
+     c
+     end))
+
+
+let pk_boxed : host  ->  ftype  ->  Prims.list<Pipeline.cell>  ->  Prims.nat  ->  Pipeline.cell = (fun ( h  :  host ) ( ty  :  ftype ) ( cells  :  Prims.list<Pipeline.cell> ) ( i  :  Prims.nat ) -> (widen_cell h ty (cell_i cells i)))
+
+
+let pack_boxed : host  ->  ftype  ->  Prims.list<Pipeline.cell>  ->  Prims.list<Pipeline.cell> = (fun ( h  :  host ) ( ty  :  ftype ) ( cells  :  Prims.list<Pipeline.cell> ) -> (lmap (pk_boxed h ty cells) (upto (Pipeline.len cells))))
+
+
 let pack : host  ->  ftype  ->  Prims.list<Pipeline.cell>  ->  vec = (fun ( h  :  host ) ( ty  :  ftype ) ( cells  :  Prims.list<Pipeline.cell> ) -> (
 
 let n = (Pipeline.len cells)
@@ -1286,7 +1304,7 @@ in (
 let mask = (pack_mask cells)
 in  
 if (not ((lfor_all (admits h ty) cells))) then begin
-     VCells (cells)
+     VCells ((pack_boxed h ty cells))
      end else begin
      (match (ty) with
 | TInt -> begin
@@ -1321,7 +1339,7 @@ in (match ((h.scale_of texts mask)) with
      VDecs ((fill h s texts mask), s, texts, mask)
      end
 | FStar_Pervasives_Native.None -> begin
-     VCells (cells)
+     VCells ((pack_boxed h ty cells))
      end))
      end)
      end)))
@@ -2069,7 +2087,7 @@ let pack_cell : host  ->  ftype  ->  Prims.list<Pipeline.cell>  ->  Prims.nat  -
 if (packs h ty cells) then begin
      (norm_cell h ty (at_or Pipeline.Null cells i))
      end else begin
-     (at_or Pipeline.Null cells i)
+     (widen_cell h ty (at_or Pipeline.Null cells i))
      end)
 
 

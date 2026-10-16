@@ -1175,17 +1175,12 @@ let private pPrims: ModelPipe.prims =
                       Mode = pBack pModes m }
                 )
             )
-      // Phase 470 (D38) — the packing's three parameters, at the functions `Vec.packAt` calls, as the
-      // frame model's host (`fHost`) carries them: the float carrier of `float v`, `string v`, and
-      // `ScaledDecimal.scaleOf` (on .NET a `Mask` is the `bool[]` itself).
+      // Phase 470 (D38) — the packing's two parameters, at the functions `Vec.packAt` calls, as the
+      // frame model's host (`fHost`) carries them: the float carrier of `float v`, and `string v`
+      // (`ScaledDecimal.scaleOf` was a third until Phase 472: the packing decides no verdict now).
       ModelPipe.prims.float_of_int =
         fun x -> (float (int x)).ToString("R", System.Globalization.CultureInfo.InvariantCulture)
-      ModelPipe.prims.int_text = fun x -> string (int x)
-      ModelPipe.prims.scale_of =
-        fun texts mask ->
-            match ScaledDecimal.scaleOf (List.toArray texts) (List.toArray mask) with
-            | Some scale -> FStar_Pervasives_Native.Some(bigint scale)
-            | None -> FStar_Pervasives_Native.None }
+      ModelPipe.prims.int_text = fun x -> string (int x) }
 
 /// The model's SECOND parameter — the twelve verbs that evaluate no expression — instantiated at
 /// production's own, one verb through the public entry point, over the frame crossed back to a
@@ -2081,9 +2076,9 @@ let private iStepsOf (p: Transform list) : ModelInc.wstep list =
 /// a mutation moves over a threshold, read on the rows that STAND by a step that tells the packing
 /// apart. A `Mod` over the float reading refuses where the int reading answers; an `Add` of a float
 /// over the decimal reading refuses where the int reading answers; and a decimal text past the
-/// scaled carrier's width abandons the typed pass, so the int reads as it was — on the reference,
-/// on the walk, and on the models. The old raw reference answered the first two where production
-/// refuses (`pRawReferenceFails` shows it once).
+/// scaled carrier's width abandons the typed pass, where the int reads as its decimal on the boxed
+/// form too (Phase 472) — on the reference, on the walk, and on the models. The old raw reference
+/// answered the first two where production refuses (`pRawReferenceFails` shows it once).
 let private pCornerShapes: Transform list list =
     let crosses = Binary(Gt, Col "v", Lit(Int 9))
     let read inner = Case([ crosses, Lit(Int 0) ], inner)
@@ -3437,10 +3432,13 @@ let private mRetypeTables: Table * Table =
 
 /// Phase 470 (D38) — the shapes the probe found production's walk diverging from the reference on
 /// AFTER D37: the reference's typed pass abandoned for the boxed cells (a decimal text past the scaled
-/// carrier's width among the column's), so an int reads as it was where the walk widened it. The
+/// carrier's width among the column's), so an int read as it was where the walk widened it. The
 /// first retypes the column from int to decimal and boxes it in one move; the second keeps the type
-/// and flips the verdict alone — `retypedSince` compared the type and saw nothing move. Each is a
-/// pipeline, the table before and the table after; the test holds the refresh to the full evaluation.
+/// and boxes it alone. Phase 472 (D40) — the boxed form widens an int as the typed carrier does, so
+/// on both shapes the int reads as its decimal on every side and there is no verdict to track; the
+/// shapes stand as the regression they were, and the first is where the verdict model is shown
+/// failing. Each is a pipeline, the table before and the table after; the test holds the refresh to
+/// the full evaluation.
 let private pBoxedShapes: (string * Transform list * Table * Table) list =
     let wide = Cell.Decimal "1234567890123456789012345.1234567"
 
@@ -3462,7 +3460,7 @@ let private pBoxedShapes: (string * Transform list * Table * Table) list =
         Derive("m", onA (Binary(Add, Col "d", Lit(Float 0.5)))) ],
       table [ 1; 2; 3 ],
       table [ 1; 2; 11 ]
-      "decimal on both, the verdict alone flips: a Mod over the standing rows",
+      "decimal on both, boxed on the second alone: a Mod over the standing rows",
       [ Derive(
             "d",
             Case(
@@ -3525,6 +3523,40 @@ let private pRawDerive
                 ModelPipe.Ok
                     { ModelPipe.frame.cols = f.cols @ [ name, ty ]
                       ModelPipe.frame.rows = ModelPipe.zip_append f.rows cells }
+
+/// Phase 472 — the reference's derive as Phase 470 modelled it, kept once: a VERDICT over the whole
+/// column — typed where `Vec.packAt` carries the cells typed, the cells packed under the type; boxed
+/// with every cell AS IT WAS otherwise. Shown failing the differential once, on the first boxed shape,
+/// where production now reads the int as its decimal on the boxed form too; nothing else calls it.
+let private pVerdictDerive
+    (env: ModelPipe.param_env)
+    (f: ModelPipe.frame)
+    (name: string)
+    (x: ModelPipe.col_expr)
+    : ModelPipe.outcome<ModelPipe.frame, ModelPipe.eval_error> =
+    match ModelPipe.derived_typing_in env f.cols x with
+    | ModelPipe.Refused -> ModelPipe.Error(ModelPipe.float_beside_decimal name)
+    | dt ->
+        match ModelPipe.derive_cells pPrims env f.cols f.rows x with
+        | ModelPipe.Error e -> ModelPipe.Error e
+        | ModelPipe.Ok cells ->
+            match ModelPipe.column_type_by dt name cells with
+            | ModelPipe.Error e -> ModelPipe.Error e
+            | ModelPipe.Ok ty ->
+                let typed =
+                    match Vec.pack (pColOfModel ty) (cells |> List.map pCellOfModel |> List.toArray) with
+                    | Cells _ -> false
+                    | _ -> true
+
+                let packed =
+                    if typed then
+                        ModelPipe.pack_cells pPrims ty cells
+                    else
+                        cells
+
+                ModelPipe.Ok
+                    { ModelPipe.frame.cols = f.cols @ [ name, ty ]
+                      ModelPipe.frame.rows = ModelPipe.zip_append f.rows packed }
 
 /// The three models beside production on one corner: the full evaluation, production's prime and
 /// refresh, the row-local model's prime and refresh, and the maintained model's — every pair held
@@ -5950,13 +5982,14 @@ let proofOracleTests =
                   pHoldRefreshToFull label p before after
 
           testCase
-              "a derived column whose typed pass the reference abandons is read by the walk as it was, and a verdict that flips under one type clears stability (Phase 470, D38)"
+              "a derived column the reference boxes is read by the walk as the reference reads it, an int as the column's type on either form (Phase 470, D38; Phase 472, D40)"
           <| fun _ ->
               // After D37 the walk widened an int under a float or decimal column unconditionally, where
-              // the reference's `Vec.packAt` abandons the typed pass for the boxed cells — a decimal text
-              // past the scaled carrier's width among them — and reads the int as it was; and
-              // `retypedSince` compared the TYPE alone, so a verdict flipping under one type reused every
-              // cell computed over the other reading.
+              // the reference's `Vec.packAt` abandoned the typed pass for the boxed cells — a decimal text
+              // past the scaled carrier's width among them — and read the int as it was; Phase 470
+              // mirrored that verdict in the walk, and Phase 472 made the boxed form widen as the typed
+              // carrier does, so the walk widens unconditionally again and the verdict is gone. The
+              // shapes still hold the refresh to the full evaluation.
               for (label, p, before, after) in pBoxedShapes do
                   pHoldRefreshToFull label p before after
 
@@ -6026,36 +6059,83 @@ let proofOracleTests =
               | other -> failtestf "the corrected reference answered %A" other
 
           testCase
-              "under production's primitives a decided derive's cells carry the decided type — `derive_then_filter`'s packing premise, instantiated (Phase 470)"
+              "an int under a float or a decimal column reads as that type's value on the boxed form too — in `Vec.packAt` and in the model — and a model that leaves the boxed int raw fails the differential, shown once (Phase 472, D40)"
           <| fun _ ->
-              // `derive_then_filter` is stated over any primitives, and under the packing it needs the
-              // decided column to pack as it is (no int under a float or a decimal column); the planner's
-              // corollary discharges that from the verdict (`derive_cells_fit`). This reads the premise
-              // off production's own primitives over drawn tables and expressions.
-              let mutable r = ConfRng.ofSeed 470
-              let mutable decided = 0
-              let menv = pEnvToModel pEnv
+              // The go-red probe, red before this phase: `Vec.packAt` abandons the typed carrier on a cell
+              // the type does not carry, and for a decimal column on texts past the scaled carrier's
+              // width; the boxed cells now read every int as the column's type, as the typed carrier does.
+              let wide = Cell.Decimal "1234567890123456789012345.1234567"
+              let boxedFloat = Vec.pack FloatType [| Int 1; Str "x"; Null |]
+              let boxedDecimal = Vec.pack DecimalType [| Int 1; wide; Int -30 |]
 
-              for _ in 1..600 do
-                  let t, r1 = pGenTable r
-                  let x, r2 = pGenExpr 2 r1
-                  r <- r2
-                  let f = pFrameOfTable t
-                  let mx = pExprToModel x
+              for v in [ boxedFloat; boxedDecimal ] do
+                  match v with
+                  | Cells _ -> ()
+                  | other -> failtestf "expected the boxed form, got %A" other
 
-                  match ModelPipe.derived_typing_of f.cols mx with
-                  | ModelPipe.Decided ty ->
-                      match ModelPipe.derive_cells pPrims menv f.cols f.rows mx with
-                      | ModelPipe.Ok cells ->
-                          decided <- decided + 1
+              Expect.equal
+                  [ for i in 0..2 -> Vec.cellAt boxedFloat i ]
+                  [ Float 1.0; Str "x"; Null ]
+                  "an int under a boxed float column is the float of its value"
 
-                          Expect.isTrue
-                              (ModelPipe.packs_as_is ty cells)
-                              (sprintf "%A: a decided %A column holds an int among %A" x ty cells)
-                      | ModelPipe.Error _ -> ()
-                  | _ -> ()
+              Expect.equal
+                  [ for i in 0..2 -> Vec.cellAt boxedDecimal i ]
+                  [ Cell.Decimal "1"; wide; Cell.Decimal "-30" ]
+                  "an int under a boxed decimal column is the decimal of its value"
 
-              Expect.isGreaterThan decided 60 (sprintf "decided derives evaluated (decided=%d)" decided)
+              // The model packs a cell by the cell and the column's type alone, whatever stands beside it.
+              let modelPacked (ty: ColumnType) (cells: Cell list) : Cell list =
+                  ModelPipe.pack_cells pPrims (pColToModel ty) (cells |> List.map pCellToModel)
+                  |> List.map pCellOfModel
+
+              Expect.equal
+                  (modelPacked FloatType [ Int 1; Str "x"; Null ])
+                  [ Float 1.0; Str "x"; Null ]
+                  "the model packs the float column cell by cell"
+
+              Expect.equal
+                  (modelPacked DecimalType [ Int 1; wide; Int -30 ])
+                  [ Cell.Decimal "1"; wide; Cell.Decimal "-30" ]
+                  "the model packs the decimal column cell by cell"
+
+              // The verdict Phase 470 modelled, kept as `pVerdictDerive`, answers the first boxed shape —
+              // an int beside a decimal past the width, read by an `Add` of a float — where production
+              // and the corrected reference refuse: a boxed int left raw in the model fails the leg.
+              let menv = pEnvToModel Map.empty
+              let label, p, _, after = List.head pBoxedShapes
+
+              let dStep, rest =
+                  match p with
+                  | Derive(dn, dx) :: rest -> (dn, pExprToModel dx), rest |> List.map pTransformToModel
+                  | other -> failtestf "unexpected shape %A" other
+
+              let verdict =
+                  match pVerdictDerive menv (pFrameOfTable after) (fst dStep) (snd dStep) with
+                  | ModelPipe.Error e -> failtestf "the verdict derive refused %s" (pRenderError (pErrOfModel e))
+                  | ModelPipe.Ok f ->
+                      ModelPipe.eval_uncounted pPrims (pStepOfProduction DataFrame.noResolve Map.empty) menv rest f
+
+              match DataFrame.evalPipelineWithInEnv DataFrame.noResolve Map.empty p after, verdict with
+              | Error(TypeError detail), ModelPipe.Ok _ ->
+                  Expect.stringContains detail "decimal" (label + ": production refuses the decimal reading")
+              | full, verdict ->
+                  failtestf
+                      "%s: expected production to refuse and the verdict model to answer; got %A and %A"
+                      label
+                      full
+                      verdict
+
+              match
+                  ModelPipe.eval_uncounted
+                      pPrims
+                      (pStepOfProduction DataFrame.noResolve Map.empty)
+                      menv
+                      (p |> List.map pTransformToModel)
+                      (pFrameOfTable after)
+              with
+              | ModelPipe.Error(ModelPipe.TypeError detail) ->
+                  Expect.stringContains detail "decimal" (label + ": the reference refuses the decimal reading")
+              | other -> failtestf "%s: the corrected reference answered %A" label other
 
           // ---- Phase 434 — the RELATIONAL verbs: output schema and refusals against the
           //      evaluator, the walk against SchemaWalk ----

@@ -24,9 +24,9 @@
        (`entry.e_order`, F#: `SortOrders[sortIdx]`); the comparator is the parameter `sprims.row_cmp`
        (F#: `compareResolved` over `resolveSortKeys`), which `MaintainedSort.fst` restates concretely;
      - the derived column is PACKED as the frame carries it (`Incremental.pack_cache`, through
-       `Pipeline.pack_cells`, Phase 470) and its pack KEY — the decided type and the pack's verdict —
-       is recorded per evaluating step (`entry.e_pack`); a `Derive` whose key is not the prior
-       evaluation's reuses nothing from there on (F#: `retypedSince`, D37, widened by D38):
+       `Pipeline.pack_cells`, Phase 470) and its pack KEY — the decided type, and since Phase 472
+       the type ALONE — is recorded per evaluating step (`entry.e_pack`); a `Derive` whose type is
+       not the prior evaluation's reuses nothing from there on (F#: `retypedSince`, D37):
        a column the cells type can be retyped by a named row while every other row's cell stands, and
        every cell cached downstream, and every reused group, was computed over the other reading;
      - the maintained `GroupBy` (`group_step`): the groups of the rows alive at the step in
@@ -398,34 +398,34 @@ let rec wk_keep_by (#n:nat) (cf:cell_fn n) (reuse:Incremental.reuse_fn)
     wk_keep_by cf reuse a0 rest
 
 (* The premise survives an extension: a reusable row's extended row is the extended prior row —
-   its cell packed under the key, the same key on both walks (Phase 470). *)
-let rec assoc_extend_by (#n:nat) (cf:cell_fn n) (pr:prims) (k:Incremental.pack_key) (i:option nat) (a0:Incremental.alive{Incremental.awidth n a0}) (t:Incremental.token)
+   its cell packed under the type, the same type on both walks (Phase 470, 472). *)
+let rec assoc_extend_by (#n:nat) (cf:cell_fn n) (pr:prims) (ty:column_type) (i:option nat) (a0:Incremental.alive{Incremental.awidth n a0}) (t:Incremental.token)
   : Lemma (requires Ok? (step_cells_by cf Incremental.no_reuse [] a0))
-          (ensures (let cs0 = Incremental.pack_cache pr k (Ok?._0 (step_cells_by cf Incremental.no_reuse [] a0)) in
+          (ensures (let cs0 = Incremental.pack_cache pr ty (Ok?._0 (step_cells_by cf Incremental.no_reuse [] a0)) in
                     match assoc t a0 with
                     | Some r0 ->
                       len r0 = n /\
                       (match cf r0 with
-                       | Ok v -> assoc t (Incremental.extend i a0 cs0) == Some (Incremental.ext_one i r0 (pack_one pr k.k_type k.k_typed v))
+                       | Ok v -> assoc t (Incremental.extend i a0 cs0) == Some (Incremental.ext_one i r0 (pack_cell pr ty v))
                        | _ -> True)
                     | None -> assoc t (Incremental.extend i a0 cs0) == None))
           (decreases a0) =
   match a0 with
   | [] -> ()
-  | (t0, _) :: rest -> if t0 = t then () else assoc_extend_by cf pr k i rest t
+  | (t0, _) :: rest -> if t0 = t then () else assoc_extend_by cf pr ty i rest t
 
-let rec wk_extend_by (#n:nat) (cf:cell_fn n) (pr:prims) (k:Incremental.pack_key) (reuse:Incremental.reuse_fn) (i:option nat)
+let rec wk_extend_by (#n:nat) (cf:cell_fn n) (pr:prims) (ty:column_type) (reuse:Incremental.reuse_fn) (i:option nat)
   (a0:Incremental.alive{Incremental.awidth n a0}) (a:Incremental.alive{Incremental.awidth n a})
   : Lemma (requires Ok? (step_cells_by cf Incremental.no_reuse [] a0) /\ Ok? (step_cells_by cf Incremental.no_reuse [] a)
                     /\ wk reuse a a0)
-          (ensures wk reuse (Incremental.extend i a (Incremental.pack_cache pr k (Ok?._0 (step_cells_by cf Incremental.no_reuse [] a))))
-                            (Incremental.extend i a0 (Incremental.pack_cache pr k (Ok?._0 (step_cells_by cf Incremental.no_reuse [] a0)))))
+          (ensures wk reuse (Incremental.extend i a (Incremental.pack_cache pr ty (Ok?._0 (step_cells_by cf Incremental.no_reuse [] a))))
+                            (Incremental.extend i a0 (Incremental.pack_cache pr ty (Ok?._0 (step_cells_by cf Incremental.no_reuse [] a0)))))
           (decreases a) =
   match a with
   | [] -> ()
   | (t, _) :: rest ->
-    (if reuse t then assoc_extend_by cf pr k i a0 t);
-    wk_extend_by cf pr k reuse i a0 rest
+    (if reuse t then assoc_extend_by cf pr ty i a0 t);
+    wk_extend_by cf pr ty reuse i a0 rest
 
 (* The premise survives a projection. *)
 let rec assoc_proj (cols:schema) (ns:list string) (a0:Incremental.alive) (t:Incremental.token)
@@ -771,9 +771,9 @@ let group_step (mp:mprims) (reuse:Incremental.reuse_fn) (prior:list pgroup) (col
    ====================================================================================== *)
 
 (* One evaluating step's retained state: its cells under the rows' tokens (F#: `StepCells[k]`), the
-   key a `Derive` packed them under — the type it decided and the pack's verdict (D37, D38) — and
-   the joined relation's key index where a join (F#: `JoinKeys`). *)
-type entry = { e_cells : Incremental.step_cache; e_pack : option Incremental.pack_key; e_keys : option (list (list cell));
+   type a `Derive` packed them under (D37, D38; the type alone since Phase 472) — and the joined
+   relation's key index where a join (F#: `JoinKeys`). *)
+type entry = { e_cells : Incremental.step_cache; e_pack : option column_type; e_keys : option (list (list cell));
                (* Phase 471 — F#: `SortOrders[sortIdx]`, the arrival and the produced order, as tokens. *)
                e_order : option sort_cache }
 
@@ -854,16 +854,14 @@ let rec mwalk (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (resolve
           (match column_type_by dt name (Incremental.cells_of cs) with
            | Error err -> Error err
            | Ok ty ->
-             let k = Incremental.pack_key_of pr ty cs in
              let i = index_of name cols in
-             Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr k cs);
-             (* D37, D38: the column packed as before keeps reusing; retyped, or carried the other way,
-                nothing is reused from here. *)
-             let same = ((prior_head prior).e_pack = Some k) in
+             Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr ty cs);
+             (* D37: the column typed as before keeps reusing; retyped, nothing is reused from here. *)
+             let same = ((prior_head prior).e_pack = Some ty) in
              let reuse' = if same then reuse else Incremental.no_reuse in
-             (match mwalk mp sp rp pr resolve env reuse' (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest with
+             (match mwalk mp sp rp pr resolve env reuse' (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr ty cs)) rest with
               | Error err -> Error err
-              | Ok st -> Ok ({ st with r_entries = ({ e_cells = cs; e_pack = Some k; e_keys = None; e_order = None } :: st.r_entries);
+              | Ok st -> Ok ({ st with r_entries = ({ e_cells = cs; e_pack = Some ty; e_keys = None; e_order = None } :: st.r_entries);
                                        r_switched = (st.r_switched || not same) })))))
   | MSort ks :: rest ->
     (* Phase 412 — the reference `Sort` refuses a key the frame does not carry, so the walk does. *)
@@ -1153,12 +1151,11 @@ let rec mwalk_is_go (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (r
           (match column_type_by dt name (Incremental.cells_of cs) with
            | Error _ -> ()
            | Ok ty ->
-             let k = Incremental.pack_key_of pr ty cs in
              let i = index_of name cols in
              Incremental.pack_cache_is_pack_cells pr ty cs;
-             Incremental.rows_of_extend i a (Incremental.pack_cache pr k cs);
-             Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr k cs);
-             mwalk_is_go mp sp rp pr resolve env (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
+             Incremental.rows_of_extend i a (Incremental.pack_cache pr ty cs);
+             Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr ty cs);
+             mwalk_is_go mp sp rp pr resolve env (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr ty cs)) rest
                (n + cost_of f0 (Derive name x)))))
   | MSort ks :: rest ->
     resolve_lit_keys env ks;
@@ -1330,10 +1327,9 @@ let rec mwalk_no_reuse (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims)
           (match column_type_by dt name (Incremental.cells_of cs) with
            | Error _ -> ()
            | Ok ty ->
-             let k = Incremental.pack_key_of pr ty cs in
              let i = index_of name cols in
-             Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr k cs);
-             mwalk_no_reuse mp sp rp pr resolve env (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest)))
+             Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr ty cs);
+             mwalk_no_reuse mp sp rp pr resolve env (prior_rest prior) (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr ty cs)) rest)))
   | MSort ks :: rest ->
     (match Relational.first_unknown cols (names ks) with
      | Some _ -> ()
@@ -1434,18 +1430,16 @@ let rec mwalk_reuse (mp:mprims) (sp:sprims) (rp:Relational.rprims) (pr:prims) (r
            | Ok ty ->
              let cs0 = Ok?._0 (step_cells_by cf Incremental.no_reuse [] a0) in
              let ty0 = Ok?._0 (column_type_by dt name (Incremental.cells_of cs0)) in
-             let k = Incremental.pack_key_of pr ty cs in
-             let k0 = Incremental.pack_key_of pr ty0 cs0 in
              let i = index_of name cols in
-             Incremental.awidth_extend (len cols) i a0 (Incremental.pack_cache pr k0 cs0);
-             Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr k cs);
-             if k0 = k then begin
-               wk_extend_by cf pr k reuse i a0 a;
-               distinct_extend i a0 (Incremental.pack_cache pr k0 cs0);
-               mwalk_reuse mp sp rp pr resolve env reuse (Incremental.ext_schema i name ty cols) (Incremental.extend i a0 (Incremental.pack_cache pr k0 cs0)) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
+             Incremental.awidth_extend (len cols) i a0 (Incremental.pack_cache pr ty0 cs0);
+             Incremental.awidth_extend (len cols) i a (Incremental.pack_cache pr ty cs);
+             if ty0 = ty then begin
+               wk_extend_by cf pr ty reuse i a0 a;
+               distinct_extend i a0 (Incremental.pack_cache pr ty0 cs0);
+               mwalk_reuse mp sp rp pr resolve env reuse (Incremental.ext_schema i name ty cols) (Incremental.extend i a0 (Incremental.pack_cache pr ty0 cs0)) (Incremental.extend i a (Incremental.pack_cache pr ty cs)) rest
              end else begin
-               let prior' = entries_of (mwalk mp sp rp pr resolve env Incremental.no_reuse [] (Incremental.ext_schema i name ty0 cols) (Incremental.extend i a0 (Incremental.pack_cache pr k0 cs0)) rest) in
-               mwalk_no_reuse mp sp rp pr resolve env prior' (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr k cs)) rest
+               let prior' = entries_of (mwalk mp sp rp pr resolve env Incremental.no_reuse [] (Incremental.ext_schema i name ty0 cols) (Incremental.extend i a0 (Incremental.pack_cache pr ty0 cs0)) rest) in
+               mwalk_no_reuse mp sp rp pr resolve env prior' (Incremental.ext_schema i name ty cols) (Incremental.extend i a (Incremental.pack_cache pr ty cs)) rest
              end)))
   | MSort ks :: rest ->
     (match Relational.first_unknown cols (names ks) with

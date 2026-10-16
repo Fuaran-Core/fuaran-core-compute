@@ -725,14 +725,33 @@ module internal Vec =
     /// fills the typed carrier and its mask, and the first present cell that disagrees with `ty`
     /// abandons it for the boxed form. A physical row no logical row lands on is absent (its mask
     /// entry `false`, its boxed cell `Null`); a caller packing a dense column passes the identity.
+    ///
+    /// Phase 472 — a cell's reading is a function of the cell and the column's type ALONE, whatever
+    /// the carrier: an `Int` under a float column is the float of its value and under a decimal
+    /// column the decimal of its value on the boxed form too (`widened`), exactly as the typed
+    /// carrier reads it back and as Core's `Column.ofCells` holds it. Until this phase the boxed
+    /// form kept the int raw, so one unrelated row (a decimal text past the width, arriving or
+    /// leaving) changed how every stable int in the column read.
     let packAt (ty: ColumnType) (count: int) (posOf: int -> int) (cells: Cell[]) : Vec =
         let n = cells.Length
+
+        let widened: Cell -> Cell =
+            match ty with
+            | FloatType ->
+                function
+                | Int v -> Float(float v)
+                | c -> c
+            | DecimalType ->
+                function
+                | Int v -> Decimal(string v)
+                | c -> c
+            | _ -> id
 
         let boxed () =
             let out = Array.create count Null
 
             for i in 0 .. n - 1 do
-                Raw.put out (posOf i) (Raw.get i cells)
+                Raw.put out (posOf i) (widened (Raw.get i cells))
 
             Cells out
 

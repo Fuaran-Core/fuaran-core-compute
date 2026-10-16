@@ -66,8 +66,8 @@
       "packages": [
         "Fuaran.Compute.DataFrame"
       ],
-      "budgetSeconds": 210,
-      "measuredSeconds": 101,
+      "budgetSeconds": 220,
+      "measuredSeconds": 107,
       "floorSeconds": 29,
       "fastestSeconds": 59,
       "floorPhase": "fuaran-core#433",
@@ -92,8 +92,8 @@
       "packages": [
         "Fuaran.Compute.DataFrame"
       ],
-      "budgetSeconds": 120,
-      "measuredSeconds": 60,
+      "budgetSeconds": 130,
+      "measuredSeconds": 64,
       "floorSeconds": 26,
       "fastestSeconds": 52,
       "floorPhase": "fuaran-core#435",
@@ -118,8 +118,8 @@
       "packages": [
         "Fuaran.Compute.DataFrame"
       ],
-      "budgetSeconds": 400,
-      "measuredSeconds": 198,
+      "budgetSeconds": 480,
+      "measuredSeconds": 238,
       "floorSeconds": 88,
       "fastestSeconds": 177,
       "floorPhase": "fuaran-core#464",

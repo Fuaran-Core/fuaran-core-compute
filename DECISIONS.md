@@ -1,5 +1,81 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-16 — D40: an int under a float or a decimal column reads as that type's value whatever the carrier — `Vec.packAt` widens it on the boxed form as on the typed one, so a cell's reading is a function of the cell and the column's type alone; the pack verdict leaves the walk's key, `packs_as_is` leaves the reorder theorem, and the models pack cell by cell; Core already read so, and nothing there moves; D38 item 5 is closed
+
+**Context.** D38 item 5 named the faithful alternative to tracking `Vec.packAt`'s VERDICT — typed, or boxed
+with every cell as it was — through the incremental walk: widen every int under a float or a decimal
+column on the boxed form too, so that the verdict vanishes, the pack key is the type alone, and the
+premise `packs_as_is` Phase 470 had to give `derive_then_filter` and `reorder_in_context` is unnecessary.
+The operator chose it on 2026-10-15 (Phase 472), under the 2026-10-12 ruling that a behaviour change in a
+published package is not a reason to keep a defect. The defect: under the verdict, one unrelated row (a
+decimal text past the scaled carrier's width, arriving or leaving) changed how every stable int in the
+column read, with no delta naming those rows — the shape Phases 464 and 470 each found production
+diverging on, and each fixed by tracking more state.
+
+**Decision.**
+
+1. **`Vec.packAt` widens on the boxed form.** The boxed fall-back — taken on a present cell the type does
+   not carry, and for a decimal column on texts `ScaledDecimal.scaleOf` cannot carry at one scale — reads
+   an `Int` under a `FloatType` column as `Float (float v)` and under a `DecimalType` column as
+   `Decimal (string v)` (`widened`), exactly as the typed carrier reads it back through `Vec.cellAt` and
+   as Core's `Column.ofCells` holds it. Every other cell is as it was; no other type is touched. `Cell.Int`
+   is a 32-bit int (D39 item 1), exact in a float and in a decimal, so the widening loses nothing. A
+   `behaviour` change on the open `0.41.0` draft (`STABILITY.md`): what a consumer observes is a `Float`
+   or a `Decimal` cell where a boxed column answered an `Int`, and a refusal where arithmetic between an
+   int and a float once answered over a boxed decimal column.
+
+2. **The walk's verdict tracking is deleted, not maintained.** `Incremental.fs`'s `typedPack` (D38's
+   mirror of the verdict) is gone; `widenCells` widens an int under a float or a decimal column
+   unconditionally again, as D37 first wrote it; `retypedSince` compares the type alone, as D37 wrote it,
+   and no longer takes the step's cells. The two production divergences 464 and 470 closed stay closed by
+   construction: there is no verdict left to disagree about.
+
+3. **The Core half's premise is false, and nothing in Core moves.** The shard asked for `Column.ofCells`
+   to widen on "the boxed path, as on the typed one". Core has no boxed path: `ColumnData` is the seven
+   typed cases and nothing else, `storageOfCells` holds an `Int` under a `FloatType` column as `float i`
+   and under a `DecimalType` column as `string i`, and REFUSES (`TypeMismatch`, the first offending cell
+   named) any present cell the type does not carry. A Core column already reads an int under a float
+   column as its float on its only path, pinned by Core's own suite (`ColumnTests`: "ofCells normalises a
+   widened Int: Float in a float column, Decimal in a decimal column"). The two halves are therefore
+   independent: this repository widens in `Vec.packAt` before any cell reaches Core, and a boxed vector
+   handed to `Column.ofCells` (through `Vec.toColumn`'s boxed arm) was already widened there. No pin is
+   raised: Core `0.38.0` is an untagged draft and this repository pins the public `0.37.0`, which this
+   change does not need. Core's `DECISIONS.md` D161 records the same finding from its side.
+
+4. **The models pack cell by cell.** `Pipeline.fst`'s `pack_cells pr ty` is `map_cells (pack_cell pr ty)`;
+   `pack_admits`, `all_admitted`, `dec_texts`, `dec_mask`, `typed_pack`, `pack_one`, `pack_with`,
+   `packs_as_is`, `pack_with_as_is` and `pack_cells_as_is` are gone, and `prims` loses `scale_of` (the
+   packing consults no scale). `derive_then_filter` and `reorder_in_context` are proved with their
+   pre-470 statements — Phase 269's three premises, no `packs_as_is` — because a per-cell packing commutes
+   with the filter's selection: the row lemma `filter_ext` is stated over the per-cell map `g` the derived
+   column went through (`zip_ext k rows (map_cells g ws)`), and its proof is the old one with `g w` for
+   `w`. `kept_cells_has_type` and `derive_cells_fit` are gone with the premise; `planner_reorder_sound`
+   keeps Phase 338's statement standing on `derive_total` alone. `Incremental.fst` records the type per
+   derive (`entry.e_pack : option column_type`; `pack_key`, `pack_key_of` and `cells_of_pack_cache` are
+   gone), `pack_cache pr ty` maps `pack_cell`, and `walk_reuse` switches on `ty0 = ty`;
+   `IncrementalMaintained.fst` the same. `Frame.fst`'s twin `pack` (the frame model, held to `Vec.pack`
+   by the frame differential) widens on its boxed arm too (`pack_boxed`), and `pack_cell` there reads
+   the boxed cell through `widen_cell`. Every other theorem over the derive is re-proved with its
+   statement unchanged (`prime_is_full`, `refresh_is_prime`, `refresh_agrees`, `mprime_is_full`,
+   `mrefresh_is_prime`, `mrefresh_agrees`, `eval_total`, `budget_monotone`, `work_bounded`,
+   `verdict_sound`, `planner_reorder_sound`, `pack_reads`). The temporal-text premise
+   (`pipeline-temporal-cells-canonical`) stands, worded over `pack_cell`.
+
+5. **Evidence.** The go-red probe (`ProofOracleTests`, "an int under a float or a decimal column reads as
+   that type's value on the boxed form too …"): `Vec.pack FloatType [| Int 1; Str "x"; Null |]` is boxed
+   and reads `Float 1.0` at row 0, `Vec.pack DecimalType [| Int 1; wide; Int -30 |]` is boxed and reads
+   `Decimal "1"` and `Decimal "-30"` — red before this phase; the model packs the same cells the same
+   way; and a model that keeps Phase 470's verdict (`pVerdictDerive`, kept once) answers the first boxed
+   shape (`pBoxedShapes`: an int beside a decimal past the width, read by an `Add` of a float) where
+   production and the corrected reference refuse `arithmetic between a decimal and a float`. The two
+   boxed shapes still hold the refresh to the full evaluation, and `pCornerAgrees` holds the three models
+   to production on every retype and boxed shape. The module budgets are re-measured in `modules.json`.
+
+**Consequences.** D38 item 5 is closed; D38 item 4's premise is retired with its reason. A column's
+reading no longer depends on rows other than the one read, in the full evaluation, the incremental
+refresh and the planner's reorders. `Vec.packAt`'s boxed form is no longer a reading of its own: a kernel's
+reference arm over a boxed float or decimal column never meets an `Int`.
+
 ## 2026-10-15 — D39: the maintained `Sort` is modelled and proved — the merge of the moved rows into the prior produced order by binary insertion, under `arrivedAsBefore`, answers the full stable sort, in a module of its own under `IncrementalMaintained.fst`; the comparator is modelled concretely and proved a total preorder within a typed column, so the incomparable-pair lead of D37 item 1 does not arise and no production code moves; D37 item 1 is closed
 
 **Context.** D37 declared `Sort` out of the maintained walk's model by name: production's refresh of a `Sort`

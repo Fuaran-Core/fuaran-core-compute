@@ -2051,60 +2051,54 @@ let cost_of : frame  ->  transform  ->  Prims.nat = (fun ( f  :  frame ) ( step 
      (Prims.parse_int "0")
      end))
 
-type prims = {binary : bin_op  ->  cell  ->  cell  ->  outcome<cell, eval_error>; cast_cell : column_type  ->  cell  ->  outcome<cell, eval_error>; apply_fn : scalar_fn  ->  Prims.list<cell>  ->  outcome<cell, eval_error>; compare : cell  ->  cell  ->  FStar_Pervasives_Native.option<Prims.int>; quotient : rounding_mode  ->  Prims.int  ->  cell  ->  cell  ->  outcome<cell, eval_error>; rounded : rounding_mode  ->  Prims.int  ->  cell  ->  outcome<cell, eval_error>; float_of_int : Prims.int  ->  Prims.string; int_text : Prims.int  ->  Prims.string; scale_of : Prims.list<Prims.string>  ->  Prims.list<Prims.bool>  ->  FStar_Pervasives_Native.option<Prims.nat>}
+type prims = {binary : bin_op  ->  cell  ->  cell  ->  outcome<cell, eval_error>; cast_cell : column_type  ->  cell  ->  outcome<cell, eval_error>; apply_fn : scalar_fn  ->  Prims.list<cell>  ->  outcome<cell, eval_error>; compare : cell  ->  cell  ->  FStar_Pervasives_Native.option<Prims.int>; quotient : rounding_mode  ->  Prims.int  ->  cell  ->  cell  ->  outcome<cell, eval_error>; rounded : rounding_mode  ->  Prims.int  ->  cell  ->  outcome<cell, eval_error>; float_of_int : Prims.int  ->  Prims.string; int_text : Prims.int  ->  Prims.string}
 
 
 let __proj__Mkprims__item__binary : prims  ->  bin_op  ->  cell  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text} -> begin
      binary
      end))
 
 
 let __proj__Mkprims__item__cast_cell : prims  ->  column_type  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text} -> begin
      cast_cell
      end))
 
 
 let __proj__Mkprims__item__apply_fn : prims  ->  scalar_fn  ->  Prims.list<cell>  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text} -> begin
      apply_fn
      end))
 
 
 let __proj__Mkprims__item__compare : prims  ->  cell  ->  cell  ->  FStar_Pervasives_Native.option<Prims.int> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text} -> begin
      compare
      end))
 
 
 let __proj__Mkprims__item__quotient : prims  ->  rounding_mode  ->  Prims.int  ->  cell  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text} -> begin
      quotient
      end))
 
 
 let __proj__Mkprims__item__rounded : prims  ->  rounding_mode  ->  Prims.int  ->  cell  ->  outcome<cell, eval_error> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text} -> begin
      rounded
      end))
 
 
 let __proj__Mkprims__item__float_of_int : prims  ->  Prims.int  ->  Prims.string = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text} -> begin
      float_of_int
      end))
 
 
 let __proj__Mkprims__item__int_text : prims  ->  Prims.int  ->  Prims.string = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
+| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text} -> begin
      int_text
-     end))
-
-
-let __proj__Mkprims__item__scale_of : prims  ->  Prims.list<Prims.string>  ->  Prims.list<Prims.bool>  ->  FStar_Pervasives_Native.option<Prims.nat> = (fun ( projectee  :  prims ) -> (match (projectee) with
-| {binary = binary; cast_cell = cast_cell; apply_fn = apply_fn; compare = compare; quotient = quotient; rounded = rounded; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of} -> begin
-     scale_of
      end))
 
 
@@ -3418,78 +3412,6 @@ if ((has_type FloatType cells) && (has_type DecimalType cells)) then begin
      end))
 
 
-let pack_admits : column_type  ->  cell  ->  Prims.bool = (fun ( ty  :  column_type ) ( c  :  cell ) -> (match (c) with
-| Null -> begin
-     true
-     end
-| Int (uu___) -> begin
-     (((Prims.op_Equals ty IntType) || (Prims.op_Equals ty FloatType)) || (Prims.op_Equals ty DecimalType))
-     end
-| uu___ -> begin
-     (Prims.op_Equals (type_of c) (FStar_Pervasives_Native.Some (ty)))
-     end))
-
-
-let rec all_admitted : column_type  ->  Prims.list<cell>  ->  Prims.bool = (fun ( ty  :  column_type ) ( cells  :  Prims.list<cell> ) -> (match (cells) with
-| [] -> begin
-     true
-     end
-| (c)::rest -> begin
-     ((pack_admits ty c) && (all_admitted ty rest))
-     end))
-
-
-let dec_text : prims  ->  cell  ->  Prims.string = (fun ( pr  :  prims ) ( c  :  cell ) -> (match (c) with
-| Decimal (s) -> begin
-     s
-     end
-| Int (v) -> begin
-     (pr.int_text v)
-     end
-| uu___ -> begin
-     ""
-     end))
-
-
-let rec dec_texts : prims  ->  Prims.list<cell>  ->  Prims.list<Prims.string> = (fun ( pr  :  prims ) ( cells  :  Prims.list<cell> ) -> (match (cells) with
-| [] -> begin
-     []
-     end
-| (c)::rest -> begin
-     ((dec_text pr c))::(dec_texts pr rest)
-     end))
-
-
-let rec dec_mask : Prims.list<cell>  ->  Prims.list<Prims.bool> = (fun ( cells  :  Prims.list<cell> ) -> (match (cells) with
-| [] -> begin
-     []
-     end
-| (c)::rest -> begin
-     ((match (c) with
-| Null -> begin
-     false
-     end
-| uu___ -> begin
-     true
-     end))::(dec_mask rest)
-     end))
-
-
-let typed_pack : prims  ->  column_type  ->  Prims.list<cell>  ->  Prims.bool = (fun ( pr  :  prims ) ( ty  :  column_type ) ( cells  :  Prims.list<cell> ) -> ((all_admitted ty cells) && (match (ty) with
-| DecimalType -> begin
-     (match ((pr.scale_of (dec_texts pr cells) (dec_mask cells))) with
-| FStar_Pervasives_Native.Some (v) -> begin
-     true
-     end
-| uu___ -> begin
-     false
-     end)
-     end
-| uu___ -> begin
-     true
-     end)))
-
-
 let pack_cell : prims  ->  column_type  ->  cell  ->  cell = (fun ( pr  :  prims ) ( ty  :  column_type ) ( c  :  cell ) -> (match (((ty), (c))) with
 | (FloatType, Int (v)) -> begin
      Float ((pr.float_of_int v))
@@ -3502,36 +3424,16 @@ let pack_cell : prims  ->  column_type  ->  cell  ->  cell = (fun ( pr  :  prims
      end))
 
 
-let pack_one : prims  ->  column_type  ->  Prims.bool  ->  cell  ->  cell = (fun ( pr  :  prims ) ( ty  :  column_type ) ( typed  :  Prims.bool ) ( c  :  cell ) ->  
-if typed then begin
-     (pack_cell pr ty c)
-     end else begin
-     c
-     end)
-
-
-let rec pack_with : prims  ->  column_type  ->  Prims.bool  ->  Prims.list<cell>  ->  Prims.list<cell> = (fun ( pr  :  prims ) ( ty  :  column_type ) ( typed  :  Prims.bool ) ( cells  :  Prims.list<cell> ) -> (match (cells) with
+let rec map_cells : (cell  ->  cell)  ->  Prims.list<cell>  ->  Prims.list<cell> = (fun ( g  :  cell  ->  cell ) ( cells  :  Prims.list<cell> ) -> (match (cells) with
 | [] -> begin
      []
      end
 | (c)::rest -> begin
-     ((pack_one pr ty typed c))::(pack_with pr ty typed rest)
+     ((g c))::(map_cells g rest)
      end))
 
 
-let pack_cells : prims  ->  column_type  ->  Prims.list<cell>  ->  Prims.list<cell> = (fun ( pr  :  prims ) ( ty  :  column_type ) ( cells  :  Prims.list<cell> ) -> (pack_with pr ty (typed_pack pr ty cells) cells))
-
-
-let packs_as_is : column_type  ->  Prims.list<cell>  ->  Prims.bool = (fun ( ty  :  column_type ) ( cells  :  Prims.list<cell> ) -> (match (ty) with
-| FloatType -> begin
-     (not ((has_type IntType cells)))
-     end
-| DecimalType -> begin
-     (not ((has_type IntType cells)))
-     end
-| uu___ -> begin
-     true
-     end))
+let pack_cells : prims  ->  column_type  ->  Prims.list<cell>  ->  Prims.list<cell> = (fun ( pr  :  prims ) ( ty  :  column_type ) ( cells  :  Prims.list<cell> ) -> (map_cells (pack_cell pr ty) cells))
 
 
 let rec retype_at : Prims.nat  ->  column_type  ->  schema  ->  schema = (fun ( i  :  Prims.nat ) ( ty  :  column_type ) ( cols  :  schema ) -> (match (cols) with

@@ -22,12 +22,12 @@
        over the step's cells after — "Reading it off a cache would type the column differently
        from the reference the moment a filter downstream dropped the only typed row");
      - the derived column PACKED as the frame carries it (Phase 470, D38: `pack_cache`, through
-       `Pipeline.pack_cells` — an int under a float or a decimal column as that type's value, every
-       cell as it was where the typed pass is abandoned), the cache kept raw as `StepCells` is, and
-       the pack KEY — the decided type and the pack's verdict — recorded per derive (`entry.e_pack`);
-       a derive whose key is not the prior evaluation's reuses nothing from there on (F#:
-       `retypedSince`, D37 widened by D38), because every cell cached downstream was computed over
-       the other reading of the column;
+       `Pipeline.pack_cells` — an int under a float or a decimal column as that type's value, on
+       the boxed form as on the typed carrier since Phase 472, every other cell as it was), the
+       cache kept raw as `StepCells` is, and the pack KEY — the decided type, and since Phase 472
+       the type ALONE — recorded per derive (`entry.e_pack`); a derive whose type is not the prior
+       evaluation's reuses nothing from there on (F#: `retypedSince`, D37), because every cell
+       cached downstream was computed over the other reading of the column;
      - `prime` as the walk with nothing reused (`Incremental.prime` runs `run` with no prior
        state), `refresh` as the walk reusing every unnamed row against the prior state's entries.
 
@@ -49,9 +49,9 @@
    its types, so a cell cached when a derived column was typed one way is still the cell when a
    named row's change retypes that column. That is what makes a per-row cache sound under a
    typing that is a function of the whole column — for the RAW cell. The packed cell a row reads
-   downstream is a function of the whole column too (the key), which is why the walk switches reuse
-   off at a derive whose key moved (`walk_reuse`'s two arms: `unchanged_extend` under one key,
-   `walk_no_reuse` past another).
+   downstream is a function of the raw cell and the column's TYPE (Phase 472: of nothing else),
+   which is why the walk switches reuse off at a derive whose type moved (`walk_reuse`'s two arms:
+   `unchanged_extend` under one type, `walk_no_reuse` past another).
 
    WHAT IS A PARAMETER. Exactly `Pipeline.fst`'s: the cell primitives (`prims`) and, through
    `eval_uncounted`, the twelve verbs that evaluate no expression (`other_fn`), which this walk
@@ -226,35 +226,27 @@ let ext_schema (i:option nat) (name:string) (ty:column_type) (cols:schema)
 (* ======================================================================================
    Phase 470 (D38) — the derived column PACKED, through Pipeline's one definition. The walk extends
    the alive rows with the step's cells as the frame's column carries them (`pack_cells`: an int
-   under a float or a decimal column as that type's value, every cell as it was where the column
-   is boxed), and KEEPS the cache raw, as production keeps `StepCells` (a later refresh may type
-   the column back). What a reused row's packed cell depends on beyond its raw cell is the pack
-   KEY — the decided type and the verdict — so the key is what the state records per derive, and a
-   derive whose key is not the prior evaluation's reuses nothing from there on (F#: `retypedSince`,
-   D37, widened to the verdict by this phase).
+   under a float or a decimal column as that type's value, every other cell as it was), and KEEPS
+   the cache raw, as production keeps `StepCells` (a later refresh may type the column back). What
+   a reused row's packed cell depends on beyond its raw cell is the column's TYPE and nothing else
+   (Phase 472: the boxed form widens as the typed carrier does, so the verdict D38 carried beside
+   the type in the pack key is gone), so the type is what the state records per derive, and a
+   derive whose type is not the prior evaluation's reuses nothing from there on (F#:
+   `retypedSince`, D37).
    ====================================================================================== *)
 
-type pack_key = { k_type : column_type; k_typed : bool }
-
-let pack_key_of (pr:prims) (ty:column_type) (cs:step_cache) : Tot pack_key =
-  { k_type = ty; k_typed = typed_pack pr ty (cells_of cs) }
-
-(* The cache's cells packed under a key, each under its token. *)
-let rec pack_cache (pr:prims) (k:pack_key) (cs:step_cache) : Tot (c:step_cache{len c = len cs}) (decreases cs) =
+(* The cache's cells packed under the column's type, each under its token. *)
+let rec pack_cache (pr:prims) (ty:column_type) (cs:step_cache) : Tot (c:step_cache{len c = len cs}) (decreases cs) =
   match cs with
   | [] -> []
-  | (t, v) :: rest -> (t, pack_one pr k.k_type k.k_typed v) :: pack_cache pr k rest
+  | (t, v) :: rest -> (t, pack_cell pr ty v) :: pack_cache pr ty rest
 
-let rec cells_of_pack_cache (pr:prims) (k:pack_key) (cs:step_cache)
-  : Lemma (ensures cells_of (pack_cache pr k cs) == pack_with pr k.k_type k.k_typed (cells_of cs)) (decreases cs) =
+(* Packing the cache under the type IS `Pipeline.pack_cells` over its cells. *)
+let rec pack_cache_is_pack_cells (pr:prims) (ty:column_type) (cs:step_cache)
+  : Lemma (ensures cells_of (pack_cache pr ty cs) == pack_cells pr ty (cells_of cs)) (decreases cs) =
   match cs with
   | [] -> ()
-  | _ :: rest -> cells_of_pack_cache pr k rest
-
-(* Packing the cache under the key it decides IS `Pipeline.pack_cells` over its cells. *)
-let pack_cache_is_pack_cells (pr:prims) (ty:column_type) (cs:step_cache)
-  : Lemma (ensures cells_of (pack_cache pr (pack_key_of pr ty cs) cs) == pack_cells pr ty (cells_of cs)) =
-  cells_of_pack_cache pr (pack_key_of pr ty cs) cs
+  | _ :: rest -> pack_cache_is_pack_cells pr ty rest
 
 (* ======================================================================================
    4. The walk — F#: `walk`, over the row-local steps; and the state it leaves.
@@ -269,8 +261,8 @@ let frame_of_walked (w:walked) : Tot wframe =
   | W cols a -> frame_of cols a
 
 (* F#: one evaluating step's retained state — its cells under the rows' tokens (`StepCells[k]`),
-   raw as evaluated, and the key a derive packed them under (D37, D38). *)
-type entry = { e_cells : step_cache; e_pack : option pack_key }
+   raw as evaluated, and the type a derive packed them under (D37, D38, D40). *)
+type entry = { e_cells : step_cache; e_pack : option column_type }
 
 (* F#: the two halves of `IncrementalEval` this walk writes — `Output` and `StepCells`. *)
 type state = { s_out : walked; s_entries : list entry }
@@ -280,7 +272,7 @@ let prior_cells (prior:list entry) : Tot step_cache =
   | [] -> []
   | e :: _ -> e.e_cells
 
-let prior_pack (prior:list entry) : Tot (option pack_key) =
+let prior_pack (prior:list entry) : Tot (option column_type) =
   match prior with
   | [] -> None
   | e :: _ -> e.e_pack
@@ -315,15 +307,14 @@ let rec walk (pr:prims) (env:param_env) (reuse:reuse_fn) (prior:list entry)
              (match column_type_by dt name (cells_of cs) with
               | Error err -> Error err
               | Ok ty ->
-                let k = pack_key_of pr ty cs in
                 let i = index_of name cols in
-                (* D37, D38: the column packed as before keeps reusing; retyped, or carried the
-                   other way, nothing is reused from here. *)
-                let reuse' = if prior_pack prior = Some k then reuse else no_reuse in
-                awidth_extend (len cols) i a (pack_cache pr k cs);
-                (match walk pr env reuse' (prior_rest prior) (ext_schema i name ty cols) (extend i a (pack_cache pr k cs)) rest with
+                (* D37: the column typed as before keeps reusing; retyped, nothing is reused from
+                   here. *)
+                let reuse' = if prior_pack prior = Some ty then reuse else no_reuse in
+                awidth_extend (len cols) i a (pack_cache pr ty cs);
+                (match walk pr env reuse' (prior_rest prior) (ext_schema i name ty cols) (extend i a (pack_cache pr ty cs)) rest with
                  | Error err -> Error err
-                 | Ok st -> Ok ({ st with s_entries = { e_cells = cs; e_pack = Some k } :: st.s_entries }))))))
+                 | Ok st -> Ok ({ st with s_entries = { e_cells = cs; e_pack = Some ty } :: st.s_entries }))))))
 
 (* F#: `Incremental.prime` — the walk with no prior state: every row evaluated. *)
 let prime (pr:prims) (env:param_env) (cols:schema) (a:alive{awidth (len cols) a}) (p:list wstep)
@@ -496,12 +487,11 @@ let rec walk_is_go (pr:prims) (other:other_fn) (env:param_env) (cols:schema) (a:
           (match column_type_by dt name (cells_of cs) with
            | Error _ -> ()
            | Ok ty ->
-             let k = pack_key_of pr ty cs in
              let i = index_of name cols in
              pack_cache_is_pack_cells pr ty cs;
-             rows_of_extend i a (pack_cache pr k cs);
-             awidth_extend (len cols) i a (pack_cache pr k cs);
-             walk_is_go pr other env (ext_schema i name ty cols) (extend i a (pack_cache pr k cs)) rest
+             rows_of_extend i a (pack_cache pr ty cs);
+             awidth_extend (len cols) i a (pack_cache pr ty cs);
+             walk_is_go pr other env (ext_schema i name ty cols) (extend i a (pack_cache pr ty cs)) rest
                (n + cost_of (frame_of cols a) (Derive name x)))))
 
 (* THEOREM. Priming a row-local pipeline computes what the reference evaluator computes: the same
@@ -605,29 +595,29 @@ let rec unchanged_keep_true (pr:prims) (env:param_env) (cols0:schema) (cols:sche
     unchanged_keep_true pr env cols0 cols x reuse a0 rest
 
 (* The premise survives a derive: a reused row's extended row is the extended prior row — its
-   cell packed under the key, the same key on both walks (Phase 470). *)
-let rec assoc_extend (pr:prims) (env:param_env) (cols:schema) (x:col_expr) (k:pack_key) (i:option nat) (a0:alive{awidth (len cols) a0}) (t:token)
+   cell packed under the type, the same type on both walks (Phase 470, 472). *)
+let rec assoc_extend (pr:prims) (env:param_env) (cols:schema) (x:col_expr) (ty:column_type) (i:option nat) (a0:alive{awidth (len cols) a0}) (t:token)
   : Lemma (requires Ok? (step_cells pr env cols x no_reuse [] a0))
           (ensures (match assoc t a0 with
                     | Some r0 ->
                       if len r0 = len cols then
                         (match eval_expr pr env cols r0 x with
-                         | Ok v -> assoc t (extend i a0 (pack_cache pr k (Ok?._0 (step_cells pr env cols x no_reuse [] a0))))
-                                   == Some (ext_one i r0 (pack_one pr k.k_type k.k_typed v))
+                         | Ok v -> assoc t (extend i a0 (pack_cache pr ty (Ok?._0 (step_cells pr env cols x no_reuse [] a0))))
+                                   == Some (ext_one i r0 (pack_cell pr ty v))
                          | _ -> True)
                       else True
                     | None -> True))
           (decreases a0) =
   match a0 with
   | [] -> ()
-  | (t0, r0) :: rest -> if t0 = t then () else assoc_extend pr env cols x k i rest t
+  | (t0, r0) :: rest -> if t0 = t then () else assoc_extend pr env cols x ty i rest t
 
 let rec unchanged_extend (pr:prims) (env:param_env) (cols0:schema) (cols:schema{names cols == names cols0})
-  (x:col_expr) (reuse:reuse_fn) (k:pack_key) (i:option nat) (a0:alive{awidth (len cols0) a0}) (a:alive{awidth (len cols) a})
+  (x:col_expr) (reuse:reuse_fn) (ty:column_type) (i:option nat) (a0:alive{awidth (len cols0) a0}) (a:alive{awidth (len cols) a})
   : Lemma (requires Ok? (step_cells pr env cols0 x no_reuse [] a0) /\ Ok? (step_cells pr env cols x no_reuse [] a)
                     /\ unchanged reuse a a0)
-          (ensures unchanged reuse (extend i a (pack_cache pr k (Ok?._0 (step_cells pr env cols x no_reuse [] a))))
-                                   (extend i a0 (pack_cache pr k (Ok?._0 (step_cells pr env cols0 x no_reuse [] a0)))))
+          (ensures unchanged reuse (extend i a (pack_cache pr ty (Ok?._0 (step_cells pr env cols x no_reuse [] a))))
+                                   (extend i a0 (pack_cache pr ty (Ok?._0 (step_cells pr env cols0 x no_reuse [] a0)))))
           (decreases a) =
   len_names cols; len_names cols0;
   match a with
@@ -635,9 +625,9 @@ let rec unchanged_extend (pr:prims) (env:param_env) (cols0:schema) (cols:schema{
   | (t, r) :: rest ->
     (if reuse t then
        (match assoc t a0 with
-        | Some r0 -> assoc_width (len cols0) a0 t; eval_expr_names pr env cols0 cols r0 x; assoc_extend pr env cols0 x k i a0 t
+        | Some r0 -> assoc_width (len cols0) a0 t; eval_expr_names pr env cols0 cols r0 x; assoc_extend pr env cols0 x ty i a0 t
         | None -> ()));
-    unchanged_extend pr env cols0 cols x reuse k i a0 rest
+    unchanged_extend pr env cols0 cols x reuse ty i a0 rest
 
 let rec names_retype_at (i:nat) (ty:column_type) (cols:schema)
   : Lemma (ensures names (retype_at i ty cols) == names cols) (decreases cols) =
@@ -684,13 +674,12 @@ let rec walk_no_reuse (pr:prims) (env:param_env) (prior:list entry) (cols:schema
           (match column_type_by dt name (cells_of cs) with
            | Error _ -> ()
            | Ok ty ->
-             let k = pack_key_of pr ty cs in
              let i = index_of name cols in
-             awidth_extend (len cols) i a (pack_cache pr k cs);
-             walk_no_reuse pr env (prior_rest prior) (ext_schema i name ty cols) (extend i a (pack_cache pr k cs)) rest)))
+             awidth_extend (len cols) i a (pack_cache pr ty cs);
+             walk_no_reuse pr env (prior_rest prior) (ext_schema i name ty cols) (extend i a (pack_cache pr ty cs)) rest)))
 
 (* The walk reusing against a prior walk's entries is the walk reusing nothing: through a derive
-   packed under the prior's key by the premise, and past one packed under another key because
+   packed under the prior's type by the premise, and past one packed under another type because
    nothing is reused from there on. *)
 let rec walk_reuse (pr:prims) (env:param_env) (reuse:reuse_fn) (cols0:schema) (cols:schema{names cols == names cols0})
   (a0:alive{awidth (len cols0) a0}) (a:alive{awidth (len cols) a}) (p:list wstep)
@@ -725,20 +714,18 @@ let rec walk_reuse (pr:prims) (env:param_env) (reuse:reuse_fn) (cols0:schema) (c
              let cs0 = Ok?._0 (step_cells pr env cols0 x no_reuse [] a0) in
              let dt0 = derived_typing_in env cols0 x in
              let ty0 = Ok?._0 (column_type_by dt0 name (cells_of cs0)) in
-             let k = pack_key_of pr ty cs in
-             let k0 = pack_key_of pr ty0 cs0 in
              index_of_names name cols cols0;
              let i = index_of name cols in
              names_ext_schema i name ty ty0 cols0 cols;
-             awidth_extend (len cols0) i a0 (pack_cache pr k0 cs0);
-             awidth_extend (len cols) i a (pack_cache pr k cs);
-             if k0 = k then begin
-               unchanged_extend pr env cols0 cols x reuse k i a0 a;
+             awidth_extend (len cols0) i a0 (pack_cache pr ty0 cs0);
+             awidth_extend (len cols) i a (pack_cache pr ty cs);
+             if ty0 = ty then begin
+               unchanged_extend pr env cols0 cols x reuse ty i a0 a;
                walk_reuse pr env reuse (ext_schema i name ty0 cols0) (ext_schema i name ty cols)
-                 (extend i a0 (pack_cache pr k0 cs0)) (extend i a (pack_cache pr k cs)) rest
+                 (extend i a0 (pack_cache pr ty0 cs0)) (extend i a (pack_cache pr ty cs)) rest
              end else
                walk_no_reuse pr env (prior_rest (Ok?._0 (walk pr env no_reuse [] cols0 a0 p)).s_entries)
-                 (ext_schema i name ty cols) (extend i a (pack_cache pr k cs)) rest)))
+                 (ext_schema i name ty cols) (extend i a (pack_cache pr ty cs)) rest)))
 
 (* THEOREM (the state theorem). A refresh against a state primed over the prior source, under a
    delta that names every row that moved, is the prime over the new source — the output and

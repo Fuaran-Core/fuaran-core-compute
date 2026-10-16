@@ -206,30 +206,13 @@ let ext_schema : FStar_Pervasives_Native.option<Prims.nat>  ->  Prims.string  ->
      (Pipeline.app cols ((((name), (ty)))::[]))
      end))
 
-type pack_key = {k_type : Pipeline.column_type; k_typed : Prims.bool}
 
-
-let __proj__Mkpack_key__item__k_type : pack_key  ->  Pipeline.column_type = (fun ( projectee  :  pack_key ) -> (match (projectee) with
-| {k_type = k_type; k_typed = k_typed} -> begin
-     k_type
-     end))
-
-
-let __proj__Mkpack_key__item__k_typed : pack_key  ->  Prims.bool = (fun ( projectee  :  pack_key ) -> (match (projectee) with
-| {k_type = k_type; k_typed = k_typed} -> begin
-     k_typed
-     end))
-
-
-let pack_key_of : Pipeline.prims  ->  Pipeline.column_type  ->  step_cache  ->  pack_key = (fun ( pr  :  Pipeline.prims ) ( ty  :  Pipeline.column_type ) ( cs  :  step_cache ) -> {k_type = ty; k_typed = (Pipeline.typed_pack pr ty (cells_of cs))})
-
-
-let rec pack_cache : Pipeline.prims  ->  pack_key  ->  step_cache  ->  step_cache = (fun ( pr  :  Pipeline.prims ) ( k  :  pack_key ) ( cs  :  step_cache ) -> (match (cs) with
+let rec pack_cache : Pipeline.prims  ->  Pipeline.column_type  ->  step_cache  ->  step_cache = (fun ( pr  :  Pipeline.prims ) ( ty  :  Pipeline.column_type ) ( cs  :  step_cache ) -> (match (cs) with
 | [] -> begin
      []
      end
 | ((t, v))::rest -> begin
-     (((t), ((Pipeline.pack_one pr k.k_type k.k_typed v))))::(pack_cache pr k rest)
+     (((t), ((Pipeline.pack_cell pr ty v))))::(pack_cache pr ty rest)
      end))
 
 type walked =
@@ -256,7 +239,7 @@ let frame_of_walked : walked  ->  Pipeline.wframe = (fun ( w  :  walked ) -> (ma
      (frame_of cols a)
      end))
 
-type entry = {e_cells : step_cache; e_pack : FStar_Pervasives_Native.option<pack_key>}
+type entry = {e_cells : step_cache; e_pack : FStar_Pervasives_Native.option<Pipeline.column_type>}
 
 
 let __proj__Mkentry__item__e_cells : entry  ->  step_cache = (fun ( projectee  :  entry ) -> (match (projectee) with
@@ -265,7 +248,7 @@ let __proj__Mkentry__item__e_cells : entry  ->  step_cache = (fun ( projectee  :
      end))
 
 
-let __proj__Mkentry__item__e_pack : entry  ->  FStar_Pervasives_Native.option<pack_key> = (fun ( projectee  :  entry ) -> (match (projectee) with
+let __proj__Mkentry__item__e_pack : entry  ->  FStar_Pervasives_Native.option<Pipeline.column_type> = (fun ( projectee  :  entry ) -> (match (projectee) with
 | {e_cells = e_cells; e_pack = e_pack} -> begin
      e_pack
      end))
@@ -294,7 +277,7 @@ let prior_cells : Prims.list<entry>  ->  step_cache = (fun ( prior  :  Prims.lis
      end))
 
 
-let prior_pack : Prims.list<entry>  ->  FStar_Pervasives_Native.option<pack_key> = (fun ( prior  :  Prims.list<entry> ) -> (match (prior) with
+let prior_pack : Prims.list<entry>  ->  FStar_Pervasives_Native.option<Pipeline.column_type> = (fun ( prior  :  Prims.list<entry> ) -> (match (prior) with
 | [] -> begin
      FStar_Pervasives_Native.None
      end
@@ -351,25 +334,22 @@ let rec walk : Pipeline.prims  ->  Pipeline.param_env  ->  reuse_fn  ->  Prims.l
 | Pipeline.Ok (ty) -> begin
      (
 
-let k = (pack_key_of pr ty cs)
-in (
-
 let i = (Pipeline.index_of name cols)
 in (
 
 let reuse' =  
-if (Prims.op_Equals (prior_pack prior) (FStar_Pervasives_Native.Some (k))) then begin
+if (Prims.op_Equals (prior_pack prior) (FStar_Pervasives_Native.Some (ty))) then begin
      reuse
      end else begin
      no_reuse
      end
-in (match ((walk pr env reuse' (prior_rest prior) (ext_schema i name ty cols) (extend i a (pack_cache pr k cs)) rest)) with
+in (match ((walk pr env reuse' (prior_rest prior) (ext_schema i name ty cols) (extend i a (pack_cache pr ty cs)) rest)) with
 | Pipeline.Error (err) -> begin
      Pipeline.Error (err)
      end
 | Pipeline.Ok (st) -> begin
-     Pipeline.Ok ({s_out = st.s_out; s_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.Some (k)})::st.s_entries})
-     end))))
+     Pipeline.Ok ({s_out = st.s_out; s_entries = ({e_cells = cs; e_pack = FStar_Pervasives_Native.Some (ty)})::st.s_entries})
+     end)))
      end)
      end)
      end)

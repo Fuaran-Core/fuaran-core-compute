@@ -41,9 +41,10 @@
      - `rows_of_reads`: the read-back is TOTAL — `rows` rows, each as wide as the schema — and cell
        `(i, j)` is vector `j` at the physical row the selection gives logical row `i`;
      - `pack_reads` and `of_rows_reads`: `Vec.pack` and `Frame.ofRows` read back every cell as the
-       type carries it (`pack_cell`: an int in a float or decimal column is that type's value, a
-       temporal text is the canonical text of what it parsed to, and a column holding any cell its
-       type does not carry stays boxed, cell for cell); `of_rows_exact`: rows the types carry
+       type carries it (`pack_cell`: an int in a float or decimal column is that type's value — on
+       the boxed form as on the typed carrier since Phase 472 — a temporal text is the canonical
+       text of what it parsed to, and a column holding any cell its type does not carry stays
+       boxed, every other cell as it was); `of_rows_exact`: rows the types carry
        exactly come back from `ofRows` then `rowsOf` as they went in;
      - `gather_reads`, `to_column_reads` and `to_table_reads`: `Frame.toTable` writes exactly the
        logical rows — through the selection, one typed gather per column, the column adopting the
@@ -491,13 +492,25 @@ let pk_dec (h:host) (cells:list cell) (i:nat) : Tot string = dec_of h (cell_i ce
 let pack_mask (cells:list cell) : Tot (list bool) = lmap (pk_present cells) (upto (len cells))
 let pack_texts (h:host) (cells:list cell) : Tot (list string) = lmap (pk_dec h cells) (upto (len cells))
 
+(* Phase 472 — the boxed fall-back's cell (F#: `packAt`'s `widened`): an int under a float or a
+   decimal column is that type's value on the boxed form as on the typed carrier; every other cell
+   as it was. *)
+let widen_cell (h:host) (ty:ftype) (c:cell) : Tot cell =
+  match ty, c with
+  | TFloat, Int v -> Float (h.float_of_int v)
+  | TDecimal, Int v -> Decimal (h.int_text v)
+  | _ -> c
+let pk_boxed (h:host) (ty:ftype) (cells:list cell) (i:nat) : Tot cell = widen_cell h ty (cell_i cells i)
+let pack_boxed (h:host) (ty:ftype) (cells:list cell) : Tot (list cell) = lmap (pk_boxed h ty cells) (upto (len cells))
+
 (* F#: `Vec.pack ty cells` = `packAt ty cells.Length id cells` — one pass filling the typed carrier
    and its mask; any cell the type does not carry, and for a decimal a scale `scaleOf` refuses,
-   leaves the cells boxed as they are. A timestamp column at seconds holds no fraction vector. *)
+   leaves the cells boxed — each as it was, an int under a float or a decimal column widened
+   (Phase 472). A timestamp column at seconds holds no fraction vector. *)
 let pack (h:host) (ty:ftype) (cells:list cell) : Tot vec =
   let n = len cells in
   let mask = pack_mask cells in
-  if not (lfor_all (admits h ty) cells) then VCells cells
+  if not (lfor_all (admits h ty) cells) then VCells (pack_boxed h ty cells)
   else
     match ty with
     | TInt -> VInts (lmap (pk_int cells) (upto n)) mask
@@ -513,7 +526,7 @@ let pack (h:host) (ty:ftype) (cells:list cell) : Tot vec =
       let texts = pack_texts h cells in
       (match h.scale_of texts mask with
        | Some s -> VDecs (fill h s texts mask) s texts mask
-       | None -> VCells cells)
+       | None -> VCells (pack_boxed h ty cells))
 
 (* F#: `Vec.ofColumn n ty column`. A column of the schema's type and length is a VIEW — its values
    and its validity borrowed; any other (another type, another length, none) is packed from its
@@ -1008,7 +1021,8 @@ let view_reads (h:host) (n:nat) (ty:ftype) (c:ccolumn) (i:nat)
 
 (* What `pack` reads back: a carried cell normalised by its type (an int in a float or decimal
    column is that type's value, a temporal text is the canonical text of what it parsed to) where
-   every cell is carried; the cells as they are where one is not (the boxed fall-back). *)
+   every cell is carried; where one is not (the boxed fall-back), the cells as they are but for an
+   int under a float or decimal column, widened on this form too (Phase 472, `widen_cell`). *)
 let packs (h:host) (ty:ftype) (cells:list cell) : Tot bool =
   lfor_all (admits h ty) cells
   && (match ty with TDecimal -> Some? (h.scale_of (pack_texts h cells) (pack_mask cells)) | _ -> true)
@@ -1024,7 +1038,7 @@ let norm_cell (h:host) (ty:ftype) (c:cell) : Tot cell =
   | _ -> c
 
 let pack_cell (h:host) (ty:ftype) (cells:list cell) (i:nat) : Tot cell =
-  if packs h ty cells then norm_cell h ty (at_or Null cells i) else at_or Null cells i
+  if packs h ty cells then norm_cell h ty (at_or Null cells i) else widen_cell h ty (at_or Null cells i)
 
 let pack_shape (h:host) (ty:ftype) (cells:list cell)
   : Lemma (ensures vlen (pack h ty cells) == len cells /\ vec_wf (pack h ty cells) /\
@@ -1042,7 +1056,7 @@ let pack_reads (h:host) (ty:ftype) (cells:list cell) (i:nat)
   let n = len cells in
   vnth_some_lt cells i;
   vnth_lmap_upto (pk_present cells) n i;
-  if not (lfor_all (admits h ty) cells) then ()
+  if not (lfor_all (admits h ty) cells) then vnth_lmap_upto (pk_boxed h ty cells) n i
   else begin
     lfor_all_nth (admits h ty) cells i;
     match ty with
@@ -1058,7 +1072,7 @@ let pack_reads (h:host) (ty:ftype) (cells:list cell) (i:nat)
       vnth_lmap_upto (pk_dec h cells) n i;
       (match h.scale_of (pack_texts h cells) (pack_mask cells) with
        | Some s -> fill_reads h s (pack_texts h cells) (pack_mask cells) i
-       | None -> ())
+       | None -> vnth_lmap_upto (pk_boxed h ty cells) n i)
   end
 #pop-options
 
