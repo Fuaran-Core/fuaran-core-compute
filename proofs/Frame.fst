@@ -46,6 +46,10 @@
        text of what it parsed to, and a column holding any cell its type does not carry stays
        boxed, every other cell as it was); `of_rows_exact`: rows the types carry
        exactly come back from `ofRows` then `rowsOf` as they went in;
+     - `widen_cell_is_pack_cell` and `pack_cell_is_pipeline` (Phase 476): that per-cell reading IS
+       `Pipeline.pack_cell` at the erased type, at every non-temporal type, typed or boxed, wherever
+       the host and Pipeline's `prims` agree on an int's two carriers — one packing, read through
+       two records and tied by name;
      - `gather_reads`, `to_column_reads` and `to_table_reads`: `Frame.toTable` writes exactly the
        logical rows — through the selection, one typed gather per column, the column adopting the
        storage and `AllValid` where every row is present; `of_frame_reads`, `prepare_rows_reads`,
@@ -1027,18 +1031,37 @@ let packs (h:host) (ty:ftype) (cells:list cell) : Tot bool =
   lfor_all (admits h ty) cells
   && (match ty with TDecimal -> Some? (h.scale_of (pack_texts h cells) (pack_mask cells)) | _ -> true)
 
+(* The typed carrier's reading: a temporal text re-rendered canonically, every other cell as the
+   boxed form reads it (`widen_cell`, so the int's widening has ONE definition in this module). *)
 let norm_cell (h:host) (ty:ftype) (c:cell) : Tot cell =
   match ty, c with
-  | _, Null -> Null
-  | TFloat, Int v -> Float (h.float_of_int v)
-  | TDecimal, Int v -> Decimal (h.int_text v)
   | TDate, Date _ -> Date (h.date_text (day_of h c))
   | TStamp u, Timestamp _ ->
     Timestamp (h.instant_text u (fst (instant_of h u c)) (if u = Seconds then 0 else snd (instant_of h u c)))
-  | _ -> c
+  | _ -> widen_cell h ty c
 
 let pack_cell (h:host) (ty:ftype) (cells:list cell) (i:nat) : Tot cell =
   if packs h ty cells then norm_cell h ty (at_or Null cells i) else widen_cell h ty (at_or Null cells i)
+
+(* Phase 476 — the frame's per-cell widening IS `Pipeline.fst`'s packing, tied by name. The two
+   cannot be one definition: `Pipeline.pack_cell` reads its carriers off `prims`, this module off
+   `host`, and the two records share exactly the two fields the widening reads (`float_of_int`,
+   `int_text`, under the same names). Where they agree on those two — as the differential
+   instantiates both from one production function — the boxed cell is Pipeline's packed cell at the
+   erased type, whatever the cell. *)
+let widen_cell_is_pack_cell (h:host) (pr:prims) (ty:ftype) (c:cell)
+  : Lemma (requires pr.float_of_int == h.float_of_int /\ pr.int_text == h.int_text)
+          (ensures widen_cell h ty c == Pipeline.pack_cell pr (erase ty) c) = ()
+
+(* ... and so `Vec.pack`'s read-back is Pipeline's packing at every non-temporal type, typed or
+   boxed: the frame and the list model read a packed cell through one definition. A temporal
+   column differs only where the typed carrier re-renders a text that was not canonical — the
+   premise `pipeline-temporal-cells-canonical` names exactly that, and reads it as the identity. *)
+let pack_cell_is_pipeline (h:host) (pr:prims) (ty:ftype) (cells:list cell) (i:nat)
+  : Lemma (requires pr.float_of_int == h.float_of_int /\ pr.int_text == h.int_text /\
+                    not (TDate? ty) /\ not (TStamp? ty))
+          (ensures pack_cell h ty cells i == Pipeline.pack_cell pr (erase ty) (at_or Null cells i)) =
+  widen_cell_is_pack_cell h pr ty (at_or Null cells i)
 
 let pack_shape (h:host) (ty:ftype) (cells:list cell)
   : Lemma (ensures vlen (pack h ty cells) == len cells /\ vec_wf (pack h ty cells) /\

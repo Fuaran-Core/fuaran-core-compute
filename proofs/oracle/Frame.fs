@@ -2058,15 +2058,6 @@ let packs : host  ->  ftype  ->  Prims.list<Pipeline.cell>  ->  Prims.bool = (fu
 
 
 let norm_cell : host  ->  ftype  ->  Pipeline.cell  ->  Pipeline.cell = (fun ( h  :  host ) ( ty  :  ftype ) ( c  :  Pipeline.cell ) -> (match (((ty), (c))) with
-| (uu___, Pipeline.Null) -> begin
-     Pipeline.Null
-     end
-| (TFloat, Pipeline.Int (v)) -> begin
-     Pipeline.Float ((h.float_of_int v))
-     end
-| (TDecimal, Pipeline.Int (v)) -> begin
-     Pipeline.Decimal ((h.int_text v))
-     end
 | (TDate, Pipeline.Date (uu___)) -> begin
      Pipeline.Date ((h.date_text (day_of h c)))
      end
@@ -2079,7 +2070,7 @@ if (Prims.op_Equals u Seconds) then begin
      end)))
      end
 | uu___ -> begin
-     c
+     (widen_cell h ty c)
      end))
 
 

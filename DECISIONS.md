@@ -1,5 +1,75 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-16 — D41: the relational model's union refuses a pair no column type holds together through the cells' typing's own definitions, and the relational differential excuses nothing — its D18 arm was dead and is gone; the frame reads a packed cell through `Pipeline.fst`'s `pack_cell`, tied by a proved equality; D38 item 1's twin sentence is corrected
+
+**Context.** Phase 470 (D38) left two things out of its scope. The relational differential in
+`ProofOracleTests` kept an excuse arm — a production `TypeError` "which no column type holds together"
+against a model `Ok` was tallied as outside the model's domain — and `Frame.fst`'s per-cell packing was
+a twin of `Pipeline.fst`'s (D38 item 1). Phase 476 was filed to close both.
+
+**The first premise was false, and was checked before anything was built.** The shard said
+`Relational.fst`'s `Union` "still lacks the D18 refusal". It did not: Phase 469 (D36) modelled the
+union's per-column rule (`union_ty`, F#: `unionField`), and `union_types` has refused a pair no column
+type holds together, with the D18 text, since then; the pinned `423-union-refuses-unrelated` shape
+compared that refusal on both sides. Production's D18 refusal of a union reads the two SCHEMAS
+(`unionField` over the two fields' types), never the cells, so there was no cell-level refusal left for
+the schema model to lack. MEASURED: with the arm deleted and nothing else changed, the relational
+differential is green and its `rowRefused` tally is 0 — the arm fired on no step, generated or named.
+What WAS true is narrower: the model restated what it should have reused. `types_beside_each_other`
+was a byte-identical twin of `Pipeline.types_beside`, `type_tag` a twin of `Pipeline.type_tag`, and
+`join_column_type` re-derived the join from `widens` both ways instead of reading the cells' typing.
+
+**Decision.**
+
+1. **The union's column typing reads the cells' typing by name.** `join_column_type a b` is
+   `if disjoint_types a b then None else Some (widen_type a b)` — `Pipeline.disjoint_types` is
+   `typeFromCells`' test of a pair no column type holds together and `Pipeline.widen_type` its join, so
+   a union column and a derived column refuse one pair by one rule. It equals the old definition by case
+   analysis (`widens` relates equal types and an int to a float or a decimal, nothing else). The refusal
+   is `Pipeline.types_beside`; `types_beside_each_other` and `type_tag` are deleted. `union_ty` keeps its
+   shape (`unionField`'s equal-types arm first). Every relational theorem is re-proved with its statement
+   unchanged — `union_sound`, `union_walk_widens`, `walk_sound` and the rest — and none needed a proof
+   edit.
+
+2. **The excuse arm is deleted, and the comparison is shown to reach the refusal.** The differential now
+   runs every ordered pair of the generator's seven column types as a one-column union (`rUnionPairs`,
+   49 shapes, a null row each) beside the named shapes, and counts a union refused on D18 by BOTH sides
+   with the same text (`RBeside`); the case asserts at least 39 — the 38 pairs no widening relates and
+   the 423 shape — and measures exactly 39. **Go-red, one perturbation, two runs** (on the extracted
+   oracle, so no prover run was spent): `union_types` answering the left type where it refuses. With the
+   arm restored as it stood, and the new count's floor relaxed to 0 as the case stood before, the
+   differential is GREEN and the 39 refusals are excused (`rowRefused=39`); without the arm the same
+   perturbation is RED on all 39 (`production refused TypeError … model evaluated to …`). So the arm
+   would have hidden exactly the defect it named, had the model ever had it.
+
+3. **The frame reads a packed cell through Pipeline's definition, tied by a proved equality.** One
+   definition is not possible within this phase's files: `Pipeline.pack_cell` reads its two carriers
+   (`float_of_int`, `int_text`) off `prims`, `Frame.fst` off `host`, and the records share exactly those
+   two fields under the same names; making them one definition means narrowing what `Pipeline.pack_cell`
+   takes, a `Pipeline.fst` change and a re-proof of every model that opens it. So: inside `Frame.fst`
+   the int's widening has ONE definition — `norm_cell`, the typed carrier's reading, now re-renders the
+   temporal texts and reads every other cell through `widen_cell` — and two theorems tie it to Pipeline's
+   by name: `widen_cell_is_pack_cell` (the boxed cell IS `Pipeline.pack_cell pr (erase ty)` wherever
+   `pr` and `h` agree on the two carriers) and `pack_cell_is_pipeline` (so `Vec.pack`'s read-back is
+   Pipeline's packing at every non-temporal type, typed or boxed). A temporal column differs only where
+   the typed carrier re-renders a text that was not canonical, which is what the premise
+   `pipeline-temporal-cells-canonical` already names. `pack_reads` and every frame theorem keep their
+   statements. The premise is checked where it is instantiated: a `Proofs.Oracle` case holds
+   `ModelFrame.pack_cell fHost` and `widen_cell fHost` to `ModelPipe.pack_cell pPrims` over drawn
+   columns at the five non-temporal types.
+
+4. **D38 item 1's twin sentence is corrected in place.** It gave the wrong reason the two could not be
+   one definition (`Frame.fst` opening `Pipeline` is what lets the frame READ Pipeline's definition);
+   the reason is the carrier record, and the two are now tied.
+
+**Evidence and cost.** The proof leg is green with every model checked and extracted (`check.ps1 -Extract`, one cold run, a contended pass at x0.89): `Relational` 54s against its 120s budget (recorded 57s; 62s on the authoring run), `Frame` 69s against 130s (recorded 64s; 69s on the authoring run too), `IncrementalMaintained`, which opens `Relational`, 208s against 480s. Both moved modules stay inside their budgets and no cost finding was raised, so `modules.json` is not re-seeded: a 5s rise on a contended pass is not a re-seed obligation by the file's own rule, and the figures are recorded here instead. No production code moves and `STABILITY.md` is untouched: production
+already refused what the model now refuses through Pipeline's definitions.
+
+**Consequences.** No proof differential in the repository excuses a production refusal the reference
+does not model. `Relational.fst` re-models nothing `Pipeline.fst` models. The frame and the list model
+read a packed cell through two definitions tied by a proved equality; one definition remains available,
+at the price of narrowing `Pipeline.pack_cell`'s record, and nothing here needs it.
+
 ## 2026-10-16 — D40: an int under a float or a decimal column reads as that type's value whatever the carrier — `Vec.packAt` widens it on the boxed form as on the typed one, so a cell's reading is a function of the cell and the column's type alone; the pack verdict leaves the walk's key, `packs_as_is` leaves the reorder theorem, and the models pack cell by cell; Core already read so, and nothing there moves; D38 item 5 is closed
 
 **Context.** D38 item 5 named the faithful alternative to tracking `Vec.packAt`'s VERDICT — typed, or boxed
@@ -251,8 +321,11 @@ the differential's generators reaching the corner, and the old raw reference sho
    two walks pack the same cells through `Incremental.pack_cache` (the cache's cells under the key, each
    under its token), whose cells ARE `pack_cells` over the raw cells (`pack_cache_is_pack_cells`) — the
    one definition the shard asked for. The verdict being a function of the WHOLE column is what the rest
-   of this record is about. It is the twin of `Frame.fst`'s `pack` / `pack_cell` on the list column; the
-   two cannot be one definition because `Frame.fst` opens `Pipeline` and not the reverse.
+   of this record is about. It is the twin of `Frame.fst`'s `pack` / `pack_cell` on the list column. (Corrected by
+   D41, Phase 476: this record first said the two could not be one definition because `Frame.fst`
+   opens `Pipeline` and not the reverse — the wrong reason, since that is what lets the frame read
+   Pipeline's definition. What keeps them two is the carrier record, `prims` here and `host` there;
+   they are tied by a proved equality, `widen_cell_is_pack_cell` and `pack_cell_is_pipeline`.)
 
 2. **Three parameters more, each an assumption the theorems make nothing of beyond its type:** the float
    carrier of `float v` (`float_of_int`), `string v` (`int_text`) and `ScaledDecimal.scaleOf`

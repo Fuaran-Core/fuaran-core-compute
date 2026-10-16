@@ -3698,6 +3698,7 @@ type private RelTally =
       ROk: int
       RErr: int
       RRowRefused: int
+      RBeside: int
       RWalks: int
       RVerbs: Set<string> }
 
@@ -3707,6 +3708,7 @@ let private rEmptyTally =
       ROk = 0
       RErr = 0
       RRowRefused = 0
+      RBeside = 0
       RWalks = 0
       RVerbs = Set.empty }
 
@@ -3772,10 +3774,6 @@ let private rCompareStep
             // A refusal that read the cells: an aggregate over a column it cannot aggregate. The
             // row function's, outside the schema model by its header.
             None, 0, 0, 1, None
-        | Error(TypeError detail), Some(ModelPipe.Ok _) when detail.Contains "which no column type holds together" ->
-            // Outside the model's domain (Phase 423, D18), exactly as the pipeline differential
-            // excuses it: the list model's column holds any cells side by side.
-            None, 0, 0, 1, None
         | Ok t', Some(ModelPipe.Error me) ->
             Some(
                 sprintf
@@ -3802,6 +3800,17 @@ let private rCompareStep
             1,
             0,
             None
+
+    // A union production refuses on D18 — two types no column type holds together — that the
+    // model refuses with the same text, through the cells' typing's own rule (Phase 476). Counted
+    // so the case below can say the differential MET the refusal rather than never reaching it.
+    let beside =
+        match t, prod, model with
+        | Union _, Error((TypeError detail) as e), Some(ModelPipe.Error me) when
+            detail.Contains "which no column type holds together" && pErrToModel e = me
+            ->
+            1
+        | _ -> 0
 
     let kProd' = SchemaWalk.ofTransform sources kProd t
     let kModel' = ModelRel.walk rp (rSources sources) kModel (pTransformToModel t)
@@ -3841,6 +3850,7 @@ let private rCompareStep
         ROk = tally.ROk + ok
         RErr = tally.RErr + err
         RRowRefused = tally.RRowRefused + rowRefused
+        RBeside = tally.RBeside + beside
         RWalks = tally.RWalks + 1
         RVerbs = Set.add (pVerbTag t) tally.RVerbs }
 
@@ -4042,15 +4052,26 @@ let private rShapes: (string * Table * Transform list) list =
               Agg = Sum }
         Project [ "g", "g" ] ] ]
 
-/// The whole relational differential: the named shapes, then `trials` generated pipelines at
-/// `seed`, each compared step by step — and, for the walk, past the first refusal.
+/// Every ordered pair of the generator's column types as a one-column union (Phase 476): the left
+/// typed by the first, the embedded right by the second, one null row each. The 38 pairs no
+/// widening relates either way are the D18 refusal the relational differential once excused.
+let private rUnionPairs: (string * Table * Transform list) list =
+    [ for a in colTypePool do
+          for b in colTypePool ->
+              sprintf "union-pair %A/%A" a b,
+              rTable [ "a", a, [ Null ] ],
+              [ Union(Embedded(rTable [ "a", b, [ Null ] ])) ] ]
+
+/// The whole relational differential: the named shapes, every union type pair, then `trials`
+/// generated pipelines at `seed`, each compared step by step — and, for the walk, past the first
+/// refusal.
 let private rDifferential (rp: ModelRel.rprims) (seed: int) (trials: int) : RelTally =
     let right, _ = pGenTable (ConfRng.ofSeed 7)
     let resolve = pResolveWith right
     let sources = fun r -> if r = "r" then Some right.Schema else None
     let mutable tally = rEmptyTally
 
-    for label, table, p in rShapes do
+    for label, table, p in rShapes @ rUnionPairs do
         tally <- rComparePipeline label rp resolve sources pEnv table p tally
 
     let mutable r = ConfRng.ofSeed seed
@@ -6151,6 +6172,13 @@ let proofOracleTests =
               Expect.isGreaterThan t.RErr 150 (sprintf "steps refused on both sides (err=%d)" t.RErr)
               Expect.isGreaterThan t.RWalks 600 (sprintf "walk steps compared (walks=%d)" t.RWalks)
 
+              // No excuse arm (Phase 476): a union production refuses on D18 is refused by the model,
+              // text for text — every one of the 38 type pairs no widening relates, and the 423 shape.
+              Expect.isGreaterThanOrEqual
+                  t.RBeside
+                  39
+                  (sprintf "unions refused on D18 by both sides (beside=%d)" t.RBeside)
+
               for verb in
                   [ "Project"
                     "GroupBy"
@@ -6182,11 +6210,12 @@ let proofOracleTests =
                       (sprintf "joinRightNames %A %A" left right)
 
               printfn
-                  "relational differential: steps=%d ok=%d err=%d rowRefused=%d walks=%d verbs=%d"
+                  "relational differential: steps=%d ok=%d err=%d rowRefused=%d beside=%d walks=%d verbs=%d"
                   t.RSteps
                   t.ROk
                   t.RErr
                   t.RRowRefused
+                  t.RBeside
                   t.RWalks
                   t.RVerbs.Count
 
@@ -6347,6 +6376,41 @@ let proofOracleTests =
                   t.FKernelRows
 
               Expect.equal (frameDifferential fTable fHost 435 300) t "same seed => identical tally"
+
+          testCase
+              "the frame model's packed cell is Pipeline.fst's pack_cell at the differential's instantiation, typed or boxed, at every non-temporal type (Phase 476)"
+          <| fun _ ->
+              // `Frame.fst`'s `pack_cell_is_pipeline`, read at the two records the differentials
+              // instantiate (`fHost`, `pPrims`): the lemma's premise is that the two agree on the
+              // carriers of an int, which this case is where it is checked.
+              let mutable r = ConfRng.ofSeed 476
+              let mutable compared = 0
+
+              for ty in colTypePool do
+                  match ty with
+                  | DateType
+                  | TimestampType _ -> ()
+                  | _ ->
+                      for _ in 1..40 do
+                          let cells =
+                              [ for _ in 1..5 ->
+                                    let c, r' = genColCell ty r
+                                    r <- r'
+                                    pCellToModel c ]
+
+                          cells
+                          |> List.iteri (fun i c ->
+                              let pipe = ModelPipe.pack_cell pPrims (pColToModel ty) c
+
+                              Expect.equal
+                                  (ModelFrame.pack_cell fHost (fType ty) cells (bigint i))
+                                  pipe
+                                  (sprintf "%A column %A, row %d" ty cells i)
+
+                              Expect.equal (ModelFrame.widen_cell fHost (fType ty) c) pipe (sprintf "%A cell %A" ty c)
+                              compared <- compared + 1)
+
+              Expect.isGreaterThan compared 900 (sprintf "cells compared (%d)" compared)
 
           testCase
               "a frame oracle whose bridge reads every validity with its meaning flipped DISAGREES with Frame.ofTable — the read-back measurement can fail"

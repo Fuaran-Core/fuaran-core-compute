@@ -62,33 +62,9 @@ let rec lookup_cols : Pipeline.schema  ->  Prims.list<Prims.string>  ->  Pipelin
      end))
 
 
-let type_tag : Pipeline.column_type  ->  Prims.string = (fun ( t  :  Pipeline.column_type ) -> (match (t) with
-| Pipeline.IntType -> begin
-     "int"
-     end
-| Pipeline.FloatType -> begin
-     "float"
-     end
-| Pipeline.BoolType -> begin
-     "bool"
-     end
-| Pipeline.StringType -> begin
-     "string"
-     end
-| Pipeline.DateType -> begin
-     "date"
-     end
-| Pipeline.TimestampType -> begin
-     "timestamp"
-     end
-| Pipeline.DecimalType -> begin
-     "decimal"
-     end))
-
-
 let cell_shape : Pipeline.cell  ->  Prims.string = (fun ( c  :  Pipeline.cell ) -> (match ((Pipeline.type_of c)) with
 | FStar_Pervasives_Native.Some (t) -> begin
-     (type_tag t)
+     (Pipeline.type_tag t)
      end
 | FStar_Pervasives_Native.None -> begin
      "null"
@@ -96,19 +72,11 @@ let cell_shape : Pipeline.cell  ->  Prims.string = (fun ( c  :  Pipeline.cell ) 
 
 
 let join_column_type : Pipeline.column_type  ->  Pipeline.column_type  ->  FStar_Pervasives_Native.option<Pipeline.column_type> = (fun ( a  :  Pipeline.column_type ) ( b  :  Pipeline.column_type ) ->  
-if (Pipeline.widens a b) then begin
-     FStar_Pervasives_Native.Some (b)
-     end else begin
-      
-if (Pipeline.widens b a) then begin
-     FStar_Pervasives_Native.Some (a)
-     end else begin
+if (Pipeline.disjoint_types a b) then begin
      FStar_Pervasives_Native.None
-     end
+     end else begin
+     FStar_Pervasives_Native.Some ((Pipeline.widen_type a b))
      end)
-
-
-let types_beside_each_other : Prims.string  ->  Pipeline.column_type  ->  Pipeline.column_type  ->  Pipeline.eval_error = (fun ( column  :  Prims.string ) ( a  :  Pipeline.column_type ) ( b  :  Pipeline.column_type ) -> Pipeline.TypeError ((Prims.strcat "derived column \'" (Prims.strcat column (Prims.strcat "\' holds a " (Prims.strcat (type_tag a) (Prims.strcat " beside a " (Prims.strcat (type_tag b) ", which no column type holds together: cast one to the other\'s type first"))))))))
 
 
 let agg_type : Pipeline.agg_fn  ->  Pipeline.column_type  ->  Pipeline.column_type = (fun ( fn  :  Pipeline.agg_fn ) ( src  :  Pipeline.column_type ) -> (match (fn) with
@@ -908,7 +876,7 @@ let rec union_types : Pipeline.schema  ->  Pipeline.schema  ->  Pipeline.outcome
 | (((n, lt))::lrest, ((uu___, rt))::rrest) -> begin
      (match ((union_ty lt rt)) with
 | FStar_Pervasives_Native.None -> begin
-     Pipeline.Error ((types_beside_each_other n lt rt))
+     Pipeline.Error ((Pipeline.types_beside n lt rt))
      end
 | FStar_Pervasives_Native.Some (ty) -> begin
      (match ((union_types lrest rrest)) with

@@ -109,9 +109,10 @@
    Anything about units. That the resolver resolves what the walk's sources declare — assumed.
 
    HOW TO READ IT. Opens `Pipeline` and reuses its definitions by name (`schema`, `frame`, the
-   verbs, `eval_error`, `assoc`, `index_of`, `names`, `app`, `type_of`, `widens`,
-   `infer_type`, `column_type_by`, `derived_typing_of`, `float_beside_decimal`, `wf`, `wframe`),
-   and re-models nothing it models. Every definition names its F# counterpart. Every type
+   verbs, `eval_error`, `assoc`, `index_of`, `names`, `app`, `type_of`, `widens`, `type_tag`,
+   `infer_type`, `column_type_by`, `derived_typing_of`, `float_beside_decimal`, `wf`, `wframe`,
+   and — for the union's type join and its refusal (Phase 476) — the cells' typing's
+   `disjoint_types`, `widen_type` and `types_beside`), and re-models nothing it models. Every definition names its F# counterpart. Every type
    parameter is `Type0`; default context, no scoped options.
 *)
 module Relational
@@ -157,33 +158,19 @@ let rec lookup_cols (cols:schema) (ns:list string) : Tot schema =
      | Some ty -> (n, ty) :: lookup_cols cols t
      | None -> lookup_cols cols t)
 
-(* F#: `ColumnType.tag` (the substrate's). *)
-let type_tag (t:column_type) : Tot string =
-  match t with
-  | IntType -> "int"
-  | FloatType -> "float"
-  | BoolType -> "bool"
-  | StringType -> "string"
-  | DateType -> "date"
-  | TimestampType -> "timestamp"
-  | DecimalType -> "decimal"
-
 (* F#: the private `cellShape` — a slot refusal's account of the cell it found. *)
 let cell_shape (c:cell) : Tot string =
   match type_of c with
   | Some t -> type_tag t
   | None -> "null"
 
-(* F#: `joinColumnType` — the join of two column types where `widens` relates them. *)
+(* F#: `joinColumnType` — the join of two column types where `widens` relates them, and nothing
+   where it relates neither way. Read through the cells' typing's own two definitions by name
+   (Phase 476): `Pipeline.disjoint_types` is `typeFromCells`' test of a pair no column type holds
+   together, and `Pipeline.widen_type` its join, so the union and a derived column refuse one pair
+   by one rule. *)
 let join_column_type (a b:column_type) : Tot (option column_type) =
-  if widens a b then Some b
-  else if widens b a then Some a
-  else None
-
-(* F#: `typesBesideEachOther column a b`. *)
-let types_beside_each_other (column:string) (a b:column_type) : Tot eval_error =
-  TypeError ("derived column '" ^ column ^ "' holds a " ^ type_tag a ^ " beside a " ^ type_tag b
-             ^ ", which no column type holds together: cast one to the other's type first")
+  if disjoint_types a b then None else Some (widen_type a b)
 
 (* F#: `Column.aggType fn srcType` (the substrate's). *)
 let agg_type (fn:agg_fn) (src:column_type) : Tot column_type =
@@ -631,7 +618,7 @@ let rec union_types (l r:schema) : Tot (outcome schema eval_error) =
   match l, r with
   | (n, lt) :: lrest, (_, rt) :: rrest ->
     (match union_ty lt rt with
-     | None -> Error (types_beside_each_other n lt rt)
+     | None -> Error (types_beside n lt rt)
      | Some ty ->
        (match union_types lrest rrest with
         | Error e -> Error e
