@@ -1,0 +1,260 @@
+{
+  "description": "The AUTHORED inputs of the dataframeParity law family: one named (source, pipeline) pair per evaluator feature. The answers are not authored here: `--emit-laws` evaluates each pair through the reference evaluator and writes conformance/laws/dataframe-parity.json. The pairs were first carried, with hand-recorded answers, as a host's own parity fixture (Phase 285); Phase 1938 moved the answers to this producer.",
+  "cases": [
+    {
+      "id": "grid-transform",
+      "source": "{\"columns\":{\"amount\":{\"validity\":[true,true,false],\"values\":[100,120,0]},\"dept\":{\"validity\":[true,true,true],\"values\":[\"eng\",\"eng\",\"sales\"]}},\"schema\":[{\"name\":\"dept\",\"type\":\"string\"},{\"name\":\"amount\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"filter\",\"pred\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"amount\"},\"op\":\"gt\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":0}}}},{\"$type\":\"groupBy\",\"aggs\":[{\"fn\":\"sum\",\"name\":\"total\",\"of\":\"amount\"}],\"keys\":[\"dept\"]},{\"$type\":\"sort\",\"by\":[{\"column\":\"total\",\"dir\":\"desc\"}]}]"
+    },
+    {
+      "id": "filter-null-drops",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"filter\",\"pred\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"ge\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":2}}}}]"
+    },
+    {
+      "id": "filter-eq-string",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"filter\",\"pred\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"k\"},\"op\":\"eq\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Str\",\"value\":\"a\"}}}}]"
+    },
+    {
+      "id": "groupby-sum-int-keeps-int",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"groupBy\",\"aggs\":[{\"fn\":\"sum\",\"name\":\"sx\",\"of\":\"x\"}],\"keys\":[\"k\"]}]"
+    },
+    {
+      "id": "groupby-mean-float",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"groupBy\",\"aggs\":[{\"fn\":\"mean\",\"name\":\"mx\",\"of\":\"x\"}],\"keys\":[\"k\"]}]"
+    },
+    {
+      "id": "groupby-count-nonnull",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"groupBy\",\"aggs\":[{\"fn\":\"count\",\"name\":\"cx\",\"of\":\"x\"}],\"keys\":[\"k\"]}]"
+    },
+    {
+      "id": "groupby-min-max",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"groupBy\",\"aggs\":[{\"fn\":\"min\",\"name\":\"lo\",\"of\":\"x\"},{\"fn\":\"max\",\"name\":\"hi\",\"of\":\"x\"}],\"keys\":[\"k\"]}]"
+    },
+    {
+      "id": "groupby-first-last",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"groupBy\",\"aggs\":[{\"fn\":\"first\",\"name\":\"f\",\"of\":\"x\"},{\"fn\":\"last\",\"name\":\"l\",\"of\":\"x\"}],\"keys\":[\"k\"]}]"
+    },
+    {
+      "id": "groupby-median-stddev",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"groupBy\",\"aggs\":[{\"fn\":\"median\",\"name\":\"md\",\"of\":\"y\"},{\"fn\":\"stddev\",\"name\":\"sd\",\"of\":\"y\"}],\"keys\":[\"k\"]}]"
+    },
+    {
+      "id": "groupby-sum-float",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"groupBy\",\"aggs\":[{\"fn\":\"sum\",\"name\":\"sy\",\"of\":\"y\"}],\"keys\":[\"k\"]}]"
+    },
+    {
+      "id": "derive-add-coerce",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"add\",\"right\":{\"$type\":\"col\",\"name\":\"y\"}},\"name\":\"z\"}]"
+    },
+    {
+      "id": "derive-int-add",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"add\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":10}}},\"name\":\"x2\"}]"
+    },
+    {
+      "id": "derive-div-by-zero",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"div\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":0}}},\"name\":\"d\"}]"
+    },
+    {
+      "id": "derive-div-frac",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"div\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":2}}},\"name\":\"d\"}]"
+    },
+    {
+      "id": "derive-mod",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"mod\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":2}}},\"name\":\"m\"}]"
+    },
+    {
+      "id": "derive-overwrite",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"mul\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":2}}},\"name\":\"x\"}]"
+    },
+    {
+      "id": "derive-coalesce",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"coalesce\",\"exprs\":[{\"$type\":\"col\",\"name\":\"x\"},{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":0}}]},\"name\":\"c\"}]"
+    },
+    {
+      "id": "derive-case",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"case\",\"cases\":[{\"then\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Str\",\"value\":\"big\"}},\"when\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"gt\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":2}}}}],\"else\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Str\",\"value\":\"small\"}}},\"name\":\"b\"}]"
+    },
+    {
+      "id": "derive-not",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"not\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"gt\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":2}}}},\"name\":\"nb\"}]"
+    },
+    {
+      "id": "derive-and",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"gt\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":1}}},\"op\":\"and\",\"right\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"lt\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":5}}}},\"name\":\"a\"}]"
+    },
+    {
+      "id": "derive-or",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"binary\",\"left\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"gt\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":4}}},\"op\":\"or\",\"right\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"y\"},\"op\":\"lt\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Float\",\"value\":1}}}},\"name\":\"o\"}]"
+    },
+    {
+      "id": "derive-cast-float",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"cast\",\"expr\":{\"$type\":\"col\",\"name\":\"x\"},\"type\":\"float\"},\"name\":\"xf\"}]"
+    },
+    {
+      "id": "derive-cast-string",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"cast\",\"expr\":{\"$type\":\"col\",\"name\":\"x\"},\"type\":\"string\"},\"name\":\"xs\"}]"
+    },
+    {
+      "id": "derive-cast-string-float",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"cast\",\"expr\":{\"$type\":\"col\",\"name\":\"y\"},\"type\":\"string\"},\"name\":\"ys\"}]"
+    },
+    {
+      "id": "apply-abs",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"x\"},\"op\":\"sub\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":3}}}],\"fn\":\"abs\"},\"name\":\"ax\"}]"
+    },
+    {
+      "id": "apply-round",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"col\",\"name\":\"y\"}],\"fn\":\"round\"},\"name\":\"ry\"}]"
+    },
+    {
+      "id": "apply-round-half",
+      "source": "{\"columns\":{\"h\":{\"validity\":[true,true,true,true,true,true],\"values\":[0.5,1.5,2.5,-0.5,-1.5,2.4]}},\"schema\":[{\"name\":\"h\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"col\",\"name\":\"h\"}],\"fn\":\"round\"},\"name\":\"r\"}]"
+    },
+    {
+      "id": "apply-floor-ceil",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"col\",\"name\":\"y\"}],\"fn\":\"floor\"},\"name\":\"fl\"},{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"col\",\"name\":\"y\"}],\"fn\":\"ceil\"},\"name\":\"ce\"}]"
+    },
+    {
+      "id": "apply-length",
+      "source": "{\"columns\":{\"s\":{\"validity\":[true,true,false],\"values\":[\"Hello\",\"World\",\"\"]}},\"schema\":[{\"name\":\"s\",\"type\":\"string\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"col\",\"name\":\"s\"}],\"fn\":\"length\"},\"name\":\"len\"}]"
+    },
+    {
+      "id": "apply-lower-upper",
+      "source": "{\"columns\":{\"s\":{\"validity\":[true,true,false],\"values\":[\"Hello\",\"World\",\"\"]}},\"schema\":[{\"name\":\"s\",\"type\":\"string\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"col\",\"name\":\"s\"}],\"fn\":\"lower\"},\"name\":\"lo\"},{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"col\",\"name\":\"s\"}],\"fn\":\"upper\"},\"name\":\"up\"}]"
+    },
+    {
+      "id": "apply-substr",
+      "source": "{\"columns\":{\"s\":{\"validity\":[true,true,false],\"values\":[\"Hello\",\"World\",\"\"]}},\"schema\":[{\"name\":\"s\",\"type\":\"string\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"col\",\"name\":\"s\"},{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":1}},{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":3}}],\"fn\":\"substr\"},\"name\":\"sub\"}]"
+    },
+    {
+      "id": "apply-datepart",
+      "source": "{\"columns\":{\"d\":{\"validity\":[true,true,false],\"values\":[\"2026-03-14\",\"2025-12-01\",\"\"]}},\"schema\":[{\"name\":\"d\",\"type\":\"date\"}]}",
+      "pipeline": "[{\"$type\":\"derive\",\"expr\":{\"$type\":\"apply\",\"args\":[{\"$type\":\"lit\",\"cell\":{\"$type\":\"Str\",\"value\":\"year\"}},{\"$type\":\"col\",\"name\":\"d\"}],\"fn\":\"datePart\"},\"name\":\"yr\"}]"
+    },
+    {
+      "id": "project-rename",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"project\",\"columns\":[{\"a\":\"k\",\"b\":\"key\"},{\"a\":\"x\",\"b\":\"val\"}]}]"
+    },
+    {
+      "id": "sort-asc-nulls-last",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"sort\",\"by\":[{\"column\":\"x\",\"dir\":\"asc\"}]}]"
+    },
+    {
+      "id": "sort-desc-nulls-last",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"sort\",\"by\":[{\"column\":\"x\",\"dir\":\"desc\"}]}]"
+    },
+    {
+      "id": "distinct",
+      "source": "{\"columns\":{\"amt\":{\"validity\":[true,true,true,true],\"values\":[1,2,3,4]},\"product\":{\"validity\":[true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\"]},\"region\":{\"validity\":[true,true,true,true],\"values\":[\"n\",\"n\",\"s\",\"s\"]}},\"schema\":[{\"name\":\"region\",\"type\":\"string\"},{\"name\":\"product\",\"type\":\"string\"},{\"name\":\"amt\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"project\",\"columns\":[{\"a\":\"region\",\"b\":\"region\"}]},{\"$type\":\"distinct\"}]"
+    },
+    {
+      "id": "limit-offset",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"limit\",\"n\":2,\"offset\":1}]"
+    },
+    {
+      "id": "join-inner",
+      "source": "{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,3]},\"name\":{\"validity\":[true,true,true],\"values\":[\"a\",\"b\",\"c\"]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"name\",\"type\":\"string\"}]}",
+      "pipeline": "[{\"$type\":\"join\",\"how\":\"inner\",\"on\":[{\"a\":\"id\",\"b\":\"id\"}],\"source\":{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,4]},\"score\":{\"validity\":[true,true,true],\"values\":[10,20,40]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"score\",\"type\":\"int\"}]}}]"
+    },
+    {
+      "id": "join-left",
+      "source": "{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,3]},\"name\":{\"validity\":[true,true,true],\"values\":[\"a\",\"b\",\"c\"]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"name\",\"type\":\"string\"}]}",
+      "pipeline": "[{\"$type\":\"join\",\"how\":\"left\",\"on\":[{\"a\":\"id\",\"b\":\"id\"}],\"source\":{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,4]},\"score\":{\"validity\":[true,true,true],\"values\":[10,20,40]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"score\",\"type\":\"int\"}]}}]"
+    },
+    {
+      "id": "join-right",
+      "source": "{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,3]},\"name\":{\"validity\":[true,true,true],\"values\":[\"a\",\"b\",\"c\"]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"name\",\"type\":\"string\"}]}",
+      "pipeline": "[{\"$type\":\"join\",\"how\":\"right\",\"on\":[{\"a\":\"id\",\"b\":\"id\"}],\"source\":{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,4]},\"score\":{\"validity\":[true,true,true],\"values\":[10,20,40]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"score\",\"type\":\"int\"}]}}]"
+    },
+    {
+      "id": "join-outer",
+      "source": "{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,3]},\"name\":{\"validity\":[true,true,true],\"values\":[\"a\",\"b\",\"c\"]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"name\",\"type\":\"string\"}]}",
+      "pipeline": "[{\"$type\":\"join\",\"how\":\"outer\",\"on\":[{\"a\":\"id\",\"b\":\"id\"}],\"source\":{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,4]},\"score\":{\"validity\":[true,true,true],\"values\":[10,20,40]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"score\",\"type\":\"int\"}]}}]"
+    },
+    {
+      "id": "window-rownumber",
+      "source": "{\"columns\":{\"g\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"a\",\"a\",\"b\",\"b\"]},\"v\":{\"validity\":[true,true,true,true,true],\"values\":[10,20,30,5,15]}},\"schema\":[{\"name\":\"g\",\"type\":\"string\"},{\"name\":\"v\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"window\",\"as\":\"rn\",\"fn\":\"rowNumber\",\"of\":\"v\",\"orderBy\":[{\"column\":\"v\",\"dir\":\"asc\"}],\"partitionBy\":[\"g\"]}]"
+    },
+    {
+      "id": "window-rank",
+      "source": "{\"columns\":{\"g\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"a\",\"a\",\"b\",\"b\"]},\"v\":{\"validity\":[true,true,true,true,true],\"values\":[10,20,30,5,15]}},\"schema\":[{\"name\":\"g\",\"type\":\"string\"},{\"name\":\"v\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"window\",\"as\":\"rk\",\"fn\":\"rank\",\"of\":\"v\",\"orderBy\":[{\"column\":\"v\",\"dir\":\"asc\"}],\"partitionBy\":[\"g\"]}]"
+    },
+    {
+      "id": "window-lag",
+      "source": "{\"columns\":{\"g\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"a\",\"a\",\"b\",\"b\"]},\"v\":{\"validity\":[true,true,true,true,true],\"values\":[10,20,30,5,15]}},\"schema\":[{\"name\":\"g\",\"type\":\"string\"},{\"name\":\"v\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"window\",\"as\":\"lg\",\"fn\":\"lag\",\"of\":\"v\",\"orderBy\":[{\"column\":\"v\",\"dir\":\"asc\"}],\"partitionBy\":[\"g\"]}]"
+    },
+    {
+      "id": "window-lead",
+      "source": "{\"columns\":{\"g\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"a\",\"a\",\"b\",\"b\"]},\"v\":{\"validity\":[true,true,true,true,true],\"values\":[10,20,30,5,15]}},\"schema\":[{\"name\":\"g\",\"type\":\"string\"},{\"name\":\"v\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"window\",\"as\":\"ld\",\"fn\":\"lead\",\"of\":\"v\",\"orderBy\":[{\"column\":\"v\",\"dir\":\"asc\"}],\"partitionBy\":[\"g\"]}]"
+    },
+    {
+      "id": "window-cumsum",
+      "source": "{\"columns\":{\"g\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"a\",\"a\",\"b\",\"b\"]},\"v\":{\"validity\":[true,true,true,true,true],\"values\":[10,20,30,5,15]}},\"schema\":[{\"name\":\"g\",\"type\":\"string\"},{\"name\":\"v\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"window\",\"as\":\"cs\",\"fn\":\"cumulSum\",\"of\":\"v\",\"orderBy\":[{\"column\":\"v\",\"dir\":\"asc\"}],\"partitionBy\":[\"g\"]}]"
+    },
+    {
+      "id": "window-rollingmean",
+      "source": "{\"columns\":{\"g\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"a\",\"a\",\"b\",\"b\"]},\"v\":{\"validity\":[true,true,true,true,true],\"values\":[10,20,30,5,15]}},\"schema\":[{\"name\":\"g\",\"type\":\"string\"},{\"name\":\"v\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"window\",\"as\":\"rm\",\"fn\":\"rollingMean\",\"of\":\"v\",\"orderBy\":[{\"column\":\"v\",\"dir\":\"asc\"}],\"partitionBy\":[\"g\"]}]"
+    },
+    {
+      "id": "pivot",
+      "source": "{\"columns\":{\"amt\":{\"validity\":[true,true,true,true],\"values\":[1,2,3,4]},\"product\":{\"validity\":[true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\"]},\"region\":{\"validity\":[true,true,true,true],\"values\":[\"n\",\"n\",\"s\",\"s\"]}},\"schema\":[{\"name\":\"region\",\"type\":\"string\"},{\"name\":\"product\",\"type\":\"string\"},{\"name\":\"amt\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"pivot\",\"agg\":\"sum\",\"index\":[\"region\"],\"on\":\"product\",\"values\":\"amt\"}]"
+    },
+    {
+      "id": "unpivot",
+      "source": "{\"columns\":{\"id\":{\"validity\":[true,true,true],\"values\":[1,2,3]},\"name\":{\"validity\":[true,true,true],\"values\":[\"a\",\"b\",\"c\"]}},\"schema\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"name\",\"type\":\"string\"}]}",
+      "pipeline": "[{\"$type\":\"unpivot\",\"idVars\":[\"id\"],\"valueVars\":[\"name\"]}]"
+    },
+    {
+      "id": "union",
+      "source": "{\"columns\":{\"n\":{\"validity\":[true,true],\"values\":[1,2]}},\"schema\":[{\"name\":\"n\",\"type\":\"int\"}]}",
+      "pipeline": "[{\"$type\":\"union\",\"source\":{\"columns\":{\"n\":{\"validity\":[true,true],\"values\":[3,4]}},\"schema\":[{\"name\":\"n\",\"type\":\"int\"}]}}]"
+    },
+    {
+      "id": "err-unknown-column",
+      "source": "{\"columns\":{\"k\":{\"validity\":[true,true,true,true,true],\"values\":[\"a\",\"b\",\"a\",\"b\",\"c\"]},\"x\":{\"validity\":[true,true,true,false,true],\"values\":[1,2,3,0,5]},\"y\":{\"validity\":[true,false,true,true,true],\"values\":[1.5,0,2.5,4,0]}},\"schema\":[{\"name\":\"k\",\"type\":\"string\"},{\"name\":\"x\",\"type\":\"int\"},{\"name\":\"y\",\"type\":\"float\"}]}",
+      "pipeline": "[{\"$type\":\"filter\",\"pred\":{\"$type\":\"binary\",\"left\":{\"$type\":\"col\",\"name\":\"nope\"},\"op\":\"gt\",\"right\":{\"$type\":\"lit\",\"cell\":{\"$type\":\"Int\",\"value\":0}}}}]"
+    }
+  ]
+}

@@ -334,6 +334,89 @@ module LawVectorExport =
         sb.ToString()
 
     // -----------------------------------------------------------------------
+    //  Phase 1938 — the dataframeParity family: named feature cases, computed answers
+    // -----------------------------------------------------------------------
+    //
+    // The transform sample above is DRAWN; this family is AUTHORED — one named (source, pipeline)
+    // pair per evaluator feature (joins, windows, pivots, the apply functions, …), the coverage a
+    // drawn sample reaches only by luck. Only the inputs are authored, in the test project's
+    // `fixtures/dataframe-parity-inputs.json`; every answer is computed here by calling the
+    // reference, exactly as the drawn vectors' are, and each input is written as the reference's
+    // own re-encoding of its decode, so a host can also assert that its codec reproduces it.
+
+    let parityFileName = "dataframe-parity.json"
+
+    let private parityInputsFile () : string =
+        Snapshots.repoFile (
+            Path.Combine("tests", "Fuaran.Core.Compute.Tests", "fixtures", "dataframe-parity-inputs.json")
+        )
+
+    let private member' (name: string) (v: JVal) : string =
+        match v with
+        | JObj ms ->
+            match ms |> List.tryPick (fun (k, x) -> if k = name then Some x else None) with
+            | Some(JStr s) -> s
+            | _ -> failwithf "dataframe-parity input: member '%s' is missing or not a string" name
+        | _ -> failwith "dataframe-parity input: a case is not an object"
+
+    let parityVectors () : Vector list =
+        let cases =
+            match Json.parse (File.ReadAllText(parityInputsFile ())) with
+            | Ok(JObj ms) ->
+                match ms |> List.tryPick (fun (k, v) -> if k = "cases" then Some v else None) with
+                | Some(JArr items) -> items
+                | _ -> failwith "dataframe-parity inputs carry no `cases` array"
+            | Ok _ -> failwith "dataframe-parity inputs are not an object"
+            | Error m -> failwithf "dataframe-parity inputs did not parse: %s" m
+
+        [ for case in cases do
+              let id = member' "id" case
+
+              match
+                  DataFrameCodec.decodePipeline (member' "pipeline" case), ColumnCodec.decode (member' "source" case)
+              with
+              | Ok pipeline, Ok(Embedded table) ->
+                  yield
+                      { Id = id
+                        Case = "evalPipeline"
+                        Input =
+                          [ "pipeline", jstr (DataFrameCodec.encodePipeline pipeline)
+                            "source", jstr (ColumnCodec.encode (Embedded table)) ]
+                        Expected = expectedOf (DataFrame.evalPipeline pipeline table) }
+              | Error e, _ ->
+                  failwithf "dataframe-parity %s: pipeline did not decode (%s)" id (ColumnCodec.errorString e)
+              | _, Error e -> failwithf "dataframe-parity %s: source did not decode (%s)" id (ColumnCodec.errorString e)
+              | _, Ok _ -> failwithf "dataframe-parity %s: source is not an embedded table" id ]
+
+    let private parityDescription =
+        "The reference answers for the AUTHORED dataframe-parity cases: one named (source, pipeline) pair per "
+        + "evaluator feature, each answer computed by calling Fuaran.Compute.DataFrame.evalPipeline. The vector "
+        + "shape is transformLaws' own: `input.source` is a canonical DataSource wire string (an embedded "
+        + "table) and `input.pipeline` a canonical Transform-pipeline wire string, each the reference's "
+        + "re-encoding of its own decode, so a host asserts that its codec reproduces both byte for byte; "
+        + "an `ok` vector's `expected.table` is the result table's canonical wire string, and an `error` "
+        + "vector requires the host to refuse the pipeline too, without naming the refusal."
+
+    let renderParityVectors () : string =
+        let sb = StringBuilder()
+        let line (s: string) = sb.Append(s).Append('\n') |> ignore
+
+        line "{"
+        line ("  \"family\": " + jstr "dataframeParity" + ",")
+        line ("  \"description\": " + jstr parityDescription + ",")
+        line "  \"vectors\": ["
+
+        let rendered = parityVectors () |> List.map renderVector
+        let last = List.length rendered - 1
+
+        rendered
+        |> List.iteri (fun i v -> line ("    " + v + (if i = last then "" else ",")))
+
+        line "  ]"
+        line "}"
+        sb.ToString()
+
+    // -----------------------------------------------------------------------
     //  writing
     // -----------------------------------------------------------------------
 
@@ -342,12 +425,17 @@ module LawVectorExport =
     let transformPath (corpusDir: string) : string =
         Path.Combine(familyDir corpusDir, transformFileName)
 
+    let parityPath (corpusDir: string) : string =
+        Path.Combine(familyDir corpusDir, parityFileName)
+
     /// Every law set this repository emits, as (path under `corpusDir`, rendered bytes) — the one
     /// list `write` walks, so a family added here cannot be rendered and then forgotten by the
-    /// writer. One set: the transform-parity family's reference answers. (The substrate's own
+    /// writer. Two sets: the transform-parity family's drawn reference answers, and the
+    /// dataframeParity family's answers over its authored cases. (The substrate's own
     /// `capabilityLaws` vectors are emitted by the substrate, beside the law they certify.)
     let emitted (corpusDir: string) : (string * string) list =
-        [ transformPath corpusDir, renderTransformVectors () ]
+        [ transformPath corpusDir, renderTransformVectors ()
+          parityPath corpusDir, renderParityVectors () ]
 
     /// Write the vectors with LF endings, whatever the host platform — the corpus is byte-compared
     /// by several hosts on three operating systems.

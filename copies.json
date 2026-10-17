@@ -20,6 +20,14 @@
       }
     },
     {
+      "source": "conformance/laws/dataframe-parity.json",
+      "consumers": [
+        "Fuaran/Fuaran-UI/wire-format-fixtures/laws/dataframe-parity.json"
+      ],
+      "check": "fingerprint",
+      "regen": "cd Fuaran/Fuaran-Core-Compute; dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-laws ../Fuaran-UI/wire-format-fixtures (Phase 1938: the dataframeParity family carries no kitVersion stamp, so the copy is graded against the committed file and moves only when an answer does)"
+    },
+    {
       "source": "proofs/fstar-pin.json",
       "consumers": [
         "Fuaran/Fuaran-Core/proofs/fstar-pin.json"

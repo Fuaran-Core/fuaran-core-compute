@@ -543,6 +543,36 @@ let tests =
                           "the committed conformance/laws file is not what this kit renders — re-run `--emit-laws` (no argument) and commit conformance/"
 
           testCase
+              "the committed conformance/laws/dataframe-parity.json is the one this kit renders over its authored cases (Phase 1938)"
+          <| fun _ ->
+              // The answers are computed by the reference at render time, so equality with the
+              // render IS the oracle question; the vector read-back below is the host's view of the
+              // same file, through the reader the transform family's vectors use.
+              let path = LawVectorExport.parityPath (OwnedConformance.root ())
+
+              if not (File.Exists path) then
+                  failtestf
+                      "this repository carries no %s at '%s' — re-run `--emit-laws` (no argument writes into conformance/) and commit the result"
+                      LawVectorExport.parityFileName
+                      path
+              else
+                  let committed = File.ReadAllText path
+
+                  match parseVectors committed with
+                  | Error m -> failtest ("the committed parity vectors did not read: " + m)
+                  | Ok vectors ->
+                      Expect.isNonEmpty vectors "the dataframeParity family carries no vectors"
+
+                      Expect.isEmpty
+                          (vectors |> List.choose checkVector)
+                          "the committed parity vectors disagree with this kit's reference evaluator"
+
+                      Expect.equal
+                          committed
+                          (LawVectorExport.renderParityVectors ())
+                          "the committed conformance/laws/dataframe-parity.json is not what this kit renders — re-run `--emit-laws` (no argument) and commit conformance/"
+
+          testCase
               "the corpus copy of laws/transform-laws.json is fresh — always checked; FUARAN_CORE_CORPUS_FRESHNESS decides only whether a finding is fatal"
           <| fun _ ->
               // Phase 130 decided that an absent corpus FAILS where the leg was asked for; Phase
