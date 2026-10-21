@@ -2104,6 +2104,11 @@ A ruling the operator may take: keep it (the recorded state), or look for a host
 that would recover it (no reuse ships: a buffer outliving its vector retains memory, and the lifetime
 is not the evaluator's to know). Nothing here is a correctness question.
 
+**Ruled 2026-10-21: keep it.** The collection cost under node is the worker path's price, accepted
+as recorded. No host-side buffer reuse is pursued: the lifetime it would need is not the evaluator's
+to know, and the regression is confined to the whole-evaluator figure at one size on one host. A
+consumer that measures it on a real workload reopens the question with that measurement.
+
 ## 2026-10-06 — D13: the worker path's first piece is the step as data, compiled by one path; the frame's byte masks come before the pool, because every worker would otherwise copy them
 
 **Decision.** fuaran-core#375 builds D10's yes in order, and the first piece is the seam a worker
