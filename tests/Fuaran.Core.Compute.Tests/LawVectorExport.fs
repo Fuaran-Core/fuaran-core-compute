@@ -41,7 +41,6 @@ module LawVectorExport =
 
     open System.IO
     open System.Reflection
-    open System.Text
     open Fuaran.Core
     open Fuaran.Compute
 
@@ -69,43 +68,6 @@ module LawVectorExport =
         TransformVectorSample.gen iteration rng
 
     let lawGen () : ConfRng.T -> (Table * Transform list) * ConfRng.T = TransformVectorSample.lawGen ()
-    // -----------------------------------------------------------------------
-    //  a small deterministic JSON renderer
-    // -----------------------------------------------------------------------
-    //  Hand-rolled rather than `Utf8JsonWriter`, for two reasons, both about the artefact being an
-    //  ORACLE rather than merely valid JSON. The writer's indented mode emits
-    //  `Environment.NewLine`, so the same run would produce different bytes on Windows and Linux.
-    //  And its default string encoder escapes every character outside a conservative HTML-safe set
-    //  — backticks, `+`, apostrophes and em-dashes all become `\uXXXX` — which is a
-    //  framework-version-dependent choice this corpus should not inherit. The escaper below is the
-    //  JSON minimum and nothing more: the two structural characters, the named short escapes, and
-    //  the control range. Everything else is written as itself, in UTF-8.
-
-    let private jstr (s: string) : string =
-        let sb = StringBuilder()
-        sb.Append('"') |> ignore
-
-        for ch in s do
-            match ch with
-            | '"' -> sb.Append("\\\"") |> ignore
-            | '\\' -> sb.Append("\\\\") |> ignore
-            | '\b' -> sb.Append("\\b") |> ignore
-            | '\f' -> sb.Append("\\f") |> ignore
-            | '\n' -> sb.Append("\\n") |> ignore
-            | '\r' -> sb.Append("\\r") |> ignore
-            | '\t' -> sb.Append("\\t") |> ignore
-            | c when c < ' ' -> sb.AppendFormat("\\u{0:x4}", int c) |> ignore
-            | c -> sb.Append(c) |> ignore
-
-        sb.Append('"') |> ignore
-        sb.ToString()
-
-    let private jint (n: int) : string = string n
-
-    let private jobj (members: (string * string) list) : string =
-        "{ "
-        + (members |> List.map (fun (k, v) -> jstr k + ": " + v) |> String.concat ", ")
-        + " }"
 
     /// The version of the reference that produced the answers, read from the assembly rather than a
     /// literal: the version decides what the reference answers, so a file naming it from a literal
@@ -126,28 +88,34 @@ module LawVectorExport =
     // -----------------------------------------------------------------------
 
     /// A single exported vector: what a host is given, and what the reference actually answered.
+    /// Every member is a cell of the substrate's one corpus writer (`CorpusFile`), which decides the
+    /// file's every byte — its escaping, its spacing and its line layout — so this producer writes
+    /// no JSON of its own.
     type Vector =
         { Id: string
           Case: string
-          Input: (string * string) list
-          Expected: (string * string) list }
+          Input: (string * CorpusCell) list
+          Expected: (string * CorpusCell) list }
 
-    let private renderVector (v: Vector) : string =
-        jobj
-            [ "id", jstr v.Id
-              "case", jstr v.Case
-              "input", jobj v.Input
-              "expected", jobj v.Expected ]
+    let private str = CorpusFile.str
+
+    /// One vector as one item line: its members in this order, `input` and `expected` spaced objects.
+    let private vectorCell (v: Vector) : CorpusCell =
+        CorpusCell.Row
+            [ "id", str v.Id
+              "case", str v.Case
+              "input", CorpusCell.Row v.Input
+              "expected", CorpusCell.Row v.Expected ]
 
     /// The reference's answer, in the terms the parity law actually compares. An `Ok` carries the
     /// canonical wire string of the result table — the identity `transformLaws` asserts. An
     /// `Error` carries the verdict and NOTHING ELSE, because the law requires only that the host
     /// also refused; it does not compare which refusal, and a vector naming one would invite a host
     /// to gate on agreement the contract has never claimed.
-    let private expectedOf (r: Result<Table, EvalError>) : (string * string) list =
+    let private expectedOf (r: Result<Table, EvalError>) : (string * CorpusCell) list =
         match r with
-        | Ok t -> [ "verdict", jstr "ok"; "table", jstr (ColumnCodec.encode (Embedded t)) ]
-        | Error _ -> [ "verdict", jstr "error" ]
+        | Ok t -> [ "verdict", str "ok"; "table", str (ColumnCodec.encode (Embedded t)) ]
+        | Error _ -> [ "verdict", str "error" ]
 
     let allVectors () : Vector list =
         let mutable rng = ConfRng.ofSeed seed
@@ -160,8 +128,8 @@ module LawVectorExport =
                   { Id = sprintf "transform-%d-%s" i (shapeOf i)
                     Case = "evalPipeline"
                     Input =
-                      [ "pipeline", jstr (DataFrameCodec.encodePipeline pipeline)
-                        "source", jstr (ColumnCodec.encode (Embedded table)) ]
+                      [ "pipeline", str (DataFrameCodec.encodePipeline pipeline)
+                        "source", str (ColumnCodec.encode (Embedded table)) ]
                     Expected = expectedOf (DataFrame.evalPipeline pipeline table) } ]
 
     // -----------------------------------------------------------------------
@@ -235,12 +203,12 @@ module LawVectorExport =
 
                 { Id = sprintf "column-op-%d-%s" i name
                   Case = "columnOp"
-                  Input = [ "op", jstr wire; "source", jstr (ColumnCodec.encode (Embedded source)) ]
+                  Input = [ "op", str wire; "source", str (ColumnCodec.encode (Embedded source)) ]
                   Expected =
                     (match ColumnOps.apply op source with
-                     | Ok t -> [ "verdict", jstr "ok"; "table", jstr (ColumnCodec.encode (Embedded t)) ]
-                     | Error _ -> [ "verdict", jstr "error" ])
-                    @ [ "op", jstr reEncoded ] })
+                     | Ok t -> [ "verdict", str "ok"; "table", str (ColumnCodec.encode (Embedded t)) ]
+                     | Error _ -> [ "verdict", str "error" ])
+                    @ [ "op", str reEncoded ] })
 
         let deltaVectors =
             deltaCases
@@ -253,10 +221,10 @@ module LawVectorExport =
                 { Id = sprintf "delta-%d-%s" i name
                   Case = "delta"
                   Input =
-                    [ "after", jstr (ColumnCodec.encode (Embedded after))
-                      "before", jstr (ColumnCodec.encode (Embedded before))
-                      "key", jstr "id" ]
-                  Expected = [ "verdict", jstr "ok"; "delta", jstr (DeltaCodec.encode d) ] })
+                    [ "after", str (ColumnCodec.encode (Embedded after))
+                      "before", str (ColumnCodec.encode (Embedded before))
+                      "key", str "id" ]
+                  Expected = [ "verdict", str "ok"; "delta", str (DeltaCodec.encode d) ] })
 
         opVectors @ deltaVectors
 
@@ -312,26 +280,15 @@ module LawVectorExport =
         + "one column twice are refused."
 
     let renderTransformVectors () : string =
-        let sb = StringBuilder()
-        let line (s: string) = sb.Append(s).Append('\n') |> ignore
-
-        line "{"
-        line ("  \"family\": " + jstr "transformLaws" + ",")
-        line ("  \"kitVersion\": " + jstr (kitVersion ()) + ",")
-        line ("  \"seed\": " + jint seed + ",")
-        line ("  \"iterations\": " + jint iterations + ",")
-        line ("  \"description\": " + jstr description + ",")
-        line "  \"vectors\": ["
-
-        let rendered = allVectors () @ wireVectors () |> List.map renderVector
-        let last = List.length rendered - 1
-
-        rendered
-        |> List.iteri (fun i v -> line ("    " + v + (if i = last then "" else ",")))
-
-        line "  ]"
-        line "}"
-        sb.ToString()
+        CorpusFile.render
+            { Head =
+                [ "family", str "transformLaws"
+                  "kitVersion", str (kitVersion ())
+                  "seed", CorpusFile.num seed
+                  "iterations", CorpusFile.num iterations
+                  "description", str description ]
+              Items = "vectors"
+              Rows = allVectors () @ wireVectors () |> List.map vectorCell }
 
     // -----------------------------------------------------------------------
     //  Phase 1938 — the dataframeParity family: named feature cases, computed answers
@@ -380,8 +337,8 @@ module LawVectorExport =
                       { Id = id
                         Case = "evalPipeline"
                         Input =
-                          [ "pipeline", jstr (DataFrameCodec.encodePipeline pipeline)
-                            "source", jstr (ColumnCodec.encode (Embedded table)) ]
+                          [ "pipeline", str (DataFrameCodec.encodePipeline pipeline)
+                            "source", str (ColumnCodec.encode (Embedded table)) ]
                         Expected = expectedOf (DataFrame.evalPipeline pipeline table) }
               | Error e, _ ->
                   failwithf "dataframe-parity %s: pipeline did not decode (%s)" id (ColumnCodec.errorString e)
@@ -398,23 +355,10 @@ module LawVectorExport =
         + "vector requires the host to refuse the pipeline too, without naming the refusal."
 
     let renderParityVectors () : string =
-        let sb = StringBuilder()
-        let line (s: string) = sb.Append(s).Append('\n') |> ignore
-
-        line "{"
-        line ("  \"family\": " + jstr "dataframeParity" + ",")
-        line ("  \"description\": " + jstr parityDescription + ",")
-        line "  \"vectors\": ["
-
-        let rendered = parityVectors () |> List.map renderVector
-        let last = List.length rendered - 1
-
-        rendered
-        |> List.iteri (fun i v -> line ("    " + v + (if i = last then "" else ",")))
-
-        line "  ]"
-        line "}"
-        sb.ToString()
+        CorpusFile.render
+            { Head = [ "family", str "dataframeParity"; "description", str parityDescription ]
+              Items = "vectors"
+              Rows = parityVectors () |> List.map vectorCell }
 
     // -----------------------------------------------------------------------
     //  writing

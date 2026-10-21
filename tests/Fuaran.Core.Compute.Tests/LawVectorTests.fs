@@ -404,6 +404,23 @@ let private announce (text: string) (fatal: bool) =
     if fatal then
         failtest text
 
+/// A committed file held to the text its exporter renders, through the substrate's one freshness
+/// reading (`CorpusFile.firstDifference`): red naming the first line that differs, and the re-emit.
+let private expectFresh (committed: string) (rendered: string) (what: string) =
+    match CorpusFile.firstDifference committed rendered with
+    | None -> ()
+    | Some d ->
+        let shown (line: string option) =
+            defaultArg (Option.map (sprintf "%A") line) "(past the end)"
+
+        failtestf
+            "%s — line %d is %s committed and %s rendered; re-run `%s` (no argument) and commit conformance/"
+            what
+            d.Line
+            (shown d.Committed)
+            (shown d.Rendered)
+            emitHere
+
 [<Tests>]
 let tests =
     testList
@@ -536,11 +553,12 @@ let tests =
                       // change (a new shape, a reworded description, a `<Version>` move behind
                       // the `kitVersion` stamp) leaves every vector true and the file stale. The
                       // stamp lives in THIS file, so a version cut re-emits it in the same commit
-                      // and never reaches across a repository boundary to go red.
-                      Expect.equal
+                      // and never reaches across a repository boundary to go red. Asked through the
+                      // substrate's one freshness reading, which names the first line that differs.
+                      expectFresh
                           committed
                           (LawVectorExport.renderTransformVectors ())
-                          "the committed conformance/laws file is not what this kit renders — re-run `--emit-laws` (no argument) and commit conformance/"
+                          "the committed conformance/laws file is not what this kit renders"
 
           testCase
               "the committed conformance/laws/dataframe-parity.json is the one this kit renders over its authored cases (Phase 1938)"
@@ -567,10 +585,10 @@ let tests =
                           (vectors |> List.choose checkVector)
                           "the committed parity vectors disagree with this kit's reference evaluator"
 
-                      Expect.equal
+                      expectFresh
                           committed
                           (LawVectorExport.renderParityVectors ())
-                          "the committed conformance/laws/dataframe-parity.json is not what this kit renders — re-run `--emit-laws` (no argument) and commit conformance/"
+                          "the committed conformance/laws/dataframe-parity.json is not what this kit renders"
 
           testCase
               "the corpus copy of laws/transform-laws.json is fresh — always checked; FUARAN_CORE_CORPUS_FRESHNESS decides only whether a finding is fatal"
