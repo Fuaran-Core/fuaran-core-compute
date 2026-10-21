@@ -46,8 +46,10 @@ let private levels = set [ "proved"; "tested"; "assumed"; "policy" ]
 let private classes = set [ "domain-obligation"; "model-bridge"; "premise" ]
 let private phaseRe = Regex(@"^[a-z][a-z0-9-]*#\d+$", RegexOptions.Compiled)
 
+/// A model is this repository's (`proofs/<Module>.fst`) or the pinned kit's, opened read-only from
+/// its release asset (`kit:models/<Module>.fst`).
 let private modelRe =
-    Regex(@"^proofs/(?<m>[A-Za-z0-9_]+)\.fst$", RegexOptions.Compiled)
+    Regex(@"^(proofs|kit:models)/(?<m>[A-Za-z0-9_]+)\.fst$", RegexOptions.Compiled)
 
 let private str (el: JsonElement) (name: string) : string option =
     match el.TryGetProperty name with
@@ -142,6 +144,9 @@ let internal treeFindings
                       yield sprintf "%s: model %s is not one proofs/check.ps1 checks" r.Id m
 
                   match sourceOf m with
+                  // A kit model's text is the verified asset's: read where the leg's host step names it
+                  // (FUARAN_PROOFS_KIT_DIR), held by the roster clause above everywhere else.
+                  | None when (r.Model |> Option.exists (fun s -> s.StartsWith "kit:")) -> ()
                   | None -> yield sprintf "%s: proofs/%s.fst does not exist" r.Id m
                   | Some src when not (declares src t) ->
                       yield sprintf "%s: `%s` is not a top-level declaration of proofs/%s.fst" r.Id t m
@@ -191,7 +196,17 @@ let private liveChecked () =
 
 let private sourceOf (m: string) : string option =
     let p = Path.Combine(root (), "proofs", m + ".fst")
-    if File.Exists p then Some(File.ReadAllText p) else None
+
+    let kit =
+        match Environment.GetEnvironmentVariable "FUARAN_PROOFS_KIT_DIR" with
+        | null
+        | "" -> None
+        | dir -> Some(Path.Combine(dir, "models", m + ".fst"))
+
+    if File.Exists p then
+        Some(File.ReadAllText p)
+    else
+        kit |> Option.filter File.Exists |> Option.map File.ReadAllText
 
 let private oracleSource () =
     File.ReadAllText(Path.Combine(root (), "tests", "Fuaran.Core.Compute.Tests", "ProofOracleTests.fs"))

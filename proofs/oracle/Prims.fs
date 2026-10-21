@@ -1,4 +1,4 @@
-// The runtime the F*-extracted `DagFold.fs` beside this file compiles against.
+// The runtime every F*-extracted module beside this file compiles against.
 //
 // F*'s F# backend (`--codegen FSharp`) emits code that names a handful of `Prims` members —
 // the list type, the string and bool types, and decidable equality — and the F* release ships
@@ -43,9 +43,29 @@ type nat = System.Numerics.BigInteger
 let parse_int (s: string) : nat = System.Numerics.BigInteger.Parse s
 
 /// F*'s `int` — an UNBOUNDED integer, unrefined. Named by the Phase 176 extraction, the first
-/// model to carry a SIGNED index: `ColumnOps.apply`'s row and `InsertColumn`'s index are F#
-/// `int`s that a caller can pass negative, and the model keeps them signed so the `row < 0`
-/// clause is a modelled refusal rather than a bridge-side convention. Same rule as `nat` above —
+/// model to carry a SIGNED index (the columnar-op model, which has since left with the compute
+/// strand, DECISIONS.md D66): a row or column index an F# caller can pass negative stays signed in
+/// a model, so a `row < 0` clause is a modelled refusal rather than a bridge-side convention. Same rule as `nat` above —
 /// the F# primitive under an F* spelling, `bigint` because F*'s integers are unbounded — and
 /// the same boundary: a host converts at the edge, and the width assumption lives there.
 type int = System.Numerics.BigInteger
+
+/// F*'s `pos` — an UNBOUNDED integer, refined to be positive. Named by the Phase 428 extraction
+/// (`Unit.fst`), whose rational scale factors hold a positive numerator and denominator and whose
+/// Euclid's gcd takes a positive first argument. The same rule as `nat` and `int` above — the F#
+/// primitive under an F* spelling, `bigint` because F*'s integers are unbounded — and the same
+/// erasure: the positivity is a refinement the prover checked and this alias cannot carry.
+type pos = System.Numerics.BigInteger
+
+/// F*'s `%` on integers — `Prims.op_Modulus`, which the F# backend emits as `mod_f`. Named by the
+/// Phase 428 extraction (Euclid's gcd, and the digit of a number). F*'s `%` is the EUCLIDEAN
+/// remainder, non-negative for a positive divisor, where .NET's `%` on `BigInteger` keeps the
+/// dividend's sign; the two agree on the non-negative operands every model here applies it to, and
+/// the Euclidean form is written out so that a negative dividend would read as F* reads it.
+let inline mod_f (a: int) (b: int) : int =
+    let r = a % b
+
+    if r.Sign < 0 then
+        (if b.Sign > 0 then r + b else r - b)
+    else
+        r

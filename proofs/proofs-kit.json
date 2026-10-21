@@ -1,0 +1,8 @@
+{
+  "kind": "proofsKitPin",
+  "$comment": "The proof kit this leg runs: one release asset of https://github.com/Fuaran-Core/fuaran-core, pinned by sha256. proofs/check.ps1 downloads it (or takes the local file -KitAsset names, for an offline run), refuses any other bytes, and runs the engine, the prover pin and the read-only models from it. Moving to a newer kit is changing these four values together, then a cold run of the leg; the kit's release notes say what a kit change asks of an adopter.",
+  "kit": "0.40.0",
+  "asset": "proofs-kit-0.40.0.tar",
+  "url": "https://github.com/Fuaran-Core/fuaran-core/releases/download/v0.40.0/proofs-kit-0.40.0.tar",
+  "sha256": "ff01abd83964e56a6be047390ca3a938caba01c951cbb0d32126e5dd800967b9"
+}

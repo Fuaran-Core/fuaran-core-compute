@@ -30,8 +30,8 @@
       "phase": "fuaran-core#149",
       "evidence": {
         "theorem": "depth_bounds_do_not_alias",
-        "model": "proofs/Limits.fst",
-        "prover": "proofs/fstar-pin.json"
+        "model": "kit:models/Limits.fst",
+        "prover": "kit:fstar-pin.json"
       }
     },
     {
@@ -42,7 +42,7 @@
       "evidence": {
         "theorem": "apply_total",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "operations": [
           "ColumnOps.apply"
         ]
@@ -56,7 +56,7 @@
       "evidence": {
         "theorem": "reject_identity",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "kit:fstar-pin.json"
       }
     },
     {
@@ -67,7 +67,7 @@
       "evidence": {
         "theorem": "canapply_agrees",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "operations": [
           "ColumnOps.canApply"
         ]
@@ -81,7 +81,7 @@
       "evidence": {
         "theorem": "apply_preserves_wf",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "kit:fstar-pin.json"
       }
     },
     {
@@ -92,7 +92,7 @@
       "evidence": {
         "theorem": "invert_roundtrip",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "operations": [
           "ColumnOps.invert"
         ]
@@ -106,7 +106,7 @@
       "evidence": {
         "theorem": "invert_refuses_as_apply",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "kit:fstar-pin.json"
       }
     },
     {
@@ -117,7 +117,7 @@
       "evidence": {
         "theorem": "invert_only_for_applicable",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "kit:fstar-pin.json"
       }
     },
     {
@@ -128,7 +128,7 @@
       "evidence": {
         "theorem": "diff_applicable",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "operations": [
           "ColumnOps.toOps"
         ]
@@ -142,7 +142,7 @@
       "evidence": {
         "theorem": "set_chunked_flatten",
         "model": "proofs/ColumnOps.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "kit:fstar-pin.json"
       }
     },
     {
@@ -198,7 +198,7 @@
       "evidence": {
         "theorem": "eval_total",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "go_ok_iff",
           "go_count",
@@ -226,7 +226,7 @@
       "evidence": {
         "theorem": "budget_monotone",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "go_app",
           "go_count_ge"
@@ -241,7 +241,7 @@
       "evidence": {
         "theorem": "work_bounded",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "step_work_bounded",
           "rows_visits_le",
@@ -261,7 +261,7 @@
       "evidence": {
         "theorem": "visits_le_nodes",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "rows_visits_le",
           "expr_visits",
@@ -281,7 +281,7 @@
       "evidence": {
         "theorem": "over_limit_not_refused",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json"
+        "prover": "kit:fstar-pin.json"
       }
     },
     {
@@ -292,7 +292,7 @@
       "evidence": {
         "theorem": "uncounted_is_projection",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "uncounted_ok_iff"
         ],
@@ -309,7 +309,7 @@
       "evidence": {
         "theorem": "derive_then_filter",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "reorder_in_context",
           "eval_extends",
@@ -327,7 +327,7 @@
       "evidence": {
         "theorem": "verdict_sound",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "step_total",
           "derive_type_rows_free",
@@ -413,7 +413,7 @@
       "evidence": {
         "theorem": "unitless_unchanged",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "unitless_list_unchanged",
           "unitless_cases_unchanged",
@@ -436,7 +436,7 @@
       "evidence": {
         "theorem": "convert_rule",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "add_rule",
           "mul_rule",
@@ -462,7 +462,7 @@
       "evidence": {
         "theorem": "refused_is_rejected",
         "model": "proofs/Pipeline.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "agree_rejected",
           "agree_all_rejected",
@@ -510,7 +510,7 @@
       "evidence": {
         "theorem": "prime_is_full",
         "model": "proofs/Incremental.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "walk_is_go",
           "cells_filter",
@@ -537,7 +537,7 @@
       "evidence": {
         "theorem": "refresh_is_prime",
         "model": "proofs/Incremental.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "walk_reuse",
           "walk_no_reuse",
@@ -567,7 +567,7 @@
       "evidence": {
         "theorem": "refresh_agrees",
         "model": "proofs/Incremental.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "refresh_is_prime",
           "prime_is_full",
@@ -618,7 +618,7 @@
       "evidence": {
         "theorem": "mprime_is_full",
         "model": "proofs/IncrementalMaintained.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "mwalk_is_go",
           "group_step_is_other",
@@ -659,7 +659,7 @@
       "evidence": {
         "theorem": "mrefresh_is_prime",
         "model": "proofs/IncrementalMaintained.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "mwalk_reuse",
           "mwalk_no_reuse",
@@ -709,7 +709,7 @@
       "evidence": {
         "theorem": "mrefresh_agrees",
         "model": "proofs/IncrementalMaintained.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "mrefresh_is_prime",
           "mprime_is_full",
@@ -771,7 +771,7 @@
       "evidence": {
         "theorem": "sort_step_reuse",
         "model": "proofs/MaintainedSort.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "merge_is_isort",
           "merge_bin_sorted",
@@ -811,7 +811,7 @@
       "evidence": {
         "theorem": "compare_resolved_preorder",
         "model": "proofs/MaintainedSort.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "lex_preorder",
           "key_cc_preorder",
@@ -851,7 +851,7 @@
       "evidence": {
         "theorem": "walk_sound",
         "model": "proofs/Relational.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "union_sound",
           "union_walk_widens",
@@ -896,7 +896,7 @@
       "evidence": {
         "theorem": "join_no_dups",
         "model": "proofs/Relational.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "window_no_dups",
           "project_no_dups",
@@ -937,7 +937,7 @@
       "evidence": {
         "theorem": "sort_unknown_refused",
         "model": "proofs/Relational.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "sort_literal_unknown_refused",
           "join_unknown_refused",
@@ -1017,7 +1017,7 @@
       "evidence": {
         "theorem": "of_table_reads_columns",
         "model": "proofs/Frame.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "view_reads",
           "of_table_reads",
@@ -1047,7 +1047,7 @@
       "evidence": {
         "theorem": "to_table_reads",
         "model": "proofs/Frame.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "gather_reads",
           "gather_shape",
@@ -1068,7 +1068,7 @@
       "evidence": {
         "theorem": "filter_kernel_is_step",
         "model": "proofs/Frame.fst",
-        "prover": "proofs/fstar-pin.json",
+        "prover": "kit:fstar-pin.json",
         "supporting": [
           "bits_eval",
           "leaf_eval",

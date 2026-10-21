@@ -20,13 +20,15 @@
     <OtherFlags>$(OtherFlags) --strict-indentation-</OtherFlags>
   </PropertyGroup>
   <ItemGroup>
-    <!-- The hand-written runtime floor, copied from the kit's repository. NOT generated and NOT
-         diffed by the leg. -->
+    <!-- The hand-written runtime floor, as the pinned kit asset ships it. NOT generated: the leg
+         holds both files to the asset's bytes (-FloorDir), and -Extract writes them from it. -->
     <Compile Include="Prims.fs" />
     <Compile Include="FStar_Pervasives_Native.fs" />
-    <!-- The WIRE_FORMAT section-21 resource limits as named premises (../Limits.fst), copied from
-         the kit's repository: Pipeline opens it for the expression-node limit it takes as a
-         hypothesis. -->
+    <!-- The kit's shared twin record (Twin.fst in the pinned kit asset), which Limits opens. -->
+    <Compile Include="Twin.fs" />
+    <!-- The WIRE_FORMAT section-21 resource limits as named premises (Limits.fst in the pinned kit
+         asset, opened read-only, never copied): Pipeline opens it for the expression-node limit it
+         takes as a hypothesis. -->
     <Compile Include="Limits.fs" />
     <!-- The model of the COMPUTE strand's op algebra (../ColumnOps.fst): `ColumnOps.apply` /
          `canApply` / `invert` / `Diff.toOps` over a table with a validity mask. Opens nothing. -->

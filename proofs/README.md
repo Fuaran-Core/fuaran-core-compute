@@ -15,7 +15,7 @@ row in the ladder is not claimed.
 | [`Frame.fst`](Frame.fst) | the evaluator's dense frame and its kernels (Phase 435): `Vec` and `Vec.cellAt` at every column type, the boundary in (`maskOf` — a null-free column's `AllValid` read as every row present — `ofColumn`, `ofDecimalTexts`, `pack`, `Frame.ofTable`, `Frame.ofRows`, `Frame.rowsOf`) and out (`gather`, `toColumn`, `Frame.toTable`), `DataFrame.prepare` / `prepareRows` / `toTable`, and the portable comparison kernels with `filterBits` and the filter's kernel branch; the native member, the morsel runner, the sort kernels and the rope are declared out in `DECISIONS.md` D34 | the frame means exactly its rows: over a table whose columns hold their fields' types and the table's length, cell `(i, j)` of `Frame.ofTable` is Core's `Column.cell i` of column `j`, with or without a mask (`of_table_reads_columns`; `view_reads`, `mask_of_reads`); the read-back is total (`rows_of_reads`); `ofRows` reads every cell as its type carries it and rows carried exactly come back as they went in (`pack_reads`, `of_rows_exact`), and that per-cell reading is `Pipeline.fst`'s `pack_cell` at every non-temporal type, typed or boxed (`pack_cell_is_pipeline`, `widen_cell_is_pack_cell`, Phase 476); `Frame.toTable` writes exactly the logical rows (`to_table_reads`); and a filter the kernels answer is `Pipeline.fst`'s `Filter` step over the read-back, never an error (`filter_kernel_is_step`) — under the kernel premise the ladder names (`frame-kernel-primitives`) |
 | [`IncrementalMaintained.fst`](IncrementalMaintained.fst) | `Incremental.prime` / `Incremental.refresh` past the row-local class (Phase 464): the walk over `Project`, `Limit`, `Window`, the filtering joins (`Semi` / `Anti`) and, since Phase 471, `Sort` (`MergeOrder`: the step's arm, its record of the arrival and the produced order, the reference's stable sort as `MaintainedSort.sort_rows`), and the maintained `GroupBy` — the groups of the rows alive at the step in first-appearance order, each group's aggregates reused exactly when every member is reusable and its member tokens are the prior group's (`groupStable`, `sameMembers`) and recomputed over its members in order otherwise, the group table walked on under one token per key; the derived column packed through `Incremental.pack_cache` and its type recorded per evaluating step, a derive whose type moved reusing nothing downstream (D37, D38, D40); the reference is `Pipeline.fst`'s driver over `Relational.fst`'s `other_of` with this module's row functions, parameterised by the aggregate function, the join key match, the window column and the group token — `Sort`, the resumed prefix-fold window, the fast paths, the guards, the chunked path and the codec are declared out in `DECISIONS.md` D37 | priming is full evaluation (`mprime_is_full`); a refresh against a primed state under a truthful delta — read one row at a time, `wk`, weaker than Phase 433's premise — over a prior source of distinct tokens is the prime over the new source, output, every entry, the group table and the tail (`mrefresh_is_prime`); and so the refreshed answer is the full evaluation over the updated source (`mrefresh_agrees`) — under the premises the ladder names (`incremental-maintained-primitives`) |
 | [`MaintainedSort.fst`](MaintainedSort.fst) | the maintained `Sort` (Phase 471): the full stable sort as the insertion sort under the comparator with the arrival position as the tie-break (`sort_alive`, F#: `sortSlots` / `evalSort`), the merge of the moved rows into the prior produced order by binary insertion (`merge_sort`, F#: `mergeOrders`), the reuse condition `arrived_as_before` (F#: `arrivedAsBefore`) and the fall-back to a sort from scratch; and the comparator concretely — `compare_resolved` over `compare_cells`, `DataFrame.compareResolved` and `compareCells` arm for arm | `sort_step_reuse`: a sort refreshed against the record a prime left answers the full stable sort of the rows that arrived, under the delta premise and a comparator that is a total preorder — through the uniqueness of a sorted permutation (`sorted_unique`), the binary-insertion merge being sorted (`merge_bin_sorted`, `bisect_cut`) and the cached run being sorted now (`lookup_sorted`, `relabel_lt`); `compare_resolved_preorder`: over the rows a typed frame holds the comparator is a total preorder, from the primitives' laws (`sprims_laws`), and `compare_cells_none` names the pairs it reads as a tie — the premise check of D39
-| [`Limits.fst`](Limits.fst) | the wire format's section-21 resource limits as named premises | the relations between them; copied from the Fuaran.Core repository because `Pipeline` opens it |
+| [`Limits.fst`](Limits.fst) | the wire format's section-21 resource limits as named premises | the relations between them; the proof kit's model, opened read-only from the pinned kit asset (never copied) because `Pipeline` opens it |
 
 ## The leg
 
@@ -25,10 +25,11 @@ pwsh ./proofs/check.ps1 -Runs 3    # what CI runs: three cold runs, so a check i
 pwsh ./proofs/check.ps1 -Extract   # rewrite oracle/*.fs from a fresh extraction, then commit them
 ```
 
-[`check.ps1`](check.ps1) declares the models, the host families and where the host lives; the engine
-is [`kit/check-proof-leg.ps1`](kit/check-proof-leg.ps1). It resolves the prover pinned in
-[`fstar-pin.json`](fstar-pin.json) (downloading and hash-checking the release on first use, under the
-git-ignored `.fstar/`), verifies each model from a cold cache, extracts each to F# and fails when the
+[`check.ps1`](check.ps1) declares the models, the host families and where the host lives, and first
+resolves the proof kit [`proofs-kit.json`](proofs-kit.json) pins (a release asset, hash-verified before
+anything runs, unpacked under the git-ignored `.kit/`); the engine is `kit/check-proof-leg.ps1` in that
+asset. It resolves the prover the asset's `fstar-pin.json` pins (downloading and hash-checking the
+release on first use, under the git-ignored `.fstar/`), verifies each model from a cold cache, extracts each to F# and fails when the
 committed [`oracle/`](oracle/) file and the fresh extraction differ — which is what makes "the oracle
 IS the model" a checked claim — and then runs the host families in the test suite:
 
@@ -88,13 +89,14 @@ rewrites it); no count here is written by hand.
 | **Total** |  | 190 | 35 | 14 | 7 | 0 | 5 | 129 |
 <!-- operation-coverage:end -->
 
-## Adopted by copy
+## Adopted from the kit's release asset
 
 The leg is the proof-leg kit from the [Fuaran.Core](https://github.com/Fuaran-Core/fuaran-core)
-repository, adopted by COPY: [`kit/`](kit/) is copied verbatim, `check.ps1`, `modules.json`, the
-oracle project and the root `proofs.json` are its templates filled in, and the pin, the two
-hand-written runtime shims under `oracle/` and `Limits.fst` are copies of that repository's live
-files. [`../copies.json`](../copies.json) declares every copied file, so a copy that has drifted
-from its source is named rather than discovered; the remedy is always to re-copy from the source,
-never to edit the copy. The two models and their committed extractions are not copies — they moved
+repository, adopted as its versioned RELEASE ASSET (since the kit's 0.40.0; by copy before it):
+[`proofs-kit.json`](proofs-kit.json) pins the asset by sha256, and `check.ps1` refuses any other
+bytes. The engine, the prover pin, `Limits.fst` and the shared `Twin.fst` it opens are run and opened
+read-only from the asset — none is a copy, so none can drift. `check.ps1`, `modules.json`, the oracle
+project and the root `proofs.json` are its templates filled in; the two hand-written runtime shims
+under `oracle/` are committed (the oracle project compiles nothing outside its directory) and the leg
+holds them to the asset's bytes. Moving to a newer kit is moving the pin. The two models and their committed extractions are not copies — they moved
 here, with their history (Phase 259).

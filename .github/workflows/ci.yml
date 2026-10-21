@@ -82,7 +82,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: proofs/.fstar
-          key: fstar-${{ runner.os }}-${{ hashFiles('proofs/fstar-pin.json') }}
+          key: fstar-${{ runner.os }}-${{ hashFiles('proofs/proofs-kit.json') }}
       - name: Proof leg (./proofs/check.ps1 -Runs 3)
         shell: pwsh
         env:

@@ -17,4 +17,5 @@ fable_modules/
 # per-invocation checked-module caches (proofs/obj/cache-<pid>) and fresh extractions under obj/;
 # neither is source.
 proofs/.fstar/
+proofs/.kit/
 proofs/obj/
