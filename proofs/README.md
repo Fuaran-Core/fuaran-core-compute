@@ -71,7 +71,7 @@ rewrites it); no count here is written by hand.
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | `Fuaran.Compute.ColumnOps` | `ColumnOps` | 17 | 5 | 1 | 0 | 0 | 0 | 11 |
 | `Fuaran.Compute.DataFrame` | `ColExpr` | 5 | 0 | 0 | 0 | 0 | 0 | 5 |
-| `Fuaran.Compute.DataFrame` | `ColumnKnowledge` | 6 | 0 | 6 | 0 | 0 | 0 | 0 |
+| `Fuaran.Compute.DataFrame` | `ColumnKnowledge` | 8 | 0 | 8 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `DataFrame` | 42 | 11 | 2 | 7 | 0 | 0 | 22 |
 | `Fuaran.Compute.DataFrame` | `DataFrameCodec` | 7 | 0 | 0 | 0 | 0 | 0 | 7 |
 | `Fuaran.Compute.DataFrame` | `Delta` | 21 | 0 | 0 | 0 | 0 | 0 | 21 |
@@ -82,11 +82,11 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `NowGrain` | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `Plan` | 3 | 0 | 0 | 0 | 0 | 0 | 3 |
 | `Fuaran.Compute.DataFrame` | `RowIdentity` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
-| `Fuaran.Compute.DataFrame` | `SchemaWalk` | 14 | 2 | 0 | 0 | 0 | 0 | 12 |
+| `Fuaran.Compute.DataFrame` | `SchemaWalk` | 17 | 2 | 0 | 1 | 0 | 0 | 14 |
 | `Fuaran.Compute.DataFrame` | `Slot` | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `Transform` | 22 | 14 | 0 | 0 | 0 | 0 | 8 |
 | `Fuaran.Compute.DataFrame` | `WorkerPool` | 5 | 0 | 0 | 0 | 0 | 2 | 3 |
-| **Total** |  | 190 | 35 | 14 | 7 | 0 | 5 | 129 |
+| **Total** |  | 195 | 35 | 16 | 8 | 0 | 5 | 131 |
 <!-- operation-coverage:end -->
 
 ## Adopted from the kit's release asset

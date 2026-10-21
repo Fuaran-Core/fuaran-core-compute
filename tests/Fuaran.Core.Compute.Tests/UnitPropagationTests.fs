@@ -224,6 +224,51 @@ let tests =
               Expect.equal (unitOfDerive (IsNull(Col "d"))) None "isNull"
               Expect.equal (unitOfDerive (Not(IsNull(Col "d")))) None "not"
 
+          // ---- Phase 557 (D43): the power functions ----
+          testCase
+              "Pow under an integer literal composes Unit.pow; any other Pow, Exp, Ln and Log10 take a dimensionless operand"
+          <| fun _ ->
+              Expect.equal (unitOfDerive (ApplyFn(Pow, [ Col "d"; Lit(Int 2) ]))) (Some "m2") "m squared"
+              Expect.equal (unitOfDerive (ApplyFn(Pow, [ Col "t"; Lit(Int -1) ]))) (Some "/s") "per second"
+
+              Expect.equal
+                  (unitOfDerive (ApplyFn(Pow, [ Col "d"; Lit(Int 0) ])))
+                  None
+                  "to the power zero: unconstrained"
+
+              Expect.equal (unitOfDerive (ApplyFn(Pow, [ Col "n"; Lit(Int 3) ]))) None "a unitless base stays unitless"
+              Expect.equal (unitOfDerive (ApplyFn(Pow, [ Col "n"; Col "n" ]))) None "two unitless operands"
+
+              // A ratio of one unit is dimensionless (`s/s` renders `1`), and a dimensionless operand
+              // is admitted exactly as an unconstrained one.
+              Expect.equal (unitOfDerive (ApplyFn(Exp, [ Binary(Div, Col "t", Col "t") ]))) None "exp of a ratio"
+              Expect.equal (unitOfDerive (ApplyFn(Ln, [ Col "n" ]))) None "ln of a count"
+              Expect.equal (unitOfDerive (ApplyFn(Log10, [ Lit(Float 100.0) ]))) None "log10 of a literal"
+
+              let step, l, r = mismatch (run (derive "x" (ApplyFn(Exp, [ Col "t" ]))))
+              Expect.equal (step, l, r) ("derive 'x'", "s", "1") "exp of seconds is refused against 1"
+
+              let _, l, r = mismatch (run (derive "x" (ApplyFn(Ln, [ Col "d" ]))))
+              Expect.equal (l, r) ("m", "1") "ln of metres is refused against 1"
+
+              let _, l, r = mismatch (run (derive "x" (ApplyFn(Pow, [ Col "d"; Col "n" ]))))
+              Expect.equal (l, r) ("m", "1") "a power of metres under a column exponent is refused against 1"
+
+              let _, l, r = mismatch (run (derive "x" (ApplyFn(Pow, [ Col "n"; Col "t" ]))))
+              Expect.equal (l, r) ("s", "1") "a dimensioned exponent is refused against 1"
+
+              // An exponent product the algebra cannot carry: `m` to a power that leaves the
+              // exponent range is refused naming the power asked for, never thrown.
+              let _, l, r =
+                  mismatch (
+                      run (derive "x" (ApplyFn(Pow, [ ApplyFn(Pow, [ Col "d"; Lit(Int 2) ]); Lit(Int 2000000000) ])))
+                  )
+
+              Expect.equal
+                  (l, r)
+                  ("m2", "a power the algebra can carry")
+                  "the algebra's exponent range is refused by name"
+
           // ---- Convert ----
           testCase
               "Convert scales by the exact factor as a float, tags an unconstrained operand, and refuses across dimensions"

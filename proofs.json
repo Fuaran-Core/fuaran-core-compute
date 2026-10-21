@@ -14,6 +14,27 @@
       }
     },
     {
+      "id": "pipeline-ieee-multiply-is-host-independent",
+      "level": "assumed",
+      "claim": "A single IEEE-754 multiply and a single divide round the same way on every conformant host, so the integer-exponent `Pow` routine — a fixed product tree over the host's multiply, one reciprocal for a negative exponent — answers the same bits on .NET, under Fable and in every twin that runs it. Section 14 of `proofs/Pipeline.fst` takes the arithmetic as a parameter and proves the tree is a function of the multiply and the exponent alone; that the multiply is the same function everywhere is this premise, held by the transform law vectors' byte comparison on every certifying host rather than by any theorem.",
+      "phase": "fuaran-core#557",
+      "class": "premise",
+      "evidence": {
+        "assumption": "IEEE-754 binary64 multiplication and division are correctly rounded on every host this repository's evaluator runs on"
+      }
+    },
+    {
+      "id": "pipeline-power-tables-before-host",
+      "level": "proved",
+      "claim": "A float-exponent `Pow`, `Exp`, `Ln` and `Log10` reach the host's own function ONLY where the special-value table does not answer: two hosts whose `pow` / `exp` / `log` differ arbitrarily answer the same cell on every input a table decides (`pow_table_before_host`, `exp_table_before_host`, `log_table_before_host`), so every special value — a NaN operand, `pow(0, 0)`, `pow(1, y)`, `pow(-1, ±Inf)`, a zero base under a negative exponent, a negative base under a non-integer exponent, `exp` overflow and underflow, `ln` at and below zero, `ln 1`, `ln Inf` — is byte-identical across hosts by construction. The tables are modelled concretely over a classification of the float, test for test as `DataFrame.powSpecial`, `expHost` and `logHost` read it; the host functions are parameters. Beside them the integer routine's product tree is stated per exponent (`pow_int_zero` to `pow_int_four`, `pow_int_neg`) and its equality with the repeated-multiplication spelling up to the cube is proved conditional on the multiply commuting (`pow_int_is_fold_to_three`). The 2 ulp cross-host bound on the inputs that DO reach the host is a measurement recorded in `DECISIONS.md` D43, never a theorem.",
+      "phase": "fuaran-core#557",
+      "evidence": {
+        "theorem": "pow_table_before_host",
+        "model": "proofs/Pipeline.fst",
+        "prover": "kit:fstar-pin.json"
+      }
+    },
+    {
       "id": "proof-leg",
       "level": "policy",
       "claim": "Which prover is pinned, how many cold-cache runs a check is, and that a model edited without re-extracting fails the leg — the reproducibility posture the proved rows above are only as good as. Policy, not algebra: no theorem addresses it. Since Phase 148 the posture also says what the leg COSTS: each module's cold-run budget is declared in proofs/modules.json, measured on every run and printed beside the measurement, with an overshoot named as a warning — prover time varies by machine and by load, so it is a smoke detector rather than a gate — and `check.ps1 -Strict` for a session that wants one red. The numbers live there rather than in a row here, because a wall-clock budget is a claim at none of this ladder's four levels and is per module where a row is per claim.",

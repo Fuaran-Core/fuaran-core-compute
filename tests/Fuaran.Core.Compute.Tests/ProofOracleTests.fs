@@ -859,7 +859,12 @@ let private pScalarFns: (ScalarFn * ModelPipe.scalar_fn) list =
       Sqrt, ModelPipe.Sqrt
       Least, ModelPipe.Least
       Greatest, ModelPipe.Greatest
-      IndexOf, ModelPipe.IndexOf ]
+      IndexOf, ModelPipe.IndexOf
+      // Phase 557 (D43) — the power functions.
+      Pow, ModelPipe.Pow
+      Exp, ModelPipe.Exp
+      Ln, ModelPipe.Ln
+      Log10, ModelPipe.Log10 ]
 
 /// Phase 277 — the seven rounding modes, one table read both ways.
 let private pModes: (RoundingMode * ModelPipe.rounding_mode) list =
@@ -1539,20 +1544,41 @@ let rec private pGenExpr (depth: int) (rng: ConfRng.T) : ColExpr * ConfRng.T =
                   IndexOf
                   Concat
                   Floor
-                  Ceil ]
+                  Ceil
+                  // Phase 557: the transcendentals, and a power under a literal int, a column, a
+                  // float literal or a null — the typer's literal rule and the cells' rule both reached.
+                  Exp
+                  Ln
+                  Log10
+                  Pow ]
                 r
 
         let x, r2 = pGenExpr (depth - 1) r1
-        let y, r3 = pGenExpr (depth - 1) r2
 
-        let args =
-            match fn with
-            | Concat
-            | Least
-            | IndexOf -> [ x; y ]
-            | _ -> [ x ]
+        if fn = Pow then
+            let e, r3 =
+                pPick
+                    [ Lit(Cell.Int 2)
+                      Lit(Cell.Int -1)
+                      Lit(Cell.Int 0)
+                      Col "v"
+                      Col "w"
+                      Lit(Cell.Float 0.5)
+                      Lit Cell.Null ]
+                    r2
 
-        ApplyFn(fn, args), r3
+            ApplyFn(Pow, [ x; e ]), r3
+        else
+            let y, r3 = pGenExpr (depth - 1) r2
+
+            let args =
+                match fn with
+                | Concat
+                | Least
+                | IndexOf -> [ x; y ]
+                | _ -> [ x ]
+
+            ApplyFn(fn, args), r3
     | 9 ->
         let x, r1 = pGenExpr (depth - 1) r
         InList(x, [ Lit(Cell.Int 1); Lit(Cell.Str "a"); Lit Cell.Null ]), r1
@@ -1841,7 +1867,15 @@ let private pUnitAlg: ModelPipe.unit_alg =
                 match pCellToModel (Cell.Float(double r.Numerator / double r.Denominator)) with
                 | ModelPipe.Float text -> FStar_Pervasives_Native.Some text
                 | _ -> FStar_Pervasives_Native.None
-            | Error _ -> FStar_Pervasives_Native.None }
+            | Error _ -> FStar_Pervasives_Native.None
+      // Phase 557 (D43): `Unit.pow`, `None` where the exponent product leaves the algebra's range,
+      // which `Unit.pow` reports by raising — production's `unitPower`.
+      ModelPipe.unit_alg.u_pow =
+        fun u n ->
+            try
+                FStar_Pervasives_Native.Some(Unit.render (Unit.pow (parsed u) (int n)))
+            with _ ->
+                FStar_Pervasives_Native.None }
 
 /// The unit differential's schema: the generator's columns under units — `v` in metres, `w` in
 /// seconds, `m` in kilograms, `g` and the unknown column unconstrained.
@@ -6443,4 +6477,157 @@ let proofOracleTests =
                   (t.FDiffs |> List.exists (fun s -> s.Contains " bits "))
                   (sprintf "a disagreement is a kernel bitmap: %A" (List.truncate 3 t.FDiffs))
 
-              printfn "frame go-red (kernels): %d disagreements, first: %s" (List.length t.FDiffs) (List.last t.FDiffs) ]
+              printfn "frame go-red (kernels): %d disagreements, first: %s" (List.length t.FDiffs) (List.last t.FDiffs)
+
+          // ---- Phase 557 (D43) — the power functions: the integer routine and the special-value
+          //      tables against the extracted section 14, instantiated at the host's arithmetic ----
+
+          testCase
+              "the extracted integer-power routine agrees with DataFrame.powInt bit for bit at the host's multiply, and is the repeated-multiplication spelling up to the cube"
+          <| fun _ ->
+              let parse (s: string) =
+                  System.Double.Parse(s, System.Globalization.NumberStyles.Float, inv)
+
+              // The model's arithmetic parameter at the host's IEEE-754 multiply and divide, over
+              // the float carrier text — the instantiation the premise `pipeline-ieee-multiply-is-
+              // host-independent` names.
+              let host: ModelPipe.fp =
+                  { ModelPipe.fp.f_mul = fun a b -> fFloat (parse a * parse b)
+                    ModelPipe.fp.f_recip = fun a -> fFloat (1.0 / parse a)
+                    ModelPipe.fp.f_one = fFloat 1.0 }
+
+              let bits (x: float) = System.BitConverter.DoubleToInt64Bits x
+              let mutable rng = ConfRng.ofSeed 557
+              let mutable compared = 0
+
+              for _ in 1..400 do
+                  let m, r1 = ConfRng.intBelow 2000 rng
+                  let n, r2 = ConfRng.intBelow 81 r1
+                  rng <- r2
+                  // Bases across six decades either side of one, some negative; exponents in -40..40.
+                  let x =
+                      (float m / 100.0 - 10.0)
+                      * (if m % 7 = 0 then 1e-3
+                         else if m % 11 = 0 then 1e3
+                         else 1.0)
+
+                  let n = n - 40
+                  let model = parse (ModelPipe.pow_int host (fFloat x) (bigint n))
+                  let production = DataFrame.powInt x n
+
+                  if bits model <> bits production then
+                      failtestf "pow_int and powInt DISAGREE at x=%g n=%d: model %g, production %g" x n model production
+
+                  compared <- compared + 1
+
+              // The product tree, exponent by exponent, on the host's arithmetic: what the theorems
+              // state over the abstract one.
+              for x in [ 1.1; 0.3; 7.0 / 3.0; -2.5; System.Math.PI; 123456.789 ] do
+                  Expect.equal (DataFrame.powInt x 0) 1.0 "x^0"
+                  Expect.equal (bits (DataFrame.powInt x 1)) (bits x) "x^1 is x"
+                  Expect.equal (bits (DataFrame.powInt x 2)) (bits (x * x)) "x^2"
+                  Expect.equal (bits (DataFrame.powInt x 3)) (bits (x * (x * x))) "x^3"
+                  Expect.equal (bits (DataFrame.powInt x 4)) (bits ((x * x) * (x * x))) "x^4"
+                  Expect.equal (bits (DataFrame.powInt x -3)) (bits (1.0 / (x * (x * x)))) "x^-3"
+
+                  for n in 0..3 do
+                      Expect.equal
+                          (bits (parse (ModelPipe.pow_int host (fFloat x) (bigint n))))
+                          (bits (parse (ModelPipe.pow_fold host (fFloat x) (bigint n))))
+                          (sprintf "pow_int is pow_fold at n=%d (the commuted multiply is the host's)" n)
+
+              printfn "power routine differential: compared=%d" compared
+
+          testCase
+              "the extracted special-value tables agree with powSpecial, expHost and logHost, classified as production reads a float"
+          <| fun _ ->
+              let specials =
+                  [ 0.0
+                    -0.0
+                    1.0
+                    -1.0
+                    2.0
+                    -2.0
+                    0.5
+                    -0.5
+                    2.5
+                    -8.0
+                    1e-300
+                    1e300
+                    709.782712893384
+                    709.79
+                    -745.1332191019412
+                    -745.2
+                    System.Double.NaN
+                    System.Double.PositiveInfinity
+                    System.Double.NegativeInfinity
+                    System.Double.Epsilon
+                    System.Double.MaxValue ]
+
+              let classify (x: float) : ModelPipe.fclass =
+                  { ModelPipe.fclass.c_nan = System.Double.IsNaN x
+                    ModelPipe.fclass.c_zero = (x = 0.0)
+                    ModelPipe.fclass.c_one = (x = 1.0)
+                    ModelPipe.fclass.c_neg_one = (x = -1.0)
+                    ModelPipe.fclass.c_neg = (x < 0.0)
+                    ModelPipe.fclass.c_inf = System.Double.IsInfinity x
+                    ModelPipe.fclass.c_int = (x = floor x) }
+
+              let mutable compared = 0
+
+              for x in specials do
+                  for y in specials do
+                      let model = ModelPipe.pow_table (classify x) (classify y)
+
+                      let expected =
+                          match DataFrame.powSpecial x y with
+                          | DataFrame.PowSpecial.NaN -> ModelPipe.PNaN
+                          | DataFrame.PowSpecial.One -> ModelPipe.POne
+                          | DataFrame.PowSpecial.Null -> ModelPipe.PNull
+                          | DataFrame.PowSpecial.Host -> ModelPipe.PHost
+
+                      if model <> expected then
+                          failtestf
+                              "pow_table and powSpecial DISAGREE at x=%g y=%g: model %A, production %A"
+                              x
+                              y
+                              model
+                              expected
+
+                      compared <- compared + 1
+
+                  // `exp`: the table's verdict is what `expHost` answers, class for class.
+                  let ec: ModelPipe.eclass =
+                      { ModelPipe.eclass.e_nan = System.Double.IsNaN x
+                        ModelPipe.eclass.e_over = (x > 709.782712893384)
+                        ModelPipe.eclass.e_under = (x < -745.1332191019412) }
+
+                  let e = DataFrame.expHost x
+
+                  match ModelPipe.exp_table ec with
+                  | ModelPipe.EInput -> Expect.isTrue (System.Double.IsNaN e) (sprintf "exp %g: the input is a NaN" x)
+                  | ModelPipe.EInf -> Expect.equal e System.Double.PositiveInfinity (sprintf "exp %g overflows" x)
+                  | ModelPipe.EZero -> Expect.equal e 0.0 (sprintf "exp %g underflows" x)
+                  | ModelPipe.EHost -> Expect.equal e (System.Math.Exp x) (sprintf "exp %g is the host's" x)
+
+                  // `ln` / `log10`: the same, over `logHost` at both host logarithms.
+                  let lc: ModelPipe.lclass =
+                      { ModelPipe.lclass.l_nan = System.Double.IsNaN x
+                        ModelPipe.lclass.l_nonpos = (x <= 0.0)
+                        ModelPipe.lclass.l_one = (x = 1.0)
+                        ModelPipe.lclass.l_pinf = System.Double.IsPositiveInfinity x }
+
+                  for name, log in [ "ln", (fun v -> System.Math.Log v); "log10", (fun v -> System.Math.Log10 v) ] do
+                      let l = DataFrame.logHost log x
+
+                      match ModelPipe.log_table lc, l with
+                      | ModelPipe.LInput, Cell.Float f ->
+                          Expect.isTrue (System.Double.IsNaN f) (sprintf "%s %g: a NaN" name x)
+                      | ModelPipe.LNull, Cell.Null -> ()
+                      | ModelPipe.LZero, Cell.Float f -> Expect.equal f 0.0 (sprintf "%s 1 is 0" name)
+                      | ModelPipe.LInf, Cell.Float f ->
+                          Expect.equal f System.Double.PositiveInfinity (sprintf "%s Inf" name)
+                      | ModelPipe.LHost, Cell.Float f -> Expect.equal f (log x) (sprintf "%s %g is the host's" name x)
+                      | verdict, cell -> failtestf "%s %g: log_table says %A, logHost answered %A" name x verdict cell
+
+              printfn "power table differential: pow pairs compared=%d" compared ]

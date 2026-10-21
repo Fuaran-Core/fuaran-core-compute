@@ -40,13 +40,29 @@ let private str (name: string) (el: JVal) : string option =
     | Some(JStr s) -> Some s
     | _ -> None
 
-/// One parsed vector, reduced to the four things a check reads.
+/// One parsed vector, reduced to the five things a check reads.
 type private ParsedVector =
-    { Id: string
-      Pipeline: string
-      Source: string
-      Verdict: string
-      Table: string option }
+    {
+        Id: string
+        Pipeline: string
+        Source: string
+        Verdict: string
+        Table: string option
+        /// Phase 557: the per-column ulp bound of the host-rounded output columns, empty where the
+        /// vector carries no `tolerance` member.
+        Tolerance: (string * int) list
+    }
+
+/// `expected.tolerance` (Phase 557): each named column with its bound in ulps.
+let private toleranceOf (expected: JVal) : (string * int) list =
+    match field "tolerance" expected with
+    | Some(JObj ms) ->
+        ms
+        |> List.choose (fun (k, v) ->
+            match v with
+            | JInt n -> Some(k, n)
+            | _ -> None)
+    | _ -> []
 
 let private parseVectors (json: string) : Result<ParsedVector list, string> =
     match Json.parse json with
@@ -69,7 +85,8 @@ let private parseVectors (json: string) : Result<ParsedVector list, string> =
                                   Pipeline = p
                                   Source = s
                                   Verdict = verdict
-                                  Table = str "table" expected }
+                                  Table = str "table" expected
+                                  Tolerance = toleranceOf expected }
                         | _ -> Error("vector " + id + ": input.pipeline / input.source / expected.verdict missing")
                     | _ -> Error "a vector is missing id / input / expected")
 
@@ -468,6 +485,72 @@ let tests =
                           (sprintf "no vector was rendered for the `%s` shape" shape)
 
                   Expect.isTrue (vectors |> List.exists (fun v -> v.Verdict = "ok")) "an accepted pipeline was rendered"
+
+          // ---- Phase 557 (D43): the tolerance a host-rounded column carries ----
+          testCase
+              "every vector names exactly the output columns the static walk marks host-rounded, each at the recorded ulp bound, and the power shapes carry both verdicts"
+          <| fun _ ->
+              match parseVectors (LawVectorExport.renderTransformVectors ()) with
+              | Error m -> failtest m
+              | Ok vectors ->
+                  let mutable withTolerance = 0
+
+                  for v in vectors do
+                      match DataFrameCodec.decodePipeline v.Pipeline, ColumnCodec.decode v.Source with
+                      | Ok pipeline, Ok(Embedded table) ->
+                          let expected =
+                              if v.Verdict = "ok" then
+                                  LawVectorExport.hostRoundedColumns table pipeline
+                                  |> List.map (fun name -> name, LawVectorExport.hostRoundedUlps)
+                              else
+                                  []
+
+                          Expect.equal
+                              v.Tolerance
+                              expected
+                              (v.Id + ": the tolerance is the walk's mark, column for column")
+
+                          if not (List.isEmpty v.Tolerance) then
+                              withTolerance <- withTolerance + 1
+                      | _ -> failtestf "%s: the vector did not decode" v.Id
+
+                  Expect.isGreaterThan withTolerance 0 "a host-rounded vector was rendered"
+
+                  // The integer-exponent shapes carry no tolerance: the routine is compared as every
+                  // other vector is. The special-value shape reads host-rounded FUNCTIONS over literals,
+                  // so the walk marks its columns and the vector carries the bound; what it pins is
+                  // still exact, because no wrong special value lies within two ulps of the right one
+                  // (`1` against NaN, `Null` against `Inf`, `0` against a subnormal).
+                  for shape in [ "power-int-exponent"; "power-int-base"; "power-cube-is-repeated-multiply" ] do
+                      let v = vectors |> List.find (fun v -> v.Id.EndsWith shape)
+                      Expect.equal v.Verdict "ok" (shape + " is accepted")
+                      Expect.isEmpty v.Tolerance (shape + " is byte-exact")
+
+                  for shape in
+                      [ "power-special-values"
+                        "power-float-exponent"
+                        "power-exp"
+                        "power-ln-log10" ] do
+                      let v = vectors |> List.find (fun v -> v.Id.EndsWith shape)
+                      Expect.equal v.Verdict "ok" (shape + " is accepted")
+                      Expect.isNonEmpty v.Tolerance (shape + " is host-rounded")
+
+                  let refused = vectors |> List.find (fun v -> v.Id.EndsWith "power-decimal-refused")
+                  Expect.equal refused.Verdict "error" "a decimal operand is refused"
+
+                  // The cube vector asserts the routine's bits ARE the spelling's: `same` is true on
+                  // every row, and a host whose `pow` is not the routine fails it byte for byte.
+                  let cube =
+                      vectors |> List.find (fun v -> v.Id.EndsWith "power-cube-is-repeated-multiply")
+
+                  match cube.Table |> Option.map ColumnCodec.decode with
+                  | Some(Ok(Embedded t)) ->
+                      let same =
+                          Table.tryColumn "same" t |> Option.map Column.toCells |> Option.defaultValue []
+
+                      Expect.isNonEmpty same "the cube vector carries the comparison column"
+                      Expect.allEqual same (Cell.Bool true) "the routine equals the spelling on every row"
+                  | other -> failtestf "the cube vector carries no decodable table (%A)" other
 
                   Expect.isTrue
                       (vectors |> List.exists (fun v -> v.Verdict = "error"))

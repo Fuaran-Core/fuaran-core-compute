@@ -5,7 +5,8 @@
 # One ordinal-sorted line per externally-visible type, member, record field and union case.
 # See STABILITY.md "Public-surface baselines" for what each move class means.
 ctor Fuaran.Compute.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
-ctor Fuaran.Compute.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>)
+ctor Fuaran.Compute.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>, Fuaran.Compute.Exactness)
+ctor Fuaran.Compute.HostRoundedDecision..ctor(System.Int32, System.String, System.String)
 ctor Fuaran.Compute.IncrementalPlan..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>, Fuaran.Compute.IncrementalStrategy)
 ctor Fuaran.Compute.IncrementalStateKey..ctor(System.String, System.String)
 ctor Fuaran.Compute.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, System.String, System.String, Fuaran.Core.AggFn)
@@ -73,6 +74,8 @@ field Fuaran.Compute.EvalError+Tags.UnitMismatch : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.UnknownColumn : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.UnpinnedClock : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.UnresolvedSource : System.Int32 (literal)
+field Fuaran.Compute.Exactness+Tags.HostRounded : System.Int32 (literal)
+field Fuaran.Compute.Exactness+Tags.Pinned : System.Int32 (literal)
 field Fuaran.Compute.FallBackReason+Tags.AggregateStepNotLast : System.Int32 (literal)
 field Fuaran.Compute.FallBackReason+Tags.AggregateStepRepeated : System.Int32 (literal)
 field Fuaran.Compute.FallBackReason+Tags.DeltaIsFullRefresh : System.Int32 (literal)
@@ -127,12 +130,16 @@ field Fuaran.Compute.ScalarFn+Tags.Ceil : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Concat : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.DateDiffDays : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.DatePart : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Exp : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Floor : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Greatest : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.IndexOf : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Least : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Length : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Ln : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Log10 : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Lower : System.Int32 (literal)
+field Fuaran.Compute.ScalarFn+Tags.Pow : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Replace : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Round : System.Int32 (literal)
 field Fuaran.Compute.ScalarFn+Tags.Sqrt : System.Int32 (literal)
@@ -187,11 +194,13 @@ method Fuaran.Compute.ColExprModule.substitute(Microsoft.FSharp.Collections.FSha
 method Fuaran.Compute.ColExprModule.substituteListParams(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
 method Fuaran.Compute.ColExprModule.substituteNow(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.NowGrain, Fuaran.Core.Cell>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
 method Fuaran.Compute.ColExprModule.usesNow(Fuaran.Compute.ColExpr) : System.Boolean
+method Fuaran.Compute.ColumnKnowledgeModule.joinExactness(Fuaran.Compute.Exactness, Fuaran.Compute.Exactness) : Fuaran.Compute.Exactness
 method Fuaran.Compute.ColumnKnowledgeModule.named(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>) : Fuaran.Compute.ColumnKnowledge
 method Fuaran.Compute.ColumnKnowledgeModule.ofField(Fuaran.Core.Field) : Fuaran.Compute.ColumnKnowledge
 method Fuaran.Compute.ColumnKnowledgeModule.renamed(System.String, Fuaran.Compute.ColumnKnowledge) : Fuaran.Compute.ColumnKnowledge
 method Fuaran.Compute.ColumnKnowledgeModule.toField(Fuaran.Compute.ColumnKnowledge) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.Field>
 method Fuaran.Compute.ColumnKnowledgeModule.toFieldAs(Fuaran.Core.ColumnType, Fuaran.Compute.ColumnKnowledge) : Fuaran.Core.Field
+method Fuaran.Compute.ColumnKnowledgeModule.withExactness(Fuaran.Compute.Exactness, Fuaran.Compute.ColumnKnowledge) : Fuaran.Compute.ColumnKnowledge
 method Fuaran.Compute.ColumnKnowledgeModule.withUnit(Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Fuaran.Compute.ColumnKnowledge) : Fuaran.Compute.ColumnKnowledge
 method Fuaran.Compute.DataFrame.aggregateCells(Fuaran.Core.AggFn, Fuaran.Core.ColumnType, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Cell, Fuaran.Compute.EvalError>
 method Fuaran.Compute.DataFrame.aggregateType(Fuaran.Core.AggFn, Fuaran.Core.ColumnType) : Fuaran.Core.ColumnType
@@ -312,7 +321,10 @@ method Fuaran.Compute.RowIdentity.byColumns(Microsoft.FSharp.Collections.FSharpL
 method Fuaran.Compute.RowIdentity.checkKeyEquality`1(Fuaran.Compute.RowIdentity`1<!!0>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Compute.KeyEqualityDisagreement>
 method Fuaran.Compute.RowIdentity.withKeyEquality`1(System.Collections.Generic.IEqualityComparer`1<!!0>, Fuaran.Compute.RowIdentity`1<!!0>) : Fuaran.Compute.RowIdentity`1<!!0>
 method Fuaran.Compute.SchemaWalk.columns(Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColumnKnowledge>
+method Fuaran.Compute.SchemaWalk.exactnessOf(System.String, Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Exactness>
 method Fuaran.Compute.SchemaWalk.has(System.String, Fuaran.Compute.SchemaKnowledge) : System.Boolean
+method Fuaran.Compute.SchemaWalk.hostRoundedDecisions(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.HostRoundedDecision>
+method Fuaran.Compute.SchemaWalk.hostRoundedDecisionsFrom(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>>, Fuaran.Compute.SchemaKnowledge, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.HostRoundedDecision>
 method Fuaran.Compute.SchemaWalk.isClosed(Fuaran.Compute.SchemaKnowledge) : System.Boolean
 method Fuaran.Compute.SchemaWalk.names(Fuaran.Compute.SchemaKnowledge) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.SchemaWalk.noSources(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>
@@ -348,11 +360,15 @@ record-field Fuaran.Compute.Agg.Fn #1 : Fuaran.Core.AggFn
 record-field Fuaran.Compute.Agg.Name #0 : System.String
 record-field Fuaran.Compute.Agg.Of #2 : System.String
 record-field Fuaran.Compute.ColumnKnowledge.Description #4 : Microsoft.FSharp.Core.FSharpOption`1<System.String>
+record-field Fuaran.Compute.ColumnKnowledge.Exactness #6 : Fuaran.Compute.Exactness
 record-field Fuaran.Compute.ColumnKnowledge.Ext #5 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>
 record-field Fuaran.Compute.ColumnKnowledge.Label #3 : Microsoft.FSharp.Core.FSharpOption`1<System.String>
 record-field Fuaran.Compute.ColumnKnowledge.Name #0 : System.String
 record-field Fuaran.Compute.ColumnKnowledge.Type #1 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>
 record-field Fuaran.Compute.ColumnKnowledge.Unit #2 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>
+record-field Fuaran.Compute.HostRoundedDecision.Operand #2 : System.String
+record-field Fuaran.Compute.HostRoundedDecision.Step #0 : System.Int32
+record-field Fuaran.Compute.HostRoundedDecision.Verb #1 : System.String
 record-field Fuaran.Compute.IncrementalPlan.Steps #0 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>
 record-field Fuaran.Compute.IncrementalPlan.Strategy #1 : Fuaran.Compute.IncrementalStrategy
 record-field Fuaran.Compute.IncrementalStateKey.Pipeline #0 : System.String
@@ -440,6 +456,8 @@ type Fuaran.Compute.EvalError+UnitMismatch (type)
 type Fuaran.Compute.EvalError+UnknownColumn (type)
 type Fuaran.Compute.EvalError+UnpinnedClock (type)
 type Fuaran.Compute.EvalError+UnresolvedSource (type)
+type Fuaran.Compute.Exactness (union)
+type Fuaran.Compute.Exactness+Tags (type)
 type Fuaran.Compute.FallBackReason (union)
 type Fuaran.Compute.FallBackReason+AggregateStepNotLast (type)
 type Fuaran.Compute.FallBackReason+AggregateStepRepeated (type)
@@ -449,6 +467,7 @@ type Fuaran.Compute.FallBackReason+StepNotRowLocal (type)
 type Fuaran.Compute.FallBackReason+Tags (type)
 type Fuaran.Compute.FallBackReason+UnresolvedSlotParam (type)
 type Fuaran.Compute.FallBackReason+WindowFrameUnbounded (type)
+type Fuaran.Compute.HostRoundedDecision (record)
 type Fuaran.Compute.Incremental (module)
 type Fuaran.Compute.IncrementalCodec (module)
 type Fuaran.Compute.IncrementalEval (record)
@@ -598,6 +617,8 @@ union-case Fuaran.Compute.EvalError.NewUnitMismatch #9(step: System.String, expr
 union-case Fuaran.Compute.EvalError.NewUnknownColumn #0(name: System.String, available: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
 union-case Fuaran.Compute.EvalError.NewUnpinnedClock #8(grain: Fuaran.Compute.NowGrain)
 union-case Fuaran.Compute.EvalError.NewUnresolvedSource #5(ref: System.String)
+union-case Fuaran.Compute.Exactness.HostRounded #1()
+union-case Fuaran.Compute.Exactness.Pinned #0()
 union-case Fuaran.Compute.FallBackReason.DeltaIsFullRefresh #2()
 union-case Fuaran.Compute.FallBackReason.EnvChanged #5()
 union-case Fuaran.Compute.FallBackReason.NewAggregateStepNotLast #1(verb: System.String)
@@ -652,12 +673,16 @@ union-case Fuaran.Compute.ScalarFn.Ceil #3()
 union-case Fuaran.Compute.ScalarFn.Concat #9()
 union-case Fuaran.Compute.ScalarFn.DateDiffDays #12()
 union-case Fuaran.Compute.ScalarFn.DatePart #8()
+union-case Fuaran.Compute.ScalarFn.Exp #18()
 union-case Fuaran.Compute.ScalarFn.Floor #2()
 union-case Fuaran.Compute.ScalarFn.Greatest #15()
 union-case Fuaran.Compute.ScalarFn.IndexOf #16()
 union-case Fuaran.Compute.ScalarFn.Least #14()
 union-case Fuaran.Compute.ScalarFn.Length #4()
+union-case Fuaran.Compute.ScalarFn.Ln #19()
+union-case Fuaran.Compute.ScalarFn.Log10 #20()
 union-case Fuaran.Compute.ScalarFn.Lower #5()
+union-case Fuaran.Compute.ScalarFn.Pow #17()
 union-case Fuaran.Compute.ScalarFn.Replace #11()
 union-case Fuaran.Compute.ScalarFn.Round #1()
 union-case Fuaran.Compute.ScalarFn.Sqrt #13()

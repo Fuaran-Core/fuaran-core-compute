@@ -127,9 +127,29 @@ module TransformVectorSample =
           "repeat-unpivot-refused"
           "repeat-pivot-refused" ]
 
+    /// The power shapes (Phase 557, D43), one vector each after the repeat shapes, over the decimal
+    /// table. An integer-exponent `Pow` is a BYTE-EXACT vector — the pinned routine, held equal bit
+    /// for bit to the repeated-multiplication spelling up to the cube — and so is every row of the
+    /// special-value table; a float-exponent `Pow`, `Exp`, `Ln` and `Log10` are HOST-ROUNDED, and
+    /// their vectors carry the per-column tolerance the exactness mark names; a decimal operand is
+    /// refused.
+    let private powerShapeNames =
+        [ "power-int-exponent"
+          "power-int-base"
+          "power-cube-is-repeated-multiply"
+          "power-special-values"
+          "power-float-exponent"
+          "power-exp"
+          "power-ln-log10"
+          "power-decimal-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
-        decimalShapeNames @ typingShapeNames @ unitShapeNames @ repeatShapeNames
+        decimalShapeNames
+        @ typingShapeNames
+        @ unitShapeNames
+        @ repeatShapeNames
+        @ powerShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -406,6 +426,43 @@ module TransformVectorSample =
         | "unit-join-key-refused" -> [ Join(other, [ "d", "t" ], Inner) ]
         | _ -> [ Union(Embedded(unitTable "km" (rows - 1) offset)) ]
 
+    /// The power shapes (Phase 557, D43) over the decimal table: `v` an int, `w` a float at or above
+    /// zero, `m` a decimal. No vector answers a non-finite float — the wire carries none — so the
+    /// table's `Inf` rows (an `exp` overflow, `ln Inf`) are held by the evaluator's own suite alone.
+    let private powerPipelineOf (shape: string) : Transform list =
+        let w = Col "w"
+        let fl (f: float) = Lit(Float f)
+        let pow b e = ApplyFn(Pow, [ b; e ])
+
+        match shape with
+        | "power-int-exponent" -> [ Derive("cube", pow w (Lit(Int 3))); Derive("recip", pow w (Lit(Int -2))) ]
+        | "power-int-base" ->
+            [ Derive("sq", pow (Col "v") (Lit(Int 2)))
+              Derive("inv", pow (Col "v") (Lit(Int -1))) ]
+        | "power-cube-is-repeated-multiply" ->
+            [ Derive("routine", pow w (Lit(Int 3)))
+              Derive("spelled", Binary(Mul, Binary(Mul, w, w), w))
+              Derive("same", Binary(Eq, Col "routine", Col "spelled")) ]
+        | "power-special-values" ->
+            [ Derive("zeroZero", pow (fl 0.0) (fl 0.0))
+              Derive("oneToAny", pow (fl 1.0) (fl 2.5))
+              Derive("zeroNeg", pow (fl 0.0) (fl -1.0))
+              Derive("negNonInt", pow (fl -8.0) (fl (1.0 / 3.0)))
+              Derive("negIntegral", pow (fl -2.0) (fl 2.0))
+              Derive("intRecip", pow (Lit(Int 2)) (Lit(Int -1)))
+              Derive("intZeroNeg", pow (Lit(Int 0)) (Lit(Int -2)))
+              Derive("expUnder", ApplyFn(Exp, [ fl -746.0 ]))
+              Derive("lnOne", ApplyFn(Ln, [ fl 1.0 ]))
+              Derive("lnZero", ApplyFn(Ln, [ fl 0.0 ]))
+              Derive("lnNeg", ApplyFn(Ln, [ fl -1.0 ]))
+              Derive("log10Zero", ApplyFn(Log10, [ Lit(Int 0) ])) ]
+        | "power-float-exponent" -> [ Derive("p", pow w (Binary(Add, w, fl 0.5))) ]
+        | "power-exp" -> [ Derive("e", ApplyFn(Exp, [ Binary(Sub, Binary(Mul, w, fl 3.0), fl 2.0) ])) ]
+        | "power-ln-log10" ->
+            [ Derive("l", ApplyFn(Ln, [ Binary(Add, w, fl 0.25) ]))
+              Derive("l10", ApplyFn(Log10, [ Binary(Add, w, fl 1.0) ])) ]
+        | _ -> [ Derive("p", pow (Col "m") (Lit(Int 2))) ]
+
     let private pipelineOf (k: int) : Transform list =
         match k with
         | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
@@ -466,6 +523,8 @@ module TransformVectorSample =
 
             if shape.StartsWith "unit-" then
                 (unitTable "m" rows offset, unitPipelineOf shape rows offset), r2
+            elif shape.StartsWith "power-" then
+                (decimalTable rows offset, powerPipelineOf shape), r2
             else
                 (decimalTable rows offset, decimalPipelineOf shape rows offset), r2
 

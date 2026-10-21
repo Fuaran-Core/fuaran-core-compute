@@ -2201,6 +2201,361 @@ let tests =
                   (Float 3.0)
                   "RollingMean is unchanged — the same window"
 
+          // ---- Phase 557 (D43): the power functions ----
+          testCase
+              "Phase 557 — Pow under an integer exponent is the pinned routine, bit for bit the repeated-multiplication spelling up to the cube; the tables answer before the host"
+          <| fun _ ->
+              let one = tbl [ Field.create "x" IntType ] [ col "x" IntType [ Int 0 ] ]
+
+              let scalar e =
+                  DataFrame.evalPipeline [ Derive("r", e) ] one
+                  |> okTable
+                  |> cellsOf "r"
+                  |> List.head
+
+              let refused e =
+                  match DataFrame.evalPipeline [ Derive("r", e) ] one with
+                  | Error e -> e
+                  | Ok _ -> failtestf "expected a refusal of %A" e
+
+              let pow a b = ApplyFn(Pow, [ Lit a; Lit b ])
+
+              // The exact int routine, and its overflow refused by name as `Mul`'s is.
+              Expect.equal (scalar (pow (Int 2) (Int 10))) (Int 1024) "2^10"
+              Expect.equal (scalar (pow (Int -3) (Int 3))) (Int -27) "(-3)^3"
+              Expect.equal (scalar (pow (Int 0) (Int 0))) (Int 1) "0^0 is 1"
+              Expect.equal (scalar (pow (Int 7) (Int 1))) (Int 7) "x^1 is x"
+              Expect.equal (scalar (pow (Int 46340) (Int 2))) (Int 2147395600) "the largest square in the band"
+
+              match refused (pow (Int 2) (Int 31)) with
+              | OverflowError d -> Expect.stringContains d "pow overflowed int32" "the overflow names pow"
+              | other -> failtestf "expected an OverflowError, got %A" other
+
+              match refused (pow (Int 50000) (Int 3)) with
+              | OverflowError _ -> ()
+              | other -> failtestf "expected an OverflowError for a base square past the band, got %A" other
+
+              // A negative int exponent is the float reciprocal; a zero base under one is Null.
+              Expect.equal (scalar (pow (Int 2) (Int -1))) (Float 0.5) "2^-1"
+              Expect.equal (scalar (pow (Int 0) (Int -2))) Null "0^-2 is Null, as 1/0 is"
+              Expect.equal (scalar (pow (Float 0.0) (Int -1))) Null "0.0^-1 is Null"
+              Expect.equal (scalar (pow (Float 4.0) (Int -2))) (Float 0.0625) "4.0^-2"
+
+              // The routine's cells ARE the repeated-multiplication spelling's up to the cube, and the
+              // evaluator's reciprocal of the square for -2 — on every float, awkward ones included
+              // (`1e-300` squares to zero: the spelling's `Div` by zero is `Null`, and so is the power).
+              // A `Float` cell compares by value, which on these finite values is by bits.
+              for x in
+                  [ 1.1
+                    0.3
+                    7.0 / 3.0
+                    1e-300
+                    123456.789
+                    -2.5
+                    System.Math.PI
+                    1.0000000000000002 ] do
+                  let x2 = Lit(Float x)
+
+                  Expect.equal
+                      (scalar (pow (Float x) (Int 2)))
+                      (scalar (Binary(Mul, x2, x2)))
+                      (sprintf "x^2 is x*x at %g" x)
+
+                  Expect.equal
+                      (scalar (pow (Float x) (Int 3)))
+                      (scalar (Binary(Mul, Binary(Mul, x2, x2), x2)))
+                      (sprintf "x^3 is (x*x)*x at %g" x)
+
+                  Expect.equal
+                      (scalar (pow (Float x) (Int -2)))
+                      (scalar (Binary(Div, Lit(Float 1.0), Binary(Mul, x2, x2))))
+                      (sprintf "x^-2 is 1/(x*x) at %g" x)
+
+                  Expect.equal (scalar (pow (Float x) (Int 1))) (Float x) (sprintf "x^1 is x at %g" x)
+                  Expect.equal (scalar (pow (Float x) (Int 0))) (Float 1.0) (sprintf "x^0 is 1 at %g" x)
+
+              Expect.equal
+                  (scalar (pow (Float 1e-300) (Int -2)))
+                  Null
+                  "a square that underflowed to zero has no reciprocal"
+
+              // The int routine and the float routine agree wherever the int one answers: every
+              // product under the band is exact in a double.
+              for b in -7 .. 7 do
+                  for n in 0..9 do
+                      match scalar (pow (Int b) (Int n)) with
+                      | Int r -> Expect.equal (float r) (DataFrame.powInt (float b) n) (sprintf "%d^%d" b n)
+                      | other -> failtestf "%d^%d answered %A" b n other
+
+              // A NaN answer, which no `Expect.equal` can see (NaN equals nothing).
+              let isNaN (what: string) (c: Cell) =
+                  match c with
+                  | Float f when System.Double.IsNaN f -> ()
+                  | other -> failtestf "%s: expected NaN, got %A" what other
+
+              // The float path: the table first, then the host.
+              Expect.equal (scalar (pow (Float 0.0) (Float 0.0))) (Float 1.0) "0.0^0.0 is 1"
+              isNaN "1^NaN is NaN: a NaN propagates" (scalar (pow (Float 1.0) (Float System.Double.NaN)))
+              isNaN "NaN^0 is NaN" (scalar (pow (Float System.Double.NaN) (Float 0.0)))
+              isNaN "NaN under an int exponent is NaN" (scalar (pow (Float System.Double.NaN) (Int 0)))
+              Expect.equal (scalar (pow (Float 1.0) (Float 2.5))) (Float 1.0) "1^y is 1"
+
+              Expect.equal
+                  (scalar (pow (Float -1.0) (Float System.Double.PositiveInfinity)))
+                  (Float 1.0)
+                  "(-1)^Inf is 1"
+
+              Expect.equal (scalar (pow (Float 0.0) (Float -1.0))) Null "0^-1.0 is Null"
+
+              Expect.equal
+                  (scalar (pow (Float -8.0) (Float(1.0 / 3.0))))
+                  Null
+                  "a negative base under a non-integer exponent is Null"
+
+              Expect.equal
+                  (scalar (pow (Float -2.0) (Float 2.0)))
+                  (Float 4.0)
+                  "a negative base under an integral float exponent is the host's"
+
+              Expect.equal (scalar (pow (Float 2.0) (Float 0.5))) (Float(System.Math.Pow(2.0, 0.5))) "the host's pow"
+              Expect.equal (scalar (pow (Int 2) (Float 0.5))) (Float(System.Math.Pow(2.0, 0.5))) "an int base promotes"
+              Expect.equal (scalar (pow (Float 2.0) Null)) Null "null propagates"
+              Expect.equal (scalar (pow Null (Int 2))) Null "null propagates"
+
+              match refused (pow (Cell.decimal "2" |> Option.get) (Int 2)) with
+              | TypeError d -> Expect.stringContains d "pow of a decimal" "a decimal is refused by name"
+              | other -> failtestf "expected a TypeError, got %A" other
+
+              match refused (pow (Str "2") (Int 2)) with
+              | TypeError _ -> ()
+              | other -> failtestf "expected a TypeError, got %A" other
+
+              // Exp: the table's two edges, then the host.
+              let exp' c = ApplyFn(Exp, [ Lit c ])
+              Expect.equal (scalar (exp' (Float 0.0))) (Float 1.0) "exp 0"
+              Expect.equal (scalar (exp' (Float 710.0))) (Float System.Double.PositiveInfinity) "exp overflow is Inf"
+              Expect.equal (scalar (exp' (Float -746.0))) (Float 0.0) "exp underflow is 0"
+              isNaN "exp NaN" (scalar (exp' (Float System.Double.NaN)))
+              Expect.equal (scalar (exp' (Int 1))) (Float(System.Math.Exp 1.0)) "the host's exp"
+              Expect.equal (scalar (exp' Null)) Null "null propagates"
+
+              // Ln and Log10: Null at zero and below, 0 at one, Inf at Inf, then the host.
+              let ln c = ApplyFn(Ln, [ Lit c ])
+              let log10' c = ApplyFn(Log10, [ Lit c ])
+              Expect.equal (scalar (ln (Float 1.0))) (Float 0.0) "ln 1"
+              Expect.equal (scalar (ln (Float 0.0))) Null "ln 0 is Null"
+              Expect.equal (scalar (ln (Float -1.0))) Null "ln of a negative is Null"
+
+              Expect.equal
+                  (scalar (ln (Float System.Double.PositiveInfinity)))
+                  (Float System.Double.PositiveInfinity)
+                  "ln Inf"
+
+              isNaN "ln NaN" (scalar (ln (Float System.Double.NaN)))
+              Expect.equal (scalar (ln (Int 10))) (Float(System.Math.Log 10.0)) "the host's ln"
+              Expect.equal (scalar (log10' (Float 1000.0))) (Float(System.Math.Log10 1000.0)) "the host's log10"
+              Expect.equal (scalar (log10' (Int 0))) Null "log10 0 is Null"
+
+              match refused (ln (Cell.decimal "2" |> Option.get)) with
+              | TypeError d -> Expect.stringContains d "ln of a decimal" "a decimal is refused by name"
+              | other -> failtestf "expected a TypeError, got %A" other
+
+              // The reference row evaluator and the compiled derive answer the same bits.
+              for e in
+                  [ pow (Float 1.1) (Int 7)
+                    pow (Float 1.1) (Float 2.3)
+                    exp' (Float 2.5)
+                    ln (Float 2.5)
+                    log10' (Float 2.5) ] do
+                  Expect.equal
+                      (DataFrame.evalExprInRow Map.empty [] [] e)
+                      (Ok(scalar e))
+                      (sprintf "the row evaluator and the derive agree on %A" e)
+
+          testCase
+              "Phase 557 — the schema walk marks every HostRounded column, types a power by its literal exponent, and reports each discrete decision a host-rounded value reaches"
+          <| fun _ ->
+              let schema =
+                  [ Field.create "x" FloatType
+                    Field.create "n" IntType
+                    Field.create "g" StringType ]
+
+              let walk pipeline = SchemaWalk.ofPipeline schema pipeline
+              let markOf name k = SchemaWalk.exactnessOf name k
+              let pinned = Some Exactness.Pinned
+              let rounded = Some Exactness.HostRounded
+
+              let derives =
+                  [ Derive("sq", ApplyFn(Pow, [ Col "x"; Lit(Int 2) ]))
+                    Derive("pn", ApplyFn(Pow, [ Col "x"; Col "n" ]))
+                    Derive("pf", ApplyFn(Pow, [ Col "x"; Cast(FloatType, Col "n") ]))
+                    Derive("e", ApplyFn(Exp, [ Col "x" ]))
+                    Derive("l", ApplyFn(Ln, [ Binary(Add, Col "x", Lit(Float 1.0)) ]))
+                    Derive("l10", ApplyFn(Log10, [ Col "n" ]))
+                    Derive("viaE", Binary(Mul, Col "e", Lit(Float 2.0)))
+                    Derive("cased", Case([ Binary(Gt, Col "n", Lit(Int 0)), Col "x" ], Col "e"))
+                    Derive("isn", IsNull(Col "e"))
+                    Derive("plain", Binary(Add, Col "x", Lit(Float 1.0))) ]
+
+              let k = walk derives
+              Expect.equal (markOf "x" k) pinned "an input column is pinned"
+              Expect.equal (markOf "sq" k) pinned "an integer-literal power is pinned"
+              Expect.equal (markOf "pn" k) pinned "a power under an int column is pinned"
+              Expect.equal (markOf "pf" k) rounded "a power under a float exponent is host-rounded"
+              Expect.equal (markOf "e" k) rounded "exp is host-rounded"
+              Expect.equal (markOf "l" k) rounded "ln is host-rounded"
+              Expect.equal (markOf "l10" k) rounded "log10 is host-rounded"
+              Expect.equal (markOf "viaE" k) rounded "the mark rides the lineage"
+              Expect.equal (markOf "cased" k) rounded "an arm drawn from a host-rounded column marks the case"
+              Expect.equal (markOf "isn" k) rounded "a boolean over a host-rounded value carries the mark"
+              Expect.equal (markOf "plain" k) pinned "a pipeline step reading no such value is pinned"
+              Expect.equal (markOf "absent" k) None "an absent column has no mark"
+
+              // The typer: a literal exponent decides a power's type by its sign.
+              Expect.equal (SchemaWalk.typeOf "sq" k) (Some FloatType) "a float base is a float"
+              Expect.equal (SchemaWalk.typeOf "pn" k) (Some FloatType) "a float base under an int column is a float"
+
+              let ints =
+                  walk
+                      [ Derive("a", ApplyFn(Pow, [ Col "n"; Lit(Int 2) ]))
+                        Derive("b", ApplyFn(Pow, [ Col "n"; Lit(Int -1) ]))
+                        Derive("c", ApplyFn(Pow, [ Col "n"; Col "n" ])) ]
+
+              Expect.equal
+                  (SchemaWalk.typeOf "a" ints)
+                  (Some IntType)
+                  "an int base under a non-negative literal is an int"
+
+              Expect.equal
+                  (SchemaWalk.typeOf "b" ints)
+                  (Some FloatType)
+                  "an int base under a negative literal is a float"
+
+              Expect.equal (SchemaWalk.typeOf "c" ints) None "an int base under an int column is the cells' to decide"
+
+              // The verbs carry the mark along: a rename, a group, a window, an unpivot, a union.
+              let carried =
+                  walk (
+                      derives
+                      @ [ Project [ "g", "g"; "e", "ee"; "x", "x" ]
+                          GroupBy(
+                              [ "g" ],
+                              [ { Name = "s"; Fn = Sum; Of = "ee" }
+                                { Name = "c"; Fn = Count; Of = "ee" }
+                                { Name = "cd"
+                                  Fn = CountDistinct
+                                  Of = "ee" }
+                                { Name = "mx"; Fn = Max; Of = "x" } ]
+                          ) ]
+                  )
+
+              Expect.equal (markOf "s" carried) rounded "a sum over a host-rounded column"
+              Expect.equal (markOf "c" carried) pinned "a count is pinned: presence is the table's"
+              Expect.equal (markOf "cd" carried) rounded "a distinct count is a decision over the values"
+              Expect.equal (markOf "mx" carried) pinned "an aggregate over a pinned column"
+
+              let windowed =
+                  walk (
+                      derives
+                      @ [ Window
+                              { PartitionBy = [ "g" ]
+                                OrderBy = [ "x", Asc ]
+                                Fn = Lag
+                                Of = "e"
+                                As = "prev" }
+                          Window
+                              { PartitionBy = [ "g" ]
+                                OrderBy = [ "e", Asc ]
+                                Fn = RowNumber
+                                Of = "x"
+                                As = "rn" }
+                          Window
+                              { PartitionBy = [ "g" ]
+                                OrderBy = [ "x", Asc ]
+                                Fn = RowNumber
+                                Of = "x"
+                                As = "rnp" } ]
+                  )
+
+              Expect.equal (markOf "prev" windowed) rounded "a lag of a host-rounded column"
+              Expect.equal (markOf "rn" windowed) rounded "a row number ordered by a host-rounded key"
+              Expect.equal (markOf "rnp" windowed) pinned "a row number over pinned keys"
+
+              let melted = walk (derives @ [ Unpivot([ "g" ], [ "x"; "e" ]) ])
+              Expect.equal (markOf "value" melted) rounded "an unpivot holding a host-rounded column"
+              Expect.equal (markOf "variable" melted) pinned "the unpivot's names are pinned"
+
+              let unioned =
+                  SchemaWalk.ofPipeline
+                      [ Field.create "x" FloatType ]
+                      [ Union(Embedded(tbl [ Field.create "x" FloatType ] [ col "x" FloatType [ Float 1.0 ] ])) ]
+
+              Expect.equal (markOf "x" unioned) pinned "a union of two pinned columns"
+
+              // The decisions (choice (c)): admitted, and each reported with its step and operand.
+              let decisions =
+                  SchemaWalk.hostRoundedDecisions
+                      schema
+                      [ Derive("e", ApplyFn(Exp, [ Col "x" ]))
+                        Filter(Binary(Gt, Col "e", Lit(Float 1.0)))
+                        Derive("r", ApplyFn(Round, [ Col "e" ]))
+                        Derive("i", Cast(IntType, ApplyFn(Ln, [ Col "x" ])))
+                        Derive("f", Cast(FloatType, Col "e"))
+                        Transform.sortBy [ "e", Desc ]
+                        GroupBy(
+                            [ "g" ],
+                            [ { Name = "cd"
+                                Fn = CountDistinct
+                                Of = "e" } ]
+                        ) ]
+
+              Expect.equal
+                  decisions
+                  [ { Step = 1
+                      Verb = "filter"
+                      Operand = "e" }
+                    { Step = 2
+                      Verb = "round"
+                      Operand = "e" }
+                    { Step = 3
+                      Verb = "cast int"
+                      Operand = "ln" }
+                    { Step = 5
+                      Verb = "sort key"
+                      Operand = "e" }
+                    { Step = 6
+                      Verb = "count-distinct"
+                      Operand = "e" } ]
+                  "every decision, in pipeline order; a cast to float is none"
+
+              Expect.isEmpty
+                  (SchemaWalk.hostRoundedDecisions
+                      schema
+                      [ Derive("sq", ApplyFn(Pow, [ Col "x"; Lit(Int 2) ]))
+                        Filter(Binary(Gt, Col "sq", Lit(Float 1.0)))
+                        Transform.sortBy [ "sq", Desc ] ])
+                  "a pinned pipeline reports no decision"
+
+              // Admitted, never refused: the pipeline with every decision evaluates.
+              let table =
+                  tbl
+                      schema
+                      [ col "x" FloatType [ Float 1.5; Float 0.5 ]
+                        col "n" IntType [ Int 2; Int 3 ]
+                        col "g" StringType [ Str "a"; Str "b" ] ]
+
+              match
+                  DataFrame.evalPipeline
+                      [ Derive("e", ApplyFn(Exp, [ Col "x" ]))
+                        Filter(Binary(Gt, Col "e", Lit(Float 1.0)))
+                        Derive("r", ApplyFn(Round, [ Col "e" ]))
+                        Transform.sortBy [ "e", Desc ]
+                        Distinct ]
+                      table
+              with
+              | Ok t -> Expect.equal (cellsOf "e" t |> List.length) 2 "both rows pass"
+              | Error e -> failtestf "a reported decision is admitted, but the evaluator refused: %A" e
+
           testCase "Phase 101 — Sqrt is Null below zero; Least/Greatest propagate null; IndexOf is 0-based"
           <| fun _ ->
               let one = tbl [ Field.create "x" IntType ] [ col "x" IntType [ Int 0 ] ]
@@ -2371,6 +2726,8 @@ let tests =
 
               Expect.contains scalars "sqrt" "the scalar roster gained sqrt"
               Expect.contains scalars "indexOf" "the scalar roster gained indexOf"
+              Expect.contains scalars "pow" "the scalar roster gained pow (Phase 557)"
+              Expect.contains scalars "log10" "the scalar roster gained log10 (Phase 557)"
 
               match
                   DataFrameCodec.decodePipeline
@@ -4235,7 +4592,11 @@ let private allFns: ScalarFn list =
       Sqrt
       Least
       Greatest
-      IndexOf ]
+      IndexOf
+      Pow
+      Exp
+      Ln
+      Log10 ]
 
 let private allTypes: ColumnType list =
     [ IntType

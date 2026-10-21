@@ -104,11 +104,16 @@ type SortDir =
 //    (for the backtracking engines) worst-case time, so a pattern is not a cross-host
 //    value. Reach for `Contains` / `StartsWith` / `EndsWith` / `IndexOf` / `Substr` /
 //    `Replace`, or derive the column host-side before it enters the algebra.
-//  * NO `Pow` / `Log` — IEEE-754 does not require transcendental functions to be
-//    correctly rounded, so `Math.Pow` / `Math.Log` may differ in the last ulp between
-//    hosts, and one ulp is a different byte in the canonical float layout. `Sqrt` IS
-//    pinned by IEEE-754 (exact, correctly rounded), which is why it is present and they
-//    are not; integer powers compose from `Mul`.
+//  * `Pow` / `Exp` / `Ln` / `Log10` ARE present (Phase 557, D43), each with its guarantee
+//    stated rather than refused: an INTEGER-exponent `Pow` runs one pinned routine (binary
+//    exponentiation over IEEE-754 multiplication, one reciprocal for a negative exponent)
+//    and is byte-identical on every host; a non-integer `Pow`, `Exp`, `Ln` and `Log10` are
+//    HOST-ROUNDED — the special-value table answers first, then the host's own maths
+//    library, deterministic within one host and within 2 ulp of the correctly rounded
+//    result across hosts, never byte for byte. The static walk marks every column whose
+//    lineage passes through one of them `HostRounded` (`Exactness`), and the cross-host law
+//    compares exactly those columns in ulps. `Sqrt` IS pinned by IEEE-754 (exact, correctly
+//    rounded), which is why it carries no mark.
 //  * NO `Split` and NO explode/flatten — the columnar `Cell` is a closed FLAT scalar set,
 //    and a list-valued cell was explicitly rejected (D12) for blast radius and model
 //    coherence. Both verbs need a value shape the model does not have, so the gap is in
@@ -133,7 +138,7 @@ type ScalarFn =
     | Trim
     | Replace
     | DateDiffDays
-    // Phase 101 — the closed-set edges. `Pow`/`Log` are deliberately absent (see the block above).
+    // Phase 101 — the closed-set edges.
     /// The non-negative square root. `Float`-valued; a NEGATIVE argument is `Null`, matching the
     /// pinned `Div`-by-zero rule (the strand answers a mathematically-undefined result with `Null`,
     /// never a `NaN` the canonical wire cannot even carry).
@@ -149,6 +154,26 @@ type ScalarFn =
     /// when absent (an empty needle is `0`). 0-based deliberately: `Substr` is 0-based here, so
     /// `Substr(s, IndexOf(s, t), n)` composes — the 1-based SQL `POSITION` convention would not.
     | IndexOf
+    // Phase 557 (D43) — the power functions, each carrying the guarantee the block above states.
+    /// `Pow(base, exponent)`. An INTEGER exponent (an `Int` cell) runs the one pinned routine —
+    /// binary exponentiation over IEEE-754 multiplication, one reciprocal for a negative exponent
+    /// (`DataFrame.powInt`) — so the bits are the same on every host; an `Int` base under an
+    /// exponent `>= 0` answers an `Int` and refuses int32 overflow by name, as `Mul` does, and under a
+    /// negative one answers the float reciprocal. A FLOAT exponent is HOST-ROUNDED: the special-value
+    /// table (`DataFrame.powSpecial`) answers first, then the host's own `pow`, within 2 ulp of the
+    /// correctly rounded result across hosts. Outside the reals' domain — a finite negative base under
+    /// a non-integer exponent, a zero base under a negative one — the answer is `Null`, as `Div` by
+    /// zero is; a NaN operand propagates as D16's one NaN. A `Decimal` operand is refused by name, as
+    /// `Sqrt` refuses it.
+    | Pow
+    /// `e` raised to the operand: host-rounded under the 2 ulp bound. Overflow is `Inf` and underflow
+    /// `0`, both decided by the table before the host is called. A `Decimal` operand is refused by name.
+    | Exp
+    /// The natural logarithm: host-rounded under the 2 ulp bound; `Null` at zero and below, as `Sqrt`
+    /// is below zero; `0` exactly at `1`, `Inf` at `Inf`. A `Decimal` operand is refused by name.
+    | Ln
+    /// The base-10 logarithm, on `Ln`'s terms.
+    | Log10
 
 /// A binary operator: arithmetic, comparison, or logical. Null propagates through arithmetic +
 /// comparison (any null operand ⇒ null); the logical pair is three-valued (Kleene).
@@ -1968,6 +1993,162 @@ module DataFrame =
             | _, Float _ -> Error(decimalFloatMismatch "quotient")
             | _ -> Error(TypeError "quotient of a non-numeric")
 
+    // ---- Phase 557 (D43): the power functions ----------------------------------------------------
+    //
+    // Two kinds of guarantee, stated per function rather than refused for the set. An INTEGER
+    // exponent is EXACT on every host: one pinned product tree over the host's IEEE-754 multiply,
+    // which every host rounds the same way, so the tree and not the host decides the bits. A float
+    // exponent, `Exp`, `Ln` and `Log10` are HOST-ROUNDED: IEEE-754 does not require them correctly
+    // rounded, so the special-value table below answers every input the hosts' libraries disagree
+    // on BEFORE the host is called, and what remains is the host's own answer — deterministic within
+    // one host, within 2 ulp of the correctly rounded result across hosts (the bound D43 records and
+    // the cross-host law compares in). `proofs/Pipeline.fst` section 14 models the routine and the
+    // tables clause for clause and the host functions as uninterpreted.
+
+    /// Binary exponentiation over the host's IEEE-754 multiply — the one pinned routine for an
+    /// integer exponent. `n = 0` is `1.0` with no multiply, `n = 1` is `x` with none, `n = 2` is
+    /// `x * x` and `n = 3` is `x * (x * x)`: the bits of the repeated-multiplication spelling, a single
+    /// multiply being commutative. Higher exponents take the squaring tree, which is pinned but is not
+    /// the left fold's tree. A negative exponent is one reciprocal of the positive power. The caller
+    /// has already answered a NaN base and a zero base under a negative exponent.
+    // The accumulator is `None` until the first set bit, so a power takes exactly the multiplies
+    // its bits name: `x^1` is `x` itself, never `1.0 * x`. `k` is the exponent's magnitude.
+    let rec private powGo (acc: float option) (b: float) (k: int64) : float =
+        let acc' =
+            if k % 2L = 1L then
+                Some(
+                    match acc with
+                    | Some a -> a * b
+                    | None -> b
+                )
+            else
+                acc
+
+        let k' = k / 2L
+
+        if k' = 0L then
+            (match acc' with
+             | Some a -> a
+             | None -> 1.0)
+        else
+            powGo acc' (b * b) k'
+
+    let internal powInt (x: float) (n: int) : float =
+        if n = 0 then 1.0
+        elif n > 0 then powGo None x (int64 n)
+        else 1.0 / powGo None x (-(int64 n))
+
+    /// A negative integer exponent as the evaluator answers it: the reciprocal of the positive
+    /// power, `Null` where that power is zero — a zero base, or a power that underflowed to zero —
+    /// exactly as `Div` by zero is `Null`, so `Pow(x, -2)` and `1 / (x * x)` answer one cell on every
+    /// input. Called with `n < 0`.
+    let private reciprocal (x: float) (n: int) : Result<Cell, EvalError> =
+        let p = powGo None x (-(int64 n))
+        if p = 0.0 then Ok Null else Ok(Float(1.0 / p))
+
+    /// The integer power under the int32 band: `powInt`'s product tree over `int64`, every product
+    /// that leaves the band refused by name as `Mul` refuses one. A base square that leaves the band
+    /// with exponent bits still to take is refused too: every value it would still multiply into is
+    /// at least as large as it. Called with `n >= 0`.
+    let private powIntExact (x: int) (n: int) : Result<Cell, EvalError> =
+        let rec go (acc: int64 option) (b: int64) (k: int) : Result<Cell, EvalError> =
+            let acc' =
+                if k % 2 = 1 then
+                    Some(
+                        match acc with
+                        | Some a -> a * b
+                        | None -> b
+                    )
+                else
+                    acc
+
+            match acc' with
+            | Some a when not (inInt32Range a) -> Error(overflowed "pow" a)
+            | _ ->
+                let k' = k / 2
+
+                if k' = 0 then
+                    Ok(
+                        Int(
+                            match acc' with
+                            | Some a -> int a
+                            | None -> 1
+                        )
+                    )
+                else
+                    let b2 = b * b
+
+                    if inInt32Range b2 then
+                        go acc' b2 k'
+                    else
+                        Error(overflowed "pow" b2)
+
+        if n = 0 then Ok(Int 1) else go None (int64 x) n
+
+    /// What the special-value table answers for a float `Pow` before any host `pow` is reached:
+    /// a NaN operand propagates (`pow(1, NaN)` and `pow(NaN, 0)` included — the hosts disagree on
+    /// both, and D16's one NaN is the answer); a zero exponent and a base of one answer `1`, and so
+    /// does a base of minus one under an infinite exponent (C99 says `1`, JavaScript says NaN); a
+    /// zero base under a negative exponent and a finite negative base under a non-integer exponent
+    /// are outside the reals and answer `Null`; everything else is the host's.
+    [<RequireQualifiedAccess>]
+    type internal PowSpecial =
+        | NaN
+        | One
+        | Null
+        | Host
+
+    let internal powSpecial (x: float) (y: float) : PowSpecial =
+        if System.Double.IsNaN x || System.Double.IsNaN y then
+            PowSpecial.NaN
+        elif y = 0.0 || x = 1.0 then
+            PowSpecial.One
+        elif x = 0.0 && y < 0.0 then
+            PowSpecial.Null
+        elif x = -1.0 && System.Double.IsInfinity y then
+            PowSpecial.One
+        elif
+            x < 0.0
+            && not (System.Double.IsInfinity x)
+            && not (System.Double.IsInfinity y)
+            && y <> floor y
+        then
+            PowSpecial.Null
+        else
+            PowSpecial.Host
+
+    /// A float `Pow`: the table, then the host.
+    let internal powFloat (x: float) (y: float) : Cell =
+        match powSpecial x y with
+        | PowSpecial.NaN -> Float System.Double.NaN
+        | PowSpecial.One -> Float 1.0
+        | PowSpecial.Null -> Null
+        | PowSpecial.Host -> Float(System.Math.Pow(x, y))
+
+    /// `Exp`'s table: a NaN propagates; above the natural log of the largest double the answer is
+    /// `Inf`, and below the natural log of half the smallest subnormal it is `0` — the two edges where
+    /// a host's last-ulp rounding decides between a finite value and the limit; between them the
+    /// host answers.
+    let internal expHost (x: float) : float =
+        if System.Double.IsNaN x then
+            x
+        elif x > 709.782712893384 then
+            System.Double.PositiveInfinity
+        elif x < -745.1332191019412 then
+            0.0
+        else
+            System.Math.Exp x
+
+    /// `Ln`'s and `Log10`'s table over a host logarithm `log`: a NaN propagates, zero and below is
+    /// `Null` (outside the reals, as a negative root is), one is exactly `0` and `Inf` is `Inf`; in
+    /// between the host answers.
+    let internal logHost (log: float -> float) (x: float) : Cell =
+        if System.Double.IsNaN x then Float x
+        elif x <= 0.0 then Null
+        elif x = 1.0 then Float 0.0
+        elif System.Double.IsPositiveInfinity x then Float x
+        else Float(log x)
+
     let private applyScalar (fn: ScalarFn) (args: Cell list) : Result<Cell, EvalError> =
         let arity n =
             if List.length args = n then
@@ -2121,6 +2302,65 @@ module DataFrame =
                     // zero does. A `NaN` would not survive the canonical wire at all.
                     | Some f -> Ok(if f < 0.0 then Null else Float(sqrt f))
                     | None -> Error(TypeError "sqrt of a non-numeric"))
+        // Phase 557 (D43). A null operand propagates first, as the unary functions' does; a decimal
+        // is refused by name, as `Sqrt` refuses one; then the exponent's CELL decides the path — an
+        // `Int` exponent is the pinned routine (exact; an `Int` base under `n >= 0` answers an `Int`),
+        // a float exponent is the table and then the host.
+        | Pow ->
+            arity 2
+            |> Result.bind (fun () ->
+                match args.[0], args.[1] with
+                | Null, _
+                | _, Null -> Ok Null
+                | Decimal _, _
+                | _, Decimal _ -> Error(TypeError "pow of a decimal is not exact: write Pow(Cast(float, x), n)")
+                | Int b, Int n -> if n >= 0 then powIntExact b n else reciprocal (float b) n
+                | x, Int n ->
+                    match asNum x with
+                    | Some f ->
+                        if System.Double.IsNaN f then Ok(Float f)
+                        elif n >= 0 then Ok(Float(powInt f n))
+                        else reciprocal f n
+                    | None -> Error(TypeError "pow of a non-numeric")
+                | x, y ->
+                    match asNum x, asNum y with
+                    | Some f, Some g -> Ok(powFloat f g)
+                    | _ -> Error(TypeError "pow of a non-numeric"))
+        | Exp ->
+            unary (fun c ->
+                match c with
+                | Decimal _ -> Error(TypeError "exp of a decimal is not exact: write Exp(Cast(float, x))")
+                | _ ->
+                    match asNum c with
+                    | Some f -> Ok(Float(expHost f))
+                    | None -> Error(TypeError "exp of a non-numeric"))
+        | Ln
+        | Log10 ->
+            let name = if fn = Ln then "ln" else "log10"
+
+            unary (fun c ->
+                match c with
+                | Decimal _ ->
+                    Error(
+                        TypeError(
+                            name
+                            + " of a decimal is not exact: write "
+                            + (if fn = Ln then "Ln" else "Log10")
+                            + "(Cast(float, x))"
+                        )
+                    )
+                | _ ->
+                    match asNum c with
+                    | Some f ->
+                        Ok(
+                            logHost
+                                (if fn = Ln then
+                                     (fun v -> System.Math.Log v)
+                                 else
+                                     (fun v -> System.Math.Log10 v))
+                                f
+                        )
+                    | None -> Error(TypeError(name + " of a non-numeric")))
         | Least
         | Greatest ->
             // Variadic (>= 1). Any null propagates, matching `Concat`; incomparable operands are a
@@ -2203,6 +2443,27 @@ module DataFrame =
         | Some x, None -> Some x
         | None, Some y -> Some(Unit.div Unit.dimensionless y)
         | Some x, Some y -> Some(Unit.div x y)
+
+    /// What a power the algebra cannot raise a unit to is refused against (Phase 557): a text naming
+    /// the refusal rather than a unit — the node in the error carries the exponent asked for.
+    let private powerRangeText = "a power the algebra can carry"
+
+    /// The unit to an integer power (Phase 557): `None` where an exponent would leave the algebra's
+    /// range, which `Unit.pow` reports by raising.
+    let private unitPower (u: UnitOfMeasure) (n: int) : UnitOfMeasure option =
+        try
+            Some(Unit.pow u n)
+        with _ ->
+            None
+
+    /// The first operand stating a unit OTHER than the dimensionless one (Phase 557): what a
+    /// transcendental, or a power under an exponent that is not a literal int, refuses against `1`.
+    let private firstDimensioned (units: UnitOfMeasure option list) : UnitOfMeasure option =
+        units
+        |> List.tryPick (fun u ->
+            match u with
+            | Some x when not (sameUnit x Unit.dimensionless) -> Some x
+            | _ -> None)
 
     /// The exact conversion ratio as the double the resolved expression multiplies by.
     let private ratioToFloat (r: Ratio) : float =
@@ -2309,6 +2570,31 @@ module DataFrame =
                 | Ceil -> Ok((units |> List.tryHead |> Option.flatten), e')
                 | Least
                 | Greatest -> agreeAll e None units |> Result.map (fun u -> u, e')
+                // Phase 557 (D43): an integer-LITERAL exponent composes the unit through the algebra
+                // (`m` squared is `m2`; to the power zero, unconstrained); any other power and the
+                // transcendentals take a dimensionless operand only, refused as a mismatch against
+                // `1`. The algebra refuses an exponent product that leaves its range (`m2` to the
+                // power of a billion), named as a mismatch against `a power the algebra can carry`.
+                | Pow ->
+                    (match args, units with
+                     | [ _; Lit(Int n) ], [ ub; _ ] ->
+                         match ub with
+                         | None -> Ok(None, e')
+                         | Some u when n = 0 -> Ok(None, e')
+                         | Some u ->
+                             match unitPower u n with
+                             | Some p -> Ok(Some p, e')
+                             | None -> Error(UnitMismatch(step, e, Unit.render u, powerRangeText))
+                     | _ ->
+                         match firstDimensioned units with
+                         | None -> Ok(None, e')
+                         | Some u -> mismatch e u Unit.dimensionless)
+                | Exp
+                | Ln
+                | Log10 ->
+                    (match firstDimensioned units with
+                     | None -> Ok(None, e')
+                     | Some u -> mismatch e u Unit.dimensionless)
                 // The algebra states integer powers only, so a root's unit is not derived: the
                 // answer is unconstrained, as a text, a date and a count are.
                 | Sqrt
@@ -2782,6 +3068,26 @@ module DataFrame =
                     | Absent
                     | Of _ -> Of FloatType)
             | Sqrt -> unary (fun _ -> Of FloatType)
+            // Phase 557 (D43): the transcendentals answer a float, as `Sqrt` does. A power's type
+            // over two typed operands: an int base under an int exponent is decided by the
+            // exponent's SIGN (an `Int` at or above zero, a float below), which the typings do not
+            // carry — `powLit` reads a literal exponent, and otherwise the cells decide; an
+            // undecided operand may be that pair, so it is undecided too; every other numeric pair
+            // and every refused pair is a float, as `Sqrt` over a refused operand is.
+            | Exp
+            | Ln
+            | Log10 -> unary (fun _ -> Of FloatType)
+            | Pow ->
+                if not (arity 2) then
+                    Absent
+                else
+                    match List.head args, List.item 1 args with
+                    | Absent, _
+                    | _, Absent -> Absent
+                    | Of IntType, Of IntType -> Unknown
+                    | Unknown, _
+                    | _, Unknown -> Unknown
+                    | _ -> Of FloatType
             | Length -> unary (fun _ -> Of IntType)
             | Lower
             | Upper
@@ -2814,6 +3120,16 @@ module DataFrame =
                 else
                     joinAll args
             | IndexOf -> if not (arity 2) || anyAbsent then Absent else Of IntType
+
+        /// A power under a LITERAL integer exponent `n` (Phase 557, D43): an int base answers an `Int`
+        /// at or above zero (the exact routine, overflow refused) and a float below (the reciprocal);
+        /// an undecided base may be an int; every other base is a float, refused ones included.
+        let powLit (n: int) (b: Typing) : Typing =
+            match b with
+            | Absent -> Absent
+            | Of IntType -> if n >= 0 then Of IntType else Of FloatType
+            | Unknown -> Unknown
+            | Of _ -> Of FloatType
 
         /// `Rounded` (Phase 277): a decimal over an exact operand, null where the operand is; any
         /// other operand is refused, so its present values are not decided.
@@ -2853,6 +3169,8 @@ module DataFrame =
         | Coalesce xs -> Typing.joinAll (List.map go xs)
         | Case(cases, els) -> Typing.case (cases |> List.map (fun (_, t) -> go t)) (go els)
         | Cast(ty, x) -> Typing.cast ty (go x)
+        // Phase 557: a literal integer exponent decides a power's type by its sign.
+        | ApplyFn(Pow, [ b; Lit(Int n) ]) -> Typing.powLit n (go b)
         | ApplyFn(fn, args) -> Typing.applyFn fn (List.map go args)
         | InList(subject, _) -> Typing.inList (go subject)
         | IsNull _ -> Typing.isNull
@@ -3368,6 +3686,23 @@ module DataFrame =
                         && (match List.head ts with
                             | Absent -> true
                             | t -> numeric t)
+                    // Phase 557: the transcendentals answer a value or `Null` over every numeric
+                    // cell; a power does too, except an int base under an int exponent, which can
+                    // overflow the band (a decimal, as for `Sqrt`, is refused).
+                    | Exp
+                    | Ln
+                    | Log10 ->
+                        arity 1
+                        && (match List.head ts with
+                            | Absent -> true
+                            | t -> numeric t)
+                    | Pow ->
+                        arity 2
+                        && (match List.head ts, List.item 1 ts with
+                            | Absent, _
+                            | _, Absent -> true
+                            | Of IntType, Of IntType -> false
+                            | a, b -> numeric a && numeric b)
                     | Length
                     | Lower
                     | Upper
@@ -4750,13 +5085,19 @@ module DataFrame =
             | RApplyFn(fn, args) ->
                 let ts, ns = args |> List.map go |> List.unzip
 
+                // Phase 557: the typer's literal-exponent rule, read off the resolved literal.
+                let typed =
+                    match fn, args, ts with
+                    | Pow, [ _; RConst(Int n) ], [ tb; _ ] -> Typing.powLit n tb
+                    | _ -> Typing.applyFn fn ts
+
                 match fn, ns with
                 // The date functions over the integer form (Phase 423, carrying Phase 422's task):
                 // a difference of two days is a subtraction, and a part of a day is read off its
                 // civil date — no text is rendered or parsed. The arguments are read left to right
                 // and the first error wins, as `evalArgs` reads them; a null date answers null.
                 | DateDiffDays, [ NDays a; NDays b ] ->
-                    Typing.applyFn fn ts,
+                    typed,
                     NInt(fun p ->
                         let da = a p
 
@@ -4768,7 +5109,7 @@ module DataFrame =
                 | DatePart, [ part; NDays d ] ->
                     let partOf = cellOf part
 
-                    Typing.applyFn fn ts,
+                    typed,
                     NInt(fun p ->
                         let which = partOf p
 
@@ -4796,7 +5137,7 @@ module DataFrame =
 
                     let rs = ns |> List.map cellOf |> List.toArray
 
-                    Typing.applyFn fn ts,
+                    typed,
                     NCell(fun p ->
                         // Arguments left to right, stopping at the first error, as `evalArgs` does.
                         let vals: Cell[] = Array.zeroCreate rs.Length
@@ -9704,6 +10045,30 @@ module DataFrame =
 //  FSharp.Core only, Fable-clean; evaluates nothing and allocates no table.
 // ============================================================================
 
+/// How exact a column's bytes are across hosts (Phase 557, `DECISIONS.md` D43). `Pinned`: every
+/// conformant host computes the same bits, so the cross-host law compares the column byte for byte.
+/// `HostRounded`: the column's lineage passes through a host-rounded function — `Exp`, `Ln`, `Log10`,
+/// or `Pow` under an exponent the typer cannot call an int — so two hosts agree within the stated ulp
+/// bound and the law compares the column in ulps. Within ONE host a `HostRounded` column is as
+/// deterministic as any other: repeated, reordered and incremental evaluation answer the same bytes.
+[<RequireQualifiedAccess>]
+type Exactness =
+    | Pinned
+    | HostRounded
+
+/// A discrete decision a host-rounded value reaches (Phase 557, D43 choice (c)): a `Filter`'s
+/// predicate, a `GroupBy` / `Join` / `Distinct` / set-verb / pivot key, a `Sort` or window key, a
+/// `Round` / `Floor` / `Ceil` / `Rounded`, or a `Cast` to an int or a decimal. Each is ADMITTED and
+/// REPORTED, never refused: two hosts a last ulp apart can decide it differently, so the cross-host
+/// law promises its tolerance only where the mark reaches no such decision. `Step` is the step's
+/// index in the pipeline, `Verb` the decision's kind, and `Operand` the host-rounded column the
+/// decision reads — or the function's wire tag where the value is computed inside the deciding
+/// expression itself.
+type HostRoundedDecision =
+    { Step: int
+      Verb: string
+      Operand: string }
+
 /// What the static walk knows about ONE output column. The name is always known — every verb that
 /// adds a column declares its name — and the type is not always, which is why only one of the two
 /// is an option.
@@ -9726,6 +10091,10 @@ type ColumnKnowledge =
         Description: string option
         /// The field's extension metadata, on the same rule.
         Ext: Map<string, string>
+        /// How exact the column's bytes are across hosts (Phase 557, D43): an input field is
+        /// `Pinned`; a column a verb computes is `HostRounded` exactly when a host-rounded function
+        /// is in its lineage, and the verbs that keep or combine columns carry the mark along.
+        Exactness: Exactness
     }
 
 /// Builders over `ColumnKnowledge` (Phase 429): construct through these, so the next metadata member
@@ -9740,19 +10109,31 @@ module ColumnKnowledge =
           Unit = None
           Label = None
           Description = None
-          Ext = Map.empty }
+          Ext = Map.empty
+          Exactness = Exactness.Pinned }
 
-    /// What a schema's field states: its type, and every metadatum.
+    /// What a schema's field states: its type, and every metadatum. An input column is pinned: its
+    /// bytes are the caller's.
     let ofField (f: Field) : ColumnKnowledge =
         { Name = f.Name
           Type = Some f.Type
           Unit = f.Unit
           Label = f.Label
           Description = f.Description
-          Ext = f.Ext }
+          Ext = f.Ext
+          Exactness = Exactness.Pinned }
 
     /// The same knowledge under a unit.
     let withUnit (u: UnitOfMeasure option) (c: ColumnKnowledge) : ColumnKnowledge = { c with Unit = u }
+
+    /// The same knowledge under an exactness mark (Phase 557).
+    let withExactness (x: Exactness) (c: ColumnKnowledge) : ColumnKnowledge = { c with Exactness = x }
+
+    /// The mark two columns' values combine into: host-rounded where either is.
+    let joinExactness (a: Exactness) (b: Exactness) : Exactness =
+        match a, b with
+        | Exactness.Pinned, Exactness.Pinned -> Exactness.Pinned
+        | _ -> Exactness.HostRounded
 
     /// The same knowledge under another name — a projection's rename, a join's suffix.
     let renamed (name: string) (c: ColumnKnowledge) : ColumnKnowledge = { c with Name = name }
@@ -9876,6 +10257,71 @@ module SchemaWalk =
         | Ok u -> u
         | Error _ -> None
 
+    /// The exactness a named column carries (Phase 557, D43): `None` when the column is absent.
+    let exactnessOf (name: string) (knowledge: SchemaKnowledge) : Exactness option =
+        columns knowledge
+        |> List.tryFind (fun c -> c.Name = name)
+        |> Option.map _.Exactness
+
+    /// A named column's mark; a column the walk cannot see is read as pinned, because the mark is a
+    /// claim about what a host-rounded function touched and an unseen column was touched by none.
+    let private markOf (input: SchemaKnowledge) (name: string) : Exactness =
+        exactnessOf name input |> Option.defaultValue Exactness.Pinned
+
+    /// Whether a power's exponent is an INTEGER exponent to the typer over the columns the walk
+    /// knows: a literal int, an int column, a cast to int. Anything else may be a float cell at
+    /// evaluation, so the walk reads the power as host-rounded — the conservative reading, since a
+    /// tolerance promised where none was needed costs a certifying host nothing.
+    let private integerExponent (input: SchemaKnowledge) (exponent: ColExpr) : bool =
+        let typed = columns input |> List.choose ColumnKnowledge.toField
+        DataFrame.typing typed exponent = DataFrame.Of IntType
+
+    /// The host-rounded operand an expression reads first, in evaluation order: a column so marked,
+    /// or the wire tag of a host-rounded function computed inside the expression itself. `None`
+    /// where it reads none.
+    let rec private hostRoundedOperand (input: SchemaKnowledge) (e: ColExpr) : string option =
+        let go = hostRoundedOperand input
+
+        let first (xs: ColExpr list) = xs |> List.tryPick go
+
+        match e with
+        | Col name ->
+            if markOf input name = Exactness.HostRounded then
+                Some name
+            else
+                None
+        | Lit _
+        | Param _
+        | Now _ -> None
+        | ApplyFn(Exp, _) -> Some "exp"
+        | ApplyFn(Ln, _) -> Some "ln"
+        | ApplyFn(Log10, _) -> Some "log10"
+        | ApplyFn(Pow, [ b; ex ]) ->
+            if integerExponent input ex then
+                first [ b; ex ]
+            else
+                Some "pow"
+        | ApplyFn(_, xs)
+        | Coalesce xs -> first xs
+        | Binary(_, a, b)
+        | Quotient(a, b, _) -> first [ a; b ]
+        | Not a
+        | IsNull a
+        | InParam(a, _)
+        | Cast(_, a)
+        | Rounded(a, _)
+        | Convert(a, _) -> go a
+        | Case(cases, els) -> first ((cases |> List.collect (fun (w, t) -> [ w; t ])) @ [ els ])
+        | InList(a, items) -> first (a :: items)
+
+    /// The mark a derive's column carries (Phase 557, D43): host-rounded exactly where the
+    /// expression's lineage passes through a transcendental, a power whose exponent the typer cannot
+    /// call an integer, or a column already so marked.
+    let internal exprExactness (input: SchemaKnowledge) (expr: ColExpr) : Exactness =
+        match hostRoundedOperand input expr with
+        | Some _ -> Exactness.HostRounded
+        | None -> Exactness.Pinned
+
     // ---- building it ----
 
     let private withColumns (cols: ColumnKnowledge list) (knowledge: SchemaKnowledge) : SchemaKnowledge =
@@ -9971,11 +10417,17 @@ module SchemaWalk =
     /// evaluator refuses (two types no column holds, two units) reads as a column of unknown type:
     /// the walk carries no refusal verdict (D26), and the evaluator is where the refusal is met.
     let private unionColumn (left: ColumnKnowledge) (right: ColumnKnowledge) : ColumnKnowledge =
+        // The output holds both sides' cells, so it is host-rounded where either side is (Phase 557).
+        let mark = ColumnKnowledge.joinExactness left.Exactness right.Exactness
+
         match ColumnKnowledge.toField left, ColumnKnowledge.toField right with
         | Some l, Some r ->
             match DataFrame.unionField l r with
-            | Ok f -> ColumnKnowledge.ofField f
-            | Error _ -> { left with Type = None }
+            | Ok f -> ColumnKnowledge.ofField f |> ColumnKnowledge.withExactness mark
+            | Error _ ->
+                { left with
+                    Type = None
+                    Exactness = mark }
         | _ ->
             // The unit is still decided: the unit rule reads units, never types, so both sides
             // stand in under one type for it, as the unit check's schema does.
@@ -9983,8 +10435,15 @@ module SchemaWalk =
                 ColumnKnowledge.toFieldAs StringType { c with Type = None }
 
             match DataFrame.unionField (untyped left) (untyped right) with
-            | Ok f -> { left with Type = None; Unit = f.Unit }
-            | Error _ -> { left with Type = None }
+            | Ok f ->
+                { left with
+                    Type = None
+                    Unit = f.Unit
+                    Exactness = mark }
+            | Error _ ->
+                { left with
+                    Type = None
+                    Exactness = mark }
 
     /// The output knowledge of ONE transform step over an input knowledge. Total, and evaluates
     /// nothing: every case is a rearrangement of names and declared types.
@@ -10048,25 +10507,51 @@ module SchemaWalk =
 
             upsert
                 (ColumnKnowledge.named name (DataFrame.derivedColumnType typed expr)
-                 |> ColumnKnowledge.withUnit (derivedUnit input expr))
+                 |> ColumnKnowledge.withUnit (derivedUnit input expr)
+                 |> ColumnKnowledge.withExactness (exprExactness input expr))
                 input
 
         // GroupBy closes the set too: the key columns then one column per aggregate, and nothing
-        // survives that was not named.
+        // survives that was not named. An aggregate over a host-rounded column is host-rounded,
+        // `Count` excepted — presence is decided by the table before any host is called (Phase 557);
+        // a `CountDistinct` is a decision over the values, so it keeps the mark.
         | GroupBy(keys, aggs) ->
             SchemaKnowledge.Closed(
                 (keys |> List.map (fun key -> known key input))
                 @ (aggs
                    |> List.map (fun agg ->
                        ColumnKnowledge.named agg.Name (aggregateType agg.Fn (typeOf agg.Of input))
-                       |> ColumnKnowledge.withUnit (DataFrame.aggregateUnit agg.Fn (unitOf agg.Of input))))
+                       |> ColumnKnowledge.withUnit (DataFrame.aggregateUnit agg.Fn (unitOf agg.Of input))
+                       |> ColumnKnowledge.withExactness (
+                           match agg.Fn with
+                           | Count -> Exactness.Pinned
+                           | _ -> markOf input agg.Of
+                       )))
             )
 
+        // A window column's lineage is its source column and its keys (Phase 557): a value window
+        // reads the source, and every window's partition and order are decided over the keys.
         | Window spec ->
+            let keys = spec.PartitionBy @ (spec.OrderBy |> List.map fst)
+
+            let mark =
+                let overKeys =
+                    keys
+                    |> List.fold (fun m k -> ColumnKnowledge.joinExactness m (markOf input k)) Exactness.Pinned
+
+                match spec.Fn with
+                | RowNumber
+                | Rank
+                | DenseRank
+                | CompetitionRank
+                | NTile _ -> overKeys
+                | _ -> ColumnKnowledge.joinExactness overKeys (markOf input spec.Of)
+
             input
             |> appendColumn (
                 ColumnKnowledge.named spec.As (windowType input spec)
                 |> ColumnKnowledge.withUnit (DataFrame.windowUnit spec.Fn (unitOf spec.Of input))
+                |> ColumnKnowledge.withExactness mark
             )
 
         // The index columns are known; the value columns are one per DISTINCT PRESENT VALUE in the
@@ -10094,11 +10579,18 @@ module SchemaWalk =
                 else
                     None
 
+            // The value column holds every value column's cells, so it is host-rounded where any
+            // of them is (Phase 557).
+            let valueMark =
+                valueVars
+                |> List.fold (fun m v -> ColumnKnowledge.joinExactness m (markOf input v)) Exactness.Pinned
+
             SchemaKnowledge.Closed(
                 (idVars |> List.map (fun name -> known name input))
                 @ [ ColumnKnowledge.named "variable" (Some StringType)
                     ColumnKnowledge.named "value" valueType
-                    |> ColumnKnowledge.withUnit (DataFrame.unpivotUnit (unitSchema input) valueVars) ]
+                    |> ColumnKnowledge.withUnit (DataFrame.unpivotUnit (unitSchema input) valueVars)
+                    |> ColumnKnowledge.withExactness valueMark ]
             )
 
         | Join(source, _, how) ->
@@ -10166,6 +10658,113 @@ module SchemaWalk =
     /// unresolved name); a caller that CAN declare them uses `ofPipelineFrom` with `ofMap`.
     let ofPipeline (schema: Schema) (pipeline: Transform list) : SchemaKnowledge =
         ofPipelineFrom noSources (ofSchema schema) pipeline
+
+    // ---- Phase 557 (D43 choice (c)): the discrete decisions a host-rounded value reaches ----
+
+    /// The decisions inside ONE expression at step `i`: a `Round` / `Floor` / `Ceil` / `Rounded`
+    /// over a host-rounded operand, and a `Cast` of one to an int or a decimal — each a value two
+    /// hosts a last ulp apart can round to different results.
+    let rec private decisionsIn (i: int) (input: SchemaKnowledge) (e: ColExpr) : HostRoundedDecision list =
+        let go = decisionsIn i input
+        let many (xs: ColExpr list) = xs |> List.collect go
+
+        let over (verb: string) (a: ColExpr) =
+            match hostRoundedOperand input a with
+            | Some operand ->
+                [ { Step = i
+                    Verb = verb
+                    Operand = operand } ]
+            | None -> []
+
+        match e with
+        | Col _
+        | Lit _
+        | Param _
+        | Now _ -> []
+        | ApplyFn(Round, [ a ]) -> over "round" a @ go a
+        | ApplyFn(Floor, [ a ]) -> over "floor" a @ go a
+        | ApplyFn(Ceil, [ a ]) -> over "ceil" a @ go a
+        | Rounded(a, _) -> over "rounded" a @ go a
+        | Cast(IntType, a) -> over "cast int" a @ go a
+        | Cast(DecimalType, a) -> over "cast decimal" a @ go a
+        | ApplyFn(_, xs)
+        | Coalesce xs -> many xs
+        | Binary(_, a, b)
+        | Quotient(a, b, _) -> many [ a; b ]
+        | Not a
+        | IsNull a
+        | InParam(a, _)
+        | Cast(_, a)
+        | Convert(a, _) -> go a
+        | Case(cases, els) -> many ((cases |> List.collect (fun (w, t) -> [ w; t ])) @ [ els ])
+        | InList(a, items) -> many (a :: items)
+
+    /// The decisions ONE step makes over its input's marks.
+    let private decisionsOf (i: int) (input: SchemaKnowledge) (step: Transform) : HostRoundedDecision list =
+        let keyed (verb: string) (names: string list) =
+            names
+            |> List.filter (fun n -> markOf input n = Exactness.HostRounded)
+            |> List.map (fun n -> { Step = i; Verb = verb; Operand = n })
+
+        match step with
+        | Filter pred ->
+            (match hostRoundedOperand input pred with
+             | Some operand ->
+                 [ { Step = i
+                     Verb = "filter"
+                     Operand = operand } ]
+             | None -> [])
+            @ decisionsIn i input pred
+        | Derive(_, e) -> decisionsIn i input e
+        | Sort keys ->
+            keys
+            |> List.choose (fun (key, _) ->
+                match key with
+                | Slot.Lit name -> Some name
+                | Slot.Param _ -> None)
+            |> keyed "sort key"
+        | GroupBy(keys, aggs) ->
+            keyed "group-by key" keys
+            @ (aggs
+               |> List.filter (fun agg -> agg.Fn = CountDistinct)
+               |> List.map _.Of
+               |> keyed "count-distinct")
+        | Join(_, on, _) -> keyed "join key" (on |> List.map fst)
+        | Distinct -> keyed "distinct" (names input)
+        | Intersect _ -> keyed "intersect" (names input)
+        | Except _ -> keyed "except" (names input)
+        | Pivot spec -> keyed "pivot key" (spec.Index @ [ spec.On ])
+        | Window spec -> keyed "window key" (spec.PartitionBy @ (spec.OrderBy |> List.map fst))
+        | Project _
+        | Limit _
+        | Union _
+        | Unpivot _ -> []
+
+    /// Every discrete decision a host-rounded value reaches in `pipeline` over knowledge already in
+    /// hand (Phase 557, D43 choice (c)), in pipeline order: a `Filter` whose predicate reads one; a
+    /// `Sort`, `GroupBy`, `Join`, `Distinct`, `Intersect`, `Except`, `Pivot` or `Window` keyed on one;
+    /// a `CountDistinct` over one; and, inside any expression, a `Round` / `Floor` / `Ceil` /
+    /// `Rounded` over one or a `Cast` of one to an int or a decimal. Each is admitted — the pipeline
+    /// evaluates — and reported, because two hosts a last ulp apart can decide it differently, so
+    /// the cross-host law promises its tolerance only on a column no such decision reaches. A
+    /// pipeline reading no host-rounded value reports none.
+    let hostRoundedDecisionsFrom
+        (sources: string -> Schema option)
+        (input: SchemaKnowledge)
+        (pipeline: Transform list)
+        : HostRoundedDecision list =
+        let _, _, decisions =
+            pipeline
+            |> List.fold
+                (fun (i, knowledge, acc) step ->
+                    i + 1, ofTransform sources knowledge step, acc @ decisionsOf i knowledge step)
+                (0, input, [])
+
+        decisions
+
+    /// `hostRoundedDecisionsFrom` over a concrete input schema with no declared sources.
+    let hostRoundedDecisions (schema: Schema) (pipeline: Transform list) : HostRoundedDecision list =
+        hostRoundedDecisionsFrom noSources (ofSchema schema) pipeline
 
 /// Reading a wire text into the JSON model with a refusal in the codecs' `ColumnError` envelope —
 /// the one read every decoder in this assembly starts from. It reads under `ReadOptions.strict` and
@@ -10297,6 +10896,10 @@ module DataFrameCodec =
         | Least -> "least"
         | Greatest -> "greatest"
         | IndexOf -> "indexOf"
+        | Pow -> "pow"
+        | Exp -> "exp"
+        | Ln -> "ln"
+        | Log10 -> "log10"
 
     let private scalarOf =
         function
@@ -10317,6 +10920,10 @@ module DataFrameCodec =
         | "least" -> Some Least
         | "greatest" -> Some Greatest
         | "indexOf" -> Some IndexOf
+        | "pow" -> Some Pow
+        | "exp" -> Some Exp
+        | "ln" -> Some Ln
+        | "log10" -> Some Log10
         | _ -> None
 
     let private binTag =
@@ -10672,7 +11279,11 @@ module DataFrameCodec =
                                   "sqrt"
                                   "least"
                                   "greatest"
-                                  "indexOf" ]
+                                  "indexOf"
+                                  "pow"
+                                  "exp"
+                                  "ln"
+                                  "log10" ]
                             )
                         )
                     | Some fn ->

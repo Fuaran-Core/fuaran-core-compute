@@ -346,10 +346,12 @@
         "ColumnKnowledge.named",
         "ColumnKnowledge.ofField",
         "ColumnKnowledge.renamed",
-        "ColumnKnowledge.withUnit"
+        "ColumnKnowledge.withUnit",
+        "ColumnKnowledge.withExactness",
+        "ColumnKnowledge.joinExactness"
       ],
       "class": "trivial",
-      "reason": "Builds or copies a column-knowledge record; no computation."
+      "reason": "Builds or copies a column-knowledge record, or joins two exactness marks over a two-case table (Phase 557); no computation."
     },
     {
       "members": [
@@ -552,6 +554,24 @@
       "class": "measured-elsewhere",
       "reason": "The static walk's readers and its pipeline fold; `Conformance.schemaWalkLaws` certifies the walk against the evaluator, and the examples pin its open and closed answers. The one-step walk itself (`SchemaWalk.ofTransform`, with `ofSource`) is modelled and proved sound for the evaluator's schema by `proofs/Relational.fst` (`relational-schema-agrees`).",
       "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "SchemaWalk.exactnessOf",
+        "SchemaWalk.hostRoundedDecisionsFrom"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The exactness mark the walk carries per column and the discrete decisions a host-rounded value reaches (Phase 557, D43 choice (c)): a lineage over the walk's marks that `proofs/Relational.fst`'s schema walk does not model; example-tested per verb and per decision kind.",
+      "through": "SchemaWalk.hostRoundedDecisions",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/DataFrameTests.fs"
+    },
+    {
+      "members": [
+        "SchemaWalk.hostRoundedDecisions"
+      ],
+      "class": "forward",
+      "reason": "The decisions over a concrete input schema with no declared sources (Phase 557).",
+      "forwardsTo": "SchemaWalk.hostRoundedDecisionsFrom"
     },
     {
       "members": [

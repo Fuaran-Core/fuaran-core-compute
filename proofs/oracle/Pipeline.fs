@@ -563,6 +563,10 @@ type scalar_fn =
 | Least
 | Greatest
 | IndexOf
+| Pow
+| Exp
+| Ln
+| Log10
 
 
 let uu___is_Abs : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
@@ -711,6 +715,42 @@ let uu___is_Greatest : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_f
 
 let uu___is_IndexOf : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
 | IndexOf -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_Pow : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
+| Pow -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_Exp : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
+| Exp -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_Ln : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
+| Ln -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_Log10 : scalar_fn  ->  Prims.bool = (fun ( projectee  :  scalar_fn ) -> (match (projectee) with
+| Log10 -> begin
      true
      end
 | uu___ -> begin
@@ -2920,6 +2960,39 @@ in (match (fn) with
 | Sqrt -> begin
      (unary (fun ( uu___  :  typing ) -> Of (FloatType)))
      end
+| Exp -> begin
+     (unary (fun ( uu___  :  typing ) -> Of (FloatType)))
+     end
+| Ln -> begin
+     (unary (fun ( uu___  :  typing ) -> Of (FloatType)))
+     end
+| Log10 -> begin
+     (unary (fun ( uu___  :  typing ) -> Of (FloatType)))
+     end
+| Pow -> begin
+     (match (ts) with
+| (Absent)::(uu___)::[] -> begin
+     Absent
+     end
+| (uu___)::(Absent)::[] -> begin
+     Absent
+     end
+| (Of (IntType))::(Of (IntType))::[] -> begin
+     Unknown
+     end
+| (Unknown)::(uu___)::[] -> begin
+     Unknown
+     end
+| (uu___)::(Unknown)::[] -> begin
+     Unknown
+     end
+| (uu___)::(uu___1)::[] -> begin
+     Of (FloatType)
+     end
+| uu___ -> begin
+     Absent
+     end)
+     end
 | Length -> begin
      (unary (fun ( uu___  :  typing ) -> Of (IntType)))
      end
@@ -3042,6 +3115,26 @@ if (any_absent ts) then begin
      end)))
 
 
+let typing_pow_lit : Prims.int  ->  typing  ->  typing = (fun ( n  :  Prims.int ) ( b  :  typing ) -> (match (b) with
+| Absent -> begin
+     Absent
+     end
+| Of (IntType) -> begin
+      
+if (n >= (Prims.parse_int "0")) then begin
+     Of (IntType)
+     end else begin
+     Of (FloatType)
+     end
+     end
+| Unknown -> begin
+     Unknown
+     end
+| Of (uu___) -> begin
+     Of (FloatType)
+     end))
+
+
 let typing_rounded : typing  ->  typing = (fun ( a  :  typing ) -> (match (a) with
 | Absent -> begin
      Absent
@@ -3107,6 +3200,9 @@ let rec typing_of : schema  ->  col_expr  ->  typing = (fun ( cols  :  schema ) 
      end
 | Cast (ty, a) -> begin
      (typing_cast ty (typing_of cols a))
+     end
+| ApplyFn (Pow, (b)::(Lit (Int (n)))::[]) -> begin
+     (typing_pow_lit n (typing_of cols b))
      end
 | ApplyFn (fn, args) -> begin
      (typing_apply_fn fn (typings_of cols args))
@@ -3884,30 +3980,56 @@ let rec work : prims  ->  other_fn  ->  param_env  ->  wframe  ->  Prims.list<tr
 
 type units = Prims.list<(Prims.string * FStar_Pervasives_Native.option<Prims.string>)>
 
-type unit_alg = {u_mul : Prims.string  ->  Prims.string  ->  Prims.string; u_div : Prims.string  ->  Prims.string  ->  Prims.string; u_one : Prims.string; u_factor : Prims.string  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.string>}
+type unit_alg = {u_mul : Prims.string  ->  Prims.string  ->  Prims.string; u_div : Prims.string  ->  Prims.string  ->  Prims.string; u_one : Prims.string; u_factor : Prims.string  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.string>; u_pow : Prims.string  ->  Prims.int  ->  FStar_Pervasives_Native.option<Prims.string>}
 
 
 let __proj__Mkunit_alg__item__u_mul : unit_alg  ->  Prims.string  ->  Prims.string  ->  Prims.string = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
-| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor} -> begin
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor; u_pow = u_pow} -> begin
      u_mul
      end))
 
 
 let __proj__Mkunit_alg__item__u_div : unit_alg  ->  Prims.string  ->  Prims.string  ->  Prims.string = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
-| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor} -> begin
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor; u_pow = u_pow} -> begin
      u_div
      end))
 
 
 let __proj__Mkunit_alg__item__u_one : unit_alg  ->  Prims.string = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
-| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor} -> begin
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor; u_pow = u_pow} -> begin
      u_one
      end))
 
 
 let __proj__Mkunit_alg__item__u_factor : unit_alg  ->  Prims.string  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
-| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor} -> begin
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor; u_pow = u_pow} -> begin
      u_factor
+     end))
+
+
+let __proj__Mkunit_alg__item__u_pow : unit_alg  ->  Prims.string  ->  Prims.int  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( projectee  :  unit_alg ) -> (match (projectee) with
+| {u_mul = u_mul; u_div = u_div; u_one = u_one; u_factor = u_factor; u_pow = u_pow} -> begin
+     u_pow
+     end))
+
+
+let power_range_text : Prims.string = "a power the algebra can carry"
+
+
+let rec first_dimensioned : Prims.string  ->  Prims.list<FStar_Pervasives_Native.option<Prims.string>>  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( one  :  Prims.string ) ( us  :  Prims.list<FStar_Pervasives_Native.option<Prims.string>> ) -> (match (us) with
+| [] -> begin
+     FStar_Pervasives_Native.None
+     end
+| (FStar_Pervasives_Native.Some (u))::rest -> begin
+      
+if (Prims.op_Equals u one) then begin
+     (first_dimensioned one rest)
+     end else begin
+     FStar_Pervasives_Native.Some (u)
+     end
+     end
+| (FStar_Pervasives_Native.None)::rest -> begin
+     (first_dimensioned one rest)
      end))
 
 
@@ -4254,6 +4376,65 @@ in (match (fn) with
      Error (e)
      end)
      end
+| Pow -> begin
+     (match (((args), ((fsts rs)))) with
+| ((uu___)::(Lit (Int (n)))::[], (ub)::(uu___1)::[]) -> begin
+     (match (ub) with
+| FStar_Pervasives_Native.None -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| FStar_Pervasives_Native.Some (u) -> begin
+      
+if (Prims.op_Equals n (Prims.parse_int "0")) then begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end else begin
+     (match ((alg.u_pow u n)) with
+| FStar_Pervasives_Native.Some (p) -> begin
+     Ok (((FStar_Pervasives_Native.Some (p)), (x')))
+     end
+| FStar_Pervasives_Native.None -> begin
+     Error (UnitMismatch (step, x, u, power_range_text))
+     end)
+     end
+     end)
+     end
+| uu___ -> begin
+     (match ((first_dimensioned alg.u_one (fsts rs))) with
+| FStar_Pervasives_Native.None -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| FStar_Pervasives_Native.Some (u) -> begin
+     Error (UnitMismatch (step, x, u, alg.u_one))
+     end)
+     end)
+     end
+| Exp -> begin
+     (match ((first_dimensioned alg.u_one (fsts rs))) with
+| FStar_Pervasives_Native.None -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| FStar_Pervasives_Native.Some (u) -> begin
+     Error (UnitMismatch (step, x, u, alg.u_one))
+     end)
+     end
+| Ln -> begin
+     (match ((first_dimensioned alg.u_one (fsts rs))) with
+| FStar_Pervasives_Native.None -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| FStar_Pervasives_Native.Some (u) -> begin
+     Error (UnitMismatch (step, x, u, alg.u_one))
+     end)
+     end
+| Log10 -> begin
+     (match ((first_dimensioned alg.u_one (fsts rs))) with
+| FStar_Pervasives_Native.None -> begin
+     Ok (((FStar_Pervasives_Native.None), (x')))
+     end
+| FStar_Pervasives_Native.Some (u) -> begin
+     Error (UnitMismatch (step, x, u, alg.u_one))
+     end)
+     end
 | uu___ -> begin
      Ok (((FStar_Pervasives_Native.None), (x')))
      end))
@@ -4507,6 +4688,435 @@ let step_convert_free : transform  ->  Prims.bool = (fun ( t  :  transform ) -> 
      end
 | uu___ -> begin
      true
+     end))
+
+
+let is_pow_lit : col_expr  ->  Prims.bool = (fun ( at  :  col_expr ) -> (match (at) with
+| ApplyFn (Pow, (uu___)::(Lit (Int (uu___1)))::[]) -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+type fp = {f_mul : Prims.string  ->  Prims.string  ->  Prims.string; f_recip : Prims.string  ->  Prims.string; f_one : Prims.string}
+
+
+let __proj__Mkfp__item__f_mul : fp  ->  Prims.string  ->  Prims.string  ->  Prims.string = (fun ( projectee  :  fp ) -> (match (projectee) with
+| {f_mul = f_mul; f_recip = f_recip; f_one = f_one} -> begin
+     f_mul
+     end))
+
+
+let __proj__Mkfp__item__f_recip : fp  ->  Prims.string  ->  Prims.string = (fun ( projectee  :  fp ) -> (match (projectee) with
+| {f_mul = f_mul; f_recip = f_recip; f_one = f_one} -> begin
+     f_recip
+     end))
+
+
+let __proj__Mkfp__item__f_one : fp  ->  Prims.string = (fun ( projectee  :  fp ) -> (match (projectee) with
+| {f_mul = f_mul; f_recip = f_recip; f_one = f_one} -> begin
+     f_one
+     end))
+
+
+let rec pow_go : fp  ->  FStar_Pervasives_Native.option<Prims.string>  ->  Prims.string  ->  Prims.nat  ->  Prims.string = (fun ( a  :  fp ) ( acc  :  FStar_Pervasives_Native.option<Prims.string> ) ( b  :  Prims.string ) ( k  :  Prims.nat ) -> (
+
+let acc' =  
+if (Prims.op_Equals (Prims.mod_f k (Prims.parse_int "2")) (Prims.parse_int "1")) then begin
+     FStar_Pervasives_Native.Some ((match (acc) with
+| FStar_Pervasives_Native.Some (v) -> begin
+     (a.f_mul v b)
+     end
+| FStar_Pervasives_Native.None -> begin
+     b
+     end))
+     end else begin
+     acc
+     end
+in (
+
+let k' = (k / (Prims.parse_int "2"))
+in  
+if (Prims.op_Equals k' (Prims.parse_int "0")) then begin
+     (match (acc') with
+| FStar_Pervasives_Native.Some (v) -> begin
+     v
+     end
+| FStar_Pervasives_Native.None -> begin
+     a.f_one
+     end)
+     end else begin
+     (pow_go a acc' (a.f_mul b b) k')
+     end)))
+
+
+let pow_int : fp  ->  Prims.string  ->  Prims.int  ->  Prims.string = (fun ( a  :  fp ) ( x  :  Prims.string ) ( n  :  Prims.int ) ->  
+if (Prims.op_Equals n (Prims.parse_int "0")) then begin
+     a.f_one
+     end else begin
+      
+if (n > (Prims.parse_int "0")) then begin
+     (pow_go a FStar_Pervasives_Native.None x n)
+     end else begin
+     (a.f_recip (pow_go a FStar_Pervasives_Native.None x (- (n))))
+     end
+     end)
+
+
+let rec pow_fold : fp  ->  Prims.string  ->  Prims.nat  ->  Prims.string = (fun ( a  :  fp ) ( x  :  Prims.string ) ( n  :  Prims.nat ) ->  
+if (Prims.op_Equals n (Prims.parse_int "0")) then begin
+     a.f_one
+     end else begin
+      
+if (Prims.op_Equals n (Prims.parse_int "1")) then begin
+     x
+     end else begin
+     (a.f_mul (pow_fold a x (n - (Prims.parse_int "1"))) x)
+     end
+     end)
+
+type fclass = {c_nan : Prims.bool; c_zero : Prims.bool; c_one : Prims.bool; c_neg_one : Prims.bool; c_neg : Prims.bool; c_inf : Prims.bool; c_int : Prims.bool}
+
+
+let __proj__Mkfclass__item__c_nan : fclass  ->  Prims.bool = (fun ( projectee  :  fclass ) -> (match (projectee) with
+| {c_nan = c_nan; c_zero = c_zero; c_one = c_one; c_neg_one = c_neg_one; c_neg = c_neg; c_inf = c_inf; c_int = c_int} -> begin
+     c_nan
+     end))
+
+
+let __proj__Mkfclass__item__c_zero : fclass  ->  Prims.bool = (fun ( projectee  :  fclass ) -> (match (projectee) with
+| {c_nan = c_nan; c_zero = c_zero; c_one = c_one; c_neg_one = c_neg_one; c_neg = c_neg; c_inf = c_inf; c_int = c_int} -> begin
+     c_zero
+     end))
+
+
+let __proj__Mkfclass__item__c_one : fclass  ->  Prims.bool = (fun ( projectee  :  fclass ) -> (match (projectee) with
+| {c_nan = c_nan; c_zero = c_zero; c_one = c_one; c_neg_one = c_neg_one; c_neg = c_neg; c_inf = c_inf; c_int = c_int} -> begin
+     c_one
+     end))
+
+
+let __proj__Mkfclass__item__c_neg_one : fclass  ->  Prims.bool = (fun ( projectee  :  fclass ) -> (match (projectee) with
+| {c_nan = c_nan; c_zero = c_zero; c_one = c_one; c_neg_one = c_neg_one; c_neg = c_neg; c_inf = c_inf; c_int = c_int} -> begin
+     c_neg_one
+     end))
+
+
+let __proj__Mkfclass__item__c_neg : fclass  ->  Prims.bool = (fun ( projectee  :  fclass ) -> (match (projectee) with
+| {c_nan = c_nan; c_zero = c_zero; c_one = c_one; c_neg_one = c_neg_one; c_neg = c_neg; c_inf = c_inf; c_int = c_int} -> begin
+     c_neg
+     end))
+
+
+let __proj__Mkfclass__item__c_inf : fclass  ->  Prims.bool = (fun ( projectee  :  fclass ) -> (match (projectee) with
+| {c_nan = c_nan; c_zero = c_zero; c_one = c_one; c_neg_one = c_neg_one; c_neg = c_neg; c_inf = c_inf; c_int = c_int} -> begin
+     c_inf
+     end))
+
+
+let __proj__Mkfclass__item__c_int : fclass  ->  Prims.bool = (fun ( projectee  :  fclass ) -> (match (projectee) with
+| {c_nan = c_nan; c_zero = c_zero; c_one = c_one; c_neg_one = c_neg_one; c_neg = c_neg; c_inf = c_inf; c_int = c_int} -> begin
+     c_int
+     end))
+
+type pow_special =
+| PNaN
+| POne
+| PNull
+| PHost
+
+
+let uu___is_PNaN : pow_special  ->  Prims.bool = (fun ( projectee  :  pow_special ) -> (match (projectee) with
+| PNaN -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_POne : pow_special  ->  Prims.bool = (fun ( projectee  :  pow_special ) -> (match (projectee) with
+| POne -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_PNull : pow_special  ->  Prims.bool = (fun ( projectee  :  pow_special ) -> (match (projectee) with
+| PNull -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_PHost : pow_special  ->  Prims.bool = (fun ( projectee  :  pow_special ) -> (match (projectee) with
+| PHost -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let pow_table : fclass  ->  fclass  ->  pow_special = (fun ( x  :  fclass ) ( y  :  fclass ) ->  
+if (x.c_nan || y.c_nan) then begin
+     PNaN
+     end else begin
+      
+if (y.c_zero || x.c_one) then begin
+     POne
+     end else begin
+      
+if (x.c_zero && y.c_neg) then begin
+     PNull
+     end else begin
+      
+if (x.c_neg_one && y.c_inf) then begin
+     POne
+     end else begin
+      
+if (((x.c_neg && (not (x.c_inf))) && (not (y.c_inf))) && (not (y.c_int))) then begin
+     PNull
+     end else begin
+     PHost
+     end
+     end
+     end
+     end
+     end)
+
+
+let pow_float : (Prims.string  ->  Prims.string  ->  Prims.string)  ->  (Prims.string  ->  fclass)  ->  Prims.string  ->  Prims.string  ->  Prims.string  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( host  :  Prims.string  ->  Prims.string  ->  Prims.string ) ( classify  :  Prims.string  ->  fclass ) ( nan  :  Prims.string ) ( one  :  Prims.string ) ( x  :  Prims.string ) ( y  :  Prims.string ) -> (match ((pow_table (classify x) (classify y))) with
+| PNaN -> begin
+     FStar_Pervasives_Native.Some (nan)
+     end
+| POne -> begin
+     FStar_Pervasives_Native.Some (one)
+     end
+| PNull -> begin
+     FStar_Pervasives_Native.None
+     end
+| PHost -> begin
+     FStar_Pervasives_Native.Some ((host x y))
+     end))
+
+type eclass = {e_nan : Prims.bool; e_over : Prims.bool; e_under : Prims.bool}
+
+
+let __proj__Mkeclass__item__e_nan : eclass  ->  Prims.bool = (fun ( projectee  :  eclass ) -> (match (projectee) with
+| {e_nan = e_nan; e_over = e_over; e_under = e_under} -> begin
+     e_nan
+     end))
+
+
+let __proj__Mkeclass__item__e_over : eclass  ->  Prims.bool = (fun ( projectee  :  eclass ) -> (match (projectee) with
+| {e_nan = e_nan; e_over = e_over; e_under = e_under} -> begin
+     e_over
+     end))
+
+
+let __proj__Mkeclass__item__e_under : eclass  ->  Prims.bool = (fun ( projectee  :  eclass ) -> (match (projectee) with
+| {e_nan = e_nan; e_over = e_over; e_under = e_under} -> begin
+     e_under
+     end))
+
+type exp_special =
+| EInput
+| EInf
+| EZero
+| EHost
+
+
+let uu___is_EInput : exp_special  ->  Prims.bool = (fun ( projectee  :  exp_special ) -> (match (projectee) with
+| EInput -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_EInf : exp_special  ->  Prims.bool = (fun ( projectee  :  exp_special ) -> (match (projectee) with
+| EInf -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_EZero : exp_special  ->  Prims.bool = (fun ( projectee  :  exp_special ) -> (match (projectee) with
+| EZero -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_EHost : exp_special  ->  Prims.bool = (fun ( projectee  :  exp_special ) -> (match (projectee) with
+| EHost -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let exp_table : eclass  ->  exp_special = (fun ( x  :  eclass ) ->  
+if x.e_nan then begin
+     EInput
+     end else begin
+      
+if x.e_over then begin
+     EInf
+     end else begin
+      
+if x.e_under then begin
+     EZero
+     end else begin
+     EHost
+     end
+     end
+     end)
+
+
+let exp_float : (Prims.string  ->  Prims.string)  ->  (Prims.string  ->  eclass)  ->  Prims.string  ->  Prims.string  ->  Prims.string  ->  Prims.string = (fun ( host  :  Prims.string  ->  Prims.string ) ( classify  :  Prims.string  ->  eclass ) ( inf  :  Prims.string ) ( zero  :  Prims.string ) ( x  :  Prims.string ) -> (match ((exp_table (classify x))) with
+| EInput -> begin
+     x
+     end
+| EInf -> begin
+     inf
+     end
+| EZero -> begin
+     zero
+     end
+| EHost -> begin
+     (host x)
+     end))
+
+type lclass = {l_nan : Prims.bool; l_nonpos : Prims.bool; l_one : Prims.bool; l_pinf : Prims.bool}
+
+
+let __proj__Mklclass__item__l_nan : lclass  ->  Prims.bool = (fun ( projectee  :  lclass ) -> (match (projectee) with
+| {l_nan = l_nan; l_nonpos = l_nonpos; l_one = l_one; l_pinf = l_pinf} -> begin
+     l_nan
+     end))
+
+
+let __proj__Mklclass__item__l_nonpos : lclass  ->  Prims.bool = (fun ( projectee  :  lclass ) -> (match (projectee) with
+| {l_nan = l_nan; l_nonpos = l_nonpos; l_one = l_one; l_pinf = l_pinf} -> begin
+     l_nonpos
+     end))
+
+
+let __proj__Mklclass__item__l_one : lclass  ->  Prims.bool = (fun ( projectee  :  lclass ) -> (match (projectee) with
+| {l_nan = l_nan; l_nonpos = l_nonpos; l_one = l_one; l_pinf = l_pinf} -> begin
+     l_one
+     end))
+
+
+let __proj__Mklclass__item__l_pinf : lclass  ->  Prims.bool = (fun ( projectee  :  lclass ) -> (match (projectee) with
+| {l_nan = l_nan; l_nonpos = l_nonpos; l_one = l_one; l_pinf = l_pinf} -> begin
+     l_pinf
+     end))
+
+type log_special =
+| LInput
+| LNull
+| LZero
+| LInf
+| LHost
+
+
+let uu___is_LInput : log_special  ->  Prims.bool = (fun ( projectee  :  log_special ) -> (match (projectee) with
+| LInput -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_LNull : log_special  ->  Prims.bool = (fun ( projectee  :  log_special ) -> (match (projectee) with
+| LNull -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_LZero : log_special  ->  Prims.bool = (fun ( projectee  :  log_special ) -> (match (projectee) with
+| LZero -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_LInf : log_special  ->  Prims.bool = (fun ( projectee  :  log_special ) -> (match (projectee) with
+| LInf -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let uu___is_LHost : log_special  ->  Prims.bool = (fun ( projectee  :  log_special ) -> (match (projectee) with
+| LHost -> begin
+     true
+     end
+| uu___ -> begin
+     false
+     end))
+
+
+let log_table : lclass  ->  log_special = (fun ( x  :  lclass ) ->  
+if x.l_nan then begin
+     LInput
+     end else begin
+      
+if x.l_nonpos then begin
+     LNull
+     end else begin
+      
+if x.l_one then begin
+     LZero
+     end else begin
+      
+if x.l_pinf then begin
+     LInf
+     end else begin
+     LHost
+     end
+     end
+     end
+     end)
+
+
+let log_float : (Prims.string  ->  Prims.string)  ->  (Prims.string  ->  lclass)  ->  Prims.string  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.string> = (fun ( host  :  Prims.string  ->  Prims.string ) ( classify  :  Prims.string  ->  lclass ) ( zero  :  Prims.string ) ( x  :  Prims.string ) -> (match ((log_table (classify x))) with
+| LInput -> begin
+     FStar_Pervasives_Native.Some (x)
+     end
+| LNull -> begin
+     FStar_Pervasives_Native.None
+     end
+| LZero -> begin
+     FStar_Pervasives_Native.Some (zero)
+     end
+| LInf -> begin
+     FStar_Pervasives_Native.Some (x)
+     end
+| LHost -> begin
+     FStar_Pervasives_Native.Some ((host x))
      end))
 
 

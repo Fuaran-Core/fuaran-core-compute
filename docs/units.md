@@ -19,6 +19,8 @@ moment a schema states a unit or an expression names a conversion.
 | `d * t`, `d / t`, `Quotient`, `Mod` | Composed through the algebra: `m * m` is `m2`, `m / s` is `m/s`, `1 / s` is `/s`, `m * 2` is `m`, `m mod 7` is `m`. |
 | `Cast`, `Abs`, `Round`, `Floor`, `Ceil`, `Rounded` | Keep the operand's unit. |
 | `Sqrt`, the text and date functions | Carry none (the algebra states integer powers only). |
+| `Pow(x, n)` with a literal integer `n` | Composed through `Unit.pow`: `m` squared is `m2`, `s` to the power `-1` is `/s`, anything to the power `0` is unconstrained. An exponent product the algebra cannot carry is refused as a mismatch against `a power the algebra can carry` (the node in the error carries the exponent). |
+| `Pow` under any other exponent, `Exp`, `Ln`, `Log10` | Require a **dimensionless** operand: an unconstrained one, or one whose unit is `1` (a ratio of one unit, `t / t`). A dimensioned operand — or a dimensioned exponent — is refused as a mismatch against `1`. The answer carries none. |
 | `Convert(expr, unit)` | The explicit conversion: a tag over an unconstrained operand, the identity over the same unit, the exact ratio between two units of one dimension, a refusal across dimensions. Always answers a **float**. |
 | `Sum`, `Mean`, `Min`, `Max`, `Median`, `First`, `Last`, `StdDev` | Keep the column's unit; `Count` and `CountDistinct` carry none. |
 | `Lag`, `Lead`, `CumulSum`, `CumulMax`, `CumulMin`, `RollingSum`, `RollingMean` | Keep the column's unit; `RowNumber`, the ranks and `NTile` carry none. |

@@ -3,7 +3,7 @@
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
 #   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
-# class since v0.39.0: additive
+# class since v0.40.0: additive
 doc	columnOp	sha256:6e529d2f6ec7e4c4412c5b2374b4065e2bff8d9b62b4ef6a5850a7ef259fd3ad	{"$type":"setCell","col":"s","row":1,"value":{"$type":"Int","v":1}}
 doc	columnOp / AggFn.Count	sha256:fe7dac1324aae87a94a345f59a28b3a68787e1fc2c3a2bc0533b4e7f9a2a25c6	{"$type":"applyTransform","pipeline":[{"$type":"groupBy","aggs":[{"fn":"count","name":"s","of":"s"}],"keys":["s"]}]}
 doc	columnOp / AggFn.CountDistinct	sha256:9a12cd85236b9c714e44225aaff2dd81c42a71b900c212f6608847945342a46c	{"$type":"applyTransform","pipeline":[{"$type":"groupBy","aggs":[{"fn":"countDistinct","name":"s","of":"s"}],"keys":["s"]}]}
@@ -97,12 +97,16 @@ doc	columnOp / ScalarFn.Ceil	sha256:48e88eb0f4d3e0b4e9e9f0a10591ca93a5e3497a39a6
 doc	columnOp / ScalarFn.Concat	sha256:1e0631dd8ec71e766d612d2f7848e34be13462ff2a463d24f3134a3b6920c9d1	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"concat"}}]}
 doc	columnOp / ScalarFn.DateDiffDays	sha256:76326cf9f20ffd111868ec6d5495196b49e23a85b121b0b4b39d2fe18f59d974	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"dateDiffDays"}}]}
 doc	columnOp / ScalarFn.DatePart	sha256:7929656aeedd9c4ea675e38febde6ec890222a570f11661a108583d28b9c2c13	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"datePart"}}]}
+doc	columnOp / ScalarFn.Exp	sha256:3e9da75d16008c83d0e159488f7b446d258e350a71b4d9e7bb8e7c795b0ab64d	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"exp"}}]}
 doc	columnOp / ScalarFn.Floor	sha256:28bf81349ab05a82cc8162d38389ef9a1e7ae1a8c3c89ceecd7a9126c6f1b2e3	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"floor"}}]}
 doc	columnOp / ScalarFn.Greatest	sha256:ab70f0da917663527d7ac4339c02800010a0d63da861d2c5ce67442d5e6c3480	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"greatest"}}]}
 doc	columnOp / ScalarFn.IndexOf	sha256:6b566e68a4c73c35e4046bb80af8df73b69f9666bceaa547e662e1f670add93a	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"indexOf"}}]}
 doc	columnOp / ScalarFn.Least	sha256:3b64ed6b3beddd41489789ea760fbe3c94d80893defbb0d8180fff5808e9ff37	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"least"}}]}
 doc	columnOp / ScalarFn.Length	sha256:bb90852df5f28c50cc132ad0bed7e93839c864a5ef4744df44c3a4847441279c	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"length"}}]}
+doc	columnOp / ScalarFn.Ln	sha256:b2d4a3bd84f040f26a84be03d4a704f07fbc52beb396822ac3d68c3b5f04f60e	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"ln"}}]}
+doc	columnOp / ScalarFn.Log10	sha256:bacfbde6fbb48a291990205ba6be11df087f589a8fac5fb98978a7fb017b7fac	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"log10"}}]}
 doc	columnOp / ScalarFn.Lower	sha256:03fc00db12e69236a32a3848637990065e1166f475d90d859aaac4b032547390	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"lower"}}]}
+doc	columnOp / ScalarFn.Pow	sha256:d90cf77dc3851294e117070aabb19c68da432d56a7979b21b8cfa2a50a742665	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"pow"}}]}
 doc	columnOp / ScalarFn.Replace	sha256:5536cc66f520a0db834389d5770d22eef54ae06cb582018146db81e05e635fa2	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"replace"}}]}
 doc	columnOp / ScalarFn.Round	sha256:e9e8eac4a6d0b53d74dd79c9753afce5cdc743bd5cf425ae17292e11bd69d655	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"round"}}]}
 doc	columnOp / ScalarFn.Sqrt	sha256:44b8324029e042735cc7348dfb58030bb98b1a4c193d3079e073d0d8dd39ac03	{"$type":"applyTransform","pipeline":[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"sqrt"}}]}

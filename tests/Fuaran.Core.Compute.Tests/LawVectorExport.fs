@@ -117,6 +117,30 @@ module LawVectorExport =
         | Ok t -> [ "verdict", str "ok"; "table", str (ColumnCodec.encode (Embedded t)) ]
         | Error _ -> [ "verdict", str "error" ]
 
+    /// The cross-host bound on a host-rounded column, in ulps (Phase 557, `DECISIONS.md` D43): what
+    /// a certifying host compares a `HostRounded` column within, where a pinned column is compared
+    /// byte for byte.
+    let hostRoundedUlps = 2
+
+    /// The columns of a pipeline's output the static walk marks `HostRounded` over the source's
+    /// schema — the columns whose tolerance a vector carries.
+    let hostRoundedColumns (table: Table) (pipeline: Transform list) : string list =
+        SchemaWalk.ofPipeline table.Schema pipeline
+        |> SchemaWalk.columns
+        |> List.filter (fun c -> c.Exactness = Exactness.HostRounded)
+        |> List.map _.Name
+
+    /// `expectedOf`, with the per-column tolerance of an accepted pipeline's host-rounded columns
+    /// (Phase 557): absent where the walk marks none, so every vector without one is the bytes it was.
+    let private expectedWithTolerance (table: Table) (pipeline: Transform list) : (string * CorpusCell) list =
+        let expected = expectedOf (DataFrame.evalPipeline pipeline table)
+
+        match hostRoundedColumns table pipeline with
+        | [] -> expected
+        | rounded ->
+            expected
+            @ [ "tolerance", CorpusCell.Row(rounded |> List.map (fun name -> name, CorpusFile.num hostRoundedUlps)) ]
+
     let allVectors () : Vector list =
         let mutable rng = ConfRng.ofSeed seed
 
@@ -130,7 +154,7 @@ module LawVectorExport =
                     Input =
                       [ "pipeline", str (DataFrameCodec.encodePipeline pipeline)
                         "source", str (ColumnCodec.encode (Embedded table)) ]
-                    Expected = expectedOf (DataFrame.evalPipeline pipeline table) } ]
+                    Expected = expectedWithTolerance table pipeline } ]
 
     // -----------------------------------------------------------------------
     //  Phase 321 — the decimal through the columnar op wire and the delta wire
@@ -277,7 +301,22 @@ module LawVectorExport =
         + "carry none, and two units met where the rule requires one are refused. From the iteration "
         + "after the last unit shape, each takes the next REPEAT shape named in its vector id (Phase 468) "
         + "over the decimal table: a project, a group-by, an unpivot and a pivot whose output would name "
-        + "one column twice are refused."
+        + "one column twice are refused. From the iteration after the last repeat shape, each takes the "
+        + "next POWER shape named in its vector id (Phase 557) over the decimal table. An integer-exponent "
+        + "`pow` is BYTE-EXACT on every host — one pinned routine, binary exponentiation over IEEE-754 "
+        + "multiplication with one reciprocal for a negative exponent, equal bit for bit to the "
+        + "repeated-multiplication spelling up to the cube — and so is every row of the special-value "
+        + "table (`pow(0,0)`, `pow(1,y)`, `pow(0,negative)`, a negative base under a non-integer exponent, "
+        + "`ln` at and below zero, `ln 1`, `exp` underflow); the special-value vector carries the bound "
+        + "below because its columns read host-rounded functions, and what it pins is exact all the "
+        + "same — no wrong special value lies within the bound of the right one. "
+        + "A float-exponent `pow`, `exp`, `ln` and `log10` are HOST-ROUNDED: within one host deterministic, "
+        + "across hosts within a bound. Such a vector carries `expected.tolerance`, an object naming each "
+        + "output column the reference's static walk marks host-rounded with the bound in ULPS a host's "
+        + "value may sit from the recorded one; a host compares those columns within that bound and "
+        + "every other column byte for byte. A host that does not implement the four functions reports "
+        + "the vector as unsupported and never skips it silently. A pinned column is never named, so a "
+        + "vector without the member is compared exactly as before."
 
     let renderTransformVectors () : string =
         CorpusFile.render

@@ -58,9 +58,24 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `Col`, `Lit`, `Param`, `Now` | a column, a literal cell, a named parameter, the pinned evaluation clock |
 | `Binary` | `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`, `And`, `Or`, `Contains`, `StartsWith`, `EndsWith` |
 | `Not`, `Coalesce`, `Case`, `Cast`, `IsNull`, `InList`, `InParam` | logic, null handling, branching, typing, membership |
-| `ApplyFn` | `Abs`, `Round`, `Floor`, `Ceil`, `Sqrt`, `Least`, `Greatest`, `Length`, `Lower`, `Upper`, `Substr`, `Trim`, `Replace`, `Concat`, `IndexOf`, `DatePart`, `DateDiffDays` |
+| `ApplyFn` | `Abs`, `Round`, `Floor`, `Ceil`, `Sqrt`, `Least`, `Greatest`, `Length`, `Lower`, `Upper`, `Substr`, `Trim`, `Replace`, `Concat`, `IndexOf`, `DatePart`, `DateDiffDays`; `Pow`, `Exp`, `Ln`, `Log10` (below) |
 | `Convert` | an explicit unit conversion: the operand under a target `UnitOfMeasure`, refused across dimensions |
 | `Quotient`, `Rounded` | an exact (decimal) quotient, and an exact number brought to a stated `Rounding` — a scale slot and a `RoundingMode` |
+
+**The power functions carry a stated guarantee each** (`DECISIONS.md` D43). `Pow` under an integer
+exponent is **exact and byte-identical on every host**: one pinned routine, binary exponentiation
+over IEEE-754 multiplication with one reciprocal for a negative exponent, equal bit for bit to the
+`x * x * x` a consumer would spell by hand up to the cube; an `Int` base under a non-negative exponent
+answers an `Int` and refuses int32 overflow by name. `Pow` under a float exponent, `Exp`, `Ln` and
+`Log10` are **host-rounded**: a special-value table answers every input the hosts' maths libraries
+disagree on (`pow(0, 0)`, `pow(1, NaN)`, a zero base under a negative exponent, a negative base under
+a non-integer exponent, `ln 0`, `exp` overflow and underflow — a NaN propagates, out of the reals'
+domain is `Null`, as `Div` by zero is), then the host's own function answers, deterministic within one
+host and within **2 ulp** of the correctly rounded result across hosts. The static walk marks every
+output column whose lineage passes through one of them `HostRounded` (`SchemaWalk.exactnessOf`), reports
+each discrete decision such a value reaches (`SchemaWalk.hostRoundedDecisions` — a filter, a key, a
+rounding, a cast to int), and the transform law vectors compare exactly those columns in ulps and every
+other column byte for byte.
 
 ## Adoption, in five lines
 

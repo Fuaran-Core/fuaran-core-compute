@@ -1,5 +1,174 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-21 — D43: `Pow`, `Exp`, `Ln` and `Log10` enter the scalar set — an integer power runs one pinned routine, exact on every host; the transcendentals are host-rounded within 2 ulp behind a special-value table; the static walk marks every host-rounded column and reports each discrete decision such a value reaches; the Pow/Log line of Fuaran.Core's D13 is superseded
+
+**Context.** Fuaran.Core's D13 (Phase 101, recorded in that repository's `DECISIONS.md` before the compute
+strand was cut from it; this repository's own D13 is unrelated) declined `Pow` and `Log`: IEEE-754 does not
+require a transcendental function to be correctly rounded, so two conformant hosts may differ in the last
+ulp, and one ulp is a different byte in the canonical float layout — a parity failure. The reasoning
+holds. What changes is the conclusion, on the operator's instruction (2026-10-21): "we should solve the
+pow / log problem, or at least deal with it to acceptable tolerance per the host languages — a project in
+one host should at least agree with other formulae in that host". Instead of refusing the functions, each
+states the guarantee it carries, and the laws enforce that guarantee. The precedent is D13's own "no clock"
+line, which Phase 125 reversed by pinning the clock through a witness rather than banning it.
+
+**The three choices were ruled by the operator on 2026-10-21, at the phase's planning**, and are recorded
+as rulings, not proposals: **(a)** the cross-host bound is **2 ulp**, measured against a correctly rounded
+reference; **(b)** out-of-domain input yields **`Null`**, never a NaN, matching how the evaluator already
+answers an invalid input (`Div` by zero, a negative `Sqrt`), and NaN input propagates as D16's one NaN;
+**(c)** a `HostRounded` value that reaches a discrete decision — a `Filter` comparison, a `GroupBy` /
+`Join` / `Distinct` key, a `Sort` key, `Round` / `Floor` / `Ceil`, a `Cast` to an int or a decimal — is
+**admitted and reported by the schema walk**, never refused; the cross-host law promises its tolerance only
+on a column no such decision reaches.
+
+**Decision.**
+
+1. **Four `ScalarFn` cases, `Pow`, `Exp`, `Ln`, `Log10`**, wire tags `pow` / `exp` / `ln` / `log10`.
+   Typing: the transcendentals answer a float; `Pow` over an `Int` base under a LITERAL exponent at or
+   above zero answers an `Int` (`Typing.powLit`), under a negative literal a float, under an int column
+   the cells decide (an `Int` for a non-negative cell, a float for a negative one), and every other
+   numeric pair a float. A `Decimal` operand is refused by name, as `Sqrt` refuses one
+   (`pow of a decimal is not exact: write Pow(Cast(float, x), n)`). `Plan.isTotal` admits the
+   transcendentals over any numeric operand and `Pow` over every numeric pair except an int base under
+   an int exponent, which can overflow. One implementation, `applyScalar`, serves the reference row
+   evaluator, the compiled derive (its boxed arm) and the incremental seam, so the three paths cannot
+   disagree; it is Fable-clean, and the node measurement below ran it under node.
+2. **An integer exponent — an `Int` cell — runs one pinned routine, `DataFrame.powInt`**: binary
+   exponentiation over the host's IEEE-754 multiply, the accumulator empty until the first set bit, so a
+   power takes exactly the multiplies its bits name — `x^0` is `1.0` with no multiply, `x^1` is `x`
+   itself, `x^2` is `x * x`, `x^3` is `x * (x * x)`, `x^4` is `(x * x) * (x * x)`. Every conformant host
+   rounds a single multiply the same way, so the product tree and not the host decides the bits, and the
+   result is byte-identical on .NET, under Fable and in any twin that runs the routine. **Up to the cube
+   the routine's cells are the repeated-multiplication spelling's** (`x * x * x` as a consumer writes it
+   with `Mul`), a single multiply being commutative; from the fourth power the squaring tree is a
+   DIFFERENT tree from the left fold's and no equality is claimed — the shard's "equals the repeated-
+   multiplication spelling bit for bit" was checked and holds exactly that far, which is what the law
+   asserts. A negative exponent is one reciprocal of the positive power, and **`Null` where that power is
+   zero** — a zero base, or a square that underflowed to zero (`1e-300` to the power `-2`) — because the
+   consumer's spelling `1 / (x * x)` meets `Div` by zero there and answers `Null`; the two spellings
+   therefore answer one cell on every input. An `Int` base under a non-negative exponent runs the same
+   tree over `int64` and refuses every product that leaves the int32 band by name
+   (`OverflowError`, `pow overflowed int32: …`), a base square that leaves the band with exponent bits
+   still to take included, since every value it would still multiply into is at least as large.
+3. **A float exponent, `Exp`, `Ln` and `Log10` are host-rounded behind a special-value table** that is
+   evaluated BEFORE the host is called, so the host's behaviour on those inputs is never reached:
+   - `pow`: a NaN operand answers NaN (`pow(1, NaN)` and `pow(NaN, 0)` included — C99 says `1`,
+     JavaScript says NaN for the first, and D16's one NaN is the answer); a zero exponent and a base of
+     one answer `1`; a base of minus one under an infinite exponent answers `1` (C99 `1`, JavaScript
+     NaN); a zero base under a negative exponent is `Null`; a finite negative base under a finite
+     non-integer exponent is `Null`; everything else is the host's `Math.Pow`.
+   - `exp`: a NaN propagates; above `709.782712893384` (the natural log of the largest double) the
+     answer is `Inf` and below `-745.1332191019412` (the natural log of half the smallest subnormal)
+     it is `0` — the two edges where a host's last-ulp rounding decides between a finite value and the
+     limit; between them the host's `Math.Exp`.
+   - `ln` / `log10`: a NaN propagates; zero and below is `Null`; `1` is exactly `0`; `Inf` is `Inf`;
+     otherwise the host's `Math.Log` / `Math.Log10`.
+   Within one host the answer is deterministic and agrees with every other formula evaluated in that
+   host — the operator's bar. Across hosts it agrees within ruling (a)'s bound, measured below.
+4. **Units** (D29 extended). `Pow` under a literal integer exponent composes through Core's `Unit.pow`
+   (`m` squared is `m2`, `s` to `-1` is `/s`, to `0` unconstrained); an exponent product the algebra
+   cannot carry — `Unit.pow` raises past `±2147483647` — is refused as `UnitMismatch` against the text
+   `a power the algebra can carry` (the node in the error carries the exponent), never thrown. `Pow` under any other exponent, `Exp`, `Ln`
+   and `Log10` take a DIMENSIONLESS operand: unconstrained, or stating `1` (a ratio of one unit, `t / t`,
+   renders `1` and is admitted); a dimensioned operand or exponent is refused against `1`.
+   `docs/units.md` states the rule; `proofs/Pipeline.fst` section 13 models it with `u_pow` a fourth
+   member of the algebra parameter, and `refused_is_rejected` now also admits a power the algebra
+   cannot raise as a rejection.
+5. **The exactness mark.** `ColumnKnowledge` gains `Exactness` — `Pinned` or `HostRounded` — and the
+   walk computes it per output column: an input field is pinned; a derive is host-rounded exactly where
+   its expression's lineage passes through `Exp`, `Ln`, `Log10`, a `Pow` whose exponent the typer cannot
+   call an int (a literal int, an int column or a cast to int is an integer exponent; anything else may
+   be a float cell), or a column already so marked — a boolean over one included, since two hosts can
+   decide it differently; a project, a filter, a sort, a join keep the mark; an aggregate over a
+   host-rounded column is host-rounded, `Count` excepted (presence is decided by the table before any
+   host is called) and `CountDistinct` not excepted (a decision over the values); a window column is
+   its source's mark joined with its partition and order keys' (a rank over a host-rounded key is a
+   decision); a union, an unpivot's `value` join their inputs' marks. `SchemaWalk.exactnessOf` reads
+   one; `SchemaWalk.hostRoundedDecisions` lists every discrete decision of ruling (c) in pipeline
+   order — the step, the verb (`filter`, `sort key`, `group-by key`, `join key`, `distinct`,
+   `intersect`, `except`, `pivot key`, `window key`, `count-distinct`, `round`, `floor`, `ceil`,
+   `rounded`, `cast int`, `cast decimal`) and the host-rounded operand (the column, or the function's
+   tag where it is computed inside the deciding expression). Nothing is refused.
+6. **Laws.** Within a host, the byte laws are unchanged: a host-rounded pipeline is byte-identical across
+   repeated, reordered-batch and incremental evaluation, because the three paths share `applyScalar`
+   and D16's one exit. Across hosts, the transform law vectors gain a per-column tolerance: a vector
+   whose accepted output the walk marks host-rounded carries `expected.tolerance`, an object naming each
+   such column with the bound in ulps (`LawVectorExport.hostRoundedUlps`, 2); a certifying host compares
+   those columns within it and every other column byte for byte; a pinned column is never named, so
+   every earlier vector is the bytes it was. Eight `power-` shapes follow the repeat shapes over the
+   decimal table: `power-int-exponent` and `power-int-base` (byte-exact), `power-cube-is-repeated-multiply`
+   (the routine beside the `Mul` spelling and their equality, byte-exact), `power-special-values` (every
+   finite row of the table — the wire carries no `Inf` or NaN, so those rows are held by the suite alone;
+   its columns read host-rounded functions and so carry the bound, which pins them all the same, since no
+   wrong special value lies within two ulps of the right one), `power-float-exponent`, `power-exp` and
+   `power-ln-log10` (host-rounded, with the bound), and `power-decimal-refused`. A host that does not
+   implement the functions reports the vectors as unsupported and never skips them silently (Phase 356's
+   rule, restated in the file's description).
+7. **Proofs.** `proofs/Pipeline.fst` section 14 models `powInt` clause for clause over an abstract
+   multiply (`fp`): `pow_int_zero` to `pow_int_four` state the product tree per exponent, `pow_int_neg`
+   the reciprocal, and `pow_int_is_fold_to_three` the equality with the left fold up to the cube,
+   **conditional on the multiply commuting** (IEEE-754's does). The tables are modelled concretely over a
+   classification of the float (`pow_table`, `exp_table`, `log_table`), and the host functions are
+   PARAMETERS reached only where a table does not answer: `pow_table_before_host`,
+   `exp_table_before_host` and `log_table_before_host` prove that two hosts whose functions differ
+   arbitrarily answer the same cell on every input a table decides. **What is conditional, named:** every
+   theorem of section 14 is over the abstract arithmetic — that a single multiply and divide round the
+   same way on every host is the premise `pipeline-ieee-multiply-is-host-independent` (`proofs.json`),
+   and the 2 ulp bound is a measurement, never a theorem. Typing (`typing_apply_fn`, `typing_pow_lit`),
+   the totality admission (`admit_fn`) and the unit rule are mirrored, and `verdict_sound` carries the
+   one extra fact the literal-exponent typing needs (`pow_lit_admitted`: where the verdict admits a power
+   under a literal int, the literal rule and the general rule name one typing, because the pair they
+   decide differently is the pair the verdict refuses). The oracle is re-extracted and the differential
+   extended: the generator draws the four functions, and `powInt`, `powSpecial`, `expHost` and `logHost`
+   are compared to the extracted `pow_int`, `pow_table`, `exp_table` and `log_table` instantiated at the
+   host's arithmetic.
+8. **Measured, on 2026-10-21 (node v24.16.0; .NET 10 on this machine's Arm64 host and on its x64 host
+   under emulation — the x64 libm's code, which is what the measurement is about).** The probe evaluates
+   each function THROUGH the evaluator (a `Derive` over a float column) over a seeded draw at seed 557 —
+   `exp` over 561 inputs spanning `-745` to `709.7` with clusters round zero and the edges; `ln` and
+   `log10` over 509 inputs log-uniform across the positive doubles with a cluster round `1`, the
+   smallest subnormal and the largest double included; `pow` over 508 (base, non-integer exponent)
+   pairs across thirty decades — and reads the canonical result wire; the reference is Python's
+   `decimal` at 60 digits rounded to the nearest double, and the distance is the difference of ordered
+   bit patterns. The worst observed distance from the correctly rounded value:
+
+   | host | `exp` | `ln` | `log10` | `pow` |
+   |---|---|---|---|---|
+   | .NET 10, Arm64 | 0 ulp | 0 ulp | 0 ulp | 0 ulp |
+   | .NET 10, x64 | 1 ulp | 0 ulp | 0 ulp | 0 ulp |
+   | node v24.16.0 (Fable) | 1 ulp | 0 ulp | 1 ulp | 0 ulp |
+
+   No host exceeds the bound; none is a finding. The instrument was checked both ways: the two .NET
+   hosts DISAGREE with each other on `exp` at one drawn input (index 46), so a difference is something
+   it sees, and the Arm64 zeros are against an independent reference, not against the host. The
+   falsifier is a draw at which a host sits more than two ulps from the reference; the probe and its
+   draw are reproducible from the seed and the recipe above.
+9. **Content hashes and cached results are host-scoped where a `HostRounded` column is in play**
+   (`STABILITY.md`): a digest over the output bytes of such a pipeline names the host that produced
+   them, so any cache keyed on output bytes must carry the host identity, and a consumer addressing
+   results across hosts keys on the pinned columns or on the input.
+
+**Premises checked against the tree.** The README carries no omissions list (the shard's "the README's
+omissions list" names a paragraph that was only ever in `DataFrame.fs`); the verb table gained the four
+and a guarantee paragraph. The "bit for bit the repeated-multiplication spelling" law was checked
+and bounded (item 2). `Unit.pow` raises on an exponent past its range, so the unit rule carries a refusal
+the shard did not name (item 4). The wire carries no non-finite float, so the special-value vectors hold
+the finite rows and the suite holds `Inf` (item 6).
+
+**Rejected.** *A correctly rounded implementation shipped with every host* (a port of a correctly
+rounded libm into .NET, JavaScript and each twin) would make the four functions byte-exact and need no
+mark — at the cost of carrying and certifying a maths library in every host, for a difference the
+measurement puts at one ulp. Declined for now; the mark and the bound are the honest claim, and the
+door is open: a host that becomes correctly rounded measures zero and changes nothing. *Comparing
+NaNs equal in the laws* — D16's answer stands: the evaluator emits one NaN. *Refusing a decision over a
+host-rounded value* — ruled out by (c): a consumer who filters on `exp(x) > 1` has an ordinary
+pipeline, and the walk's report is where the cross-host caveat is read. *Marking `Count` host-rounded*
+— presence is pinned by construction (every `Null` the functions answer is decided by the table), so a
+count is exact and the mark would be false.
+
+**Supersedes** the Pow/Log line of Fuaran.Core's D13, whose entry carries the status line; the rest of
+that entry stands.
+
 ## 2026-10-21 — D42: the per-row caches of an incremental state are held in chunks below the large-object threshold, so an append shares the prior chunks; the refresh-against-full case draws each call's source from a pool; the 20,000-row append is timed, and D27's 448.C reach is closed
 
 **Context.** D27 held the refresh alone against the full evaluation at every size for an edit, but for

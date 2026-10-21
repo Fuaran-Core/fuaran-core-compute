@@ -87,7 +87,15 @@ module DeriveTypingConformance =
           ApplyFn(Round, [ Case([ gt0, Col "i" ], Col "m") ])
           Param "p"
           ApplyFn(Round, [ Param "p" ])
-          Binary(Add, Col "i", Param "p") ]
+          Binary(Add, Col "i", Param "p")
+          // Phase 557 (D43): an int power under a literal exponent is an int (`m2`), a float power
+          // a float, a power under a column exponent is decided by the cells, and a transcendental
+          // over a dimensionless ratio is a float with no unit.
+          ApplyFn(Pow, [ Col "i"; Lit(Int 2) ])
+          ApplyFn(Pow, [ Col "f"; Lit(Int -2) ])
+          ApplyFn(Pow, [ Col "id"; Binary(Sub, Col "id", Lit(Int 2)) ])
+          ApplyFn(Exp, [ Binary(Div, Col "f", Col "f") ])
+          ApplyFn(Ln, [ Binary(Div, Col "i", Col "i") ]) ]
 
     /// The params a `Param` reads, by the draw: an int, a float or a decimal.
     let private envOf (k: int) : Map<string, Cell> =

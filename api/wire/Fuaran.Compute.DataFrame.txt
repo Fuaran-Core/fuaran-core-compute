@@ -3,7 +3,7 @@
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
 #   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
-# class since v0.39.0: additive
+# class since v0.40.0: additive
 doc	pipeline	sha256:550548d3d7bf089a8a45fcb797fe094f1cc6caa13de897c823d29bfbb14072b2	[{"$type":"filter","pred":{"$type":"col","name":"s"}}]
 doc	pipeline / AggFn.Count	sha256:da304afcc9a509331438f6e1935f5d6da8b2571473b82423518c6a8819b82c8e	[{"$type":"groupBy","aggs":[{"fn":"count","name":"s","of":"s"}],"keys":["s"]}]
 doc	pipeline / AggFn.CountDistinct	sha256:b7eed063d04d14cb71106071777d52903f178c9cd174abaecf86db95baad1471	[{"$type":"groupBy","aggs":[{"fn":"countDistinct","name":"s","of":"s"}],"keys":["s"]}]
@@ -91,12 +91,16 @@ doc	pipeline / ScalarFn.Ceil	sha256:071cff715cef867ffe4a395825f1843cbce61bd741ba
 doc	pipeline / ScalarFn.Concat	sha256:e42bc2d7106ccb8bb9c5cb1ecee41877860d4d2e7dbfc1cc37027f0f41c94e15	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"concat"}}]
 doc	pipeline / ScalarFn.DateDiffDays	sha256:e93ac93f7996f35ea71929db53a319bcf4754cf5d787ac7ac8dfd7a826bc2764	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"dateDiffDays"}}]
 doc	pipeline / ScalarFn.DatePart	sha256:eebfed14da065330a7814f53840b52f56ffebc6e3084391592835e09212d695f	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"datePart"}}]
+doc	pipeline / ScalarFn.Exp	sha256:d36be0f5b98e5b5be64d133a34ee28b943bf23da6975d0cf04b192f1ed267e28	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"exp"}}]
 doc	pipeline / ScalarFn.Floor	sha256:d6519053f04e9d9c45c5e7494868ff5da889376c73f3d54f8a38ac9ef5bbe18f	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"floor"}}]
 doc	pipeline / ScalarFn.Greatest	sha256:b50a5b49ef90310fdb17e23d5562e7704ee0ad2d9deafb1389b0c3dee3d23c25	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"greatest"}}]
 doc	pipeline / ScalarFn.IndexOf	sha256:3b2cfb9fe702be713a04a2d9e9450fe1ccf985acdf4cf3fc54bcb0813f169e80	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"indexOf"}}]
 doc	pipeline / ScalarFn.Least	sha256:ea4fde0f9a90219973b20dc1e7146e33abbc2015872714f005f9c3ca388bf9ac	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"least"}}]
 doc	pipeline / ScalarFn.Length	sha256:75725501571d19618db3dd297275e76aa886add78cbada1acf42c576da4d9d99	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"length"}}]
+doc	pipeline / ScalarFn.Ln	sha256:31c7a7f7c516610405190ebb538d2fe0c3f85450ec7950316192a4348d1c3ab3	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"ln"}}]
+doc	pipeline / ScalarFn.Log10	sha256:dce98b839caceeffad97239c060bc4c3e098f0fcace098a61e3b7658516168a8	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"log10"}}]
 doc	pipeline / ScalarFn.Lower	sha256:aa47917425b932a79878cf3c4b05fab0018eb67d361e8c36bbb722b4f28cbe6c	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"lower"}}]
+doc	pipeline / ScalarFn.Pow	sha256:4e368b0d797705421c319dd6482f37c32219522e3dc808a5f6137cffa1276dea	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"pow"}}]
 doc	pipeline / ScalarFn.Replace	sha256:ff9fd71be3279263999e455fc7b7bcb2b84d83801a78fb7c3d8d23956123fe1b	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"replace"}}]
 doc	pipeline / ScalarFn.Round	sha256:e441990e720adbb5f3ec09574ffaaa88175cc4b7b3555f5964cfe7df62ab474a	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"round"}}]
 doc	pipeline / ScalarFn.Sqrt	sha256:3db5984976960053039811eadfdc812e592165738bccc93be596cd3098ef830e	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"sqrt"}}]

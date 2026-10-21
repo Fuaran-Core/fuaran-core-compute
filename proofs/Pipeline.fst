@@ -300,6 +300,11 @@ type scalar_fn =
   | Least
   | Greatest
   | IndexOf
+  (* Phase 557 (D43): the power functions; section 14 models what each computes. *)
+  | Pow
+  | Exp
+  | Ln
+  | Log10
 
 (* F#: `BinOp`. *)
 type bin_op =
@@ -873,6 +878,18 @@ let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
   | Round | Floor | Ceil ->
     unary (fun t -> match t with Of DecimalType -> Of DecimalType | Unknown -> Unknown | _ -> Of FloatType)
   | Sqrt -> unary (fun _ -> Of FloatType)
+  (* Phase 557 (D43): the transcendentals answer a float; a power's type over two typed operands
+     is decided by the exponent's SIGN where both are ints, which the typings do not carry
+     (`typing_pow_lit` reads a literal exponent; otherwise the cells decide), undecided where an
+     operand is, and a float on every other pair. *)
+  | Exp | Ln | Log10 -> unary (fun _ -> Of FloatType)
+  | Pow ->
+    (match ts with
+     | [Absent; _] | [_; Absent] -> Absent
+     | [Of IntType; Of IntType] -> Unknown
+     | [Unknown; _] | [_; Unknown] -> Unknown
+     | [_; _] -> Of FloatType
+     | _ -> Absent)
   | Length -> unary (fun _ -> Of IntType)
   | Lower | Upper | Trim -> unary (fun _ -> Of StringType)
   | Substr ->
@@ -890,6 +907,16 @@ let typing_apply_fn (fn:scalar_fn) (ts:list typing) : Tot typing =
   | DateDiffDays -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
   | Least | Greatest -> (match ts with [] -> Absent | _ -> if any_absent ts then Absent else join_all ts)
   | IndexOf -> (match ts with [_; _] -> if any_absent ts then Absent else Of IntType | _ -> Absent)
+
+(* F#: `Typing.powLit` (Phase 557, D43) — a power under a LITERAL integer exponent: an int base
+   answers an int at or above zero (the exact routine) and a float below (the reciprocal); an
+   undecided base may be an int; every other base is a float. *)
+let typing_pow_lit (n:int) (b:typing) : Tot typing =
+  match b with
+  | Absent -> Absent
+  | Of IntType -> if n >= 0 then Of IntType else Of FloatType
+  | Unknown -> Unknown
+  | Of _ -> Of FloatType
 
 (* F#: `Typing.rounded` (Phase 277). *)
 let typing_rounded (a:typing) : Tot typing =
@@ -916,6 +943,8 @@ let rec typing_of (cols:schema) (x:col_expr) : Tot typing (decreases x) =
   | Coalesce xs -> join_all (typings_of cols xs)
   | Case cases els -> join_all (typing_of cols els :: typings_thens cols cases)
   | Cast ty a -> typing_cast ty (typing_of cols a)
+  (* Phase 557: a literal integer exponent decides a power's type by its sign. *)
+  | ApplyFn Pow [b; Lit (Int n)] -> typing_pow_lit n (typing_of cols b)
   | ApplyFn fn args -> typing_apply_fn fn (typings_of cols args)
   | InList a _ -> typing_in_list (typing_of cols a)
   | IsNull _ -> Of BoolType
@@ -2271,6 +2300,15 @@ let admit_fn (fn:scalar_fn) (ts:list typing) : Tot bool =
   | Abs -> (match ts with [Absent] | [Of FloatType] | [Of DecimalType] -> true | _ -> false)
   | Round | Floor | Ceil -> (match ts with [Absent] | [Of DecimalType] -> true | [t] -> numeric_t t | _ -> false)
   | Sqrt -> (match ts with [Absent] -> true | [t] -> numeric_t t | _ -> false)
+  (* Phase 557: the transcendentals answer a value or `Null` over every numeric cell; a power does
+     too, except an int base under an int exponent, which can overflow the band. *)
+  | Exp | Ln | Log10 -> (match ts with [Absent] -> true | [t] -> numeric_t t | _ -> false)
+  | Pow ->
+    (match ts with
+     | [Absent; _] | [_; Absent] -> true
+     | [Of IntType; Of IntType] -> false
+     | [a; b] -> numeric_t a && numeric_t b
+     | _ -> false)
   | Length | Lower | Upper | Trim -> (match ts with [t] -> is_str t | _ -> false)
   | Substr -> (match ts with [t0; Of IntType; Of IntType] -> is_str t0 | _ -> false)
   | DatePart | DateDiffDays -> false
@@ -2354,6 +2392,13 @@ let substr_args_present (fn:scalar_fn) (cs:list cell) : Tot bool =
   | Substr, [_; a1; a2] -> not (Null? a1) && not (Null? a2)
   | Substr, _ -> false
   | _ -> true
+
+(* Phase 557: where the verdict admits a power under a literal int exponent, the literal rule of
+   `typing_of` and the general `typing_apply_fn` name one typing — the one pair they decide
+   differently, an int base under an int exponent, is exactly the pair the verdict refuses. *)
+let pow_lit_admitted (n:int) (tb:typing)
+  : Lemma (requires admit_fn Pow [tb; Of IntType])
+          (ensures typing_pow_lit n tb == typing_apply_fn Pow [tb; Of IntType]) = ()
 
 (* THE ASSUMPTION. On the operand shapes the verdict admits, each primitive answers `Ok`, with
    a cell that fits the typing the typer assigns the node; and the pinned ordering compares any
@@ -2510,6 +2555,8 @@ let rec verdict_sound (pr:prims) (h:admits pr) (env:param_env) (cols:schema) (ro
           eval_args_3 pr env cols row a0 a1 a2;
           never_null_sound pr env cols row a1;
           never_null_sound pr env cols row a2
+        (* Phase 557: the literal-exponent typing is the general one where the verdict admits. *)
+        | Pow, [b; Lit (Int n)] -> pow_lit_admitted n (typing_of cols b)
         | _ -> ());
        h.apply_ok fn (typings_of cols args) cs
      | Error _ -> ())
@@ -2718,7 +2765,28 @@ noeq type unit_alg = {
   (* `Unit.conversionFactor source target`: `Some` the factor as the float literal's text the
      resolved expression multiplies by, `None` where the two are of different dimensions. *)
   u_factor : string -> string -> option string;
+  (* Phase 557: `Unit.pow u n` (production's `unitPower`), `None` where an exponent would leave the
+     algebra's range. *)
+  u_pow    : string -> int -> option string;
 }
+
+(* Phase 557 — what a power the algebra cannot raise a unit to is refused against: the text names the
+   refusal rather than a unit, and the node itself carries the exponent. *)
+let power_range_text : string = "a power the algebra can carry"
+
+(* Phase 557 — the first operand stating a unit OTHER than the dimensionless one: what a
+   transcendental, or a power under an exponent that is not a literal int, refuses against `1`. *)
+let rec first_dimensioned (one:string) (us:list (option string)) : Tot (option string) =
+  match us with
+  | [] -> None
+  | Some u :: rest -> if u = one then first_dimensioned one rest else Some u
+  | None :: rest -> first_dimensioned one rest
+
+let rec first_dimensioned_not_one (one:string) (us:list (option string))
+  : Lemma (ensures (match first_dimensioned one us with Some u -> u =!= one | None -> True)) =
+  match us with
+  | [] -> ()
+  | _ :: rest -> first_dimensioned_not_one one rest
 
 (* F#: `unitProduct` — an unconstrained factor contributes nothing. *)
 let unit_product (alg:unit_alg) (a b:option string) : Tot (option string) =
@@ -2848,6 +2916,28 @@ let rec resolve_units (alg:unit_alg) (step:string) (us:units) (x:col_expr)
           (match agree_all step x None (fsts rs) with
            | Ok u -> Ok (u, x')
            | Error e -> Error e)
+        (* Phase 557 (D43): an integer-LITERAL exponent composes the unit through the algebra (to
+           the power zero, unconstrained); any other power and the transcendentals take a
+           dimensionless operand only, refused as a mismatch against `1`. An exponent product the
+           algebra cannot carry is refused naming the power asked for. *)
+        | Pow ->
+          (match args, fsts rs with
+           | [_; Lit (Int n)], [ub; _] ->
+             (match ub with
+              | None -> Ok (None, x')
+              | Some u ->
+                if n = 0 then Ok (None, x')
+                else (match alg.u_pow u n with
+                      | Some p -> Ok (Some p, x')
+                      | None -> Error (UnitMismatch step x u power_range_text)))
+           | _ ->
+             (match first_dimensioned alg.u_one (fsts rs) with
+              | None -> Ok (None, x')
+              | Some u -> Error (UnitMismatch step x u alg.u_one)))
+        | Exp | Ln | Log10 ->
+          (match first_dimensioned alg.u_one (fsts rs) with
+           | None -> Ok (None, x')
+           | Some u -> Error (UnitMismatch step x u alg.u_one))
         | _ -> Ok (None, x')))
   | InList a items ->
     (match resolve_units alg step us a with
@@ -3021,6 +3111,13 @@ let first_unit_nones (xs:list col_expr) : Lemma (ensures first_unit (fsts (nones
   | [] -> ()
   | _ :: _ -> ()
 
+(* Phase 557: over operands stating no unit, no operand is dimensioned. *)
+let rec first_dimensioned_nones (one:string) (xs:list col_expr)
+  : Lemma (ensures first_dimensioned one (fsts (nones xs)) == None) =
+  match xs with
+  | [] -> ()
+  | _ :: rest -> first_dimensioned_nones one rest
+
 (* THE THEOREM: over a schema that states no unit, a convert-free expression is accepted, carries
    no unit, and is handed to the evaluator exactly as written — so every step of a unitless
    pipeline evaluates what it evaluated before the check existed. *)
@@ -3038,7 +3135,7 @@ let rec unitless_unchanged (alg:unit_alg) (step:string) (us:units) (x:col_expr)
     unitless_list_unchanged alg step us xs; snds_nones xs; agree_all_nones step x None xs
   | ApplyFn fn xs ->
     unitless_list_unchanged alg step us xs; snds_nones xs;
-    agree_all_nones step x None xs; first_unit_nones xs
+    agree_all_nones step x None xs; first_unit_nones xs; first_dimensioned_nones alg.u_one xs
   | InList a items ->
     unitless_unchanged alg step us a; unitless_list_unchanged alg step us items;
     snds_nones items; agree_all_nones step x None items
@@ -3098,21 +3195,30 @@ let checked_step_unitless (alg:unit_alg) (us:units) (pr:prims) (other:other_fn) 
 
 (* A refusal names two DIFFERENT units at the node they met in; a refused conversion names its
    source and its target, and the algebra has no factor between them. *)
+(* Phase 557: the one node whose refusal names no second unit — a power under a literal int
+   exponent, refused because the algebra cannot raise the base's unit to it. *)
+let is_pow_lit (at:col_expr) : Tot bool =
+  match at with
+  | ApplyFn Pow [_; Lit (Int _)] -> true
+  | _ -> false
+
 noextract
 let rejected (alg:unit_alg) (e:eval_error) : Tot prop =
   match e with
   | UnitMismatch _ at l r ->
-    l =!= r /\ (match at with
-                | Convert _ t -> t == r /\ alg.u_factor l r == None
-                | _ -> True)
+    (match at with
+     | Convert _ t -> l =!= r /\ t == r /\ alg.u_factor l r == None
+     (* Phase 557: a power the algebra cannot raise the unit to, named with the power asked for. *)
+     | ApplyFn Pow [_; Lit (Int n)] -> alg.u_pow l n == None
+     | _ -> l =!= r)
   | _ -> False
 
 let agree_rejected (alg:unit_alg) (step:string) (at:col_expr) (a b:option string)
-  : Lemma (requires ~(Convert? at))
+  : Lemma (requires ~(Convert? at) /\ not (is_pow_lit at))
           (ensures (match agree step at a b with Error e -> rejected alg e | Ok _ -> True)) = ()
 
 let rec agree_all_rejected (alg:unit_alg) (step:string) (at:col_expr) (acc:option string) (us:list (option string))
-  : Lemma (requires ~(Convert? at))
+  : Lemma (requires ~(Convert? at) /\ not (is_pow_lit at))
           (ensures (match agree_all step at acc us with Error e -> rejected alg e | Ok _ -> True))
           (decreases us) =
   match us with
@@ -3123,6 +3229,8 @@ let rec agree_all_rejected (alg:unit_alg) (step:string) (at:col_expr) (acc:optio
      | Ok acc' -> agree_all_rejected alg step at acc' rest
      | Error _ -> ())
 
+(* Phase 557: the power rules match a two-element argument list, three constructors deep. *)
+#push-options "--ifuel 4"
 let rec refused_is_rejected (alg:unit_alg) (step:string) (us:units) (x:col_expr)
   : Lemma (ensures (match resolve_units alg step us x with
                     | Error e -> rejected alg e
@@ -3137,10 +3245,21 @@ let rec refused_is_rejected (alg:unit_alg) (step:string) (us:units) (x:col_expr)
      | _ -> ())
   | Quotient a b _ -> refused_is_rejected alg step us a; refused_is_rejected alg step us b
   | Not a | IsNull a | InParam a _ | Cast _ a | Rounded a _ -> refused_is_rejected alg step us a
-  | Coalesce xs | ApplyFn _ xs ->
+  | Coalesce xs ->
     refused_list_is_rejected alg step us xs;
     (match resolve_list alg step us xs with
      | Ok rs -> agree_all_rejected alg step x None (fsts rs)
+     | Error _ -> ())
+  | ApplyFn fn xs ->
+    refused_list_is_rejected alg step us xs;
+    (match resolve_list alg step us xs with
+     | Ok rs ->
+       (match fn with
+        | Least | Greatest -> agree_all_rejected alg step x None (fsts rs)
+        (* Phase 557: a dimensioned operand refused against `1` names two different units; a
+           power the algebra cannot raise is the predicate's own clause. *)
+        | Pow | Exp | Ln | Log10 -> first_dimensioned_not_one alg.u_one (fsts rs)
+        | _ -> ())
      | Error _ -> ())
   | InList a items ->
     refused_is_rejected alg step us a; refused_list_is_rejected alg step us items;
@@ -3171,6 +3290,8 @@ and refused_cases_is_rejected (alg:unit_alg) (step:string) (us:units) (cases:lis
   | (w, t) :: rest ->
     refused_is_rejected alg step us w; refused_is_rejected alg step us t;
     refused_cases_is_rejected alg step us rest
+
+#pop-options
 
 (* ---- 13.4 An accepted expression's unit is the algebra's derivation, constructor by constructor ---- *)
 
@@ -3232,3 +3353,204 @@ let agg_unit_keeps (fn:agg_fn{fn <> Count /\ fn <> CountDistinct}) (source:optio
 
 let agg_unit_count (fn:agg_fn{fn = Count \/ fn = CountDistinct}) (source:option string)
   : Lemma (ensures agg_unit fn source == None) = ()
+
+(* ======================================================================================
+   14. The power functions (Phase 557, `DECISIONS.md` D43) — `DataFrame.powInt` clause for clause
+       over an abstract multiply, the special-value tables `powSpecial`, `expHost` and `logHost`
+       concretely over a classification of the float, and the host's own `pow` / `exp` / `log` as
+       UNINTERPRETED functions the tables answer before.
+
+   WHAT IS AND IS NOT CLAIMED. A float is the opaque carrier it is everywhere in this model, and its
+   arithmetic is a PARAMETER (`fp`), as the cell primitives are: a multiply, a reciprocal and the
+   one. Nothing here proves a fact about IEEE-754. That a single multiply and a single divide round
+   the same way on every conformant host is the premise `pipeline-ieee-multiply-is-host-independent`
+   names (`proofs.json`); what the theorems add is that the routine's bits are a function of THAT
+   MULTIPLY AND THE EXPONENT ALONE — the product tree is fixed by the exponent (`pow_int_zero` to
+   `pow_int_four`, `pow_int_neg`), and for exponents up to three it is the repeated-multiplication
+   spelling's tree up to one commuted multiply (`pow_int_is_fold_to_three`, conditional on the
+   multiply commuting, which IEEE-754's does). From four the squaring tree is a DIFFERENT tree
+   from the left fold's, and no equality is claimed: the pinned routine is what every host runs.
+
+   The host-rounded functions are not modelled: `pow_float`, `exp_float` and `log_float` take the
+   host's function as a parameter and reach it exactly where the table does not answer. The
+   theorems `pow_table_before_host`, `exp_table_before_host` and `log_table_before_host` say that two
+   hosts whose functions differ ARBITRARILY answer the same cell on every input the table decides —
+   so every special value is byte-identical across hosts by construction, and the 2 ulp bound D43
+   records is a claim about the inputs that reach the host, measured there, never proved here. *)
+
+(* The float arithmetic the routine runs on. *)
+noeq type fp = {
+  (* The host's IEEE-754 multiply. *)
+  f_mul   : string -> string -> string;
+  (* `1.0 / x`. *)
+  f_recip : string -> string;
+  (* `1.0`. *)
+  f_one   : string;
+}
+
+(* F#: `powInt`'s `go` — the accumulator `None` until the first set bit, so a power takes exactly
+   the multiplies its bits name; `k` is the exponent's magnitude, which the F# loop halves as an
+   `int64`. *)
+let rec pow_go (a:fp) (acc:option string) (b:string) (k:nat) : Tot string (decreases k) =
+  let acc' = if k % 2 = 1 then Some (match acc with Some v -> a.f_mul v b | None -> b) else acc in
+  let k' = k / 2 in
+  if k' = 0 then (match acc' with Some v -> v | None -> a.f_one)
+  else pow_go a acc' (a.f_mul b b) k'
+
+(* F#: `powInt`. *)
+let pow_int (a:fp) (x:string) (n:int) : Tot string =
+  if n = 0 then a.f_one
+  else if n > 0 then pow_go a None x n
+  else a.f_recip (pow_go a None x (-n))
+
+(* The repeated-multiplication spelling, `((x * x) * x) * ...`: the left fold a consumer writes by
+   hand with `Mul`. *)
+let rec pow_fold (a:fp) (x:string) (n:nat) : Tot string (decreases n) =
+  if n = 0 then a.f_one
+  else if n = 1 then x
+  else a.f_mul (pow_fold a x (n - 1)) x
+
+(* ---- 14.1 The product tree, exponent by exponent ---- *)
+
+#push-options "--fuel 8 --ifuel 2"
+
+let pow_int_zero (a:fp) (x:string) : Lemma (ensures pow_int a x 0 == a.f_one) = ()
+
+let pow_int_one (a:fp) (x:string) : Lemma (ensures pow_int a x 1 == x) = ()
+
+let pow_int_two (a:fp) (x:string) : Lemma (ensures pow_int a x 2 == a.f_mul x x) = ()
+
+let pow_int_three (a:fp) (x:string) : Lemma (ensures pow_int a x 3 == a.f_mul x (a.f_mul x x)) = ()
+
+let pow_int_four (a:fp) (x:string)
+  : Lemma (ensures pow_int a x 4 == a.f_mul (a.f_mul x x) (a.f_mul x x)) = ()
+
+(* A negative exponent is one reciprocal of the positive power. *)
+let pow_int_neg (a:fp) (x:string) (n:int{n < 0})
+  : Lemma (ensures pow_int a x n == a.f_recip (pow_int a x (-n))) = ()
+
+(* Up to the cube, the routine's tree is the left fold's up to one commuted multiply: the law the
+   transform vectors assert bit for bit, conditional on the multiply commuting (IEEE-754's does). *)
+let pow_int_is_fold_to_three (a:fp) (x:string) (n:nat{n <= 3})
+  : Lemma (requires forall u v. a.f_mul u v == a.f_mul v u)
+          (ensures pow_int a x n == pow_fold a x n) = ()
+
+#pop-options
+
+(* ---- 14.2 The special-value tables, and the host behind them ---- *)
+
+(* What the tables read off a float carrier. F#: `Double.IsNaN`, `= 0.0` (both zeros), `= 1.0`,
+   `= -1.0`, `< 0.0`, `Double.IsInfinity`, and `y = floor y`. The classification is a parameter
+   (`classify` below): the model does not read a carrier. *)
+type fclass = {
+  c_nan     : bool;
+  c_zero    : bool;
+  c_one     : bool;
+  c_neg_one : bool;
+  c_neg     : bool;
+  c_inf     : bool;
+  c_int     : bool;
+}
+
+(* F#: `PowSpecial`. *)
+type pow_special =
+  | PNaN
+  | POne
+  | PNull
+  | PHost
+
+(* F#: `powSpecial`, test for test in the same order. *)
+let pow_table (x y:fclass) : Tot pow_special =
+  if x.c_nan || y.c_nan then PNaN
+  else if y.c_zero || x.c_one then POne
+  else if x.c_zero && y.c_neg then PNull
+  else if x.c_neg_one && y.c_inf then POne
+  else if x.c_neg && not x.c_inf && not y.c_inf && not y.c_int then PNull
+  else PHost
+
+(* F#: `powFloat` — the table, then the host, which is a PARAMETER. `None` is the `Null` cell. *)
+let pow_float (host:string -> string -> string) (classify:string -> fclass) (nan one:string) (x y:string)
+  : Tot (option string) =
+  match pow_table (classify x) (classify y) with
+  | PNaN -> Some nan
+  | POne -> Some one
+  | PNull -> None
+  | PHost -> Some (host x y)
+
+(* Two hosts whose `pow` differ arbitrarily answer the same cell on every input the table decides. *)
+let pow_table_before_host (h1 h2:string -> string -> string) (classify:string -> fclass) (nan one:string) (x y:string)
+  : Lemma (requires pow_table (classify x) (classify y) <> PHost)
+          (ensures pow_float h1 classify nan one x y == pow_float h2 classify nan one x y) = ()
+
+(* A NaN operand never reaches the host and answers the one NaN; a zero exponent and a base of one
+   answer `1`; a zero base under a negative exponent, and a finite negative base under a finite
+   non-integer exponent that the earlier rows did not take, answer `Null`. *)
+let pow_table_nan (x y:fclass) : Lemma (requires x.c_nan \/ y.c_nan) (ensures pow_table x y == PNaN) = ()
+
+let pow_table_one (x y:fclass)
+  : Lemma (requires ~x.c_nan /\ ~y.c_nan /\ (y.c_zero \/ x.c_one)) (ensures pow_table x y == POne) = ()
+
+let pow_table_zero_base (x y:fclass)
+  : Lemma (requires ~x.c_nan /\ ~y.c_nan /\ ~y.c_zero /\ ~x.c_one /\ x.c_zero /\ y.c_neg)
+          (ensures pow_table x y == PNull) = ()
+
+let pow_table_negative_base (x y:fclass)
+  : Lemma (requires ~x.c_nan /\ ~y.c_nan /\ ~y.c_zero /\ ~x.c_one /\ ~(x.c_zero /\ y.c_neg)
+                    /\ ~(x.c_neg_one /\ y.c_inf) /\ x.c_neg /\ ~x.c_inf /\ ~y.c_inf /\ ~y.c_int)
+          (ensures pow_table x y == PNull) = ()
+
+(* F#: `expHost` — what the table reads: a NaN, above the natural log of the largest double, below
+   the natural log of half the smallest subnormal. *)
+type eclass = { e_nan : bool; e_over : bool; e_under : bool }
+
+type exp_special =
+  | EInput
+  | EInf
+  | EZero
+  | EHost
+
+let exp_table (x:eclass) : Tot exp_special =
+  if x.e_nan then EInput
+  else if x.e_over then EInf
+  else if x.e_under then EZero
+  else EHost
+
+let exp_float (host:string -> string) (classify:string -> eclass) (inf zero:string) (x:string) : Tot string =
+  match exp_table (classify x) with
+  | EInput -> x
+  | EInf -> inf
+  | EZero -> zero
+  | EHost -> host x
+
+let exp_table_before_host (h1 h2:string -> string) (classify:string -> eclass) (inf zero:string) (x:string)
+  : Lemma (requires exp_table (classify x) <> EHost)
+          (ensures exp_float h1 classify inf zero x == exp_float h2 classify inf zero x) = ()
+
+(* F#: `logHost` — a NaN, zero and below, one, positive infinity. *)
+type lclass = { l_nan : bool; l_nonpos : bool; l_one : bool; l_pinf : bool }
+
+type log_special =
+  | LInput
+  | LNull
+  | LZero
+  | LInf
+  | LHost
+
+let log_table (x:lclass) : Tot log_special =
+  if x.l_nan then LInput
+  else if x.l_nonpos then LNull
+  else if x.l_one then LZero
+  else if x.l_pinf then LInf
+  else LHost
+
+let log_float (host:string -> string) (classify:string -> lclass) (zero:string) (x:string) : Tot (option string) =
+  match log_table (classify x) with
+  | LInput -> Some x
+  | LNull -> None
+  | LZero -> Some zero
+  | LInf -> Some x
+  | LHost -> Some (host x)
+
+let log_table_before_host (h1 h2:string -> string) (classify:string -> lclass) (zero:string) (x:string)
+  : Lemma (requires log_table (classify x) <> LHost)
+          (ensures log_float h1 classify zero x == log_float h2 classify zero x) = ()
