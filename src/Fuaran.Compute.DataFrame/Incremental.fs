@@ -1043,7 +1043,7 @@ module internal StateWire =
             if f = 0.0 && 1.0 / f < 0.0 then
                 "-0"
             else
-                Canon.canonicalFloat f
+                FloatLayout.canonical f
 
     let private floatOfToken (tok: string) : float option =
         match tok with
@@ -1257,7 +1257,7 @@ module internal StateWire =
                         mixed <- true
 
         if mixed then
-            Canon.typed "cells" [ "values", JArr(xs |> Array.map cellJson |> List.ofArray) ]
+            Canonical.typed "cells" [ "values", JArr(xs |> Array.map cellJson |> List.ofArray) ]
         else
             let sb = System.Text.StringBuilder()
             let mutable first = true
@@ -1303,7 +1303,7 @@ module internal StateWire =
                 else
                     []
 
-            Canon.typed tag ([ "n", JInt xs.Length; "values", JStr(sb.ToString()) ] @ mask)
+            Canonical.typed tag ([ "n", JInt xs.Length; "values", JStr(sb.ToString()) ] @ mask)
 
     /// Read a run of cells. `unreached` says whether a slot that holds no cell is admitted here: it
     /// is in a step's cached cells and a window's cell run, and nowhere else.
@@ -1526,14 +1526,15 @@ module internal StateWire =
     /// The canonical text of a table's exact encoding, or the refusal of a string it holds that is
     /// not well-formed UTF-16.
     let tableText (t: Table) : Result<string, ColumnError> =
-        match Canon.tryRender (tableJson t) with
+        match Canonical.tryWrite Rendering.CrossHost (tableJson t) with
         | Ok text -> Ok text
         | Error m -> Error(Malformed("incremental state: source: " + m))
 
     /// The fingerprint of a source: SHA-256 of its exact canonical encoding. Two tables share one
     /// exactly when they hold the same schema, the same columns in the same order and the same
     /// cells under the same cases.
-    let sourceFingerprint (t: Table) : string = sha256Hex (Canon.render (tableJson t))
+    let sourceFingerprint (t: Table) : string =
+        sha256Hex (Canonical.write Rendering.CrossHost (tableJson t))
 
 /// The incremental evaluation seam: classify a pipeline, prime a state over a source, then refresh
 /// that state against a delta. Every result equals `DataFrame.evalPipelineWithInEnv` over the same
@@ -6161,41 +6162,41 @@ module IncrementalCodec =
 
     let private defectJson (d: DeltaDefect) : JVal =
         match d with
-        | EmptyScheme -> Canon.typed "emptyScheme" []
-        | EmptyRowKey -> Canon.typed "emptyRowKey" []
-        | NegativeOrdinal i -> Canon.typed "negativeOrdinal" [ "index", JInt i ]
-        | DuplicateRow r -> Canon.typed "duplicateRow" [ "row", JStr r ]
-        | MixedAddressing(s, r) -> Canon.typed "mixedAddressing" [ "scheme", JStr s; "row", JStr r ]
-        | EmptyColumnName -> Canon.typed "emptyColumnName" []
-        | DuplicateInvalidatedColumn n -> Canon.typed "duplicateInvalidatedColumn" [ "name", JStr n ]
-        | SchemeMismatch(l, r) -> Canon.typed "schemeMismatch" [ "left", JStr l; "right", JStr r ]
-        | MissingIdentity(s, i) -> Canon.typed "missingIdentity" [ "scheme", JStr s; "index", JInt i ]
-        | DuplicateIdentity(s, k) -> Canon.typed "duplicateIdentity" [ "scheme", JStr s; "key", JStr k ]
+        | EmptyScheme -> Canonical.typed "emptyScheme" []
+        | EmptyRowKey -> Canonical.typed "emptyRowKey" []
+        | NegativeOrdinal i -> Canonical.typed "negativeOrdinal" [ "index", JInt i ]
+        | DuplicateRow r -> Canonical.typed "duplicateRow" [ "row", JStr r ]
+        | MixedAddressing(s, r) -> Canonical.typed "mixedAddressing" [ "scheme", JStr s; "row", JStr r ]
+        | EmptyColumnName -> Canonical.typed "emptyColumnName" []
+        | DuplicateInvalidatedColumn n -> Canonical.typed "duplicateInvalidatedColumn" [ "name", JStr n ]
+        | SchemeMismatch(l, r) -> Canonical.typed "schemeMismatch" [ "left", JStr l; "right", JStr r ]
+        | MissingIdentity(s, i) -> Canonical.typed "missingIdentity" [ "scheme", JStr s; "index", JInt i ]
+        | DuplicateIdentity(s, k) -> Canonical.typed "duplicateIdentity" [ "scheme", JStr s; "key", JStr k ]
 
     let private reasonJson (r: FallBackReason) : JVal =
         match r with
-        | StepNotRowLocal v -> Canon.typed "stepNotRowLocal" [ "verb", JStr v ]
-        | AggregateStepNotLast v -> Canon.typed "aggregateStepNotLast" [ "verb", JStr v ]
-        | DeltaIsFullRefresh -> Canon.typed "deltaIsFullRefresh" []
-        | OrdinalAddressing -> Canon.typed "ordinalAddressing" []
-        | SourceSchemaMoved -> Canon.typed "sourceSchemaMoved" []
-        | EnvChanged -> Canon.typed "envChanged" []
-        | PipelineChanged -> Canon.typed "pipelineChanged" []
-        | RowIdentityUnusable d -> Canon.typed "rowIdentityUnusable" [ "defect", defectJson d ]
-        | UnresolvedSlotParam(v, p) -> Canon.typed "unresolvedSlotParam" [ "verb", JStr v; "param", JStr p ]
-        | WindowFrameUnbounded fn -> Canon.typed "windowFrameUnbounded" [ "fn", JStr fn ]
-        | JoinNotRowPreserving kind -> Canon.typed "joinNotRowPreserving" [ "kind", JStr kind ]
-        | AggregateStepRepeated v -> Canon.typed "aggregateStepRepeated" [ "verb", JStr v ]
+        | StepNotRowLocal v -> Canonical.typed "stepNotRowLocal" [ "verb", JStr v ]
+        | AggregateStepNotLast v -> Canonical.typed "aggregateStepNotLast" [ "verb", JStr v ]
+        | DeltaIsFullRefresh -> Canonical.typed "deltaIsFullRefresh" []
+        | OrdinalAddressing -> Canonical.typed "ordinalAddressing" []
+        | SourceSchemaMoved -> Canonical.typed "sourceSchemaMoved" []
+        | EnvChanged -> Canonical.typed "envChanged" []
+        | PipelineChanged -> Canonical.typed "pipelineChanged" []
+        | RowIdentityUnusable d -> Canonical.typed "rowIdentityUnusable" [ "defect", defectJson d ]
+        | UnresolvedSlotParam(v, p) -> Canonical.typed "unresolvedSlotParam" [ "verb", JStr v; "param", JStr p ]
+        | WindowFrameUnbounded fn -> Canonical.typed "windowFrameUnbounded" [ "fn", JStr fn ]
+        | JoinNotRowPreserving kind -> Canonical.typed "joinNotRowPreserving" [ "kind", JStr kind ]
+        | AggregateStepRepeated v -> Canonical.typed "aggregateStepRepeated" [ "verb", JStr v ]
 
     let private recomputeJson (r: Recompute) : JVal =
         match r with
-        | Primed n -> Canon.typed "primed" [ "rowsEvaluated", JInt n ]
-        | ReusedPrior -> Canon.typed "reusedPrior" []
-        | RowsRecomputed n -> Canon.typed "rowsRecomputed" [ "rowsEvaluated", JInt n ]
+        | Primed n -> Canonical.typed "primed" [ "rowsEvaluated", JInt n ]
+        | ReusedPrior -> Canonical.typed "reusedPrior" []
+        | RowsRecomputed n -> Canonical.typed "rowsRecomputed" [ "rowsEvaluated", JInt n ]
         | GroupsRecomputed(n, g) ->
-            Canon.typed "groupsRecomputed" [ "rowsEvaluated", JInt n; "groupsRecomputed", JInt g ]
+            Canonical.typed "groupsRecomputed" [ "rowsEvaluated", JInt n; "groupsRecomputed", JInt g ]
         | FullRecompute(n, reason) ->
-            Canon.typed "fullRecompute" [ "rowsEvaluated", JInt n; "reason", reasonJson reason ]
+            Canonical.typed "fullRecompute" [ "rowsEvaluated", JInt n; "reason", reasonJson reason ]
 
     /// A prefix-fold window's run: its frame's schema, its orderings, each partition's key cells
     /// and the cells it wrote, in the carrier it wrote them in (a float run keeps its floats exact,
@@ -6204,12 +6205,12 @@ module IncrementalCodec =
         let out =
             match run.Out with
             | RunFloats(values, present) ->
-                Canon.typed
+                Canonical.typed
                     "floats"
                     [ "values", JStr(StateWire.floatsText values)
                       "present", JStr(StateWire.boolsText present) ]
-            | RunInts values -> Canon.typed "ints" [ "values", ints values ]
-            | RunCells values -> Canon.typed "cells" [ "values", cells values ]
+            | RunInts values -> Canonical.typed "ints" [ "values", ints values ]
+            | RunCells values -> Canonical.typed "cells" [ "values", cells values ]
 
         [ "cols", StateWire.schemaJson run.Cols
           "arrival", ints run.Arrival
@@ -6316,7 +6317,7 @@ module IncrementalCodec =
 
     /// A JSON object's canonical text from its members' canonical texts: the members in Ordinal
     /// order of their names, which are plain ASCII words here and need no escape. What
-    /// `Canon.render` writes for the same object, assembled so a large member is rendered once.
+    /// `Canonical.write Rendering.CrossHost` writes for the same object, assembled so a large member is rendered once.
     let private objectText (members: (string * string) list) : string =
         let sb = System.Text.StringBuilder()
         sb.Append('{') |> ignore
@@ -6352,7 +6353,7 @@ module IncrementalCodec =
             )
         else
             let render (name: string, v: JVal) : Result<string * string, ColumnError> =
-                match Canon.tryRender v with
+                match Canonical.tryWrite Rendering.CrossHost v with
                 | Ok text -> Ok(name, text)
                 | Error m -> Error(Malformed("incremental state: " + name + ": " + m))
 
@@ -6903,7 +6904,7 @@ module IncrementalCodec =
             let! carriedPipeline = field "pipeline" st
 
             let! _ =
-                if StateWire.sha256Hex (Canon.render carriedPipeline) = key.Pipeline then
+                if StateWire.sha256Hex (Canonical.write Rendering.CrossHost carriedPipeline) = key.Pipeline then
                     Ok()
                 else
                     Error(
@@ -6996,8 +6997,8 @@ module IncrementalCodec =
         | None ->
             // Not the frame. Say which kind of not: not JSON at all, another document, or this
             // document in a spelling the encoder does not write.
-            match Json.parseDetailed text with
-            | Error e -> Error(NotJson e)
+            match WireText.read text with
+            | Error e -> Error e
             | Ok doc ->
                 tagged doc
                 |> Result.bind (fun tag ->
@@ -7013,8 +7014,8 @@ module IncrementalCodec =
             if StateWire.sha256Hex bodyText <> digest then
                 Error(Malformed "incremental state: the digest is not the digest of the body; the encoding is damaged")
             else
-                match Json.parseDetailed bodyText with
-                | Error e -> Error(NotJson e)
+                match WireText.read bodyText with
+                | Error e -> Error e
                 | Ok body ->
                     res {
                         let! v = body |> at "version" intOf

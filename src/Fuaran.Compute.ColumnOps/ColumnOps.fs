@@ -316,18 +316,18 @@ module ColumnOps =
 
     let private cellToJson (c: Cell) : JVal =
         match c with
-        | Null -> Canon.typed "Null" []
-        | Int i -> Canon.typed "Int" [ "v", JInt i ]
-        | Float f -> Canon.typed "Float" [ "v", JFloat f ]
-        | Bool b -> Canon.typed "Bool" [ "v", JBool b ]
-        | Str s -> Canon.typed "Str" [ "v", JStr s ]
-        | Date s -> Canon.typed "Date" [ "v", JStr s ]
-        | Timestamp s -> Canon.typed "Timestamp" [ "v", JStr s ]
+        | Null -> Canonical.typed "Null" []
+        | Int i -> Canonical.typed "Int" [ "v", JInt i ]
+        | Float f -> Canonical.typed "Float" [ "v", JFloat f ]
+        | Bool b -> Canonical.typed "Bool" [ "v", JBool b ]
+        | Str s -> Canonical.typed "Str" [ "v", JStr s ]
+        | Date s -> Canonical.typed "Date" [ "v", JStr s ]
+        | Timestamp s -> Canonical.typed "Timestamp" [ "v", JStr s ]
         // Phase 277: the canonical decimal text as a JSON string (Core `DECISIONS.md` D72 K5).
         // Phase 321: canonicalised on the way OUT as the decoder canonicalises on the way in, so a
         // cell built by hand as `1.50` encodes as `1.5` and the wire round trip is byte-identical;
         // text that is not decimal at all is written as found, for the decoder to refuse by name.
-        | Decimal s -> Canon.typed "Decimal" [ "v", JStr(DecimalText.tryCanonical s |> Option.defaultValue s) ]
+        | Decimal s -> Canonical.typed "Decimal" [ "v", JStr(DecimalText.tryCanonical s |> Option.defaultValue s) ]
 
     let private field (k: string) (el: JVal) : Result<JVal, string> =
         match el with
@@ -435,17 +435,19 @@ module ColumnOps =
     /// Encode a `ColumnOp` to a `JVal` (`"$type"`-tagged, the `Fuaran.Core` envelope discipline).
     let encodeJson (op: ColumnOp) : JVal =
         match op with
-        | SetCell(name, row, v) -> Canon.typed "setCell" [ "col", JStr name; "row", JInt row; "value", cellToJson v ]
-        | SetColumn col -> Canon.typed "setColumn" [ "column", columnToJson col ]
-        | InsertColumn(i, col) -> Canon.typed "insertColumn" [ "index", JInt i; "column", columnToJson col ]
-        | RemoveColumn name -> Canon.typed "removeColumn" [ "name", JStr name ]
-        | AppendRows rows -> Canon.typed "appendRows" [ "rows", JArr(rows |> List.map rowToJson) ]
+        | SetCell(name, row, v) ->
+            Canonical.typed "setCell" [ "col", JStr name; "row", JInt row; "value", cellToJson v ]
+        | SetColumn col -> Canonical.typed "setColumn" [ "column", columnToJson col ]
+        | InsertColumn(i, col) -> Canonical.typed "insertColumn" [ "index", JInt i; "column", columnToJson col ]
+        | RemoveColumn name -> Canonical.typed "removeColumn" [ "name", JStr name ]
+        | AppendRows rows -> Canonical.typed "appendRows" [ "rows", JArr(rows |> List.map rowToJson) ]
         | ApplyTransform pipeline ->
-            Canon.typed "applyTransform" [ "pipeline", JArr(pipeline |> List.map DataFrameCodec.encodeTransform) ]
+            Canonical.typed "applyTransform" [ "pipeline", JArr(pipeline |> List.map DataFrameCodec.encodeTransform) ]
 
     /// The canonical wire string for a `ColumnOp` (Ordinal-sorted keys + cross-host float layout → byte-
     /// identical across hosts).
-    let encode (op: ColumnOp) : string = Canon.render (encodeJson op)
+    let encode (op: ColumnOp) : string =
+        Canonical.write Rendering.CrossHost (encodeJson op)
 
     let decodeJson (el: JVal) : Result<ColumnOp, string> =
         kindOf el

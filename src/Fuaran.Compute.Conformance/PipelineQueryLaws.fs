@@ -554,10 +554,9 @@ module PipelineQueryConformance =
             record codec (Result.isError (PipelineQueryCodec.decode retagged)) (fun () ->
                 "a document of another $type was decoded as a pipeline query")
 
+        // The family is unconditional: every iteration builds the evidence for each of these laws.
         let result (law: string) (cell: string option ref) : LawResult =
-            { Law = law
-              Passed = cell.Value.IsNone
-              Counterexample = cell.Value }
+            Verdict.subject "PipelineQueryConformance.laws" law iterations cell.Value
 
         [ result
               "a pair is admitted iff its walk is closed and IS the declared result schema; each disagreement is refused naming the column"

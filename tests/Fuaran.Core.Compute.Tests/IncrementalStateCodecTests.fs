@@ -154,20 +154,17 @@ let tests =
                     Decimal "12.5" ]
 
               for c in cells do
-                  let wire = Canon.render (StateWire.cellJson c)
+                  let wire = Canonical.write Rendering.CrossHost (StateWire.cellJson c)
 
-                  let back =
-                      ok (Json.parseDetailed wire |> Result.mapError NotJson)
-                      |> StateWire.cellOfJson false
+                  let back = ok (WireText.read wire) |> StateWire.cellOfJson false
 
                   Expect.equal back (Ok c) (sprintf "%A through %s" c wire)
 
               // The three a structural comparison cannot hold: a NaN is unequal to itself, and the
               // two zeros are equal to each other.
               let through (c: Cell) =
-                  Canon.render (StateWire.cellJson c)
-                  |> Json.parseDetailed
-                  |> Result.mapError NotJson
+                  Canonical.write Rendering.CrossHost (StateWire.cellJson c)
+                  |> WireText.read
                   |> Result.bind (StateWire.cellOfJson false)
 
               (match through (Float nan) with
@@ -224,10 +221,9 @@ let tests =
                     "an int in a float column", [| Int 3; Float 2.5; Null; Float(-0.0); unreached |] ]
 
               for name, run in runs do
-                  let wire = Canon.render (StateWire.runJson run)
+                  let wire = Canonical.write Rendering.CrossHost (StateWire.runJson run)
 
-                  let back =
-                      ok (Json.parseDetailed wire |> Result.mapError NotJson) |> StateWire.runOf true
+                  let back = ok (WireText.read wire) |> StateWire.runOf true
 
                   match back with
                   | Ok cells ->
@@ -236,7 +232,10 @@ let tests =
                       for k in 0 .. run.Length - 1 do
                           Expect.equal (isNull (box cells[k])) (isNull (box run[k])) (sprintf "%s: slot %d" name k)
 
-                      Expect.equal (Canon.render (StateWire.runJson cells)) wire (sprintf "%s: the same run" name)
+                      Expect.equal
+                          (Canonical.write Rendering.CrossHost (StateWire.runJson cells))
+                          wire
+                          (sprintf "%s: the same run" name)
                   | Error e -> failtestf "%s through %s: %A" name wire e
 
               // The tag says which carrier a homogeneous run took; the mixed one keeps a value a cell.
@@ -249,9 +248,8 @@ let tests =
               Expect.equal (tagOf [| Int 3; Float 2.5 |]) (Some(JStr "cells")) "an int among floats is per cell"
 
               (match
-                  Canon.render (StateWire.runJson [| Float(-0.0); Float nan |])
-                  |> Json.parseDetailed
-                  |> Result.mapError NotJson
+                  Canonical.write Rendering.CrossHost (StateWire.runJson [| Float(-0.0); Float nan |])
+                  |> WireText.read
                   |> Result.bind (StateWire.runOf false)
                with
                | Ok [| Float z; Float n |] ->
@@ -261,9 +259,8 @@ let tests =
 
               // A slot that holds no cell is admitted only where a step's cache is read.
               Expect.isError
-                  (Canon.render (StateWire.runJson [| Int 1; unreached |])
-                   |> Json.parseDetailed
-                   |> Result.mapError NotJson
+                  (Canonical.write Rendering.CrossHost (StateWire.runJson [| Int 1; unreached |])
+                   |> WireText.read
                    |> Result.bind (StateWire.runOf false))
                   "the no-cell slot is not a cell outside a step's cache"
 
@@ -276,15 +273,11 @@ let tests =
                      [||]
                      [| Str "g3"; Decimal "1.10"; Null |] |]
 
-              let wire = Canon.render (StateWire.matrixJson rows)
+              let wire = Canonical.write Rendering.CrossHost (StateWire.matrixJson rows)
 
-              match
-                  Json.parseDetailed wire
-                  |> Result.mapError NotJson
-                  |> Result.bind StateWire.matrixOf
-              with
+              match WireText.read wire |> Result.bind StateWire.matrixOf with
               | Ok back ->
-                  Expect.equal (Canon.render (StateWire.matrixJson back)) wire "the same matrix"
+                  Expect.equal (Canonical.write Rendering.CrossHost (StateWire.matrixJson back)) wire "the same matrix"
                   Expect.isNull back[1] "the missing row stays missing"
                   Expect.equal back[2] [| Str "g2" |] "a short row stays short"
               | Error e -> failtestf "a matrix through %s: %A" wire e
@@ -292,9 +285,7 @@ let tests =
           testCase "a damaged run is refused rather than read short"
           <| fun _ ->
               let read (text: string) =
-                  Json.parseDetailed text
-                  |> Result.mapError NotJson
-                  |> Result.bind (StateWire.runOf true)
+                  WireText.read text |> Result.bind (StateWire.runOf true)
 
               for text in
                   [ "{\"$type\":\"ints\",\"n\":3,\"values\":\"1,2\"}"
@@ -452,14 +443,14 @@ let tests =
               // The encoder assembles the document from its members' texts; what it writes is what
               // the canonical renderer writes for the same value.
               Expect.equal
-                  (Json.parseDetailed text |> Result.map Canon.render)
+                  (Json.parse text |> Result.map (Canonical.write Rendering.CrossHost))
                   (Ok text)
                   "the document is its own canonical rendering"
 
               let detached = ok (IncrementalCodec.encodeDetached state)
 
               Expect.equal
-                  (Json.parseDetailed detached |> Result.map Canon.render)
+                  (Json.parse detached |> Result.map (Canonical.write Rendering.CrossHost))
                   (Ok detached)
                   "and so is the detached one"
 

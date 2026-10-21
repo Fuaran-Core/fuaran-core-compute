@@ -1881,16 +1881,16 @@ module DeltaCodec =
 
     let private rowToJson (ref: RowRef, change: RowChange) : JVal =
         match ref with
-        | ByKey k -> Canon.typed (changeTag change) [ "key", JStr k ]
-        | ByOrdinal i -> Canon.typed (changeTag change) [ "ordinal", JInt i ]
+        | ByKey k -> Canonical.typed (changeTag change) [ "key", JStr k ]
+        | ByOrdinal i -> Canonical.typed (changeTag change) [ "ordinal", JInt i ]
 
     /// Encode a delta to a `JVal`. Normalises first, so the bytes are canonical whatever order the
     /// caller built the record in.
     let encodeJson (d: TableDelta) : JVal =
         match Delta.normalise d with
-        | FullRefresh -> Canon.typed "fullRefresh" []
+        | FullRefresh -> Canonical.typed "fullRefresh" []
         | RowSet r ->
-            Canon.typed
+            Canonical.typed
                 "rowSet"
                 [ "scheme", JStr r.Scheme
                   "rows", JArr(r.Rows |> List.map rowToJson)
@@ -1898,7 +1898,8 @@ module DeltaCodec =
 
     /// The canonical wire string for a delta (Ordinal-sorted keys + the cross-host float layout —
     /// byte-identical across hosts).
-    let encode (d: TableDelta) : string = Canon.render (encodeJson d)
+    let encode (d: TableDelta) : string =
+        Canonical.write Rendering.CrossHost (encodeJson d)
 
     // ---- decode ----
 
@@ -1985,6 +1986,6 @@ module DeltaCodec =
 
     /// Decode a delta from a wire string.
     let decode (s: string) : Result<TableDelta, ColumnError> =
-        match Json.parseDetailed s with
-        | Error m -> Error(NotJson m)
+        match WireText.read s with
+        | Error m -> Error m
         | Ok el -> decodeJson el

@@ -46,13 +46,16 @@ let compute: Set<string> =
 /// is BELOW the four, not above: since Core `1.0.0` a schema field carries a unit of measure, so
 /// `Fuaran.Core.Column` stands on it and every assembly that reads a `Field` references it
 /// transitively (Phase 423). No project names it; the assembly rule admits it for that reason.
+/// `Fuaran.Core.Text` is below them too: since Core `0.40.0` it is the kernel `Wire` and `OpStream`
+/// stand on (hashing, digests, the string escape), so an assembly that uses either references it.
 let allowedSubstrate: Set<string> =
     set
         [ "Fuaran.Core.Column"
           "Fuaran.Core.Wire"
           "Fuaran.Core.OpStream"
           "Fuaran.Core.Conformance"
-          "Fuaran.Core.Unit" ]
+          "Fuaran.Core.Unit"
+          "Fuaran.Core.Text" ]
 
 /// The one designed widening, per project (Phase 281): the registered pipeline query pairs the
 /// substrate's `Query` declaration with a pipeline, so it takes `Fuaran.Core.Query` — and, through

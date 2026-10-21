@@ -37,7 +37,7 @@ module Fuaran.Compute.Tests.WireSurfaceTests
 //     bytes the package emitted — which is what a byte-pinning consumer compares — and the
 //     document re-rendered canonically, which is what the classifier reads. Two of the emitters
 //     (the IDL artifact's indented form, and the hand-assembled stream envelopes) are not
-//     `Canon.render`, so the hash is the only thing that sees their layout.
+//     `Canonical.write Rendering.CrossHost`, so the hash is the only thing that sees their layout.
 //   * NOT a domain's vocabulary. `Idl.Encode` renders a DOMAIN's values under the domain's own
 //     vocabulary, and an op stream embeds the domain's own op encoding verbatim: those member
 //     names are the domain's, and so is pinning them. What is pinned here is what THIS
@@ -48,7 +48,7 @@ module Fuaran.Compute.Tests.WireSurfaceTests
 // On the pattern the managed baseline uses, and as the phase states them: a new member or a new
 // case is ADDITIVE; a renamed or removed member, a changed discriminator, or the same structure
 // rendered to different bytes is BREAKING. A reordered member cannot occur in canonical output
-// (`Canon.render` sorts keys), so it is not a class of its own — in the two non-canonical
+// (`Canonical.write Rendering.CrossHost` sorts keys), so it is not a class of its own — in the two non-canonical
 // emitters it surfaces as a byte move, which is breaking.
 //
 // ---- regenerating ----------------------------------------------------------------------
@@ -347,7 +347,7 @@ let internal toDoc (name: string, emitted: string) : WireDoc =
       Hash = sha256 emitted
       Canonical =
         match Json.parse emitted with
-        | Ok v -> Canon.render v
+        | Ok v -> Canonical.write Rendering.CrossHost v
         | Error _ -> "!unparsed" }
 
 /// Render one package's documents, in the ordinal order of their names.
@@ -454,7 +454,9 @@ let internal tokensOf (canonical: string) : Set<string> =
         | JArr items ->
             for x in items do
                 walk (path + "[]") x
-        | scalar -> acc.Add(sprintf "value %s %s" path (Canon.render scalar)) |> ignore
+        | scalar ->
+            acc.Add(sprintf "value %s %s" path (Canonical.write Rendering.CrossHost scalar))
+            |> ignore
 
     match Json.parse canonical with
     | Ok v -> walk "$" v

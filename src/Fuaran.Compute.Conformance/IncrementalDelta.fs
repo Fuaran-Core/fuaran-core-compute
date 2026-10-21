@@ -1258,39 +1258,43 @@ module IncrementalDelta =
             then
                 work <- Some(cite s "a refresh evaluated more rows than a full evaluation would")
 
-        [ { Law = "every generated pair produced a sample (no base failed to evaluate)"
-            Passed = List.length xs = iterations
-            Counterexample =
-              if List.length xs = iterations then
-                  None
-              else
-                  Some(
-                      "seed="
-                      + string seed
-                      + ": "
-                      + string (List.length xs)
-                      + " of "
-                      + string iterations
-                      + " samples"
-                  ) }
-          { Law = "incremental evaluation equals the reference evaluator for every (base, delta) pair"
-            Passed = equivalence.IsNone
-            Counterexample = equivalence }
-          { Law = "priming a state is a full reference evaluation"
-            Passed = priming.IsNone
-            Counterexample = priming }
-          { Law = "a declined pipeline reports a full evaluation carrying its declared reason"
-            Passed = boundary.IsNone
-            Counterexample = boundary }
-          { Law = "a declined pipeline's PRIME reports `Primed`, not the decline"
-            Passed = primeClass.IsNone
-            Counterexample = primeClass }
-          { Law = "a refresh evaluates no more rows than a full evaluation would — declined or restricted"
-            Passed = work.IsNone
-            Counterexample = work }
-          { Law = "plan is pure, total, and agrees with isIncremental"
-            Passed = planPurity.IsNone
-            Counterexample = planPurity } ]
+        // Every sample asserts the equivalence, priming, work and plan laws; the two decline laws stand
+        // on the declined samples, which the `refresh class` guard counts.
+        let family = "IncrementalDelta.lawsWith"
+        let samples = List.length xs
+
+        let declined =
+            xs
+            |> List.filter (fun s ->
+                match (Incremental.plan s.Pipeline).Strategy with
+                | ReferenceOnly _ -> true
+                | _ -> false)
+            |> List.length
+
+        let law = Verdict.subject family
+        let onDeclined = Verdict.covered family "refresh class"
+
+        [ law
+              "every generated pair produced a sample (no base failed to evaluate)"
+              iterations
+              (if samples = iterations then
+                   None
+               else
+                   Some(
+                       "seed="
+                       + string seed
+                       + ": "
+                       + string samples
+                       + " of "
+                       + string iterations
+                       + " samples"
+                   ))
+          law "incremental evaluation equals the reference evaluator for every (base, delta) pair" samples equivalence
+          law "priming a state is a full reference evaluation" samples priming
+          onDeclined "a declined pipeline reports a full evaluation carrying its declared reason" declined boundary
+          onDeclined "a declined pipeline's PRIME reports `Primed`, not the decline" declined primeClass
+          law "a refresh evaluates no more rows than a full evaluation would — declined or restricted" samples work
+          law "plan is pure, total, and agrees with isIncremental" samples planPurity ]
         @ SampleAdequacy.check "IncrementalDelta" seed demands xs
 
     /// The incremental-evaluation equivalence laws at the shipped table-width bound.
@@ -1528,20 +1532,35 @@ module IncrementalDelta =
 
                 reached.Add { Classes = List.ofSeq classes }
 
+        // Every primed state is encoded, decoded, refreshed and damaged; the refresh-built and the
+        // foreign-source laws stand on the classes the `state class` guard counts.
+        let family = "IncrementalDelta.stateLaws"
+        let primed = reached.Count
+
+        let classCount (c: string) =
+            reached |> Seq.filter (fun r -> List.contains c r.Classes) |> Seq.length
+
         let law (name: string) (finding: string option) : LawResult =
-            { Law = name
-              Passed = finding.IsNone
-              Counterexample = finding }
+            Verdict.subject family name primed finding
+
+        let covered (cls: string) (name: string) (finding: string option) : LawResult =
+            Verdict.covered family "state class" name (classCount cls) finding
 
         [ law "a decoded state reads as the state that was encoded, and re-encodes to the same bytes" reads
           law
               "a refresh from a decoded state equals a refresh from the original, cell for cell and in footprint"
               refresh
           law "a refresh from a state decoded over its source equals a refresh from the original" detached
-          law "a state a refresh built survives the round trip: the next refresh from it equals the original's" sequence
+          covered
+              "refresh-built state"
+              "a state a refresh built survives the round trip: the next refresh from it equals the original's"
+              sequence
           law
               "a pipeline that is not the state's evaluates in full, from the decoded state as from the original"
               pipelineKey
-          law "a state decoded over a source it was not built for evaluates in full and says so" sourceKey
+          covered
+              "foreign source"
+              "a state decoded over a source it was not built for evaluates in full and says so"
+              sourceKey
           law "a truncated or altered encoding is refused, and a detached one is refused without its source" damage ]
         @ SampleAdequacy.check "IncrementalDelta.stateLaws" seed stateDemands (List.ofSeq reached)

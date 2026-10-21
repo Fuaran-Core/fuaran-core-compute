@@ -434,25 +434,30 @@ module DeriveTypingConformance =
                 if refused.IsNone then
                     refused <- Some(at (sprintf "the cells' mix over an empty frame answered %A" other))
 
-        let law name (cell: string option) =
-            { Law = name
-              Passed = cell.IsNone
-              Counterexample = cell }
+        // Each law's arm is counted by the `typing` guard below; its evidence is that arm's count, and
+        // the refresh and the unpivot are built every iteration.
+        let law = Verdict.covered "DeriveTypingConformance.laws" "typing"
 
         [ law
               "a decided derive or unpivot types its column identically over a full, an empty and an all-null frame"
+              decidedSeen
               sameEverywhere
           law
               "a derive the evaluation's params decide types its column identically over a full, an empty and an all-null frame"
+              envDecidedSeen
               envDecided
-          law "SchemaWalk states exactly the type the evaluator gives a decided derive" walkAgrees
-          law "prime, refresh and the full evaluation type a derived column identically" refreshAgrees
-          law "every present derived cell is of its column's type or widens into it" admitted
-          law "a float beside a decimal in one derived column is refused by name, never widened" refused
+          law "SchemaWalk states exactly the type the evaluator gives a decided derive" decidedSeen walkAgrees
+          law "prime, refresh and the full evaluation type a derived column identically" iterations refreshAgrees
+          law "every present derived cell is of its column's type or widens into it" iterations admitted
+          law "a float beside a decimal in one derived column is refused by name, never widened" refusalsSeen refused
           law
               "a derive's column carries the unit the check derives over the schema, on a full, an empty and an all-null frame alike"
+              unitsSeen
               unitAgrees
-          law "a derive adding metres to seconds is refused by name, on a full and an empty frame alike" unitRefused
+          law
+              "a derive adding metres to seconds is refused by name, on a full and an empty frame alike"
+              unitRefusalsSeen
+              unitRefused
           SampleAdequacy.reached
               "DeriveTypingConformance.laws"
               "typing"

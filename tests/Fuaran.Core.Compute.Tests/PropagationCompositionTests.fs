@@ -4,7 +4,7 @@ module Fuaran.Compute.Tests.PropagationCompositionTests
 // spreadsheet-shaped consumer's measurement (Phase 250) built a sheet over `Column.Ops`,
 // `DataFrame.Incremental` and `Propagation` and found five places where the three strands met only
 // through glue it kept by hand. Each was closed inside the contract, and the sheet at the bottom of
-// this file composes them and is certified by `Conformance.propagationEvaluatorLawsWith`.
+// this file composes them and is certified by `Conformance.propagationPriorLawsAt`.
 //
 // Three of the five are facts about `Propagation` and `Ops` alone and stay with them in the
 // Fuaran.Core repository (https://github.com/Fuaran-Core/fuaran-core), whose suite still carries
@@ -406,7 +406,7 @@ let private dataEdit (op: ColumnOp) (s: Sheet) : Sheet * Set<string> =
 
 /// A structural edit through `Ops`, its change set from `changedForOp`.
 let private sheetEdit (op: SkeletonOp<SheetNode, string>) (s: Sheet) : Sheet * Set<string> =
-    match Ops.apply sheetw idw op s.Tree with
+    match Ops.apply Policy.none (OpScope.plain sheetw idw) op s.Tree with
     | Error _ -> s, Set.empty
     | Ok tree' -> { s with Tree = tree' }, Propagation.changedForOp sheetw idw nodeReads s.Tree tree' op
 
@@ -519,10 +519,9 @@ let private sheetTests =
                   (Propagation.evalWith (withPrior s1) (depsOf s1))
                   "and the refresh agrees"
 
-          testCase "the sheet's prior-aware evaluator is certified by propagationEvaluatorLawsWith"
+          testCase "the sheet's prior-aware evaluator is certified by propagationPriorLawsAt"
           <| fun () ->
-              let results =
-                  Conformance.propagationEvaluatorLawsWith evaluatorWitness withPrior 2500 120
+              let results = Conformance.propagationPriorLawsAt evaluatorWitness withPrior 2500 120
 
               match results |> List.filter (fun r -> not r.Passed) with
               | [] -> ()
@@ -530,7 +529,7 @@ let private sheetTests =
                   failed
                   |> List.map (fun r -> r.Law + ": " + defaultArg r.Counterexample "")
                   |> String.concat "\n"
-                  |> failtestf "the sheet failed propagationEvaluatorLawsWith:\n%s"
+                  |> failtestf "the sheet failed propagationPriorLawsAt:\n%s"
 
           testCase "the family has teeth: an evaluator that trusts a stale prior fails the prior discipline"
           <| fun () ->
@@ -540,8 +539,7 @@ let private sheetTests =
                   | Some(TableV t), Some(TableFormula _) -> Ok(TableV t)
                   | _ -> withPrior s resolve prior id
 
-              let results =
-                  Conformance.propagationEvaluatorLawsWith evaluatorWitness trusting 2500 120
+              let results = Conformance.propagationPriorLawsAt evaluatorWitness trusting 2500 120
 
               let law = results |> List.find (fun r -> r.Law.Contains "prior discipline")
 
@@ -554,8 +552,7 @@ let private sheetTests =
                   | None, Some(CellSum _) -> Ok(CellV(Float -1.0))
                   | _ -> withPrior s resolve prior id
 
-              let results =
-                  Conformance.propagationEvaluatorLawsWith evaluatorWitness drifting 2500 40
+              let results = Conformance.propagationPriorLawsAt evaluatorWitness drifting 2500 40
 
               let law = results |> List.find (fun r -> r.Law.Contains "prior-blind reading")
               Expect.isFalse law.Passed "the drift is caught" ]

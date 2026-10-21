@@ -29,6 +29,26 @@ module internal KitColumn =
     let create (name: string) (ty: ColumnType) (cells: Cell list) : Column =
         Vec.columnOfCells (Field.create name ty) cells
 
+/// A hand-counted law's verdict through the kit's `LawResult` constructors: green exactly when no
+/// counterexample was recorded, standing on `evidence` assertions. A recorded counterexample is an
+/// assertion that failed, so a red verdict stands on at least one. `covered` names the adequacy-guard
+/// dimension that counts the law's arm: the law then reads green at zero evidence, and the guard beside
+/// it reports the zero (the kit's own rule for a covered law).
+module internal Verdict =
+
+    let subject (family: string) (law: string) (evidence: int) (counterexample: string option) : LawResult =
+        LawResult.subject family law (if counterexample.IsSome then max 1 evidence else evidence) counterexample
+
+    let covered
+        (family: string)
+        (dimension: string)
+        (law: string)
+        (evidence: int)
+        (counterexample: string option)
+        : LawResult =
+        { subject family law evidence counterexample with
+            Kind = LawKind.Subject(Some dimension) }
+
 module DataFrameConformance =
 
     /// The dataframe-transform parity laws (Phase 29) — the teeth on a host evaluator's agreement
@@ -95,12 +115,14 @@ module DataFrameConformance =
                 if not agree && parity.IsNone then
                     parity <- Some(sprintf "seed=%d iter=%d: evaluator ≠ reference (pipeline=%A)" seed i pipeline)
 
-        [ { Law = "host evaluator is byte-identical to the DataFrame reference"
-            Passed = parity.IsNone
-            Counterexample = parity }
-          { Law = "evaluators are total (return EvalError, never throw)"
-            Passed = totality.IsNone
-            Counterexample = totality }
+        let family = "Conformance.transformLaws"
+
+        [ Verdict.subject
+              family
+              "host evaluator is byte-identical to the DataFrame reference"
+              (accepted + refused)
+              parity
+          Verdict.subject family "evaluators are total (return EvalError, never throw)" iterations totality
           // Phase 223 — `Guarded ["accepted"; "refused"]`, after the subject laws. A generator of
           // only well-formed pipelines certifies the Error/Error parity arm by nothing, and green.
           SampleAdequacy.reached "Conformance.transformLaws" "evaluated pipeline" seed [ "accepted", accepted ]
@@ -193,9 +215,11 @@ module DataFrameConformance =
                                 viaGroup
                         )
 
-        [ { Law = "Column.aggregate is byte-identical to a single-group GroupBy (single source of truth)"
-            Passed = parity.IsNone
-            Counterexample = parity }
+        [ Verdict.subject
+              "Conformance.aggregateParityLaws"
+              "Column.aggregate is byte-identical to a single-group GroupBy (single source of truth)"
+              (iterations * List.length fns)
+              parity
           // Phase 321 — a sample that drew no present decimal certifies the decimal arms of the ten
           // aggregates by nothing.
           SampleAdequacy.reached "Conformance.aggregateParityLaws" "decimal column" seed [ "decimal", decimals ] ]
@@ -341,11 +365,15 @@ module DataFrameConformance =
         let mutable inversion = None
         let mutable refusedInverse = None
         let mutable refusedStructural = 0
+        // The assertions the canApply and inversion laws stand on: an op that applied without
+        // throwing, and an inverse the algebra answered (or failed to answer) for an applied op.
+        let mutable appliedOps = 0
+        let mutable inverseChecks = 0
         let mutable verify = None
         let mutable replayLaw = None
 
-        let hashFn = OpStream.defaultHash
         let sw = ColumnOps.streamWitness
+        let stream = OpStream.canonical OpStream.defaultHash sw
 
         // The four ops an inverse can exist for — the two that never have one are skipped by the
         // coverage count below, since a law about refused ops learns nothing from them.
@@ -377,6 +405,7 @@ module DataFrameConformance =
                     if totality.IsNone then
                         totality <- Some(sprintf "seed=%d iter=%d: apply threw on %A" seed i op)
                 | Some res ->
+                    appliedOps <- appliedOps + 1
                     let chk = ColumnOps.canApply op state
 
                     let equiv =
@@ -392,6 +421,8 @@ module DataFrameConformance =
                     | Ok post ->
                         (match invertUnderTest op state with
                          | Ok inv ->
+                             inverseChecks <- inverseChecks + 1
+
                              match ColumnOps.apply inv post with
                              | Ok restored when restored = state -> ()
                              | other ->
@@ -400,6 +431,8 @@ module DataFrameConformance =
                                          Some(sprintf "seed=%d iter=%d: apply∘invert≠id on %A (got %A)" seed i op other)
                          | Error(NotInvertible _) -> ()
                          | Error e ->
+                             inverseChecks <- inverseChecks + 1
+
                              if inversion.IsNone then
                                  inversion <-
                                      Some(
@@ -411,7 +444,7 @@ module DataFrameConformance =
                                              e
                                      ))
 
-                        match OpStream.append hashFn sw (Human "conf") op state recs with
+                        match OpStream.append stream (Human "conf") op state recs with
                         | Ok(s', recs') ->
                             state <- s'
                             recs <- recs'
@@ -440,7 +473,7 @@ module DataFrameConformance =
                                         )
                             | Error _ -> ()
 
-            if not (OpStream.verifyChain hashFn sw recs) && verify.IsNone then
+            if not (OpStream.verifyChain stream recs) && verify.IsNone then
                 verify <- Some(sprintf "seed=%d iter=%d: verifyChain rejected an intact table-edit stream" seed i)
 
             match OpStream.replay sw baseTable recs with
@@ -449,24 +482,21 @@ module DataFrameConformance =
                 if replayLaw.IsNone then
                     replayLaw <- Some(sprintf "seed=%d iter=%d: replay ≠ live state (got %A)" seed i other)
 
-        [ { Law = "columnar apply totality (never throws)"
-            Passed = totality.IsNone
-            Counterexample = totality }
-          { Law = "columnar canApply ≡ apply (accept/reject + rejection)"
-            Passed = equivalence.IsNone
-            Counterexample = equivalence }
-          { Law = "columnar apply ∘ invert = identity (where invert is defined)"
-            Passed = inversion.IsNone
-            Counterexample = inversion }
-          { Law = "columnar inverse exists only for an applicable op"
-            Passed = refusedInverse.IsNone
-            Counterexample = refusedInverse }
-          { Law = "verifyChain accepts an intact table-edit stream (over the columnar StreamWitness)"
-            Passed = verify.IsNone
-            Counterexample = verify }
-          { Law = "replay re-derives the live table from the base"
-            Passed = replayLaw.IsNone
-            Counterexample = replayLaw }
+        [ Verdict.subject family "columnar apply totality (never throws)" (iterations * 7) totality
+          Verdict.subject family "columnar canApply ≡ apply (accept/reject + rejection)" appliedOps equivalence
+          Verdict.subject family "columnar apply ∘ invert = identity (where invert is defined)" inverseChecks inversion
+          Verdict.covered
+              family
+              "invert's refusal population"
+              "columnar inverse exists only for an applicable op"
+              refusedStructural
+              refusedInverse
+          Verdict.subject
+              family
+              "verifyChain accepts an intact table-edit stream (over the columnar StreamWitness)"
+              iterations
+              verify
+          Verdict.subject family "replay re-derives the live table from the base" iterations replayLaw
           // The law above is about REFUSED ops, so a run that refused no invertible op certifies
           // nothing by it — and would report a hollow green. Phase 121's guard says so instead.
           SampleAdequacy.reached
@@ -568,6 +598,10 @@ module DataFrameConformance =
         let mutable rng = ConfRng.ofSeed seed
         let mutable changeDriven = None
         let mutable opDriven = None
+        // The comparisons each law stands on: an iteration whose prior evaluated (and, for the
+        // op-driven law, whose edit applied).
+        let mutable changeCompared = 0
+        let mutable opCompared = 0
 
         let col name cells : Column = KitColumn.create name IntType cells
 
@@ -644,6 +678,7 @@ module DataFrameConformance =
 
             (match DataFrame.evalPipeline pipeline oldSrc with
              | Ok prior ->
+                 changeCompared <- changeCompared + 1
                  let viaIncr = DataFrame.evalFrom prior change pipeline newSrc
                  let viaFull = DataFrame.evalPipeline pipeline newSrc
 
@@ -659,6 +694,7 @@ module DataFrameConformance =
              | Ok newSrc2 ->
                  match DataFrame.evalPipeline pipeline oldSrc with
                  | Ok prior ->
+                     opCompared <- opCompared + 1
                      let viaIncr = DataFrame.evalFrom prior (ColumnOps.changeOf editOp) pipeline newSrc2
                      let viaFull = DataFrame.evalPipeline pipeline newSrc2
 
@@ -668,12 +704,18 @@ module DataFrameConformance =
                  | Error _ -> ()
              | Error _ -> ())
 
-        [ { Law = "evalFrom is byte-identical to a full evalPipeline over the changed source (every change)"
-            Passed = changeDriven.IsNone
-            Counterexample = changeDriven }
-          { Law = "a columnar op's changeOf drives evalFrom equivalently (edit-stream incremental re-eval)"
-            Passed = opDriven.IsNone
-            Counterexample = opDriven } ]
+        let family = "Conformance.incrementalLaws"
+
+        [ Verdict.subject
+              family
+              "evalFrom is byte-identical to a full evalPipeline over the changed source (every change)"
+              changeCompared
+              changeDriven
+          Verdict.subject
+              family
+              "a columnar op's changeOf drives evalFrom equivalently (edit-stream incremental re-eval)"
+              opCompared
+              opDriven ]
 
     /// The incremental-equivalence law at a DOMAIN'S pipelines and tables (Phase 246).
     /// `incrementalLaws` beside it draws the kit's own `(a, b, c)` tables and six fixed pipelines;
@@ -700,6 +742,7 @@ module DataFrameConformance =
         let mutable rng = ConfRng.ofSeed seed
         let mutable equivalence = None
         let mutable valueEdits = 0
+        let mutable compared = 0
 
         for i in 0 .. iterations - 1 do
             let mutable state = gen.State0
@@ -715,6 +758,7 @@ module DataFrameConformance =
 
                     (match DataFrame.evalPipeline pipeline state with
                      | Ok prior ->
+                         compared <- compared + 1
                          let change = ColumnOps.changeOf op
 
                          (match change with
@@ -740,9 +784,12 @@ module DataFrameConformance =
                 | Ok after, [] -> state <- after
                 | Error _, _ -> ()
 
-        [ { Law = "at the domain's pipelines, evalFrom over an edit's changeOf is byte-identical to a full evalPipeline"
-            Passed = equivalence.IsNone
-            Counterexample = equivalence }
+        [ Verdict.covered
+              "Conformance.incrementalLawsWith"
+              "value edit"
+              "at the domain's pipelines, evalFrom over an edit's changeOf is byte-identical to a full evalPipeline"
+              compared
+              equivalence
           SampleAdequacy.reached "Conformance.incrementalLawsWith" "value edit" seed [ "value edit", valueEdits ] ]
 
     /// The `ColExpr.Param` + evaluation-environment laws (Phase 77) — the teeth on the parameterised
@@ -901,18 +948,16 @@ module DataFrameConformance =
                                  (ColumnCodec.errorString e)
                          ))
 
-        [ { Law = "evalPipelineInEnv env ≡ evalPipeline (substitute Lit) for every binding in env"
-            Passed = substEquiv.IsNone
-            Counterexample = substEquiv }
-          { Law = "an unbound param is UnboundParam(name, bound) — names the param, enumerates the bound set"
-            Passed = unboundDefect.IsNone
-            Counterexample = unboundDefect }
-          { Law = "Transform.paramsOf is total + complete (evaluation consults no param outside it)"
-            Passed = completeness.IsNone
-            Counterexample = completeness }
-          { Law = "a pipeline carrying Param steps round-trips the codec byte-stably"
-            Passed = roundTrip.IsNone
-            Counterexample = roundTrip }
+        // Every iteration builds at least one param, so each law is asserted once per iteration.
+        let law = Verdict.subject "Conformance.paramLaws"
+
+        [ law "evalPipelineInEnv env ≡ evalPipeline (substitute Lit) for every binding in env" iterations substEquiv
+          law
+              "an unbound param is UnboundParam(name, bound) — names the param, enumerates the bound set"
+              iterations
+              unboundDefect
+          law "Transform.paramsOf is total + complete (evaluation consults no param outside it)" iterations completeness
+          law "a pipeline carrying Param steps round-trips the codec byte-stably" iterations roundTrip
           SampleAdequacy.reached "Conformance.paramLaws" "decimal param" seed [ "decimal param", decimalParams ] ]
 
     // ---- Static output-schema derivation (Phase 112) ----
@@ -1248,37 +1293,35 @@ module DataFrameConformance =
                     if badType.IsSome && typesAgree.IsNone then
                         typesAgree <- Some(sprintf "%s (open, at %A)" (describe ()) badType)
 
-        [ { Law = "a Closed derivation names exactly the columns evalPipeline produces, in order"
-            Passed = closedExact.IsNone
-            Counterexample = closedExact }
-          { Law = "an AtLeast derivation names only columns evalPipeline produces (never claims one)"
-            Passed = openSound.IsNone
-            Counterexample = openSound }
-          { Law = "a derived column's DECLARED type is the type evalPipeline gave that column"
-            Passed = typesAgree.IsNone
-            Counterexample = typesAgree }
-          { Law =
+        // The accepted evaluations: each one asserts the type and metadata laws, and exactly one of
+        // the two derivation laws, by the walk's verdict.
+        let accepted = closedSeen + openSeen
+        let law = Verdict.subject "Conformance.schemaWalkLaws"
+
+        [ law "a Closed derivation names exactly the columns evalPipeline produces, in order" closedSeen closedExact
+          law "an AtLeast derivation names only columns evalPipeline produces (never claims one)" openSeen openSound
+          law "a derived column's DECLARED type is the type evalPipeline gave that column" accepted typesAgree
+          law
               "a combining join adds no repeated name: its right columns' output names are distinct from each other and from every left name, and the walk names them as the evaluator does"
-            Passed = joinNamesUnique.IsNone
-            Counterexample = joinNamesUnique }
-          { Law =
+              iterations
+              joinNamesUnique
+          law
               "a walked column's unit, label and description are the ones evalPipeline gave that column, over a sample whose outputs carry units"
-            Passed = metadataAgree.IsNone && unitOutputs > 0
-            Counterexample =
-              match metadataAgree with
-              | Some c -> Some c
-              | None ->
-                  if unitOutputs > 0 then
-                      None
-                  else
-                      Some(sprintf "seed=%d: no accepted output carried a unit" seed) }
-          { Law = "the generated sample reached both verdicts (the parity claim is not vacuous)"
-            Passed = closedSeen > 0 && openSeen > 0
-            Counterexample =
-              if closedSeen > 0 && openSeen > 0 then
-                  None
-              else
-                  Some(sprintf "seed=%d: closed=%d open=%d over %d iterations" seed closedSeen openSeen iterations) }
+              accepted
+              (match metadataAgree with
+               | Some c -> Some c
+               | None ->
+                   if unitOutputs > 0 then
+                       None
+                   else
+                       Some(sprintf "seed=%d: no accepted output carried a unit" seed))
+          law
+              "the generated sample reached both verdicts (the parity claim is not vacuous)"
+              accepted
+              (if closedSeen > 0 && openSeen > 0 then
+                   None
+               else
+                   Some(sprintf "seed=%d: closed=%d open=%d over %d iterations" seed closedSeen openSeen iterations))
           SampleAdequacy.reached "Conformance.schemaWalkLaws" "decimal step" seed [ "decimal step", decimalSteps ] ]
 
     /// **`Now` at a pinned clock is deterministic** (Phase 125) — the law that makes a
@@ -1463,21 +1506,22 @@ module DataFrameConformance =
                             i
                     )
 
-        [ { Law = "Now at a pinned ClockWitness is deterministic: the same pipeline twice gives the same table"
-            Passed = deterministic.IsNone
-            Counterexample = deterministic }
-          { Law = "a pinned Now evaluates to exactly the cell the witness returned for its grain"
-            Passed = isWitnessReading.IsNone
-            Counterexample = isWitnessReading }
-          { Law = "the witness is read at most ONCE PER GRAIN per pinning, so two Now nodes agree"
-            Passed = oneReading.IsNone
-            Counterexample = oneReading }
-          { Law = "an unpinned Now is EvalError.UnpinnedClock naming its grain, never a silent reading"
-            Passed = unpinned.IsNone
-            Counterexample = unpinned }
-          { Law = "pinning a clock does not change a pipeline that names no Now"
-            Passed = clockFreeUnchanged.IsNone
-            Counterexample = clockFreeUnchanged } ]
+        let law = Verdict.subject "Conformance.nowLaws"
+
+        [ law
+              "Now at a pinned ClockWitness is deterministic: the same pipeline twice gives the same table"
+              iterations
+              deterministic
+          law
+              "a pinned Now evaluates to exactly the cell the witness returned for its grain"
+              iterations
+              isWitnessReading
+          law "the witness is read at most ONCE PER GRAIN per pinning, so two Now nodes agree" iterations oneReading
+          law
+              "an unpinned Now is EvalError.UnpinnedClock naming its grain, never a silent reading"
+              (iterations * 2)
+              unpinned
+          law "pinning a clock does not change a pipeline that names no Now" iterations clockFreeUnchanged ]
 
     /// **A scalar slot's parameter resolves exactly as an expression parameter does** (Phase 125) —
     /// the law that makes `Slot<'T>` a widening of the param seam rather than a second one beside it.
@@ -1636,24 +1680,14 @@ module DataFrameConformance =
                             litWire
                     )
 
-        [ { Law = "a bound slot param evaluates byte-identically to the literal it stands for"
-            Passed = asLiteral.IsNone
-            Counterexample = asLiteral }
-          { Law = "slot params: evalPipelineInEnv ≡ evalPipeline ∘ Transform.substitute"
-            Passed = substEquiv.IsNone
-            Counterexample = substEquiv }
-          { Law = "Transform.paramsOf names every slot param alongside the expression params"
-            Passed = census.IsNone
-            Counterexample = census }
-          { Law = "an unbound slot param is EvalError.UnboundParam naming it, never a default"
-            Passed = unbound.IsNone
-            Counterexample = unbound }
-          { Law = "a slot param bound to the wrong cell shape is a TypeError NAMING the slot"
-            Passed = mistyped.IsNone
-            Counterexample = mistyped }
-          { Law = "a literal slot encodes as the bare value it did before slots existed"
-            Passed = literalOnly.IsNone
-            Counterexample = literalOnly } ]
+        let law = Verdict.subject "Conformance.slotParamLaws"
+
+        [ law "a bound slot param evaluates byte-identically to the literal it stands for" iterations asLiteral
+          law "slot params: evalPipelineInEnv ≡ evalPipeline ∘ Transform.substitute" iterations substEquiv
+          law "Transform.paramsOf names every slot param alongside the expression params" iterations census
+          law "an unbound slot param is EvalError.UnboundParam naming it, never a default" iterations unbound
+          law "a slot param bound to the wrong cell shape is a TypeError NAMING the slot" iterations mistyped
+          law "a literal slot encodes as the bare value it did before slots existed" iterations literalOnly ]
 
     // ---- planner parity (Phase 269) ----
     // The teeth on `Plan.rewrite` and the fused `Sort` > `Limit` kernel: the planned evaluation —
@@ -1696,6 +1730,12 @@ module DataFrameConformance =
         // whose schema carried a unit.
         let mutable metadata = None
         let mutable unitOutputs = 0
+        // The assertions the subject laws stand on: a pipeline the planner explained, one both
+        // evaluators answered (and, of those, one both accepted), and a step `isTotal` admitted.
+        let mutable explained = 0
+        let mutable compared = 0
+        let mutable bothAccepted = 0
+        let mutable admittedSteps = 0
 
         let unitOf (text: string) : UnitOfMeasure =
             match Unit.parse text with
@@ -1874,6 +1914,8 @@ module DataFrameConformance =
                 if totality.IsNone then
                     totality <- Some(sprintf "seed=%d iter=%d: the planner threw: %s" seed i m)
             | Ok report ->
+                explained <- explained + 1
+
                 for a in report.Applied do
                     match a.Class with
                     | RewriteClass.TopN -> fusion <- fusion + 1
@@ -1896,6 +1938,8 @@ module DataFrameConformance =
                     if totality.IsNone then
                         totality <- Some(sprintf "seed=%d iter=%d: an evaluator threw: %s" seed i m)
                 | Ok planned, Ok written ->
+                    compared <- compared + 1
+
                     (match written with
                      | Error _ -> refused <- refused + 1
                      | Ok _ -> ())
@@ -1909,6 +1953,8 @@ module DataFrameConformance =
                     // Phase 429: the planned schema IS the reference's — fields, metadata included.
                     (match planned, written with
                      | Ok a, Ok b ->
+                         bothAccepted <- bothAccepted + 1
+
                          if a.Schema |> List.exists (fun f -> f.Unit.IsSome) then
                              unitOutputs <- unitOutputs + 1
 
@@ -1945,6 +1991,8 @@ module DataFrameConformance =
                             (match DataFrame.evalPipelineAsWritten prefix table with
                              | Ok at ->
                                  if Plan.isTotal at.Schema step then
+                                     admittedSteps <- admittedSteps + 1
+
                                      match DataFrame.evalPipelineAsWritten [ step ] at with
                                      | Ok _ -> ()
                                      | Error e ->
@@ -1964,29 +2012,22 @@ module DataFrameConformance =
 
                     walk [] pipeline
 
-        [ { Law = "the planned evaluation equals the reference as written, errors included"
-            Passed = parity.IsNone
-            Counterexample = parity }
-          { Law = "Plan.rewrite is idempotent"
-            Passed = projection.IsNone
-            Counterexample = projection }
-          { Law = "a step Plan.isTotal admits never answers Error over the drawn table"
-            Passed = verdict.IsNone
-            Counterexample = verdict }
-          { Law = "the planner and both evaluators are total (never throw)"
-            Passed = totality.IsNone
-            Counterexample = totality }
-          { Law =
+        let law = Verdict.subject "Conformance.plannerLaws"
+
+        [ law "the planned evaluation equals the reference as written, errors included" compared parity
+          law "Plan.rewrite is idempotent" explained projection
+          law "a step Plan.isTotal admits never answers Error over the drawn table" admittedSteps verdict
+          law "the planner and both evaluators are total (never throw)" iterations totality
+          law
               "the planned evaluation's schema is the reference's, unit, label and description included, over a sample whose outputs carry units"
-            Passed = metadata.IsNone && unitOutputs > 0
-            Counterexample =
-              match metadata with
-              | Some c -> Some c
-              | None ->
-                  if unitOutputs > 0 then
-                      None
-                  else
-                      Some(sprintf "seed=%d: no planned output carried a unit" seed) }
+              bothAccepted
+              (match metadata with
+               | Some c -> Some c
+               | None ->
+                   if unitOutputs > 0 then
+                       None
+                   else
+                       Some(sprintf "seed=%d: no planned output carried a unit" seed))
           SampleAdequacy.reached "Conformance.plannerLaws" "fusion" seed [ "fusion", fusion ]
           SampleAdequacy.reached "Conformance.plannerLaws" "pruning" seed [ "pruning", pruning ]
           SampleAdequacy.reached "Conformance.plannerLaws" "reorder" seed [ "reorder", reorder ]

@@ -1210,7 +1210,7 @@ module DataFrame =
     let cellString (c: Cell) : string =
         match c with
         | Int i -> string i
-        | Float f -> Canon.canonicalFloat f
+        | Float f -> FloatLayout.canonical f
         | Bool b -> if b then "true" else "false"
         | Str s -> s
         | Date s -> s
@@ -1242,7 +1242,7 @@ module DataFrame =
             + (if System.Double.IsNaN f then "NaN"
                elif System.Double.IsPositiveInfinity f then "Inf"
                elif System.Double.IsNegativeInfinity f then "-Inf"
-               else Canon.canonicalFloat f) // canonical layout collapses -0.0 → "0"
+               else FloatLayout.canonical f) // canonical layout collapses -0.0 → "0"
         | Bool b -> "b:" + (if b then "1" else "0")
         | Str s -> "s:" + s
         | Date s -> "d:" + s
@@ -1852,7 +1852,12 @@ module DataFrame =
                     if System.Double.IsNaN f || System.Double.IsInfinity f then
                         Error(TypeError "cannot cast a non-finite float to int")
                     elif f < float System.Int32.MinValue || f > float System.Int32.MaxValue then
-                        Error(OverflowError("float→int cast out of int32 range: " + Canon.render (JFloat f)))
+                        Error(
+                            OverflowError(
+                                "float→int cast out of int32 range: "
+                                + Canonical.write Rendering.CrossHost (JFloat f)
+                            )
+                        )
                     else
                         Ok(Int(int f))
                 // Phase 277: truncated toward zero, as a float is; outside int32 a named overflow.
@@ -10162,6 +10167,27 @@ module SchemaWalk =
     let ofPipeline (schema: Schema) (pipeline: Transform list) : SchemaKnowledge =
         ofPipelineFrom noSources (ofSchema schema) pipeline
 
+/// Reading a wire text into the JSON model with a refusal in the codecs' `ColumnError` envelope —
+/// the one read every decoder in this assembly starts from. It reads under `ReadOptions.strict` and
+/// projects the refusal exactly as the substrate's column codec does: malformed text is `NotJson`
+/// carrying the parser's classified error, and the depth cap, the one breach a strict read meets,
+/// keeps its `NotJson` spelling (`MaxDepthExceeded` at the container's position), so no refusal a
+/// caller reads moved when the substrate's reader began reporting the cap as a breach.
+module internal WireText =
+
+    let read (text: string) : Result<JVal, ColumnError> =
+        match Json.read ReadOptions.strict text with
+        | Ok v -> Ok v
+        | Error(JsonRefusal.Malformed e) -> Error(NotJson e)
+        | Error(JsonRefusal.LimitExceeded b) when b.Limit = JsonLimit.Depth ->
+            Error(
+                NotJson
+                    { Kind = MaxDepthExceeded
+                      Position = b.Position
+                      Message = "max nesting depth " + string b.Declared + " exceeded" }
+            )
+        | Error r -> Error(MalformedShape (DecodeError.ofJsonRefusal r).Message)
+
 /// The canonical wire codec for the `Transform` + `ColExpr` trees — `"kind"`-tagged objects (the
 /// `Fuaran.Core` envelope discipline), reusing `ColumnCodec` for embedded `DataSource` operands and
 /// the `Wire` canonical-float rules for literals. Decode is `Result`-typed with the same six-code
@@ -10336,16 +10362,16 @@ module DataFrameCodec =
 
     let private cellToJson (c: Cell) : JVal =
         match c with
-        | Null -> Canon.typed "Null" []
-        | Int i -> Canon.typed "Int" [ "value", JInt i ]
-        | Float f -> Canon.typed "Float" [ "value", JFloat f ]
-        | Bool b -> Canon.typed "Bool" [ "value", JBool b ]
-        | Str s -> Canon.typed "Str" [ "value", JStr s ]
-        | Date s -> Canon.typed "Date" [ "value", JStr s ]
-        | Timestamp s -> Canon.typed "Timestamp" [ "value", JStr s ]
+        | Null -> Canonical.typed "Null" []
+        | Int i -> Canonical.typed "Int" [ "value", JInt i ]
+        | Float f -> Canonical.typed "Float" [ "value", JFloat f ]
+        | Bool b -> Canonical.typed "Bool" [ "value", JBool b ]
+        | Str s -> Canonical.typed "Str" [ "value", JStr s ]
+        | Date s -> Canonical.typed "Date" [ "value", JStr s ]
+        | Timestamp s -> Canonical.typed "Timestamp" [ "value", JStr s ]
         // Phase 277: the canonical decimal TEXT, a JSON string, as the column codec carries it
         // (Core `DECISIONS.md` D72 K5) — a number token would have been through a float.
-        | Decimal s -> Canon.typed "Decimal" [ "value", JStr s ]
+        | Decimal s -> Canonical.typed "Decimal" [ "value", JStr s ]
 
     /// The refusal of a literal whose `value` is not of its `$type`: a `TypeMismatch` naming the
     /// column type the tag denotes (Core `1.0.0` types the expected side), or, for a tag outside
@@ -10456,15 +10482,15 @@ module DataFrameCodec =
 
     let rec encodeExpr (e: ColExpr) : JVal =
         match e with
-        | Col name -> Canon.typed "col" [ "name", JStr name ]
-        | Lit c -> Canon.typed "lit" [ "cell", cellToJson c ]
-        | Param name -> Canon.typed "param" [ "name", JStr name ]
+        | Col name -> Canonical.typed "col" [ "name", JStr name ]
+        | Lit c -> Canonical.typed "lit" [ "cell", cellToJson c ]
+        | Param name -> Canonical.typed "param" [ "name", JStr name ]
         | Binary(op, a, b) ->
-            Canon.typed "binary" [ "op", JStr(binTag op); "left", encodeExpr a; "right", encodeExpr b ]
-        | Not inner -> Canon.typed "not" [ "expr", encodeExpr inner ]
-        | Coalesce exprs -> Canon.typed "coalesce" [ "exprs", JArr(exprs |> List.map encodeExpr) ]
+            Canonical.typed "binary" [ "op", JStr(binTag op); "left", encodeExpr a; "right", encodeExpr b ]
+        | Not inner -> Canonical.typed "not" [ "expr", encodeExpr inner ]
+        | Coalesce exprs -> Canonical.typed "coalesce" [ "exprs", JArr(exprs |> List.map encodeExpr) ]
         | Case(cases, elseExpr) ->
-            Canon.typed
+            Canonical.typed
                 "case"
                 [ "cases",
                   JArr(
@@ -10472,22 +10498,22 @@ module DataFrameCodec =
                       |> List.map (fun (w, t) -> JObj [ "when", encodeExpr w; "then", encodeExpr t ])
                   )
                   "else", encodeExpr elseExpr ]
-        | Cast(ty, inner) -> Canon.typed "cast" [ "type", JStr(ColumnType.tag ty); "expr", encodeExpr inner ]
+        | Cast(ty, inner) -> Canonical.typed "cast" [ "type", JStr(ColumnType.tag ty); "expr", encodeExpr inner ]
         | ApplyFn(fn, args) ->
-            Canon.typed "apply" [ "fn", JStr(scalarTag fn); "args", JArr(args |> List.map encodeExpr) ]
+            Canonical.typed "apply" [ "fn", JStr(scalarTag fn); "args", JArr(args |> List.map encodeExpr) ]
         | InList(subject, items) ->
-            Canon.typed "in" [ "expr", encodeExpr subject; "items", JArr(items |> List.map encodeExpr) ]
-        | InParam(subject, name) -> Canon.typed "in" [ "expr", encodeExpr subject; "param", JStr name ]
-        | IsNull inner -> Canon.typed "isNull" [ "expr", encodeExpr inner ]
-        | Now grain -> Canon.typed "now" [ "grain", JStr(NowGrain.tag grain) ]
+            Canonical.typed "in" [ "expr", encodeExpr subject; "items", JArr(items |> List.map encodeExpr) ]
+        | InParam(subject, name) -> Canonical.typed "in" [ "expr", encodeExpr subject; "param", JStr name ]
+        | IsNull inner -> Canonical.typed "isNull" [ "expr", encodeExpr inner ]
+        | Now grain -> Canonical.typed "now" [ "grain", JStr(NowGrain.tag grain) ]
         | Quotient(a, b, r) ->
-            Canon.typed
+            Canonical.typed
                 "quotient"
                 [ "dividend", encodeExpr a
                   "divisor", encodeExpr b
                   "rounding", roundingJson r ]
-        | Rounded(x, r) -> Canon.typed "rounded" [ "expr", encodeExpr x; "rounding", roundingJson r ]
-        | Convert(x, u) -> Canon.typed "convert" [ "expr", encodeExpr x; "unit", JStr(Unit.render u) ]
+        | Rounded(x, r) -> Canonical.typed "rounded" [ "expr", encodeExpr x; "rounding", roundingJson r ]
+        | Convert(x, u) -> Canonical.typed "convert" [ "expr", encodeExpr x; "unit", JStr(Unit.render u) ]
 
     let private field k el =
         match el with
@@ -10898,15 +10924,16 @@ module DataFrameCodec =
 
     let encodeTransform (t: Transform) : JVal =
         match t with
-        | Filter pred -> Canon.typed "filter" [ "pred", encodeExpr pred ]
+        | Filter pred -> Canonical.typed "filter" [ "pred", encodeExpr pred ]
         // `0.28.0` (D48) — the member is `columns`, not `cols`: it holds the LIST of column renames,
         // and `cols` is the wire format's name for an integer column COUNT. `cols` remains a decode alias
         // and is never emitted.
-        | Project pairs -> Canon.typed "project" [ "columns", JArr(pairs |> List.map pairJson) ]
-        | Derive(name, expr) -> Canon.typed "derive" [ "name", JStr name; "expr", encodeExpr expr ]
-        | GroupBy(keys, aggs) -> Canon.typed "groupBy" [ "keys", strList keys; "aggs", JArr(aggs |> List.map aggJson) ]
+        | Project pairs -> Canonical.typed "project" [ "columns", JArr(pairs |> List.map pairJson) ]
+        | Derive(name, expr) -> Canonical.typed "derive" [ "name", JStr name; "expr", encodeExpr expr ]
+        | GroupBy(keys, aggs) ->
+            Canonical.typed "groupBy" [ "keys", strList keys; "aggs", JArr(aggs |> List.map aggJson) ]
         | Join(src, on, how) ->
-            Canon.typed
+            Canonical.typed
                 "join"
                 [ "source", ColumnCodec.encodeJson src
                   "on", JArr(on |> List.map pairJson)
@@ -10919,29 +10946,29 @@ module DataFrameCodec =
                   "of", JStr spec.Of
                   "as", JStr spec.As ]
 
-            Canon.typed
+            Canonical.typed
                 "window"
                 // Phase 101 — the bucket count is emitted ONLY for `ntile`, so every pre-existing
-                // window step's wire is byte-unchanged. `Canon.render` sorts keys, so position
+                // window step's wire is byte-unchanged. `Canonical.write Rendering.CrossHost` sorts keys, so position
                 // does not matter.
                 (match spec.Fn with
                  | NTile buckets -> fields @ [ "n", JInt buckets ]
                  | _ -> fields)
         | Pivot spec ->
-            Canon.typed
+            Canonical.typed
                 "pivot"
                 [ "index", strList spec.Index
                   "on", JStr spec.On
                   "values", JStr spec.Values
                   "agg", JStr(aggFnTag spec.Agg) ]
         | Unpivot(idVars, valueVars) ->
-            Canon.typed "unpivot" [ "idVars", strList idVars; "valueVars", strList valueVars ]
-        | Sort by -> Canon.typed "sort" [ "by", JArr(by |> List.map sortKeyJson) ]
-        | Distinct -> Canon.typed "distinct" []
-        | Limit(n, offset) -> Canon.typed "limit" [ "n", slotJson JInt n; "offset", slotJson JInt offset ]
-        | Union src -> Canon.typed "union" [ "source", ColumnCodec.encodeJson src ]
-        | Intersect src -> Canon.typed "intersect" [ "source", ColumnCodec.encodeJson src ]
-        | Except src -> Canon.typed "except" [ "source", ColumnCodec.encodeJson src ]
+            Canonical.typed "unpivot" [ "idVars", strList idVars; "valueVars", strList valueVars ]
+        | Sort by -> Canonical.typed "sort" [ "by", JArr(by |> List.map sortKeyJson) ]
+        | Distinct -> Canonical.typed "distinct" []
+        | Limit(n, offset) -> Canonical.typed "limit" [ "n", slotJson JInt n; "offset", slotJson JInt offset ]
+        | Union src -> Canonical.typed "union" [ "source", ColumnCodec.encodeJson src ]
+        | Intersect src -> Canonical.typed "intersect" [ "source", ColumnCodec.encodeJson src ]
+        | Except src -> Canonical.typed "except" [ "source", ColumnCodec.encodeJson src ]
 
     let decodeTransform (el: JVal) : Result<Transform, ColumnError> =
         // Phase 88 DIDACTIC — a step without `$type` names the op roster (the
@@ -11222,13 +11249,13 @@ module DataFrameCodec =
 
     /// Encode a pipeline (ordered `Transform list`) to a canonical wire string.
     let encodePipeline (pipeline: Transform list) : string =
-        Canon.render (JArr(pipeline |> List.map encodeTransform))
+        Canonical.write Rendering.CrossHost (JArr(pipeline |> List.map encodeTransform))
 
     /// Decode a pipeline from a wire string (six-code `ColumnError` envelope; `NotJson` on a
     /// syntax error).
     let decodePipeline (s: string) : Result<Transform list, ColumnError> =
-        match Json.parseDetailed s with
-        | Error m -> Error(NotJson m)
+        match WireText.read s with
+        | Error m -> Error m
         | Ok(JArr xs) -> mapM decodeTransform xs
         | Ok _ -> Error(MalformedShape "pipeline: expected a JSON array of transform steps")
 
@@ -11337,10 +11364,12 @@ module internal MorselHandOff =
     // shared memory is copied into it once, at plan; elsewhere every array is carried as it is.
 
     let private encodeEnv (env: Map<string, Cell>) : string =
-        Canon.render (JObj [ for KeyValue(name, c) in env -> name, DataFrameCodec.encodeExpr (Lit c) ])
+        Canonical.write
+            Rendering.CrossHost
+            (JObj [ for KeyValue(name, c) in env -> name, DataFrameCodec.encodeExpr (Lit c) ])
 
     let private decodeEnv (s: string) : Map<string, Cell> option =
-        match Json.parseDetailed s with
+        match WireText.read s with
         | Ok(JObj fields) ->
             let cells =
                 fields
@@ -11362,10 +11391,10 @@ module internal MorselHandOff =
 
     /// The schema as its field documents, canonically rendered (Phase 429).
     let private encodeFields (cols: Schema) : string =
-        Canon.render (JArr(cols |> List.map ColumnCodec.fieldJson))
+        Canonical.write Rendering.CrossHost (JArr(cols |> List.map ColumnCodec.fieldJson))
 
     let private decodeFields (s: string) : Schema option =
-        match Json.parseDetailed s with
+        match WireText.read s with
         | Ok(JArr items) ->
             let fields =
                 items

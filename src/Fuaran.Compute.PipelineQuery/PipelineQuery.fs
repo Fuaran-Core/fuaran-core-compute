@@ -562,15 +562,18 @@ module PipelineQueryCodec =
     let private schemaJson (s: Schema) : JVal =
         JArr(s |> List.map ColumnCodec.fieldJson)
 
-    // The string-error readers this codec is written against, over Core `1.0.0`'s `…With` forms
-    // (the bare `getProp` / `strField` / `mapList` helpers left on that slot).
-    let private getProp (name: string) (el: JVal) : Result<JVal, string> = Decode.propWith Decode.describe name el
+    // The string-error readers this codec is written against: the substrate's `Decoder` combinators, their
+    // refusal in its one sentence per code (`missing property: <name>`, `expected <kind>, got <kind>`).
+    let private getProp (name: string) (el: JVal) : Result<JVal, string> =
+        Decoder.field name Decoder.json el |> Result.mapError DecodeError.describe
 
     let private strField (name: string) (el: JVal) : Result<string, string> =
-        getProp name el |> Result.bind (Decode.stringWith Decode.describe)
+        getProp name el
+        |> Result.bind (Decoder.str >> Result.mapError DecodeError.describe)
 
     let private mapList (f: JVal -> Result<'a, string>) (el: JVal) : Result<'a list, string> =
-        Decode.arrayWith Decode.describe el
+        Decoder.items el
+        |> Result.mapError DecodeError.describe
         |> Result.bind (fun items ->
             let rec go acc =
                 function
@@ -587,7 +590,7 @@ module PipelineQueryCodec =
         let query =
             // The substrate's codec renders the declaration canonically; reading its own output back
             // cannot fail, and doing so is what keeps one encoding of a `Query` rather than two.
-            match Decode.parse (QueryCodec.encode pq.Query) with
+            match Json.parse (QueryCodec.encode pq.Query) with
             | Ok j -> j
             | Error m -> failwith ("QueryCodec.encode produced unparseable JSON: " + m)
 
@@ -602,7 +605,8 @@ module PipelineQueryCodec =
                   |> List.map (fun (name, schema) -> JObj [ "name", JStr name; "schema", schemaJson schema ])
               ) ]
 
-    let encode (pq: PipelineQuery) : string = Canon.render (encodeJson pq)
+    let encode (pq: PipelineQuery) : string =
+        Canonical.write Rendering.CrossHost (encodeJson pq)
 
     /// A pair from its JSON value: the `"$type"` must be `pipelineQuery`, and a source named twice is
     /// refused rather than resolved by order.
@@ -616,7 +620,7 @@ module PipelineQueryCodec =
         let query () =
             getProp "query" el
             |> Result.bind (fun j ->
-                QueryCodec.decode (Canon.render j)
+                QueryCodec.decode (Canonical.write Rendering.CrossHost j)
                 // The substrate's codec answers its decode refusal as text (Core 0.34.0, Phase 295).
                 |> Result.mapError (fun e -> "query: " + e))
 
@@ -644,5 +648,4 @@ module PipelineQueryCodec =
             pipeline ()
             |> Result.bind (fun p -> sources () |> Result.map (fun s -> { Query = q; Pipeline = p; Sources = s })))
 
-    let decode (s: string) : Result<PipelineQuery, string> =
-        Decode.parse s |> Result.bind decodeJson
+    let decode (s: string) : Result<PipelineQuery, string> = Json.parse s |> Result.bind decodeJson

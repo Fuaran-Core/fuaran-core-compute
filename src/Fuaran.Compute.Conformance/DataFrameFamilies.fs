@@ -169,53 +169,51 @@ module DataFrameFamilies =
 
     /// The families this package ships, in declaration order. Renderings sort by `Id`.
     let families: LawFamily list =
-        let f m entry witness reason discharges =
+        let f m entry takes election discharges =
             let id = m + "." + entry
 
             { Id = id
-              Module = m
-              Entry = entry
-              Witness = witness
-              OptIn = Option.isSome reason
-              Reason = reason
-              Discharges = discharges
+              Takes = takes
+              Election = election
               Adequacy = adequacyOf id
-              Refusal = refusalOf id }
+              Refusal = refusalOf id
+              Discharges = discharges
+              Operations = []
+              Spellings = [] }
 
-        let c entry witness reason discharges =
-            f "Conformance" entry witness reason discharges
+        let c entry takes election discharges =
+            f "Conformance" entry takes election discharges
 
-        let none: string list = []
+        let none: Takes list = []
+        let optIn = OptIn SeamNotEveryDomainHas
 
         [ // Phase 281 — the registered pipeline query, in its own module.
-          f "PipelineQueryConformance" "laws" none (Some SeamNotEveryDomainHas) []
+          f "PipelineQueryConformance" "laws" none optIn []
           // Phase 338 — the derived-column typing rule, in its own module.
-          f "DeriveTypingConformance" "laws" none (Some SeamNotEveryDomainHas) []
-          c "transformLaws" none (Some SeamNotEveryDomainHas) []
+          f "DeriveTypingConformance" "laws" none optIn []
+          c "transformLaws" none optIn []
           // Phase 257 — the `GroupBy` half. The `Column.aggregate` null-skip half stays in the kit
           // as `Conformance.aggregateNullSkipLaws`.
-          c "aggregateParityLaws" none (Some SeamNotEveryDomainHas) []
-          c "columnarOpLaws" none (Some SeamNotEveryDomainHas) []
+          c "aggregateParityLaws" none optIn []
+          c "columnarOpLaws" none optIn []
           // Phase 246 — the columnar pair at a domain's `StreamGen<ColumnOp, Table>`. `StreamGen` is
           // a base-run witness, so the reason stays `SeamNotEveryDomainHas`.
-          c "columnarOpLawsWith" [ "StreamGen" ] (Some SeamNotEveryDomainHas) []
-          c "incrementalLaws" none (Some SeamNotEveryDomainHas) []
-          c "incrementalLawsWith" [ "StreamGen" ] (Some SeamNotEveryDomainHas) []
-          c "paramLaws" none (Some SeamNotEveryDomainHas) []
-          c "schemaWalkLaws" none (Some SeamNotEveryDomainHas) []
-          c "nowLaws" none (Some SeamNotEveryDomainHas) []
-          c "slotParamLaws" none (Some SeamNotEveryDomainHas) []
+          c "columnarOpLawsWith" [ Takes.StreamGen ] optIn []
+          c "incrementalLaws" none optIn []
+          c "incrementalLawsWith" [ Takes.StreamGen ] optIn []
+          c "paramLaws" none optIn []
+          c "schemaWalkLaws" none optIn []
+          c "nowLaws" none optIn []
+          c "slotParamLaws" none optIn []
           // Phase 269 — the planner held to the reference as written.
-          c "plannerLaws" none (Some SeamNotEveryDomainHas) []
+          c "plannerLaws" none optIn []
 
-          f "IncrementalDelta" "laws" none (Some SeamNotEveryDomainHas) []
-          f "IncrementalDelta" "lawsWith" none (Some SeamNotEveryDomainHas) []
+          f "IncrementalDelta" "laws" none optIn []
+          f "IncrementalDelta" "lawsWith" none optIn []
           // Phase 355 - the state's wire form.
-          f "IncrementalDelta" "stateLaws" none (Some SeamNotEveryDomainHas) [] ]
+          f "IncrementalDelta" "stateLaws" none optIn [] ]
 
     /// This package's share, for a reader composing it with the kit's `Families.roster`.
     let roster: Roster =
         { Package = "Fuaran.Compute.Conformance"
-          Families = families
-          RefusalAudit = refusalAudit
-          Census = census }
+          Families = families }

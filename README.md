@@ -169,7 +169,7 @@ let dirty =
 - **The sheet.** The `PropagationComposition` suite composes both halves: a source edited through
   `ColumnOps`, a formula tree edited by `UpdateNode`, driven by `Propagation.evalFromWith` with each
   table node's incremental state carried as its prior, and certified by the substrate's
-  `Conformance.propagationEvaluatorLawsWith` — including two evaluators the family must refuse, one
+  `Conformance.propagationPriorLawsAt` — including two evaluators the family must refuse, one
   that trusts a stale prior and one whose prior-blind reading drifts from the reference. The sheet
   is Phase 250's, carried here from the Fuaran.Core suite by Phase 261. `Propagation`, `Ops` and
   `Tree` are test references of that suite only; no package here takes them.
