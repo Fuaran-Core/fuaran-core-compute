@@ -1924,13 +1924,37 @@ carrier does not hold), the refresh packs as before. Writing one row wrongly in 
 reddens the incremental and window law families.
 
 **What the clock leg holds.** A seventeenth case times the refresh alone against the one-thread full
-evaluation on every corpus node the seam accepts: `refresh <= full + floor`, the edit at every size and the
-append at 1,000 and 100,000 rows. At 20,000 rows an append grows two per-row reference arrays just past
-the runtimes large-object threshold, and the collections that triggers, not the refreshs work, decide
-a refresh timed alone there; the append tick case still holds those cells (`DECISIONS.md` D27). The declined nodes
-(`inner join`, `pivot`) refresh by the full evaluation; the case prints each with the plan's reason,
-and the main suite pins which nodes those are. The figures are in
-[`performance.md`](performance.md), "A refresh assembles its result from the prior one".
+evaluation on every corpus node the seam accepts: `refresh <= full + floor`, the edit and the append at
+every size (the append at 20,000 rows since Phase 451, below). The declined nodes (`inner join`,
+`pivot`) refresh by the full evaluation; the case prints each with the plan's reason, and the main suite
+pins which nodes those are. The figures are in [`performance.md`](performance.md), "A refresh
+assembles its result from the prior one".
+
+### The per-row caches are chunked (Phase 451)
+
+A state keeps three caches with one entry per source row: the row tokens, each evaluating step's
+cells, and the group each row landed in. Each was one array, and an append that refreshed in place
+re-allocated each whole to grow it by a row. At 20,000 rows a reference array of that length is
+160 KB, past the runtime's large-object threshold of 85,000 bytes. Those allocations drew
+generation-2 collections every few calls, and on the small-group grouped nodes the collections, not
+the refresh's work, decided a refresh timed against a full evaluation of a quarter of a millisecond.
+
+The three caches are now held in chunks of 8,192 entries (`RowChunks`). A cache an append grows
+shares every chunk of the prior state's cache that keeps its length, and copies only the one it
+extends. A cache an edit writes copies only the chunks it writes, where it copied the whole array. A
+shared chunk is copied before its first write, so a prior state's caches never move under a later
+refresh, and two refreshes of one state each see only their own writes. A derived column in the walk's
+frame is the step's chunks: a step that reads only the rows a refresh walks reads them there, and a
+step that reads the column whole (a sort, a window, a group streamed in full) reads it as one array
+built once. The state's encoding flattens each cache, so no wire byte moves, and a decoded state is
+chunked again on decode.
+
+The main suite pins the representation over every node the seam accepts: a prime and two chained
+appends at 20,000 rows leave no per-row array of 85,000 bytes or more, and each append shares every
+chunk of the prior caches it does not write. The refresh-against-full case now draws each call's
+source from a pool of prepared (source, delta) pairs, because one source refreshed over and over
+measured the collector's heap budget. The A/B is in [`performance.md`](performance.md), "A 20,000-row
+append refresh is held against the full evaluation" (`DECISIONS.md` D42).
 
 ## Across a process boundary (Phase 355)
 

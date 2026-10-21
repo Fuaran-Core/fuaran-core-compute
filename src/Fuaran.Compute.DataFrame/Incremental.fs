@@ -373,6 +373,122 @@ type internal WindowRun =
         Column: Lazy<Cell list>
     }
 
+/// Phase 451 — a per-row cache held in CHUNKS of `RowChunks.size` entries, so that no array a
+/// state keeps per row is a large object. .NET puts an array of 85,000 bytes or more on the
+/// large-object heap, collected only with generation 2; a reference is 8 bytes, so a flat per-row
+/// array crosses the threshold at about 10,600 rows, and an append that re-allocated one whole (the
+/// row tokens, a step's cells, the rows' groups) drew a generation-2 collection every few calls
+/// (Phase 448 measured it, DECISIONS.md D27). A cache GROWN by an append shares every chunk of the
+/// prior cache that keeps its length and copies only the one it extends; a cache an edit writes
+/// copies only the chunks it writes.
+///
+/// Persistent by construction: a chunk is written only by the cache that allocated or copied it
+/// (`owned`), and only while the step building that cache runs; a chunk shared with a prior cache is
+/// copied before its first write (`Set`). So a prior state's caches never move under a later refresh,
+/// and two refreshes of one state each see their own writes alone. The wire form flattens
+/// (`RowChunks.toArray`), so the representation moves no byte of the encoded state.
+[<Sealed; AllowNullLiteral>]
+type internal RowChunks<'T>(chunks: 'T[][], owned: bool[], length: int) =
+    /// The number of entries.
+    member _.Length = length
+
+    /// The chunks in order. Every one but the last is `RowChunks.size` entries long.
+    member _.Chunks = chunks
+
+    /// The entry at `i`.
+    member _.Item
+        with get (i: int): 'T = chunks[i >>> 13][i &&& 8191]
+
+    /// Write the entry at `i`, copying its chunk first where this cache does not own it.
+    member _.Set(i: int, value: 'T) =
+        let k = i >>> 13
+
+        if not owned[k] then
+            chunks[k] <- Array.copy chunks[k]
+            owned[k] <- true
+
+        chunks[k][i &&& 8191] <- value
+
+/// Phase 451 — building and reading `RowChunks`.
+[<RequireQualifiedAccess>]
+module internal RowChunks =
+
+    /// The entries a chunk holds, `1 <<< 13` (the shift `RowChunks` indexes by): 64 KiB of
+    /// references, 32 KiB of ints, under the large-object threshold of 85,000 bytes with the array
+    /// header to spare.
+    [<Literal>]
+    let size = 8192
+
+    let private count (n: int) : int = (n + size - 1) / size
+
+    let private lengthOf (n: int) (k: int) : int = min size (n - k * size)
+
+    /// `n` entries, each `value`.
+    let create (n: int) (value: 'T) : RowChunks<'T> =
+        let c = count n
+        RowChunks<'T>(Array.init c (fun k -> Array.create (lengthOf n k) value), Array.create c true, n)
+
+    /// `n` entries, each the default of `'T`.
+    let zeroCreate<'T> (n: int) : RowChunks<'T> =
+        let c = count n
+        RowChunks<'T>(Array.init c (fun k -> Array.zeroCreate (lengthOf n k)), Array.create c true, n)
+
+    /// `n` entries, the entry at `i` being `f i`.
+    let init (n: int) (f: int -> 'T) : RowChunks<'T> =
+        let c = count n
+
+        RowChunks<'T>(
+            Array.init c (fun k -> Array.init (lengthOf n k) (fun j -> f (k * size + j))),
+            Array.create c true,
+            n
+        )
+
+    /// The empty cache.
+    let empty<'T> () : RowChunks<'T> = zeroCreate<'T> 0
+
+    /// `a`'s entries, copied into chunks.
+    let ofArray (a: 'T[]) : RowChunks<'T> = init a.Length (fun i -> a[i])
+
+    /// The entries as one array (a copy): the wire form, and a step that reads a column whole.
+    let toArray (c: RowChunks<'T>) : 'T[] = Array.concat c.Chunks
+
+    /// `prior`'s entries followed by `n - prior.Length` defaults, as a cache this refresh writes:
+    /// every chunk of `prior` that keeps its length is SHARED (and copied only if it is written), the
+    /// chunk it extends is copied once, and the new ones are allocated. `n` is at least `prior.Length`.
+    let grow (prior: RowChunks<'T>) (n: int) : RowChunks<'T> =
+        let c = count n
+        let held = prior.Chunks
+        let chunks: 'T[][] = Array.zeroCreate c
+        let owned: bool[] = Array.zeroCreate c
+
+        for k in 0 .. c - 1 do
+            let len = lengthOf n k
+
+            if k < held.Length && held[k].Length = len then
+                chunks[k] <- held[k]
+            else
+                let grown: 'T[] = Array.zeroCreate len
+
+                if k < held.Length then
+                    Array.blit held[k] 0 grown 0 held[k].Length
+
+                chunks[k] <- grown
+                owned[k] <- true
+
+        RowChunks<'T>(chunks, owned, n)
+
+    /// Does any entry satisfy `p`?
+    let exists (p: 'T -> bool) (c: RowChunks<'T>) : bool =
+        c.Chunks |> Array.exists (Array.exists p)
+
+    /// Does every entry satisfy `p`?
+    let forall (p: 'T -> bool) (c: RowChunks<'T>) : bool =
+        c.Chunks |> Array.forall (Array.forall p)
+
+    /// `f` of every entry, in chunks of its own.
+    let map (f: 'T -> 'U) (c: RowChunks<'T>) : RowChunks<'U> =
+        RowChunks<'U>(c.Chunks |> Array.map (Array.map f), Array.create c.Chunks.Length true, c.Length)
+
 /// The state an incremental evaluation carries between refreshes: the result, and the caches that
 /// let the next delta be answered without revisiting the unchanged rows.
 ///
@@ -419,7 +535,8 @@ type IncrementalEval =
             /// what makes the arrays below positional: a row still sitting at the index it
             /// sat at last time is recognised by one pointer comparison, and only a row that moved
             /// costs a lookup. Empty on a state the reference path built (which caches nothing).
-            Tokens: string[]
+            /// Chunked since Phase 451 (`RowChunks`), so an append shares the prior chunks.
+            Tokens: RowChunks<string>
             /// Phase 274 — the cells the row-local steps evaluated, one array per evaluating step
             /// in step order, each aligned with `Tokens`; `null` where the row did not reach that
             /// step. A row a `Filter` dropped keeps the prefix it reached, so the drop verdict is
@@ -427,16 +544,17 @@ type IncrementalEval =
             ///
             /// Column-major since `0.35.0`. It was one `Cell list` per row (an array of them since
             /// `0.27.0`, a `Map<string, Cell list>` before that), which a refresh rebuilt row by row;
-            /// a step's cells are now one array the walk writes once.
-            StepCells: Cell[][]
+            /// a step's cells are now one array the walk writes once. Phase 451 — each step's cells are
+            /// a `RowChunks`, so an append or an edit copies the chunks it writes and shares the rest.
+            StepCells: RowChunks<Cell>[]
             /// Phase 208 — aligned with `Tokens`: the index into `GroupOrder` of the group that
             /// row's cells landed in, or `-1` for a row that no longer reached the grouping (it was
             /// filtered away); empty on every pipeline without a maintained `GroupBy`. It is what
             /// lets the next refresh CARRY a group identity rather than re-minting it: a group is a
             /// pure function of the key cells, so a row whose cells have not moved is in the group
             /// it was in. (The group's token until Phase 274; the index is what the next refresh
-            /// reads without hashing.)
-            RowGroups: int[]
+            /// reads without hashing.) Chunked since Phase 451 (`RowChunks`).
+            RowGroups: RowChunks<int>
             /// Aligned with `GroupOrder`: each group's members' row tokens IN ORDER — what makes
             /// reusing a cached aggregate safe for the order-sensitive aggregates (maintained-groups
             /// only). Positional since Phase 274; a map keyed by group token before, which a refresh
@@ -480,7 +598,7 @@ type IncrementalEval =
             /// A group's cells are reusable exactly when that group's aggregates were REUSED rather
             /// than recomputed: its key cells and its aggregate cells are then byte-identical to the
             /// row the tail last read, so every tail step's output for it is too.
-            TailCells: Cell[][]
+            TailCells: RowChunks<Cell>[]
             /// Phase 268 — the result as a chunked version, where the state was produced by the
             /// chunked path (`primePrepared` / `refreshPrepared` over a pipeline of `Derive`s): its
             /// output columns share every chunk the source did not move, and the next chunked
@@ -1976,9 +2094,16 @@ module Incremental =
     /// cells of the source from slot `TailFrom` on (the rows appended), as an array, so an appended
     /// row's cell is read at once — and a column no step unpacks is never unpacked for it. `null`
     /// everywhere else.
+    ///
+    /// Phase 451 — `Cached` co-indexes with `Data` too: where a column is a step's cells (a `Derive`),
+    /// the step's `RowChunks`, which `Data` holds as one array only once a step reads the column whole
+    /// (`column`). A refresh in place reads the few rows it walks straight off the chunks
+    /// (`cellAt`), so a derived column a refresh shares with the prior evaluation is never copied into
+    /// a frame-long array to be read at those rows. `null` at every other column.
     type private WalkFrame =
         { Cols: Schema
           Data: Cell[][]
+          Cached: RowChunks<Cell>[]
           Origins: Column option[]
           Tails: Cell[] option[]
           TailFrom: int
@@ -2007,12 +2132,12 @@ module Incremental =
     /// indexed by this frame's slots: the walk's `evalIdx` is always `Steps.Count`.
     type private WalkRows =
         {
-            Tokens: string[]
+            Tokens: RowChunks<string>
             Prior: int[]
             Stable: bool[]
-            PriorSteps: Cell[][]
+            PriorSteps: RowChunks<Cell>[]
             PriorCount: int
-            Steps: ResizeArray<Cell[]>
+            Steps: ResizeArray<RowChunks<Cell>>
             /// Phase 323 — when not `null`, every slot holds the row the PRIOR evaluation held at that
             /// slot (the delta found every row in place and no prefix step reorders), the slots not
             /// listed here are `Stable`, and these are the changed slots, ascending. A step may then
@@ -2048,15 +2173,35 @@ module Incremental =
     /// the first time a step reads it (Phase 274): a column no step reads — an identity or a label
     /// carried through to the result — is never unpacked at all, and the result hands its list back.
     /// The write is a memo of the array the list already determines, never a change of contents.
+    ///
+    /// Phase 451 — a step's cells (`Cached`) are concatenated from their chunks, once, for the step
+    /// that reads the column whole.
     let private column (f: WalkFrame) (c: int) : Cell[] =
         let a = f.Data[c]
 
         if not (isNull a) then
             a
         else
-            let unpacked = List.toArray (Column.toCells f.Origins[c].Value)
+            let unpacked =
+                match f.Cached[c] with
+                | null -> List.toArray (Column.toCells f.Origins[c].Value)
+                | cached -> RowChunks.toArray cached
+
             f.Data[c] <- unpacked
             unpacked
+
+    /// Phase 451 — the cell at slot `s` of column `c`, for a step that reads every row it walks from
+    /// the column: off the column's array where it has one, off a step's chunks where the column is a
+    /// step's cells, and otherwise from the column unpacked (`column`), as such a step always read it.
+    let private cellAt (f: WalkFrame) (c: int) (s: int) : Cell =
+        let a = f.Data[c]
+
+        if not (isNull a) then
+            a[s]
+        else
+            match f.Cached[c] with
+            | null -> (column f c)[s]
+            | cached -> cached[s]
 
     /// The columns an expression reads, each once.
     let private columnsRead (e: DataFrame.ResolvedExpr) : int[] =
@@ -2125,6 +2270,9 @@ module Incremental =
 
         if not (isNull a) then
             a[s]
+        elif not (isNull f.Cached[c]) then
+            // Phase 451 — a step's cells, read off its chunks.
+            f.Cached[c][s]
         else if
             // Phase 359 — an appended slot is read from the tail's cells, not walked to from the head.
             not (isNull f.Tails)
@@ -2138,7 +2286,7 @@ module Incremental =
 
     let private fillRow (f: WalkFrame) (cols: int[]) (s: int) (into: Cell[]) =
         for c in cols do
-            into[c] <- (column f c)[s]
+            into[c] <- cellAt f c s
 
     /// The cells of column `c` at the slots `slots`: from the column's array where it has one, else
     /// read in place, one row each — without unpacking the column (Phase 323; Phase 423 reads the
@@ -2150,6 +2298,12 @@ module Incremental =
         if not (isNull a) then
             for j in 0 .. slots.Count - 1 do
                 out[j] <- a[slots[j]]
+        elif not (isNull f.Cached[c]) then
+            // Phase 451 — a step's cells, read off its chunks.
+            let cached = f.Cached[c]
+
+            for j in 0 .. slots.Count - 1 do
+                out[j] <- cached[slots[j]]
         else
             let origin = f.Origins[c].Value
 
@@ -2298,7 +2452,7 @@ module Incremental =
     /// copy. Phase 472 — the widening is UNCONDITIONAL again: `Vec.packAt` widens an int on its boxed
     /// form as on its typed carrier, so a cell's reading is a function of the cell and the type alone,
     /// and the verdict Phase 470 (D38) mirrored here (`typedPack`) is gone with it.
-    let private widenCells (ty: ColumnType) (step: Cell[]) : Cell[] =
+    let private widenCells (ty: ColumnType) (step: RowChunks<Cell>) : RowChunks<Cell> =
         let widen (c: Cell) : Cell =
             if not (reachedInt c) then
                 c
@@ -2311,8 +2465,8 @@ module Incremental =
         match ty with
         | FloatType
         | DecimalType ->
-            if Array.exists reachedInt step then
-                Array.map widen step
+            if RowChunks.exists reachedInt step then
+                RowChunks.map widen step
             else
                 step
         | _ -> step
@@ -2338,7 +2492,9 @@ module Incremental =
             if evalIdx >= r.PriorSteps.Length then
                 true
             else
-                let reached = r.PriorSteps[evalIdx] |> Array.filter (fun c -> not (isNull (box c)))
+                let reached =
+                    r.PriorSteps[evalIdx].Chunks
+                    |> Array.collect (Array.filter (fun c -> not (isNull (box c))))
 
                 match DataFrame.typeFromCells name reached.Length (fun i -> reached[i]) with
                 | Ok priorTy -> priorTy <> ty
@@ -2351,7 +2507,7 @@ module Incremental =
         (evalIdx: int)
         (resolved: DataFrame.ResolvedExpr)
         (evaluated: int)
-        : Result<Cell[] * int, EvalError> =
+        : Result<RowChunks<Cell> * int, EvalError> =
         let scratch: Cell[] = Array.zeroCreate f.Data.Length
         let reads = columnsRead resolved
         let mutable n = evaluated
@@ -2373,15 +2529,15 @@ module Incremental =
             && r.PriorSteps[evalIdx].Length = r.PriorCount
             && r.PriorCount <= r.Stable.Length
 
-        let step: Cell[] =
+        //
+        // Phase 451 — in place, the step's cells are the prior's GROWN (`RowChunks.grow`): every chunk
+        // the step does not write is the prior's, shared, so an append copies the one chunk it extends
+        // and an edit the chunks it writes, where both copied the whole frame-long array.
+        let step: RowChunks<Cell> =
             if not inPlace then
-                Array.zeroCreate r.Stable.Length
-            elif r.PriorCount = r.Stable.Length then
-                Array.copy r.PriorSteps[evalIdx]
+                RowChunks.zeroCreate r.Stable.Length
             else
-                let grown: Cell[] = Array.zeroCreate r.Stable.Length
-                Array.blit r.PriorSteps[evalIdx] 0 grown 0 r.PriorCount
-                grown
+                RowChunks.grow r.PriorSteps[evalIdx] r.Stable.Length
 
         if inPlace then
             // Phase 359 — appended slots read their own cells (`WalkFrame.Tails`), so only the changed
@@ -2400,15 +2556,15 @@ module Incremental =
 
                 if reaches f.Order s then
                     for c in reads do
-                        scratch[c] <- if sparse then cellAtSlot f c s else (column f c)[s]
+                        scratch[c] <- if sparse then cellAtSlot f c s else cellAt f c s
 
                     match DataFrame.evalResolved scratch resolved with
                     | Ok c ->
-                        step[s] <- c
+                        step.Set(s, c)
                         n <- n + 1
                     | Error e -> failed <- Some e
                 else
-                    step[s] <- Unchecked.defaultof<Cell>
+                    step.Set(s, Unchecked.defaultof<Cell>)
 
                 j <- j + 1
 
@@ -2419,13 +2575,13 @@ module Incremental =
             let cached = cachedAt r evalIdx s
 
             if not (isNull (box cached)) then
-                step[s] <- cached
+                step.Set(s, cached)
             else
                 fillRow f reads s scratch
 
                 match DataFrame.evalResolved scratch resolved with
                 | Ok c ->
-                    step[s] <- c
+                    step.Set(s, c)
                     n <- n + 1
                 | Error e -> failed <- Some e
 
@@ -3418,6 +3574,7 @@ module Incremental =
                     { r with InPlace = null }
                     { Cols = cols2
                       Data = data2
+                      Cached = Array.append f.Cached [| null |]
                       Origins = origins2
                       Tails =
                         if isNull f.Tails then
@@ -3471,7 +3628,7 @@ module Incremental =
                         rowsOf rightTable |> List.map (fun row -> ri |> List.map (fun j -> row[j]))
 
                     let relationMoved = Map.tryFind joinIdx prior.JoinKeys <> Some rightKeys
-                    let step: Cell[] = Array.zeroCreate r.Stable.Length
+                    let step = RowChunks.zeroCreate<Cell> r.Stable.Length
                     let kept = ResizeArray<int>(f.Order.Length)
 
                     for s in f.Order do
@@ -3485,11 +3642,11 @@ module Incremental =
                             if not (isNull (box cached)) then
                                 cached
                             else
-                                let leftKeys = li |> List.map (fun i -> (column f i)[s])
+                                let leftKeys = li |> List.map (fun i -> cellAt f i s)
                                 let matched = rightKeys |> List.exists (DataFrame.joinKeysMatch leftKeys)
                                 Bool(matched = keepMatched)
 
-                        step[s] <- v
+                        step.Set(s, v)
 
                         if v = Bool true then
                             kept.Add s
@@ -3557,6 +3714,7 @@ module Incremental =
                     { f with
                         Cols = resolved |> List.map (fun (o, field, _) -> Fields.rename o field)
                         Data = idx |> Array.map (fun i -> f.Data[i])
+                        Cached = idx |> Array.map (fun i -> f.Cached[i])
                         Origins = idx |> Array.map (fun i -> f.Origins[i])
                         Tails =
                             if isNull f.Tails then
@@ -3627,7 +3785,9 @@ module Incremental =
                                 { r with InPlace = null }
 
                         // The step's cells ARE the derived column: live at every slot in `Order`,
-                        // and a slot outside it is never read again this walk.
+                        // and a slot outside it is never read again this walk. Phase 451 — held as
+                        // the step's chunks (`Cached`), made one array only for a step that reads the
+                        // column whole (`column`).
                         let f2 =
                             match colIndex f.Cols name with
                             | Some i ->
@@ -3639,7 +3799,8 @@ module Incremental =
                                                 Field.create name ty |> DataFrame.stated unit
                                             else
                                                 fd)
-                                    Data = f.Data |> Array.mapi (fun j a -> if j = i then column else a)
+                                    Data = f.Data |> Array.mapi (fun j a -> if j = i then null else a)
+                                    Cached = f.Cached |> Array.mapi (fun j a -> if j = i then column else a)
                                     Origins = f.Origins |> Array.mapi (fun j o -> if j = i then None else o)
                                     Tails =
                                         if isNull f.Tails then
@@ -3649,7 +3810,8 @@ module Incremental =
                             | None ->
                                 { f with
                                     Cols = f.Cols @ [ Field.create name ty |> DataFrame.stated unit ]
-                                    Data = Array.append f.Data [| column |]
+                                    Data = Array.append f.Data [| null |]
+                                    Cached = Array.append f.Cached [| column |]
                                     Origins = Array.append f.Origins [| None |]
                                     Tails =
                                         if isNull f.Tails then
@@ -3702,23 +3864,29 @@ module Incremental =
                         field
                         (Vec.gather (Vec.ofColumn (Column.length origin) field.Type (Some origin)) f.Order)
                 // A step's own cells, in the frame's order: packed once from the array, with no list
-                // between.
+                // between. Phase 451 — read off the step's chunks where it holds them chunked, so a
+                // patched column reads its written rows without the frame-long array being built.
                 | _ ->
-                    let a = column f ci
+                    let a: int -> Cell =
+                        match f.Data[ci], f.Cached[ci] with
+                        | null, cached when not (isNull cached) -> fun s -> cached[s]
+                        | _ ->
+                            let arr = column f ci
+                            fun s -> arr[s]
 
                     let patched =
                         match prior with
                         | Some(output, rows) when identity && Table.rowCount output <= slotCount ->
                             match Table.tryColumn field.Name output with
                             | Some pc when output.Schema |> List.contains field ->
-                                patchedColumn field pc slotCount rows (fun s -> a[s])
+                                patchedColumn field pc slotCount rows a
                             | _ -> None
                         | _ -> None
 
                     match patched with
                     | Some c -> c
                     | None ->
-                        Vec.toColumn field (Vec.pack field.Type (Array.init f.Order.Length (fun k -> a[f.Order[k]])))) }
+                        Vec.toColumn field (Vec.pack field.Type (Array.init f.Order.Length (fun k -> a f.Order[k])))) }
 
     // ---- the maintained-group step ----
 
@@ -3738,7 +3906,7 @@ module Incremental =
             /// Phase 208 — the index into `Order` of the group each SOURCE ROW landed in, by that
             /// row's slot in the source's row order (`-1` for a row the prefix filtered away). It is
             /// what lets the next refresh CARRY a group identity instead of re-minting one per row.
-            RowGroups: int[]
+            RowGroups: RowChunks<int>
             /// Per group, its members' row tokens IN ORDER.
             Members: string list[]
             /// Per group, the aggregate cells computed or reused for it.
@@ -3756,7 +3924,7 @@ module Incremental =
     type private PriorGroups =
         {
             Order: string[]
-            RowGroups: int[]
+            RowGroups: RowChunks<int>
             Members: string list[]
             Aggs: Cell list[]
             /// Phase 323 — the group rows, aligned with `Order`.
@@ -3828,14 +3996,14 @@ module Incremental =
                 // carried group's token is the token of its row's key cells (it was minted from them,
                 // and a `Stable` row's cells have not moved), and `CellKey` equality is token
                 // equality, which a law in the suite holds.
-                let rowGroups: int[] = Array.create r.Stable.Length -1
+                let rowGroups = RowChunks.create r.Stable.Length -1
                 let current: int[] = Array.create prior.Order.Length -1
                 let bySlotCells = DataFrame.CellKey.slots ()
                 let probe: Cell[] = Array.zeroCreate idxs.Length
 
                 let readKey (s: int) =
                     for j in 0 .. idxs.Length - 1 do
-                        probe[j] <- (column f idxs[j])[s]
+                        probe[j] <- cellAt f idxs[j] s
 
                 let order = ResizeArray<string>()
                 let priorIdx = ResizeArray<int>()
@@ -3874,7 +4042,7 @@ module Incremental =
                     let carriedGroup = if carried >= 0 then current[carried] else -1
 
                     if carriedGroup >= 0 then
-                        rowGroups[s] <- carriedGroup
+                        rowGroups.Set(s, carriedGroup)
                         join carriedGroup s
                     else
                         readKey s
@@ -3893,7 +4061,7 @@ module Incremental =
                         if carried >= 0 then
                             current[carried] <- gi
 
-                        rowGroups[s] <- gi
+                        rowGroups.Set(s, gi)
 
                 // The prior index of a group no carried row opened — a lookup by its token, through an
                 // index built on the first such group that needs one and never otherwise.
@@ -4132,8 +4300,15 @@ module Incremental =
             // Phase 359 — the appended rows each group gains (an existing group's or a new one's), in
             // slot order, which is their member order: every appended slot follows every prior one.
             let addedIn = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
-            let rowGroups: int[] = Array.zeroCreate r.Stable.Length
-            Array.blit prior.RowGroups 0 rowGroups 0 r.PriorCount
+            // Phase 451 — the rows' groups are the prior's, grown by the appended rows: the prior's
+            // chunks are shared and only the one the append extends is copied. In place with no row
+            // appended nothing writes them, and they are the prior's outright.
+            let rowGroups =
+                if r.PriorCount = r.Stable.Length then
+                    prior.RowGroups
+                else
+                    RowChunks.grow prior.RowGroups r.Stable.Length
+
             let newOrder = ResizeArray<string>()
             let newKeys = ResizeArray<Cell[]>()
             // The prior groups by token, built on the first appended row the walk reaches.
@@ -4183,10 +4358,10 @@ module Incremental =
                         if g < groupCount then
                             dirty[g] <- true
 
-                        rowGroups[s] <- g
+                        rowGroups.Set(s, g)
                         addTo addedIn g s
                     else
-                        rowGroups[s] <- -1
+                        rowGroups.Set(s, -1)
                 else
                     let pg = prior.RowGroups[s]
                     let reached = reaches f.Order s
@@ -4252,7 +4427,7 @@ module Incremental =
 
                 // The cell column `c` held at slot `s` in the PRIOR evaluation, where it can be read.
                 let priorCellAt (c: int) (s: int) : Cell voption =
-                    let a = f.Data[c]
+                    let a = f.Cached[c]
                     let mutable stepIdx = -1
 
                     if not (isNull a) then
@@ -4478,11 +4653,7 @@ module Incremental =
                                     prior.Order
                                 else
                                     Array.append prior.Order (newOrder.ToArray())
-                              RowGroups =
-                                if r.PriorCount = r.Stable.Length then
-                                    prior.RowGroups
-                                else
-                                    rowGroups
+                              RowGroups = rowGroups
                               Members = members
                               Aggs = aggCells
                               Recomputed = recomputed
@@ -4511,12 +4682,16 @@ module Incremental =
     /// tick's `Delta.diff`, whose `before` is this source, reads them rather than minting them again.
     /// Where the delta carries the new source's keys already, `tokensOfKnown` below replaces this
     /// function altogether.
-    let private tokensOf (idw: RowIdentity<'Id>) (priorTokens: string[]) (t: Table) : Result<string[], DeltaDefect> =
+    let private tokensOf
+        (idw: RowIdentity<'Id>)
+        (priorTokens: RowChunks<string>)
+        (t: Table)
+        : Result<RowChunks<string>, DeltaDefect> =
         let n = Table.rowCount t
         // Hoisted for the reason `Delta.keyIndex` hoists it (Phase 206): the witness's per-table
         // work belongs in the first application, not in every iteration of this loop.
         let keyAt = idw.KeyOf t
-        let tokens: string[] = Array.zeroCreate n
+        let tokens = RowChunks.zeroCreate<string> n
         let keys: string[] = Array.zeroCreate n
         // Phase 283 — for a witness that declares a key equality, the typed ids ride beside the keys,
         // so the next tick's `Delta.diff` pairs this source's rows by id without asking the witness
@@ -4546,7 +4721,7 @@ module Incremental =
                         minted
 
                 if seen.Add token then
-                    tokens[i] <- token
+                    tokens.Set(i, token)
                 else
                     defect <- Some(DuplicateIdentity(idw.Scheme, k))
 
@@ -4568,14 +4743,14 @@ module Incremental =
     /// The answer is `tokensOf`'s: the same strings, and the PRIOR instance wherever the row sits
     /// where it sat — recognised by comparing the prior token's key part in place, so an unmoved
     /// row allocates nothing either.
-    let private tokensOfKnown (known: KeyedIndex) (priorTokens: string[]) : string[] =
+    let private tokensOfKnown (known: KeyedIndex) (priorTokens: RowChunks<string>) : RowChunks<string> =
         let keys = known.Keys
-        let tokens: string[] = Array.zeroCreate keys.Length
+        let tokens = RowChunks.zeroCreate<string> keys.Length
 
         for i in 0 .. keys.Length - 1 do
             let k = keys[i]
 
-            tokens[i] <-
+            let token =
                 if i < priorTokens.Length then
                     let p = priorTokens[i]
 
@@ -4589,6 +4764,8 @@ module Incremental =
                         Delta.refToken (ByKey k)
                 else
                     Delta.refToken (ByKey k)
+
+            tokens.Set(i, token)
 
         tokens
 
@@ -4701,6 +4878,7 @@ module Incremental =
 
         { Cols = t.Schema
           Data = unpacked |> Array.map fst
+          Cached = Array.zeroCreate unpacked.Length
           Origins = unpacked |> Array.map snd
           Tails = tails
           TailFrom = tailFrom
@@ -4720,7 +4898,7 @@ module Incremental =
         (final: (string list * Agg list * PrefixStep list) option)
         (source: Table)
         (prepared: Prepared option)
-        (tokens: string[])
+        (tokens: RowChunks<string>)
         (prior: IncrementalEval option)
         (named: Set<string> option)
         (inPlace: InPlaceReading option)
@@ -4773,7 +4951,9 @@ module Incremental =
             | _ -> null
 
         let priorTokens =
-            prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
+            prior
+            |> Option.map (fun s -> s.Tokens)
+            |> Option.defaultWith RowChunks.empty<string>
 
         let priorSteps =
             prior |> Option.map (fun s -> s.StepCells) |> Option.defaultValue [||]
@@ -4851,7 +5031,7 @@ module Incremental =
               Stable = stable
               PriorSteps = priorSteps
               PriorCount = priorTokens.Length
-              Steps = ResizeArray<Cell[]>()
+              Steps = ResizeArray<RowChunks<Cell>>()
               InPlace = inPlaceRows
               SeedShift = seedShift }
 
@@ -4915,7 +5095,7 @@ module Incremental =
                       Output = Prepared.ready (tableOfFrame frame rowCount priorResult)
                       Tokens = tokens
                       StepCells = stepCells
-                      RowGroups = [||]
+                      RowGroups = RowChunks.empty ()
                       GroupMembers = [||]
                       GroupAggs = [||]
                       SortOrders = caches.SortOrders
@@ -4944,7 +5124,7 @@ module Incremental =
                           Rows = s.GroupRows }
                     | None ->
                         { Order = [||]
-                          RowGroups = [||]
+                          RowGroups = RowChunks.empty ()
                           Members = [||]
                           Aggs = [||]
                           Rows = [||] }
@@ -5072,12 +5252,12 @@ module Incremental =
                                 | _ -> -1)
 
                         let groupRows =
-                            { Tokens = groupOrder
+                            { Tokens = RowChunks.ofArray groupOrder
                               Prior = groupPrior
                               Stable = Array.init groupCount (fun gi -> groupPrior[gi] >= 0 && not g.RecomputedAt[gi])
                               PriorSteps = priorTail
                               PriorCount = priorOrder.Length
-                              Steps = ResizeArray<Cell[]>()
+                              Steps = ResizeArray<RowChunks<Cell>>()
                               InPlace = null
                               SeedShift = seedShift }
 
@@ -5087,6 +5267,7 @@ module Incremental =
                         let groupFrame =
                             { Cols = g.Cols
                               Data = Array.init width (fun c -> rowArrays |> Array.map (fun row -> row[c]))
+                              Cached = Array.zeroCreate width
                               Origins = Array.create width None
                               Tails = null
                               TailFrom = 0
@@ -5140,9 +5321,9 @@ module Incremental =
               Source = Prepared.ready source
               Prepared = prepared
               Output = Prepared.ready output
-              Tokens = [||]
+              Tokens = RowChunks.empty ()
               StepCells = [||]
-              RowGroups = [||]
+              RowGroups = RowChunks.empty ()
               GroupMembers = [||]
               GroupAggs = [||]
               SortOrders = Map.empty
@@ -5212,7 +5393,9 @@ module Incremental =
              // row's token comes back as the prior STRING INSTANCE; `runIncremental`'s positional
              // cache lookup is a pointer comparison off the back of that.
              let priorTokens =
-                 prior |> Option.map (fun s -> s.Tokens) |> Option.defaultValue [||]
+                 prior
+                 |> Option.map (fun s -> s.Tokens)
+                 |> Option.defaultWith RowChunks.empty<string>
 
              // Phase 273 — keys the delta carried for this very source are reused, not re-minted.
              //
@@ -5220,7 +5403,9 @@ module Incremental =
              // row: `tokensOfKnown` would return each prior instance, so the array is shared.
              //
              // Phase 359 — on an append they are the prior's, then the appended rows' tokens, minted
-             // from the keys the diff minted for the tail alone.
+             // from the keys the diff minted for the tail alone. Phase 451 — the prior's GROWN: its
+             // chunks are shared and only the one the append extends is copied, where the whole array
+             // was re-allocated on the large-object heap.
              let tokens =
                  match inPlace, known with
                  | Some reading, Some k when
@@ -5230,10 +5415,12 @@ module Incremental =
                          Ok priorTokens
                      else
                          let held = priorTokens.Length
+                         let grown = RowChunks.grow priorTokens k.Keys.Length
 
-                         Array.init (k.Keys.Length - held) (fun t -> Delta.refToken (ByKey k.Keys[held + t]))
-                         |> Array.append priorTokens
-                         |> Ok
+                         for t in held .. k.Keys.Length - 1 do
+                             grown.Set(t, Delta.refToken (ByKey k.Keys[t]))
+
+                         Ok grown
                  | _, Some k -> Ok(tokensOfKnown k priorTokens)
                  | _, None -> tokensOf idw priorTokens source
 
@@ -5615,9 +5802,9 @@ module Incremental =
           Source = prepared.Source
           Prepared = Some prepared
           Output = out.Source
-          Tokens = [||]
+          Tokens = RowChunks.empty ()
           StepCells = [||]
-          RowGroups = [||]
+          RowGroups = RowChunks.empty ()
           GroupMembers = [||]
           GroupAggs = [||]
           SortOrders = Map.empty
@@ -6039,6 +6226,19 @@ module Incremental =
     /// What producing that result cost.
     let footprint (s: IncrementalEval) : RecomputeFootprint = s.Footprint
 
+    /// Phase 451 — the state's per-row caches, each as the arrays it is held in: the row tokens,
+    /// every step's cells and the rows' groups, by name. The suite's pin on their representation
+    /// reads it: no array an append leaves in a state is a large object, and an append shares every
+    /// chunk of the prior state it does not write.
+    let internal rowCaches (s: IncrementalEval) : (string * System.Array[]) list =
+        let arrays (c: RowChunks<'T>) : System.Array[] =
+            c.Chunks |> Array.map (fun a -> a :> System.Array)
+
+        [ yield "tokens", arrays s.Tokens
+          for i in 0 .. s.StepCells.Length - 1 do
+              yield sprintf "step %d" i, arrays s.StepCells[i]
+          yield "row groups", arrays s.RowGroups ]
+
     /// The classification the state was built under — the same value `plan` returns for the state's
     /// own pipeline.
     ///
@@ -6280,10 +6480,11 @@ module IncrementalCodec =
                |> List.map (fun (name, c) -> JArr [ JStr name; StateWire.cellJson c ])
            )
            "output", StateWire.tableJson s.Output.Value
-           "tokens", StateWire.stringsJson s.Tokens
-           "stepCells", JArr(s.StepCells |> Array.map cells |> List.ofArray)
-           "rowGroups", ints s.RowGroups
-           "groupMembers", groupMembersJson s.Tokens s.GroupMembers
+           // Phase 451 — the chunked caches are flattened: the wire form is the flat arrays'.
+           "tokens", StateWire.stringsJson (RowChunks.toArray s.Tokens)
+           "stepCells", JArr(s.StepCells |> Array.map (RowChunks.toArray >> cells) |> List.ofArray)
+           "rowGroups", ints (RowChunks.toArray s.RowGroups)
+           "groupMembers", groupMembersJson (RowChunks.toArray s.Tokens) s.GroupMembers
            "groupAggs", listRows s.GroupAggs
            "sortOrders",
            JArr(
@@ -6304,7 +6505,7 @@ module IncrementalCodec =
                  "resultRows", JInt s.Footprint.ResultRows
                  "recompute", recomputeJson s.Footprint.Recompute ]
            "groupOrder", StateWire.stringsJson s.GroupOrder
-           "tailCells", JArr(s.TailCells |> Array.map cells |> List.ofArray)
+           "tailCells", JArr(s.TailCells |> Array.map (RowChunks.toArray >> cells) |> List.ofArray)
            "sourceExact", JStr(StateWire.boolsText s.SourceExact)
            "groupRows", StateWire.matrixJson s.GroupRows
            "windowRuns",
@@ -6704,11 +6905,16 @@ module IncrementalCodec =
 
     /// The alignments the walk indexes by. A state the encoder wrote holds them all; an encoding
     /// that does not is refused here rather than met as an out-of-range read inside a refresh.
+    /// Phase 451 — a decoded step's cells as the chunked cache the state holds; an absent step stays
+    /// absent, for `misaligned` to read as it read the flat array.
+    let private chunkedOrAbsent (a: Cell[]) : RowChunks<Cell> =
+        if isNull a then null else RowChunks.ofArray a
+
     let private misaligned (s: IncrementalEval) : string option =
         let rows = s.Tokens.Length
         let groups = s.GroupOrder.Length
         let slots = max rows groups
-        let absentOr (n: int) (a: 'a[]) = isNull (box a) || a.Length = n
+        let absentOr (n: int) (a: RowChunks<Cell>) = isNull a || a.Length = n
 
         let within (bound: int) (xs: int[]) =
             xs |> Array.forall (fun i -> i >= 0 && i < bound)
@@ -6719,7 +6925,7 @@ module IncrementalCodec =
             Some "a tail step's cached cells are not aligned with the group order"
         elif s.RowGroups.Length <> 0 && s.RowGroups.Length <> rows then
             Some "the row-to-group index is not aligned with the row tokens"
-        elif not (s.RowGroups |> Array.forall (fun g -> g >= -1 && g < groups)) then
+        elif not (s.RowGroups |> RowChunks.forall (fun g -> g >= -1 && g < groups)) then
             Some "the row-to-group index names a group the group order does not hold"
         elif
             s.GroupMembers.Length <> groups
@@ -6931,16 +7137,18 @@ module IncrementalCodec =
                   Source = Prepared.ready source
                   Prepared = None
                   Output = Prepared.ready output
-                  Tokens = tokens
-                  StepCells = stepCells
-                  RowGroups = rowGroups
+                  // Phase 451 — the flat wire arrays are chunked, so the first append after a decode
+                  // already shares the prior chunks.
+                  Tokens = RowChunks.ofArray tokens
+                  StepCells = stepCells |> Array.map chunkedOrAbsent
+                  RowGroups = RowChunks.ofArray rowGroups
                   GroupMembers = groupMembers
                   GroupAggs = groupAggs
                   SortOrders = Map.ofArray sortOrders
                   JoinKeys = Map.ofArray joinKeys
                   Footprint = footprint
                   GroupOrder = groupOrder
-                  TailCells = tailCells
+                  TailCells = tailCells |> Array.map chunkedOrAbsent
                   ChunkedOutput = None
                   ChunksTouched = chunksTouched
                   SourceExact = sourceExact
@@ -6959,9 +7167,9 @@ module IncrementalCodec =
                 // in full.
                 return
                     { state with
-                        Tokens = [||]
+                        Tokens = RowChunks.empty ()
                         StepCells = [||]
-                        RowGroups = [||]
+                        RowGroups = RowChunks.empty ()
                         GroupMembers = [||]
                         GroupAggs = [||]
                         SortOrders = Map.empty

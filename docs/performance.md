@@ -321,6 +321,77 @@ the same refresh read 0.43 times the full and the collector ran no gen-2 collect
 refresh case therefore times the append at 1,000 and 100,000 rows; the append tick case holds the
 20,000-row cells, diff and refresh together, inside its bound (`DECISIONS.md` D27).
 
+Phase 451 closed it: the caches are chunked and the case times the 20,000-row append on every node
+("A 20,000-row append refresh is held against the full evaluation", below).
+
+## A 20,000-row append refresh is held against the full evaluation (Phase 451)
+
+Phase 448 left the refresh-against-full case short of one size: the append at 20,000 rows, where the
+small-group grouped nodes read 0.8 to 2.5 times a full evaluation of a quarter of a millisecond. It
+named two causes, and both held when checked on this tree (`DECISIONS.md` D42).
+
+**The per-row caches were large objects.** An in-place append re-allocated the row tokens, a step's
+cells and the rows' groups, each one array per source row. At 20,000 rows each reference array is
+160 KB, past the runtime's large-object threshold of 85,000 bytes, and is collected only with
+generation 2. A probe counting the runtime's large-object allocation events over 500 appends at
+20,000 rows found one 160 KB `string[]` and one 160 KB `Cell[]` per refresh on `filter > groupBy`,
+`filter > groupBy > filter` and `byRegion`, and nothing else on the large-object heap. The caches are
+now held in chunks of 8,192 entries (`RowChunks`, 64 KB of references). An append shares every chunk
+of the prior state's caches and copies only the one it extends. An edit copies only the chunks it
+writes. A step's derived column is read off its chunks by the rows a refresh walks, and is made one
+array only for a step that reads it whole. The same probe then found no large-object allocation on
+those three nodes. On `lines` it found one 160 KB `double[]` per refresh: the result's own computed
+column, which the consumer receives, not a cache.
+
+**The instrument measured the heap budget.** The case re-refreshed one (state, delta, source) triple,
+and the collections that drew decided the reading. It now refreshes a source of its own on each call,
+drawn in turn from a pool of prepared (source, delta) pairs (`ScalingTests.refreshPool`: 128 at 1,000
+and 20,000 rows, 16 at 100,000). The full evaluation it is held against is unchanged.
+
+**The A/B.** The refresh alone, the one-row append at 20,000 rows, in ms, on Arm64 in Release. The
+pre-451 library is `5cd9ecc`. Each arm ran the case narrowed to the append at 1,000 and then 20,000
+rows, twice, and a range includes the attempts the clock leg repeats on a red cell. The heap budget is
+moved two ways: the generation-0 budget raised to 256 MB (`DOTNET_GCgen0size=0x10000000`) and the
+large-object threshold raised past the caches (`DOTNET_GCLOHThreshold=0x30000`).
+
+| Library | Inputs | Heap budget | `byRegion` | `filter > groupBy` | `filter > groupBy > filter` | gen-2 per cell |
+|---|---|---|---:|---:|---:|---:|
+| pre-451 | one source | default | 0.30–0.61 | 0.21–0.43 | 0.20–0.52 | 7–23 |
+| pre-451 | one source | gen-0 256 MB | 0.24–0.29 | 0.17–0.45 | 0.21–0.30 | 1–14 |
+| pre-451 | one source | LOH threshold raised | 0.19–0.20 | 0.11 | 0.11 | 0 |
+| pre-451 | pool | default | 0.26–0.29 | 0.16–0.17 | 0.16–0.17 | 0 |
+| pre-451 | pool | gen-0 256 MB | 0.21–0.22 | 0.12 | 0.12–0.13 | 0 |
+| pre-451 | pool | LOH threshold raised | 0.20 | 0.11 | 0.11–0.12 | 0 |
+| 451 | pool | default | 0.19–0.25 | 0.09–0.10 | 0.09–0.10 | 0 |
+| 451 | pool | gen-0 256 MB | 0.18 | 0.09 | 0.09 | 0 |
+| 451 | pool | LOH threshold raised | 0.18–0.19 | 0.09 | 0.09–0.10 | 0 |
+
+One source on the pre-451 library read 0.55 to 1.88 times the full evaluation, red on a counted
+attempt in every default run, and moved with either knob. The pool took the generation-2 count to
+zero, but the reading still moved with the budget, 0.11 to 0.17 ms on `filter > groupBy`, because the
+caches were still re-allocated whole. On this phase's library and the pool, the three budgets read
+within 11% of one another on the two `filter` nodes, against 51% before. On `byRegion` they read
+within 7%, but for one default reading of 0.25 ms. With one source on this phase's library the three grouped nodes held
+steady too. `lines` did not: it read 0.18 to 0.56 ms, with 7 to 23 gen-2 collections, because its
+refresh still allocates the result's 160 KB column. That is why the case keeps the pool.
+
+**The case, at every size.** One clock leg of the case on this tree (Arm64, Release), the 20,000-row
+append:
+
+| Node | Refresh | Full | Ratio |
+|---|---:|---:|---:|
+| `lines` | 0.128 ms | 0.528 ms | 0.24 |
+| `byRegion` | 0.186 ms | 0.461 ms | 0.40 |
+| `filter > groupBy` | 0.092 ms | 0.266 ms | 0.35 |
+| `filter > groupBy > filter` | 0.095 ms | 0.266 ms | 0.36 |
+| `group-by high-card` | 0.344 ms | 0.800 ms | 0.43 |
+
+Every edit and append cell at 1,000, 20,000 and 100,000 rows read at most 0.85 of its full evaluation
+on that leg. The highest was `window CumulSum`'s edit at 20,000 rows. The main suite pins the representation itself: over every node the seam accepts, a prime and
+two chained appends at 20,000 rows leave no per-row array of 85,000 bytes or more, and each append
+shares every chunk of the prior caches it does not write. Making `RowChunks.grow` copy the whole cache
+reddens that case, and so does copying the chunks it shares.
+
 ## A decimal vector holds no boxed cells (Phase 440)
 
 Phase 423 made the frame a view over Core's typed vectors, but a decimal column still entered it

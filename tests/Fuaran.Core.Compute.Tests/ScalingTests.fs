@@ -189,20 +189,21 @@ let private tickBaselineFactor = 1.5
 /// the one list all three cases read.
 let refreshDeclinedShapes: string list = [ "inner join"; "pivot" ]
 
-/// Phase 448 — the sizes the refresh-against-full case times, per tick kind: every size for the edit,
-/// and 1,000 and 100,000 rows for the append. At 20,000 rows an in-place append grows two per-row
-/// reference arrays (the row tokens and a step's cell cache) just past the runtime's large-object
-/// threshold, and the collections those allocations trigger, not the refresh's own work, decide
-/// a refresh timed alone against a full evaluation of a quarter of a millisecond: the same cell read
-/// 1.05 times the full from a large pool of sources and 1.3 to 2.4 times from one, with the
-/// collector's gen-2 count moving from 0 to 17 per 500 calls. The append tick case above still holds
-/// those cells, diff and refresh together, and the large-object bookkeeping is a later phase's
-/// (DECISIONS.md D27).
-let private refreshSizes (kind: string) : int list =
-    if kind = "edit" then
-        [ small; large; 100_000 ]
-    else
-        [ small; 100_000 ]
+/// Phase 448 — the sizes the refresh-against-full case times, for the edit and the append alike.
+/// Phase 451 — the append at 20,000 rows included: Phase 448 left it out because an in-place append
+/// re-allocated three per-row caches on the large-object heap, and the collections that drew, not the
+/// refresh's own work, decided a reading against a full evaluation of a quarter of a millisecond. The
+/// caches are chunked now (`RowChunks`, DECISIONS.md D42), and the case draws each call's inputs from
+/// a pool (`refreshPool`), so every shape is held at every size (D27's 448.C reach, closed).
+let private refreshSizes: int list = [ small; large; 100_000 ]
+
+/// Phase 451 — how many prepared (source, delta) pairs the refresh-against-full case cycles through
+/// at `n` rows. Re-refreshing ONE source measured how the collector's heap budget fell, not the code
+/// path: Phase 448 read the same cell at 1.05 times the full from a pool of 500 sources and 1.3 to 2.4
+/// times from one, the generation-2 count moving from 0 to 17 per 500 calls (D27). A pool gives each
+/// call a source of its own, as a consumer's tick has; it is sized so a batched sample at 20,000 rows
+/// visits each pair once or twice, and bounded at 100,000 rows, where a source is several megabytes.
+let private refreshPool (n: int) : int = if n >= 100_000 then 16 else 128
 
 /// Phase 439 — each corpus cell's one-row tick on the pre-423 tree (`ccbddc7`, the last whose full
 /// evaluation paid the `Table` boundary), per CPU architecture (`RuntimeInformation.ProcessArchitecture`),
@@ -787,13 +788,10 @@ let private setCell (colName: string) (row: int) (v: Cell) (t: Table) : Table =
                         c.Type
                         (Column.toCells c |> List.mapi (fun i x -> if i = row then v else x))) }
 
-/// Phase 359 — `t` with `k` rows APPENDED the way `ColumnOps.AppendRows` appends them: every column's list is
-/// `before @ extra`, so the prefix's cells are the very cells of `t`, in new lists. The appended rows
-/// are row `n` onwards of `nd.Mk (n + k)`, except in the identity column, which takes keys no row of
-/// `t` holds (the corpus's integer ids are below `n`, its string ids `r<i>`).
-let private appendTo (nd: CorpusNode) (k: int) (t: Table) : Table =
+/// Phase 451 — `appendTo` with the node's table of `n + k` rows (`big`) built by the caller, so a
+/// pool of appends to one table builds it once.
+let private appendFrom (big: Table) (nd: CorpusNode) (k: int) (t: Table) : Table =
     let n = Table.rowCount t
-    let big = nd.Mk(n + k)
 
     { t with
         Columns =
@@ -809,6 +807,13 @@ let private appendTo (nd: CorpusNode) (k: int) (t: Table) : Table =
                         Column.toCells (Table.tryColumn c.Name big).Value |> List.skip n
 
                 KitColumn.create c.Name c.Type (Column.toCells c @ extra)) }
+
+/// Phase 359 — `t` with `k` rows APPENDED the way `ColumnOps.AppendRows` appends them: every column's list is
+/// `before @ extra`, so the prefix's cells are the very cells of `t`, in new lists. The appended rows
+/// are row `n` onwards of `nd.Mk (n + k)`, except in the identity column, which takes keys no row of
+/// `t` holds (the corpus's integer ids are below `n`, its string ids `r<i>`).
+let private appendTo (nd: CorpusNode) (k: int) (t: Table) : Table =
+    appendFrom (nd.Mk(Table.rowCount t + k)) nd k t
 
 /// Best of `runs` BATCHED samples, in ms per call: each sample repeats `f` until it spans at least
 /// 20 ms, so a 1,000-row node whose one call takes a tenth of a millisecond is timed over a window
@@ -2067,7 +2072,7 @@ let clockTests =
               // This one holds the claim the seam exists for: the REFRESH alone, handed the delta the
               // diff built, costs no more than evaluating the same source from scratch, plus the
               // per-call floor (`tickFloorMs`). Every corpus node, the one-row edit and the one-row
-              // append, at the sizes `refreshSizes` names, the full evaluation at one thread as above.
+              // append, at every size `refreshSizes` names, the full evaluation at one thread as above.
               //
               // Phase 439 found three shapes on which the refresh alone cost 2.1 to 3.4 times the full
               // evaluation (`lines`, `window CumulSum`, `group-by high-card`): the refresh assembled its
@@ -2090,33 +2095,60 @@ let clockTests =
                            | _ -> "NOT DECLINED - the main suite's pin is red")
                   else
                       for kind in [ "edit"; "append" ] do
-                          for n in refreshSizes kind do
+                          for n in refreshSizes do
                               let w = RowIdentity.byColumn nd.IdCol
                               let before = nd.Mk n
+                              let big = if kind = "edit" then before else nd.Mk(n + 1)
 
-                              let after =
+                              let edited () =
                                   if kind = "edit" then
                                       setCell nd.EditCol (n / 2) nd.EditTo before
                                   else
-                                      appendTo nd 1 before
+                                      appendFrom big nd 1 before
 
                               let p = nd.Pipe n
                               let state = ok (Incremental.prime DataFrame.noResolve nd.Env w p before)
-                              let d = ok (Delta.diff w before after)
 
-                              let refresh () =
+                              // Phase 451 — each call refreshes a source of its own, drawn in turn from
+                              // a pool of prepared (source, delta) pairs (`refreshPool`), as a consumer's
+                              // tick does: one source refreshed over and over measured the collector's
+                              // heap budget, not the refresh (DECISIONS.md D42).
+                              let pool =
+                                  Array.init (refreshPool n) (fun _ ->
+                                      let after = edited ()
+                                      after, ok (Delta.diff w before after))
+
+                              let after, d = pool[0]
+
+                              let refreshOf (after: Table, d: TableDelta) =
                                   ok (Incremental.refresh DataFrame.noResolve nd.Env w p state d after)
 
                               Expect.equal
-                                  (Ok(Incremental.result (refresh ())))
+                                  (Ok(Incremental.result (refreshOf pool[0])))
                                   (DataFrame.evalPipelineInEnv nd.Env p after)
                                   (sprintf "%s %s @ %d: the refresh answers what the reference answers" kind nd.Name n)
 
-                              let fullMs = batchedMs 5 (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
-                              let refreshMs = batchedMs 5 (fun () -> refresh () |> ignore)
+                              let runs = 5
+
+                              let fullMs =
+                                  batchedMs runs (fun () -> fullAtOneThread nd.Env p after |> ok |> ignore)
+
+                              let mutable next = 0
+                              let gen2Before = System.GC.CollectionCount 2
+
+                              let refreshMs =
+                                  batchedMs runs (fun () ->
+                                      refreshOf pool[next] |> ignore
+                                      next <- (next + 1) % pool.Length)
+
+                              // The generation-2 collections the refresh's timing drew, less the one
+                              // `batchedMs` forces before each sample: the figure that moved with the
+                              // heap budget before Phase 451, printed so a reading that moves with it
+                              // again is visible in the log.
+                              let gen2 = System.GC.CollectionCount 2 - gen2Before - runs
 
                               printfn
-                                  "  [refresh] %-26s %-6s @ %6d: refresh %8.3f ms vs full %8.3f ms (x%.2f; allowed x1.0 full + floor %.3f ms)"
+                                  "  [refresh] %-26s %-6s @ %6d: refresh %8.3f ms vs full %8.3f ms (x%.2f; allowed x1.0 full + floor %.3f ms; %d gen-2)"
                                   nd.Name
                                   kind
                                   n
@@ -2124,6 +2156,7 @@ let clockTests =
                                   fullMs
                                   (refreshMs / fullMs)
                                   floorMs
+                                  gen2
 
                               Calibration.checkpoint ()
 
@@ -2461,6 +2494,76 @@ let appendTests =
                       | other -> failtestf "expected a restricted refresh, got %A" other
 
                       prior <- after
+
+          // Phase 451 — the representation pin behind the 20,000-row refresh-against-full cell. An
+          // in-place append grew the row tokens, a step's cells and the rows' groups by
+          // re-allocating each whole, and at 20,000 rows each such array is a large object (85,000
+          // bytes or more), collected only with generation 2 (DECISIONS.md D42). Over every corpus
+          // node the seam accepts, a prime and two chained appends: every array any of the three
+          // states holds per row is below the threshold, and each append SHARES every chunk of the
+          // prior state's caches it does not write — the last chunk, which it extends, aside. A flat
+          // re-allocation fails both.
+          testCase "an append re-allocates no per-row cache on the large-object heap, and shares the prior chunks"
+          <| fun _ ->
+              let threshold = 85_000
+              let n = 20_000
+
+              let bytes (a: System.Array) =
+                  a.Length
+                  * (if a.GetType().GetElementType() = typeof<int> then
+                         4
+                     else
+                         System.IntPtr.Size)
+
+              for nd in corpusNodes do
+                  if not (List.contains nd.Name refreshDeclinedShapes) then
+                      let w = RowIdentity.byColumn nd.IdCol
+                      let p = nd.Pipe n
+                      let t0 = nd.Mk n
+                      let t1 = appendTo nd 1 t0
+                      let t2 = appendTo nd 1 t1
+                      let s0 = ok (Incremental.prime DataFrame.noResolve nd.Env w p t0)
+
+                      let s1 =
+                          ok (Incremental.refresh DataFrame.noResolve nd.Env w p s0 (ok (Delta.diff w t0 t1)) t1)
+
+                      let s2 =
+                          ok (Incremental.refresh DataFrame.noResolve nd.Env w p s1 (ok (Delta.diff w t1 t2)) t2)
+
+                      Expect.equal
+                          (Ok(Incremental.result s2))
+                          (DataFrame.evalPipelineInEnv nd.Env p t2)
+                          (sprintf "%s: the chained refresh answers what the reference answers" nd.Name)
+
+                      for s, label in [ s0, "prime"; s1, "first append"; s2, "second append" ] do
+                          for name, arrays in Incremental.rowCaches s do
+                              for a in arrays do
+                                  Expect.isLessThan
+                                      (bytes a)
+                                      threshold
+                                      (sprintf
+                                          "%s, the %s: the %s cache holds an array of %d entries, a large object"
+                                          nd.Name
+                                          label
+                                          name
+                                          a.Length)
+
+                      for older, newer, label in [ s0, s1, "first"; s1, s2, "second" ] do
+                          let before = Map.ofList (Incremental.rowCaches older)
+
+                          for name, arrays in Incremental.rowCaches newer do
+                              match Map.tryFind name before with
+                              | Some prior when prior.Length > 0 ->
+                                  for k in 0 .. prior.Length - 2 do
+                                      Expect.isTrue
+                                          (obj.ReferenceEquals(arrays[k], prior[k]))
+                                          (sprintf
+                                              "%s: the %s append re-allocated chunk %d of the %s cache, which it does not write"
+                                              nd.Name
+                                              label
+                                              k
+                                              name)
+                              | _ -> ()
 
           testCase "append ticks of 1, k and n rows over every corpus pipeline answer the full evaluation, chained"
           <| fun _ ->

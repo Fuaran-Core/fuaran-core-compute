@@ -1,5 +1,87 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-21 — D42: the per-row caches of an incremental state are held in chunks below the large-object threshold, so an append shares the prior chunks; the refresh-against-full case draws each call's source from a pool; the 20,000-row append is timed, and D27's 448.C reach is closed
+
+**Context.** D27 held the refresh alone against the full evaluation at every size for an edit, but for
+an append only at 1,000 and 100,000 rows. At 20,000 rows the append's refresh on `byRegion`,
+`filter > groupBy` and `filter > groupBy > filter` read 0.8 to 2.5 times a full evaluation of 0.24 to
+0.45 ms, and Phase 448 named two causes: the large-object growth of two per-row arrays, and an
+instrument that re-refreshed one (state, delta, source) triple. Phase 451 was filed for both (448's
+deferred task 448.t3).
+
+**Both premises were checked on this tree before anything was built.** A probe counted the runtime's
+large-object allocation events over 500 in-place appends at 20,000 rows. It found exactly one 160 KB
+`string[]` (the row tokens) and one 160 KB `Cell[]` (a step's cells) per refresh on the three nodes,
+and nothing else on the large-object heap. On `byRegion` the `Cell[]` is the `Derive` step's cells,
+which are also the walk's frame column, so chunking the cache alone would not have reached it. A third
+per-row cache, the rows' groups (`int[]`), was copied whole on every in-place refresh too, and on an
+edit the copy was then discarded. At 20,000 rows it is 80 KB, just under the threshold, and it crosses
+the threshold at 21,250 rows. It is the same class of array and is taken in the same change. The
+instrument premise held as well; the A/B is below.
+
+**Decision.**
+
+1. **The three per-row caches are `RowChunks`**: chunks of 8,192 entries, 64 KB of references, each
+   owned by the cache that allocated or copied it. `RowChunks.grow` shares every chunk of the prior
+   cache that keeps its length, copies the one it extends, and allocates the new ones. A shared chunk
+   is copied before its first write. So a prior state's caches never move, and two refreshes of one
+   state see only their own writes. A state built by a full walk, a prime included, is chunked too, so
+   the first refresh after a prime shares as every later one does. No array a state keeps per row is
+   ever a large object.
+2. **A `Derive`'s column in the walk's frame is the step's chunks** (`WalkFrame.Cached`). A step that
+   reads only the rows a refresh walks reads them off the chunks (`cellAt`, `cellAtSlot`,
+   `cellsAtSlots`, the patched result column). A step that reads the column whole (a sort, a window, a
+   group streamed in full) concatenates it once (`column`).
+3. **The wire form is the flat arrays'.** The encoder flattens each cache (`RowChunks.toArray`) and the
+   decoder chunks it again, so no encoded byte, corpus vector or result value moves.
+4. **The refresh-against-full case draws each call's source from a pool** of prepared (source, delta)
+   pairs (`ScalingTests.refreshPool`: 128 at 1,000 and 20,000 rows, 16 at 100,000), as a consumer's
+   tick has a source of its own. The full evaluation it is held against still re-evaluates one source,
+   so the bound is not loosened. The case prints the generation-2 collections each refresh timing drew.
+   `refreshSizes` is one list, and the 20,000-row append is timed on every node the seam accepts.
+
+**The A/B** (Arm64, Release, the case narrowed to the append at 1,000 then 20,000 rows, two runs per
+arm; the figures are in `docs/performance.md`, "A 20,000-row append refresh is held against the full
+evaluation"). The heap budget was moved two ways: the generation-0 budget raised to 256 MB, and the
+large-object threshold raised past the caches. On the pre-451 library (`5cd9ecc`) with one source, the
+three nodes read 0.55 to 1.88 times the full, with 1 to 23 generation-2 collections per cell, and went
+red on a counted attempt in both default runs. With the pool they drew no generation-2 collection, but
+`filter > groupBy` still read 0.11 to 0.17 ms across the three budgets. On this phase's library with
+the pool, it read 0.086 to 0.095 ms on all three. One source on this phase's library held the three
+grouped nodes steady too, but not `lines`, whose refresh still allocates its result's 160 KB column:
+the pool stays.
+
+**448.C is closed** (448.t3). One clock leg of the case on this tree read the 20,000-row append at
+0.09 to 0.43 of the full evaluation on every node the seam accepts. Across every size and both ticks
+no cell read above 0.85. A main-suite case pins the representation: over every node the seam accepts,
+a prime and two chained appends at 20,000 rows leave no per-row array of 85,000 bytes or more, and
+each append shares every chunk of the prior caches it does not write. It went red under each of two
+perturbations, run one at a time: `grow` returning one flat array, and `grow` copying the chunks it
+shares.
+
+**Considered and rejected.**
+
+- **A shared buffer with spare capacity**, written past the prior's length by the next append. Two
+  refreshes of one state, which the seam allows and the suite does, would both write the same spare
+  slots, and one state would read the other's rows.
+- **Raising the large-object threshold** (`GCLOHThreshold`). It is a process-wide runtime setting.
+  A library cannot own it for its consumers, and it only moves the cliff.
+- **Flat caches after a full walk, chunked from the first refresh.** It saves a prime the chunking,
+  but the first refresh after every prime then re-chunks the whole state. That is the refresh the case
+  times, and the one a consumer pays first.
+- **Timing the full evaluation over the pool too.** It is the symmetric choice, but it can only make
+  the full evaluation dearer and the bound easier, so it is not taken.
+
+**Not taken here, and why.** The walk's own per-slot scratch (`Prior`, `Stable`, a filter's order) is
+allocated per refresh and dropped. It crosses the threshold at about 21,000 rows for an `int[]` and
+85,000 for a `bool[]`. It is not a cache and is outside this phase's acceptance. A refreshed result's
+computed column is the consumer's answer, and a 20,000-row column of floats is 160 KB whatever the
+seam does. The group order (`GroupOrder`) has one entry per group, not per row.
+
+**Consequences.** No public signature, answer or wire byte moves (`STABILITY.md`, class `none`,
+`performance`), and the `0.41.0` draft is ridden. The clock leg's case count is unchanged. The main
+suite gains one case.
+
 ## 2026-10-16 — D41: the relational model's union refuses a pair no column type holds together through the cells' typing's own definitions, and the relational differential excuses nothing — its D18 arm was dead and is gone; the frame reads a packed cell through `Pipeline.fst`'s `pack_cell`, tied by a proved equality; D38 item 1's twin sentence is corrected
 
 **Context.** Phase 470 (D38) left two things out of its scope. The relational differential in
