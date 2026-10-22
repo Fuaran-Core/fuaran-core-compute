@@ -49,6 +49,141 @@ module internal Verdict =
         { subject family law evidence counterexample with
             Kind = LawKind.Subject(Some dimension) }
 
+/// The tolerance a transform law vector carries on its host-rounded columns, read and applied as a
+/// certifying host applies it (Phase 559, `DECISIONS.md` D44; the member itself is Phase 557's, D43).
+/// A module of its own rather than members of `DataFrameConformance`: it is the comparison the
+/// families' vectors are read under, not a family, and it has no pre-split spelling to forward.
+module VectorTolerance =
+
+    /// The distance between two doubles in ulps (Phase 559, `DECISIONS.md` D44): the difference of
+    /// their IEEE-754 binary64 bit patterns read as ORDERED integers — a negative double's pattern
+    /// reflected below zero, so adjacent doubles are one apart across the whole line. The measure
+    /// D43's bound was taken in; `floatsAgree` is the rule that reads it.
+    let ulpDistance (a: float) (b: float) : bigint =
+        let ordered (x: float) =
+            let bits = System.BitConverter.DoubleToInt64Bits x
+
+            if bits < 0L then
+                bigint System.Int64.MinValue - bigint bits
+            else
+                bigint bits
+
+        abs (ordered a - ordered b)
+
+    /// Do two float cells of a host-rounded column agree under a bound of `ulps` (Phase 559,
+    /// `DECISIONS.md` D44)? Two finite nonzero doubles of one sign agree when `ulpDistance` puts them
+    /// within the bound. A zero of either sign, a NaN and an infinity are compared exactly, bit for bit,
+    /// and two doubles of opposite signs never agree: a special value is decided by the table before
+    /// any host function runs, so it is pinned on every host, and the bare measure would otherwise
+    /// admit `0` against the least subnormal, one apart, which is exactly the pair the table decides.
+    let floatsAgree (ulps: int) (a: float) (b: float) : bool =
+        let special (x: float) =
+            x = 0.0 || System.Double.IsNaN x || System.Double.IsInfinity x
+
+        if special a || special b then
+            System.BitConverter.DoubleToInt64Bits a = System.BitConverter.DoubleToInt64Bits b
+        elif (a < 0.0) <> (b < 0.0) then
+            false
+        else
+            ulpDistance a b <= bigint ulps
+
+    /// A transform law vector's `expected.tolerance` (Phase 557; read here since Phase 559): each
+    /// named column with its bound in ulps, in the file's order, and empty where the vector's
+    /// `expected` member carries none. A member that is not an integer bound is not a bound, so it is
+    /// not read as one — the column it names is then compared byte for byte.
+    let ofExpected (expected: JVal) : (string * int) list =
+        match expected with
+        | JObj members ->
+            match members |> List.tryPick (fun (k, v) -> if k = "tolerance" then Some v else None) with
+            | Some(JObj bounds) ->
+                bounds
+                |> List.choose (fun (column, bound) ->
+                    match bound with
+                    | JInt n -> Some(column, n)
+                    | _ -> None)
+            | _ -> []
+        | _ -> []
+
+    /// Does a host's answer `actual` agree with a transform law vector's recorded `expected` table
+    /// (both canonical table wire strings) under the vector's `expected.tolerance` (Phase 559,
+    /// `DECISIONS.md` D44)? `tolerance` is that member read as written — each host-rounded output
+    /// column with its bound in ulps — and empty where the vector carries none. `None` is agreement;
+    /// `Some` names the first disagreement.
+    ///
+    /// The rule a certifying host applies, stated here once so a .NET host does not restate it:
+    /// with no tolerance the two strings are equal byte for byte. With one, every named column is
+    /// present in both tables under one type and one length, null in exactly the same rows, and each
+    /// pair of present cells is equal — except that two float cells agree when `floatsAgree` puts
+    /// them within the column's bound; and the actual table with every named column replaced by the
+    /// recorded one encodes to the recorded string byte for byte, so the schema, the column order
+    /// and every column the vector does not name are compared exactly as before.
+    let tableAgrees (tolerance: (string * int) list) (expected: string) (actual: string) : string option =
+        if actual = expected then
+            None
+        elif List.isEmpty tolerance then
+            Some "the tables differ, and the vector names no host-rounded column, so they are compared byte for byte"
+        else
+            match ColumnCodec.decode expected, ColumnCodec.decode actual with
+            | Ok(Embedded recorded), Ok(Embedded answered) ->
+                let cellAgrees (name: string) (ulps: int) (i: int) (r: Cell) (a: Cell) =
+                    match r, a with
+                    | Float x, Float y when floatsAgree ulps x y -> None
+                    | Float x, Float y ->
+                        Some(
+                            sprintf
+                                "column '%s' row %d: %s recorded and %s answered are %A ulps apart, outside the bound of %d (a zero, a sign or a non-finite value is compared exactly)"
+                                name
+                                i
+                                (string x)
+                                (string y)
+                                (ulpDistance x y)
+                                ulps
+                        )
+                    | _ when r = a -> None
+                    | _ -> Some(sprintf "column '%s' row %d: %A recorded, %A answered" name i r a)
+
+                let columnAgrees (name: string, ulps: int) =
+                    match Table.tryColumn name recorded, Table.tryColumn name answered with
+                    | Some r, Some a when r.Type <> a.Type ->
+                        Some(sprintf "column '%s' is %A recorded and %A answered" name r.Type a.Type)
+                    | Some r, Some a when Column.length r <> Column.length a ->
+                        Some(
+                            sprintf
+                                "column '%s' has %d rows recorded and %d answered"
+                                name
+                                (Column.length r)
+                                (Column.length a)
+                        )
+                    | Some r, Some a ->
+                        List.zip (Column.toCells r) (Column.toCells a)
+                        |> List.indexed
+                        |> List.tryPick (fun (i, (rc, ac)) -> cellAgrees name ulps i rc ac)
+                    | None, _ -> Some(sprintf "the tolerance names column '%s', which the recorded table lacks" name)
+                    | _, None -> Some(sprintf "the answered table lacks column '%s'" name)
+
+                match List.tryPick columnAgrees tolerance with
+                | Some why -> Some why
+                | None ->
+                    let named = set (List.map fst tolerance)
+
+                    let substituted =
+                        { answered with
+                            Columns =
+                                answered.Columns
+                                |> List.map (fun c ->
+                                    if named.Contains c.Name then
+                                        Table.tryColumn c.Name recorded |> Option.defaultValue c
+                                    else
+                                        c) }
+
+                    if ColumnCodec.encode (Embedded substituted) = expected then
+                        None
+                    else
+                        Some "a column the tolerance does not name, or the schema, differs from the recorded table"
+            | Error e, _ -> Some("the recorded table did not decode: " + ColumnCodec.errorString e)
+            | _, Error e -> Some("the answered table did not decode: " + ColumnCodec.errorString e)
+            | _ -> Some "a table wire string is not an embedded table"
+
 module DataFrameConformance =
 
     /// The dataframe-transform parity laws (Phase 29) — the teeth on a host evaluator's agreement

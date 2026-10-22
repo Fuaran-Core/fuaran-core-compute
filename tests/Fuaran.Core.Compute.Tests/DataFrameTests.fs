@@ -6025,11 +6025,25 @@ let preparedResultTests =
                   let kept = DataFrame.evalToPrepared DataFrame.noResolve Map.empty pipeline source
 
                   match jsonText "verdict" expected, reference, kept with
-                  | Some "ok", Ok _, Ok p ->
+                  | Some "ok", Ok r, Ok p ->
+                      let kept = ColumnCodec.encode (Embedded(DataFrame.toTable p))
+
+                      // Within this host the law is byte-exact: the kept result IS evalPrepared's.
                       Expect.equal
-                          (ColumnCodec.encode (Embedded(DataFrame.toTable p)))
-                          (jsonText "table" expected |> Option.get)
-                          (sprintf "%s: toTable of the kept result is the vector's answer, byte for byte" id)
+                          kept
+                          (ColumnCodec.encode (Embedded r))
+                          (sprintf "%s: toTable of the kept result is evalPrepared's answer, byte for byte" id)
+
+                      // Against the vector, as a certifying host compares (Phase 559, D44): the file was
+                      // emitted on one host, so its host-rounded columns hold within their tolerance.
+                      match
+                          VectorTolerance.tableAgrees
+                              (VectorTolerance.ofExpected expected)
+                              (jsonText "table" expected |> Option.get)
+                              kept
+                      with
+                      | None -> ()
+                      | Some why -> failtestf "%s: toTable of the kept result is not the vector's answer: %s" id why
                   | Some "error", Error a, Error b ->
                       refused <- refused + 1
                       Expect.equal b a (sprintf "%s: the kept evaluation refuses with evalPrepared's error" id)
@@ -6494,10 +6508,16 @@ let kernelTests =
 
                   match jsonText "verdict" expected, portable with
                   | Some "ok", Ok t ->
-                      Expect.equal
-                          (ColumnCodec.encode (Embedded t))
-                          (jsonText "table" expected |> Option.get)
-                          (sprintf "%s: the answer is the vector's, byte for byte" id)
+                      // The pair agree byte for byte above; against the vector, the certifying host's
+                      // comparison (Phase 559, D44) — exact outside the host-rounded columns it names.
+                      match
+                          VectorTolerance.tableAgrees
+                              (VectorTolerance.ofExpected expected)
+                              (jsonText "table" expected |> Option.get)
+                              (ColumnCodec.encode (Embedded t))
+                      with
+                      | None -> ()
+                      | Some why -> failtestf "%s: the answer is not the vector's: %s" id why
                   | Some "error", Error _ -> ()
                   | verdict, r -> failtestf "%s: the vector says %A, the pair answered %A" id verdict r
 

@@ -1754,16 +1754,23 @@ let private pipelineDifferential
 
     tally
 
-/// An expression of exactly `nodes` `ColExpr` nodes (odd, at least 1): `Col "v"` wrapped in
-/// `Binary(Add, _, Lit 1)` — two nodes a wrap.
+/// An expression of exactly `nodes` `ColExpr` nodes (odd, at least 1): one `Col "v"` and
+/// `(nodes - 1) / 2` each of `Binary(Add, _, _)` and `Lit 1`, as a BALANCED tree (Phase 559). What
+/// reads it is a claim about the node COUNT, so the depth is incidental and held to the logarithm of
+/// it: the evaluator recurses as deep as the expression, and the left-deep chain this used to build
+/// (256 wraps) outran a Windows thread's stack in a Debug build once Phase 557 grew the unit walk's
+/// frame (`DECISIONS.md` D44 records the measured headroom).
 let private pExprOfNodes (nodes: int) : ColExpr =
-    let rec wrap (acc: ColExpr) (k: int) =
-        if k = 0 then
-            acc
+    let rec build (n: int) (leftmost: bool) =
+        if n <= 1 then
+            if leftmost then Col "v" else Lit(Cell.Int 1)
         else
-            wrap (Binary(Add, acc, Lit(Cell.Int 1))) (k - 1)
+            // The n - 1 nodes under the root, split into two odd counts.
+            let half = (n - 1) / 2
+            let left = if half % 2 = 1 then half else half - 1
+            Binary(Add, build left leftmost, build (n - 1 - left) false)
 
-    wrap (Col "v") ((nodes - 1) / 2)
+    build nodes true
 
 /// A node counter that FORGETS a `Case`'s nested `when` / `then` arms — the go-red's under-counting
 /// model (Phase 234). It agrees with `expr_nodes` on every other constructor, so only an expression
@@ -5356,6 +5363,15 @@ let proofOracleTests =
               let rows = Table.rowCount table
               let over = pExprOfNodes 513
               let within = pExprOfNodes 511
+
+              // Phase 559: the count is the finding, the depth is not — held to the tree's logarithm,
+              // so no stack ever decides this case (a 256-deep chain once did, on Windows).
+              let rec depth (e: ColExpr) =
+                  match e with
+                  | Binary(_, a, b) -> 1 + max (depth a) (depth b)
+                  | _ -> 1
+
+              Expect.isLessThanOrEqual (depth over) 10 "the over-limit expression is balanced, ten deep at most"
 
               Expect.equal
                   (ModelPipe.expr_nodes (pExprToModel over))

@@ -53,17 +53,6 @@ type private ParsedVector =
         Tolerance: (string * int) list
     }
 
-/// `expected.tolerance` (Phase 557): each named column with its bound in ulps.
-let private toleranceOf (expected: JVal) : (string * int) list =
-    match field "tolerance" expected with
-    | Some(JObj ms) ->
-        ms
-        |> List.choose (fun (k, v) ->
-            match v with
-            | JInt n -> Some(k, n)
-            | _ -> None)
-    | _ -> []
-
 let private parseVectors (json: string) : Result<ParsedVector list, string> =
     match Json.parse json with
     | Error m -> Error("the vector file did not parse: " + m)
@@ -86,7 +75,7 @@ let private parseVectors (json: string) : Result<ParsedVector list, string> =
                                   Source = s
                                   Verdict = verdict
                                   Table = str "table" expected
-                                  Tolerance = toleranceOf expected }
+                                  Tolerance = VectorTolerance.ofExpected expected }
                         | _ -> Error("vector " + id + ": input.pipeline / input.source / expected.verdict missing")
                     | _ -> Error "a vector is missing id / input / expected")
 
@@ -116,12 +105,22 @@ let private checkVector (v: ParsedVector) : string option =
         | Embedded table ->
             match DataFrame.evalPipeline pipeline table, v.Verdict, v.Table with
             | Ok t, "ok", Some expected ->
+                // Phase 559 (D44): as a certifying host compares — the vector's own tolerance on its
+                // host-rounded columns, byte for byte everywhere else — because the file was emitted
+                // on one host and this check runs on every host CI has.
                 let actual = ColumnCodec.encode (Embedded t)
 
-                if actual = expected then
-                    None
-                else
-                    Some(sprintf "%s: the reference answered\n  %s\nbut the vector records\n  %s" v.Id actual expected)
+                match VectorTolerance.tableAgrees v.Tolerance expected actual with
+                | None -> None
+                | Some why ->
+                    Some(
+                        sprintf
+                            "%s: %s — the reference answered\n  %s\nbut the vector records\n  %s"
+                            v.Id
+                            why
+                            actual
+                            expected
+                    )
             | Ok t, "ok", None -> Some(sprintf "%s: an `ok` vector carries no expected table (reference: %A)" v.Id t)
             | Ok _, verdict, _ ->
                 Some(sprintf "%s: the reference evaluated the pipeline, but the vector says `%s`" v.Id verdict)
@@ -421,11 +420,80 @@ let private announce (text: string) (fatal: bool) =
     if fatal then
         failtest text
 
+/// Phase 559 (D44): is the committed file this host's render up to the tolerance its vectors
+/// declare? The file was emitted on ONE host, and a host whose libm rounds a transcendental an ulp
+/// apart renders that ulp, so the freshness question across hosts is the certifying host's question.
+/// Strict everywhere else: the two have the same lines, and each line that differs is one vector
+/// carrying `expected.tolerance` whose every member but the recorded table is identical and whose
+/// tables agree under `VectorTolerance.tableAgrees`.
+let private agreesWithinTolerance (committed: string) (rendered: string) : bool =
+    let without (name: string) (el: JVal) =
+        match el with
+        | JObj ms -> JObj(ms |> List.filter (fun (k, _) -> k <> name))
+        | other -> other
+
+    // One vector per line, as the corpus writer lays the file out; the separator is not the vector's.
+    let vectorOf (line: string) =
+        match Json.parse (line.Trim().TrimEnd(',')) with
+        | Ok(JObj _ as v) -> Some v
+        | _ -> None
+
+    let linesAgree (c: string) (r: string) =
+        c = r
+        || (match vectorOf c, vectorOf r with
+            | Some cv, Some rv ->
+                match
+                    field "expected" cv, field "expected" rv, (c.TrimEnd().EndsWith ",") = (r.TrimEnd().EndsWith ",")
+                with
+                | Some ce, Some re, true ->
+                    let tolerance = VectorTolerance.ofExpected ce
+
+                    not (List.isEmpty tolerance)
+                    && without "expected" cv = without "expected" rv
+                    && without "table" ce = without "table" re
+                    && (match str "table" ce, str "table" re with
+                        | Some ct, Some rt -> Option.isNone (VectorTolerance.tableAgrees tolerance ct rt)
+                        | _ -> false)
+                | _ -> false
+            | _ -> false)
+
+    let cs = fingerprintLines committed
+    let rs = fingerprintLines rendered
+    cs.Length = rs.Length && Array.forall2 linesAgree cs rs
+
+/// A double moved `k` representable steps (Phase 559's go-red): up for a positive `k`, down for a
+/// negative one.
+let rec private nudgeUlps (k: int) (x: float) : float =
+    if k = 0 then x
+    elif k > 0 then nudgeUlps (k - 1) (Math.BitIncrement x)
+    else nudgeUlps (k + 1) (Math.BitDecrement x)
+
+/// A recorded table wire with the cells of one column mapped (each beside its row index), re-encoded
+/// canonically — the perturbations Phase 559's go-red makes.
+let private perturbedColumn (wire: string) (name: string) (f: int -> Cell -> Cell) : string =
+    match ColumnCodec.decode wire with
+    | Ok(Embedded table) ->
+        let columns =
+            table.Columns
+            |> List.map (fun c ->
+                if c.Name = name then
+                    match Column.ofCells c.Name c.Type (Column.toCells c |> List.mapi f) with
+                    | Ok c' -> c'
+                    | Error e -> failtestf "the perturbed column did not build: %A" e
+                else
+                    c)
+
+        ColumnCodec.encode (Embedded { table with Columns = columns })
+    | other -> failtestf "the recorded table did not decode: %A" other
+
 /// A committed file held to the text its exporter renders, through the substrate's one freshness
 /// reading (`CorpusFile.firstDifference`): red naming the first line that differs, and the re-emit.
+/// Phase 559: a difference confined to host-rounded columns within their declared bound is not
+/// staleness (`agreesWithinTolerance`).
 let private expectFresh (committed: string) (rendered: string) (what: string) =
     match CorpusFile.firstDifference committed rendered with
     | None -> ()
+    | Some _ when agreesWithinTolerance committed rendered -> ()
     | Some d ->
         let shown (line: string option) =
             defaultArg (Option.map (sprintf "%A") line) "(past the end)"
@@ -485,6 +553,120 @@ let tests =
                           (sprintf "no vector was rendered for the `%s` shape" shape)
 
                   Expect.isTrue (vectors |> List.exists (fun v -> v.Verdict = "ok")) "an accepted pipeline was rendered"
+
+          // ---- Phase 559 (D44): the tolerance read as a certifying host reads it ----
+          testCase
+              "a vector's tolerance admits a host-rounded column within its bound and nothing else — a column it does not name, a null, a zero, a sign and a value past the bound are each red"
+          <| fun _ ->
+              // The go-red of the comparison every certifying leg above now uses. The perturbations
+              // are made on the vector's own recorded table, so the case means the same on every host.
+              let v =
+                  match parseVectors (LawVectorExport.renderTransformVectors ()) with
+                  | Ok vectors -> vectors |> List.find (fun v -> v.Id.EndsWith "-power-ln-log10")
+                  | Error m -> failtest m
+
+              Expect.equal v.Tolerance [ "l", 2; "l10", 2 ] "the log vector names its two host-rounded columns"
+              let recorded = Option.get v.Table
+              let mapped = perturbedColumn recorded
+              let atRow (row: int) (g: Cell -> Cell) = fun i c -> if i = row then g c else c
+
+              let byUlps k =
+                  function
+                  | Float x -> Float(nudgeUlps k x)
+                  | c -> c
+
+              let agrees = VectorTolerance.tableAgrees v.Tolerance recorded
+              Expect.isNone (agrees recorded) "the recorded table agrees with itself"
+
+              for k in [ -2; -1; 1; 2 ] do
+                  Expect.isNone (agrees (mapped "l10" (atRow 3 (byUlps k)))) (sprintf "log10 %+d ulps is within" k)
+                  Expect.isNone (agrees (mapped "l" (fun _ c -> byUlps k c))) (sprintf "ln %+d ulps, every row" k)
+
+              for k in [ -3; 3; 1000 ] do
+                  Expect.isSome (agrees (mapped "l10" (atRow 3 (byUlps k)))) (sprintf "log10 %+d ulps is outside" k)
+
+              Expect.isSome (agrees (mapped "l10" (atRow 0 (fun _ -> Null)))) "a value answered as a null"
+              Expect.isSome (agrees (mapped "v" (atRow 0 (fun _ -> Cell.Int 99)))) "a pinned int column moved"
+              Expect.isSome (agrees (mapped "g" (atRow 0 (fun _ -> Str "z")))) "a pinned text column moved"
+
+              Expect.isSome
+                  (VectorTolerance.tableAgrees [] recorded (mapped "l10" (atRow 3 (byUlps 1))))
+                  "with no tolerance a single ulp is a difference"
+
+              Expect.isSome
+                  (VectorTolerance.tableAgrees [ "absent", 2 ] recorded (mapped "l10" (atRow 3 (byUlps 1))))
+                  "a tolerance naming another column does not cover this one"
+
+              // The measure and its rule, at the edges.
+              Expect.equal (VectorTolerance.ulpDistance 1.0 (Math.BitIncrement 1.0)) 1I "adjacent doubles are one apart"
+
+              Expect.equal (VectorTolerance.ulpDistance -1.0 (Math.BitDecrement -1.0)) 1I "below zero as above it"
+
+              Expect.equal
+                  (VectorTolerance.ulpDistance Double.Epsilon -Double.Epsilon)
+                  2I
+                  "the least subnormals are two apart across zero"
+
+              Expect.isTrue (VectorTolerance.floatsAgree 2 0.5 (nudgeUlps 2 0.5)) "two ulps is within two"
+              Expect.isFalse (VectorTolerance.floatsAgree 2 0.5 (nudgeUlps 3 0.5)) "three is not"
+              Expect.isFalse (VectorTolerance.floatsAgree 2 0.0 Double.Epsilon) "a zero is exact"
+              Expect.isFalse (VectorTolerance.floatsAgree 2 0.0 -0.0) "and its sign is pinned"
+
+              Expect.isFalse (VectorTolerance.floatsAgree 2 Double.Epsilon -Double.Epsilon) "opposite signs never agree"
+
+              Expect.isFalse
+                  (VectorTolerance.floatsAgree 2 Double.MaxValue Double.PositiveInfinity)
+                  "an infinity is exact"
+
+          testCase
+              "the committed file's freshness admits a host-rounded answer within its bound and nothing else (Phase 559)"
+          <| fun _ ->
+              // The freshness question on a host whose libm rounds an ulp apart from the emitting
+              // host's: the render differs from the file in one host-rounded cell, and that is not
+              // staleness — but the same move outside the bound, or anywhere else in the file, is.
+              let rendered = LawVectorExport.renderTransformVectors ()
+
+              let v =
+                  match parseVectors rendered with
+                  | Ok vectors -> vectors |> List.find (fun v -> v.Id.EndsWith "-power-ln-log10")
+                  | Error m -> failtest m
+
+              let recorded = Option.get v.Table
+
+              let withL10 (k: int) =
+                  perturbedColumn recorded "l10" (fun i c ->
+                      match c with
+                      | Float x when i = 3 -> Float(nudgeUlps k x)
+                      | other -> other)
+
+              // The table is a JSON string inside the file: its quotes are escaped there, and the
+              // table carries no other character the writer escapes.
+              let escaped (wire: string) = wire.Replace("\"", "\\\"")
+
+              let replacedOnce (needle: string) (replacement: string) (text: string) =
+                  let i = text.IndexOf(needle, StringComparison.Ordinal)
+                  Expect.isGreaterThanOrEqual i 0 "the fixture could not be perturbed: the needle is not in the file"
+
+                  Expect.equal
+                      (text.IndexOf(needle, i + 1, StringComparison.Ordinal))
+                      -1
+                      "the needle occurs once, so the perturbation is the one intended"
+
+                  text.Substring(0, i) + replacement + text.Substring(i + needle.Length)
+
+              let oneUlp = replacedOnce (escaped recorded) (escaped (withL10 1)) rendered
+              let threeUlps = replacedOnce (escaped recorded) (escaped (withL10 3)) rendered
+              Expect.notEqual oneUlp rendered "the perturbation moved the file's bytes"
+              Expect.isTrue (agreesWithinTolerance oneUlp rendered) "one ulp in a host-rounded column is fresh"
+              Expect.isFalse (agreesWithinTolerance threeUlps rendered) "three ulps is not"
+
+              Expect.isFalse
+                  (agreesWithinTolerance (replacedOnce "\"seed\": " "\"seed\": 1" rendered) rendered)
+                  "a header member that moved is stale"
+
+              Expect.isFalse
+                  (agreesWithinTolerance (replacedOnce "\"iterations\": " "\"iterations\": 1" oneUlp) rendered)
+                  "and is not hidden behind a within-tolerance vector"
 
           // ---- Phase 557 (D43): the tolerance a host-rounded column carries ----
           testCase

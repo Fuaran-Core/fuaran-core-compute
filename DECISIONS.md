@@ -1,5 +1,86 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-22 — D44: a transform law vector is compared under the tolerance it carries, on every host and in this suite — a host-rounded column cell by cell within its bound, a zero, a sign and a non-finite value exact, everything else byte for byte — by one comparison the conformance kit ships; the committed file's freshness is asked the same way; the over-limit oracle expression is balanced, and the evaluator's measured stack headroom is recorded
+
+**Context.** `main` was red in CI from `38ae3d8` (Phase 557's landing). On the Linux runners, in Debug and in
+Release, `transform-77-power-ln-log10` answers `0.5118833609788744` in row 4 of `l10` where the vector,
+emitted on a Windows x64 host, records `0.5118833609788743`: one ulp, which D43's bound admits. D43 item 6
+had put the bound in the data (`expected.tolerance`), but nothing in this repository read it. Three legs
+compared the recorded table byte for byte: the oracle question of the committed-vectors case
+(`LawVectorTests`), the prepared-result law over the vectors (Phase 342) and the kernel pair over the
+vectors (both `DataFrameTests`). They were green where the file was emitted and red everywhere else.
+Separately, on Windows `verify.ps1` died with `0xC00000FD` inside the `Proofs.Oracle` case "the finding
+holds on the shipped evaluator".
+
+**Ruled.**
+
+1. **The comparison.** An `ok` vector with no `tolerance` member is compared byte for byte, as before. One
+   with the member is compared column by column. Every column it names must be present in both tables,
+   under one type and one length, and null in the same rows. Each pair of present cells must be equal,
+   except that two nonzero finite floats of one sign agree when they lie within the column's bound. The
+   distance is the measure D43 item 8 was taken in: the difference of the two doubles' IEEE-754 binary64
+   bit patterns, read as ordered integers. Then the answer, with every named column replaced by the
+   recorded one, must encode to `expected.table` byte for byte, so the schema, the column order and every
+   column the member does not name are compared exactly as before. The bound is the vector's own, never a
+   constant on the host side; today every vector carries D43's 2. The rule is
+   `Fuaran.Compute.Conformance.VectorTolerance` (`ofExpected`, `tableAgrees`, `floatsAgree`, `ulpDistance`).
+   It is the kit a .NET host certifies with, and the three legs above call it. The file's `description`
+   states the same rule for a host in another language, which is the re-emit: one line, and every vector
+   is byte-identical. It is a module of its own because it is the comparison the families' vectors are
+   read under, not a family, and so has no pre-split spelling for `Forwards.fs` to carry.
+2. **A zero, a sign and a non-finite value are exact.** D43 item 6 says the special-value vector is pinned
+   because "no wrong special value lies within two ulps of the right one", and gives `0` against a
+   subnormal as an instance. Under the bare measure that is false: `0` and the least subnormal are one
+   apart, and `expUnder` (`exp(-746)`, decided by the table) records `0`. So a zero of either sign is
+   compared bit for bit, and so is a NaN or an infinity (the wire carries neither). Two floats of opposite
+   signs never agree. This makes D43's sentence true as written. It is strictly narrower than D43's bound,
+   and admits nothing D43 refused.
+3. **Freshness is the same question.** The committed file and this host's render are the same file when
+   they are byte-identical. They are also the same when they have the same lines and each line that differs
+   is one vector carrying the member, identical in every member but its recorded table, whose tables agree
+   under item 1. A header line that moved is staleness, and so is any other vector line. The within-host
+   laws stay byte-exact: the render byte-stable across renders, the kept result against `evalPrepared`, the
+   portable kernel member against the native one.
+4. **The corpus copy is not re-synced here.** `copies.json` grades it `against: release`. It holds the
+   `v0.40.0` release's file (67 iterations, `kitVersion` 0.40.0). The `CORPUS COPY STALE` banner is the
+   standing, non-fatal report every run has printed since: the green run on `5d0435f` prints it at 89 lines
+   against 93. Moving the copy now would publish twelve draft vectors no certifying host evaluates yet,
+   ahead of the release they belong to. It moves with `0.41.0`, by that release's own re-emit.
+5. **The stack overflow, at its cause.** Reproduced from this tree in Debug on Windows x64: 255 repeats of
+   `resolveUnitsIn` / `go` / `both`, three frames for each `Binary` level. On `5d0435f` the same case passes.
+   The case's 513-node expression was a left-deep chain 256 deep. The finding it pins is about the node
+   COUNT (§21.8's limit is enforced nowhere, `pipeline-limit-unenforced`). The depth was incidental, and the
+   evaluator recurses as deep as an expression is in several walks: unit resolution, typing, compilation.
+   The expression is now a balanced tree of the same nodes (one `Col`, 256 `Add`, 256 `Lit 1`), ten deep,
+   and the case asserts the depth. No thread's stack is raised and no production code moves.
+6. **Measured, on 2026-10-22 (.NET 10, Windows x64).** A probe evaluates a left-deep `Binary(Add, _, Lit 1)`
+   chain through `evalPipeline` on a thread of a stated stack, and halves the interval to the deepest chain
+   answered. Debug, 1 MB: about 162 levels at `38ae3d8` and 190 at `5d0435f`. Debug, the default thread:
+   about 250 and 292. Release, 1 MB: about 772 at `38ae3d8`, the limit there being `compileExpr`. The
+   256-deep case therefore passed by about 36 levels before Phase 557 grew `resolveUnitsIn`'s frame with the
+   `Pow` arm, and failed by about 6 after. The falsifier is a chain the probe reports answered at a depth it
+   also reports overflowing. The instrument was checked both ways: the same chain passes at 150 and
+   overflows at 200 on a 1 MB Debug thread.
+7. **Recorded, and left where it is decided.** Nothing bounds an expression's depth. `decodePipeline`
+   accepts a chain 300 deep, and the node limit is unenforced. Enforcing the node limit, the decision
+   `pipeline-limit-unenforced` records as open, bounds the depth at 511. That is inside a Release build's
+   measured 1 MB headroom and outside a Debug build's. This entry adds the measurement to that open
+   decision, so whoever takes it starts from the number; it does not take it.
+
+**Premises checked against the tree.** The shard asked that the format say which answers are
+tolerance-compared and by how much. The format already did, since 557 (`expected.tolerance`). What it did
+not say was the measure, or what else in a named column is exact, and the description now states both. The
+CI's corpus banner is not one of the three failures, and it predates 557 (item 4). The overflow does not
+predate 557 on this case, but it is a margin 557 consumed rather than a defect it introduced (item 6).
+
+**Rejected.** *A host-side constant bound in the comparison:* the shard rules it out, and it would let a
+vector's tolerance and a host's disagree silently. *Comparing the freshness of the committed file only on
+the emitting host:* nothing records which host that was, and a CI on two operating systems is the case the
+check exists for. *Raising the test thread's stack, or running the case on a thread of its own:* that hides
+the depth instead of removing an incidental one. *Shrinking `resolveUnitsIn`'s frame:* it moves the first
+walk to overflow without bounding any of them, and depth is item 7's question. *Re-syncing the corpus copy
+now:* item 4.
+
 ## 2026-10-21 — D43: `Pow`, `Exp`, `Ln` and `Log10` enter the scalar set — an integer power runs one pinned routine, exact on every host; the transcendentals are host-rounded within 2 ulp behind a special-value table; the static walk marks every host-rounded column and reports each discrete decision such a value reaches; the Pow/Log line of Fuaran.Core's D13 is superseded
 
 **Context.** Fuaran.Core's D13 (Phase 101, recorded in that repository's `DECISIONS.md` before the compute
