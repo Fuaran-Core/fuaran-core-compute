@@ -35,7 +35,8 @@
          `UnitMismatch`, `ColumnKnowledge` carries the field's metadata) advanced the slot to 0.40.0,
          released as `v0.40.0`. 0.40.0 is tagged, so Phase 468's breaking change (a `Project`, a
          `GroupBy`, an `Unpivot` and a `Pivot` refuse a repeated output name, class `behaviour`)
-         advanced the slot to 0.41.0. -->
+         advanced the slot to 0.41.0,
+         released as `v0.41.0`. -->
     <Version>0.41.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
