@@ -1,5 +1,62 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-24 — D45: the transform law vectors pin int32 overflow on `Add`, `Sub`, `Mul` and integer `Pow`, and a refused overflow vector names its class, `OverflowError`; every other refusal stays unnamed, and the in-process parity law still compares refusal with refusal
+
+**Context.** The reference has range-checked every integer result against the int32 band since Phase 39:
+`checkedInt` refuses an out-of-band `add`, `sub`, `mul` or `mod` as `OverflowError`, and since Phase 557
+`powIntExact` refuses an integer power the same way, every product and every base square checked. No transform
+law vector reached the band. On 2026-10-24 the four host twins were measured computing `add`, `sub` and `mul`
+over a wider integer and answering unchecked, and every one was certified green, because nothing in the file
+could see it. Separately, the twins' new `pow` refusal reports `TypeError` where this reference reports
+`OverflowError`, and the file could not see that either: an `error` vector carried `"verdict": "error"` and
+nothing else.
+
+**Premise check.** Confirmed against the tree before any vector was written: `checkedInt` is the one check
+behind `Add`, `Sub` and `Mul` on two integers (and the Fable arm's float carrier recomputes in int64 before the
+same check, Phase 326); integer `Pow` with a non-negative exponent runs `powIntExact`; a negative exponent is a
+float reciprocal and cannot overflow the band. Neither the vectors nor `DataFrameConformance.transformLaws`
+compared the refusal's class: the law's `Error _, Error _` arm agrees on any two refusals, and the file's
+`description` told hosts not to gate on a class. No production code moves in this phase.
+
+**Ruled.**
+
+1. **The vectors.** Twelve `evalPipeline` shapes are appended to the drawn sample after the power shapes
+   (iterations 79 to 90), so every earlier vector is byte-identical and every reader that follows
+   `iterations` follows them. For each operator, one vector lies past the upper edge of the band, one past
+   the lower edge, and one in-band neighbour lands on or beside the edges: `Int32.MaxValue` and
+   `Int32.MinValue` are reached by `add`, `sub` and `mul`, and `MinValue` by `(-2) ^ 31`. The upper edge of
+   `mul` is `MinValue * -1`, the negation no int32 holds; the lower edge of `pow` is `(-1291) ^ 3`, refused by
+   its final product. Each operand is derived into a column first, so the operation runs over a column as a
+   host's kernel would, never over two literals a host might fold. They live in the shared sample
+   (`TransformVectorSample`) rather than in a block of their own because they are evaluator answers like
+   every other, and a case kind of their own would be skipped by a host that ignores kinds it does not know.
+
+2. **The class is pinned for overflow, by name.** A refused overflow vector carries
+   `"error": "OverflowError"`. The token is the `EvalError` case as it is named, which is the vocabulary every
+   host's evaluator already mirrors, and it follows the member the substrate's decimal laws already use for a
+   named refusal (`"verdict": "reject", "error": "MalformedShape"`). The overflow class is pinned because it
+   is the class the reference has named on purpose since Phase 39, and because a host that answers an
+   overflow with some other refusal has implemented a different rule, not spelled the same one differently:
+   `TypeError` says the operands were wrong, where `OverflowError` says the operands were right and the
+   result left the band. The twins' `pow` refusal is therefore a divergence these vectors make red, and
+   fuaran#2444 is where the twins move.
+
+3. **Every other refusal stays unnamed.** The file's other refusals (an unknown column, a decimal under
+   `Div`, a unit mismatch, a repeated name) are not given classes here. Each would be a separate claim about
+   a cross-host vocabulary nobody has measured, and this phase measured only overflow. The `description`
+   now says a refusal is unnamed unless the vector carries `expected.error`.
+
+4. **The in-process law is unchanged.** `DataFrameConformance.transformLaws` still agrees on any two
+   refusals. Its subjects are .NET evaluators that return this repository's own `EvalError`, so the class
+   comparison would add a behaviour change to a published kit for evaluators that cannot answer a different
+   case without being a different evaluator. The cross-host contract is the vector file, and that is where
+   the class is pinned. This suite checks it there: a vector's named class must be the reference's
+   (`LawVectorTests`), with a go-red that perturbs the recorded class.
+
+5. **The version.** `0.41.0` is tagged, so the change advances the slot to `0.42.0`. No package's public
+   surface moves, but the vectors are part of what a version publishes and the corpus copy is re-emitted
+   from a released version (D6 (4)), so a released `0.41.0` cannot be the version that carries them.
+
 ## 2026-10-22 — D44: a transform law vector is compared under the tolerance it carries, on every host and in this suite — a host-rounded column cell by cell within its bound, a zero, a sign and a non-finite value exact, everything else byte for byte — by one comparison the conformance kit ships; the committed file's freshness is asked the same way; the over-limit oracle expression is balanced, and the evaluator's measured stack headroom is recorded
 
 **Context.** `main` was red in CI from `38ae3d8` (Phase 557's landing). On the Linux runners, in Debug and in
@@ -2950,6 +3007,8 @@ is raised when a version is released rather than when a draft is cut. A cut stil
 `conformance/laws/transform-laws.json` here, because this suite holds that file to what the kit renders
 at the declared `<Version>`. The `lag` is unchanged and still owned by fuaran#2001: it says when the copy
 moves, while the grading says what the copy is compared with.
+
+**Amendment (Phase 573): the lag is removed.** The corpus copy of `conformance/laws/transform-laws.json` is now identical to this repository's file, so the `lag` block in [`copies.json`](copies.json) held nothing and the registry reported it as removable. The record keeps `against: release` and `stamp: kitVersion` (4, as decided), so it is graded against the released source with no stale exemption. The copy no longer waits for a host, and the hold in the opening paragraph no longer applies.
 
 ## 2026-10-02 — D5: a derived column is typed by its expression; the cells decide only where the typer cannot; a float beside a decimal is refused
 

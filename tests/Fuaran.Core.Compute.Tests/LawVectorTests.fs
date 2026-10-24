@@ -51,6 +51,8 @@ type private ParsedVector =
         /// Phase 557: the per-column ulp bound of the host-rounded output columns, empty where the
         /// vector carries no `tolerance` member.
         Tolerance: (string * int) list
+        /// Phase 572 (D45): the refusal class an `error` vector names, `None` where it names none.
+        Error: string option
     }
 
 let private parseVectors (json: string) : Result<ParsedVector list, string> =
@@ -75,7 +77,8 @@ let private parseVectors (json: string) : Result<ParsedVector list, string> =
                                   Source = s
                                   Verdict = verdict
                                   Table = str "table" expected
-                                  Tolerance = VectorTolerance.ofExpected expected }
+                                  Tolerance = VectorTolerance.ofExpected expected
+                                  Error = str "error" expected }
                         | _ -> Error("vector " + id + ": input.pipeline / input.source / expected.verdict missing")
                     | _ -> Error "a vector is missing id / input / expected")
 
@@ -93,6 +96,13 @@ let private parseVectors (json: string) : Result<ParsedVector list, string> =
                           | Ok v -> yield v
                           | Error _ -> () ]
         | _ -> Error "the vector file carries no `vectors` array"
+
+/// An `EvalError`'s class, spelled as its case is named — the token a vector's `expected.error` carries.
+let private errorClass (e: EvalError) : string =
+    let case, _ =
+        Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(e, typeof<EvalError>)
+
+    case.Name
 
 /// Run one parsed vector the way a host would: decode both halves with the public codecs,
 /// evaluate with the reference, and report what disagreed with the recorded answer.
@@ -124,7 +134,12 @@ let private checkVector (v: ParsedVector) : string option =
             | Ok t, "ok", None -> Some(sprintf "%s: an `ok` vector carries no expected table (reference: %A)" v.Id t)
             | Ok _, verdict, _ ->
                 Some(sprintf "%s: the reference evaluated the pipeline, but the vector says `%s`" v.Id verdict)
-            | Error _, "error", _ -> None
+            | Error e, "error", _ ->
+                // Phase 572 (D45): where the vector names the class, the refusal must be that class.
+                match v.Error with
+                | Some named when named <> errorClass e ->
+                    Some(sprintf "%s: the reference refused with %s, but the vector names %s" v.Id (errorClass e) named)
+                | _ -> None
             | Error e, verdict, _ ->
                 Some(sprintf "%s: the reference refused the pipeline (%A), but the vector says `%s`" v.Id e verdict)
         | other -> Some(sprintf "%s: input.source is not an embedded table (%A)" v.Id other)
@@ -553,6 +568,63 @@ let tests =
                           (sprintf "no vector was rendered for the `%s` shape" shape)
 
                   Expect.isTrue (vectors |> List.exists (fun v -> v.Verdict = "ok")) "an accepted pipeline was rendered"
+
+          // ---- Phase 572 (D45): the int32 band, pinned on Add, Sub, Mul and integer Pow ----
+          testCase
+              "every overflow vector past the int32 band names OverflowError, every in-band neighbour is answered, and no other vector names a refusal"
+          <| fun _ ->
+              match parseVectors (LawVectorExport.renderTransformVectors ()) with
+              | Error m -> failtest m
+              | Ok vectors ->
+                  let overflow = vectors |> List.filter (fun v -> v.Id.Contains "-overflow-")
+
+                  for op in [ "add"; "sub"; "mul"; "pow" ] do
+                      for suffix in [ "above-refused"; "below-refused"; "in-band" ] do
+                          Expect.isTrue
+                              (overflow
+                               |> List.exists (fun v -> v.Id.EndsWith(sprintf "-overflow-%s-%s" op suffix)))
+                              (sprintf "no %s %s vector was rendered" op suffix)
+
+                  for v in overflow do
+                      if v.Id.EndsWith "-refused" then
+                          Expect.equal
+                              (v.Verdict, v.Error)
+                              ("error", Some "OverflowError")
+                              (v.Id + " names the overflow")
+                      else
+                          Expect.equal (v.Verdict, v.Error) ("ok", None) (v.Id + " is answered")
+
+                  for v in vectors |> List.filter (fun v -> not (v.Id.Contains "-overflow-")) do
+                      Expect.isNone v.Error (v.Id + " names no refusal class")
+
+                  // The in-band neighbours reach the edges themselves, so a refusal one short of the
+                  // band's edge is as red as a wrap past it.
+                  for op in [ "add"; "sub"; "mul"; "pow" ] do
+                      let v =
+                          overflow
+                          |> List.find (fun v -> v.Id.EndsWith(sprintf "-overflow-%s-in-band" op))
+
+                      let table = Option.get v.Table
+
+                      Expect.stringContains table (string System.Int32.MinValue) (v.Id + " reaches the lower edge")
+
+                      if op <> "pow" then
+                          Expect.stringContains table (string System.Int32.MaxValue) (v.Id + " reaches the upper edge")
+
+          testCase "a vector naming a refusal class the reference does not answer is red"
+          <| fun _ ->
+              // The go-red of the class comparison: the recorded class perturbed, the vector fails.
+              match parseVectors (LawVectorExport.renderTransformVectors ()) with
+              | Error m -> failtest m
+              | Ok vectors ->
+                  let v = vectors |> List.find (fun v -> v.Id.EndsWith "-overflow-mul-above-refused")
+
+                  Expect.isNone (checkVector v) "the recorded vector agrees with the reference"
+                  Expect.isSome (checkVector { v with Error = Some "TypeError" }) "another class is red"
+
+                  Expect.isSome
+                      (checkVector { v with Verdict = "ok"; Error = None })
+                      "an answer where the reference refuses is red"
 
           // ---- Phase 559 (D44): the tolerance read as a certifying host reads it ----
           testCase

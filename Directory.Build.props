@@ -36,8 +36,12 @@
          released as `v0.40.0`. 0.40.0 is tagged, so Phase 468's breaking change (a `Project`, a
          `GroupBy`, an `Unpivot` and a `Pivot` refuse a repeated output name, class `behaviour`)
          advanced the slot to 0.41.0,
-         released as `v0.41.0`. -->
-    <Version>0.41.0</Version>
+         released as `v0.41.0`. 0.41.0 is tagged, so Phase 572's additive change (the transform law
+         vectors pin int32 overflow on Add, Sub, Mul and integer Pow; no public surface moves) advanced
+         the slot to 0.42.0: a released number names one contract, and the vectors a host certifies
+         against are part of what this version publishes,
+         released as `v0.42.0`. -->
+    <Version>0.42.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
