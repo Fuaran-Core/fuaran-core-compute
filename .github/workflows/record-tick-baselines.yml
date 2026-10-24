@@ -1,0 +1,94 @@
+name: record-tick-baselines
+
+# Phase 461 - the clock leg's tick-baseline table for x64 (ScalingTests.tickBaselines), recorded on a
+# hosted x64 runner because no x64 machine records it locally. MANUAL ONLY: no push or pull_request
+# trigger, so a push reaches no job here. It runs gates/record-tick-baselines.ps1 exactly as a local
+# recording does - the pre-423 tree exported beside the checkout, its whole clock leg run at least
+# three times, any leg that discarded a window set aside, each cell the median of the per-run bests -
+# and uploads the F# block (its provenance line names the runner image) with the legs' logs.
+# Refreshing a table that exists is a decision recorded in DECISIONS.md (D19), not a routine re-run.
+#
+#   gh workflow run record-tick-baselines.yml --ref main -R Fuaran-Core/fuaran-core-compute
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The tree whose ticks are the baseline (the last pre-423 commit, per D19).
+        default: ccbddc7
+        required: true
+      runs:
+        description: Clean clock legs to take the median over (at least three).
+        default: '3'
+        required: true
+      max_legs:
+        description: Legs to attempt in all before giving up on a noisy runner.
+        default: '9'
+        required: true
+
+permissions:
+  contents: read
+
+# The inputs reach the steps as environment variables, never spliced into a script's text.
+env:
+  BASELINE_COMMIT: ${{ inputs.commit }}
+  BASELINE_RUNS: ${{ inputs.runs }}
+  BASELINE_MAX_LEGS: ${{ inputs.max_legs }}
+
+jobs:
+  record:
+    # The label the ci workflow's clock leg runs on, so the table is recorded where it is judged.
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      # The script exports the baseline tree from history with `git archive`: fetch all of it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      # nuget.config's local folder feed, two levels above the checkout (and so above the exported
+      # tree, which sits beside it); NuGet refuses a missing folder source, so an empty one is minted
+      # and every Fuaran.Core package restores from nuget.org.
+      - name: Create the empty local feed directory
+        run: mkdir -p ../../local-nuget-feed
+      - name: Describe the runner
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force tick-baselines | Out-Null
+          @(
+            "runner image: $env:ImageOS $env:ImageVersion"
+            "runner os/arch: $env:RUNNER_OS $env:RUNNER_ARCH"
+            "process architecture: $([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
+            "commit recorded: $env:BASELINE_COMMIT"
+            "script from: $env:GITHUB_SHA"
+            "run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            ''
+          ) + @(lscpu) + @('') + @(dotnet --info) | Set-Content tick-baselines/runner.txt
+          Get-Content tick-baselines/runner.txt | Select-Object -First 7
+      - name: Record (gates/record-tick-baselines.ps1)
+        shell: pwsh
+        run: >-
+          ./gates/record-tick-baselines.ps1
+          -Commit $env:BASELINE_COMMIT
+          -Runs ([int]$env:BASELINE_RUNS)
+          -MaxLegs ([int]$env:BASELINE_MAX_LEGS)
+          -OutFile "$env:GITHUB_WORKSPACE/tick-baselines/tick-baselines-X64.fs.txt"
+          -Keep
+      # The legs' logs, kept on success and on failure: the exported tree sits beside the checkout,
+      # where upload-artifact does not reach, so they are copied in.
+      - name: Collect the clock-leg logs
+        if: always()
+        shell: pwsh
+        run: |
+          $export = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) ("{0}-tick-baseline-{1}" -f (Split-Path $env:GITHUB_WORKSPACE -Leaf), $env:BASELINE_COMMIT)
+          New-Item -ItemType Directory -Force tick-baselines | Out-Null
+          if (Test-Path $export) { Copy-Item (Join-Path $export 'clock-leg*.log') tick-baselines/ -ErrorAction SilentlyContinue }
+          Get-ChildItem tick-baselines | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tick-baselines-x64
+          path: tick-baselines/
+          if-no-files-found: error

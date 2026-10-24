@@ -28,6 +28,12 @@
     Run it on a quiet machine. Refreshing a table that exists is a decision recorded in
     DECISIONS.md (D19), not a routine re-run: see there for who decides and when.
 
+    An architecture with no machine to hand records on a hosted runner: the manually-dispatched
+    workflow `.github/workflows/record-tick-baselines.yml` runs this script unchanged on an x64
+    Linux runner (Phase 461) and uploads the block and the legs' logs as an artefact. On a hosted
+    runner the block's provenance line names the runner image (`ImageOS` / `ImageVersion`), because
+    an image change can move the table and the line is how a later reader tells which one it was.
+
 .EXAMPLE
     pwsh ./gates/record-tick-baselines.ps1
     pwsh ./gates/record-tick-baselines.ps1 -Runs 5 -Keep
@@ -160,8 +166,10 @@ $rows = @($best.Keys | Sort-Object { ($_ -split '\|')[0] }, { ($_ -split '\|')[1
 })
 $rows[0] = '              [ ' + $rows[0].TrimStart()
 $rows[-1] = $rows[-1] + ' ]'
+# A hosted runner names its image; a local machine has none to name (Phase 461).
+$image = if ($env:ImageOS) { " on runner image $env:ImageOS $env:ImageVersion" } else { '' }
 $block = @(
-    "          // $arch - recorded $(Get-Date -Format 'yyyy-MM-dd') from $Commit, the median of $Runs runs' bests, by gates/record-tick-baselines.ps1"
+    "          // $arch - recorded $(Get-Date -Format 'yyyy-MM-dd') from $Commit$image, the median of $Runs runs' bests, by gates/record-tick-baselines.ps1"
     "          `"$arch`","
     '          Map.ofList'
 ) + $rows
