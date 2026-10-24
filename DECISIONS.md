@@ -2905,6 +2905,8 @@ is raised when a version is released rather than when a draft is cut. A cut stil
 at the declared `<Version>`. The `lag` is unchanged and still owned by fuaran#2001: it says when the copy
 moves, while the grading says what the copy is compared with.
 
+**Amendment (Phase 573): the lag is removed.** The corpus copy of `conformance/laws/transform-laws.json` is now identical to this repository's file, so the `lag` block in [`copies.json`](copies.json) held nothing and the registry reported it as removable. The record keeps `against: release` and `stamp: kitVersion` (4, as decided), so it is graded against the released source with no stale exemption. The copy no longer waits for a host, and the hold in the opening paragraph no longer applies.
+
 ## 2026-10-02 — D5: a derived column is typed by its expression; the cells decide only where the typer cannot; a float beside a decimal is refused
 
 **Decided (Phase 338, carrying D3's last paragraph).** One rule types every column the dataframe
