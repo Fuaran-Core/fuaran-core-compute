@@ -143,6 +143,25 @@ module TransformVectorSample =
           "power-ln-log10"
           "power-decimal-refused" ]
 
+    /// The int32 overflow shapes (Phase 572, `DECISIONS.md` D45), one vector each after the power
+    /// shapes, over the decimal table. Each of `Add`, `Sub`, `Mul` and integer `Pow` carries a vector
+    /// past each edge of the int32 band, refused as the named `OverflowError`, and one in-band
+    /// neighbour landing on the edges themselves, so a host that wraps or widens is red and a host that
+    /// refuses too eagerly is red as well.
+    let private overflowShapeNames =
+        [ "overflow-add-above-refused"
+          "overflow-add-below-refused"
+          "overflow-add-in-band"
+          "overflow-sub-above-refused"
+          "overflow-sub-below-refused"
+          "overflow-sub-in-band"
+          "overflow-mul-above-refused"
+          "overflow-mul-below-refused"
+          "overflow-mul-in-band"
+          "overflow-pow-above-refused"
+          "overflow-pow-below-refused"
+          "overflow-pow-in-band" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
         decimalShapeNames
@@ -150,6 +169,7 @@ module TransformVectorSample =
         @ unitShapeNames
         @ repeatShapeNames
         @ powerShapeNames
+        @ overflowShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -463,6 +483,52 @@ module TransformVectorSample =
               Derive("l10", ApplyFn(Log10, [ Binary(Add, w, fl 1.0) ])) ]
         | _ -> [ Derive("p", pow (Col "m") (Lit(Int 2))) ]
 
+    /// The int32 overflow shapes (Phase 572, D45). Each operand is first derived into a column, so the
+    /// operation runs over a column as a host's kernel would rather than over two literals; every row
+    /// carries the same values, so the answer does not depend on the draw. An in-band shape lands
+    /// exactly on `Int32.MaxValue` and `Int32.MinValue` where the operator can reach them.
+    let private overflowPipelineOf (shape: string) : Transform list =
+        let i (n: int) = Lit(Int n)
+        let hi = System.Int32.MaxValue
+        let lo = System.Int32.MinValue
+        let pow b e = ApplyFn(Pow, [ b; e ])
+
+        let past (a: int) (op: BinOp) (b: int) =
+            [ Derive("a", i a); Derive("o", Binary(op, Col "a", i b)) ]
+
+        let inBand (op: BinOp) (up: int) (down: int) =
+            [ Derive("hi", i (hi - 1))
+              Derive("lo", i (lo + 1))
+              Derive("top", Binary(op, Col "hi", i up))
+              Derive("bottom", Binary(op, Col "lo", i down)) ]
+
+        match shape with
+        | "overflow-add-above-refused" -> past hi Add 1
+        | "overflow-add-below-refused" -> past lo Add -1
+        | "overflow-add-in-band" -> inBand Add 1 -1
+        | "overflow-sub-above-refused" -> past hi Sub -1
+        | "overflow-sub-below-refused" -> past lo Sub 1
+        | "overflow-sub-in-band" -> inBand Sub -1 1
+        // `MinValue * -1` is 2^31, the negation no int32 holds; the other edge is a product past it.
+        | "overflow-mul-above-refused" -> past lo Mul -1
+        | "overflow-mul-below-refused" -> past -65536 Mul 32769
+        | "overflow-mul-in-band" ->
+            [ Derive("a", i 65536)
+              Derive("top", Binary(Mul, Col "a", i 32767))
+              Derive("bottom", Binary(Mul, Col "a", i -32768))
+              Derive("max", i hi)
+              Derive("negated", Binary(Mul, Col "max", i -1)) ]
+        // 2^31 is one past the band; (-1291)^3 is past its lower edge by its final product.
+        | "overflow-pow-above-refused" -> [ Derive("a", i 2); Derive("o", pow (Col "a") (i 31)) ]
+        | "overflow-pow-below-refused" -> [ Derive("a", i -1291); Derive("o", pow (Col "a") (i 3)) ]
+        | _ ->
+            [ Derive("two", i -2)
+              Derive("bottom", pow (Col "two") (i 31))
+              Derive("c", i 1290)
+              Derive("top", pow (Col "c") (i 3))
+              Derive("nc", i -1290)
+              Derive("low", pow (Col "nc") (i 3)) ]
+
     let private pipelineOf (k: int) : Transform list =
         match k with
         | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
@@ -525,6 +591,8 @@ module TransformVectorSample =
                 (unitTable "m" rows offset, unitPipelineOf shape rows offset), r2
             elif shape.StartsWith "power-" then
                 (decimalTable rows offset, powerPipelineOf shape), r2
+            elif shape.StartsWith "overflow-" then
+                (decimalTable rows offset, overflowPipelineOf shape), r2
             else
                 (decimalTable rows offset, decimalPipelineOf shape rows offset), r2
 

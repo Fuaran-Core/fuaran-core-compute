@@ -109,9 +109,10 @@ module LawVectorExport =
 
     /// The reference's answer, in the terms the parity law actually compares. An `Ok` carries the
     /// canonical wire string of the result table — the identity `transformLaws` asserts. An
-    /// `Error` carries the verdict and NOTHING ELSE, because the law requires only that the host
+    /// `Error` carries the verdict and nothing else here, because the law requires only that the host
     /// also refused; it does not compare which refusal, and a vector naming one would invite a host
-    /// to gate on agreement the contract has never claimed.
+    /// to gate on agreement the contract has never claimed. The one class the vectors DO name is the
+    /// int32 overflow (Phase 572, `DECISIONS.md` D45), added by `namedRefusal` below on its own shapes.
     let private expectedOf (r: Result<Table, EvalError>) : (string * CorpusCell) list =
         match r with
         | Ok t -> [ "verdict", str "ok"; "table", str (ColumnCodec.encode (Embedded t)) ]
@@ -130,10 +131,25 @@ module LawVectorExport =
         |> List.filter (fun c -> c.Exactness = Exactness.HostRounded)
         |> List.map _.Name
 
+    /// The refusal class an overflow shape's vector names (Phase 572, `DECISIONS.md` D45): the
+    /// `EvalError` case, spelled as the case is named, which is the vocabulary every host's evaluator
+    /// already mirrors. Only the overflow shapes carry it — every other refusal stays unnamed — and an
+    /// overflow shape the reference answers any other way is a broken sample, never a vector.
+    let private namedRefusal (shape: string) (r: Result<Table, EvalError>) : (string * CorpusCell) list =
+        if not (shape.StartsWith "overflow-") then
+            []
+        else
+            match r, shape.EndsWith "-refused" with
+            | Error(OverflowError _), true -> [ "error", str "OverflowError" ]
+            | Ok _, false -> []
+            | other, _ -> failwithf "overflow shape %s: the reference answered %A" shape other
+
     /// `expectedOf`, with the per-column tolerance of an accepted pipeline's host-rounded columns
-    /// (Phase 557): absent where the walk marks none, so every vector without one is the bytes it was.
-    let private expectedWithTolerance (table: Table) (pipeline: Transform list) : (string * CorpusCell) list =
-        let expected = expectedOf (DataFrame.evalPipeline pipeline table)
+    /// (Phase 557): absent where the walk marks none, so every vector without one is the bytes it was;
+    /// and on an overflow shape the refusal's class (Phase 572).
+    let private expectedWithTolerance (shape: string) (table: Table) (pipeline: Transform list) =
+        let result = DataFrame.evalPipeline pipeline table
+        let expected = expectedOf result @ namedRefusal shape result
 
         match hostRoundedColumns table pipeline with
         | [] -> expected
@@ -154,7 +170,7 @@ module LawVectorExport =
                     Input =
                       [ "pipeline", str (DataFrameCodec.encodePipeline pipeline)
                         "source", str (ColumnCodec.encode (Embedded table)) ]
-                    Expected = expectedWithTolerance table pipeline } ]
+                    Expected = expectedWithTolerance (shapeOf i) table pipeline } ]
 
     // -----------------------------------------------------------------------
     //  Phase 321 — the decimal through the columnar op wire and the delta wire
@@ -265,8 +281,9 @@ module LawVectorExport =
         + "runs the family by decoding both, evaluating the pipeline with ITS OWN evaluator, and "
         + "comparing: an `ok` vector requires the host's result table to encode byte-for-byte to "
         + "`expected.table`, and an `error` vector requires the host to refuse the pipeline too. "
-        + "The refusal is deliberately unnamed — the parity contract compares that both sides "
-        + "errored, never which error, so a host must not gate on a class this file does not carry. "
+        + "The refusal is unnamed unless the vector carries `expected.error` — the parity contract "
+        + "compares that both sides errored, never which error, so a host must not gate on a class this "
+        + "file does not carry. "
         + "To reproduce the sample rather than replay it: per iteration draw intBelow(4) = extra "
         + "(rows = extra + 2) and intBelow(7) = offset, then build columns g = Str of "
         + "[a;b;c][i mod 3], v = Null when (i + offset) mod 4 = 0 else Int(i*3 + offset - 5), and "
@@ -322,7 +339,16 @@ module LawVectorExport =
         + "for byte: its answer with every named column replaced by the recorded one encodes to "
         + "`expected.table` exactly (Phase 559). A host that does not implement the four functions reports "
         + "the vector as unsupported and never skips it silently. A pinned column is never named, so a "
-        + "vector without the member is compared exactly as before."
+        + "vector without the member is compared exactly as before. "
+        + "From the iteration after the last power shape, each takes the next OVERFLOW shape named in its "
+        + "vector id (Phase 572) over the decimal table: `add`, `sub`, `mul` and an integer-exponent `pow` "
+        + "over int32 operands, each first derived into a column so the operation runs over a column. An "
+        + "integer result is range-checked against the int32 band, never wrapped and never widened: a "
+        + "`-refused` vector's result lies past one edge of the band (above it, or below it), and the "
+        + "host must refuse it with the class `expected.error` names, `OverflowError`; an `-in-band` "
+        + "vector lands on or beside the band's edges and must be answered, not refused. A host that "
+        + "computes over a wider integer, an unbounded integer or an IEEE-754 double must check the "
+        + "result against the band before answering."
 
     let renderTransformVectors () : string =
         CorpusFile.render
