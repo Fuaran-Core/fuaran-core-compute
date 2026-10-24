@@ -213,7 +213,8 @@ let private refreshPool (n: int) : int = if n >= 100_000 then 16 else 128
 /// block to paste here; refreshing a table is the operator's decision (DECISIONS.md D19). An
 /// architecture with no table is NOT passed on this arm by default: the cases print that the table
 /// is missing and name the script, and hold such a machine to the ratio arm alone, which is the
-/// stricter condition.
+/// stricter condition. Phase 461: the X64 table, recorded on the hosted runner the ci clock leg runs
+/// on (`.github/workflows/record-tick-baselines.yml`), so CI judges a tick by both arms.
 let private tickBaselines: Map<string, Map<string * string * int, float>> =
     Map.ofList
         [
@@ -279,7 +280,73 @@ let private tickBaselines: Map<string, Map<string * string * int, float>> =
                 ("edit", "sort two keys", 100000), 2.072068
                 ("edit", "window CumulSum", 1000), 0.011604
                 ("edit", "window CumulSum", 20000), 0.244553
-                ("edit", "window CumulSum", 100000), 1.137215 ] ]
+                ("edit", "window CumulSum", 100000), 1.137215 ]
+          // X64 - recorded 2026-10-24 from ccbddc7 on runner image ubuntu24 20261012.334.1, the median of 3 runs' bests, by gates/record-tick-baselines.ps1
+          // Recorded on a hosted runner by .github/workflows/record-tick-baselines.yml (run 40110148786,
+          // Phase 461): three legs, none discarded, on an AMD EPYC 7763 with 4 vCPUs. The image is the
+          // ubuntu-latest the ci clock leg runs on; an image change can move the table (DECISIONS.md D19).
+          "X64",
+          Map.ofList
+              [ ("append", "byRegion", 1000), 0.006910
+                ("append", "byRegion", 20000), 0.126463
+                ("append", "byRegion", 100000), 0.868966
+                ("append", "filter > groupBy", 1000), 0.005949
+                ("append", "filter > groupBy", 20000), 0.104586
+                ("append", "filter > groupBy", 100000), 0.722649
+                ("append", "filter > groupBy > filter", 1000), 0.006141
+                ("append", "filter > groupBy > filter", 20000), 0.105556
+                ("append", "filter > groupBy > filter", 100000), 0.730570
+                ("append", "filter > sort > limit", 1000), 0.010536
+                ("append", "filter > sort > limit", 20000), 0.241954
+                ("append", "filter > sort > limit", 100000), 1.405566
+                ("append", "group-by high-card", 1000), 0.009981
+                ("append", "group-by high-card", 20000), 0.251775
+                ("append", "group-by high-card", 100000), 1.593678
+                ("append", "inner join", 1000), 0.030843
+                ("append", "inner join", 20000), 0.923800
+                ("append", "inner join", 100000), 2.992720
+                ("append", "lines", 1000), 0.013410
+                ("append", "lines", 20000), 0.337548
+                ("append", "lines", 100000), 1.822875
+                ("append", "pivot", 1000), 0.032630
+                ("append", "pivot", 20000), 0.804607
+                ("append", "pivot", 100000), 2.721167
+                ("append", "sort two keys", 1000), 0.011686
+                ("append", "sort two keys", 20000), 0.351948
+                ("append", "sort two keys", 100000), 1.683685
+                ("append", "window CumulSum", 1000), 0.011303
+                ("append", "window CumulSum", 20000), 0.274521
+                ("append", "window CumulSum", 100000), 1.276437
+                ("edit", "byRegion", 1000), 0.007663
+                ("edit", "byRegion", 20000), 0.130651
+                ("edit", "byRegion", 100000), 0.811708
+                ("edit", "filter > groupBy", 1000), 0.007471
+                ("edit", "filter > groupBy", 20000), 0.125912
+                ("edit", "filter > groupBy", 100000), 0.861228
+                ("edit", "filter > groupBy > filter", 1000), 0.007678
+                ("edit", "filter > groupBy > filter", 20000), 0.126296
+                ("edit", "filter > groupBy > filter", 100000), 0.859962
+                ("edit", "filter > sort > limit", 1000), 0.011706
+                ("edit", "filter > sort > limit", 20000), 0.229310
+                ("edit", "filter > sort > limit", 100000), 1.456342
+                ("edit", "group-by high-card", 1000), 0.010345
+                ("edit", "group-by high-card", 20000), 0.194626
+                ("edit", "group-by high-card", 100000), 1.309004
+                ("edit", "inner join", 1000), 0.031418
+                ("edit", "inner join", 20000), 0.786015
+                ("edit", "inner join", 100000), 3.076392
+                ("edit", "lines", 1000), 0.021689
+                ("edit", "lines", 20000), 0.305172
+                ("edit", "lines", 100000), 1.651724
+                ("edit", "pivot", 1000), 0.032438
+                ("edit", "pivot", 20000), 0.767562
+                ("edit", "pivot", 100000), 2.573372
+                ("edit", "sort two keys", 1000), 0.013218
+                ("edit", "sort two keys", 20000), 0.297893
+                ("edit", "sort two keys", 100000), 1.590211
+                ("edit", "window CumulSum", 1000), 0.013027
+                ("edit", "window CumulSum", 20000), 0.260728
+                ("edit", "window CumulSum", 100000), 1.579927 ] ]
 
 /// Phase 272 — how much `Delta.diff` may cost beyond minting both tables' keys through the witness,
 /// which is the floor of any diff by identity (`KeyString` is the only thing that can say what a key

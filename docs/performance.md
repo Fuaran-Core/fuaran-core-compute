@@ -525,3 +525,52 @@ and reference evaluation on two legs at calibration 6.20 ms; a third leg at 7.67
 read the `pivot` edit cells x1.09 to x1.17 on two attempts and x1.00 on the third, so green under the
 same-cell rule. With the pipeline walk put back, the `inner join` cells at 20,000 and 100,000 rows read
 x1.24 to x1.33 and were red on all three attempts of both cases, where the old ratio arm had passed them.
+
+## The x64 tick baselines (Phase 461)
+
+The corpus tick cases hold every cell to `max(1.6 x full, 1.5 x baseline) + floor`. Here `baseline`
+is the cell's pre-423 tick, kept in one table per CPU architecture (`DECISIONS.md` D19). Only Arm64
+had a table, so CI's x64 runner printed `NO TICK BASELINE TABLE for architecture X64` and held every
+cell to the ratio arm alone. Phase 461 records the x64 table.
+
+**How it was recorded.** No x64 machine is to hand, so `.github/workflows/record-tick-baselines.yml`
+runs `gates/record-tick-baselines.ps1` on a hosted `ubuntu-latest` runner. That is the label the ci
+clock leg runs on. The workflow is dispatched by hand only; no push reaches it. The script is the one
+used locally, run with the same method:
+
+- it exports `ccbddc7` beside the checkout and builds its tests in Release;
+- it runs that tree's whole clock leg until three legs discard no window;
+- it takes each cell's best reading per leg in calibration units, and keeps the median of those bests.
+
+The run's artefact holds the F# block, every leg's log and a description of the runner. On a hosted
+runner the block's provenance line names the image.
+
+| Run | Image | CPU | Legs | Calibration |
+|---|---|---|---|---:|
+| [40110148786](https://github.com/Fuaran-Core/fuaran-core-compute/actions/runs/40110148786) | `ubuntu24 20261012.334.1` | AMD EPYC 7763, 4 vCPUs | 3 of 3 clean | 5.21–5.22 ms |
+
+**The two tables differ by cell, not by a factor.** Per cell, the X64 figure is 0.63 to 1.83 times the
+Arm64 one, with a median of 1.12. The extremes:
+
+- the append of `lines` at 1,000 rows, ×0.63;
+- the edit of `pivot` at 20,000 rows, ×1.44;
+- the append of `byRegion` at 100,000 rows, ×1.83.
+
+No single conversion would carry one table to the other, which is why D19 keeps one table per
+architecture.
+
+**When the table is re-recorded.** A figure in calibration units does not move with the speed of the
+machine. The weekly image bump is therefore not a reason to re-record. Two kinds of change can move
+the table:
+
+- a new OS release or .NET runtime behind `ubuntu-latest`;
+- a different hosted CPU family.
+
+Each one shows as a difference between the provenance line and a later run's runner description. If
+the x64 clock leg goes red, or keeps reaching no verdict, after such a change, re-recording is the
+operator's decision, recorded under D19:
+
+1. Dispatch the workflow with its default `commit`.
+2. Replace the X64 block with the artefact's block verbatim, naming the run.
+
+The table is never edited by hand.

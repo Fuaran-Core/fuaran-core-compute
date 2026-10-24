@@ -2091,6 +2091,52 @@ summarised here as given:
 **Refreshing the ceiling** follows the table rule above. It is the operator's decision, recorded
 here; the script is the only writer. It goes when Phase 448's acceptance removes the exception.
 
+**Amended 2026-10-24 — the X64 table (Phase 461).** Until now only Arm64 had a table, so every x64
+machine, CI's `ubuntu-latest` runner included, printed `NO TICK BASELINE TABLE for architecture X64`
+and held each cell to the ratio arm alone. Phase 461 adds the x64 table. This is the first of the two
+occasions above, and the phase that asked for it is the operator's decision to land it.
+
+- **Where it was recorded.** No x64 machine is to hand, so the script got a hosted home:
+  `.github/workflows/record-tick-baselines.yml`. It is triggered only by `workflow_dispatch`, so no
+  push or pull request runs it. It runs `gates/record-tick-baselines.ps1` unchanged on `ubuntu-latest`,
+  the label the ci clock leg runs on. It uploads the block, every leg's log and a description of the
+  runner (image, `lscpu`, `dotnet --info`). On a hosted runner the script's provenance line also names
+  the runner image (`ImageOS` / `ImageVersion`).
+- **What was recorded.** Run 40110148786 used the script at `24bce4e` and recorded from `ccbddc7`,
+  with the second ruling's method: the median over three full legs of each leg's best. On image
+  `ubuntu24 20261012.334.1`, an AMD EPYC 7763 with 4 vCPUs, all three legs were clean, with no window
+  discarded and calibration at 5.21 to 5.22 ms. That table is pasted beside Arm64 in
+  `ScalingTests.tickBaselines` with its provenance.
+- **Two tables, one rule.** Per cell, the X64 figure is 0.63 to 1.83 times the Arm64 one, with a
+  median of 1.12. The two tables do not differ by a constant factor, which is why this entry keys
+  tables by architecture rather than scaling one.
+- **What CI now asserts.** On x64, every corpus cell is held to
+  `max(1.6 x full, 1.5 x baseline) + floor`. Phase 459's declined shapes keep their own rule. Arm64 is
+  unchanged.
+
+**Re-recording the X64 table after a runner change.** A table is in calibration units, so a faster or
+slower x64 machine reads the same figure. The routine weekly `ImageVersion` bump is therefore not, by
+itself, a reason to re-record. Two kinds of change can move the table:
+
+- the `ubuntu-latest` label moving to a new OS release or .NET runtime;
+- hosted x64 runners moving to a different CPU family.
+
+Either one is visible as a difference between the table's provenance line and the runner description
+of a later run. The ci log's `Set up job` step names the image.
+
+When the x64 clock leg goes red, or keeps reaching no verdict, after such a change, re-recording is
+the operator's decision, recorded as a dated note here, and never a re-run to make a red leg green.
+To re-record:
+
+1. Dispatch the workflow (`gh workflow run record-tick-baselines.yml --ref main`) with the default
+   `commit` (`ccbddc7`).
+2. Download its `tick-baselines-x64` artefact.
+3. Replace the X64 block with the artefact's `tick-baselines-X64.fs.txt` verbatim, with the run id
+   in the provenance comment.
+
+The same workflow serves a change of baseline tree: pass the new tree as `commit`. Arm64 is then
+re-recorded from that tree locally, in the same change.
+
 ## 2026-10-12 — D21: a sort key that names no column is refused with `UnknownColumn`, in a `Sort` and in a `Window`'s ordering; the pinned "unknown columns skipped" is reversed
 
 **Context.** `Sort` dropped a key that named no column: `resolveSortKeys` resolved the keys against
