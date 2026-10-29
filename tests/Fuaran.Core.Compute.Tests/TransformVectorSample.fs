@@ -162,6 +162,30 @@ module TransformVectorSample =
           "overflow-pow-below-refused"
           "overflow-pow-in-band" ]
 
+    /// The ordering-key shapes (Phase 584, `DECISIONS.md` D46), one vector each after the overflow
+    /// shapes, over the decimal table: a key a `Sort`, the fused `Sort` + `Limit`, or a `Window`'s
+    /// partition or order takes from the pipeline that names no column is refused as the named
+    /// `UnknownColumn` (Phases 412 and 441), and each refusal has an in-schema neighbour answered.
+    let private orderingShapeNames =
+        [ "ordering-sort-unknown-key-refused"
+          "ordering-sort-known-key"
+          "ordering-pivot-sort-unknown-key-refused"
+          "ordering-pivot-sort-known-key"
+          "ordering-sort-limit-unknown-key-refused"
+          "ordering-sort-limit-known-key"
+          "ordering-window-partition-unknown-key-refused"
+          "ordering-window-order-unknown-key-refused"
+          "ordering-window-known-keys" ]
+
+    /// The union typing shapes (Phase 584, D46), one vector each after the ordering shapes: a pair of
+    /// one type, a pair the column-type join widens (an int beside a float is a float), a pair with no
+    /// join refused as the named `TypeError`, and sides whose names differ refused as `JoinError`.
+    let private unionShapeNames =
+        [ "union-same-types"
+          "union-int-float-widens"
+          "union-string-int-refused"
+          "union-name-mismatch-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
         decimalShapeNames
@@ -170,6 +194,8 @@ module TransformVectorSample =
         @ repeatShapeNames
         @ powerShapeNames
         @ overflowShapeNames
+        @ orderingShapeNames
+        @ unionShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -529,6 +555,61 @@ module TransformVectorSample =
               Derive("nc", i -1290)
               Derive("low", pow (Col "nc") (i 3)) ]
 
+    /// The ordering-key shapes (Phase 584, D46) over the decimal table (`g`, `m`, `v`, `w`). The
+    /// absent key is `revenue`, the reported shape's; the pivot spreads `g` (whose `a`, `b` and `c`
+    /// every table of three rows or more carries) over the index `v`.
+    let private orderingPipelineOf (shape: string) : Transform list =
+        let pivot =
+            Pivot
+                { Index = [ "v" ]
+                  On = "g"
+                  Values = "w"
+                  Agg = Sum }
+
+        let window partition order =
+            Window
+                { PartitionBy = partition
+                  OrderBy = order
+                  Fn = RowNumber
+                  Of = "v"
+                  As = "rn" }
+
+        match shape with
+        | "ordering-sort-unknown-key-refused" -> [ Transform.sortBy [ "revenue", Desc ] ]
+        | "ordering-sort-known-key" -> [ Transform.sortBy [ "w", Desc; "g", Asc ] ]
+        | "ordering-pivot-sort-unknown-key-refused" -> [ pivot; Transform.sortBy [ "revenue", Desc ] ]
+        | "ordering-pivot-sort-known-key" -> [ pivot; Transform.sortBy [ "a", Desc; "v", Asc ] ]
+        | "ordering-sort-limit-unknown-key-refused" -> [ Transform.sortBy [ "revenue", Desc ]; Transform.limit 2 0 ]
+        | "ordering-sort-limit-known-key" -> [ Transform.sortBy [ "v", Desc ]; Transform.limit 2 0 ]
+        | "ordering-window-partition-unknown-key-refused" -> [ window [ "dept" ] [ "v", Asc ] ]
+        | "ordering-window-order-unknown-key-refused" -> [ window [ "g" ] [ "revenue", Asc ] ]
+        | _ -> [ window [ "g" ] [ "v", Asc ] ]
+
+    /// The union typing shapes (Phase 584, D46). The left side is the decimal table's `g` and `v`, the
+    /// int column renamed `x`; the right side is `rows - 1` rows of `g` and one column whose type the
+    /// shape decides, so the pair the union meets is exactly the one the shape names.
+    let private unionPipelineOf (shape: string) (rows: int) : Transform list =
+        let keys = [| "a"; "b"; "c" |]
+        let n = rows - 1
+
+        let right (name: string) (ty: ColumnType) (cells: Cell list) =
+            Embedded
+                { Schema = [ Field.create "g" StringType; Field.create name ty ]
+                  Columns =
+                    [ KitColumn.create "g" StringType [ for i in 0 .. n - 1 -> Str keys[i % 3] ]
+                      KitColumn.create name ty cells ] }
+
+        let ints = [ for i in 0 .. n - 1 -> Int(i * 5 - 3) ]
+
+        let other =
+            match shape with
+            | "union-same-types" -> right "x" IntType ints
+            | "union-int-float-widens" -> right "x" FloatType [ for i in 0 .. n - 1 -> Float(float i + 0.5) ]
+            | "union-string-int-refused" -> right "x" StringType [ for i in 0 .. n - 1 -> Str(string i) ]
+            | _ -> right "y" IntType ints
+
+        [ Project [ "g", "g"; "v", "x" ]; Union other ]
+
     let private pipelineOf (k: int) : Transform list =
         match k with
         | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
@@ -593,6 +674,10 @@ module TransformVectorSample =
                 (decimalTable rows offset, powerPipelineOf shape), r2
             elif shape.StartsWith "overflow-" then
                 (decimalTable rows offset, overflowPipelineOf shape), r2
+            elif shape.StartsWith "ordering-" then
+                (decimalTable rows offset, orderingPipelineOf shape), r2
+            elif shape.StartsWith "union-" then
+                (decimalTable rows offset, unionPipelineOf shape rows), r2
             else
                 (decimalTable rows offset, decimalPipelineOf shape rows offset), r2
 

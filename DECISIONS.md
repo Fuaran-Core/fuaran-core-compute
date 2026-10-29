@@ -1,5 +1,60 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-29 — D46: the transform law vectors pin an unknown sort, partition or order key as `UnknownColumn`, a union pair with no type join as `TypeError` and a union whose sides' names differ as `JoinError`, each beside an answered neighbour; D45 item 3's "every other refusal stays unnamed" is narrowed by exactly these three classes
+
+**Context.** The reference refuses a `Sort` key that names no column (Phase 412, D21), on the fused `Sort` + `Limit`
+path too, and a `Window` partition or order key that names no column (Phase 441, D26), each as
+`UnknownColumn(name, available)` before any row is read; and it types a union column by the column-type join,
+refusing a pair no column type holds together (`unionField`, Phase 469, D36). On 2026-10-28 the four host twins were
+read: the Python, Go and TypeScript twins sort by an absent key and return the input order, and the Python union keeps
+the left side's types whatever the right side holds. All were certified green, because no transform law vector
+reached any of these refusals.
+
+**Premise check.** Confirmed on the tree before any vector was written. `knownSortKeys` (through `unknownSortKey` and
+`unknownKey`) refuses an unknown key on the `Sort` step and on the fused top-n arm of `foldHead`, which
+`evalPipeline` takes, since it plans; `windowRefusal` refuses an unknown partition key, then an unknown order key,
+through the same `unknownKey`; `unionField` refuses an unjoinable pair with `typesBesideEachOther`, a `TypeError`,
+and `evalUnion` refuses differing column names as `JoinError` before it pairs any column. Refusals were encoded as
+D45 left them: `"verdict": "error"`, with `expected.error` on the overflow vectors alone, so no existing vector pinned
+any class here. One premise of the shard was false: the file DID carry `Union` steps (`decimal-union`, `unit-union`,
+and `unit-union-refused`, a unit mismatch), but every one paired two columns of one type, so none reached the type
+join. No production code moves in this phase.
+
+**Ruled.**
+
+1. **The vectors.** Thirteen `evalPipeline` shapes are appended after the overflow shapes (iterations 91 to 103), so
+   every earlier vector is byte-identical. The ordering family: a sort by the absent `revenue` alone, after a `Pivot`
+   (the reported shape) and fused with a `Limit`; a `Window` partitioned by the absent `dept` and one ordered by the
+   absent `revenue`; and an in-schema neighbour for each verb that must be answered. The union family: an int beside
+   an int, an int beside a float (answered as a float, the join), an int beside a string (refused) and two sides whose
+   second column's names differ (refused). They live in the shared sample for the reason D45 item 1 gives.
+
+2. **An unknown ordering key is pinned as `UnknownColumn`.** It is the class every other verb answers for a column
+   that is not there, and D21 and D26 made the ordering keys answer it on purpose: a key is a column reference, and a
+   host that refused it as `TypeError` would have a different rule for name resolution in three verbs. The twins
+   already carry the class (the base `unknown-column` vector's refusal is one), so the name costs a host nothing it
+   does not have.
+
+3. **An unjoinable union pair is pinned as `TypeError`, and differing names as `JoinError`.** `TypeError` is the
+   class the reference gives every pair no column type holds together, a derived column's and a union's alike
+   (`typesBesideEachOther`); `JoinError` is the class it gives a set verb whose sides do not line up by name. Both
+   were read in the Python, Go and TypeScript twins before they were pinned: the twins spell the name mismatch
+   `JoinError` today, and carry `TypeError` as a class.
+
+4. **Every other refusal stays unnamed.** D45 item 3 stands for every refusal not named here: a decimal `Div`, a unit
+   mismatch and a repeated name remain unmeasured vocabularies. The suite now asks the named families by shape
+   (`LawVectorExport.refusalClassOf`), and holds every other vector to no class.
+
+5. **The in-process law is unchanged**, for D45 item 4's reason.
+
+6. **The version.** `0.42.0` is tagged, so the change advances the slot to `0.43.0`, as D45 item 5 did for the same
+   class of change. No package's public surface moves.
+
+**Rejected.** *Leaving the classes unnamed:* the ordering vectors would still turn a silently-sorting host red, but
+a host could then refuse an unknown key as anything, and the rule D21 and D26 fixed is name resolution, which has a
+class. *A case kind of its own:* D45 item 1. *Fixing the twins here:* they are other repositories, and follow in
+fuaran#2485.
+
 ## 2026-10-24 — D45: the transform law vectors pin int32 overflow on `Add`, `Sub`, `Mul` and integer `Pow`, and a refused overflow vector names its class, `OverflowError`; every other refusal stays unnamed, and the in-process parity law still compares refusal with refusal
 
 **Context.** The reference has range-checked every integer result against the int32 band since Phase 39:

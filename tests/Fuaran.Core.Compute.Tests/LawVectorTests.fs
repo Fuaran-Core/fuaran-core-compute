@@ -97,13 +97,6 @@ let private parseVectors (json: string) : Result<ParsedVector list, string> =
                           | Error _ -> () ]
         | _ -> Error "the vector file carries no `vectors` array"
 
-/// An `EvalError`'s class, spelled as its case is named — the token a vector's `expected.error` carries.
-let private errorClass (e: EvalError) : string =
-    let case, _ =
-        Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(e, typeof<EvalError>)
-
-    case.Name
-
 /// Run one parsed vector the way a host would: decode both halves with the public codecs,
 /// evaluate with the reference, and report what disagreed with the recorded answer.
 let private checkVector (v: ParsedVector) : string option =
@@ -137,8 +130,14 @@ let private checkVector (v: ParsedVector) : string option =
             | Error e, "error", _ ->
                 // Phase 572 (D45): where the vector names the class, the refusal must be that class.
                 match v.Error with
-                | Some named when named <> errorClass e ->
-                    Some(sprintf "%s: the reference refused with %s, but the vector names %s" v.Id (errorClass e) named)
+                | Some named when named <> LawVectorExport.errorClass e ->
+                    Some(
+                        sprintf
+                            "%s: the reference refused with %s, but the vector names %s"
+                            v.Id
+                            (LawVectorExport.errorClass e)
+                            named
+                    )
                 | _ -> None
             | Error e, verdict, _ ->
                 Some(sprintf "%s: the reference refused the pipeline (%A), but the vector says `%s`" v.Id e verdict)
@@ -594,8 +593,12 @@ let tests =
                       else
                           Expect.equal (v.Verdict, v.Error) ("ok", None) (v.Id + " is answered")
 
-                  for v in vectors |> List.filter (fun v -> not (v.Id.Contains "-overflow-")) do
-                      Expect.isNone v.Error (v.Id + " names no refusal class")
+                  // A refusal outside the named families stays unnamed (D45 item 3, D46).
+                  for v in vectors do
+                      let shape = v.Id.Substring(v.Id.IndexOf('-', v.Id.IndexOf('-') + 1) + 1)
+
+                      if not (LawVectorExport.namesRefusals shape) then
+                          Expect.isNone v.Error (v.Id + " names no refusal class")
 
                   // The in-band neighbours reach the edges themselves, so a refusal one short of the
                   // band's edge is as red as a wrap past it.
@@ -610,6 +613,73 @@ let tests =
 
                       if op <> "pow" then
                           Expect.stringContains table (string System.Int32.MaxValue) (v.Id + " reaches the upper edge")
+
+          // ---- Phase 584 (D46): an unknown ordering key and an unjoinable union, refused by name ----
+          testCase
+              "every ordering-key and union vector names the class the reference refuses with, and each refusal has an answered in-schema neighbour"
+          <| fun _ ->
+              match parseVectors (LawVectorExport.renderTransformVectors ()) with
+              | Error m -> failtest m
+              | Ok vectors ->
+                  let named family =
+                      vectors |> List.filter (fun v -> v.Id.Split('-')[2] = family)
+
+                  let expect (suffix: string) (verdict: string) (error: string option) =
+                      match vectors |> List.tryFind (fun v -> v.Id.EndsWith("-" + suffix)) with
+                      | None -> failtestf "no %s vector was rendered" suffix
+                      | Some v -> Expect.equal (v.Verdict, v.Error) (verdict, error) v.Id
+
+                  for refused in
+                      [ "sort-unknown-key-refused"
+                        "pivot-sort-unknown-key-refused"
+                        "sort-limit-unknown-key-refused"
+                        "window-partition-unknown-key-refused"
+                        "window-order-unknown-key-refused" ] do
+                      expect ("ordering-" + refused) "error" (Some "UnknownColumn")
+
+                  for answered in
+                      [ "sort-known-key"
+                        "pivot-sort-known-key"
+                        "sort-limit-known-key"
+                        "window-known-keys" ] do
+                      expect ("ordering-" + answered) "ok" None
+
+                  expect "union-same-types" "ok" None
+                  expect "union-int-float-widens" "ok" None
+                  expect "union-string-int-refused" "error" (Some "TypeError")
+                  expect "union-name-mismatch-refused" "error" (Some "JoinError")
+
+                  Expect.equal (List.length (named "ordering")) 9 "nine ordering vectors"
+                  Expect.equal (List.length (named "union")) 4 "four union vectors"
+
+                  // The widening pair answers ONE float column: the join, not the left side's type.
+                  let widened =
+                      vectors |> List.find (fun v -> v.Id.EndsWith "-union-int-float-widens")
+
+                  match ColumnCodec.decode (Option.get widened.Table) with
+                  | Ok(Embedded t) ->
+                      Expect.equal
+                          (t.Schema |> List.map (fun f -> f.Name, f.Type))
+                          [ "g", StringType; "x", FloatType ]
+                          "an int beside a float unions as a float"
+                  | other -> failtestf "the widened union's table did not decode: %A" other
+
+          testCase "an ordering or union vector whose recorded refusal class is perturbed is red"
+          <| fun _ ->
+              match parseVectors (LawVectorExport.renderTransformVectors ()) with
+              | Error m -> failtest m
+              | Ok vectors ->
+                  for suffix in
+                      [ "-ordering-sort-limit-unknown-key-refused"
+                        "-ordering-window-partition-unknown-key-refused"
+                        "-union-string-int-refused"
+                        "-union-name-mismatch-refused" ] do
+                      let v = vectors |> List.find (fun v -> v.Id.EndsWith suffix)
+                      Expect.isNone (checkVector v) (v.Id + " agrees with the reference")
+
+                      Expect.isSome
+                          (checkVector { v with Error = Some "OverflowError" })
+                          (v.Id + " under another class is red")
 
           testCase "a vector naming a refusal class the reference does not answer is red"
           <| fun _ ->

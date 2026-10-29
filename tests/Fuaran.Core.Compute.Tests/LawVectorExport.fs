@@ -111,8 +111,9 @@ module LawVectorExport =
     /// canonical wire string of the result table — the identity `transformLaws` asserts. An
     /// `Error` carries the verdict and nothing else here, because the law requires only that the host
     /// also refused; it does not compare which refusal, and a vector naming one would invite a host
-    /// to gate on agreement the contract has never claimed. The one class the vectors DO name is the
-    /// int32 overflow (Phase 572, `DECISIONS.md` D45), added by `namedRefusal` below on its own shapes.
+    /// to gate on agreement the contract has never claimed. The classes the vectors DO name (the int32
+    /// overflow, Phase 572, D45; an unknown ordering key and an unjoinable union, Phase 584, D46) are
+    /// added by `namedRefusal` below on their own shapes.
     let private expectedOf (r: Result<Table, EvalError>) : (string * CorpusCell) list =
         match r with
         | Ok t -> [ "verdict", str "ok"; "table", str (ColumnCodec.encode (Embedded t)) ]
@@ -131,22 +132,55 @@ module LawVectorExport =
         |> List.filter (fun c -> c.Exactness = Exactness.HostRounded)
         |> List.map _.Name
 
-    /// The refusal class an overflow shape's vector names (Phase 572, `DECISIONS.md` D45): the
-    /// `EvalError` case, spelled as the case is named, which is the vocabulary every host's evaluator
-    /// already mirrors. Only the overflow shapes carry it — every other refusal stays unnamed — and an
-    /// overflow shape the reference answers any other way is a broken sample, never a vector.
+    /// An `EvalError`'s class, spelled as its case is named: the token a vector's `expected.error`
+    /// carries, and the vocabulary every host's evaluator already mirrors.
+    let errorClass (e: EvalError) : string =
+        let case, _ =
+            Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(e, typeof<EvalError>)
+
+        case.Name
+
+    /// The refusal class a shape's vector names, for the shape families that name one: the int32
+    /// overflow (Phase 572, `DECISIONS.md` D45), `OverflowError`; an ordering key that names no
+    /// column (Phase 584, D46), `UnknownColumn`; a union pair with no type join, `TypeError`, and a
+    /// union whose sides' names differ, `JoinError` (D46). `None` for a shape whose vector names no
+    /// class. Within a named family every `-refused` shape names its class and every other shape is
+    /// answered; every other refusal in the file stays unnamed.
+    let refusalClassOf (shape: string) : string option =
+        if not (shape.EndsWith "-refused") then
+            None
+        elif shape.StartsWith "overflow-" then
+            Some "OverflowError"
+        elif shape.StartsWith "ordering-" then
+            Some "UnknownColumn"
+        elif shape = "union-string-int-refused" then
+            Some "TypeError"
+        elif shape = "union-name-mismatch-refused" then
+            Some "JoinError"
+        else
+            None
+
+    /// Whether a shape belongs to a family whose refusals are named (`refusalClassOf`).
+    let namesRefusals (shape: string) : bool =
+        shape.StartsWith "overflow-"
+        || shape.StartsWith "ordering-"
+        || shape.StartsWith "union-"
+
+    /// The class a named family's refused shape carries, checked against what the reference answered:
+    /// a refused shape the reference answers otherwise, or an answered one it refuses, is a broken
+    /// sample, never a vector.
     let private namedRefusal (shape: string) (r: Result<Table, EvalError>) : (string * CorpusCell) list =
-        if not (shape.StartsWith "overflow-") then
+        if not (namesRefusals shape) then
             []
         else
-            match r, shape.EndsWith "-refused" with
-            | Error(OverflowError _), true -> [ "error", str "OverflowError" ]
-            | Ok _, false -> []
-            | other, _ -> failwithf "overflow shape %s: the reference answered %A" shape other
+            match r, refusalClassOf shape with
+            | Error e, Some named when errorClass e = named -> [ "error", str named ]
+            | Ok _, None -> []
+            | other, _ -> failwithf "shape %s: the reference answered %A" shape other
 
     /// `expectedOf`, with the per-column tolerance of an accepted pipeline's host-rounded columns
     /// (Phase 557): absent where the walk marks none, so every vector without one is the bytes it was;
-    /// and on an overflow shape the refusal's class (Phase 572).
+    /// and on a named family's refused shape the refusal's class (Phases 572 and 584).
     let private expectedWithTolerance (shape: string) (table: Table) (pipeline: Transform list) =
         let result = DataFrame.evalPipeline pipeline table
         let expected = expectedOf result @ namedRefusal shape result
@@ -348,7 +382,20 @@ module LawVectorExport =
         + "host must refuse it with the class `expected.error` names, `OverflowError`; an `-in-band` "
         + "vector lands on or beside the band's edges and must be answered, not refused. A host that "
         + "computes over a wider integer, an unbounded integer or an IEEE-754 double must check the "
-        + "result against the band before answering."
+        + "result against the band before answering. "
+        + "From the iteration after the last overflow shape, each takes the next ORDERING shape named in "
+        + "its vector id (Phase 584) over the decimal table: a key a `sort`, a `sort` followed by a "
+        + "`limit`, or a `window`'s partition or order takes from the pipeline is a column reference, "
+        + "resolved against the step's input schema before any row is read, and a key that names no column "
+        + "is refused with the class `expected.error` names, `UnknownColumn` — never the input order "
+        + "returned as if it had been sorted, nor one partition answered as if it were several; each "
+        + "refusal has an in-schema neighbour that must be answered. From the iteration after the last "
+        + "ordering shape, each takes the next UNION shape named in its vector id over the decimal table, "
+        + "projected to `g` and `v` renamed `x`, against a second operand of rows - 1 rows carrying `g` and "
+        + "one column the shape declares (x = Int(i*5 - 3), Float(i + 0.5) or Str of i, or y = Int(i*5 - 3) "
+        + "for the name mismatch): a pair of one type unions under that type, an int beside a "
+        + "float unions as a float, a pair no column type holds together (a string beside an int) is "
+        + "refused as `TypeError`, and sides whose column names differ are refused as `JoinError`."
 
     let renderTransformVectors () : string =
         CorpusFile.render
