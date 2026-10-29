@@ -1,5 +1,75 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-10-29 — D47: a cell edit through `applyPrepared` records the rows it wrote, and a refresh of a state evaluated over the edited version reads that record as an in-place delta, keying the written rows and no others; the edited version's table shares every column the edit did not write; the shard's "the cost moved with the column identity" is half right, and the counted half is the record
+
+**Context.** fuaran#1891 drove grid edits through `ColumnOps.applyPrepared`, read the delta off the op
+(`deltaOfPrepared`, O(1)) and refreshed with `Incremental.refreshPrepared`. On a derive-only pipeline that is the
+chunked path (Phase 268) and one edit costs one chunk. On a filter it is the row-local walk, and the op-derived
+refresh measured no better than a diffed one (about 2.7 ms against 2.1 ms on 10,000 rows). The shard read the cause as
+column identity: `Prepared.ofChunks` builds the version's table with a fresh column per column, so nothing keyed over
+the prior version's columns carries across.
+
+**Premise check.** Read on the tree (`0b6f287`) before anything moved, and reproduced as a counted test
+(`PreparedEditRefreshTests`: 10,000 rows, one `SetCell`, a filter and a derive-only pipeline, op-derived against
+diffed against full).
+
+1. *Where the row-local refresh over a prepared version reads its key:* the TABLE. `refreshPrepared` hands
+   `Prepared.table` to `refreshWith`, and `run` mints a token for every row (`tokensOf`), because the op-derived delta
+   carries neither the keys a diff attaches (`KeyedIndexes.carried`) nor its in-place record
+   (`KeyedIndexes.inPlaceOf`, Phase 323). A diffed delta carries both, so its refresh mints nothing and pays for the
+   changed row; the diff itself keys the new table, which is where the diffed tick's linear term lives.
+2. *`Source` builds fresh columns for untouched ones:* confirmed. `ofChunks` concatenates every rope
+   (`Chunked.toColumn`) on first read, so an `applyPrepared` version shares no column with its prior version's table.
+3. *The cost moves with column identity:* HALF TRUE. The counted linear term is the key minting, and column identity
+   does not reach it: the walk's frame tests a column's length in O(1) whether or not the column is the prior's
+   (`frameOf`), and nothing in the refresh holds an index over the prior's columns. The falsifier is a go-red in the
+   suite: the edited version with its columns shared and its record dropped still keys every row. What column
+   identity does cost is the concatenation of every untouched column the first time the version's table is read,
+   which is memory traffic linear in the table and no key work.
+
+**Ruled.**
+
+1. **The edit is the record — both mechanisms, for different halves.** `Prepared` gains two internal fields: `Stamp`,
+   a fresh object per version compared by reference and holding nothing, and `Edit`, the record a cell edit leaves
+   (`PreparedEdit`: the parent's stamp and the rows written). `ColumnOps.applyPrepared`'s `SetCell` builds its version
+   through `Prepared.ofEdit` with the edited row as the record. `refreshWith`, given a prepared version whose record
+   names the stamp of the version this state was evaluated over (the state's source being that version's table),
+   checks each written row's key against the state's token for that row, one key per row, and where every one is
+   unmoved reads the edit exactly as it reads a diff's in-place record. `run` then takes the prior tokens as the
+   source's, which the record asserts, and mints nothing. A written row whose key moved, a state evaluated over some
+   other version, or a version with no record takes the general walk, as before.
+2. **The version's table shares the parent's columns.** `Prepared.ofEdit` gives the new version's table the parent
+   table's own column wherever the edit left the parent's rope in place (the same `Chunked`, under the same field, the
+   parent's column `count` rows long), decided at edit time in time linear in the schema and only where the parent's
+   table is already built. `SetCell`, `SetColumn`, `InsertColumn` and `RemoveColumn` build through it; `AppendRows`
+   moves every rope and keeps `ofChunks`.
+3. **Laziness and the persistent-version guarantee.** `Source` stays lazy: nothing is built at edit time but the
+   schema-long sharing decision. The closure holds the shared columns, which the new table holds anyway, and nothing
+   else of the parent: no frame, no rope, no table, and the parent is named only by its stamp, so a chain of versions
+   never keeps its ancestors alive. A column is immutable, so sharing one changes neither version's table; the prior
+   version still reads its own cell. `toTable (applyPrepared op (prepare t)) = apply op t` holds as before and is
+   asserted over the shared table.
+4. **What the bound is.** A one-cell edit's op-derived tick keys a constant number of rows (two to derive the delta,
+   one to confirm it in place), evaluates one row on a filter, and does both identically at 1,000 and at 10,000 rows;
+   the diffed tick keys at least the new table. The measure is counted, because a clock comparison of two sub-
+   millisecond paths does not discriminate (Phase 207). The refresh still walks an array of row flags as long as the
+   table (`runIncremental`'s `priorOf`/`stable`), which is the same pass the diffed in-place refresh makes and no key
+   work; it is not claimed away.
+5. **Refresh equals full evaluation, unchanged.** Every test of the phase compares the refresh with
+   `DataFrame.evalPipeline` over the version's table, including a chain of five edits, a key-moving edit, a skipped
+   version and a filter feeding a group step; the Phase 433 / 464 theorems' differential runs unchanged and green.
+6. **The version.** `0.43.0` is an untagged draft carrying an additive change (D46); this change moves no public
+   surface (the new fields and `ofEdit` are internal), so it rides the draft.
+
+**Rejected.** *Keying the row-local refresh incrementally from the delta's rows alone:* the delta names keys, not
+positions, so reading "the row with this key is at its prior index" off it needs either an index over the new table,
+which is the work being removed, or trust in the delta beyond the contract (a delta must describe the change, not
+where rows sit). The op knows the position, so the op records it. *Column sharing alone:* removes the concatenation
+and no key work (premise 3). *A strong reference to the parent version in the record:* it would keep every ancestor,
+and its table, alive for as long as the newest version lives. *A record for `SetColumn`:* its changed rows are read
+off the cells, which is the diff's work; a whole-column write reaches the chunked path's chunk sharing already, and a
+row-local record for it is left until a consumer measures one.
+
 ## 2026-10-29 — D46: the transform law vectors pin an unknown sort, partition or order key as `UnknownColumn`, a union pair with no type join as `TypeError` and a union whose sides' names differ as `JoinError`, each beside an answered neighbour; D45 item 3's "every other refusal stays unnamed" is narrowed by exactly these three classes
 
 **Context.** The reference refuses a `Sort` key that names no column (Phase 412, D21), on the fused `Sort` + `Limit`

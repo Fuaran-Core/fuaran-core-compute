@@ -1861,6 +1861,12 @@ module internal Chunked =
     /// back as it is, several concatenated once — adopted as the column's storage.
     let toColumn (field: Field) (c: Chunked) : Column = Vec.toColumn field (toVec c)
 
+/// Phase 585 — what a cell edit records about the version it produced (`ColumnOps.applyPrepared`): the
+/// version is its parent — the version whose `Stamp` is `From` — under the same schema and row count
+/// with the cells of `Rows` written and no other cell. A refresh of a state evaluated over that parent
+/// reads it as the in-place record `Delta.diff` would have attached, without diffing anything.
+type internal PreparedEdit = { From: obj; Rows: int[] }
+
 /// A source prepared once for many evaluations (Phase 267), and since Phase 268 a persistent
 /// VERSION of a table: its schema and row count, and one chunked column per schema column (the
 /// rope every edit shares), with the table it stands for and the evaluator's dense frame of it
@@ -1885,6 +1891,11 @@ type Prepared =
             Count: int
             /// One rope per schema column.
             Columns: Lazy<Chunked[]>
+            /// Phase 585 — this version's identity: a fresh object, compared by reference and holding
+            /// nothing, so a version an edit produced can name its parent without keeping it alive.
+            Stamp: obj
+            /// Phase 585 — where an edit produced this version, what it wrote (`PreparedEdit`).
+            Edit: PreparedEdit option
         }
 
 module internal Prepared =
@@ -1905,10 +1916,20 @@ module internal Prepared =
           Frame = ready f
           Cols = t.Schema
           Count = f.Count
-          Columns = lazy (Array.mapi (fun ci v -> Chunked.ofVec types[ci] Chunked.rows v) f.Vecs) }
+          Columns = lazy (Array.mapi (fun ci v -> Chunked.ofVec types[ci] Chunked.rows v) f.Vecs)
+          Stamp = obj ()
+          Edit = None }
 
-    /// A version from its rope: the frame and the table each concatenated from it on first read.
-    let ofChunks (cols: Schema) (count: int) (columns: Chunked[]) : Prepared =
+    /// A version from its rope, with the frame and the table each built from it on first read: the
+    /// table's column `ci` is `shared[ci]` where that is a column already built, else the rope
+    /// concatenated.
+    let private assemble
+        (cols: Schema)
+        (count: int)
+        (columns: Chunked[])
+        (shared: Column option[])
+        (edit: PreparedEdit option)
+        : Prepared =
         let frame =
             lazy
                 { Cols = cols
@@ -1918,13 +1939,59 @@ module internal Prepared =
 
         let table () : Table =
             { Schema = cols
-              Columns = cols |> List.mapi (fun ci field -> Chunked.toColumn field columns[ci]) }
+              Columns =
+                cols
+                |> List.mapi (fun ci field ->
+                    match shared[ci] with
+                    | Some c -> c
+                    | None -> Chunked.toColumn field columns[ci]) }
 
         { Source = lazy (table ())
           Frame = frame
           Cols = cols
           Count = count
-          Columns = ready columns }
+          Columns = ready columns
+          Stamp = obj ()
+          Edit = edit }
+
+    /// A version from its rope: the frame and the table each concatenated from it on first read.
+    let ofChunks (cols: Schema) (count: int) (columns: Chunked[]) : Prepared =
+        assemble cols count columns (Array.create columns.Length None) None
+
+    /// Phase 585 — the version an edit produced from `parent`: `ofChunks`, except that the table it
+    /// stands for SHARES every column of the parent's table whose rope the edit left as the parent's
+    /// own (the same `Chunked` object, under the same field, the parent's column exactly `count`
+    /// rows long), so only a column the edit wrote is concatenated afresh. Sharing is decided here, in
+    /// time linear in the schema, and only where the parent's table is already built; the closure
+    /// holds those columns and nothing else of the parent, which the new table holds anyway. A column
+    /// is immutable, so the parent's table and this one each stay exactly what they stood for.
+    ///
+    /// `rows`, where given, is the edit's record (`PreparedEdit`): the rows a cell edit wrote, kept
+    /// only where the schema and the row count are the parent's.
+    let ofEdit (parent: Prepared) (cols: Schema) (count: int) (columns: Chunked[]) (rows: int[] option) : Prepared =
+        let shared =
+            if not (parent.Source.IsValueCreated && parent.Columns.IsValueCreated) then
+                Array.create columns.Length None
+            else
+                let pt = parent.Source.Value
+                let ropes = parent.Columns.Value
+
+                cols
+                |> List.mapi (fun ci field ->
+                    match parent.Cols |> List.tryFindIndex (fun f -> f = field) with
+                    | Some pj when pj < ropes.Length && obj.ReferenceEquals(ropes[pj], columns[ci]) ->
+                        match Table.tryColumn field.Name pt with
+                        | Some c when Column.length c = count && c.Type = field.Type -> Some c
+                        | _ -> None
+                    | _ -> None)
+                |> List.toArray
+
+        let edit =
+            match rows with
+            | Some r when count = parent.Count && cols = parent.Cols -> Some { From = parent.Stamp; Rows = r }
+            | _ -> None
+
+        assemble cols count columns shared edit
 
     /// An evaluation's result kept prepared (Phase 342): the frame the evaluator ended on, as the
     /// version it stands for, with the table built from it only the first time something reads it.
@@ -1956,7 +2023,9 @@ module internal Prepared =
           Frame = ready dense
           Cols = dense.Cols
           Count = dense.Count
-          Columns = lazy (Array.mapi (fun ci v -> Chunked.ofVec types[ci] Chunked.rows v) dense.Vecs) }
+          Columns = lazy (Array.mapi (fun ci v -> Chunked.ofVec types[ci] Chunked.rows v) dense.Vecs)
+          Stamp = obj ()
+          Edit = None }
 
     /// The rope, cut if it has not been yet.
     let columns (p: Prepared) : Chunked[] = p.Columns.Value
