@@ -673,7 +673,7 @@ module ColumnOps =
                     |> Result.map (fun () ->
                         let columns = Array.copy (Prepared.columns p)
                         columns[ci] <- Chunked.setCell columns[ci] row value
-                        Prepared.ofChunks p.Cols rc columns)
+                        Prepared.ofEdit p p.Cols rc columns (Some [| row |]))
         | SetColumn newCol ->
             match indexIn p newCol.Name with
             | None -> Error(NoSuchColumn(newCol.Name, names))
@@ -690,7 +690,7 @@ module ColumnOps =
                         columns[ci] <-
                             Chunked.ofCellsSharing columns[ci] newCol.Type (List.toArray (Column.toCells newCol))
 
-                        Prepared.ofChunks (retyped newCol.Name newCol.Type p.Cols) rc columns
+                        Prepared.ofEdit p (retyped newCol.Name newCol.Type p.Cols) rc columns None
                     )
         | InsertColumn(index, col) ->
             if p.Cols |> List.exists (fun f -> f.Name = col.Name) then
@@ -713,10 +713,12 @@ module ColumnOps =
                         let columns' =
                             Array.concat [ Array.sub columns 0 i; [| rope |]; Array.sub columns i (columns.Length - i) ]
 
-                        Prepared.ofChunks
+                        Prepared.ofEdit
+                            p
                             (insertAt i (Field.create col.Name col.Type) p.Cols)
                             (if hasCols then rc else n)
                             columns'
+                            None
                     )
         | RemoveColumn name ->
             match indexIn p name with
@@ -728,7 +730,7 @@ module ColumnOps =
                     Array.append (Array.sub columns 0 ci) (Array.sub columns (ci + 1) (columns.Length - ci - 1))
 
                 let cols = p.Cols |> List.filter (fun f -> f.Name <> name)
-                Ok(Prepared.ofChunks cols (if List.isEmpty cols then 0 else p.Count) columns')
+                Ok(Prepared.ofEdit p cols (if List.isEmpty cols then 0 else p.Count) columns' None)
         | AppendRows rows ->
             let nameSet = Set.ofList names
 

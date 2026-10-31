@@ -5422,6 +5422,11 @@ module Incremental =
 
                          Ok grown
                  | _, Some k -> Ok(tokensOfKnown k priorTokens)
+                 // Phase 585 — in place with no keys carried (an edit's record, `refreshWith`): every
+                 // row of the source sits at its prior index under its prior key, which is what the
+                 // record asserts, so the source's tokens ARE the prior's and nothing is minted.
+                 | Some reading, None when isNull reading.Tails && reading.PriorCount = priorTokens.Length ->
+                     Ok priorTokens
                  | _, None -> tokensOf idw priorTokens source
 
              match tokens with
@@ -5947,6 +5952,44 @@ module Incremental =
         // full refresh, or a diff into some other table) carries none and the refresh mints.
         let known = KeyedIndexes.carried idw.Scheme delta source
 
+        // Phase 585 — the version a cell edit produced from the very version this state was evaluated
+        // over (`Prepared.ofEdit`, `ColumnOps.applyPrepared`) is in place against that version's table
+        // by construction: the edit wrote the rows its record names and no other cell, under the same
+        // schema and row count. Where every written row still carries the key it had, the refresh
+        // reads it exactly as it reads the in-place record of a diff (below), keying the written rows
+        // and nothing else. A written row whose key moved is no longer in place, and the general walk
+        // takes it.
+        let editedInPlace () : InPlaceReading option =
+            match given, state.Prepared with
+            | Some p, Some sp when
+                (match p.Edit with
+                 | Some e -> obj.ReferenceEquals(e.From, sp.Stamp)
+                 | None -> false)
+                && sp.Source.IsValueCreated
+                && state.Source.IsValueCreated
+                && obj.ReferenceEquals(state.Source.Value, sp.Source.Value)
+                && state.Tokens.Length > 0
+                && state.Tokens.Length = p.Count
+                ->
+                let rows = p.Edit.Value.Rows
+
+                let keptKey (r: int) =
+                    r >= 0
+                    && r < p.Count
+                    && (match idw.KeyOf source r with
+                        | Some id -> Delta.refToken (ByKey(idw.KeyString id)) = state.Tokens[r]
+                        | None -> false)
+
+                if rows |> Array.forall keptKey then
+                    Some
+                        { Changed = Array.sort (Array.distinct rows)
+                          PriorCount = p.Count
+                          Tails = null
+                          Exact = null }
+                else
+                    None
+            | _ -> None
+
         // Phase 323 — every row in place against the very table this state was evaluated over: the
         // refresh may then pay for the changed rows rather than for the table (`runIncremental`).
         // Anything else — another `before`, a hand-built delta, a moved, added or removed row —
@@ -5983,7 +6026,7 @@ module Incremental =
                           PriorCount = a.PriorCount
                           Tails = a.Tails
                           Exact = a.Exact }
-                | _ -> None
+                | _ -> editedInPlace ()
 
         match stale with
         | Some r ->

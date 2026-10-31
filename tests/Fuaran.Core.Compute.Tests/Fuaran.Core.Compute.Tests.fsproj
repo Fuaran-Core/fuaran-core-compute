@@ -52,6 +52,7 @@
     <Compile Include="IncrementalRefreshCostTests.fs" />
     <Compile Include="IncrementalStateCodecTests.fs" />
     <Compile Include="IncrementalWindowTests.fs" />
+    <Compile Include="PreparedEditRefreshTests.fs" />
     <!-- Phase 250's composition, carried from the substrate's suite by Phase 261: deltaOf,
          changedColumns and the sheet that drives Propagation over Incremental through them. -->
     <Compile Include="PropagationCompositionTests.fs" />
