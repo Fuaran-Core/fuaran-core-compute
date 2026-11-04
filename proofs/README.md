@@ -76,6 +76,7 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `DataFrameCodec` | 7 | 0 | 0 | 0 | 0 | 0 | 7 |
 | `Fuaran.Compute.DataFrame` | `Delta` | 21 | 0 | 0 | 0 | 0 | 0 | 21 |
 | `Fuaran.Compute.DataFrame` | `DeltaCodec` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
+| `Fuaran.Compute.DataFrame` | `FnDef` | 1 | 0 | 0 | 0 | 0 | 0 | 1 |
 | `Fuaran.Compute.DataFrame` | `Incremental` | 25 | 3 | 0 | 0 | 0 | 0 | 22 |
 | `Fuaran.Compute.DataFrame` | `IncrementalCodec` | 7 | 0 | 0 | 0 | 0 | 0 | 7 |
 | `Fuaran.Compute.DataFrame` | `MorselWorker` | 3 | 0 | 0 | 0 | 0 | 3 | 0 |
@@ -84,9 +85,9 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `RowIdentity` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
 | `Fuaran.Compute.DataFrame` | `SchemaWalk` | 17 | 2 | 0 | 1 | 0 | 0 | 14 |
 | `Fuaran.Compute.DataFrame` | `Slot` | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
-| `Fuaran.Compute.DataFrame` | `Transform` | 22 | 14 | 0 | 0 | 0 | 0 | 8 |
+| `Fuaran.Compute.DataFrame` | `Transform` | 23 | 14 | 0 | 0 | 0 | 0 | 9 |
 | `Fuaran.Compute.DataFrame` | `WorkerPool` | 5 | 0 | 0 | 0 | 0 | 2 | 3 |
-| **Total** |  | 195 | 35 | 16 | 8 | 0 | 5 | 131 |
+| **Total** |  | 197 | 35 | 16 | 8 | 0 | 5 | 133 |
 <!-- operation-coverage:end -->
 
 ## Adopted from the kit's release asset

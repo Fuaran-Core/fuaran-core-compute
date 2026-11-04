@@ -188,6 +188,9 @@ module PipelineQuery =
         | ColExpr.Quotient(a, b, r) -> go None a @ go None b @ scale r
         | ColExpr.Rounded(x, r) -> go None x @ scale r
         | ColExpr.Convert(x, _) -> go None x
+        | ColExpr.Interpolate(x, _, _, _) -> go (Some FloatType) x
+        | ColExpr.Call(_, xs) -> xs |> List.collect (go None)
+        | ColExpr.Arg _ -> []
 
     /// The reads in one step over the typed columns alive at it. Closed over `Transform` with no
     /// catch-all, for the reason `exprReads` is.
@@ -197,6 +200,15 @@ module PipelineQuery =
         | Derive(_, e) -> exprReads cols None e
         | Sort keys -> keys |> List.collect (fun (c, _) -> slotRead StringType c)
         | Limit(n, offset) -> slotRead IntType n @ slotRead IntType offset
+        // A definition's defaults, then its body's reads — `Transform.paramsOf`'s order.
+        | Define fd ->
+            (fd.Params
+             |> List.collect (fun p ->
+                 match p.Default with
+                 | Some(Slot.Param n) -> [ n, ParamRead.Scalar None ]
+                 | Some(Slot.Lit _)
+                 | None -> []))
+            @ exprReads cols None fd.Body
         | Project _
         | GroupBy _
         | Join _
@@ -254,7 +266,8 @@ module PipelineQuery =
             | Unpivot _
             | Sort _
             | Distinct
-            | Limit _ -> []
+            | Limit _
+            | Define _ -> []
 
         refOf pq.Query.Source @ (pq.Pipeline |> List.collect stepRefs) |> List.distinct
 

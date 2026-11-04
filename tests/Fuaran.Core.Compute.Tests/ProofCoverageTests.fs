@@ -767,8 +767,8 @@ let coverageTests =
                   (names
                    |> List.filter (fun n -> n.StartsWith "Transform." && Char.IsUpper n[10])
                    |> List.length)
-                  14
-                  "the census names the fourteen relational verbs"
+                  15
+                  "the census names the fifteen relational verbs (Phase 596 added `Define`)"
 
               Expect.isEmpty
                   (Set.difference inputs.Obsolete (Set.ofList names))

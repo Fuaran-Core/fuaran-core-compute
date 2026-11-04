@@ -157,6 +157,19 @@ module LawVectorExport =
             Some "TypeError"
         elif shape = "union-name-mismatch-refused" then
             Some "JoinError"
+        // Phase 596 (D48): the named-function and curve refusals.
+        elif shape = "function-recursive-refused" then
+            Some "RecursiveFunction"
+        elif shape = "function-unknown-refused" then
+            Some "FunctionError"
+        elif shape = "function-arity-refused" then
+            Some "ArityError"
+        elif shape = "function-oversize-refused" then
+            Some "ExpansionTooLarge"
+        elif shape = "curve-knots-refused" then
+            Some "InvalidKnots"
+        elif shape = "curve-decimal-refused" then
+            Some "TypeError"
         else
             None
 
@@ -165,6 +178,8 @@ module LawVectorExport =
         shape.StartsWith "overflow-"
         || shape.StartsWith "ordering-"
         || shape.StartsWith "union-"
+        || shape.StartsWith "function-"
+        || shape.StartsWith "curve-"
 
     /// The class a named family's refused shape carries, checked against what the reference answered:
     /// a refused shape the reference answers otherwise, or an answered one it refuses, is a broken
@@ -185,9 +200,12 @@ module LawVectorExport =
         let result = DataFrame.evalPipeline pipeline table
         let expected = expectedOf result @ namedRefusal shape result
 
-        match hostRoundedColumns table pipeline with
-        | [] -> expected
-        | rounded ->
+        // A refused vector carries no tolerance: there is no column to compare (Phase 596 made it
+        // reachable — a call whose functions are refused is walked as written, and marked).
+        match result, hostRoundedColumns table pipeline with
+        | Error _, _
+        | _, [] -> expected
+        | Ok _, rounded ->
             expected
             @ [ "tolerance", CorpusCell.Row(rounded |> List.map (fun name -> name, CorpusFile.num hostRoundedUlps)) ]
 

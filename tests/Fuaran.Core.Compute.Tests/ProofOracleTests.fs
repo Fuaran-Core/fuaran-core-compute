@@ -964,6 +964,12 @@ let rec private pExprToModel (e: ColExpr) : ModelPipe.col_expr =
     | Rounded(x, r) -> ModelPipe.Rounded(pExprToModel x, pRoundingToModel r)
     // Phase 429: the target unit crosses as its canonical text (one product, one text).
     | Convert(x, u) -> ModelPipe.Convert(pExprToModel x, Unit.render u)
+    // Phase 596 (D48): outside the model. A call and its arguments are gone before evaluation
+    // (`FnDef.expand`), and a curve's arithmetic is over floats, which the model carries opaquely;
+    // the generators below never build any of the three.
+    | Arg _
+    | Call _
+    | Interpolate _ -> failtestf "not in the model (Phase 596, D48): %A" e
 
 /// A unit back from its canonical text — the model carries texts, production the value.
 let private pUnitOfText (text: string) : UnitOfMeasure =
@@ -1055,6 +1061,8 @@ let private pTransformToModel (t: Transform) : ModelPipe.transform =
     | Union src -> ModelPipe.Union(pSourceToModel src)
     | Intersect src -> ModelPipe.Intersect(pSourceToModel src)
     | Except src -> ModelPipe.Except(pSourceToModel src)
+    // Phase 596 (D48): a definition is gone before evaluation, so the model has no case for it.
+    | Define _ -> failtestf "not in the model (Phase 596, D48): %A" t
 
 let private pTransformOfModel (t: ModelPipe.transform) : Transform =
     match t with
@@ -1114,6 +1122,11 @@ let private pErrToModel (e: EvalError) : ModelPipe.eval_error =
     | UnboundParam(name, bound) -> ModelPipe.UnboundParam(name, bound)
     | UnpinnedClock grain -> ModelPipe.UnpinnedClock(pFwd pGrains grain)
     | UnitMismatch(step, at, l, r) -> ModelPipe.UnitMismatch(step, pExprToModel at, l, r)
+    // Phase 596 (D48): refusals of what the model does not carry; no modelled pipeline reaches one.
+    | FunctionError _
+    | RecursiveFunction _
+    | ExpansionTooLarge _
+    | InvalidKnots _ -> failtestf "not in the model (Phase 596, D48): %A" e
 
 let private pErrOfModel (e: ModelPipe.eval_error) : EvalError =
     match e with
@@ -1260,6 +1273,7 @@ let private pVerbTag (t: Transform) : string =
     | Union _ -> "Union"
     | Intersect _ -> "Intersect"
     | Except _ -> "Except"
+    | Define _ -> "Define"
 
 let rec private pExprTags (e: ColExpr) : string list =
     match e with
@@ -1281,6 +1295,9 @@ let rec private pExprTags (e: ColExpr) : string list =
     | Quotient(a, b, _) -> "Quotient" :: pExprTags a @ pExprTags b
     | Rounded(x, _) -> "Rounded" :: pExprTags x
     | Convert(x, _) -> "Convert" :: pExprTags x
+    | Interpolate(x, _, _, _) -> "Interpolate" :: pExprTags x
+    | Call(_, xs) -> "Call" :: List.collect pExprTags xs
+    | Arg _ -> [ "Arg" ]
 
 type private PipeTally =
     {
@@ -1423,6 +1440,32 @@ let private pLawVectors () : (string * Transform list * Table * bool) list =
 
           let refuses = v.GetProperty("expected").GetProperty("verdict").GetString() = "error"
           id, pipeline, table, refuses ]
+    // Phase 596 (D48): the model's subset. A pipeline's calls are expanded first, so the model checks
+    // the expansion production evaluates; one whose functions are refused at registration, or that
+    // reads a curve, is outside the model and is held by `FunctionsAndCurvesTests` instead.
+    |> List.choose (fun (id, pipeline, table, refuses) ->
+        let readsCurve (p: Transform list) =
+            p
+            |> List.exists (function
+                | Filter e
+                | Derive(_, e) -> pExprTags e |> List.contains "Interpolate"
+                | _ -> false)
+
+        match FnDef.expand pipeline with
+        | Ok expanded when not (readsCurve expanded) -> Some(id, expanded, table, refuses)
+        | _ -> None)
+
+/// How many law vectors `pLawVectors` leaves out (Phase 596, D48): every curve shape, and every
+/// named-function shape refused at registration — counted from the shape names, so a vector dropped
+/// for any other reason still turns a count red.
+let private pOutOfModelVectors () : int =
+    [ 0 .. LawVectorExport.iterations - 1 ]
+    |> List.filter (fun i ->
+        let shape = LawVectorExport.shapeOf i
+
+        shape.StartsWith "curve-"
+        || (shape.StartsWith "function-" && shape.EndsWith "-refused"))
+    |> List.length
 
 /// The generated sample — the vectors' own draw recipe for the table (a tie-heavy string key, an
 /// int column carrying nulls, a float column, and since Phase 277 a decimal column), WIDENED in the pipeline: one to four steps over all
@@ -1787,7 +1830,10 @@ let rec private pUnderCountNodes (e: ColExpr) : int =
     | IsNull x
     | InParam(x, _)
     | Rounded(x, _)
-    | Convert(x, _) -> 1 + pUnderCountNodes x
+    | Convert(x, _)
+    | Interpolate(x, _, _, _) -> 1 + pUnderCountNodes x
+    | Arg _ -> 1
+    | Call(_, xs) -> 1 + List.sumBy pUnderCountNodes xs
     | Quotient(a, b, _) -> 1 + pUnderCountNodes a + pUnderCountNodes b
     | Coalesce xs
     | ApplyFn(_, xs) -> 1 + List.sumBy pUnderCountNodes xs
@@ -5350,8 +5396,8 @@ let proofOracleTests =
 
               Expect.equal
                   checked
-                  (LawVectorExport.iterations + 200)
-                  "every vector and two hundred generated pipelines were checked"
+                  (LawVectorExport.iterations - pOutOfModelVectors () + 200)
+                  "every vector in the model's subset and two hundred generated pipelines were checked"
 
           testCase
               "the finding holds on the shipped evaluator — an expression over `Limits.max_expr_nodes` is evaluated, never refused"

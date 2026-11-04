@@ -1,5 +1,123 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D48: a pipeline carries its own named functions as `Define` steps, every `Call` is expanded inline before evaluation under §21.8's 512-node bound with recursion refused, and `Interpolate` reads an operand through knots as data — linear, step, or a monotone cubic under a pinned Fritsch–Carlson slope rule — exact at every knot and byte-identical on every host
+
+**Context.** Phase 596, stage S8 of the accepted linear-algebra plan (its rulings D11 and D12, and its §7 Q7,
+answered "copies in each pipeline"). A regressor is rarely a raw column: a saturation curve, a custom index or an
+empirical response curve prepares it before a fit sees it, and the founding rule here is that a pipeline is data, not
+code. Two tiers meet both: named functions written in `ColExpr`, and curves given as knots. Phase 597 builds on both
+(its t-quantile table is an `Interpolate`), so the wire forms below are meant to be final.
+
+**Premise check.** Read on the tree (`74a34f3`) before anything moved. The `ColExpr` union is as the plan describes
+(sixteen cases, `Convert` last); the compiled expression form (Phase 266) compiles the resolved form `ResolvedExpr`,
+so a new node needs an arm in the resolver, the reference evaluator and the compiler; the schema walk reads
+exactness per output column (`ColumnKnowledge.Exactness`, D43) through `hostRoundedOperand`. All three held. One
+plan detail did not survive contact: the plan's `FnDef` gives each parameter a `ColumnType`. Item 2 says why it
+has none.
+
+**Ruled.**
+
+1. **Where definitions travel: a `Transform.Define of FnDef` step, scoped to the whole pipeline.** A pipeline is a
+   `Transform list` and its wire is a JSON array of steps, so a definition is a step: `{"$type":"define","name":…,
+   "params":[{"name":…,"default":<cell or {"$param":…}>?},…],"body":…}`. A definition is visible to every step and
+   every other definition's body wherever it stands, so no ordering rule can be broken by a rewrite and the call
+   graph, not the step order, is what is checked. A call's wire tag is `invoke` (`{"$type":"invoke","name":…,
+   "args":[…]}`), because `call` has been a lenient spelling of `apply` since Phase 93 and a decoder cannot tell
+   the two apart by tag. Alternatives considered: a pipeline record `{functions; steps}`
+   (breaks the wire's top-level shape and every `Transform list` signature); a definition carried on each call
+   (`Call of FnDef * args`, a copy per call site, and "unknown function" would not exist to refuse); a prelude rule
+   (definitions must lead) — rejected because the planner may insert a `Project` at the head of a pipeline it
+   prunes, and a rule a rewrite can break is a rule the evaluator would have to re-check.
+2. **A parameter is a name and an optional default; it carries no declared type.** A declared type is either
+   unchecked — a comment the wire carries that can lie — or enforced by a cast around each argument, which changes
+   the body's typing and breaks the ruling that a call means exactly its body. Typing reads through the expansion
+   instead. A default is a `Slot<Cell>`: a literal cell or a named parameter of the pipeline, so a Hill curve's `a`
+   and `k` bind per evaluation, are reported by `Transform.paramsOf`, and bind under `Transform.substitute`.
+   Arguments bind parameters in order; a parameter left without one takes its default, and one with none is an
+   `ArityError` naming the count the call needed, as is a call passing more arguments than there are parameters.
+3. **Expansion, not evaluation.** `FnDef.expand` registers the functions and replaces every `Call` with its
+   callee's body, each `Arg` replaced by the argument (or the default), and drops the `Define` steps. Every
+   evaluating entry point expands before its first step (`evalPreparedCountedFolding`, the asynchronous fold), the
+   planner plans the expanded pipeline (`Plan.explain`, so the incremental seam classifies the expansion and a call
+   is exactly as incremental as its body), and the schema walk walks it (`SchemaWalk.ofPipelineFrom`), so a call's
+   type, unit and exactness mark are its body's — a body over a float `Pow` is `HostRounded` and the walk says so,
+   until 594 moves the transcendentals onto pinned functions. A `Call` or an `Arg` that reaches the evaluator
+   unexpanded (a caller of `evalExprInRow` that never expanded) is refused by name, as an unpinned `Now` is.
+   `hostRoundedDecisions` reports each decision at the index of the WRITTEN step it came from; the planner's report
+   counts the expanded pipeline's steps, and says so. Expansion is the pipeline's meaning, not an optimisation, so
+   no `RewriteClass` names it. A pipeline's functions belong to the whole pipeline, so a host that splits one at a
+   step (the Phase 415 source seam) carries every `Define` into each half; the seam law in the suite does so.
+4. **The refusals, in order, at registration:** a name defined twice; a definition's own text — a parameter named
+   twice, a body that reads a column, an `Arg` naming no parameter (`FunctionError`, naming the function); a call
+   naming no definition (`FunctionError`, enumerating the defined names) or passing the wrong count (`ArityError`);
+   a cycle in the call graph (`RecursiveFunction`, the cycle in call order, first name repeated last); a definition
+   whose body alone expands past the bound; then, step by step, an `Arg` outside any body, a call refused as above,
+   or an expansion past the bound (`ExpansionTooLarge`, naming the step or the function and the bound).
+5. **The expansion bound is §21.8's 512 nodes per expression** — the limit the proof model states as
+   `Limits.max_expr_nodes`, which D44 item 7 records as enforced nowhere. A function never builds an expression the
+   specification refuses. The size is computed from the definitions, never by building the expansion: each
+   definition's expanded size is a linear form `constant + Σ coefficient(p) · size(argument p)` over its own
+   parameters (an argument is substituted whole wherever its parameter is read), filled callee first, every number
+   saturating one past the bound, so a nest that doubles sixty times is refused in time linear in its text. The
+   bound binds only an expression that contains a call: a hand-written expression past 512 nodes is unchanged, and
+   enforcing §21.8 everywhere stays the open decision D44 item 7 names. Alternatives considered: a larger,
+   function-only bound (4,096 or 10,000) — rejected because the evaluator's measured headroom (D44 item 6) is about
+   190 levels of a left-deep chain in a Debug build, and a bound beyond the specification's would let a call build
+   what the specification refuses; a depth bound — rejected because size bounds depth and work together, and depth
+   bounds neither the work nor the expansion's memory.
+6. **`Interpolate of ColExpr * knots * InterpKind * InterpOutside`.** Knots are `(x, y)` float pairs, literal: at
+   least two, every coordinate finite, `x` strictly increasing, and every gap, rise and secant finite, so no
+   arithmetic meets an infinity the knots did not state (`InvalidKnots`, raised with the step's other static
+   refusals in the unit walk, before any row, so an empty frame is refused as a full one; the planner's totality
+   verdict reads the same rule). The
+   operand is an `Int` (promoted) or a `Float`; a `Decimal` is refused naming the `Cast`; a null propagates; a NaN
+   answers NaN. Outside `[x0, xn]`, `Clamp` answers the end knot's `y` and `Null` answers `Null`. Inside, the
+   segment is the largest `k` with `x_k <= x`, and a knot's own `x` answers its own `y` exactly, whatever the kind.
+   `Linear` is `y0 + (y1 - y0) * ((x - x0) / (x1 - x0))`, in that order. `Step` holds `y_k` on `[x_k, x_{k+1})`.
+   The answer is a `Float` (`Typing.interpolate`), states no unit (the curve's `y` are numbers the curve gives,
+   whatever the operand's unit), and is marked as its operand is. Wire:
+   `{"$type":"interpolate","expr":…,"knots":[[x,y],…],"kind":"linear"|"step"|"monotoneCubic","outside":"clamp"|"null"}`.
+7. **The monotone-cubic slope rule (pinned).** Secants `d_k = (y_{k+1} - y_k) / (x_{k+1} - x_k)`. Tangents: `m_0 =
+   d_0`, `m_n = d_{n-1}`, and at an interior knot `(d_{k-1} + d_k) / 2` where the two secants share a strict sign,
+   else `0`. Then, segment by segment from the left: a flat segment (`d_k = 0`) sets `m_k = m_{k+1} = 0`; otherwise
+   a tangent more than three times its segment's secant (`m_k / d_k > 3`, `m_{k+1} / d_k > 3`) is set to `3 · d_k`.
+   That is Fritsch and Carlson's monotonicity region restricted to the square `[0, 3]²`, which needs no square root
+   (their circle `α² + β² <= 9` does, and a square root is the one operation here whose correct rounding a
+   JavaScript host does not promise); lowering a tangent only shrinks it toward the region, so a later segment's
+   adjustment never undoes an earlier one. Evaluation: `h = x1 - x0`, `t = (x - x0) / h`, `c2 = 3d - 2m0 - m1`,
+   `c3 = m0 + m1 - 2d`, `y = y0 + h · (t · (m0 + t · (c2 + t · c3)))`, then clamped into `[min(y0, y1), max(y0,
+   y1)]`. The cubic lies in that interval on a monotone segment, so the clamp removes only a rounding overshoot; a
+   flat segment answers `y0` exactly, because every increment is a product with zero.
+8. **Exactness and decisions.** `Interpolate` is `Pinned`: every operation is an IEEE addition, subtraction,
+   multiplication, division or comparison in a written order — no square root, no host library function, no fused
+   multiply-add (neither .NET's JIT nor a JavaScript engine contracts one unasked). A curve that JUMPS — a `Step`,
+   or `Null` outside — decides which side of a knot its operand fell, so over a host-rounded operand it is reported
+   as a decision (`interpolate`); a continuous one (linear or cubic, clamped) is not.
+9. **The proof model.** `Call`, `Arg` and `Define` need no model case: they are gone before evaluation, and what
+   the model's evaluator sees is the expansion. `Interpolate` is declared out of the model, not modelled: floats
+   are opaque carriers in `proofs/Pipeline.fst`, so a modelled curve could state only that some host function is
+   called, which the law vectors already pin byte for byte. The oracle's translation refuses all four by name
+   (`ProofOracleTests`), and its generators never build them. `FnDef.expand` and `Transform.Define` enter the
+   operation census as `measured-elsewhere` (`proofs/coverage-exclusions.json`), standing in on
+   `FunctionsAndCurvesTests`.
+10. **The law vectors.** Thirteen shapes join `transform-laws.json` after the union shapes: `function-call`
+    derives one column through a call, one through its body spelled out and a third comparing them, so a host
+    reads the expansion law off the vector; the four registration refusals and the two curve refusals NAME their class (as
+    D45 and D46 name theirs — a host evaluating named functions mirrors `RecursiveFunction`, `FunctionError`,
+    `ArityError`, `ExpansionTooLarge`, `InvalidKnots` and `TypeError`); the curve shapes run every kind under both
+    policies over the float column and over fixed probes below, between, on and above the knots, and exactly at
+    the knots. Every vector is pinned
+    bytes — the Hill curve's exponent is an int, so its powers run the exact routine.
+
+**What a consumer does.** An exhaustive `match` over `ColExpr` gains `Arg`, `Call` and `Interpolate`; over
+`Transform`, `Define`; over `EvalError`, `FunctionError`, `RecursiveFunction`, `ExpansionTooLarge` and
+`InvalidKnots`. A host that evaluates pipelines itself either expands calls (the registration order above is the
+contract) or reports the new vectors as unsupported; a host that hands pipelines to this evaluator changes nothing.
+
+**Tidy.** Reviewed every key file this phase touched for dead code and duplication made obsolete by the change;
+the new walks reuse the existing ones (expansion's sub-expression walk is one `children` function, not a fourth
+copy of the match), and nothing the change made obsolete remains.
+
 ## 2026-10-29 — D47: a cell edit through `applyPrepared` records the rows it wrote, and a refresh of a state evaluated over the edited version reads that record as an in-place delta, keying the written rows and no others; the edited version's table shares every column the edit did not write; the shard's "the cost moved with the column identity" is half right, and the counted half is the record
 
 **Context.** fuaran#1891 drove grid edits through `ColumnOps.applyPrepared`, read the delta off the op

@@ -52,6 +52,7 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `Pivot` / `Unpivot` | reshape wide ↔ long |
 | `Sort` / `Distinct` / `Limit` | order (keys may be parameter slots), de-duplicate, page |
 | `Union` / `Intersect` / `Except` | set operations against another source |
+| `Define of FnDef` | a named function the pipeline carries (below); it changes no frame |
 
 | `ColExpr` | |
 |---|---|
@@ -61,6 +62,20 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `ApplyFn` | `Abs`, `Round`, `Floor`, `Ceil`, `Sqrt`, `Least`, `Greatest`, `Length`, `Lower`, `Upper`, `Substr`, `Trim`, `Replace`, `Concat`, `IndexOf`, `DatePart`, `DateDiffDays`; `Pow`, `Exp`, `Ln`, `Log10` (below) |
 | `Convert` | an explicit unit conversion: the operand under a target `UnitOfMeasure`, refused across dimensions |
 | `Quotient`, `Rounded` | an exact (decimal) quotient, and an exact number brought to a stated `Rounding` — a scale slot and a `RoundingMode` |
+| `Call`, `Arg` | a call of a function the pipeline defines, and a function body's read of its parameter (below) |
+| `Interpolate` | the operand read through a curve given as knots: `Linear`, `Step` or `MonotoneCubic`, clamped or null outside (below) |
+
+**Named functions and curves are data too** (`DECISIONS.md` D48). A pipeline carries its own
+functions as `Define` steps — `{ Name; Params; Body }`, the body reading its parameters through `Arg`
+and never a column, a parameter optionally defaulting to a literal or a named parameter (a Hill curve
+`x^a / (x^a + k^a)` with `a` and `k` bound per evaluation) — and calls them with `Call`. Every call is
+**expanded inline before evaluation** (`FnDef.expand`): the definitions are checked once (an unknown
+name, a wrong argument count, a recursive call graph and an expansion past §21.8's 512-node expression
+bound are each refused by name), and what evaluates is the body, so a call's typing, units, exactness
+and incremental behaviour are exactly its body's. `Interpolate` reads an operand through `(x, y)` knots
+— strictly increasing, finite, at least two — and is **exact at every knot and byte-identical on every
+host**: it is computed from additions, multiplications, divisions and comparisons only, the monotone
+cubic under Fritsch and Carlson's slope rule as D48 pins it, monotone wherever its knots are.
 
 **The power functions carry a stated guarantee each** (`DECISIONS.md` D43). `Pow` under an integer
 exponent is **exact and byte-identical on every host**: one pinned routine, binary exponentiation

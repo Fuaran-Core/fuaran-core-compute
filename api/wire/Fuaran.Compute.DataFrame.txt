@@ -3,7 +3,7 @@
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
 #   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
-# class since v0.40.0: additive
+# class since v0.42.0: additive
 doc	pipeline	sha256:550548d3d7bf089a8a45fcb797fe094f1cc6caa13de897c823d29bfbb14072b2	[{"$type":"filter","pred":{"$type":"col","name":"s"}}]
 doc	pipeline / AggFn.Count	sha256:da304afcc9a509331438f6e1935f5d6da8b2571473b82423518c6a8819b82c8e	[{"$type":"groupBy","aggs":[{"fn":"count","name":"s","of":"s"}],"keys":["s"]}]
 doc	pipeline / AggFn.CountDistinct	sha256:b7eed063d04d14cb71106071777d52903f178c9cd174abaecf86db95baad1471	[{"$type":"groupBy","aggs":[{"fn":"countDistinct","name":"s","of":"s"}],"keys":["s"]}]
@@ -40,7 +40,9 @@ doc	pipeline / Cell.Null	sha256:4fcb7645484b6375343e53572c12603ce813f6a4879b6846
 doc	pipeline / Cell.Str	sha256:50d054d97429c84acc9865aa4f066703ef843bf7b1881c8939ee728bb59dfd6d	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Str","value":"s"}}}]
 doc	pipeline / Cell.Timestamp	sha256:791110d52d935e07ee0babd387cdb97a0970a56898cb9b316c809c73087ebf5c	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Timestamp","value":"s"}}}]
 doc	pipeline / ColExpr.ApplyFn	sha256:fa769ad8a2e781d7551401bbc93581976e3521b8af2878d39ea865be16fbbc6a	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"abs"}}]
+doc	pipeline / ColExpr.Arg	sha256:9f7b93059f6c70dbe02cc530ff29ab24887c9ac0abeed34a49faddaf40f8bbfe	[{"$type":"filter","pred":{"$type":"arg","name":"s"}}]
 doc	pipeline / ColExpr.Binary	sha256:5e13263399d2b7e350870e0445f07b9dd7767c903c0405499cb93e3732e15a9e	[{"$type":"filter","pred":{"$type":"binary","left":{"$type":"col","name":"s"},"op":"add","right":{"$type":"col","name":"s"}}}]
+doc	pipeline / ColExpr.Call	sha256:65e54dadf3cc1cea1cd8d35b4d06f90fc7b5e3ea15d2fb065c820ce8e84781e3	[{"$type":"filter","pred":{"$type":"invoke","args":[{"$type":"col","name":"s"}],"name":"s"}}]
 doc	pipeline / ColExpr.Case	sha256:6259ba6ea64173c2eaaf5168d546f62de7a3c7e12466e38d6fe9d226506b3cc9	[{"$type":"filter","pred":{"$type":"case","cases":[{"then":{"$type":"col","name":"s"},"when":{"$type":"col","name":"s"}}],"else":{"$type":"col","name":"s"}}}]
 doc	pipeline / ColExpr.Cast	sha256:1d6502b1a5723afd2cc7714c00262cb11a4f2f7e3fda04ad313590ec78e499c0	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"int"}}]
 doc	pipeline / ColExpr.Coalesce	sha256:01a7328c483f0c5f0c4c5a5f1c2c8687821a9f59813c8e9758304110b10dcaec	[{"$type":"filter","pred":{"$type":"coalesce","exprs":[{"$type":"col","name":"s"}]}}]
@@ -48,6 +50,7 @@ doc	pipeline / ColExpr.Col	sha256:550548d3d7bf089a8a45fcb797fe094f1cc6caa13de897
 doc	pipeline / ColExpr.Convert	sha256:f347f4646b0a345b73976e2016600bec4286ee56dc35ebaf136e1911b68cbb79	[{"$type":"filter","pred":{"$type":"convert","expr":{"$type":"col","name":"s"},"unit":"ss"}}]
 doc	pipeline / ColExpr.InList	sha256:fc265fdd767d02f4731317c57d5a739f29e8bd5b3b804d60d21d410cc45d107e	[{"$type":"filter","pred":{"$type":"in","expr":{"$type":"col","name":"s"},"items":[{"$type":"col","name":"s"}]}}]
 doc	pipeline / ColExpr.InParam	sha256:d7ab28e96919b87121633ee1147d5aa5a2a878e8754adc079408c202fc7d4db9	[{"$type":"filter","pred":{"$type":"in","expr":{"$type":"col","name":"s"},"param":"s"}}]
+doc	pipeline / ColExpr.Interpolate	sha256:13bd572b6cea3739932671247a880636d2022b67c87adb5c717850ebfd2ed168	[{"$type":"filter","pred":{"$type":"interpolate","expr":{"$type":"col","name":"s"},"kind":"linear","knots":[[1.5,1.5]],"outside":"clamp"}}]
 doc	pipeline / ColExpr.IsNull	sha256:7f63fba36bc2d61510238d3a869dbc3e11c70c91f94cb3723d7ce6282eabd24d	[{"$type":"filter","pred":{"$type":"isNull","expr":{"$type":"col","name":"s"}}}]
 doc	pipeline / ColExpr.Lit	sha256:fb1eeb4dbad400d85359b80d02114505412746338613f7d037d3ab58cd247466	[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Int","value":1}}}]
 doc	pipeline / ColExpr.Not	sha256:66b044dbbf745b1ae5cf974320c3e00e515001bb65940760f329216cd96666a8	[{"$type":"filter","pred":{"$type":"not","expr":{"$type":"col","name":"s"}}}]
@@ -71,6 +74,11 @@ doc	pipeline / ColumnType.StringType	sha256:32cdfb71e251b380731ff591682c4cc81daa
 doc	pipeline / ColumnType.TimestampType	sha256:ea76d305ee5e3fe84b64d20f15fbf0431437215f038c0799d2e1d7471ef060d1	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"timestamp"}}]
 doc	pipeline / DataSource.Embedded	sha256:7fdb180548276badc056ce8fd9f1f5b17d3d13d17ea7d956f30a3a9a955c6a8e	[{"$type":"join","how":"inner","on":[{"a":"s","b":"s"}],"source":{"columns":{"s":{"validity":[true],"values":[1]}},"schema":[{"description":"s","ext":{"s":"s"},"label":"s","name":"s","type":"int","unit":"ss"}]}}]
 doc	pipeline / DataSource.Ref	sha256:8c99abf6d83f0b7d7da2cddf587bb54351b059406c7687950d77fc74c31321a4	[{"$type":"join","how":"inner","on":[{"a":"s","b":"s"}],"source":{"ref":"s","schema":[]}}]
+doc	pipeline / InterpKind.Linear	sha256:13bd572b6cea3739932671247a880636d2022b67c87adb5c717850ebfd2ed168	[{"$type":"filter","pred":{"$type":"interpolate","expr":{"$type":"col","name":"s"},"kind":"linear","knots":[[1.5,1.5]],"outside":"clamp"}}]
+doc	pipeline / InterpKind.MonotoneCubic	sha256:e700d0638ec70a45aabf67cdd8e6d9b429366da874064b34b79598b90d2d3a45	[{"$type":"filter","pred":{"$type":"interpolate","expr":{"$type":"col","name":"s"},"kind":"monotoneCubic","knots":[[1.5,1.5]],"outside":"clamp"}}]
+doc	pipeline / InterpKind.Step	sha256:ce3a0e17e53d82088a1e5ef9965faada0fbc7206088fcef65b61db4f032f8d36	[{"$type":"filter","pred":{"$type":"interpolate","expr":{"$type":"col","name":"s"},"kind":"step","knots":[[1.5,1.5]],"outside":"clamp"}}]
+doc	pipeline / InterpOutside.Clamp	sha256:13bd572b6cea3739932671247a880636d2022b67c87adb5c717850ebfd2ed168	[{"$type":"filter","pred":{"$type":"interpolate","expr":{"$type":"col","name":"s"},"kind":"linear","knots":[[1.5,1.5]],"outside":"clamp"}}]
+doc	pipeline / InterpOutside.Null	sha256:1348b9f8eef6b66e2effee455ab612e2c5d4bfdc47284cb292bf9482567e7cc6	[{"$type":"filter","pred":{"$type":"interpolate","expr":{"$type":"col","name":"s"},"kind":"linear","knots":[[1.5,1.5]],"outside":"null"}}]
 doc	pipeline / JoinKind.Anti	sha256:faa6d6c8e97902bf1cb16c24ee3c32e4d58d95ad96a57ce83595481de0edf98a	[{"$type":"join","how":"anti","on":[{"a":"s","b":"s"}],"source":{"columns":{"s":{"validity":[true],"values":[1]}},"schema":[{"description":"s","ext":{"s":"s"},"label":"s","name":"s","type":"int","unit":"ss"}]}}]
 doc	pipeline / JoinKind.Inner	sha256:7fdb180548276badc056ce8fd9f1f5b17d3d13d17ea7d956f30a3a9a955c6a8e	[{"$type":"join","how":"inner","on":[{"a":"s","b":"s"}],"source":{"columns":{"s":{"validity":[true],"values":[1]}},"schema":[{"description":"s","ext":{"s":"s"},"label":"s","name":"s","type":"int","unit":"ss"}]}}]
 doc	pipeline / JoinKind.Left	sha256:e6464ad868157537e13118b9e0cad90f3afa9f18b33905212fba51bcbb973732	[{"$type":"join","how":"left","on":[{"a":"s","b":"s"}],"source":{"columns":{"s":{"validity":[true],"values":[1]}},"schema":[{"description":"s","ext":{"s":"s"},"label":"s","name":"s","type":"int","unit":"ss"}]}}]
@@ -107,6 +115,8 @@ doc	pipeline / ScalarFn.Sqrt	sha256:3db5984976960053039811eadfdc812e592165738bcc
 doc	pipeline / ScalarFn.Substr	sha256:d1bb11b3835a641f873c58db835a31da28546f72115921582433c0b0d9cc27bc	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"substr"}}]
 doc	pipeline / ScalarFn.Trim	sha256:6b09a103adba6f73d10b678b1331a734308e269c0d4f636ac7b8532349be12f6	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"trim"}}]
 doc	pipeline / ScalarFn.Upper	sha256:22a07950b6711676cd443f413ad840bfdb4361d5f01721ca0e71358607f84c39	[{"$type":"filter","pred":{"$type":"apply","args":[{"$type":"col","name":"s"}],"fn":"upper"}}]
+doc	pipeline / Slot<Cell>.Lit	sha256:57d7dcbe3ec06133efa6ca8fd6738904206beb251daf5ed89939e290044e87c9	[{"$type":"define","body":{"$type":"col","name":"s"},"name":"s","params":[{"default":{"$type":"Int","value":1},"name":"s"}]}]
+doc	pipeline / Slot<Cell>.Param	sha256:4561499542c361fc5de47dc4857b5a18889b7a3ce5c4e826a9117ded4e569f37	[{"$type":"define","body":{"$type":"col","name":"s"},"name":"s","params":[{"default":{"$param":"s"},"name":"s"}]}]
 doc	pipeline / Slot<Int32>.Lit	sha256:3b3d33b8a98f41efc7c5f363f074b5ff6d1361b8d686807e45a7ccf6dee60267	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":1}}}]
 doc	pipeline / Slot<Int32>.Param	sha256:023fff388a16a328dd363ddcabef696556649ab3708e6a047c0d37d94cf0ad20	[{"$type":"filter","pred":{"$type":"quotient","dividend":{"$type":"col","name":"s"},"divisor":{"$type":"col","name":"s"},"rounding":{"mode":"half-even","scale":{"$param":"s"}}}}]
 doc	pipeline / Slot<String>.Lit	sha256:15e974c262fa119450bf35d8c663e45de6bc55c9e25effca8e2f5ab3508b09dc	[{"$type":"sort","by":[{"column":"s","dir":"asc"}]}]
@@ -117,6 +127,7 @@ doc	pipeline / TimeUnit.Microseconds	sha256:43fe3085434a18402ad24d531ef983822b55
 doc	pipeline / TimeUnit.Milliseconds	sha256:ae6088c02f13a0db4d737540de0d66aefd96a92490e2fb9d48346398b1e29ee4	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"timestamp_ms"}}]
 doc	pipeline / TimeUnit.Nanoseconds	sha256:754d48843fd5cac0c9733506f32023f5e4338b6d913fa8f42958c001a1862685	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"timestamp_ns"}}]
 doc	pipeline / TimeUnit.Seconds	sha256:ea76d305ee5e3fe84b64d20f15fbf0431437215f038c0799d2e1d7471ef060d1	[{"$type":"filter","pred":{"$type":"cast","expr":{"$type":"col","name":"s"},"type":"timestamp"}}]
+doc	pipeline / Transform.Define	sha256:57d7dcbe3ec06133efa6ca8fd6738904206beb251daf5ed89939e290044e87c9	[{"$type":"define","body":{"$type":"col","name":"s"},"name":"s","params":[{"default":{"$type":"Int","value":1},"name":"s"}]}]
 doc	pipeline / Transform.Derive	sha256:b3514a2ef666dca1f77dd7d3a0afd8eb1e59c8cef2c9f41cc52aeb0fb64a435a	[{"$type":"derive","expr":{"$type":"col","name":"s"},"name":"s"}]
 doc	pipeline / Transform.Distinct	sha256:a82d75f66b759246871af23ec87fbb425d2c136f262ecc7e601d7b61c0424436	[{"$type":"distinct"}]
 doc	pipeline / Transform.Except	sha256:90e8a9b27e2c215a0f785c98cd58b08e21f2f4187c5a9dbcf1cd9a8f9cf3635b	[{"$type":"except","source":{"columns":{"s":{"validity":[true],"values":[1]}},"schema":[{"description":"s","ext":{"s":"s"},"label":"s","name":"s","type":"int","unit":"ss"}]}}]

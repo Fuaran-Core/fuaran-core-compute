@@ -6154,16 +6154,27 @@ let private handOff (p: Prepared) : Result<Prepared, EvalError> =
     DataFrame.prepareRows t.Schema (rowsByPosition t)
 
 /// The pipeline split after `k` steps: the prefix evaluated, its result handed through the seam,
-/// the remainder evaluated over it.
+/// the remainder evaluated over it. A pipeline's functions are defined for the whole pipeline (Phase
+/// 596, `DECISIONS.md` D48), so each half carries every `Define` step, wherever it stood.
 let private evalSplitIn
     (env: Map<string, Cell>)
     (k: int)
     (pipeline: Transform list)
     (source: Prepared)
     : Result<Table, EvalError> =
-    DataFrame.evalToPrepared DataFrame.noResolve env (List.take k pipeline) source
+    let isDefine =
+        function
+        | Define _ -> true
+        | _ -> false
+
+    let defs = pipeline |> List.filter isDefine
+
+    let half (steps: Transform list) =
+        defs @ (steps |> List.filter (isDefine >> not))
+
+    DataFrame.evalToPrepared DataFrame.noResolve env (half (List.take k pipeline)) source
     |> Result.bind handOff
-    |> Result.bind (DataFrame.evalPrepared DataFrame.noResolve env (List.skip k pipeline))
+    |> Result.bind (DataFrame.evalPrepared DataFrame.noResolve env (half (List.skip k pipeline)))
 
 let private evalSplit = evalSplitIn Map.empty
 

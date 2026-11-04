@@ -186,6 +186,27 @@ module TransformVectorSample =
           "union-string-int-refused"
           "union-name-mismatch-refused" ]
 
+    /// The named-function and curve shapes (Phase 596, `DECISIONS.md` D48), one vector each after the
+    /// union shapes, over the decimal table. `function-call` derives one column through a call and one
+    /// through its body spelled out, and a third that compares them, so a host reads the expansion law
+    /// off the vector; each registration refusal names its class. The curve shapes run every kind under
+    /// both outside policies over the float column and over fixed probes below, between, on and above
+    /// the knots, whatever the draw; and they name the knot and operand refusals.
+    let private functionShapeNames =
+        [ "function-call"
+          "function-nested-defaults"
+          "function-recursive-refused"
+          "function-unknown-refused"
+          "function-arity-refused"
+          "function-oversize-refused"
+          "curve-linear"
+          "curve-step"
+          "curve-monotone-cubic"
+          "curve-at-knots"
+          "curve-int-operand"
+          "curve-knots-refused"
+          "curve-decimal-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
         decimalShapeNames
@@ -196,6 +217,7 @@ module TransformVectorSample =
         @ overflowShapeNames
         @ orderingShapeNames
         @ unionShapeNames
+        @ functionShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -610,6 +632,99 @@ module TransformVectorSample =
 
         [ Project [ "g", "g"; "v", "x" ]; Union other ]
 
+    /// The named-function and curve shapes (Phase 596, D48). The Hill curve's exponent is an int, so
+    /// every power in it runs the exact integer routine and the vectors are pinned bytes.
+    let private functionPipelineOf (shape: string) : Transform list =
+        let w = Col "w"
+        let fl (f: float) = Lit(Float f)
+        let pow b e = ApplyFn(Pow, [ b; e ])
+        let arg (name: string) : FnParam = { Name = name; Default = None }
+
+        let hillBody x a k =
+            Binary(Div, pow x a, Binary(Add, pow x a, pow k a))
+
+        let hill =
+            Define
+                { Name = "hill"
+                  Params =
+                    [ arg "x"
+                      { Name = "a"
+                        Default = Some(Slot.Lit(Int 2)) }
+                      { Name = "k"
+                        Default = Some(Slot.Lit(Float 1.5)) } ]
+                  Body = hillBody (Arg "x") (Arg "a") (Arg "k") }
+
+        let double' =
+            Define
+                { Name = "double"
+                  Params = [ arg "v" ]
+                  Body = Binary(Add, Arg "v", Arg "v") }
+
+        let knots = [ 0.25, 1.0; 0.75, 3.0; 1.0, 3.0; 1.75, -0.5 ]
+        let curve kind outside = Interpolate(w, knots, kind, outside)
+
+        let probes = [ -1.0; 0.25; 0.5; 0.875; 1.0; 1.3; 1.75; 9.0 ]
+
+        let bothPolicies (kind: InterpKind) =
+            [ for outside, tag in [ InterpOutside.Clamp, "clamp"; InterpOutside.Null, "null" ] do
+                  yield Derive(tag, curve kind outside)
+
+                  for i, x in List.indexed probes -> Derive(tag + string i, Interpolate(fl x, knots, kind, outside)) ]
+
+        match shape with
+        | "function-call" ->
+            [ hill
+              Derive("h", Call("hill", [ w ]))
+              Derive("byHand", hillBody w (Lit(Int 2)) (fl 1.5))
+              Derive("same", Binary(Eq, Col "h", Col "byHand")) ]
+        | "function-nested-defaults" ->
+            [ double'
+              Define
+                  { Name = "shifted"
+                    Params =
+                      [ arg "v"
+                        { Name = "by"
+                          Default = Some(Slot.Lit(Int 10)) } ]
+                    Body = Binary(Add, Call("double", [ Arg "v" ]), Arg "by") }
+              Derive("s", Call("shifted", [ Col "v" ]))
+              Derive("t", Call("shifted", [ Col "v"; Lit(Int -1) ])) ]
+        | "function-recursive-refused" ->
+            [ Define
+                  { Name = "loop"
+                    Params = [ arg "v" ]
+                    Body = Call("loop", [ Arg "v" ]) }
+              Derive("y", Call("loop", [ w ])) ]
+        | "function-unknown-refused" -> [ double'; Derive("y", Call("triple", [ w ])) ]
+        | "function-arity-refused" -> [ double'; Derive("y", Call("double", [ w; w ])) ]
+        | "function-oversize-refused" ->
+            // Nine doublings over a sum: 1,023 nodes in `d8`, past the 512-node bound.
+            [ for i in 0..8 ->
+                  Define
+                      { Name = "d" + string i
+                        Params = [ arg "v" ]
+                        Body =
+                          if i = 0 then
+                              Binary(Add, Arg "v", Arg "v")
+                          else
+                              let inner = Call("d" + string (i - 1), [ Arg "v" ])
+                              Binary(Add, inner, inner) } ]
+            @ [ Derive("y", Call("d8", [ w ])) ]
+        | "curve-linear" -> bothPolicies InterpKind.Linear
+        | "curve-step" -> bothPolicies InterpKind.Step
+        | "curve-monotone-cubic" -> bothPolicies InterpKind.MonotoneCubic
+        | "curve-at-knots" ->
+            knots
+            |> List.mapi (fun i (x, _) ->
+                Derive("k" + string i, Interpolate(fl x, knots, InterpKind.MonotoneCubic, InterpOutside.Null)))
+        | "curve-int-operand" ->
+            [ Derive(
+                  "y",
+                  Interpolate(Col "v", [ -3.0, -1.0; 0.0, 0.0; 6.0, 2.0 ], InterpKind.Linear, InterpOutside.Clamp)
+              ) ]
+        | "curve-knots-refused" ->
+            [ Derive("y", Interpolate(w, [ 0.0, 1.0; 0.0, 2.0 ], InterpKind.Linear, InterpOutside.Clamp)) ]
+        | _ -> [ Derive("y", Interpolate(Col "m", knots, InterpKind.Linear, InterpOutside.Clamp)) ]
+
     let private pipelineOf (k: int) : Transform list =
         match k with
         | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
@@ -678,6 +793,8 @@ module TransformVectorSample =
                 (decimalTable rows offset, orderingPipelineOf shape), r2
             elif shape.StartsWith "union-" then
                 (decimalTable rows offset, unionPipelineOf shape rows), r2
+            elif shape.StartsWith "function-" || shape.StartsWith "curve-" then
+                (decimalTable rows offset, functionPipelineOf shape), r2
             else
                 (decimalTable rows offset, decimalPipelineOf shape rows offset), r2
 

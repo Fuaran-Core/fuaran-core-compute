@@ -319,6 +319,31 @@ type RoundingMode =
 type Rounding =
     { Scale: Slot<int>; Mode: RoundingMode }
 
+/// How `ColExpr.Interpolate` reads between two neighbouring knots (Phase 596, `DECISIONS.md` D48).
+/// Every kind is exact at a knot and is computed from additions, subtractions, multiplications and
+/// divisions only, in a pinned order, so its bytes are the same on every host.
+///
+/// `RequireQualifiedAccess` because the names are ordinary words other unions may want.
+[<RequireQualifiedAccess>]
+type InterpKind =
+    /// The straight line between the two knots: `y0 + (y1 - y0) * ((x - x0) / (x1 - x0))`.
+    | Linear
+    /// The left knot's value, held until the next knot: a right-continuous step.
+    | Step
+    /// The monotone cubic Hermite curve of Fritsch and Carlson, with the slope rule pinned in D48:
+    /// monotone wherever the knot data are, and flat on a segment whose two knots are equal.
+    | MonotoneCubic
+
+/// What `ColExpr.Interpolate` answers for an operand outside its knots' range (Phase 596).
+///
+/// `RequireQualifiedAccess` because `Null` is already a `Cell` case in this namespace.
+[<RequireQualifiedAccess>]
+type InterpOutside =
+    /// The nearest end knot's value.
+    | Clamp
+    /// `Null`.
+    | Null
+
 /// A scalar expression over a row's columns + literals — the `ColExpr` algebra (spec §2).
 type ColExpr =
     | Col of string
@@ -389,6 +414,35 @@ type ColExpr =
     ///
     /// Wire: `{"$type":"convert","expr":…,"unit":"<canonical unit text>"}`.
     | Convert of ColExpr * unit: UnitOfMeasure
+    /// A parameter of the named function whose body this is (Phase 596, `DECISIONS.md` D48) — the
+    /// one way a `FnDef`'s body reads its input, as `Col` is the way a step reads a row. It exists
+    /// only inside a definition: expansion (`FnDef.expand`) replaces every one with the call's
+    /// argument, so one that reaches evaluation is refused by name (`EvalError.FunctionError`).
+    ///
+    /// Wire: `{"$type":"arg","name":"<parameter>"}`.
+    | Arg of name: string
+    /// A call of a function the pipeline defines (Phase 596, D48): its arguments bind the
+    /// definition's parameters in order, and a parameter left without one takes its default.
+    /// Resolved by EXPANSION before evaluation (`FnDef.expand`), as `Now` and `InParam` are
+    /// resolved by substitution: the call is replaced by the definition's body with every `Arg`
+    /// replaced by its argument, so typing, units, exactness and incremental behaviour are exactly
+    /// the body's and nothing new reaches the evaluator. One that reaches evaluation unexpanded is
+    /// refused by name (`EvalError.FunctionError`).
+    ///
+    /// Wire: `{"$type":"invoke","name":"<function>","args":[…]}` — `invoke`, because `call` has been a
+    /// lenient spelling of `apply` since Phase 93.
+    | Call of name: string * args: ColExpr list
+    /// The operand read through a curve given as data (Phase 596, D48): `knots` are `(x, y)` pairs
+    /// with strictly increasing, finite `x` and finite `y` — at least two — and `kind` says how the
+    /// curve runs between them. An operand outside the knots' range takes `outside`. The operand is
+    /// an `Int` or a `Float` (an int promotes); a `Decimal` is refused by name (`Cast` first) and a
+    /// null operand propagates. The answer is a `Float`, the knot's own `y` at a knot exactly, and a
+    /// NaN operand answers NaN. Knots that break the rule are refused by name when the step resolves
+    /// (`EvalError.InvalidKnots`).
+    ///
+    /// Wire: `{"$type":"interpolate","expr":…,"knots":[[x,y],…],"kind":"linear"|"step"|"monotoneCubic",
+    /// "outside":"clamp"|"null"}`.
+    | Interpolate of ColExpr * knots: (float * float) list * kind: InterpKind * outside: InterpOutside
 
 /// One aggregate in a `GroupBy` / `Pivot`: an output `Name`, the aggregate `Fn`, over column `Of`.
 type Agg = { Name: string; Fn: AggFn; Of: string }
@@ -407,6 +461,24 @@ type PivotSpec =
       On: string
       Values: string
       Agg: AggFn }
+
+/// One parameter of a named function (Phase 596, `DECISIONS.md` D48): its name, read in the body
+/// as `Arg name`, and the value a call that passes no argument for it takes. A default is a `Slot`:
+/// a literal cell, or a named parameter of the pipeline resolved from the evaluation env as any
+/// `Param` is — so a Hill curve's exponent and half-saturation point can be bound per evaluation.
+/// A parameter with no default must be passed.
+type FnParam =
+    { Name: string
+      Default: Slot<Cell> option }
+
+/// A named function a pipeline carries as data (Phase 596, D48): parameters and a body. The body
+/// reads its parameters through `Arg` and never reads a column; it may read a pipeline `Param`, a
+/// literal, and call another function the pipeline defines. A pipeline carries its own definitions
+/// (`Transform.Define`); there is no shared registry (D11 of the accepted plan).
+type FnDef =
+    { Name: string
+      Params: FnParam list
+      Body: ColExpr }
 
 /// One transform step — the full v1 verb set (spec §2). A pipeline is an ordered `Transform list`
 /// over a `DataSource`.
@@ -445,6 +517,11 @@ type Transform =
     /// `source` (SQL `EXCEPT ALL`); `Except · Distinct` is SQL `EXCEPT`. The everyday "rows in A not
     /// in B" that had no spelling while `Union` shipped alone.
     | Except of DataSource
+    /// Phase 596 (`DECISIONS.md` D48) — a named function, defined for the whole pipeline: every
+    /// `ColExpr.Call` of its name, in any step and in any other definition's body, is expanded to
+    /// its body before evaluation (`FnDef.expand`). The step itself changes no frame. Wire:
+    /// `{"$type":"define","name":…,"params":[{"name":…,"default":<slot>?},…],"body":…}`.
+    | Define of FnDef
 
 // ---------------------------------------------------------------------------
 //  Phase 269 — the planner's report vocabulary. The planner itself is `Plan` (Plan.fs), over the
@@ -526,6 +603,10 @@ module ColExpr =
         | Quotient(a, b, r) -> paramNames a @ paramNames b @ Slot.paramName r.Scale
         | Rounded(x, r) -> paramNames x @ Slot.paramName r.Scale
         | Convert(x, _) -> paramNames x
+        // Phase 596: a call's params are its arguments'; the definition's own are the `Define`'s.
+        | Arg _ -> []
+        | Call(_, args) -> args |> List.collect paramNames
+        | Interpolate(x, _, _, _) -> paramNames x
 
     /// The distinct `Param` names an expression references, first-occurrence order, deduplicated.
     let paramsOf (e: ColExpr) : string list = paramNames e |> List.distinct
@@ -568,6 +649,9 @@ module ColExpr =
         | Quotient(a, b, r) -> Quotient(substitute env a, substitute env b, bindScale env r)
         | Rounded(x, r) -> Rounded(substitute env x, bindScale env r)
         | Convert(x, u) -> Convert(substitute env x, u)
+        | Arg _ -> e
+        | Call(name, args) -> Call(name, args |> List.map (substitute env))
+        | Interpolate(x, knots, kind, outside) -> Interpolate(substitute env x, knots, kind, outside)
 
     /// Substitute every `InParam(x, n)` bound in `listEnv` with `InList(x, <items as literals>)`,
     /// leaving unbound list params intact — the list-valued twin of `substitute` (Phase 91). A host
@@ -601,6 +685,9 @@ module ColExpr =
         | Quotient(a, b, r) -> Quotient(substituteListParams listEnv a, substituteListParams listEnv b, r)
         | Rounded(x, r) -> Rounded(substituteListParams listEnv x, r)
         | Convert(x, u) -> Convert(substituteListParams listEnv x, u)
+        | Arg _ -> e
+        | Call(name, args) -> Call(name, args |> List.map (substituteListParams listEnv))
+        | Interpolate(x, knots, kind, outside) -> Interpolate(substituteListParams listEnv x, knots, kind, outside)
 
     /// Replace every `Now g` with `Lit (clock g)` — the clock-pinning twin of `substitute`
     /// (Phase 125). A `Now` resolves this way and no other: Core holds no clock, so the reading is
@@ -653,6 +740,9 @@ module ColExpr =
         | Quotient(a, b, r) -> Quotient(go a, go b, r)
         | Rounded(x, r) -> Rounded(go x, r)
         | Convert(x, u) -> Convert(go x, u)
+        | Arg _ -> e
+        | Call(name, args) -> Call(name, args |> List.map go)
+        | Interpolate(x, knots, kind, outside) -> Interpolate(go x, knots, kind, outside)
 
     /// Does the expression name `now` anywhere? The `paramsOf` analogue for the clock: a host that
     /// needs to know whether a pipeline is clock-dependent (to decide caching, or to refuse to
@@ -675,6 +765,9 @@ module ColExpr =
         | Quotient(a, b, _) -> usesNow a || usesNow b
         | Rounded(x, _) -> usesNow x
         | Convert(x, _) -> usesNow x
+        | Arg _ -> false
+        | Call(_, args) -> args |> List.exists usesNow
+        | Interpolate(x, _, _, _) -> usesNow x
 
 /// Pure, total derivations over a `Transform` pipeline (Phase 77) — the load-bearing helper for a
 /// host that wires a filter/state value into a declarative pipeline: `paramsOf` names every param the
@@ -694,6 +787,12 @@ module Transform =
         // had to learn about it.
         | Sort by -> by |> List.collect (fun (c, _) -> Slot.paramName c)
         | Limit(n, offset) -> Slot.paramName n @ Slot.paramName offset
+        // Phase 596: a definition's defaults and the params its body reads — the params every call
+        // of it may read once expanded.
+        | Define fd ->
+            (fd.Params
+             |> List.collect (fun p -> p.Default |> Option.map Slot.paramName |> Option.defaultValue []))
+            @ ColExpr.paramNames fd.Body
         | Project _
         | GroupBy _
         | Join _
@@ -742,6 +841,20 @@ module Transform =
             | Derive(n, e) -> Derive(n, ColExpr.substitute env e)
             | Sort by -> Sort(by |> List.map (fun (c, d) -> bindStr c, d))
             | Limit(n, offset) -> Limit(bindInt n, bindInt offset)
+            // Phase 596: a default param binds to any cell, as an expression `Param` does.
+            | Define fd ->
+                let bindCell (p: FnParam) =
+                    match p.Default with
+                    | Some(Slot.Param n) ->
+                        match Map.tryFind n env with
+                        | Some c -> { p with Default = Some(Slot.Lit c) }
+                        | None -> p
+                    | _ -> p
+
+                Define
+                    { fd with
+                        Params = fd.Params |> List.map bindCell
+                        Body = ColExpr.substitute env fd.Body }
             | other -> other)
 
     /// Substitute every LIST param bound in `listEnv` through the whole pipeline (Phase 91) —
@@ -752,6 +865,10 @@ module Transform =
             match t with
             | Filter p -> Filter(ColExpr.substituteListParams listEnv p)
             | Derive(n, e) -> Derive(n, ColExpr.substituteListParams listEnv e)
+            | Define fd ->
+                Define
+                    { fd with
+                        Body = ColExpr.substituteListParams listEnv fd.Body }
             | other -> other)
 
     /// Pin the clock through the whole pipeline (Phase 125): every `ColExpr.Now` becomes the
@@ -767,6 +884,10 @@ module Transform =
             match t with
             | Filter p -> Filter(ColExpr.substituteWithPinned pinned p)
             | Derive(n, e) -> Derive(n, ColExpr.substituteWithPinned pinned e)
+            | Define fd ->
+                Define
+                    { fd with
+                        Body = ColExpr.substituteWithPinned pinned fd.Body }
             | other -> other)
 
     /// The literal `Limit` — `Transform.limit 10 0` for the common case, so a call site that never
@@ -798,6 +919,7 @@ module Transform =
             match t with
             | Filter p -> ColExpr.usesNow p
             | Derive(_, e) -> ColExpr.usesNow e
+            | Define fd -> ColExpr.usesNow fd.Body
             | _ -> false)
 
 /// The reference evaluator's recoverable error envelope — names the failure, enumerates the
@@ -833,6 +955,568 @@ type EvalError =
     /// text. Static: it is decided over the step's schema before any row is read, so an empty frame
     /// is refused exactly as a full one.
     | UnitMismatch of step: string * expr: ColExpr * left: string * right: string
+    /// A pipeline's named functions refused at registration (Phase 596, `DECISIONS.md` D48): a call
+    /// of a name no `Define` gives (`detail` enumerates the defined names), two definitions of one
+    /// name, a parameter named twice, a body that reads a column, an `Arg` naming no parameter of
+    /// its definition, an `Arg` outside any definition, or a `Call` that reached evaluation
+    /// unexpanded. Names the function. A wrong argument count is the existing `ArityError`.
+    | FunctionError of name: string * detail: string
+    /// A pipeline's functions call one another in a cycle (Phase 596, D48), so expansion would not
+    /// terminate: refused at registration, naming the cycle in call order, first name repeated last.
+    | RecursiveFunction of cycle: string list
+    /// An expression whose expansion would exceed the bound (Phase 596, D48: `FnDef.maxExpandedNodes`
+    /// nodes), refused at registration before the expansion is built. Names where — the step, or
+    /// the function whose expanded body alone exceeds it — and the bound.
+    | ExpansionTooLarge of at: string * bound: int
+    /// An `Interpolate`'s knots break the rule (Phase 596, D48): fewer than two, an `x` that does
+    /// not strictly increase, or a coordinate that is not finite. Static: refused when the step
+    /// resolves, before any row is read, so an empty frame is refused exactly as a full one.
+    | InvalidKnots of detail: string
+
+/// A curve prepared once per step (Phase 596, `DECISIONS.md` D48): the knots as arrays, and for a
+/// monotone cubic the tangent at every knot under the pinned slope rule.
+type internal PreparedCurve =
+    {
+        Xs: float[]
+        Ys: float[]
+        /// The tangent at each knot (`InterpKind.MonotoneCubic` only; empty for the other kinds).
+        Slopes: float[]
+        Kind: InterpKind
+        Outside: InterpOutside
+    }
+
+/// `ColExpr.Interpolate`'s arithmetic (Phase 596, D48) — one definition, read by the reference
+/// evaluator and the compiled form alike. Every value is computed from IEEE additions,
+/// subtractions, multiplications, divisions and comparisons in the order written here, so the bytes
+/// are the same on every host; no square root, no fused multiply-add, no host library function.
+[<RequireQualifiedAccess>]
+module internal Interpolation =
+
+    let private finite (v: float) =
+        not (System.Double.IsNaN v || System.Double.IsInfinity v)
+
+    /// The knot rule: at least two knots; every coordinate finite; `x` strictly increasing; and every
+    /// gap, rise and secant finite, so no arithmetic below meets an infinity the knots did not state.
+    let validate (knots: (float * float) list) : Result<unit, EvalError> =
+        let xs = knots |> List.map fst |> Array.ofList
+        let ys = knots |> List.map snd |> Array.ofList
+        let n = xs.Length
+
+        let refused (detail: string) =
+            Error(InvalidKnots("interpolate: " + detail))
+
+        if n < 2 then
+            refused (string n + " knot(s); a curve needs at least two")
+        else
+            let rec check k =
+                if k = n then
+                    Ok()
+                elif not (finite xs[k] && finite ys[k]) then
+                    refused ("knot " + string k + " is not finite")
+                elif k > 0 && not (xs[k] > xs[k - 1]) then
+                    refused (
+                        "knot "
+                        + string k
+                        + "'s x does not strictly increase on knot "
+                        + string (k - 1)
+                        + "'s"
+                    )
+                elif
+                    k > 0
+                    && not (
+                        finite (xs[k] - xs[k - 1])
+                        && finite (ys[k] - ys[k - 1])
+                        && finite ((ys[k] - ys[k - 1]) / (xs[k] - xs[k - 1]))
+                    )
+                then
+                    refused (
+                        "the segment from knot "
+                        + string (k - 1)
+                        + " to knot "
+                        + string k
+                        + " overflows"
+                    )
+                else
+                    check (k + 1)
+
+            check 0
+
+    /// The Fritsch–Carlson tangents (D48's slope rule, pinned): the secant `d` of every segment; at
+    /// the two ends the end segment's secant, and at an interior knot the mean of its two secants
+    /// where they share a strict sign and zero otherwise; then, segment by segment from the left, a
+    /// flat segment sets both its tangents to zero, and a tangent more than three times its
+    /// segment's secant is brought down to three times it — the square of Fritsch and Carlson's
+    /// monotonicity region, which needs no square root.
+    let private slopes (xs: float[]) (ys: float[]) : float[] =
+        let n = xs.Length
+        let d = Array.init (n - 1) (fun k -> (ys[k + 1] - ys[k]) / (xs[k + 1] - xs[k]))
+        let m: float[] = Array.zeroCreate n
+        m[0] <- d[0]
+        m[n - 1] <- d[n - 2]
+
+        for k in 1 .. n - 2 do
+            m[k] <-
+                if (d[k - 1] > 0.0 && d[k] > 0.0) || (d[k - 1] < 0.0 && d[k] < 0.0) then
+                    (d[k - 1] + d[k]) / 2.0
+                else
+                    0.0
+
+        for k in 0 .. n - 2 do
+            if d[k] = 0.0 then
+                m[k] <- 0.0
+                m[k + 1] <- 0.0
+            else
+                if m[k] / d[k] > 3.0 then
+                    m[k] <- 3.0 * d[k]
+
+                if m[k + 1] / d[k] > 3.0 then
+                    m[k + 1] <- 3.0 * d[k]
+
+        m
+
+    /// The curve, once per step: the knots checked and, for a monotone cubic, the tangents computed.
+    let prepare
+        (knots: (float * float) list)
+        (kind: InterpKind)
+        (outside: InterpOutside)
+        : Result<PreparedCurve, EvalError> =
+        validate knots
+        |> Result.map (fun () ->
+            let xs = knots |> List.map fst |> Array.ofList
+            let ys = knots |> List.map snd |> Array.ofList
+
+            { Xs = xs
+              Ys = ys
+              Slopes =
+                match kind with
+                | InterpKind.MonotoneCubic -> slopes xs ys
+                | InterpKind.Linear
+                | InterpKind.Step -> [||]
+              Kind = kind
+              Outside = outside })
+
+    /// The largest `k` with `xs[k] <= x`, for `xs[0] <= x <= xs[last]`.
+    let private segment (xs: float[]) (x: float) : int =
+        let mutable lo = 0
+        let mutable hi = xs.Length - 1
+
+        while lo < hi do
+            let mid = (lo + hi + 1) / 2
+
+            if xs[mid] <= x then lo <- mid else hi <- mid - 1
+
+        lo
+
+    /// The curve at `x`: `None` where the answer is `Null` (an operand outside the knots under
+    /// `InterpOutside.Null`). A knot's own `x` answers its own `y` exactly; a NaN answers NaN.
+    let at (c: PreparedCurve) (x: float) : float option =
+        let last = c.Xs.Length - 1
+
+        if System.Double.IsNaN x then
+            Some nan
+        elif x < c.Xs[0] || x > c.Xs[last] then
+            match c.Outside with
+            | InterpOutside.Null -> None
+            | InterpOutside.Clamp -> Some(if x < c.Xs[0] then c.Ys[0] else c.Ys[last])
+        else
+            let k = segment c.Xs x
+
+            if x = c.Xs[k] then
+                Some c.Ys[k]
+            else
+                let x0 = c.Xs[k]
+                let x1 = c.Xs[k + 1]
+                let y0 = c.Ys[k]
+                let y1 = c.Ys[k + 1]
+
+                match c.Kind with
+                | InterpKind.Step -> Some y0
+                | InterpKind.Linear -> Some(y0 + (y1 - y0) * ((x - x0) / (x1 - x0)))
+                | InterpKind.MonotoneCubic ->
+                    let h = x1 - x0
+                    let t = (x - x0) / h
+                    let d = (y1 - y0) / h
+                    let m0 = c.Slopes[k]
+                    let m1 = c.Slopes[k + 1]
+                    let c2 = 3.0 * d - 2.0 * m0 - m1
+                    let c3 = m0 + m1 - 2.0 * d
+                    let y = y0 + h * (t * (m0 + t * (c2 + t * c3)))
+                    // The cubic lies between its two knots' values on a monotone segment; the clamp
+                    // removes only a rounding overshoot, so the curve never steps past its knots.
+                    let lo = min y0 y1
+                    let hi = max y0 y1
+
+                    Some(
+                        if y < lo then lo
+                        elif y > hi then hi
+                        else y
+                    )
+
+/// Named functions over a pipeline (Phase 596, `DECISIONS.md` D48): registration and inline
+/// expansion. A pipeline's `Transform.Define` steps are its functions; `expand` checks them and every
+/// call, then replaces every `ColExpr.Call` with the callee's body — each `Arg` replaced by the call's
+/// argument, or the parameter's default — and drops the definitions. What evaluates is the
+/// expanded pipeline, so a call means exactly its body: its typing, units, exactness and incremental
+/// behaviour are the body's, and nothing new reaches the evaluator.
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module FnDef =
+
+    /// The bound on an expanded expression (D48): §21.8's 512 nodes per expression, the limit the
+    /// proof model states as `Limits.max_expr_nodes`. A call is refused where its expansion would
+    /// exceed it, so a function never builds an expression the specification refuses, and the size is
+    /// computed from the definitions before any expansion is built — an exponential nest is refused
+    /// in time linear in its text.
+    let internal maxExpandedNodes = 512
+
+    /// Every immediate sub-expression, left to right.
+    let private children (e: ColExpr) : ColExpr list =
+        match e with
+        | Col _
+        | Lit _
+        | Param _
+        | Now _
+        | Arg _ -> []
+        | Binary(_, a, b)
+        | Quotient(a, b, _) -> [ a; b ]
+        | Not x
+        | IsNull x
+        | Cast(_, x)
+        | InParam(x, _)
+        | Rounded(x, _)
+        | Convert(x, _)
+        | Interpolate(x, _, _, _) -> [ x ]
+        | Coalesce xs
+        | ApplyFn(_, xs)
+        | Call(_, xs) -> xs
+        | Case(cases, els) -> (cases |> List.collect (fun (w, t) -> [ w; t ])) @ [ els ]
+        | InList(x, items) -> x :: items
+
+    /// Every node, pre-order.
+    let rec private nodes (e: ColExpr) : ColExpr list = e :: (children e |> List.collect nodes)
+
+    let rec private firstError (checks: (unit -> Result<unit, EvalError>) list) : Result<unit, EvalError> =
+        match checks with
+        | [] -> Ok()
+        | c :: rest ->
+            match c () with
+            | Ok() -> firstError rest
+            | Error e -> Error e
+
+    /// The calls in an expression against the definitions: each names one, with an argument count
+    /// it admits — at most one per parameter, and one for every parameter up to the last that has
+    /// no default.
+    let private checkCalls (defs: Map<string, FnDef>) (e: ColExpr) : Result<unit, EvalError> =
+        nodes e
+        |> List.choose (function
+            | Call(name, args) -> Some(name, List.length args)
+            | _ -> None)
+        |> List.map (fun (name, got) ->
+            fun () ->
+                match Map.tryFind name defs with
+                | None ->
+                    Error(
+                        FunctionError(
+                            name,
+                            "a call names no definition; defined: "
+                            + String.concat ", " (defs |> Map.toList |> List.map fst)
+                        )
+                    )
+                | Some fd ->
+                    let total = List.length fd.Params
+
+                    let required =
+                        fd.Params
+                        |> List.mapi (fun i p -> if Option.isNone p.Default then i + 1 else 0)
+                        |> List.fold max 0
+
+                    if got > total then
+                        Error(ArityError(name, total, got))
+                    elif got < required then
+                        Error(ArityError(name, required, got))
+                    else
+                        Ok())
+        |> firstError
+
+    /// One definition's own text: its parameters named once each, and a body that reads no column
+    /// and only its own parameters.
+    let private checkDefinition (fd: FnDef) : Result<unit, EvalError> =
+        let names = fd.Params |> List.map (fun p -> p.Name)
+
+        let repeated =
+            names |> List.countBy id |> List.tryFind (fun (_, c) -> c > 1) |> Option.map fst
+
+        match repeated with
+        | Some p -> Error(FunctionError(fd.Name, "parameter '" + p + "' is named twice"))
+        | None ->
+            nodes fd.Body
+            |> List.tryPick (function
+                | Col c ->
+                    Some(
+                        FunctionError(
+                            fd.Name,
+                            "the body reads column '" + c + "'; a body reads its parameters through Arg"
+                        )
+                    )
+                | Arg a when not (List.contains a names) ->
+                    Some(
+                        FunctionError(
+                            fd.Name,
+                            "Arg '" + a + "' names no parameter; parameters: " + String.concat ", " names
+                        )
+                    )
+                | _ -> None)
+            |> Option.map Error
+            |> Option.defaultValue (Ok())
+
+    /// The call graph's first cycle, in definition order: the names in call order, the first repeated
+    /// last. Every name a body calls is defined (checked first).
+    let private cycle (order: FnDef list) (defs: Map<string, FnDef>) : string list option =
+        let callees (name: string) =
+            nodes defs[name].Body
+            |> List.choose (function
+                | Call(n, _) -> Some n
+                | _ -> None)
+            |> List.distinct
+
+        // Depth-first from each definition; `path` is the chain from the root, nearest last.
+        let rec visit (path: string list) (finished: Set<string>) (name: string) : Result<Set<string>, string list> =
+            if List.contains name path then
+                let from = path |> List.findIndex ((=) name)
+                Error((path |> List.skip from) @ [ name ])
+            elif finished.Contains name then
+                Ok finished
+            else
+                let rec over fin =
+                    function
+                    | [] -> Ok(Set.add name fin)
+                    | c :: rest ->
+                        match visit (path @ [ name ]) fin c with
+                        | Ok fin' -> over fin' rest
+                        | Error cyc -> Error cyc
+
+                over finished (callees name)
+
+        let rec roots fin =
+            function
+            | [] -> None
+            | (fd: FnDef) :: rest ->
+                match visit [] fin fd.Name with
+                | Ok fin' -> roots fin' rest
+                | Error cyc -> Some cyc
+
+        roots Set.empty order
+
+    /// The size of an expression once expanded, as `constant + Σ coefficient(p) · size(argument p)`
+    /// over the enclosing definition's parameters — linear because an argument is substituted
+    /// whole wherever its parameter is read. Every number saturates one past the bound, which is all
+    /// a refusal needs to know, so no nest, however deep, overflows the arithmetic.
+    type private Size =
+        { Const: int64
+          Coeffs: Map<string, int64> }
+
+    let private cap = int64 maxExpandedNodes + 1L
+
+    let private sat (v: int64) = if v > cap then cap else v
+
+    let private sizeAdd (a: Size) (b: Size) : Size =
+        { Const = sat (a.Const + b.Const)
+          Coeffs =
+            (a.Coeffs, b.Coeffs)
+            ||> Map.fold (fun acc k v -> acc |> Map.add k (sat (v + (Map.tryFind k acc |> Option.defaultValue 0L)))) }
+
+    let private sizeScale (k: int64) (a: Size) : Size =
+        { Const = sat (k * a.Const)
+          Coeffs = a.Coeffs |> Map.map (fun _ v -> sat (k * v)) }
+
+    let private one: Size = { Const = 1L; Coeffs = Map.empty }
+
+    /// An expression's size over its enclosing definition's parameters, given each callee's own
+    /// size over ITS parameters (`known`, filled callee first).
+    let rec private sizeOf (defs: Map<string, FnDef>) (known: Map<string, Size>) (e: ColExpr) : Size =
+        match e with
+        | Arg a ->
+            { Const = 0L
+              Coeffs = Map.ofList [ a, 1L ] }
+        | Call(name, args) ->
+            let fd = defs[name]
+            let s = known[name]
+
+            fd.Params
+            |> List.mapi (fun i p ->
+                let argSize =
+                    match List.tryItem i args with
+                    | Some a -> sizeOf defs known a
+                    // A default is one node: a literal or a param.
+                    | None -> one
+
+                sizeScale (Map.tryFind p.Name s.Coeffs |> Option.defaultValue 0L) argSize)
+            |> List.fold sizeAdd { Const = s.Const; Coeffs = Map.empty }
+        | _ -> children e |> List.map (sizeOf defs known) |> List.fold sizeAdd one
+
+    /// A size with every argument one node — the expanded size of a body on its own.
+    let private alone (s: Size) : int64 =
+        s.Coeffs |> Map.fold (fun acc _ v -> sat (acc + v)) s.Const
+
+    let rec private hasCalls (e: ColExpr) : bool =
+        match e with
+        | Call _
+        | Arg _ -> true
+        | _ -> children e |> List.exists hasCalls
+
+    /// The expansion itself, over checked definitions: `bindings` maps the enclosing definition's
+    /// parameters to their (already expanded) arguments.
+    let rec private inline' (defs: Map<string, FnDef>) (bindings: Map<string, ColExpr>) (e: ColExpr) : ColExpr =
+        let go = inline' defs bindings
+
+        match e with
+        | Col _
+        | Lit _
+        | Param _
+        | Now _ -> e
+        | Arg a -> bindings[a]
+        | Call(name, args) ->
+            let fd = defs[name]
+            let args' = args |> List.map go
+
+            let bound =
+                fd.Params
+                |> List.mapi (fun i p ->
+                    p.Name,
+                    match List.tryItem i args' with
+                    | Some a -> a
+                    | None ->
+                        match p.Default with
+                        | Some(Slot.Lit c) -> Lit c
+                        | Some(Slot.Param n) -> Param n
+                        // Unreachable over a checked call: the arity check refused it.
+                        | None -> Lit Null)
+                |> Map.ofList
+
+            inline' defs bound fd.Body
+        | Binary(op, a, b) -> Binary(op, go a, go b)
+        | Not x -> Not(go x)
+        | Coalesce xs -> Coalesce(List.map go xs)
+        | Case(cases, els) -> Case(cases |> List.map (fun (w, t) -> go w, go t), go els)
+        | Cast(ty, x) -> Cast(ty, go x)
+        | ApplyFn(fn, xs) -> ApplyFn(fn, List.map go xs)
+        | InList(x, items) -> InList(go x, List.map go items)
+        | IsNull x -> IsNull(go x)
+        | InParam(x, n) -> InParam(go x, n)
+        | Quotient(a, b, r) -> Quotient(go a, go b, r)
+        | Rounded(x, r) -> Rounded(go x, r)
+        | Convert(x, u) -> Convert(go x, u)
+        | Interpolate(x, knots, kind, outside) -> Interpolate(go x, knots, kind, outside)
+
+    /// Callee first: every definition's size over its parameters, refusing one whose body alone
+    /// expands past the bound. The call graph is acyclic (checked first), so every pass sizes one.
+    let rec private sized
+        (defs: Map<string, FnDef>)
+        (known: Map<string, Size>)
+        (pending: FnDef list)
+        : Result<Map<string, Size>, EvalError> =
+        match pending with
+        | [] -> Ok known
+        | _ ->
+            let ready, waiting =
+                pending
+                |> List.partition (fun fd ->
+                    nodes fd.Body
+                    |> List.forall (function
+                        | Call(n, _) -> known.ContainsKey n
+                        | _ -> true))
+
+            let rec add known' =
+                function
+                | [] -> sized defs known' waiting
+                | (fd: FnDef) :: rest ->
+                    let s = sizeOf defs known' fd.Body
+
+                    if alone s > int64 maxExpandedNodes then
+                        Error(ExpansionTooLarge("function '" + fd.Name + "'", maxExpandedNodes))
+                    else
+                        add (Map.add fd.Name s known') rest
+
+            add known ready
+
+    /// One step expression's checks: no `Arg` outside a body, every call admitted, and the expansion
+    /// within the bound.
+    let private checkStep
+        (defs: Map<string, FnDef>)
+        (known: Map<string, Size>)
+        (at: string)
+        (e: ColExpr)
+        : Result<unit, EvalError> =
+        match
+            nodes e
+            |> List.tryPick (function
+                | Arg a -> Some a
+                | _ -> None)
+        with
+        | Some a -> Error(FunctionError(a, "Arg read in a step, outside any function body (" + at + ")"))
+        | None ->
+            checkCalls defs e
+            |> Result.bind (fun () ->
+                if hasCalls e && (sizeOf defs known e).Const > int64 maxExpandedNodes then
+                    Error(ExpansionTooLarge(at, maxExpandedNodes))
+                else
+                    Ok())
+
+    /// Register the pipeline's functions and expand every call (Phase 596, D48). Refused, at the
+    /// first failure in this order: a name defined twice, a definition's own text (`FunctionError`:
+    /// a parameter named twice, a body reading a column or an `Arg` naming no parameter), a call
+    /// naming no definition (`FunctionError`) or passing too many or too few arguments
+    /// (`ArityError`), a cycle in the call graph (`RecursiveFunction`), a definition whose body
+    /// alone expands past the bound (`ExpansionTooLarge`), and then, step by step, an `Arg` outside
+    /// any body (`FunctionError`), a call refused as above, or an expansion past the bound
+    /// (`ExpansionTooLarge`). Answered: the pipeline with every `Define` removed and every `Call`
+    /// replaced, which a pipeline with neither is unchanged by. Pure and total: nothing evaluates,
+    /// and every other refusal a step can make is still the step's own, at evaluation.
+    let expand (pipeline: Transform list) : Result<Transform list, EvalError> =
+        let order =
+            pipeline
+            |> List.choose (function
+                | Define fd -> Some fd
+                | _ -> None)
+
+        let stepExprs =
+            pipeline
+            |> List.choose (function
+                | Filter p -> Some("filter", p)
+                | Derive(name, e) -> Some("derive '" + name + "'", e)
+                | _ -> None)
+
+        if List.isEmpty order && not (stepExprs |> List.exists (snd >> hasCalls)) then
+            Ok pipeline
+        else
+            let duplicate =
+                order |> List.countBy (fun fd -> fd.Name) |> List.tryFind (fun (_, c) -> c > 1)
+
+            match duplicate with
+            | Some(name, _) -> Error(FunctionError(name, "defined twice"))
+            | None ->
+                let defs = order |> List.map (fun fd -> fd.Name, fd) |> Map.ofList
+
+                firstError (
+                    (order |> List.map (fun fd () -> checkDefinition fd))
+                    @ (order |> List.map (fun fd () -> checkCalls defs fd.Body))
+                )
+                |> Result.bind (fun () ->
+                    match cycle order defs with
+                    | Some cyc -> Error(RecursiveFunction cyc)
+                    | None -> Ok())
+                |> Result.bind (fun () -> sized defs Map.empty order)
+                |> Result.bind (fun known ->
+                    stepExprs
+                    |> List.map (fun (at, e) () -> checkStep defs known at e)
+                    |> firstError)
+                |> Result.map (fun () ->
+                    pipeline
+                    |> List.choose (fun t ->
+                        match t with
+                        | Define _ -> None
+                        | Filter p -> Some(Filter(inline' defs Map.empty p))
+                        | Derive(name, e) -> Some(Derive(name, inline' defs Map.empty e))
+                        | other -> Some other))
 
 /// A description of what changed in a source table between a prior evaluation and now (Phase 34) — the
 /// input to the incremental `DataFrame.evalFrom`. `ColumnValuesChanged` = the cells of one existing
@@ -1947,6 +2631,25 @@ module DataFrame =
     /// `Round` / `Floor` / `Ceil`, which are its scale-0 specialisations — one implementation. The
     /// scale is checked first (a scale outside `0 .. 1000` is refused by name), then a null
     /// propagates, then an exact operand is brought to the scale; a `Float` names the `Cast`.
+    /// `Interpolate` over one cell (Phase 596, `DECISIONS.md` D48): a null propagates, an int
+    /// promotes, a float reads the curve; a decimal is refused by name (`Cast` first), and so is every
+    /// other cell. One implementation, read by the reference arm and the compiled form alike.
+    let internal interpolateCell (c: PreparedCurve) (v: Cell) : Result<Cell, EvalError> =
+        let read (x: float) =
+            match Interpolation.at c x with
+            | Some y -> Ok(Float y)
+            | None -> Ok Null
+
+        match v with
+        | Null -> Ok Null
+        | Int i -> read (float i)
+        | Float f -> read f
+        | Decimal _ -> Error(TypeError "interpolate: a decimal operand is refused; cast it to a float first (Cast)")
+        | Bool _
+        | Str _
+        | Date _
+        | Timestamp _ -> Error(TypeError "interpolate: the operand must be an int or a float")
+
     let private roundedCell (mode: RoundingMode) (scale: int) (c: Cell) : Result<Cell, EvalError> =
         if scale < 0 || scale > DecimalArith.maxScale then
             Error(
@@ -2617,6 +3320,25 @@ module DataFrame =
                     |> Result.map (fun _ -> None, InList(x', List.map snd rs))))
         | Quotient(a, b, r) -> both a b (fun ua a' ub b' -> Ok(unitQuotient ua ub, Quotient(a', b', r)))
         | Rounded(x, r) -> go x |> Result.map (fun (u, x') -> u, Rounded(x', r))
+        // Phase 596: a curve's answer states no unit — its knots' `y` are numbers the curve gives,
+        // whatever the operand's unit; the operand's own units are checked as anywhere else.
+        // The knots are checked here, with the step's other static refusals, so an empty frame is
+        // refused exactly as a full one.
+        | Interpolate(x, knots, kind, outside) ->
+            go x
+            |> Result.bind (fun (_, x') ->
+                Interpolation.validate knots
+                |> Result.map (fun () -> None, Interpolate(x', knots, kind, outside)))
+        // Phase 596: expansion (`FnDef.expand`) removes every call and argument before a step
+        // resolves; one that reaches here is refused by name.
+        | Call(name, _) ->
+            Error(
+                FunctionError(
+                    name,
+                    "a call reached evaluation unexpanded; expand the pipeline's functions first (FnDef.expand)"
+                )
+            )
+        | Arg a -> Error(FunctionError(a, "an Arg reached evaluation outside a function body"))
         | Convert(x, target) ->
             go x
             |> Result.bind (fun (ux, x') ->
@@ -2663,6 +3385,10 @@ module DataFrame =
         /// held and raised only when an evaluation reaches the node, before its operands.
         | RQuotient of scale: Result<int, EvalError> * RoundingMode * ResolvedExpr * ResolvedExpr
         | RRounded of scale: Result<int, EvalError> * RoundingMode * ResolvedExpr
+        /// Phase 596. The curve is prepared with the node (its knots checked, a monotone cubic's
+        /// tangents computed) once per step; a refusal is held and raised when an evaluation reaches
+        /// the node, before its operand.
+        | RInterpolate of curve: Result<PreparedCurve, EvalError> * ResolvedExpr
 
     /// A rounding's scale against the evaluation env (Phase 277): a literal is itself; a param reads
     /// the env — unbound is `UnboundParam` naming the bound set, as a `Param` gives, and a cell that
@@ -2719,6 +3445,16 @@ module DataFrame =
             match resolveUnitsIn "expression" cols e with
             | Ok(_, resolved) -> go resolved
             | Error err -> RFail err
+        | Interpolate(x, knots, kind, outside) -> RInterpolate(Interpolation.prepare knots kind outside, go x)
+        // Phase 596: expanded away before evaluation; one that reaches here is refused by name.
+        | Call(name, _) ->
+            RFail(
+                FunctionError(
+                    name,
+                    "a call reached evaluation unexpanded; expand the pipeline's functions first (FnDef.expand)"
+                )
+            )
+        | Arg a -> RFail(FunctionError(a, "an Arg reached evaluation outside a function body"))
 
     let private binaryOp (op: BinOp) (av: Cell) (bv: Cell) : Result<Cell, EvalError> =
         match op with
@@ -2854,6 +3590,9 @@ module DataFrame =
         | RRounded(scale, mode, a) ->
             scale
             |> Result.bind (fun n -> evalNode row a |> Result.bind (roundedCell mode n))
+        | RInterpolate(curve, a) ->
+            curve
+            |> Result.bind (fun c -> evalNode row a |> Result.bind (interpolateCell c))
 
     /// `evalNode`'s answer as it leaves the evaluator: a NaN made canonical (Phase 404). The one exit
     /// of the row evaluator — `evalExprInRow`, and the incremental seam's re-evaluated cells, read it
@@ -3131,6 +3870,14 @@ module DataFrame =
             | Unknown -> Unknown
             | Of _ -> Of FloatType
 
+        /// `Interpolate` (Phase 596): a float, null where the operand is. Any other operand is refused
+        /// on every row it reaches, so no present value contradicts the float.
+        let interpolate (a: Typing) : Typing =
+            match a with
+            | Absent -> Absent
+            | Of _
+            | Unknown -> Of FloatType
+
         /// `Rounded` (Phase 277): a decimal over an exact operand, null where the operand is; any
         /// other operand is refused, so its present values are not decided.
         let rounded (a: Typing) : Typing =
@@ -3181,6 +3928,11 @@ module DataFrame =
         | Rounded(a, _) -> Typing.rounded (go a)
         // A conversion answers a float (D29): the typing of the cast it resolves to, a factor or not.
         | Convert(x, _) -> Typing.cast FloatType (go x)
+        // Phase 596: a curve answers a float, null where its operand is.
+        | Interpolate(x, _, _, _) -> Typing.interpolate (go x)
+        // Expanded away before a step is typed; unexpanded, the typer does not decide it.
+        | Call _
+        | Arg _ -> Unknown
 
     /// The static type of an expression's present values over a schema, or `None` where the schema
     /// does not decide it — the typer a static reader (`SchemaWalk`, a planner) asks (Phase 266;
@@ -3239,7 +3991,10 @@ module DataFrame =
         | InParam _
         | Quotient _
         | Rounded _
-        | Convert _ -> typing cols e = Of ty
+        | Convert _
+        | Arg _
+        | Call _
+        | Interpolate _ -> typing cols e = Of ty
 
     /// A float arm beside a decimal arm in one derived column (Phase 338, carried from 321): the
     /// static half of the refusal. Every such expression is `Unknown` to the typer, because the
@@ -3497,6 +4252,10 @@ module DataFrame =
             | Quotient(a, b, _) -> exprCols a @ exprCols b
             | Rounded(x, _) -> exprCols x
             | Convert(x, _) -> exprCols x
+            | Interpolate(x, _, _, _) -> exprCols x
+            // A body reads no column, so a call reads exactly what its arguments read.
+            | Call(_, xs) -> xs |> List.collect exprCols
+            | Arg _ -> []
 
         /// A typing whose present values the pinned cell ordering compares with `other`'s: an
         /// absent value propagates before any comparison, numbers compare across `Int`/`Float`,
@@ -3741,6 +4500,18 @@ module DataFrame =
             // Conservative (Phase 429): the verdict reads the expression as written, and a
             // conversion's arithmetic is what it resolves to over the step's units.
             | Convert _ -> false
+            // Phase 596: total where its operand is, is a number or absent, and its knots hold.
+            | Interpolate(x, knots, _, _) ->
+                exprTotal cols x
+                && Result.isOk (Interpolation.validate knots)
+                && (match ty x with
+                    | Absent
+                    | Of IntType
+                    | Of FloatType -> true
+                    | _ -> false)
+            // Unexpanded, each is refused at evaluation.
+            | Call _
+            | Arg _ -> false
 
         /// THE TOTALITY VERDICT over a step: `true` only where evaluating the step over ANY table
         /// of schema `cols` returns `Ok`. `Sort` refuses a key the schema does not carry (Phase
@@ -3777,6 +4548,8 @@ module DataFrame =
                 pairs |> List.forall (fun (src, _) -> Option.isSome (colType cols src))
                 && Option.isNone (projectRefusal pairs)
             | Distinct -> true
+            // A definition changes no frame.
+            | Define _ -> true
             | GroupBy _
             | Join _
             | Window _
@@ -3801,7 +4574,8 @@ module DataFrame =
                 else
                     None
             | Limit _
-            | Distinct -> Some []
+            | Distinct
+            | Define _ -> Some []
             | GroupBy(keys, aggs) -> Some(keys @ (aggs |> List.map (fun a -> a.Of)))
             | Pivot spec -> Some(spec.Index @ [ spec.On; spec.Values ])
             | Join _
@@ -3902,6 +4676,7 @@ module DataFrame =
             | Union _ -> "union"
             | Intersect _ -> "intersect"
             | Except _ -> "except"
+            | Define _ -> "define"
 
         // ---- reordering: a Filter bubbles ahead of the Sort / Derive it follows ----
 
@@ -4165,15 +4940,29 @@ module DataFrame =
 
         /// The planner: reorder, then prune, then name the fusions the driver will take. Total —
         /// a pipeline it cannot read is emitted as written.
+        ///
+        /// Phase 596: a pipeline carrying functions is planned in its EXPANDED form
+        /// (`FnDef.expand`): its definitions are dropped and its calls inlined before any rewrite,
+        /// so `Planned` holds no call and every index counts the expanded pipeline's steps.
+        /// Expansion is the pipeline's meaning rather than a rewrite class, so no `Applied` entry
+        /// names it. One whose functions are refused is emitted as written, and its evaluation
+        /// answers the refusal.
         let explain (cols: Schema) (pipeline: Transform list) : PlanReport =
-            let before = schemasBefore cols pipeline
-            let reordered, moved, declined = reorder before pipeline
-            let planned, pruned = prune cols reordered
+            match FnDef.expand pipeline with
+            | Error _ ->
+                { Written = pipeline
+                  Planned = pipeline
+                  Applied = []
+                  Declined = [] }
+            | Ok expanded ->
+                let before = schemasBefore cols expanded
+                let reordered, moved, declined = reorder before expanded
+                let planned, pruned = prune cols reordered
 
-            { Written = pipeline
-              Planned = planned
-              Applied = moved @ pruned @ topN planned
-              Declined = declined }
+                { Written = pipeline
+                  Planned = planned
+                  Applied = moved @ pruned @ topN planned
+                  Declined = declined }
 
         let rewrite (cols: Schema) (pipeline: Transform list) : Transform list = (explain cols pipeline).Planned
 
@@ -5186,6 +5975,19 @@ module DataFrame =
                     | Ok n ->
                         let av = ra p
                         if erred () then Null else unwrap (roundedCell mode n av))
+            // Phase 596 — boxed: the curve is the one `interpolateCell` reads, prepared with the
+            // node; a refused curve is raised before the operand, as `evalResolved` raises it.
+            | RInterpolate(curve, a) ->
+                let ta, na = go a
+                let ra = cellOf na
+
+                Typing.interpolate ta,
+                NCell(fun p ->
+                    match curve with
+                    | Error err -> fail err
+                    | Ok c ->
+                        let av = ra p
+                        if erred () then Null else unwrap (interpolateCell c av))
 
         let _, node = go e
 
@@ -9217,6 +10019,8 @@ module DataFrame =
         | Except other ->
             evalSource resolve other
             |> Result.bind (fun t -> evalSetOp "except" false f (Frame.ofTable t))
+        // Phase 596: a definition changes no frame; `FnDef.expand` has removed it before any fold.
+        | Define _ -> Ok f
 
     /// One step over the frame through the host kernels (`Kernels.host`, chosen when the package is
     /// compiled). Internal so the suite can hold the frame's well-formedness after every step of a
@@ -9295,7 +10099,9 @@ module DataFrame =
                 | Ok(f', cost, rest) -> go f' (evaluated + cost) rest
                 | Error e -> Error e
 
-        go prepared.Frame.Value 0 pipeline
+        // Phase 596: the pipeline's functions are registered and expanded before the first step, so
+        // a refused definition is the answer and what folds holds no call (a no-op without them).
+        FnDef.expand pipeline |> Result.bind (go prepared.Frame.Value 0)
 
     /// The reference evaluator over a prepared source through the kernel set `k` (Phase 270),
     /// reporting alongside its answer how many row evaluations at steps it cost (Phase 267) — the
@@ -9493,8 +10299,13 @@ module DataFrame =
 
         async {
             let frame = prepared.Frame.Value
-            let! answer = go frame (Planner.rewrite frame.Cols pipeline)
-            return answer |> Result.map Prepared.ofFrame
+
+            // Phase 596: registered and expanded first, as `evalToPrepared` folds it.
+            match FnDef.expand pipeline with
+            | Error e -> return Error e
+            | Ok expanded ->
+                let! answer = go frame (Planner.rewrite frame.Cols expanded)
+                return answer |> Result.map Prepared.ofFrame
         }
 
     /// `evalManyToPrepared` through the kernel set `k` (Phase 343). Internal so the suite can run
@@ -9854,6 +10665,9 @@ module DataFrame =
         | Quotient(a, b, _) -> Set.union (exprCols a) (exprCols b)
         | Rounded(x, _) -> exprCols x
         | Convert(x, _) -> exprCols x
+        | Interpolate(x, _, _, _) -> exprCols x
+        | Call(_, xs) -> unionAll (xs |> List.map exprCols)
+        | Arg _ -> Set.empty
 
     /// The source columns a single step references — an over-approximation is safe (it only makes the
     /// incremental check more conservative, never less). A right-hand `Join`/`Union` source is a
@@ -9881,7 +10695,8 @@ module DataFrame =
         | Limit _
         | Union _
         | Intersect _
-        | Except _ -> Set.empty
+        | Except _
+        | Define _ -> Set.empty
 
     let private readColumns (pipeline: Transform list) : Set<string> =
         unionAll (pipeline |> List.map stepCols)
@@ -9961,6 +10776,9 @@ module DataFrame =
         | Quotient(a, b, _) -> "quotient(" + exprText a + ", " + exprText b + ")"
         | Rounded(x, _) -> "rounded(" + exprText x + ")"
         | Convert(x, u) -> "convert(" + exprText x + ", " + Unit.render u + ")"
+        | Interpolate(x, _, _, _) -> "interpolate(" + exprText x + ")"
+        | Call(name, xs) -> name + "(" + args xs + ")"
+        | Arg a -> "arg(" + a + ")"
 
     let errorString (e: EvalError) : string =
         match e with
@@ -9976,6 +10794,10 @@ module DataFrame =
             "unpinned clock: a now("
             + NowGrain.tag g
             + ") reached evaluation with no ClockWitness; pin one with evalPipelineAt (or Transform.substituteNow)"
+        | FunctionError(name, detail) -> "function '" + name + "': " + detail
+        | RecursiveFunction cycle -> "recursive functions: " + String.concat " -> " cycle
+        | ExpansionTooLarge(at, bound) -> "the expansion of " + at + " exceeds " + string bound + " expression nodes"
+        | InvalidKnots detail -> "invalid knots: " + detail
         | UnitMismatch(step, expr, left, right) ->
             "unit mismatch in "
             + step
@@ -10310,9 +11132,14 @@ module SchemaWalk =
         | InParam(a, _)
         | Cast(_, a)
         | Rounded(a, _)
-        | Convert(a, _) -> go a
+        | Convert(a, _)
+        | Interpolate(a, _, _, _) -> go a
         | Case(cases, els) -> first ((cases |> List.collect (fun (w, t) -> [ w; t ])) @ [ els ])
         | InList(a, items) -> first (a :: items)
+        // Phase 596: the walk reads the EXPANDED pipeline (`ofPipelineFrom`), so a call is its body
+        // by here; one it cannot expand is marked, never read as pinned.
+        | Call(name, _) -> Some name
+        | Arg _ -> None
 
     /// The mark a derive's column carries (Phase 557, D43): host-rounded exactly where the
     /// expression's lineage passes through a transcendental, a power whose exponent the typer cannot
@@ -10457,7 +11284,9 @@ module SchemaWalk =
         | Distinct
         | Limit _
         | Intersect _
-        | Except _ -> input
+        | Except _
+        // Phase 596: a definition changes no column (the walk reads the expanded pipeline).
+        | Define _ -> input
 
         // A union keeps the left's names and joins each column's type with the right's, through the
         // evaluator's own `unionField` (Phase 469, D36). The right is read as a join reads it.
@@ -10644,6 +11473,13 @@ module SchemaWalk =
                                 + " — and a right column colliding with a left name takes a suffix the right's unnamed columns decide, so it cannot be named either"
                             )
 
+    /// The pipeline a static reader walks (Phase 596): expanded where its functions register, as
+    /// written where they are refused (the evaluation answers that refusal).
+    let private expandedOrWritten (pipeline: Transform list) : Transform list =
+        match FnDef.expand pipeline with
+        | Ok expanded -> expanded
+        | Error _ -> pipeline
+
     /// Fold a pipeline over knowledge already in hand — the general form, and the one a consumer
     /// that interleaves its own per-step checks with the walk reaches for.
     let ofPipelineFrom
@@ -10651,7 +11487,9 @@ module SchemaWalk =
         (input: SchemaKnowledge)
         (pipeline: Transform list)
         : SchemaKnowledge =
-        pipeline |> List.fold (ofTransform sources) input
+        // Phase 596: the walk reads the EXPANDED pipeline, so a call's column is typed, unitised and
+        // marked exactly as its body's; one whose functions are refused is walked as written.
+        expandedOrWritten pipeline |> List.fold (ofTransform sources) input
 
     /// The output knowledge of a whole pipeline over a concrete input schema. Total. A `Ref` source
     /// inside a `Join` / set op is undeclared here (the result opens, with the reason naming the
@@ -10696,6 +11534,15 @@ module SchemaWalk =
         | InParam(a, _)
         | Cast(_, a)
         | Convert(a, _) -> go a
+        // Phase 596: a curve that jumps — a step, or a null outside its knots — decides which side of
+        // a knot its operand fell; a continuous one (linear or monotone cubic, clamped) decides nothing.
+        | Interpolate(a, _, kind, outside) ->
+            match kind, outside with
+            | InterpKind.Step, _
+            | _, InterpOutside.Null -> over "interpolate" a @ go a
+            | _ -> go a
+        | Call(_, xs) -> many xs
+        | Arg _ -> []
         | Case(cases, els) -> many ((cases |> List.collect (fun (w, t) -> [ w; t ])) @ [ els ])
         | InList(a, items) -> many (a :: items)
 
@@ -10738,7 +11585,8 @@ module SchemaWalk =
         | Project _
         | Limit _
         | Union _
-        | Unpivot _ -> []
+        | Unpivot _
+        | Define _ -> []
 
     /// Every discrete decision a host-rounded value reaches in `pipeline` over knowledge already in
     /// hand (Phase 557, D43 choice (c)), in pipeline order: a `Filter` whose predicate reads one; a
@@ -10753,11 +11601,27 @@ module SchemaWalk =
         (input: SchemaKnowledge)
         (pipeline: Transform list)
         : HostRoundedDecision list =
+        // Phase 596: the decisions are read off the expanded pipeline; each `Step` is then the
+        // index of the WRITTEN step it came from (expansion drops only `Define` steps).
+        let walked = expandedOrWritten pipeline
+
+        let written =
+            if List.length walked = List.length pipeline then
+                [| 0 .. List.length pipeline - 1 |]
+            else
+                pipeline
+                |> List.indexed
+                |> List.choose (fun (i, t) ->
+                    match t with
+                    | Define _ -> None
+                    | _ -> Some i)
+                |> Array.ofList
+
         let _, _, decisions =
-            pipeline
+            walked
             |> List.fold
                 (fun (i, knowledge, acc) step ->
-                    i + 1, ofTransform sources knowledge step, acc @ decisionsOf i knowledge step)
+                    i + 1, ofTransform sources knowledge step, acc @ decisionsOf written[i] knowledge step)
                 (0, input, [])
 
         decisions
@@ -11087,6 +11951,23 @@ module DataFrameCodec =
     let private roundingJson (r: Rounding) : JVal =
         JObj [ "mode", JStr(modeTag r.Mode); "scale", slotJson JInt r.Scale ]
 
+    // ---- the curve vocabulary (Phase 596) ----
+    // The ONE place an `InterpKind` and an `InterpOutside` are spelled, each a total round trip.
+
+    let private interpKinds: (InterpKind * string) list =
+        [ InterpKind.Linear, "linear"
+          InterpKind.Step, "step"
+          InterpKind.MonotoneCubic, "monotoneCubic" ]
+
+    let private interpOutsides: (InterpOutside * string) list =
+        [ InterpOutside.Clamp, "clamp"; InterpOutside.Null, "null" ]
+
+    let private tagIn (table: ('a * string) list) (v: 'a) : string =
+        table |> List.find (fun (k, _) -> k = v) |> snd
+
+    let private knotsJson (knots: (float * float) list) : JVal =
+        JArr(knots |> List.map (fun (x, y) -> JArr [ JFloat x; JFloat y ]))
+
     let rec encodeExpr (e: ColExpr) : JVal =
         match e with
         | Col name -> Canonical.typed "col" [ "name", JStr name ]
@@ -11121,6 +12002,16 @@ module DataFrameCodec =
                   "rounding", roundingJson r ]
         | Rounded(x, r) -> Canonical.typed "rounded" [ "expr", encodeExpr x; "rounding", roundingJson r ]
         | Convert(x, u) -> Canonical.typed "convert" [ "expr", encodeExpr x; "unit", JStr(Unit.render u) ]
+        | Arg name -> Canonical.typed "arg" [ "name", JStr name ]
+        // `invoke`, not `call`: Phase 93 made `call` a lenient spelling of `apply`.
+        | Call(name, args) -> Canonical.typed "invoke" [ "name", JStr name; "args", JArr(args |> List.map encodeExpr) ]
+        | Interpolate(x, knots, kind, outside) ->
+            Canonical.typed
+                "interpolate"
+                [ "expr", encodeExpr x
+                  "knots", knotsJson knots
+                  "kind", JStr(tagIn interpKinds kind)
+                  "outside", JStr(tagIn interpOutsides outside) ]
 
     let private field k el =
         match el with
@@ -11178,6 +12069,29 @@ module DataFrameCodec =
                 field "scale" el
                 |> Result.bind (slotOf intOf "rounding scale")
                 |> Result.map (fun scale -> { Scale = scale; Mode = mode }))
+
+    /// A knot coordinate: a float token, or an integer token read as its float.
+    let private knotNum (el: JVal) : Result<float, ColumnError> =
+        match el with
+        | JFloat f -> Ok f
+        | JInt i -> Ok(float i)
+        | _ -> Error(MalformedShape "interpolate: a knot is a two-number array [x, y]")
+
+    let private knotsOf (el: JVal) : Result<(float * float) list, ColumnError> =
+        arrOf el
+        |> Result.bind (
+            mapM (fun k ->
+                match k with
+                | JArr [ x; y ] -> knotNum x |> Result.bind (fun x -> knotNum y |> Result.map (fun y -> x, y))
+                | _ -> Error(MalformedShape "interpolate: a knot is a two-number array [x, y]"))
+        )
+
+    let private tagOf (table: ('a * string) list) (el: JVal) : Result<'a, ColumnError> =
+        strOf el
+        |> Result.bind (fun t ->
+            match table |> List.tryFind (fun (_, tag) -> tag = t) with
+            | Some(v, _) -> Ok v
+            | None -> Error(WireRefusal.unknownTag (t, table |> List.map snd)))
 
     let rec decodeExpr (el: JVal) : Result<ColExpr, ColumnError> =
         kindOf el
@@ -11311,6 +12225,28 @@ module DataFrameCodec =
                         )
                     | None, None -> Error(MissingField "items"))
             | "isNull" -> field "expr" el |> Result.bind decodeExpr |> Result.map IsNull
+            | "arg" -> field "name" el |> Result.bind strOf |> Result.map Arg
+            | "invoke" ->
+                field "name" el
+                |> Result.bind strOf
+                |> Result.bind (fun name ->
+                    field "args" el
+                    |> Result.bind arrOf
+                    |> Result.bind (mapM decodeExpr)
+                    |> Result.map (fun args -> Call(name, args)))
+            | "interpolate" ->
+                field "expr" el
+                |> Result.bind decodeExpr
+                |> Result.bind (fun x ->
+                    field "knots" el
+                    |> Result.bind knotsOf
+                    |> Result.bind (fun knots ->
+                        field "kind" el
+                        |> Result.bind (tagOf interpKinds)
+                        |> Result.bind (fun kind ->
+                            field "outside" el
+                            |> Result.bind (tagOf interpOutsides)
+                            |> Result.map (fun outside -> Interpolate(x, knots, kind, outside)))))
             | "convert" ->
                 field "unit" el
                 |> Result.bind strOf
@@ -11580,6 +12516,42 @@ module DataFrameCodec =
         | Union src -> Canonical.typed "union" [ "source", ColumnCodec.encodeJson src ]
         | Intersect src -> Canonical.typed "intersect" [ "source", ColumnCodec.encodeJson src ]
         | Except src -> Canonical.typed "except" [ "source", ColumnCodec.encodeJson src ]
+        | Define fd ->
+            let paramJson (p: FnParam) =
+                JObj(
+                    [ "name", JStr p.Name ]
+                    @ (match p.Default with
+                       | None -> []
+                       | Some(Slot.Lit c) -> [ "default", cellToJson c ]
+                       | Some(Slot.Param n) -> [ "default", JObj [ "$param", JStr n ] ])
+                )
+
+            Canonical.typed
+                "define"
+                [ "name", JStr fd.Name
+                  "params", JArr(fd.Params |> List.map paramJson)
+                  "body", encodeExpr fd.Body ]
+
+    /// A function parameter (Phase 596): its `name`, and an optional `default` — a literal cell, or
+    /// `{"$param": <name>}`, the slot form every other slot on the wire takes.
+    let private fnParamOf (el: JVal) : Result<FnParam, ColumnError> =
+        field "name" el
+        |> Result.bind strOf
+        |> Result.bind (fun name ->
+            match tryField "default" el with
+            | None -> Ok { Name = name; Default = None }
+            | Some d ->
+                match tryField "$param" d with
+                | Some(JStr n) ->
+                    Ok
+                        { Name = name
+                          Default = Some(Slot.Param n) }
+                | Some _ -> Error(MalformedShape "\"$param\" must be a JSON string (function parameter default)")
+                | None ->
+                    cellOfJson d
+                    |> Result.map (fun c ->
+                        { Name = name
+                          Default = Some(Slot.Lit c) }))
 
     let decodeTransform (el: JVal) : Result<Transform, ColumnError> =
         // Phase 88 DIDACTIC — a step without `$type` names the op roster (the
@@ -11589,7 +12561,7 @@ module DataFrameCodec =
         | Error(MissingField "$type") ->
             Error(
                 MalformedShape(
-                    "a pipeline step is a $type-discriminated op (filter | project | derive | groupBy | join | window | pivot | unpivot | sort | distinct | limit | union | intersect | except) — this step object has no \"$type\""
+                    "a pipeline step is a $type-discriminated op (filter | project | derive | groupBy | join | window | pivot | unpivot | sort | distinct | limit | union | intersect | except | define) — this step object has no \"$type\""
                 )
             )
         | r ->
@@ -11837,6 +12809,21 @@ module DataFrameCodec =
                 | "union" -> field "source" el |> Result.bind ColumnCodec.decodeJson |> Result.map Union
                 | "intersect" -> field "source" el |> Result.bind ColumnCodec.decodeJson |> Result.map Intersect
                 | "except" -> field "source" el |> Result.bind ColumnCodec.decodeJson |> Result.map Except
+                | "define" ->
+                    field "name" el
+                    |> Result.bind strOf
+                    |> Result.bind (fun name ->
+                        field "params" el
+                        |> Result.bind arrOf
+                        |> Result.bind (mapM fnParamOf)
+                        |> Result.bind (fun ps ->
+                            field "body" el
+                            |> Result.bind decodeExpr
+                            |> Result.map (fun body ->
+                                Define
+                                    { Name = name
+                                      Params = ps
+                                      Body = body })))
                 | other ->
                     Error(
                         WireRefusal.unknownTag (
@@ -11854,7 +12841,8 @@ module DataFrameCodec =
                               "limit"
                               "union"
                               "intersect"
-                              "except" ]
+                              "except"
+                              "define" ]
                         )
                     ))
 
@@ -12031,6 +13019,7 @@ module internal MorselHandOff =
         | DataFrame.RCast(_, a)
         | DataFrame.RIsNull a
         | DataFrame.RRounded(_, _, a) -> reads a
+        | DataFrame.RInterpolate(_, a) -> reads a
         | DataFrame.RCoalesce xs
         | DataFrame.RApplyFn(_, xs) -> List.collect reads xs
         | DataFrame.RCase(cases, e) -> (cases |> List.collect (fun (w, t) -> reads w @ reads t)) @ reads e

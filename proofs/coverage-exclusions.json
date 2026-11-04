@@ -326,6 +326,15 @@
     },
     {
       "members": [
+        "FnDef.expand",
+        "Transform.Define"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "A pipeline's named functions, registered and expanded inline before evaluation (Phase 596, D48). The model has no case for either because both are gone before its evaluator runs; a call evaluating byte for byte as its hand-expanded body, every registration refusal and the size bound are tested, and the transform law vectors carry the call and its expansion side by side.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/FunctionsAndCurvesTests.fs"
+    },
+    {
+      "members": [
         "Slot.isParam",
         "Slot.paramName",
         "Slot.tryLit"

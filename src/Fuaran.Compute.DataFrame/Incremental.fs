@@ -1689,6 +1689,7 @@ module Incremental =
         | Union _ -> "union"
         | Intersect _ -> "intersect"
         | Except _ -> "except"
+        | Define _ -> "define"
 
     /// The stable name of a window function — the spelling `WindowFrameUnbounded` carries (Phase
     /// 120). These are the canonical wire tags, spelled here for the same reason `verbName` spells
@@ -2219,7 +2220,8 @@ module Incremental =
             | DataFrame.RNot a
             | DataFrame.RCast(_, a)
             | DataFrame.RIsNull a
-            | DataFrame.RRounded(_, _, a) -> go a
+            | DataFrame.RRounded(_, _, a)
+            | DataFrame.RInterpolate(_, a) -> go a
             | DataFrame.RCoalesce xs
             | DataFrame.RApplyFn(_, xs) -> List.iter go xs
             | DataFrame.RCase(arms, otherwise) ->

@@ -908,6 +908,9 @@ module IncrementalDelta =
         | Quotient(x, y, _) -> colsNamed x @ colsNamed y
         | Rounded(x, _) -> colsNamed x
         | Convert(x, _) -> colsNamed x
+        | Interpolate(x, _, _, _) -> colsNamed x
+        | Call(_, xs) -> xs |> List.collect colsNamed
+        | Arg _ -> []
 
     /// Phase 212 — every cross-row PRODUCER class whose appended column a later ROW-LOCAL step
     /// READS: the shape whose absence let `v0.26.0` publish a wrong answer.
