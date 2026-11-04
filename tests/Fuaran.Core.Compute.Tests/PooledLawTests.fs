@@ -98,6 +98,19 @@ let tests =
                   let code, transcript = run "node" "PooledLawNode.js" out
                   Expect.equal code 0 ("the node leg's laws failed:\n" + transcript)
                   Expect.stringContains transcript "pooled laws under node: held" "the node leg ran to its end"
+
+                  // Phase 592 — the regression vectors' answers under node are this host's, line for
+                  // line: the estimates, the statistics, the decimal outputs and the refusals.
+                  let lines = transcript.Replace("\r\n", "\n").Split('\n')
+                  let first = Array.IndexOf(lines, "BEGIN fit-vectors")
+                  let last = Array.IndexOf(lines, "END fit-vectors")
+                  Expect.isTrue (first >= 0 && last > first) "the node leg printed the fit vectors"
+                  let underNode = lines[first + 1 .. last - 1]
+                  let onDotnet = TransformVectorSample.fitRender().Split('\n')
+                  Expect.equal underNode.Length onDotnet.Length "one line per fit shape"
+
+                  for i in 0 .. onDotnet.Length - 1 do
+                      Expect.equal underNode[i] onDotnet[i] (sprintf "under node, fit vector %d differs from .NET" i)
               finally
                   try
                       Directory.Delete(scratch, true)

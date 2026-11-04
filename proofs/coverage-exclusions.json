@@ -342,6 +342,20 @@
     },
     {
       "members": [
+        "FitSpec.estimationResponse",
+        "FitSpec.exprs",
+        "FitSpec.mapExprs",
+        "FitSpec.ols",
+        "FitSpec.slotParams",
+        "FitSpec.substituteSlots",
+        "Transform.Fit"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "A regression fitted per group (Phase 592, D53). The model carries no regression; the estimates are the linear-algebra package's least squares (itself pinned-order law-tested) over the bridge's design, held byte for byte, with the statistics, the coding, the decimal outputs, the refusals, the wire round trip, the static walk, registration and the incremental append law tested, and the transform law vectors carry the fit shapes under .NET and node.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/FitTests.fs"
+    },
+    {
+      "members": [
         "Slot.isParam",
         "Slot.paramName",
         "Slot.tryLit"

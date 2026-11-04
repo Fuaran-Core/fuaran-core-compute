@@ -170,6 +170,11 @@ module LawVectorExport =
             Some "InvalidKnots"
         elif shape = "curve-decimal-refused" then
             Some "TypeError"
+        // Phase 592 (D53): a family this version does not evaluate, and a row the bridge refuses.
+        elif shape = "fit-poisson-refused" then
+            Some "UnsupportedFit"
+        elif shape = "fit-nonfinite-refused" then
+            Some "FitError"
         else
             None
 
@@ -180,6 +185,7 @@ module LawVectorExport =
         || shape.StartsWith "union-"
         || shape.StartsWith "function-"
         || shape.StartsWith "curve-"
+        || shape.StartsWith "fit-"
 
     /// The class a named family's refused shape carries, checked against what the reference answered:
     /// a refused shape the reference answers otherwise, or an answered one it refuses, is a broken
@@ -413,7 +419,13 @@ module LawVectorExport =
         + "one column the shape declares (x = Int(i*5 - 3), Float(i + 0.5) or Str of i, or y = Int(i*5 - 3) "
         + "for the name mismatch): a pair of one type unions under that type, an int beside a "
         + "float unions as a float, a pair no column type holds together (a string beside an int) is "
-        + "refused as `TypeError`, and sides whose column names differ are refused as `JoinError`."
+        + "refused as `TypeError`, and sides whose column names differ are refused as `JoinError`. "
+        + "After the function and curve shapes, each iteration takes the next FIT shape named in its vector "
+        + "id (Phase 592) over a fixed ten-row table carried whole in `input.source`: ordinary least squares "
+        + "by the streaming Givens QR of the linear-algebra package, so every estimate, standard error and "
+        + "statistic is pinned bytes; an aliased column is named with null estimates, a decimal response's "
+        + "fitted values, residuals and deviances are decimal, and a family the version does not evaluate "
+        + "(`UnsupportedFit`) or a non-finite term (`FitError`) is refused by the class `expected.error` names."
 
     let renderTransformVectors () : string =
         CorpusFile.render

@@ -207,6 +207,27 @@ module TransformVectorSample =
           "curve-knots-refused"
           "curve-decimal-refused" ]
 
+    /// The regression shapes (Phase 592, `DECISIONS.md` D53), one vector each after the function and curve
+    /// shapes, over the fit table (ten fixed rows, whatever the draw): ordinary least squares, a grouped
+    /// summary, a categorical term, an interaction and a polynomial, an aliased column named with a null
+    /// estimate, two nearly collinear terms, weights with a zero and a ridge penalty, an offset without an
+    /// intercept, fitted values over a listwise deletion, a decimal response's residuals and summary, and
+    /// the two refusals by name.
+    let private fitShapeNames =
+        [ "fit-ols"
+          "fit-grouped-summary"
+          "fit-categorical"
+          "fit-interaction-polynomial"
+          "fit-rank-deficient"
+          "fit-ill-conditioned"
+          "fit-weighted-ridge"
+          "fit-offset-no-intercept"
+          "fit-fitted-listwise"
+          "fit-decimal-residuals"
+          "fit-decimal-summary"
+          "fit-poisson-refused"
+          "fit-nonfinite-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
         decimalShapeNames
@@ -218,6 +239,7 @@ module TransformVectorSample =
         @ orderingShapeNames
         @ unionShapeNames
         @ functionShapeNames
+        @ fitShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -725,6 +747,122 @@ module TransformVectorSample =
             [ Derive("y", Interpolate(w, [ 0.0, 1.0; 0.0, 2.0 ], InterpKind.Linear, InterpOutside.Clamp)) ]
         | _ -> [ Derive("y", Interpolate(Col "m", knots, InterpKind.Linear, InterpOutside.Clamp)) ]
 
+    /// The fit table (Phase 592, D53): ten fixed rows. `g` alternates `a` / `b`; `x` = i + 1 in metres;
+    /// `z` = x + 1e-7·((7i mod 3) − 1), nearly collinear with `x`; `c` cycles `lo` / `mid` / `hi`; `n` =
+    /// Int((3i mod 5) − 2), null at i = 4; `w` = Float(1 + (i mod 4) / 2), zero at i = 6; `y` =
+    /// 2 + x/2 + ((37i mod 11) − 5)/10 in seconds; `m` = 1000 + 125i + ((53i mod 17) − 8) hundredths, a
+    /// decimal.
+    let fitTable: Table =
+        let rows = 10
+        let xs = [ for i in 0 .. rows - 1 -> float (i + 1) ]
+
+        { Schema =
+            [ Field.create "g" StringType
+              Field.create "x" FloatType |> Field.withUnit (unitOf "m")
+              Field.create "z" FloatType
+              Field.create "c" StringType
+              Field.create "n" IntType
+              Field.create "w" FloatType
+              Field.create "y" FloatType |> Field.withUnit (unitOf "s")
+              Field.create "m" DecimalType ]
+          Columns =
+            [ KitColumn.create "g" StringType [ for i in 0 .. rows - 1 -> Str(if i % 2 = 0 then "a" else "b") ]
+              KitColumn.create "x" FloatType [ for x in xs -> Float x ]
+              KitColumn.create "z" FloatType [ for i in 0 .. rows - 1 -> Float(xs[i] + 1e-7 * float ((7 * i) % 3 - 1)) ]
+              KitColumn.create
+                  "c"
+                  StringType
+                  [ for i in 0 .. rows - 1 ->
+                        Str(
+                            match i % 3 with
+                            | 0 -> "lo"
+                            | 1 -> "mid"
+                            | _ -> "hi"
+                        ) ]
+              KitColumn.create "n" IntType [ for i in 0 .. rows - 1 -> if i = 4 then Null else Int((3 * i) % 5 - 2) ]
+              KitColumn.create
+                  "w"
+                  FloatType
+                  [ for i in 0 .. rows - 1 -> Float(if i = 6 then 0.0 else 1.0 + float (i % 4) / 2.0) ]
+              KitColumn.create
+                  "y"
+                  FloatType
+                  [ for i in 0 .. rows - 1 -> Float(2.0 + xs[i] / 2.0 + float ((37 * i) % 11 - 5) / 10.0) ]
+              KitColumn.create
+                  "m"
+                  DecimalType
+                  [ for i in 0 .. rows - 1 -> cents (100000 + 12500 * i + (53 * i) % 17 - 8) ] ] }
+
+    /// The regression shapes (Phase 592, D53) over `fitTable`.
+    let private fitPipelineOf (shape: string) : Transform list =
+        let x = Col "x"
+        let ols = FitSpec.ols "y" [ "x", x ]
+
+        match shape with
+        | "fit-ols" -> [ Fit ols ]
+        | "fit-grouped-summary" ->
+            [ Fit
+                  { ols with
+                      GroupBy = [ "g" ]
+                      Output = FitOutput.Summary } ]
+        | "fit-categorical" -> [ Fit(FitSpec.ols "y" [ "x", x; "c", Col "c" ]) ]
+        | "fit-interaction-polynomial" ->
+            [ Fit(
+                  FitSpec.ols
+                      "y"
+                      [ "x", x
+                        "x:n", Binary(Mul, x, Col "n")
+                        "x^2", ApplyFn(Pow, [ x; Lit(Int 2) ]) ]
+              ) ]
+        | "fit-rank-deficient" -> [ Fit(FitSpec.ols "y" [ "x", x; "twice", Binary(Mul, x, Lit(Float 2.0)) ]) ]
+        | "fit-ill-conditioned" -> [ Fit(FitSpec.ols "y" [ "x", x; "z", Col "z" ]) ]
+        | "fit-weighted-ridge" ->
+            [ Fit
+                  { ols with
+                      Predictors = [ "x", x; "z", Col "z" ]
+                      Weights = Some "w"
+                      Ridge = Some(Slot.Lit 0.5) } ]
+        | "fit-offset-no-intercept" ->
+            [ Fit
+                  { ols with
+                      Intercept = false
+                      Offset = Some(Lit(Float 2.0)) } ]
+        | "fit-fitted-listwise" ->
+            [ Fit
+                  { ols with
+                      Predictors = [ "x", x; "n", Col "n" ]
+                      GroupBy = [ "g" ]
+                      Output = FitOutput.Fitted } ]
+        | "fit-decimal-residuals" ->
+            [ Fit
+                  { FitSpec.ols "m" [ "x", x ] with
+                      Output = FitOutput.Residuals } ]
+        | "fit-decimal-summary" ->
+            [ Fit
+                  { FitSpec.ols "m" [ "x", x ] with
+                      GroupBy = [ "g" ]
+                      Output = FitOutput.Summary } ]
+        | "fit-poisson-refused" ->
+            [ Fit
+                  { ols with
+                      Family = FitFamily.Poisson
+                      Link = FitLink.Log } ]
+        | _ -> [ Fit(FitSpec.ols "y" [ "huge", Binary(Mul, x, Lit(Float 1e308)) ]) ]
+
+    /// Every fit shape's answer over `fitTable`, one line each — the shape, then the canonical wire string
+    /// of the result table or `error <errorString>` — in shape order. The node leg prints it under
+    /// Fable and the suite holds it equal to this host's, line for line (Phase 592): the estimates, the
+    /// statistics, the decimal outputs and the refusals' texts, byte for byte.
+    let fitRender () : string =
+        fitShapeNames
+        |> List.map (fun shape ->
+            shape
+            + " "
+            + (match DataFrame.evalPipeline (fitPipelineOf shape) fitTable with
+               | Ok t -> ColumnCodec.encode (Embedded t)
+               | Error e -> "error " + DataFrame.errorString e))
+        |> String.concat "\n"
+
     let private pipelineOf (k: int) : Transform list =
         match k with
         | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
@@ -795,6 +933,8 @@ module TransformVectorSample =
                 (decimalTable rows offset, unionPipelineOf shape rows), r2
             elif shape.StartsWith "function-" || shape.StartsWith "curve-" then
                 (decimalTable rows offset, functionPipelineOf shape), r2
+            elif shape.StartsWith "fit-" then
+                (fitTable, fitPipelineOf shape), r2
             else
                 (decimalTable rows offset, decimalPipelineOf shape rows offset), r2
 

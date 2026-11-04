@@ -209,6 +209,12 @@ module PipelineQuery =
                  | Some(Slot.Lit _)
                  | None -> []))
             @ exprReads cols None fd.Body
+        // Phase 592: the terms' and the offset's reads, then the slots' — `Transform.paramsOf`'s order.
+        | Fit spec ->
+            (FitSpec.exprs spec |> List.collect (exprReads cols None))
+            @ (spec.Ridge |> Option.map (slotRead FloatType) |> Option.defaultValue [])
+            @ slotRead IntType spec.Control.MaxIter
+            @ slotRead FloatType spec.Control.Tol
         | Project _
         | GroupBy _
         | Join _
@@ -267,7 +273,8 @@ module PipelineQuery =
             | Sort _
             | Distinct
             | Limit _
-            | Define _ -> []
+            | Define _
+            | Fit _ -> []
 
         refOf pq.Query.Source @ (pq.Pipeline |> List.collect stepRefs) |> List.distinct
 

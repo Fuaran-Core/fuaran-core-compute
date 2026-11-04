@@ -480,6 +480,148 @@ type FnDef =
       Params: FnParam list
       Body: ColExpr }
 
+/// The error distribution a `Fit` assumes (Phase 592, `DECISIONS.md` D5 of the accepted plan): one
+/// verb, the family and the link as data. `Gaussian` under `FitLink.Identity` is ordinary least
+/// squares, the one pairing this version evaluates; every other pairing is typed here so a pipeline
+/// can carry it, and refused by name when the step runs (`EvalError.UnsupportedFit`).
+[<RequireQualifiedAccess>]
+type FitFamily =
+    | Gaussian
+    | Poisson
+    | Gamma
+    /// The Tweedie family with variance power `power` (`V(μ) = μ^power`).
+    | Tweedie of power: float
+    | QuasiPoisson
+
+/// The link function a `Fit` relates the linear predictor to the mean through (Phase 592).
+[<RequireQualifiedAccess>]
+type FitLink =
+    | Identity
+    | Log
+
+/// The iteration control of a `Fit` (Phase 592): the most iterations and the convergence tolerance,
+/// each a `Slot` so a host can bind them per evaluation. Ordinary least squares solves in one pass and
+/// reads neither, but both are checked when the step resolves, so a pipeline is refused for an
+/// out-of-range control whichever family it names.
+type FitControl =
+    { MaxIter: Slot<int>; Tol: Slot<float> }
+
+/// Which table a `Fit` step answers (Phase 592). Every one has a closed schema, decided before any row
+/// is read.
+[<RequireQualifiedAccess>]
+type FitOutput =
+    /// One row per group and term: the group keys, `term`, `estimate`, `std_error`, `t` and `unit`.
+    | Coefficients
+    /// One row per group: the group keys, `n`, `df`, `sigma`, `r2`, `rank`, `deviance`,
+    /// `null_deviance`, `dispersion`, `iterations` and `converged`.
+    | Summary
+    /// The step's input rows, in order, with a `fitted` column appended.
+    | Fitted
+    /// The step's input rows, in order, with a `residual` column appended.
+    | Residuals
+
+/// A regression a pipeline fits (Phase 592; plan §2.4, `DECISIONS.md` of this phase). The response is
+/// a column; each predictor is a named `ColExpr`, so an interaction is a `Mul` and a polynomial an
+/// integer `Pow`; a string or boolean predictor is a categorical term, one-hot coded against its first
+/// level in the cell order. One fit per group of `GroupBy` (none: one fit over every row).
+type FitSpec =
+    {
+        /// The response column: int, float or decimal. A decimal response is estimated through
+        /// `Cast(FloatType, Col response)` and every output stated against it is computed in decimal.
+        Response: string
+        /// The named terms, in coefficient order after the intercept.
+        Predictors: (string * ColExpr) list
+        /// Whether the design carries the `(Intercept)` column, first.
+        Intercept: bool
+        /// The grouping columns; one fit per group, groups in first-appearance order.
+        GroupBy: string list
+        /// The prior weights column, if any: finite and not negative; a zero weight row is in the
+        /// design but not counted.
+        Weights: string option
+        /// An offset added to the linear predictor, if any (its coefficient fixed at one).
+        Offset: ColExpr option
+        /// A ridge penalty `λ ≥ 0`, if any: one row of `√λ` per non-intercept column, in column order,
+        /// folded in after the data rows.
+        Ridge: Slot<float> option
+        Family: FitFamily
+        Link: FitLink
+        Control: FitControl
+        Output: FitOutput
+    }
+
+/// Construction and derivations of a `FitSpec` (Phase 592).
+[<RequireQualifiedAccess>]
+module FitSpec =
+
+    /// The control a spec takes unless it says otherwise: at most 25 iterations, tolerance `1e-8`
+    /// (`DECISIONS.md` D49 item 13).
+    let defaultControl: FitControl =
+        { MaxIter = Slot.Lit 25
+          Tol = Slot.Lit 1e-8 }
+
+    /// Ordinary least squares of `response` on `predictors`, with an intercept, ungrouped, unweighted,
+    /// answering the coefficients.
+    let ols (response: string) (predictors: (string * ColExpr) list) : FitSpec =
+        { Response = response
+          Predictors = predictors
+          Intercept = true
+          GroupBy = []
+          Weights = None
+          Offset = None
+          Ridge = None
+          Family = FitFamily.Gaussian
+          Link = FitLink.Identity
+          Control = defaultControl
+          Output = FitOutput.Coefficients }
+
+    /// The response the estimation reads: `Cast(FloatType, Col response)`, the evaluator's own cast, so
+    /// an int or a decimal response reaches the factorization exactly as a pipeline's `Cast` would hand
+    /// it over, and a float response unchanged.
+    let estimationResponse (spec: FitSpec) : ColExpr = Cast(FloatType, Col spec.Response)
+
+    /// Every expression the spec carries, predictors in order and then the offset.
+    let exprs (spec: FitSpec) : ColExpr list =
+        (spec.Predictors |> List.map snd) @ Option.toList spec.Offset
+
+    /// The spec with `f` applied to every expression it carries.
+    let mapExprs (f: ColExpr -> ColExpr) (spec: FitSpec) : FitSpec =
+        { spec with
+            Predictors = spec.Predictors |> List.map (fun (n, e) -> n, f e)
+            Offset = spec.Offset |> Option.map f }
+
+    /// The params the spec's slots name: the ridge penalty, then the control's iteration bound and
+    /// tolerance.
+    let slotParams (spec: FitSpec) : string list =
+        (spec.Ridge |> Option.map Slot.paramName |> Option.defaultValue [])
+        @ Slot.paramName spec.Control.MaxIter
+        @ Slot.paramName spec.Control.Tol
+
+    /// The spec with every slot param bound in `env` replaced by its literal (a float slot takes a
+    /// float cell, or an int cell read as its float; an int slot an int cell).
+    let substituteSlots (env: Map<string, Cell>) (spec: FitSpec) : FitSpec =
+        let bindFloat (s: Slot<float>) =
+            match s with
+            | Slot.Param n ->
+                match Map.tryFind n env with
+                | Some(Float v) -> Slot.Lit v
+                | Some(Int v) -> Slot.Lit(float v)
+                | _ -> s
+            | Slot.Lit _ -> s
+
+        let bindInt (s: Slot<int>) =
+            match s with
+            | Slot.Param n ->
+                match Map.tryFind n env with
+                | Some(Int v) -> Slot.Lit v
+                | _ -> s
+            | Slot.Lit _ -> s
+
+        { spec with
+            Ridge = spec.Ridge |> Option.map bindFloat
+            Control =
+                { MaxIter = bindInt spec.Control.MaxIter
+                  Tol = bindFloat spec.Control.Tol } }
+
 /// One transform step — the full v1 verb set (spec §2). A pipeline is an ordered `Transform list`
 /// over a `DataSource`.
 type Transform =
@@ -522,6 +664,12 @@ type Transform =
     /// its body before evaluation (`FnDef.expand`). The step itself changes no frame. Wire:
     /// `{"$type":"define","name":…,"params":[{"name":…,"default":<slot>?},…],"body":…}`.
     | Define of FnDef
+    /// Phase 592 — fit a regression (plan §2.4, `DECISIONS.md` D53): one factorization per group by the
+    /// streaming Givens QR of `Fuaran.Compute.LinearAlgebra`, answering the table `FitOutput` names.
+    /// Wire: `{"$type":"fit","response":…,"predictors":[{"name":…,"expr":…},…],"intercept":…,
+    /// "groupBy":[…],"weights":…?,"offset":…?,"ridge":<slot>?,"family":…,"link":…,
+    /// "control":{"maxIter":<slot>,"tol":<slot>},"output":…}`.
+    | Fit of FitSpec
 
 // ---------------------------------------------------------------------------
 //  Phase 269 — the planner's report vocabulary. The planner itself is `Plan` (Plan.fs), over the
@@ -793,6 +941,10 @@ module Transform =
             (fd.Params
              |> List.collect (fun p -> p.Default |> Option.map Slot.paramName |> Option.defaultValue []))
             @ ColExpr.paramNames fd.Body
+        // Phase 592: the terms' and the offset's params, then the slots' (`FitSpec.slotParams`).
+        | Fit spec ->
+            (FitSpec.exprs spec |> List.collect ColExpr.paramNames)
+            @ FitSpec.slotParams spec
         | Project _
         | GroupBy _
         | Join _
@@ -855,6 +1007,7 @@ module Transform =
                     { fd with
                         Params = fd.Params |> List.map bindCell
                         Body = ColExpr.substitute env fd.Body }
+            | Fit spec -> Fit(spec |> FitSpec.mapExprs (ColExpr.substitute env) |> FitSpec.substituteSlots env)
             | other -> other)
 
     /// Substitute every LIST param bound in `listEnv` through the whole pipeline (Phase 91) —
@@ -869,6 +1022,7 @@ module Transform =
                 Define
                     { fd with
                         Body = ColExpr.substituteListParams listEnv fd.Body }
+            | Fit spec -> Fit(FitSpec.mapExprs (ColExpr.substituteListParams listEnv) spec)
             | other -> other)
 
     /// Pin the clock through the whole pipeline (Phase 125): every `ColExpr.Now` becomes the
@@ -888,6 +1042,7 @@ module Transform =
                 Define
                     { fd with
                         Body = ColExpr.substituteWithPinned pinned fd.Body }
+            | Fit spec -> Fit(FitSpec.mapExprs (ColExpr.substituteWithPinned pinned) spec)
             | other -> other)
 
     /// The literal `Limit` — `Transform.limit 10 0` for the common case, so a call site that never
@@ -908,6 +1063,7 @@ module Transform =
             match t with
             | Sort by -> by |> List.collect (fun (c, _) -> Slot.paramName c)
             | Limit(n, offset) -> Slot.paramName n @ Slot.paramName offset
+            | Fit spec -> FitSpec.slotParams spec
             | _ -> [])
         |> List.distinct
 
@@ -920,6 +1076,7 @@ module Transform =
             | Filter p -> ColExpr.usesNow p
             | Derive(_, e) -> ColExpr.usesNow e
             | Define fd -> ColExpr.usesNow fd.Body
+            | Fit spec -> FitSpec.exprs spec |> List.exists ColExpr.usesNow
             | _ -> false)
 
 /// The reference evaluator's recoverable error envelope — names the failure, enumerates the
@@ -972,6 +1129,15 @@ type EvalError =
     /// not strictly increase, or a coordinate that is not finite. Static: refused when the step
     /// resolves, before any row is read, so an empty frame is refused exactly as a full one.
     | InvalidKnots of detail: string
+    /// A `Fit` whose family and link this version does not evaluate (Phase 592, D53): every pairing but
+    /// `Gaussian` under `Identity` is typed in `FitSpec` and refused here by name, before any row is
+    /// read. Names both by their wire spellings.
+    | UnsupportedFit of family: string * link: string
+    /// A `Fit` refused (Phase 592, D53): a spec that cannot be fitted as written (no design column, a
+    /// term named twice, an output column that already exists, a predictor of a type the bridge does
+    /// not code, a ridge penalty or a control out of range), or a row the bridge refuses (a non-finite
+    /// response, term or offset, a negative or non-finite weight), naming the step's input row.
+    | FitError of detail: string
 
 /// A curve prepared once per step (Phase 596, `DECISIONS.md` D48): the knots as arrays, and for a
 /// monotone cubic the tangent at every knot under the pinned slope rule.
@@ -1480,10 +1646,13 @@ module FnDef =
 
         let stepExprs =
             pipeline
-            |> List.choose (function
-                | Filter p -> Some("filter", p)
-                | Derive(name, e) -> Some("derive '" + name + "'", e)
-                | _ -> None)
+            |> List.collect (function
+                | Filter p -> [ "filter", p ]
+                | Derive(name, e) -> [ "derive '" + name + "'", e ]
+                // Phase 592: a fit's terms and offset are expressions of the step like any other.
+                | Fit spec -> FitSpec.exprs spec |> List.map (fun e -> "fit", e)
+                | _ -> [])
+
 
         if List.isEmpty order && not (stepExprs |> List.exists (snd >> hasCalls)) then
             Ok pipeline
@@ -1516,6 +1685,7 @@ module FnDef =
                         | Define _ -> None
                         | Filter p -> Some(Filter(inline' defs Map.empty p))
                         | Derive(name, e) -> Some(Derive(name, inline' defs Map.empty e))
+                        | Fit spec -> Some(Fit(FitSpec.mapExprs (inline' defs Map.empty) spec))
                         | other -> Some other))
 
 /// A description of what changed in a source table between a prior evaluation and now (Phase 34) — the
@@ -4550,6 +4720,8 @@ module DataFrame =
             | Distinct -> true
             // A definition changes no frame.
             | Define _ -> true
+            // Phase 592: a fit reaches the factorization, whose refusals the schema cannot vouch for.
+            | Fit _ -> false
             | GroupBy _
             | Join _
             | Window _
@@ -4578,6 +4750,20 @@ module DataFrame =
             | Define _ -> Some []
             | GroupBy(keys, aggs) -> Some(keys @ (aggs |> List.map (fun a -> a.Of)))
             | Pivot spec -> Some(spec.Index @ [ spec.On; spec.Values ])
+            // Phase 592: a coefficient or summary table reads the response, the keys, the weights and the
+            // terms' columns; a fitted or residual table hands every input column on, so it reads the row.
+            | Fit spec ->
+                match spec.Output with
+                | FitOutput.Coefficients
+                | FitOutput.Summary ->
+                    Some(
+                        spec.GroupBy
+                        @ [ spec.Response ]
+                        @ Option.toList spec.Weights
+                        @ (FitSpec.exprs spec |> List.collect exprCols)
+                    )
+                | FitOutput.Fitted
+                | FitOutput.Residuals -> None
             | Join _
             | Window _
             | Unpivot _
@@ -4677,6 +4863,7 @@ module DataFrame =
             | Intersect _ -> "intersect"
             | Except _ -> "except"
             | Define _ -> "define"
+            | Fit _ -> "fit"
 
         // ---- reordering: a Filter bubbles ahead of the Sort / Derive it follows ----
 
@@ -9970,6 +10157,1022 @@ module DataFrame =
             | Ok vs, Ok v -> Ok(v :: vs))
         |> Result.map List.rev
 
+    // -----------------------------------------------------------------------------------------
+    //  Phase 592 — `Fit` (plan §2.4, `DECISIONS.md` D53). The frame-to-matrix bridge, the units,
+    //  and the tables a fit answers live here; the algebra — the streaming Givens QR, the rank
+    //  rule and the solve — is `Fuaran.Compute.LinearAlgebra`'s, called and never restated.
+    // -----------------------------------------------------------------------------------------
+
+    /// The wire spelling of a family — what the codec writes and `UnsupportedFit` names.
+    let internal fitFamilyTag (f: FitFamily) : string =
+        match f with
+        | FitFamily.Gaussian -> "gaussian"
+        | FitFamily.Poisson -> "poisson"
+        | FitFamily.Gamma -> "gamma"
+        | FitFamily.Tweedie _ -> "tweedie"
+        | FitFamily.QuasiPoisson -> "quasiPoisson"
+
+    /// The wire spelling of a link.
+    let internal fitLinkTag (l: FitLink) : string =
+        match l with
+        | FitLink.Identity -> "identity"
+        | FitLink.Log -> "log"
+
+    /// The wire spelling of an output.
+    let internal fitOutputTag (o: FitOutput) : string =
+        match o with
+        | FitOutput.Coefficients -> "coefficients"
+        | FitOutput.Summary -> "summary"
+        | FitOutput.Fitted -> "fitted"
+        | FitOutput.Residuals -> "residuals"
+
+    /// The unit of a squared response (a deviance's), where the response states one the algebra can
+    /// square.
+    let internal fitUnitSquared (u: UnitOfMeasure option) : UnitOfMeasure option =
+        u |> Option.bind (fun u -> unitPower u 2)
+
+    /// The name of the coefficient of the design's constant column (R's spelling).
+    let internal interceptTerm = "(Intercept)"
+
+    /// The column a `Fitted` / `Residuals` table appends.
+    let internal fitAppendedColumn (o: FitOutput) : string option =
+        match o with
+        | FitOutput.Fitted -> Some "fitted"
+        | FitOutput.Residuals -> Some "residual"
+        | FitOutput.Coefficients
+        | FitOutput.Summary -> None
+
+    /// A float slot: a float cell, or an int cell read as its float.
+    let private resolveFloatSlot (env: Map<string, Cell>) (slot: string) (s: Slot<float>) : Result<float, EvalError> =
+        match s with
+        | Slot.Lit v -> Ok v
+        | Slot.Param n ->
+            match Map.tryFind n env with
+            | None -> Error(UnboundParam(n, env |> Map.toList |> List.map fst))
+            | Some(Float v) -> Ok v
+            | Some(Int v) -> Ok(float v)
+            | Some other ->
+                Error(
+                    TypeError(
+                        slot
+                        + ": param '"
+                        + n
+                        + "' is bound to a "
+                        + cellShape other
+                        + " cell, not a number"
+                    )
+                )
+
+    /// A spec's slots, resolved and checked, and its family and link admitted: the static half of a
+    /// fit, decided before any row is read (D53 items 1 and 2).
+    type internal FitResolved =
+        { Ridge: float
+          MaxIter: int
+          Tol: float }
+
+    let private finite (v: float) : bool =
+        not (System.Double.IsNaN v || System.Double.IsInfinity v)
+
+    let internal fitResolve (env: Map<string, Cell>) (spec: FitSpec) : Result<FitResolved, EvalError> =
+        match spec.Family, spec.Link with
+        | FitFamily.Gaussian, FitLink.Identity ->
+            let ridge =
+                match spec.Ridge with
+                | None -> Ok 0.0
+                | Some s ->
+                    resolveFloatSlot env "fit ridge" s
+                    |> Result.bind (fun l ->
+                        if finite l && l >= 0.0 then
+                            Ok l
+                        else
+                            Error(FitError "fit: the ridge penalty must be finite and not negative"))
+
+            ridge
+            |> Result.bind (fun ridge ->
+                resolveIntSlot env "fit maxIter" spec.Control.MaxIter
+                |> Result.bind (fun maxIter ->
+                    if maxIter < 1 then
+                        Error(FitError "fit: maxIter must be at least 1")
+                    else
+                        resolveFloatSlot env "fit tol" spec.Control.Tol
+                        |> Result.bind (fun tol ->
+                            if finite tol && tol > 0.0 then
+                                Ok
+                                    { Ridge = ridge
+                                      MaxIter = maxIter
+                                      Tol = tol }
+                            else
+                                Error(FitError "fit: tol must be finite and positive"))))
+        | family, link -> Error(UnsupportedFit(fitFamilyTag family, fitLinkTag link))
+
+    /// The design a `Fit` step assembles over its input frame (D53 items 3 to 6): one row per logical
+    /// row of the frame, in the frame's order.
+    type internal FitDesign =
+        {
+            /// The coefficient names, design-column order.
+            Names: string[]
+            /// Each coefficient's unit, `unit(y) / unit(xⱼ)`, where one is stated.
+            CoefUnits: UnitOfMeasure option[]
+            /// The design width, `p`.
+            P: int
+            /// Per logical row: in the design (no null among the response, the terms, the offset and
+            /// the weight).
+            Used: bool[]
+            /// Row-major, `p` per logical row; zeros at a row not in the design.
+            X: float[]
+            /// The estimation response, `Cast(FloatType, Col response)`.
+            Y: float[]
+            /// The offset, `0.0` where the spec has none.
+            Off: float[]
+            /// The prior weight, `1.0` where the spec has none.
+            W: float[]
+            /// The response cells as the frame holds them: what a decimal response's outputs read.
+            YCells: Cell[]
+            /// The response column is decimal.
+            Decimal: bool
+            /// The response's unit.
+            YUnit: UnitOfMeasure option
+            /// Per group, its members' logical rows in frame order.
+            Members: int[][]
+            /// Per group, its key cells.
+            KeyCells: Cell[][]
+            /// The key fields, in `GroupBy` order.
+            KeyCols: Field list
+        }
+
+    /// The text a level of a categorical term is named by in its coefficient: the string itself, or
+    /// `true` / `false`.
+    let private levelText (c: Cell) : string =
+        match c with
+        | Str s -> s
+        | Bool b -> if b then "true" else "false"
+        | other -> cellString other
+
+    /// A column the bridge evaluates an expression into: the expression's cells at every logical row,
+    /// its column type and its unit. The derive's own typing and unit check, under the step's label.
+    let private fitColumn
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (label: string)
+        (expr: ColExpr)
+        : Result<Cell[] * ColumnType * UnitOfMeasure option, EvalError> =
+        resolveUnitsIn label f.Cols expr
+        |> Result.bind (fun (unit, resolved) ->
+            let tmp = "\u0000fit"
+
+            match derivedTypingIn env f.Cols resolved with
+            | Refused -> Error(floatBesideDecimal label)
+            | dt ->
+                evalDerivedColumn k env f tmp resolved dt
+                |> Result.map (fun f' ->
+                    let at = f'.Vecs.Length - 1
+                    let v = f'.Vecs[at]
+                    let ty = (List.last f'.Cols).Type
+                    let phys = Frame.physical f'
+                    phys |> Array.map (Vec.cellAt v), ty, unit))
+
+    /// A numeric cell's float: an int exactly, a float as itself, a decimal through the cast's rule.
+    let private fitFloat (c: Cell) : float option =
+        match c with
+        | Int i -> Some(float i)
+        | Float v -> Some v
+        | Decimal s -> DecimalText.tryToFloat s
+        | _ -> None
+
+    /// A row the bridge refuses, named by its index among the step's input rows.
+    let private rowError (row: int) (what: string) : EvalError =
+        FitError("fit: row " + string row + ": " + what)
+
+    /// A linear-algebra refusal in the words the evaluator reports it, one spelling on every host.
+    let private linAlgText (e: LinearAlgebra.LinAlgError) : string =
+        match e with
+        | LinearAlgebra.LinAlgError.ShapeMismatch(op, _, _) -> "a shape mismatch in " + op
+        | LinearAlgebra.LinAlgError.Singular i -> "a singular triangle at " + string i
+        | LinearAlgebra.LinAlgError.RankDeficient r -> "rank deficient at rank " + string r
+        | LinearAlgebra.LinAlgError.NotFinite(r, c) -> "a non-finite value at (" + string r + ", " + string c + ")"
+        | LinearAlgebra.LinAlgError.NotTriangular(r, c) -> "not triangular at (" + string r + ", " + string c + ")"
+        | LinearAlgebra.LinAlgError.NotConverged n -> "not converged after " + string n + " iterations"
+        | LinearAlgebra.LinAlgError.InvalidWeight r -> "an invalid weight at " + string r
+
+    /// One predictor as the bridge codes it.
+    type private FitTerm =
+        | NumericTerm of name: string * cells: Cell[] * unit: UnitOfMeasure option
+        | CategoricalTerm of name: string * cells: Cell[]
+
+    /// Assemble the design (D53 items 3 to 6). The checks run in this order, each refusal naming what
+    /// it refuses: the response column, the group keys, the weights column, the appended output's
+    /// name, then each term, then the offset, then the rows.
+    let internal fitDesign
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (spec: FitSpec)
+        : Result<FitDesign, EvalError> =
+        let n = Frame.rows f
+        let phys = Frame.physical f
+
+        let cellsOf (name: string) =
+            let ci = colIndex f.Cols name |> Option.get
+            phys |> Array.map (Vec.cellAt f.Vecs[ci])
+
+        let numericType (ty: ColumnType) =
+            match ty with
+            | IntType
+            | FloatType
+            | DecimalType -> true
+            | _ -> false
+
+        let known (name: string) =
+            match colType f.Cols name with
+            | Some ty -> Ok ty
+            | None -> Error(UnknownColumn(name, available f.Cols))
+
+        let checkKeys () =
+            spec.GroupBy
+            |> List.tryPick (fun key ->
+                match known key with
+                | Error e -> Some e
+                | Ok _ -> None)
+
+        known spec.Response
+        |> Result.bind (fun yTy ->
+            if not (numericType yTy) then
+                Error(
+                    TypeError(
+                        "fit: the response '"
+                        + spec.Response
+                        + "' is a "
+                        + ColumnType.tag yTy
+                        + " column; a response is int, float or decimal"
+                    )
+                )
+            else
+                match checkKeys () with
+                | Some e -> Error e
+                | None ->
+                    let weightsOk =
+                        match spec.Weights with
+                        | None -> Ok()
+                        | Some w ->
+                            known w
+                            |> Result.bind (fun ty ->
+                                if numericType ty then
+                                    Ok()
+                                else
+                                    Error(
+                                        TypeError(
+                                            "fit: the weights '"
+                                            + w
+                                            + "' are a "
+                                            + ColumnType.tag ty
+                                            + " column; weights are int, float or decimal"
+                                        )
+                                    ))
+
+                    weightsOk
+                    |> Result.bind (fun () ->
+                        match fitAppendedColumn spec.Output with
+                        | Some out when Option.isSome (colIndex f.Cols out) ->
+                            Error(FitError("fit: the input already has a column '" + out + "'"))
+                        | _ -> Ok())
+                    |> Result.bind (fun () ->
+                        let names = spec.Predictors |> List.map fst
+
+                        match
+                            names
+                            |> List.countBy id
+                            |> List.tryFind (fun (nm, c) -> c > 1 || (spec.Intercept && nm = interceptTerm))
+                        with
+                        | Some(nm, _) -> Error(FitError("fit: the term '" + nm + "' is named twice"))
+                        | None -> Ok())
+                    |> Result.bind (fun () ->
+                        fitColumn k env f "fit response" (FitSpec.estimationResponse spec)
+                        |> Result.bind (fun (yCast, _, _) ->
+                            let terms =
+                                spec.Predictors
+                                |> List.map (fun (name, e) ->
+                                    fitColumn k env f ("fit term '" + name + "'") e
+                                    |> Result.bind (fun (cells, ty, unit) ->
+                                        match ty with
+                                        | IntType
+                                        | FloatType
+                                        | DecimalType -> Ok(NumericTerm(name, cells, unit))
+                                        | StringType
+                                        | BoolType -> Ok(CategoricalTerm(name, cells))
+                                        | other ->
+                                            Error(
+                                                TypeError(
+                                                    "fit: the term '"
+                                                    + name
+                                                    + "' is a "
+                                                    + ColumnType.tag other
+                                                    + " expression; a term is numeric, string or boolean"
+                                                )
+                                            )))
+                                |> sequenceR
+
+                            let offset =
+                                match spec.Offset with
+                                | None -> Ok None
+                                | Some e ->
+                                    fitColumn k env f "fit offset" e
+                                    |> Result.bind (fun (cells, ty, _) ->
+                                        if numericType ty then
+                                            Ok(Some cells)
+                                        else
+                                            Error(
+                                                TypeError(
+                                                    "fit: the offset is a "
+                                                    + ColumnType.tag ty
+                                                    + " expression; an offset is numeric"
+                                                )
+                                            ))
+
+                            terms
+                            |> Result.bind (fun terms ->
+                                offset
+                                |> Result.bind (fun offset ->
+                                    let yCells = cellsOf spec.Response
+                                    let wCells = spec.Weights |> Option.map cellsOf
+
+                                    let present (c: Cell) =
+                                        match c with
+                                        | Null -> false
+                                        | _ -> true
+
+                                    // Listwise deletion (D49 item 13): a null anywhere the row is read.
+                                    let used =
+                                        Array.init n (fun i ->
+                                            present yCast[i]
+                                            && terms
+                                               |> List.forall (fun t ->
+                                                   match t with
+                                                   | NumericTerm(_, cells, _)
+                                                   | CategoricalTerm(_, cells) -> present cells[i])
+                                            && (match offset with
+                                                | Some cells -> present cells[i]
+                                                | None -> true)
+                                            && (match wCells with
+                                                | Some cells -> present cells[i]
+                                                | None -> true))
+
+                                    // The levels of each categorical term, over the rows in the design,
+                                    // in the cell order; the first is the reference (D53 item 4).
+                                    let levelsOf (cells: Cell[]) =
+                                        let seen = System.Collections.Generic.HashSet<string>()
+                                        let levels = ResizeArray<Cell>()
+
+                                        for i in 0 .. n - 1 do
+                                            if used[i] && seen.Add(levelText cells[i]) then
+                                                levels.Add cells[i]
+
+                                        levels.ToArray()
+                                        |> Array.sortWith (fun a b -> compareCells a b |> Option.defaultValue 0)
+
+                                    let firstCategorical =
+                                        terms
+                                        |> List.tryFindIndex (fun t ->
+                                            match t with
+                                            | CategoricalTerm _ -> true
+                                            | NumericTerm _ -> false)
+
+                                    let yUnit = colUnit f.Cols spec.Response
+
+                                    // Each design column: its name, its unit, and its value at a row.
+                                    let columns: (string * UnitOfMeasure option * (int -> float)) list =
+                                        (if spec.Intercept then
+                                             [ interceptTerm, yUnit, (fun _ -> 1.0) ]
+                                         else
+                                             [])
+                                        @ (terms
+                                           |> List.mapi (fun ti t ->
+                                               match t with
+                                               | NumericTerm(name, cells, unit) ->
+                                                   [ name,
+                                                     unitQuotient yUnit unit,
+                                                     (fun i -> fitFloat cells[i] |> Option.defaultValue nan) ]
+                                               | CategoricalTerm(name, cells) ->
+                                                   let levels = levelsOf cells
+                                                   // Without an intercept the first categorical term
+                                                   // keeps every level, as R's treatment coding does.
+                                                   let coded =
+                                                       if not spec.Intercept && firstCategorical = Some ti then
+                                                           levels
+                                                       else
+                                                           Array.skip (min 1 levels.Length) levels
+
+                                                   coded
+                                                   |> Array.toList
+                                                   |> List.map (fun level ->
+                                                       let token = levelText level
+
+                                                       name + "[" + token + "]",
+                                                       yUnit,
+                                                       (fun i -> if levelText cells[i] = token then 1.0 else 0.0)))
+                                           |> List.concat)
+
+                                    let names = columns |> List.map (fun (nm, _, _) -> nm) |> List.toArray
+                                    let p = names.Length
+
+                                    match names |> Array.countBy id |> Array.tryFind (fun (_, c) -> c > 1) with
+                                    | Some(nm, _) -> Error(FitError("fit: the term '" + nm + "' is named twice"))
+                                    | None when p = 0 -> Error(FitError "fit: the design has no column")
+                                    | None ->
+                                        let colFns = columns |> List.map (fun (_, _, g) -> g) |> List.toArray
+                                        let x = Array.zeroCreate<float> (n * p)
+                                        let y = Array.zeroCreate<float> n
+                                        let off = Array.zeroCreate<float> n
+                                        let w = Array.create n 1.0
+                                        let mutable failure = None
+                                        let mutable i = 0
+
+                                        while Option.isNone failure && i < n do
+                                            if used[i] then
+                                                match fitFloat yCast[i] with
+                                                | Some v when finite v -> y[i] <- v
+                                                | _ -> failure <- Some(rowError i "the response is not finite")
+
+                                                let mutable j = 0
+
+                                                while Option.isNone failure && j < p do
+                                                    let v = colFns[j]i
+
+                                                    if finite v then
+                                                        x[i * p + j] <- v
+                                                    else
+                                                        failure <-
+                                                            Some(
+                                                                rowError
+                                                                    i
+                                                                    ("the term '" + names[j] + "' is not finite")
+                                                            )
+
+                                                    j <- j + 1
+
+                                                if Option.isNone failure then
+                                                    match offset with
+                                                    | Some cells ->
+                                                        match fitFloat cells[i] with
+                                                        | Some v when finite v -> off[i] <- v
+                                                        | _ ->
+                                                            failure <- Some(rowError i "the offset is not finite")
+                                                    | None -> ()
+
+                                                if Option.isNone failure then
+                                                    match wCells with
+                                                    | Some cells ->
+                                                        match fitFloat cells[i] with
+                                                        | Some v when finite v && v >= 0.0 -> w[i] <- v
+                                                        | _ ->
+                                                            failure <-
+                                                                Some(
+                                                                    rowError
+                                                                        i
+                                                                        "the weight is negative or not finite"
+                                                                )
+                                                    | None -> ()
+
+                                            i <- i + 1
+
+                                        match failure with
+                                        | Some e -> Error e
+                                        | None ->
+                                            // Groups over the rows in the design, in first-appearance
+                                            // order (`GroupBy`'s rule).
+                                            let usedRows = Array.init n id |> Array.filter (fun i -> used[i])
+
+                                            let keyIdx =
+                                                spec.GroupBy
+                                                |> List.map (fun key -> colIndex f.Cols key |> Option.get)
+                                                |> List.toArray
+
+                                            let keyVecs = keyIdx |> Array.map (fun ci -> f.Vecs[ci])
+
+                                            let slotOf, _ =
+                                                keySlots keyVecs (usedRows |> Array.map (fun i -> phys[i]))
+
+                                            let groups = if usedRows.Length = 0 then 0 else (Array.max slotOf + 1)
+                                            let members = Array.init groups (fun _ -> ResizeArray<int>())
+
+                                            for u in 0 .. usedRows.Length - 1 do
+                                                members[slotOf[u]].Add usedRows[u]
+
+                                            let members = members |> Array.map (fun m -> m.ToArray())
+
+                                            let keyCells =
+                                                members
+                                                |> Array.map (fun m ->
+                                                    keyIdx
+                                                    |> Array.map (fun ci -> Vec.cellAt f.Vecs[ci] phys[m[0]]))
+
+                                            Ok
+                                                { Names = names
+                                                  CoefUnits =
+                                                    columns |> List.map (fun (_, u, _) -> u) |> List.toArray
+                                                  P = p
+                                                  Used = used
+                                                  X = x
+                                                  Y = y
+                                                  Off = off
+                                                  W = w
+                                                  YCells = yCells
+                                                  Decimal = (yTy = DecimalType)
+                                                  YUnit = yUnit
+                                                  Members = members
+                                                  KeyCells = keyCells
+                                                  KeyCols =
+                                                    spec.GroupBy
+                                                    |> List.map (fun key ->
+                                                        f.Cols |> List.find (fun fd -> fd.Name = key)) })))))
+
+    /// The data accumulator of one group: its member rows from `from` on folded onto `acc`, in member
+    /// order (D49 items 8 and 9). `addRows` over the batch, which `LinearAlgebraLaws` holds byte-equal
+    /// to `addRow` row by row — so a group extended by its appended rows is the group folded whole.
+    let private fitFold
+        (d: FitDesign)
+        (members: int[])
+        (from: int)
+        (acc: LinearAlgebra.QRAccumulator)
+        : Result<LinearAlgebra.QRAccumulator, EvalError> =
+        let rows = members.Length - from
+
+        if rows <= 0 then
+            Ok acc
+        else
+            let p = d.P
+            let x = LinearAlgebra.Matrix.init rows p (fun r j -> d.X[members[from + r] * p + j])
+
+            let y =
+                Vector.adopt (
+                    Array.init rows (fun r ->
+                        let i = members[from + r]
+                        d.Y[i] - d.Off[i])
+                )
+
+            let w = Vector.adopt (Array.init rows (fun r -> d.W[members[from + r]]))
+
+            LinearAlgebra.QRAccumulator.addRows x y w acc
+            |> Result.mapError (fun e ->
+                match e with
+                | LinearAlgebra.LinAlgError.InvalidWeight r ->
+                    FitError(
+                        "fit: row "
+                        + string members[from + r]
+                        + ": the weight is negative or not finite"
+                    )
+                | LinearAlgebra.LinAlgError.NotFinite(r, _) ->
+                    FitError("fit: row " + string members[from + r] + ": a scaled value overflowed")
+                | other -> FitError("fit: " + linAlgText other))
+
+    /// One group's fit read off its data accumulator (D53 items 5 to 9).
+    type internal FitGroup =
+        {
+            /// Per design column: the estimate, `None` where the column is aliased.
+            Estimates: float option[]
+            StdErrors: float option[]
+            T: float option[]
+            /// Rows of positive weight.
+            N: int
+            Rank: int
+            Df: int
+            Sigma: float option
+            Dispersion: float option
+            R2: float option
+            /// A float, or for a decimal response a decimal.
+            Deviance: Cell
+            NullDeviance: Cell
+            /// Per member (aligned with the group's members): the fitted value and the residual, each
+            /// a float, or for a decimal response a decimal.
+            Fitted: Cell[]
+            Residuals: Cell[]
+        }
+
+    /// The fit of one group from its data accumulator: the ridge rows folded in after the data, the
+    /// solve, then the fitted values, the residuals and the statistics, each a pinned left-to-right
+    /// fold in member order.
+    let internal fitGroupOf
+        (d: FitDesign)
+        (r: FitResolved)
+        (spec: FitSpec)
+        (members: int[])
+        (data: LinearAlgebra.QRAccumulator)
+        : Result<FitGroup, EvalError> =
+        let p = d.P
+
+        let penalised =
+            if r.Ridge > 0.0 then
+                // One row of `√λ` per non-intercept column, in column order (D53 item 7).
+                let s = sqrt r.Ridge
+                let first = if spec.Intercept then 1 else 0
+                let rows = p - first
+
+                if rows <= 0 then
+                    Ok data
+                else
+                    let x =
+                        LinearAlgebra.Matrix.init rows p (fun i j -> if j = first + i then s else 0.0)
+
+                    LinearAlgebra.QRAccumulator.addRows
+                        x
+                        (Vector.adopt (Array.zeroCreate rows))
+                        (Vector.adopt (Array.create rows 1.0))
+                        data
+                    |> Result.mapError (fun e -> FitError("fit: the ridge rows: " + linAlgText e))
+            else
+                Ok data
+
+        penalised
+        |> Result.bind (fun acc ->
+            LinearAlgebra.LeastSquares.ofAccumulator acc
+            |> Result.mapError (fun e -> FitError("fit: " + linAlgText e)))
+        |> Result.bind (fun ls ->
+            let beta = ls.Coefficients |> List.toArray
+            let n = data.Count
+            let rank = ls.Rank
+            let df = max 0 (n - rank)
+
+            let fittedFloat (i: int) =
+                let mutable acc = 0.0
+
+                for j in 0 .. p - 1 do
+                    match beta[j] with
+                    | Some b -> acc <- acc + d.X[i * p + j] * b
+                    | None -> ()
+
+                acc + d.Off[i]
+
+            let m = members.Length
+            let fitted = Array.init m (fun t -> fittedFloat members[t])
+
+            // The null model's mean (R's `glm.fit`): with an intercept the weighted mean of the
+            // response, without one the offset.
+            let mutable sw = 0.0
+            let mutable swy = 0.0
+
+            for t in 0 .. m - 1 do
+                let i = members[t]
+                sw <- sw + d.W[i]
+                swy <- swy + d.W[i] * d.Y[i]
+
+            let sw = sw
+            let swy = swy
+
+            let nullMean (i: int) =
+                if spec.Intercept then swy / sw else d.Off[i]
+
+            let fail (what: string) = FitError("fit: " + what)
+
+            let devianceAndCells: Result<Cell * Cell * float * float * Cell[] * Cell[], EvalError> =
+                if d.Decimal then
+                    // D53 item 10: every output stated against a decimal response is decimal — the fitted
+                    // value is the float estimate's exact decimal, and the residual, the deviance and the
+                    // null deviance are exact decimal arithmetic on the response as the frame holds it.
+                    let dec (v: float) =
+                        match DecimalArith.ofFloat v with
+                        | Some s -> Ok s
+                        | None -> Error(fail "a fitted value is not finite")
+
+                    let yDec (i: int) =
+                        match d.YCells[i] with
+                        | Decimal s -> Ok s
+                        | Int v -> Ok(string v)
+                        | other -> Error(fail ("the response cell " + cellString other + " is not decimal"))
+
+                    let opt (what: string) (o: string option) =
+                        match o with
+                        | Some s -> Ok s
+                        | None -> Error(fail what)
+
+                    let fittedDec = Array.zeroCreate<string> m
+                    let residDec = Array.zeroCreate<string> m
+                    let mutable dev = "0"
+                    let mutable nul = "0"
+                    let mutable failure = None
+                    let mutable t = 0
+
+                    while Option.isNone failure && t < m do
+                        let i = members[t]
+                        let devNow = dev
+                        let nulNow = nul
+
+                        let step =
+                            dec fitted[t]
+                            |> Result.bind (fun fd ->
+                                yDec i
+                                |> Result.bind (fun yd ->
+                                    dec d.W[i]
+                                    |> Result.bind (fun wd ->
+                                        opt "a residual" (DecimalArith.sub yd fd)
+                                        |> Result.bind (fun rd ->
+                                            dec (nullMean i)
+                                            |> Result.bind (fun md ->
+                                                opt "a null residual" (DecimalArith.sub yd md)
+                                                |> Result.bind (fun nd ->
+                                                    opt
+                                                        "a deviance term"
+                                                        (DecimalArith.mul rd rd
+                                                         |> Option.bind (DecimalArith.mul wd))
+                                                    |> Result.bind (fun dt ->
+                                                        opt
+                                                            "a null deviance term"
+                                                            (DecimalArith.mul nd nd
+                                                             |> Option.bind (DecimalArith.mul wd))
+                                                        |> Result.bind (fun nt ->
+                                                            opt "the deviance" (DecimalArith.add devNow dt)
+                                                            |> Result.bind (fun dev' ->
+                                                                opt
+                                                                    "the null deviance"
+                                                                    (DecimalArith.add nulNow nt)
+                                                                |> Result.map (fun nul' -> fd, rd, dev', nul'))))))))))
+
+                        match step with
+                        | Ok(fd, rd, dev', nul') ->
+                            fittedDec[t] <- fd
+                            residDec[t] <- rd
+                            dev <- dev'
+                            nul <- nul'
+                        | Error e -> failure <- Some e
+
+                        t <- t + 1
+
+                    match failure with
+                    | Some e -> Error e
+                    | None ->
+                        let toF (s: string) =
+                            DecimalText.tryToFloat s |> Option.defaultValue nan
+
+                        Ok(
+                            Decimal dev,
+                            Decimal nul,
+                            toF dev,
+                            toF nul,
+                            fittedDec |> Array.map Decimal,
+                            residDec |> Array.map Decimal
+                        )
+                else
+                    let mutable dev = 0.0
+                    let mutable nul = 0.0
+                    let resid = Array.zeroCreate<float> m
+
+                    for t in 0 .. m - 1 do
+                        let i = members[t]
+                        let rr = d.Y[i] - fitted[t]
+                        resid[t] <- rr
+                        dev <- dev + d.W[i] * (rr * rr)
+                        let nr = d.Y[i] - nullMean i
+                        nul <- nul + d.W[i] * (nr * nr)
+
+                    Ok(Float dev, Float nul, dev, nul, fitted |> Array.map Float, resid |> Array.map Float)
+
+            devianceAndCells
+            |> Result.map (fun (devCell, nulCell, dev, nul, fittedCells, residCells) ->
+                let dispersion = if df > 0 then Some(dev / float df) else None
+                let sigma = dispersion |> Option.map sqrt
+                let rinv = ls.RInverse
+                let kept = ls.Kept |> List.toArray
+
+                let se = Array.create p None
+
+                match dispersion with
+                | Some phi ->
+                    for t in 0 .. kept.Length - 1 do
+                        // diag((RᵀR)⁻¹)[t] = Σₖ R⁻¹[t,k]², k ascending (R⁻¹ is upper triangular).
+                        let mutable c = 0.0
+
+                        for kk in t .. kept.Length - 1 do
+                            let v = LinearAlgebra.Matrix.item t kk rinv
+                            c <- c + v * v
+
+                        se[kept[t]] <- Some(sqrt (phi * c))
+                | None -> ()
+
+                let tStat =
+                    Array.init p (fun j ->
+                        match beta[j], se[j] with
+                        | Some b, Some s when s > 0.0 -> Some(b / s)
+                        | _ -> None)
+
+                { Estimates = beta
+                  StdErrors = se
+                  T = tStat
+                  N = n
+                  Rank = rank
+                  Df = df
+                  Sigma = sigma
+                  Dispersion = dispersion
+                  R2 =
+                    (if sw > 0.0 && nul > 0.0 then
+                         Some(1.0 - dev / nul)
+                     else
+                         None)
+                  Deviance = devCell
+                  NullDeviance = nulCell
+                  Fitted = fittedCells
+                  Residuals = residCells }))
+
+    /// What a maintained fit carries from one evaluation to the next (D53 item 12): the design's layout
+    /// and, per group token, the group's member row tokens in order and its data accumulator.
+    type internal FitMemo =
+        { Layout: string
+          Groups: Map<string, string[] * LinearAlgebra.QRAccumulator> }
+
+    /// The memo of a fit nothing maintains.
+    let internal emptyFitMemo: FitMemo = { Layout = ""; Groups = Map.empty }
+
+    /// How a maintained fit reads the rows it is handed: each logical row's token, and whether the row
+    /// is the very row the prior evaluation held under that token.
+    type internal FitRows =
+        { Tokens: string[]
+          Stable: int -> bool }
+
+    /// The fit's output types: a float column, or a decimal one for a decimal response.
+    let private fitCellType (d: FitDesign) : ColumnType =
+        if d.Decimal then DecimalType else FloatType
+
+    /// `Fit` over the frame (D53), maintained against `prior` where `rows` is given: a group whose
+    /// member tokens extend the prior members — every prior member stable, in the prior order —
+    /// continues from the prior accumulator by its appended rows; every other group is folded whole.
+    /// Answers the output frame, the memo for the next evaluation (empty without `rows`) and how
+    /// many groups were folded from their first row.
+    let internal evalFitWith
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (spec: FitSpec)
+        (rows: FitRows option)
+        (prior: FitMemo)
+        : Result<Frame * FitMemo * int, EvalError> =
+        fitResolve env spec
+        |> Result.bind (fun resolved ->
+            fitDesign k env f spec
+            |> Result.bind (fun d ->
+                let layout = System.String.Join("\u0001", d.Names)
+                let groups = d.Members.Length
+                let keyToken (g: int) = rowTokenStringOfArray d.KeyCells[g]
+
+                let start (g: int) : LinearAlgebra.QRAccumulator * int =
+                    let fresh = LinearAlgebra.QRAccumulator.empty d.P, 0
+
+                    match rows with
+                    | Some rr when prior.Layout = layout ->
+                        match Map.tryFind (keyToken g) prior.Groups with
+                        | Some(old, acc) when old.Length <= d.Members[g].Length ->
+                            let ms = d.Members[g]
+                            let mutable ok = true
+                            let mutable j = 0
+
+                            while ok && j < old.Length do
+                                ok <- rr.Tokens[ms[j]] = old[j] && rr.Stable ms[j]
+                                j <- j + 1
+
+                            if ok then acc, old.Length else fresh
+                        | _ -> fresh
+                    | _ -> fresh
+
+                let mutable refit = 0
+                let accs = Array.zeroCreate<LinearAlgebra.QRAccumulator> groups
+                let fits = Array.zeroCreate<FitGroup> groups
+                let mutable failure = None
+                let mutable g = 0
+
+                while Option.isNone failure && g < groups do
+                    let gi = g
+                    let acc0, from = start gi
+
+                    if from = 0 then
+                        refit <- refit + 1
+
+                    match
+                        fitFold d d.Members[gi] from acc0
+                        |> Result.bind (fun acc ->
+                            fitGroupOf d resolved spec d.Members[gi] acc |> Result.map (fun fg -> acc, fg))
+                    with
+                    | Ok(acc, fg) ->
+                        accs[gi] <- acc
+                        fits[gi] <- fg
+                    | Error e -> failure <- Some e
+
+                    g <- g + 1
+
+                match failure with
+                | Some e -> Error e
+                | None ->
+                    let memo =
+                        match rows with
+                        | Some rr ->
+                            { Layout = layout
+                              Groups =
+                                Seq.init groups (fun g ->
+                                    keyToken g, ((d.Members[g] |> Array.map (fun i -> rr.Tokens[i])), accs[g]))
+                                |> Map.ofSeq }
+                        | None -> emptyFitMemo
+
+                    let floatCell (o: float option) =
+                        match o with
+                        | Some v -> Float v
+                        | None -> Null
+
+                    let unitCell (u: UnitOfMeasure option) =
+                        match u with
+                        | Some u -> Str(Unit.render u)
+                        | None -> Null
+
+                    let table (cols: Field list) (cells: Cell[][]) : Frame =
+                        { Cols = cols
+                          Vecs =
+                            cols
+                            |> List.mapi (fun c fd -> Vec.pack fd.Type (cells |> Array.map (fun row -> row[c])))
+                            |> List.toArray
+                          Sel = None
+                          Count = cells.Length }
+
+                    let yUnit2 = fitUnitSquared d.YUnit
+
+                    let out =
+                        match spec.Output with
+                        | FitOutput.Coefficients ->
+                            let cols =
+                                d.KeyCols
+                                @ [ Field.create "term" StringType
+                                    Field.create "estimate" FloatType
+                                    Field.create "std_error" FloatType
+                                    Field.create "t" FloatType
+                                    Field.create "unit" StringType ]
+
+                            let cells =
+                                [| for g in 0 .. groups - 1 do
+                                       for j in 0 .. d.P - 1 do
+                                           Array.append
+                                               d.KeyCells[g]
+                                               [| Str d.Names[j]
+                                                  floatCell fits[g].Estimates[j]
+                                                  floatCell fits[g].StdErrors[j]
+                                                  floatCell fits[g].T[j]
+                                                  unitCell d.CoefUnits[j] |] |]
+
+                            table cols cells
+                        | FitOutput.Summary ->
+                            let devType = fitCellType d
+
+                            let cols =
+                                d.KeyCols
+                                @ [ Field.create "n" IntType
+                                    Field.create "df" IntType
+                                    Field.create "sigma" FloatType |> stated d.YUnit
+                                    Field.create "r2" FloatType
+                                    Field.create "rank" IntType
+                                    Field.create "deviance" devType |> stated yUnit2
+                                    Field.create "null_deviance" devType |> stated yUnit2
+                                    Field.create "dispersion" FloatType |> stated yUnit2
+                                    Field.create "iterations" IntType
+                                    Field.create "converged" BoolType ]
+
+                            let cells =
+                                Array.init groups (fun g ->
+                                    let fg = fits[g]
+
+                                    Array.append
+                                        d.KeyCells[g]
+                                        [| Int fg.N
+                                           Int fg.Df
+                                           floatCell fg.Sigma
+                                           floatCell fg.R2
+                                           Int fg.Rank
+                                           fg.Deviance
+                                           fg.NullDeviance
+                                           floatCell fg.Dispersion
+                                           Int 1
+                                           Bool true |])
+
+                            table cols cells
+                        | FitOutput.Fitted
+                        | FitOutput.Residuals ->
+                            let name = fitAppendedColumn spec.Output |> Option.get
+                            let n = Frame.rows f
+                            let cells = Array.create n Null
+
+                            for g in 0 .. groups - 1 do
+                                let source =
+                                    if spec.Output = FitOutput.Fitted then
+                                        fits[g].Fitted
+                                    else
+                                        fits[g].Residuals
+
+                                d.Members[g] |> Array.iteri (fun t i -> cells[i] <- source[t])
+
+                            let ty = fitCellType d
+                            let phys = Frame.physical f
+                            let v = Vec.packAt ty f.Count (fun i -> phys[i]) cells
+                            Frame.appendColumn f name ty v |> unitised name d.YUnit
+
+                    Ok(out, memo, refit)))
+
+    /// `Fit` over the frame, as the reference evaluates it: every group folded from its first row.
+    let private evalFit (k: KernelSet) (env: Map<string, Cell>) (f: Frame) (spec: FitSpec) : Result<Frame, EvalError> =
+        evalFitWith k env f spec None emptyFitMemo
+        |> Result.map (fun (out, _, _) -> out)
+
     /// A table's rows for the right-hand side of a two-table verb — the same transpose the left
     /// side paid at the boundary, without unpacking a frame it would only gather again.
     /// One step over the frame, running the row-local verbs through the kernel set `k` (Phase 270).
@@ -10021,6 +11224,8 @@ module DataFrame =
             |> Result.bind (fun t -> evalSetOp "except" false f (Frame.ofTable t))
         // Phase 596: a definition changes no frame; `FnDef.expand` has removed it before any fold.
         | Define _ -> Ok f
+        // Phase 592: one factorization per group (D53).
+        | Fit spec -> evalFit k env f spec
 
     /// One step over the frame through the host kernels (`Kernels.host`, chosen when the package is
     /// compiled). Internal so the suite can hold the frame's well-formedness after every step of a
@@ -10069,7 +11274,9 @@ module DataFrame =
             let cost =
                 match step with
                 | Filter _
-                | Derive _ -> Frame.rows f
+                | Derive _
+                // Phase 592: a fit evaluates its terms at every input row, once per step.
+                | Fit _ -> Frame.rows f
                 | _ -> 0
 
             evalStepWith k resolve env f step |> Result.map (fun f' -> f', cost, rest)
@@ -10691,6 +11898,12 @@ module DataFrame =
         // reuses a prior result when a changed column is absent from this set). `evalFrom` therefore
         // declines the reuse outright while any slot param stands — see its guard.
         | Sort by -> by |> List.choose (fun (c, _) -> Slot.tryLit c) |> Set.ofList
+        // Phase 592: the response, the keys, the weights and every column a term or the offset reads.
+        | Fit spec ->
+            unionAll (
+                Set.ofList (spec.Response :: spec.GroupBy @ Option.toList spec.Weights)
+                :: (FitSpec.exprs spec |> List.map exprCols)
+            )
         | Distinct
         | Limit _
         | Union _
@@ -10798,6 +12011,13 @@ module DataFrame =
         | RecursiveFunction cycle -> "recursive functions: " + String.concat " -> " cycle
         | ExpansionTooLarge(at, bound) -> "the expansion of " + at + " exceeds " + string bound + " expression nodes"
         | InvalidKnots detail -> "invalid knots: " + detail
+        | UnsupportedFit(family, link) ->
+            "fit: the family '"
+            + family
+            + "' under the link '"
+            + link
+            + "' is not evaluated by this version"
+        | FitError detail -> detail
         | UnitMismatch(step, expr, left, right) ->
             "unit mismatch in "
             + step
@@ -11358,6 +12578,62 @@ module SchemaWalk =
                        )))
             )
 
+        // Phase 592 (D53) — a fit's tables are closed: the keys and a fixed set of statistics, or the
+        // input with one appended column. Every statistic is a pinned operation over the rows, so a
+        // column is host-rounded only where the response, a key, the weights or a term already is.
+        | Fit spec ->
+            let mark =
+                (spec.Response :: spec.GroupBy @ Option.toList spec.Weights)
+                |> List.map (markOf input)
+                |> List.append (FitSpec.exprs spec |> List.map (exprExactness input))
+                |> List.fold ColumnKnowledge.joinExactness Exactness.Pinned
+
+            let yType = typeOf spec.Response input
+            let yUnit = unitOf spec.Response input
+            let yUnit2 = DataFrame.fitUnitSquared yUnit
+
+            // The type a column stated against the response takes: decimal for a decimal response,
+            // float for an int or a float one, unknown where the response's type is.
+            let againstY =
+                yType
+                |> Option.map (fun ty -> if ty = DecimalType then DecimalType else FloatType)
+
+            let col (name: string) (ty: ColumnType option) (unit: UnitOfMeasure option) =
+                ColumnKnowledge.named name ty
+                |> ColumnKnowledge.withUnit unit
+                |> ColumnKnowledge.withExactness mark
+
+            let keys = spec.GroupBy |> List.map (fun key -> known key input)
+
+            match spec.Output with
+            | FitOutput.Coefficients ->
+                SchemaKnowledge.Closed(
+                    keys
+                    @ [ col "term" (Some StringType) None
+                        col "estimate" (Some FloatType) None
+                        col "std_error" (Some FloatType) None
+                        col "t" (Some FloatType) None
+                        col "unit" (Some StringType) None ]
+                )
+            | FitOutput.Summary ->
+                SchemaKnowledge.Closed(
+                    keys
+                    @ [ col "n" (Some IntType) None
+                        col "df" (Some IntType) None
+                        col "sigma" (Some FloatType) yUnit
+                        col "r2" (Some FloatType) None
+                        col "rank" (Some IntType) None
+                        col "deviance" againstY yUnit2
+                        col "null_deviance" againstY yUnit2
+                        col "dispersion" (Some FloatType) yUnit2
+                        col "iterations" (Some IntType) None
+                        col "converged" (Some BoolType) None ]
+                )
+            | FitOutput.Fitted
+            | FitOutput.Residuals ->
+                let name = DataFrame.fitAppendedColumn spec.Output |> Option.get
+                input |> appendColumn (col name againstY yUnit)
+
         // A window column's lineage is its source column and its keys (Phase 557): a value window
         // reads the source, and every window's partition and order are decided over the keys.
         | Window spec ->
@@ -11582,6 +12858,19 @@ module SchemaWalk =
         | Except _ -> keyed "except" (names input)
         | Pivot spec -> keyed "pivot key" (spec.Index @ [ spec.On ])
         | Window spec -> keyed "window key" (spec.PartitionBy @ (spec.OrderBy |> List.map fst))
+        // Phase 592: a fit groups on its keys, codes a categorical term by its levels, and decides each
+        // column's rank (D49 item 11) over the values its terms compute.
+        | Fit spec ->
+            keyed "fit key" spec.GroupBy
+            @ (FitSpec.exprs spec
+               |> List.collect (fun e ->
+                   (match hostRoundedOperand input e with
+                    | Some operand ->
+                        [ { Step = i
+                            Verb = "fit rank"
+                            Operand = operand } ]
+                    | None -> [])
+                   @ decisionsIn i input e))
         | Project _
         | Limit _
         | Union _
@@ -12531,6 +13820,32 @@ module DataFrameCodec =
                 [ "name", JStr fd.Name
                   "params", JArr(fd.Params |> List.map paramJson)
                   "body", encodeExpr fd.Body ]
+        // Phase 592 (D53): every member is emitted; `power` only for a Tweedie family, and `weights`,
+        // `offset` and `ridge` only where the spec carries them.
+        | Fit spec ->
+            Canonical.typed
+                "fit"
+                ([ "response", JStr spec.Response
+                   "predictors",
+                   JArr(
+                       spec.Predictors
+                       |> List.map (fun (name, e) -> JObj [ "name", JStr name; "expr", encodeExpr e ])
+                   )
+                   "intercept", JBool spec.Intercept
+                   "groupBy", strList spec.GroupBy
+                   "family", JStr(DataFrame.fitFamilyTag spec.Family)
+                   "link", JStr(DataFrame.fitLinkTag spec.Link)
+                   "control",
+                   JObj
+                       [ "maxIter", slotJson JInt spec.Control.MaxIter
+                         "tol", slotJson JFloat spec.Control.Tol ]
+                   "output", JStr(DataFrame.fitOutputTag spec.Output) ]
+                 @ (match spec.Family with
+                    | FitFamily.Tweedie power -> [ "power", JFloat power ]
+                    | _ -> [])
+                 @ (spec.Weights |> Option.map (fun w -> "weights", JStr w) |> Option.toList)
+                 @ (spec.Offset |> Option.map (fun e -> "offset", encodeExpr e) |> Option.toList)
+                 @ (spec.Ridge |> Option.map (fun r -> "ridge", slotJson JFloat r) |> Option.toList))
 
     /// A function parameter (Phase 596): its `name`, and an optional `default` — a literal cell, or
     /// `{"$param": <name>}`, the slot form every other slot on the wire takes.
@@ -12552,6 +13867,108 @@ module DataFrameCodec =
                     |> Result.map (fun c ->
                         { Name = name
                           Default = Some(Slot.Lit c) }))
+
+    /// A float literal of a slot: a float token, or an integer token read as its float.
+    let private floatOf (el: JVal) : Result<float, ColumnError> =
+        match el with
+        | JFloat f -> Ok f
+        | JInt i -> Ok(float i)
+        | _ -> Error(MalformedShape "expected number")
+
+    let private boolOf (el: JVal) : Result<bool, ColumnError> =
+        match el with
+        | JBool b -> Ok b
+        | _ -> Error(MalformedShape "expected boolean")
+
+    /// A fit step's spec (Phase 592, D53). Every member but `weights`, `offset`, `ridge` and `power` is
+    /// required; `power` is required for, and only read with, a Tweedie family.
+    let private fitSpecOf (el: JVal) : Result<FitSpec, ColumnError> =
+        let tag (table: (string * 'a) list) (s: string) : Result<'a, ColumnError> =
+            match table |> List.tryFind (fun (t, _) -> t = s) with
+            | Some(_, v) -> Ok v
+            | None -> Error(WireRefusal.unknownTag (s, table |> List.map fst))
+
+        let optional (name: string) (f: JVal -> Result<'a, ColumnError>) : Result<'a option, ColumnError> =
+            match tryField name el with
+            | Some v -> f v |> Result.map Some
+            | None -> Ok None
+
+        let predictorOf (p: JVal) =
+            field "name" p
+            |> Result.bind strOf
+            |> Result.bind (fun name -> field "expr" p |> Result.bind decodeExpr |> Result.map (fun e -> name, e))
+
+        field "response" el
+        |> Result.bind strOf
+        |> Result.bind (fun response ->
+            field "predictors" el
+            |> Result.bind arrOf
+            |> Result.bind (mapM predictorOf)
+            |> Result.bind (fun predictors ->
+                field "intercept" el
+                |> Result.bind boolOf
+                |> Result.bind (fun intercept ->
+                    field "groupBy" el
+                    |> Result.bind strListOf
+                    |> Result.bind (fun groupBy ->
+                        field "family" el
+                        |> Result.bind strOf
+                        |> Result.bind (fun familyTag ->
+                            match familyTag with
+                            | "tweedie" -> field "power" el |> Result.bind floatOf |> Result.map FitFamily.Tweedie
+                            | other ->
+                                tag
+                                    [ "gaussian", FitFamily.Gaussian
+                                      "poisson", FitFamily.Poisson
+                                      "gamma", FitFamily.Gamma
+                                      "quasiPoisson", FitFamily.QuasiPoisson ]
+                                    other
+                                |> Result.mapError (fun _ ->
+                                    WireRefusal.unknownTag (
+                                        other,
+                                        [ "gaussian"; "poisson"; "gamma"; "tweedie"; "quasiPoisson" ]
+                                    )))
+                        |> Result.bind (fun family ->
+                            field "link" el
+                            |> Result.bind strOf
+                            |> Result.bind (tag [ "identity", FitLink.Identity; "log", FitLink.Log ])
+                            |> Result.bind (fun link ->
+                                field "control" el
+                                |> Result.bind (fun c ->
+                                    field "maxIter" c
+                                    |> Result.bind (slotOf intOf "fit maxIter")
+                                    |> Result.bind (fun maxIter ->
+                                        field "tol" c
+                                        |> Result.bind (slotOf floatOf "fit tol")
+                                        |> Result.map (fun tol -> { MaxIter = maxIter; Tol = tol })))
+                                |> Result.bind (fun control ->
+                                    field "output" el
+                                    |> Result.bind strOf
+                                    |> Result.bind (
+                                        tag
+                                            [ "coefficients", FitOutput.Coefficients
+                                              "summary", FitOutput.Summary
+                                              "fitted", FitOutput.Fitted
+                                              "residuals", FitOutput.Residuals ]
+                                    )
+                                    |> Result.bind (fun output ->
+                                        optional "weights" strOf
+                                        |> Result.bind (fun weights ->
+                                            optional "offset" decodeExpr
+                                            |> Result.bind (fun offset ->
+                                                optional "ridge" (slotOf floatOf "fit ridge")
+                                                |> Result.map (fun ridge ->
+                                                    { Response = response
+                                                      Predictors = predictors
+                                                      Intercept = intercept
+                                                      GroupBy = groupBy
+                                                      Weights = weights
+                                                      Offset = offset
+                                                      Ridge = ridge
+                                                      Family = family
+                                                      Link = link
+                                                      Control = control
+                                                      Output = output })))))))))))
 
     let decodeTransform (el: JVal) : Result<Transform, ColumnError> =
         // Phase 88 DIDACTIC — a step without `$type` names the op roster (the
@@ -12824,6 +14241,7 @@ module DataFrameCodec =
                                     { Name = name
                                       Params = ps
                                       Body = body })))
+                | "fit" -> fitSpecOf el |> Result.map Fit
                 | other ->
                     Error(
                         WireRefusal.unknownTag (
@@ -12842,7 +14260,8 @@ module DataFrameCodec =
                               "union"
                               "intersect"
                               "except"
-                              "define" ]
+                              "define"
+                              "fit" ]
                         )
                     ))
 

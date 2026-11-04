@@ -119,6 +119,9 @@ type FallBackReason =
     | StepNotRowLocal of verb: string
     /// A step that WOULD be maintainable, sitting somewhere other than last.
     ///
+    /// **Produced again since Phase 592, for a `Fit` only**: a fit's maintained state is per group of the
+    /// rows it is handed, and a step after it would need a delta over the fit's table.
+    ///
     /// **RETAINED, and no longer produced by `plan` (Phase 202).** The premise was that a delta over
     /// the source rows says nothing about a delta over the group table. It said one thing: WHICH
     /// GROUPS MOVED — which is exactly what `MaintainGroups` already computes and records, and what
@@ -176,6 +179,13 @@ type FallBackReason =
     /// inserting one beside the group-shaped reason above would retype every case after it — a
     /// second, gratuitous breakage beside the union-widening this already is (Phase 207's finding).
     | AggregateStepRepeated of verb: string
+    /// Phase 592 — a `Fit` whose input rows can change while the source rows they came from do not: a
+    /// step ahead of it that recomputes a column over a whole partition (a `Window`). A maintained fit
+    /// continues a group's factorization from the rows the prior evaluation folded, which is sound
+    /// only where an unnamed source row reaches the fit with the very values it had; a window's column
+    /// moves for a row whose neighbour moved. Names the verb. Declared last, for the reason
+    /// `AggregateStepRepeated` is.
+    | FitInputNotMaintained of verb: string
 
 /// How ONE pipeline step responds to a delta — the per-node incrementality, declared as data.
 type StepIncrementality =
@@ -276,6 +286,14 @@ type StepIncrementality =
     /// a `Limit` evaluates no expression, so it costs nothing on this seam's instrument in either
     /// path, and the saving is that the steps BEFORE it stop re-evaluating every row.
     | TruncateOrder of n: int * offset: int
+    /// Phase 592 — the step FITS a regression per group (`Transform.Fit`) and keeps, per group, the
+    /// streaming factorization of the rows it folded (`DECISIONS.md` D53): a group whose members are the
+    /// prior members, unchanged and in order, followed by appended rows continues from the stored
+    /// state by those rows alone, byte-equal to folding the group whole, and every other group is
+    /// folded from its first row. Admitted as the pipeline's LAST step, after no other aggregating step
+    /// and no window. Names the grouping keys. Declared after `TruncateOrder`, for the reason that one
+    /// is declared after `FallBack`.
+    | MaintainFits of groupBy: string list
 
 /// The strategy a whole pipeline's classification induces.
 type IncrementalStrategy =
@@ -284,7 +302,8 @@ type IncrementalStrategy =
     /// and every law key off `ReferenceOnly`-versus-not, and a third case would change every
     /// consumer's match without carrying a new decision. `Steps` carries the per-step truth.)
     | RowLocal
-    /// A row-local prefix followed by a final maintained `GroupBy`.
+    /// A row-local prefix followed by a maintained grouping step: a `GroupBy` (with the steps after
+    /// it), or since Phase 592 a final `Fit`.
     | RowLocalThenGroups
     /// The reference evaluator, always — the pipeline contains a step that cannot answer a delta.
     | ReferenceOnly of reason: FallBackReason
@@ -628,6 +647,9 @@ type IncrementalEval =
             /// for (`IncrementalCodec.decodeOver`): the reason its next refresh evaluates in full.
             /// Such a state carries no caches. `None` everywhere else.
             Stale: FallBackReason option
+            /// Phase 592 — the maintained `Fit`'s per-group factorizations and their members' row tokens
+            /// (`DECISIONS.md` D53); empty on every pipeline that does not end in a maintained fit.
+            FitState: DataFrame.FitMemo
         }
 
 /// Phase 355 — the key an encoded incremental state is stored under: the pipeline it was built for
@@ -1690,6 +1712,7 @@ module Incremental =
         | Intersect _ -> "intersect"
         | Except _ -> "except"
         | Define _ -> "define"
+        | Fit _ -> "fit"
 
     /// The stable name of a window function — the spelling `WindowFrameUnbounded` carries (Phase
     /// 120). These are the canonical wire tags, spelled here for the same reason `verbName` spells
@@ -1798,6 +1821,9 @@ module Incremental =
                 let p = (Slot.paramName n @ Slot.paramName offset) |> List.head
 
                 FallBack(UnresolvedSlotParam("limit", p))
+        // Phase 592 — a fit is maintained per group; where it may stand is `plan`'s, which sees the
+        // whole pipeline (last, after no aggregate and no window).
+        | Fit spec -> MaintainFits spec.GroupBy
         | other -> FallBack(StepNotRowLocal(verbName other))
 
     /// Classify a whole pipeline. An empty pipeline is `RowLocal` (the identity is trivially
@@ -1826,6 +1852,39 @@ module Incremental =
             |> snd
             |> List.rev
 
+        // Phase 592 — a fit is maintained only as the LAST step, after no aggregating step (its rows
+        // would be a group table's) and no window (a window's column moves for a row whose neighbour
+        // moved, so an unnamed row would not reach the fit unchanged).
+        let last = List.length steps - 1
+
+        let steps =
+            steps
+            |> List.mapi (fun i step ->
+                match step with
+                | MaintainFits _ ->
+                    let before = List.take i steps
+
+                    if
+                        before
+                        |> List.exists (function
+                            | MaintainGroups _
+                            | MaintainFits _ -> true
+                            | _ -> false)
+                    then
+                        FallBack(AggregateStepRepeated "fit")
+                    elif i <> last then
+                        FallBack(AggregateStepNotLast "fit")
+                    else
+                        match
+                            before
+                            |> List.tryPick (function
+                                | RecomputeFrame _ -> Some "window"
+                                | _ -> None)
+                        with
+                        | Some verb -> FallBack(FitInputNotMaintained verb)
+                        | None -> step
+                | other -> other)
+
         let firstFallBack =
             steps
             |> List.tryPick (function
@@ -1839,7 +1898,8 @@ module Incremental =
                 if
                     steps
                     |> List.exists (function
-                        | MaintainGroups _ -> true
+                        | MaintainGroups _
+                        | MaintainFits _ -> true
                         | _ -> false)
                 then
                     RowLocalThenGroups
@@ -1898,6 +1958,10 @@ module Incremental =
             "'"
             + v
             + "' is maintainable once per pipeline; a second one would group the group table"
+        | FitInputNotMaintained v ->
+            "a 'fit' is maintained only over rows that reach it unchanged; a '"
+            + v
+            + "' ahead of it moves a row's values when its neighbours move"
         | UnresolvedSlotParam(verb, param) ->
             "'"
             + verb
@@ -4898,6 +4962,7 @@ module Incremental =
         (p: IncrementalPlan)
         (prefix: PrefixStep list)
         (final: (string list * Agg list * PrefixStep list) option)
+        (fit: FitSpec option)
         (source: Table)
         (prepared: Prepared option)
         (tokens: RowChunks<string>)
@@ -5074,6 +5139,7 @@ module Incremental =
             | Some s when
                 not (isNull inPlaceRows)
                 && prefix |> List.forall rowLocal
+                && Option.isNone fit
                 && s.Output.IsValueCreated
                 && Table.rowCount s.Output.Value = s.Tokens.Length
                 ->
@@ -5085,6 +5151,58 @@ module Incremental =
             let stepCells = rows.Steps.ToArray()
 
             match final with
+            | None when Option.isSome fit ->
+                // Phase 592 (D53) — the maintained fit: the walked frame is the fit's input, each of
+                // its rows a source row under that row's token, unchanged exactly where the walk found
+                // it stable. The reference's own `Fit` answers it, handed the prior factorizations.
+                let spec = Option.get fit
+                let order = frame.Order
+                let input = tableOfFrame frame rowCount None
+
+                let fitRows: DataFrame.FitRows =
+                    { Tokens = order |> Array.map (fun s -> tokens[s])
+                      Stable = fun i -> rows.Stable[order[i]] }
+
+                let priorMemo =
+                    prior
+                    |> Option.map (fun s -> s.FitState)
+                    |> Option.defaultValue DataFrame.emptyFitMemo
+
+                DataFrame.evalFitWith Kernels.host env (Frame.ofTable input) spec (Some fitRows) priorMemo
+                |> Result.map (fun (out, memo, refit) ->
+                    let output = Frame.toTable out
+
+                    { Plan = p
+                      Pipeline = pipeline
+                      Planned = pipeline
+                      Env = env
+                      Scheme = scheme
+                      Source = Prepared.ready source
+                      Prepared = prepared
+                      Output = Prepared.ready output
+                      Tokens = tokens
+                      StepCells = stepCells
+                      RowGroups = RowChunks.empty ()
+                      GroupMembers = [||]
+                      GroupAggs = [||]
+                      SortOrders = caches.SortOrders
+                      JoinKeys = caches.JoinKeys
+                      // The fit charges every row it is handed, as the reference does (it evaluates
+                      // its terms over the whole input); what it saves is the factorization.
+                      Footprint =
+                        { SourceRows = rowCount
+                          ResultRows = Table.rowCount output
+                          Recompute = recomputeOf (evaluated + order.Length) refit }
+                      GroupOrder = [||]
+                      TailCells = [||]
+                      ChunkedOutput = None
+                      ChunksTouched = None
+                      SourceExact = sourceExact
+                      GroupRows = [||]
+                      WindowRuns = caches.WindowRuns
+                      PipelineKey = ""
+                      Stale = None
+                      FitState = memo })
             | None ->
                 Ok
                     { Plan = p
@@ -5114,7 +5232,8 @@ module Incremental =
                       GroupRows = [||]
                       WindowRuns = caches.WindowRuns
                       PipelineKey = ""
-                      Stale = None }
+                      Stale = None
+                      FitState = DataFrame.emptyFitMemo }
             | Some(keys, aggs, tail) ->
                 let priorGroups =
                     match prior with
@@ -5172,7 +5291,8 @@ module Incremental =
                           GroupRows = g.Rows
                           WindowRuns = caches'.WindowRuns
                           PipelineKey = ""
-                          Stale = None }
+                          Stale = None
+                          FitState = DataFrame.emptyFitMemo }
 
                     if List.isEmpty tail then
                         // The pipeline every pre-202 state was built for. Taken as its own branch
@@ -5342,7 +5462,8 @@ module Incremental =
               GroupRows = [||]
               WindowRuns = Map.empty
               PipelineKey = ""
-              Stale = None })
+              Stale = None
+              FitState = DataFrame.emptyFitMemo })
 
     /// The shared entry: run the incremental path when the shape and the witness allow it, and the
     /// reference path otherwise. `named` is `None` for "every row".
@@ -5384,7 +5505,15 @@ module Incremental =
                 let planned = Plan.rewrite source.Schema pipeline
                 planned, plan planned
 
-        (match p.Strategy, split pipeline with
+        // Phase 592 — a maintained fit is the pipeline's last step (`plan` declines it anywhere else), so
+        // the walk is split over the steps ahead of it and the fit is handed over whole.
+        let body, fit =
+            match p.Strategy, List.rev pipeline with
+            | ReferenceOnly _, _ -> pipeline, None
+            | _, Fit spec :: ahead -> List.rev ahead, Some spec
+            | _ -> pipeline, None
+
+        (match p.Strategy, split body with
          | ReferenceOnly r, _ -> runReference resolve env idw.Scheme pipeline p source prepared (onDeclined r)
          | _, None ->
              // Unreachable while `plan` and `split` agree; the reference path is the safe reading of
@@ -5444,6 +5573,7 @@ module Incremental =
                      p
                      prefix
                      final
+                     fit
                      source
                      prepared
                      tokens
@@ -5828,7 +5958,8 @@ module Incremental =
           GroupRows = [||]
           WindowRuns = Map.empty
           PipelineKey = ""
-          Stale = None }
+          Stale = None
+          FitState = DataFrame.emptyFitMemo }
 
     /// `prime` over a source prepared once (`DataFrame.prepare`; Phase 267): the state `prime`
     /// builds over the prepared table — equal to it in every field a consumer can read — with the
@@ -6432,6 +6563,7 @@ module IncrementalCodec =
         | WindowFrameUnbounded fn -> Canonical.typed "windowFrameUnbounded" [ "fn", JStr fn ]
         | JoinNotRowPreserving kind -> Canonical.typed "joinNotRowPreserving" [ "kind", JStr kind ]
         | AggregateStepRepeated v -> Canonical.typed "aggregateStepRepeated" [ "verb", JStr v ]
+        | FitInputNotMaintained v -> Canonical.typed "fitInputNotMaintained" [ "verb", JStr v ]
 
     let private recomputeJson (r: Recompute) : JVal =
         match r with
@@ -6509,11 +6641,42 @@ module IncrementalCodec =
     /// Every large member is a run (Phase 357): the row tokens and the group tokens as packed
     /// strings, each step's cached cells as a run aligned with them, the indexes as packed ints,
     /// and the row-shaped caches as matrices.
+    /// Phase 592 — a maintained fit's state (`DECISIONS.md` D53): the design's layout and, per group (in
+    /// token order), its token, its members as indices into the state's row tokens, and its data
+    /// accumulator in `LinAlgWire`'s form — IEEE-754 bit patterns, so a decoded fit continues to the
+    /// same bits.
+    let private fitJson (tokens: string[]) (m: DataFrame.FitMemo) : JVal =
+        let index = System.Collections.Generic.Dictionary<string, int>(tokens.Length)
+
+        for j in 0 .. tokens.Length - 1 do
+            index[tokens[j]] <- j
+
+        JObj
+            [ "layout", JStr m.Layout
+              "groups",
+              JArr(
+                  m.Groups
+                  |> Map.toList
+                  |> List.map (fun (token, (members, acc)) ->
+                      JObj
+                          [ "token", JStr token
+                            "members", ints (members |> Array.map (fun t -> index[t]))
+                            "acc", LinearAlgebra.LinAlgWire.accumulatorToJson acc ])
+              ) ]
+
     let private stateMembers (s: IncrementalEval) : (string * JVal) list =
         let chunks =
             match s.ChunksTouched with
             | Some n -> [ "chunksTouched", JInt n ]
             | None -> []
+
+        // Phase 592 — emitted only where a maintained fit left state, so every other state's bytes are
+        // the bytes they were.
+        let fit =
+            if Map.isEmpty s.FitState.Groups && s.FitState.Layout = "" then
+                []
+            else
+                [ "fit", fitJson (RowChunks.toArray s.Tokens) s.FitState ]
 
         ([ "scheme", JStr s.Scheme
            "pipeline", JArr(s.Pipeline |> List.map DataFrameCodec.encodeTransform)
@@ -6559,7 +6722,8 @@ module IncrementalCodec =
                |> Map.toList
                |> List.map (fun (step, run) -> JObj(("step", JInt step) :: windowRunMembers run))
            ) ]
-         @ chunks)
+         @ chunks
+         @ fit)
 
     /// A JSON object's canonical text from its members' canonical texts: the members in Ordinal
     /// order of their names, which are plain ASCII words here and need no escape. What
@@ -6838,7 +7002,8 @@ module IncrementalCodec =
           "unresolvedSlotParam"
           "windowFrameUnbounded"
           "joinNotRowPreserving"
-          "aggregateStepRepeated" ]
+          "aggregateStepRepeated"
+          "fitInputNotMaintained" ]
 
     let private reasonOf (el: JVal) : Result<FallBackReason, ColumnError> =
         res {
@@ -6872,6 +7037,9 @@ module IncrementalCodec =
             | "aggregateStepRepeated" ->
                 let! v = el |> at "verb" strOf
                 return AggregateStepRepeated v
+            | "fitInputNotMaintained" ->
+                let! v = el |> at "verb" strOf
+                return FitInputNotMaintained v
             | other -> return! Error(WireRefusal.unknownTag (other, reasonTags))
         }
 
@@ -7067,6 +7235,40 @@ module IncrementalCodec =
             return! build counts members literals
         }
 
+    /// Phase 592 — `fitJson`'s inverse: every member index a row token's, every accumulator one
+    /// `LinAlgWire` reads.
+    let private fitOf (tokens: string[]) (el: JVal) : Result<DataFrame.FitMemo, ColumnError> =
+        res {
+            let! layout = el |> at "layout" strOf
+
+            let! groups =
+                el
+                |> at
+                    "groups"
+                    (items (fun g ->
+                        res {
+                            let! token = g |> at "token" strOf
+                            let! members = g |> at "members" intsOf
+
+                            let! acc =
+                                g
+                                |> at "acc" (fun a ->
+                                    LinearAlgebra.LinAlgWire.accumulatorOfJson a
+                                    |> Result.mapError (fun e ->
+                                        MalformedShape("incremental state: fit: " + e.Message)))
+
+                            if members |> Array.forall (fun i -> i >= 0 && i < tokens.Length) then
+                                return token, (members |> Array.map (fun i -> tokens[i]), acc)
+                            else
+                                return!
+                                    Error(MalformedShape "incremental state: a fit member is the index of a row token")
+                        }))
+
+            return
+                { DataFrame.FitMemo.Layout = layout
+                  DataFrame.FitMemo.Groups = Map.ofArray groups }
+        }
+
     let private stateOf
         (supplied: Table option)
         (key: IncrementalStateKey)
@@ -7149,6 +7351,11 @@ module IncrementalCodec =
                 | Some n -> intOf n |> Result.map Some
                 | None -> Ok None
 
+            let! fitState =
+                match tryField "fit" st with
+                | Some f -> fitOf tokens f
+                | None -> Ok DataFrame.emptyFitMemo
+
             // The stored hash is what a refresh compares against, so it has to be the hash of the
             // pipeline stored beside it — of its wire form as carried, which is the string that was
             // hashed (the decoded value is that form's normal form and may encode differently).
@@ -7200,7 +7407,8 @@ module IncrementalCodec =
                   GroupRows = groupRows
                   WindowRuns = Map.ofArray windowRuns
                   PipelineKey = key.Pipeline
-                  Stale = None }
+                  Stale = None
+                  FitState = fitState }
 
             if vouched then
                 match misaligned state with
@@ -7224,6 +7432,7 @@ module IncrementalCodec =
                         SourceExact = [||]
                         GroupRows = [||]
                         WindowRuns = Map.empty
+                        FitState = DataFrame.emptyFitMemo
                         Stale = Some DeltaIsFullRefresh }
         }
 

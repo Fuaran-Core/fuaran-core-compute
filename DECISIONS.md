@@ -1,5 +1,138 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D53: a pipeline fits a regression with one `Fit` step — `FitSpec` names the response, the terms as expressions, the groups, the weights, an offset, a ridge penalty, the family and link and the table it answers; the frame-to-matrix bridge, units, the schema walk, the wire tag and the incremental state live in `DataFrame` while the algebra stays in `LinearAlgebra`; ordinary least squares is the one pairing evaluated, every other refused by name; a decimal response is estimated through a recorded cast and every output stated against it is decimal; an append to a group continues its stored factorization byte for byte
+
+**Context.** The plan's S3 (`fuaran-compute-linear-algebra-and-glm.md` §2.4, operator rulings D4, D5 and D7 of
+2026-11-01): a design matrix could be assembled with `Derive` and `Pivot`, but nothing in a pipeline could fit a
+model, so every regression left the algebra — not data, not on the wire, not incremental, not law-checked. Phase
+591 shipped the kernel (`QRAccumulator`, `LeastSquares`, `LinAlgWire`, D51). The premise check at take found all
+three on `main` as D51 states, and the streamed `GroupBy` slots (Phases 323 / 344) as the plan assumed — one
+pass over the rows into per-slot state in first-appearance order, with a deferral to the member lists where a
+stream cannot answer; the fit takes the same grouping (`keySlots`) and keeps member lists outright, because a
+factorization folds its rows in order and has no stream form cheaper than its own fold.
+
+**Decided.**
+
+1. **One verb, the family and link as data (plan D5).** `Transform.Fit of FitSpec`, appended last to the union.
+   `FitFamily` = `Gaussian | Poisson | Gamma | Tweedie of power | QuasiPoisson`; `FitLink` = `Identity | Log`.
+   `Gaussian` under `Identity` is ordinary least squares and is the one pairing this version evaluates; every
+   other is typed, carried on the wire and refused when the step resolves — before any row is read — as the new
+   `EvalError.UnsupportedFit (family, link)`, both named by their wire spellings. Phase 595 lifts the refusal for
+   the log-link families; a pairing no later phase evaluates keeps it, which is why the case names the pair
+   rather than "not yet".
+2. **The slots.** `Ridge : Slot<float> option` and `Control = { MaxIter : Slot<int>; Tol : Slot<float> }`
+   resolve against the evaluation env as every slot does (a float slot takes a float or an int cell). They are
+   checked for every family, OLS included, so a pipeline is refused for an out-of-range control whatever it
+   names: the penalty finite and `≥ 0`, `MaxIter ≥ 1`, `Tol` finite and `> 0`. The default control is D49 item
+   13's: 25 iterations, `1e-8`. Ordinary least squares solves in one pass: its summary reports `iterations = 1`
+   and `converged = true`. Every slot's param is reported by `Transform.paramsOf` and `slotParamsOf`, and bound
+   by `Transform.substitute`.
+3. **The bridge (D49 item 13).** The response is a column, int, float or decimal; each predictor a named
+   `ColExpr` evaluated into a column by the derive's own typing and unit check under the label `fit term '<name>'`
+   (so an interaction is a `Mul`, a polynomial an integer `Pow`, and both are exact). A row is in the design
+   exactly when none of the response, a term, the offset or the weight is null: listwise deletion. A row in the
+   design whose response, term or offset is not finite, or whose weight is negative or not finite, is refused as
+   `FitError`, naming the step's input row and the column. A numeric term (int, float, decimal) is one design
+   column, read as the cast to float reads it; a string or boolean term is categorical; any other type is a
+   `TypeError`.
+4. **Categorical coding.** A categorical term's levels are its distinct values over the rows in the design —
+   across all groups, so every group carries the same terms — in the cell order (strings ordinal, `false` before
+   `true`). The first level is the reference and is dropped (treatment coding); each other level is one 0/1
+   column named `term[level]`. Without an intercept the FIRST categorical term keeps every level, as R's
+   treatment coding does, so the model spans the same space either way. A level absent from a group is a column
+   of zeros there and is aliased (item 6).
+5. **The coefficients' order and names.** `(Intercept)` first (R's spelling), then the terms in the order
+   written, each categorical term expanded in level order. A name repeated — two terms, a term named
+   `(Intercept)`, or a coded name colliding with a written one — is refused as `FitError`; so is a design with no
+   column.
+6. **The kernel (plan D4).** Per group, the group's rows in frame order are folded into a fresh
+   `QRAccumulator` by `addRows` (byte-equal to `addRow` row by row, D51), with the response minus the offset as
+   `y` and the prior weight as the weight (D49 item 9: scaled by `√w`, a zero weight in the design and not
+   counted). `LeastSquares.ofAccumulator` solves it with D49 item 11's rank rule: an aliased column keeps its row
+   in the coefficient table — named, never dropped — with null `estimate`, `std_error` and `t`.
+7. **Ridge.** A penalty `λ > 0` folds one row per non-intercept column, `√λ` at that column and zero elsewhere,
+   response zero, weight one, in column order, AFTER the data rows. The intercept is not penalised: a penalised
+   intercept makes the fit depend on where the response's zero is, which no reader of a ridge regression expects
+   (glmnet and scikit-learn agree); the plan's "p rows of √λ·I" is read as one row per penalised column. A zero
+   penalty folds nothing, so it is byte-equal to no ridge (a row of zeros would count towards `n` and the rank
+   tolerance). The data accumulator is kept without the penalty rows, so an append continues it (item 12).
+8. **The statistics, each a pinned left-to-right fold in member order.** `fitted = Σⱼ xⱼ·βⱼ` over the kept
+   columns `j` ascending, then `+ offset`; `residual = y − fitted`; `deviance = Σ w·(r·r)`; the null model's mean
+   is R's `glm.fit` rule — with an intercept `Σwy / Σw`, without one the offset — and `null_deviance = Σ w·(y −
+   μ₀)²`. `n` is the accumulator's count (rows of positive weight), `rank` the kept columns, `df = max(0, n −
+   rank)`; `dispersion = deviance / df` and `sigma = √dispersion`, null where `df = 0`; `std_errorⱼ =
+   √(dispersion · Σₖ R⁻¹[t,k]²)` over the kept column's row `t` of `R⁻¹`, `k` ascending; `t = estimate /
+   std_error`, null where the error is zero or null; `r2 = 1 − deviance / null_deviance`, null where the null
+   deviance or the weight total is zero. Under a ridge penalty the deviance is the data rows' alone, not the
+   penalised objective.
+9. **The outputs, closed schemas.** `Coefficients`: the group keys, `term`, `estimate`, `std_error`, `t`, `unit`
+   — one row per group and term, groups in first-appearance order (the `GroupBy` rule), terms in coefficient
+   order. `Summary`: the keys, `n`, `df`, `sigma`, `r2`, `rank`, `deviance`, `null_deviance`, `dispersion`,
+   `iterations`, `converged` — one row per group. `Fitted` / `Residuals`: the step's input rows in order with
+   `fitted` / `residual` appended (null at a row not in the design; a zero-weight row has both); an input already
+   carrying that name is refused as `FitError`. Groups are formed over the rows in the design, so a frame with
+   none answers no group. Every schema is decided before any row is read, which is what lets
+   `PipelineQueryRegistry.register` admit a registered regression query; the static walk states each, with the
+   units of item 10, and marks every column `Pinned` where the response, keys, weights and terms are — the fit
+   adds no host-rounded operation (`+ − × ÷ √` only, D49).
+10. **Units (D29).** A coefficient's unit is `unit(y) / unit(xⱼ)` through Core's algebra, the intercept's and a
+    categorical column's `unit(y)`. One column of a tidy table cannot carry one unit per row, so the coefficient
+    table carries it as data: `unit`, the canonical text, null where none is stated. `sigma`, `fitted` and
+    `residual` carry `unit(y)` as field metadata; `deviance`, `null_deviance` and `dispersion` its square.
+11. **A decimal response (plan §7 Q3, operator ruling 2026-11-03).** The estimation reads the response through
+    `FitSpec.estimationResponse spec = Cast(FloatType, Col response)` — the evaluator's own cast, the recorded
+    `Cast` the pipeline and its replay show, for every response type (identity on a float, exact on an int).
+    Every output computed AGAINST the response then uses the decimal column: **`fitted`** is the float estimate's
+    exact decimal (the float's own digits, the one place an approximation enters a decimal),
+    **`residual`** = `y − fitted` in exact decimal arithmetic, **`deviance`** and **`null_deviance`** are exact
+    decimal sums of `w · r²` (the weight and the null mean entering as their exact decimals). The statistics
+    that are not amounts in the response unit — `estimate`, `std_error`, `t`, `sigma`, `dispersion` and `r2`
+    (the last two read off the decimal deviances, converted once) — stay floats. So a money figure is never
+    reported through a float: what is stated in the response's unit is decimal, and what is a statistic says so
+    by its type.
+12. **Incremental (plan D7).** `Incremental.plan` classifies a `Fit` as `MaintainFits groupBy` (a new case,
+    appended) when it is the LAST step, after no aggregating step and no window; otherwise it declines by name —
+    `AggregateStepNotLast "fit"` (produced again, for a fit only), `AggregateStepRepeated "fit"` after a
+    `GroupBy`, and the new `FitInputNotMaintained "window"` after a window, whose column moves for a row whose
+    neighbour moved. The strategy is `RowLocalThenGroups`, the maintained-grouping strategy, so a refresh
+    reports `GroupsRecomputed (rows, groupsRefit)`. The state keeps, per group token, the members' row tokens in
+    order and the DATA accumulator. A group whose prior members are a prefix of its members now — each one
+    stable (not named by the delta) and in the prior order — continues from its accumulator by the appended rows
+    alone: **an append refresh is byte-equal to a full evaluation**, because the fold is sequential and
+    `addRows` onto the prior state is the fold of the whole. Any other group — an edit, a delete, a reorder — is
+    refolded from its first row (downdating is unstable), the rule float `Sum` follows; a design whose layout
+    moved (a new level, say) refolds every group. Warm starts are never certified (D7). The terms are
+    re-evaluated over the whole input on every refresh and the footprint charges them, as the reference does —
+    what the state saves is the factorization. The state codec carries it as a `fit` member — the layout, and
+    per group its token, its members as indices into the state's row tokens, and its accumulator through
+    `LinAlgWire` (IEEE-754 bit patterns), emitted only where a fit left state, so every other state's bytes are
+    unchanged and a decoded fit continues to the same bits.
+13. **Wire.** `{"$type":"fit","response":…,"predictors":[{"name":…,"expr":…},…],"intercept":…,"groupBy":[…],
+    "family":"gaussian"|"poisson"|"gamma"|"tweedie"|"quasiPoisson","power":…?,"link":"identity"|"log",
+    "control":{"maxIter":<slot>,"tol":<slot>},"output":"coefficients"|"summary"|"fitted"|"residuals",
+    "weights":…?,"offset":…?,"ridge":<slot>?}` — `power` for a Tweedie family only; the three optional members
+    only where the spec carries them.
+14. **Laws and vectors.** Thirteen transform vectors over a fixed ten-row table (the `fit-` shapes): ordinary
+    least squares, a grouped summary, a categorical term, an interaction and a polynomial, an aliased column, two
+    terms collinear to `1e-7`, weights with a zero beside a ridge penalty, an offset without an intercept, fitted
+    values over a listwise deletion, a decimal response's residuals and summary, and two refusals named by class
+    (`UnsupportedFit`, `FitError`). They are pinned bytes, held on .NET by the vector tests and under node by the
+    pooled node leg, which renders the same vectors' results through Fable and compares them line for line.
+
+**Rejected.** *A `Predict` verb in this phase* — the plan pairs it with the fit (§2.4) but no task here names it;
+it is a step of its own over a fitted table. *Levels per group* — each group would carry its own terms and
+reference level, the coefficient tables of two groups would not line up, and a level seen first in one group
+would change another's coding; global levels cost an incremental refit of every group when a new level appears,
+which is the honest price. *A `unit` per column of the coefficient table, a wide table, one column per term* —
+the term set is data (a categorical term's levels), so the schema would not be closed and registration would
+refuse it. *Penalising the intercept* — item 7. *A float deviance for a decimal response* — the operator's
+ruling. *Maintaining a fit after a sort or a limit by row values* — a stable row is unchanged and the member
+comparison is in order, so a sort ahead of a fit is maintained already; only a window moves values of a stable
+row, and storing every row's design to compare would make the state O(n·p).
+
+**Supersedes nothing.** `AggregateStepNotLast`'s "no longer produced" (Phase 202) is narrowed: it is produced
+again, for a `Fit` only.
+
 ## 2026-11-04 — D52: `exp`, `ln`, `log10` and the float-exponent `pow` are pinned in `Fuaran.Compute.LinearAlgebra.Elementary` — one reduction and one polynomial each, `+ − × ÷` and comparisons over a table of the powers of two, no fused multiply-add and no host mathematics call, behind D43's special-value table published as data; the faithful-pinned build is chosen over a correctly rounded one on the measurement, which puts the pinned routines within one ulp of the true value and byte-identical on .NET and node, and the correctly rounded candidate at five to twenty-five times the cost with a multiprecision library in every twin
 
 **Context.** D43 (Phase 557) made the transcendentals host-rounded: deterministic within one host, within two ulps

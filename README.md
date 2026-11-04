@@ -54,6 +54,7 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `Sort` / `Distinct` / `Limit` | order (keys may be parameter slots), de-duplicate, page |
 | `Union` / `Intersect` / `Except` | set operations against another source |
 | `Define of FnDef` | a named function the pipeline carries (below); it changes no frame |
+| `Fit of FitSpec` | fit a regression per group by the pinned streaming Givens QR (below): coefficients, a summary, fitted values or residuals |
 
 | `ColExpr` | |
 |---|---|
@@ -77,6 +78,18 @@ and incremental behaviour are exactly its body's. `Interpolate` reads an operand
 — strictly increasing, finite, at least two — and is **exact at every knot and byte-identical on every
 host**: it is computed from additions, multiplications, divisions and comparisons only, the monotone
 cubic under Fritsch and Carlson's slope rule as D48 pins it, monotone wherever its knots are.
+
+**A regression is a step of the pipeline** (`DECISIONS.md` D53). `Fit` names a response column, its
+terms as expressions (an interaction is a `Mul`, a polynomial an integer `Pow`, a string or boolean term
+one-hot coded against its first level), an intercept, the groups, prior weights, an offset and a ridge
+penalty, and the table it answers: `Coefficients` (`term`, `estimate`, `std_error`, `t` and each
+coefficient's `unit`, `unit(y) / unit(x)`), `Summary` (`n`, `df`, `sigma`, `r2`, `rank`, the deviances,
+the dispersion), `Fitted` or `Residuals`. Ordinary least squares (`Gaussian` under `Identity`) is
+evaluated through `Fuaran.Compute.LinearAlgebra`'s streaming Givens QR, so every estimate and statistic
+is **byte-identical on every host**; an aliased column keeps its row with a null estimate; a decimal
+response's fitted values, residuals and deviances are decimal. Every other family and link is typed and
+refused by name. Incrementally, a group whose rows were appended continues its stored factorization by
+the new rows alone, byte-equal to a full evaluation; an edited group is refitted.
 
 **The power functions carry a stated guarantee each** (`DECISIONS.md` D43). `Pow` under an integer
 exponent is **exact and byte-identical on every host**: one pinned routine, binary exponentiation

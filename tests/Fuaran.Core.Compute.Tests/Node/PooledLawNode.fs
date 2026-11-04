@@ -95,6 +95,13 @@ let private fallback () : Async<bool> =
         return ok.Value
     }
 
+// Phase 592 — the regression vectors' answers under this host, between marker lines; the suite holds them
+// to the .NET render line for line.
+if isMainThread then
+    printfn "BEGIN fit-vectors"
+    printfn "%s" (TransformVectorSample.fitRender ())
+    printfn "END fit-vectors"
+
 if isMainThread then
     Async.StartWithContinuations(
         async {
