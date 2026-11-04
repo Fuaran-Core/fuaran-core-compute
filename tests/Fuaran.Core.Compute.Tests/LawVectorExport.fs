@@ -510,12 +510,15 @@ module LawVectorExport =
 
     /// Every law set this repository emits, as (path under `corpusDir`, rendered bytes) — the one
     /// list `write` walks, so a family added here cannot be rendered and then forgotten by the
-    /// writer. Two sets: the transform-parity family's drawn reference answers, and the
-    /// dataframeParity family's answers over its authored cases. (The substrate's own
+    /// writer. Three sets: the transform-parity family's drawn reference answers, the
+    /// dataframeParity family's answers over its authored cases, and the linear-algebra package's
+    /// answers over its authored hard inputs (Phase 590). (The substrate's own
     /// `capabilityLaws` vectors are emitted by the substrate, beside the law they certify.)
     let emitted (corpusDir: string) : (string * string) list =
         [ transformPath corpusDir, renderTransformVectors ()
-          parityPath corpusDir, renderParityVectors () ]
+          parityPath corpusDir, renderParityVectors ()
+          // Phase 590: the linear-algebra hard-input vectors.
+          Path.Combine(familyDir corpusDir, LinearAlgebraVectors.fileName), LinearAlgebraVectors.render () ]
 
     /// Write the vectors with LF endings, whatever the host platform — the corpus is byte-compared
     /// by several hosts on three operating systems.

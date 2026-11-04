@@ -1,5 +1,102 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D50: `Fuaran.Compute.LinearAlgebra` ships in its own namespace with modules `Matrix`, `Blas`, `UpperTriangular` and `Givens`; it takes `Fuaran.Core.Column` alone; exactness is D43's `Pinned | HostRounded`; the two triangular solves' fold orders are pinned; its laws live in the package and its hard-input vectors render through the one corpus writer, with a NaN written as a token
+
+**Context.** Phase 590, stage S1 of the linear-algebra plan: the first kernels under D49. The shard left five
+calls to the phase — the level-1 module's name, the error cases' names, where the law family lives, how the
+vectors are written, and the package's exact dependency set — and implementing D49 surfaced three more (the
+solves' fold orders, the identity rotation, the coverage reason). Each is ruled here so 591 onward and a twin
+author read one record. The operator's standing instruction of 2026-11-04 (work unsupervised, take the
+long-term option, record the alternatives) applies to every item.
+
+**Premise check** (on `dd61528`). D49 had landed (as D49, not the shard's D48). The substrate's
+`Vector<float>` (Column 0.40.2) still ships `Vector.adopt` and `Vector.Unsafe.borrow`, with `slice` a
+zero-copy view. The roster, surface, wire, boundary and coverage checks all derive their package set from
+`src/`, so a new packable project is picked up automatically — and is refused until it is registered in each:
+the README table, `api/`, `WireSurfaceTests.notWire`, `ComputeBoundaryTests.compute` and
+`proofs/coverage-exclusions.json`. That list is longer than the shard's "the roster test and `api/`
+baselines", which is why the phase touched three test files and a proofs file outside its declared region.
+
+**Ruled.**
+
+1. **Namespace and modules.** The package's namespace is `Fuaran.Compute.LinearAlgebra`, not the
+   `Fuaran.Compute` the other four share: `DataFrame` already publishes `Fuaran.Compute.Exactness` and keeps an
+   internal `Vec`, and two assemblies contributing one name to one namespace resolve by reference order. Inside
+   it: `Matrix` (storage — `init`, `identity`, `ofColumns`, `column`, `columns`, `transpose`, the reads),
+   `Blas` (levels 1 to 3 — `dot`, `axpy`, `scale`, `add`, `sub`, `norm2`, `gemv`, `gemm`, `gram`),
+   `UpperTriangular` (the checked factor and its solves), `Givens`, `Operations` (the exactness table) and
+   `LinearAlgebraLaws`. Alternatives considered: `Vec` for level 1 (rejected: the shard's own collision with
+   `DataFrame`'s internal module); `Vector` (rejected: the substrate's module for the very type these operate
+   on); `Level1` / `Level2` / `Level3` (rejected: a call site would name a level rather than the operation, and
+   `gemv` beside `gemm` is one contract split three ways). `Blas` names the operations' conventional levels; it
+   is not the reference BLAS calling convention and carries no `alpha` / `beta`.
+2. **Exactness is D43's vocabulary.** The shard said `Exact`; the evaluator's word since D43 is `Pinned`, and a
+   schema walk that reads through this table later should read one vocabulary, so the type is
+   `Exactness = Pinned | HostRounded`, in this namespace, with `Operations.exactness` classifying every public
+   operation. The suite holds the table equal to the published functions of the four operation modules, both
+   ways, so a function published without a class is red at the commit that adds it.
+3. **Column only.** D49 item 20 bounds the package to `Fuaran.Core.Column`, `Fuaran.Core.Wire` and FSharp.Core.
+   Nothing here encodes, so the project references Column alone: a package reference without a use is a
+   dependency a consumer pays for and a raise must move for nothing. A matrix codec, when one is wanted,
+   takes Wire under the same bound.
+4. **The errors.** `LinAlgError` (qualified access) is `ShapeMismatch of operation * left: Dims * right: Dims`,
+   `Singular of index`, `RankDeficient of rank`, `NotFinite of row * col`, `NotTriangular of row * col` and
+   `NotConverged of iterations`. `NotTriangular` is the one case D49 item 6 did not list: the checked
+   `UpperTriangular.ofMatrix` needs a refusal for a nonzero entry below the diagonal, and naming it as a shape
+   mismatch would hide which entry. `ofMatrix` checks square, then finite, then triangular, and names the first
+   offender in column-major order; a `-0.0` below the diagonal is a zero. A kernel does not refuse a non-finite
+   operand — it propagates it, and the NaN leaves canonical (D49 item 5); refusing non-finite input is the
+   checked constructors' and the frame bridge's (D49 item 13), where the row and column are known.
+5. **The solves' orders** (D49 item 1 says the order is the contract; this item states it). `solveUpper` is
+   back substitution by columns: for `j` from `n − 1` down, `x_j = b'_j / R[j,j]`, then
+   `b'_i ← b'_i − x_j · R[i,j]` for `i < j` — so each `x_i` subtracts its terms in DESCENDING `j`, a lane per
+   row as in `gemv`. `solveUpperT` is forward substitution down column `i` of `R`, ASCENDING `j`. A diagonal
+   entry exactly zero is refused as `Singular`, the lowest such index, before any arithmetic. The rank
+   tolerance (D49 item 11) is the factorization's test, not the solve's.
+6. **`gemm` is `gemv` a column at a time.** Element `(i, j)` accumulates `A[i,k] · B[k,j]` in `k` order from
+   `+0.0` either way, so the column form is the per-element dot byte for byte, with `gemv`'s SIMD row lanes;
+   a law holds the two spellings equal. `gram` computes each pair once and mirrors it, so it is exactly
+   symmetric, and a law holds it equal to `gemm (transpose A) A`.
+7. **The identity rotation is a flag.** `Givens.make a b` with `b = 0` (either sign) is the identity and says
+   so (`IsIdentity`); applying it returns the pair bit for bit. Testing `c = 1 && s = 0` instead would be
+   wrong: a pair `(huge, subnormal)` makes a real rotation whose `s` underflows to zero, and `c·x + s·y` is not
+   `x` when `y` is infinite or `x` is `-0.0`.
+8. **Storage.** A `Matrix` is rows, columns and one adopted `Vector<float>` in column-major order, NaNs made
+   canonical as it is built, so `Matrix.column` is a zero-copy `Vector.slice` that is already canonical.
+   Equality is the substrate vector's (every NaN one value, `-0.0 = 0.0`); a byte comparison reads
+   `Matrix.toColumnMajor`. A shape is an argument, not data, so `init` raises on a negative dimension and the
+   reads raise outside the shape, as the substrate's indexer does; a mismatch between operands is data and
+   returns `ShapeMismatch`.
+9. **The laws live in the package.** `LinearAlgebraLaws.laws seed count` answers each law by name with a
+   `Result<unit, string>` — the verdict shape of the substrate's `Corpus.codecLaws`. They are not a family in
+   `Fuaran.Compute.Conformance`: that package sits above `DataFrame`, and the kit's `LawResult` and roster are
+   `Fuaran.Core.Conformance`'s, which item 3 and D49 item 20 keep out of this package; a law family the
+   package cannot run itself would also leave a consumer (or a host compiled from the Fable sources) unable to
+   check a native member without the dataframe layer. The draw is Park and Miller's generator run in float
+   arithmetic, every step exact, so a seed draws the same matrices on every host.
+10. **The vectors.** `conformance/laws/linear-algebra-laws.json` holds the package's answers over authored hard
+    inputs, rendered through `CorpusFile` (Phase 543's route) and written by `--emit-laws`. A float is its bit
+    pattern as sixteen lowercase hex digits, except a NaN, which is the token `nan`: .NET's `Double.NaN` sets
+    the sign bit and JavaScript's NaN does not, so "the canonical NaN" is one value per host but not one bit
+    pattern across hosts, and the file compares only what is pinned. The file carries no version stamp, so it
+    moves only when an answer does. The suite holds it fresh on .NET and holds the document the node leg
+    renders under Fable equal to it, so the vectors pass on both hosts. **The shared corpus copy is a release
+    act:** like the transform family's (D6 (4)), the corpus grades a copy against a release tag, and no tag
+    holds this file yet; the `v0.43.0` release adds the `copies.json` record and the copy.
+11. **The coverage reason.** The package is excluded from `Proofs.Coverage` under a new term,
+    `pinned-order-law-tested`: its contract is an order of IEEE operations, which the byte laws and the vectors
+    check directly, over the premise `linear-algebra-basic-ops-host-independent`. The substrate's
+    `law-tested-by-design` was considered and rejected: its text requires the named family to sit in the kit's
+    roster, which item 9 rules out. `model-scheduled` was rejected because no model is filed, and an F* model of
+    a fixed float order would restate the code.
+
+**What a consumer does.** Nothing changes for an existing consumer: a new package, additive (`STABILITY.md`,
+0.43.0). Before the `v0.43.0` tag, the nuget.org Trusted Publishing policy must name the new id
+(`.github/workflows/publish-packages.yml` says so).
+
+**Tidy.** Reviewed every file the phase touched. `pack.ps1`'s header and `LawVectorExport.emitted`'s comment
+counted the packages and vector sets and were corrected with the addition; nothing was made dead or duplicate.
+
 ## 2026-11-04 — D49: the linear-algebra rules, recorded before any kernel lands — every reduction a pinned left-to-right fold, no fused multiply-add on any host, one Givens rotation with a non-negative diagonal, one rank tolerance, listwise deletion at the frame bridge, the IRLS start, step-halving and stopping rules, and the package boundary; D48 item 7's "a JavaScript host does not promise a correctly rounded square root" is corrected
 
 **Context.** Phase 589, stage S0 of the accepted linear-algebra plan: a pinned matrix library

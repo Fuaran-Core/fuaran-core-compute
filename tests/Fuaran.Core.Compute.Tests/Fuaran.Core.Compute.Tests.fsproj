@@ -57,6 +57,11 @@
     <!-- Phase 250's composition, carried from the substrate's suite by Phase 261: deltaOf,
          changedColumns and the sheet that drives Propagation over Incremental through them. -->
     <Compile Include="PropagationCompositionTests.fs" />
+    <!-- Phase 590: the linear-algebra law vectors (Fable-clean; the node leg under LinearAlgebraNode/
+         compiles them too) and the suite over the package. Before LawVectorExport.fs, whose emitted
+         list names the vector file. -->
+    <Compile Include="LinearAlgebraVectors.fs" />
+    <Compile Include="LinearAlgebraTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
@@ -90,6 +95,7 @@
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.ColumnOps\Fuaran.Compute.ColumnOps.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />

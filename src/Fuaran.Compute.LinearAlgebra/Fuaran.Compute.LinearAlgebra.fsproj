@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Compute.LinearAlgebra</PackageId>
+    <Description>Fuaran.Compute.LinearAlgebra — a small, dense, column-major linear-algebra contract whose every operation runs in one pinned floating-point order, so its answers are byte-identical on .NET, under Fable and in every host that ports it: an opaque immutable Matrix, vectors as Fuaran.Core's Vector&lt;float&gt; (a float column is an input without a copy), the level-1 operations (dot, axpy, scale, add, sub and the scaled norm2), gemv in column-axpy order, gemm in per-element k order, the Gram matrix, triangular solves over a checked UpperTriangular, the one Givens rotation, typed errors and canonical NaN out. No fused multiply-add on any host. FSharp.Core only, Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Types, storage and the internal kernels every module reads. -->
+    <Compile Include="Matrix.fs" />
+    <!-- Levels 1 to 3. -->
+    <Compile Include="Blas.fs" />
+    <!-- The checked triangular factor, its solves, and the one Givens rotation. -->
+    <Compile Include="Triangular.fs" />
+    <!-- Every public operation's exactness class, as data. -->
+    <Compile Include="Operations.fs" />
+    <!-- The law family over the operations above. LAST: it reads all of them. -->
+    <Compile Include="LinearAlgebraLaws.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Vectors are the substrate's `Vector<float>` (DECISIONS.md D49 item 20); nothing else of the
+         substrate is read. -->
+    <PackageReference Include="Fuaran.Core.Column" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The suite holds the native gemv kernel byte-equal to the portable one. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Tests" />
+  </ItemGroup>
+</Project>

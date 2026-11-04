@@ -40,7 +40,9 @@ let compute: Set<string> =
         [ "Fuaran.Compute.DataFrame"
           "Fuaran.Compute.ColumnOps"
           "Fuaran.Compute.Conformance"
-          "Fuaran.Compute.PipelineQuery" ]
+          "Fuaran.Compute.PipelineQuery"
+          // Phase 590: the dense-matrix library, below DataFrame; it takes Column alone.
+          "Fuaran.Compute.LinearAlgebra" ]
 
 /// The substrate packages the compute strand stands on — and nothing above them. `Fuaran.Core.Unit`
 /// is BELOW the four, not above: since Core `1.0.0` a schema field carries a unit of measure, so

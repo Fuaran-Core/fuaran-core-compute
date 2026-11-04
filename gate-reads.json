@@ -1,13 +1,14 @@
 {
   "kind": "gateReads",
-  "_": "What this repository's gate reads and builds. No census of the files its suite opens has been taken here, so `reads` claims every tracked file (`**`): nothing is gate-inert, the same conservative reading the repository had with no record. `builds` names what the gate (verify.ps1: the solution build and suite; the suite's PooledLawTests Fable-compiles tests/Fuaran.Core.Compute.Tests/Node/PooledLawNode.fsproj and runs it under node) builds, and `notBuilt` each project file it deliberately does not, with the reason. Checked: the coverage check classifies every tracked project file against the pair, and once `builds` is declared an unreached project is an error and refuses a landing.",
+  "_": "What this repository's gate reads and builds. No census of the files its suite opens has been taken here, so `reads` claims every tracked file (`**`): nothing is gate-inert, the same conservative reading the repository had with no record. `builds` names what the gate (verify.ps1: the solution build and suite; the suite's PooledLawTests Fable-compiles tests/Fuaran.Core.Compute.Tests/Node/PooledLawNode.fsproj, and its LinearAlgebraTests Fable-compiles tests/Fuaran.Core.Compute.Tests/LinearAlgebraNode/LinearAlgebraNode.fsproj, and runs each under node) builds, and `notBuilt` each project file it deliberately does not, with the reason. Checked: the coverage check classifies every tracked project file against the pair, and once `builds` is declared an unreached project is an error and refuses a landing.",
   "reads": [
     "**"
   ],
   "notRead": [],
   "builds": [
     "Fuaran.Core.Compute.slnx",
-    "tests/Fuaran.Core.Compute.Tests/Node/PooledLawNode.fsproj"
+    "tests/Fuaran.Core.Compute.Tests/Node/PooledLawNode.fsproj",
+    "tests/Fuaran.Core.Compute.Tests/LinearAlgebraNode/LinearAlgebraNode.fsproj"
   ],
   "notBuilt": [
     {

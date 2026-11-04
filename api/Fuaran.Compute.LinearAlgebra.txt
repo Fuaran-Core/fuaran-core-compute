@@ -1,0 +1,91 @@
+# Fuaran.Compute.LinearAlgebra — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Compute.LinearAlgebra.Dims..ctor(System.Int32, System.Int32)
+field Fuaran.Compute.LinearAlgebra.Exactness+Tags.HostRounded : System.Int32 (literal)
+field Fuaran.Compute.LinearAlgebra.Exactness+Tags.Pinned : System.Int32 (literal)
+field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.NotConverged : System.Int32 (literal)
+field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.NotFinite : System.Int32 (literal)
+field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.NotTriangular : System.Int32 (literal)
+field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.RankDeficient : System.Int32 (literal)
+field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.ShapeMismatch : System.Int32 (literal)
+field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.Singular : System.Int32 (literal)
+method Fuaran.Compute.LinearAlgebra.Blas.add(Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.Blas.axpy(System.Double, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.Blas.dot(Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.Blas.gemm(Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.Blas.gemv(Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.Blas.gram(Fuaran.Compute.LinearAlgebra.Matrix) : Fuaran.Compute.LinearAlgebra.Matrix
+method Fuaran.Compute.LinearAlgebra.Blas.norm2(Fuaran.Core.Vector`1<System.Double>) : System.Double
+method Fuaran.Compute.LinearAlgebra.Blas.scale(System.Double, Fuaran.Core.Vector`1<System.Double>) : Fuaran.Core.Vector`1<System.Double>
+method Fuaran.Compute.LinearAlgebra.Blas.sub(Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.Givens.Equals(System.Object) : System.Boolean
+method Fuaran.Compute.LinearAlgebra.Givens.GetHashCode() : System.Int32
+method Fuaran.Compute.LinearAlgebra.GivensModule.apply(Fuaran.Compute.LinearAlgebra.Givens, System.Double, System.Double) : System.Tuple`2<System.Double, System.Double>
+method Fuaran.Compute.LinearAlgebra.GivensModule.make(System.Double, System.Double) : Fuaran.Compute.LinearAlgebra.Givens
+method Fuaran.Compute.LinearAlgebra.LinearAlgebraLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
+method Fuaran.Compute.LinearAlgebra.Matrix.Equals(System.Object) : System.Boolean
+method Fuaran.Compute.LinearAlgebra.Matrix.GetHashCode() : System.Int32
+method Fuaran.Compute.LinearAlgebra.MatrixModule.cols(Fuaran.Compute.LinearAlgebra.Matrix) : System.Int32
+method Fuaran.Compute.LinearAlgebra.MatrixModule.column(System.Int32, Fuaran.Compute.LinearAlgebra.Matrix) : Fuaran.Core.Vector`1<System.Double>
+method Fuaran.Compute.LinearAlgebra.MatrixModule.columns(Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Vector`1<System.Double>>
+method Fuaran.Compute.LinearAlgebra.MatrixModule.dims(Fuaran.Compute.LinearAlgebra.Matrix) : Fuaran.Compute.LinearAlgebra.Dims
+method Fuaran.Compute.LinearAlgebra.MatrixModule.identity(System.Int32) : Fuaran.Compute.LinearAlgebra.Matrix
+method Fuaran.Compute.LinearAlgebra.MatrixModule.init(System.Int32, System.Int32, Microsoft.FSharp.Core.FSharpFunc`2<System.Int32, Microsoft.FSharp.Core.FSharpFunc`2<System.Int32, System.Double>>) : Fuaran.Compute.LinearAlgebra.Matrix
+method Fuaran.Compute.LinearAlgebra.MatrixModule.item(System.Int32, System.Int32, Fuaran.Compute.LinearAlgebra.Matrix) : System.Double
+method Fuaran.Compute.LinearAlgebra.MatrixModule.ofColumns(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Vector`1<System.Double>>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.MatrixModule.rows(Fuaran.Compute.LinearAlgebra.Matrix) : System.Int32
+method Fuaran.Compute.LinearAlgebra.MatrixModule.toColumnMajor(Fuaran.Compute.LinearAlgebra.Matrix) : System.Double[]
+method Fuaran.Compute.LinearAlgebra.MatrixModule.transpose(Fuaran.Compute.LinearAlgebra.Matrix) : Fuaran.Compute.LinearAlgebra.Matrix
+method Fuaran.Compute.LinearAlgebra.Operations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.LinearAlgebra.Exactness>
+method Fuaran.Compute.LinearAlgebra.UpperTriangular.Equals(System.Object) : System.Boolean
+method Fuaran.Compute.LinearAlgebra.UpperTriangular.GetHashCode() : System.Int32
+method Fuaran.Compute.LinearAlgebra.UpperTriangularModule.ofMatrix(Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.UpperTriangular, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.UpperTriangularModule.order(Fuaran.Compute.LinearAlgebra.UpperTriangular) : System.Int32
+method Fuaran.Compute.LinearAlgebra.UpperTriangularModule.solveUpper(Fuaran.Compute.LinearAlgebra.UpperTriangular, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.UpperTriangularModule.solveUpperT(Fuaran.Compute.LinearAlgebra.UpperTriangular, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.UpperTriangularModule.toMatrix(Fuaran.Compute.LinearAlgebra.UpperTriangular) : Fuaran.Compute.LinearAlgebra.Matrix
+property Fuaran.Compute.LinearAlgebra.Givens.Cos : System.Double { get }
+property Fuaran.Compute.LinearAlgebra.Givens.IsIdentity : System.Boolean { get }
+property Fuaran.Compute.LinearAlgebra.Givens.Radius : System.Double { get }
+property Fuaran.Compute.LinearAlgebra.Givens.Sin : System.Double { get }
+property Fuaran.Compute.LinearAlgebra.Matrix.Cols : System.Int32 { get }
+property Fuaran.Compute.LinearAlgebra.Matrix.Dims : Fuaran.Compute.LinearAlgebra.Dims { get }
+property Fuaran.Compute.LinearAlgebra.Matrix.Item : System.Double { get }
+property Fuaran.Compute.LinearAlgebra.Matrix.Rows : System.Int32 { get }
+property Fuaran.Compute.LinearAlgebra.Operations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.LinearAlgebra.Exactness>> { get }
+property Fuaran.Compute.LinearAlgebra.UpperTriangular.Matrix : Fuaran.Compute.LinearAlgebra.Matrix { get }
+property Fuaran.Compute.LinearAlgebra.UpperTriangular.Order : System.Int32 { get }
+record-field Fuaran.Compute.LinearAlgebra.Dims.Cols #1 : System.Int32
+record-field Fuaran.Compute.LinearAlgebra.Dims.Rows #0 : System.Int32
+type Fuaran.Compute.LinearAlgebra.Blas (module)
+type Fuaran.Compute.LinearAlgebra.Dims (record)
+type Fuaran.Compute.LinearAlgebra.Exactness (union)
+type Fuaran.Compute.LinearAlgebra.Exactness+Tags (type)
+type Fuaran.Compute.LinearAlgebra.Givens (type)
+type Fuaran.Compute.LinearAlgebra.GivensModule (module)
+type Fuaran.Compute.LinearAlgebra.LinAlgError (union)
+type Fuaran.Compute.LinearAlgebra.LinAlgError+NotConverged (type)
+type Fuaran.Compute.LinearAlgebra.LinAlgError+NotFinite (type)
+type Fuaran.Compute.LinearAlgebra.LinAlgError+NotTriangular (type)
+type Fuaran.Compute.LinearAlgebra.LinAlgError+RankDeficient (type)
+type Fuaran.Compute.LinearAlgebra.LinAlgError+ShapeMismatch (type)
+type Fuaran.Compute.LinearAlgebra.LinAlgError+Singular (type)
+type Fuaran.Compute.LinearAlgebra.LinAlgError+Tags (type)
+type Fuaran.Compute.LinearAlgebra.LinearAlgebraLaws (module)
+type Fuaran.Compute.LinearAlgebra.Matrix (type)
+type Fuaran.Compute.LinearAlgebra.MatrixModule (module)
+type Fuaran.Compute.LinearAlgebra.Operations (module)
+type Fuaran.Compute.LinearAlgebra.UpperTriangular (type)
+type Fuaran.Compute.LinearAlgebra.UpperTriangularModule (module)
+union-case Fuaran.Compute.LinearAlgebra.Exactness.HostRounded #1()
+union-case Fuaran.Compute.LinearAlgebra.Exactness.Pinned #0()
+union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewNotConverged #5(iterations: System.Int32)
+union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewNotFinite #3(row: System.Int32, col: System.Int32)
+union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewNotTriangular #4(row: System.Int32, col: System.Int32)
+union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewRankDeficient #2(rank: System.Int32)
+union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewShapeMismatch #0(operation: System.String, left: Fuaran.Compute.LinearAlgebra.Dims, right: Fuaran.Compute.LinearAlgebra.Dims)
+union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewSingular #1(index: System.Int32)
