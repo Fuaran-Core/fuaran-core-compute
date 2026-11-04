@@ -317,10 +317,25 @@ let tests =
                     let r = called |> List.find (fun c -> c.Name = "r")
                     Expect.equal d.Type (Some IntType) "an int doubled is an int"
                     Expect.equal d.Exactness Exactness.Pinned "exact arithmetic is pinned"
-                    Expect.equal r.Exactness Exactness.HostRounded "a float power is host-rounded, and the walk says so"
+                    Expect.equal r.Exactness Exactness.Pinned "a float power is pinned (D54), and the walk says so"
+                    Expect.isEmpty (SchemaWalk.hostRoundedDecisions schema p) "a pinned pipeline reaches no decision"
 
-                    // The filter reading the host-rounded column is a decision at the WRITTEN step 4.
-                    let decisions = SchemaWalk.hostRoundedDecisions schema p
+                    // Over an input whose `x` is declared host-rounded, the filter reading the call's
+                    // column is a decision at the WRITTEN step 4, not at the expanded step 2.
+                    let marked =
+                        match SchemaWalk.ofSchema schema with
+                        | SchemaKnowledge.Closed cs ->
+                            SchemaKnowledge.Closed(
+                                cs
+                                |> List.map (fun c ->
+                                    if c.Name = "x" then
+                                        ColumnKnowledge.withExactness Exactness.HostRounded c
+                                    else
+                                        c)
+                            )
+                        | other -> failtestf "an input schema walks closed: %A" other
+
+                    let decisions = SchemaWalk.hostRoundedDecisionsFrom SchemaWalk.noSources marked p
                     Expect.equal (decisions |> List.map (fun d -> d.Step, d.Verb)) [ 4, "filter" ] "written index"
                 }
 

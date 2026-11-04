@@ -701,13 +701,20 @@ let tests =
               "a vector's tolerance admits a host-rounded column within its bound and nothing else — a column it does not name, a null, a zero, a sign and a value past the bound are each red"
           <| fun _ ->
               // The go-red of the comparison every certifying leg above now uses. The perturbations
-              // are made on the vector's own recorded table, so the case means the same on every host.
+              // are made on a vector's own recorded table, so the case means the same on every host.
+              // Since Phase 594 (D54) no vector of the file carries a tolerance — the log columns are
+              // pinned — so the bound is declared here over the log vector's two float columns: the
+              // comparison is the one a vector whose walk marks a host-rounded column is read by.
               let v =
                   match parseVectors (LawVectorExport.renderTransformVectors ()) with
                   | Ok vectors -> vectors |> List.find (fun v -> v.Id.EndsWith "-power-ln-log10")
                   | Error m -> failtest m
 
-              Expect.equal v.Tolerance [ "l", 2; "l10", 2 ] "the log vector names its two host-rounded columns"
+              Expect.isEmpty v.Tolerance "the log vector is byte-exact since Phase 594"
+
+              let tolerance =
+                  [ "l", LawVectorExport.hostRoundedUlps; "l10", LawVectorExport.hostRoundedUlps ]
+
               let recorded = Option.get v.Table
               let mapped = perturbedColumn recorded
               let atRow (row: int) (g: Cell -> Cell) = fun i c -> if i = row then g c else c
@@ -717,7 +724,7 @@ let tests =
                   | Float x -> Float(nudgeUlps k x)
                   | c -> c
 
-              let agrees = VectorTolerance.tableAgrees v.Tolerance recorded
+              let agrees = VectorTolerance.tableAgrees tolerance recorded
               Expect.isNone (agrees recorded) "the recorded table agrees with itself"
 
               for k in [ -2; -1; 1; 2 ] do
@@ -763,13 +770,15 @@ let tests =
           testCase
               "the committed file's freshness admits a host-rounded answer within its bound and nothing else (Phase 559)"
           <| fun _ ->
-              // The freshness question on a host whose libm rounds an ulp apart from the emitting
+              // The freshness question on a host whose function rounds an ulp apart from the emitting
               // host's: the render differs from the file in one host-rounded cell, and that is not
               // staleness — but the same move outside the bound, or anywhere else in the file, is.
-              let rendered = LawVectorExport.renderTransformVectors ()
+              // Since Phase 594 (D54) no vector of the file carries a tolerance, so the render is
+              // first given one: the log vector's `l10` declared host-rounded at the recorded bound.
+              let plain = LawVectorExport.renderTransformVectors ()
 
               let v =
-                  match parseVectors rendered with
+                  match parseVectors plain with
                   | Ok vectors -> vectors |> List.find (fun v -> v.Id.EndsWith "-power-ln-log10")
                   | Error m -> failtest m
 
@@ -796,6 +805,17 @@ let tests =
 
                   text.Substring(0, i) + replacement + text.Substring(i + needle.Length)
 
+              Expect.isFalse
+                  (agreesWithinTolerance (replacedOnce (escaped recorded) (escaped (withL10 1)) plain) plain)
+                  "with no tolerance declared, one ulp is stale"
+
+              let rendered =
+                  replacedOnce
+                      (escaped recorded + "\"")
+                      (escaped recorded
+                       + sprintf "\", \"tolerance\": { \"l10\": %d }" LawVectorExport.hostRoundedUlps)
+                      plain
+
               let oneUlp = replacedOnce (escaped recorded) (escaped (withL10 1)) rendered
               let threeUlps = replacedOnce (escaped recorded) (escaped (withL10 3)) rendered
               Expect.notEqual oneUlp rendered "the perturbation moved the file's bytes"
@@ -810,9 +830,9 @@ let tests =
                   (agreesWithinTolerance (replacedOnce "\"iterations\": " "\"iterations\": 1" oneUlp) rendered)
                   "and is not hidden behind a within-tolerance vector"
 
-          // ---- Phase 557 (D43): the tolerance a host-rounded column carries ----
+          // ---- Phase 557 (D43), Phase 594 (D54): the tolerance a host-rounded column carries ----
           testCase
-              "every vector names exactly the output columns the static walk marks host-rounded, each at the recorded ulp bound, and the power shapes carry both verdicts"
+              "every vector names exactly the output columns the static walk marks host-rounded, each at the recorded ulp bound, and every power shape is byte-exact"
           <| fun _ ->
               match parseVectors (LawVectorExport.renderTransformVectors ()) with
               | Error m -> failtest m
@@ -838,26 +858,22 @@ let tests =
                               withTolerance <- withTolerance + 1
                       | _ -> failtestf "%s: the vector did not decode" v.Id
 
-                  Expect.isGreaterThan withTolerance 0 "a host-rounded vector was rendered"
+                  // Phase 594 (D54): no scalar function is host-rounded, so no vector carries a bound.
+                  Expect.equal withTolerance 0 "no vector of the sample carries a tolerance"
 
-                  // The integer-exponent shapes carry no tolerance: the routine is compared as every
-                  // other vector is. The special-value shape reads host-rounded FUNCTIONS over literals,
-                  // so the walk marks its columns and the vector carries the bound; what it pins is
-                  // still exact, because no wrong special value lies within two ulps of the right one
-                  // (`1` against NaN, `Null` against `Inf`, `0` against a subnormal).
-                  for shape in [ "power-int-exponent"; "power-int-base"; "power-cube-is-repeated-multiply" ] do
-                      let v = vectors |> List.find (fun v -> v.Id.EndsWith shape)
-                      Expect.equal v.Verdict "ok" (shape + " is accepted")
-                      Expect.isEmpty v.Tolerance (shape + " is byte-exact")
-
+                  // Every power shape is compared byte for byte: the integer routine, the special-value
+                  // table, and the pinned `Elementary` routines behind it.
                   for shape in
-                      [ "power-special-values"
+                      [ "power-int-exponent"
+                        "power-int-base"
+                        "power-cube-is-repeated-multiply"
+                        "power-special-values"
                         "power-float-exponent"
                         "power-exp"
                         "power-ln-log10" ] do
                       let v = vectors |> List.find (fun v -> v.Id.EndsWith shape)
                       Expect.equal v.Verdict "ok" (shape + " is accepted")
-                      Expect.isNonEmpty v.Tolerance (shape + " is host-rounded")
+                      Expect.isEmpty v.Tolerance (shape + " is byte-exact")
 
                   let refused = vectors |> List.find (fun v -> v.Id.EndsWith "power-decimal-refused")
                   Expect.equal refused.Verdict "error" "a decimal operand is refused"

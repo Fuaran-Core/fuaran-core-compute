@@ -6615,7 +6615,7 @@ let proofOracleTests =
               printfn "power routine differential: compared=%d" compared
 
           testCase
-              "the extracted special-value tables agree with powSpecial, expHost and logHost, classified as production reads a float"
+              "the extracted special-value tables agree with Elementary's published tables, and the model with its routine parameter set to the pinned functions is the evaluator, cell for cell (Phase 594)"
           <| fun _ ->
               let specials =
                   [ 0.0
@@ -6649,6 +6649,27 @@ let proofOracleTests =
                     ModelPipe.fclass.c_inf = System.Double.IsInfinity x
                     ModelPipe.fclass.c_int = (x = floor x) }
 
+              // The model's float carrier is text; the evaluator's answer is a cell. `None` is `Null`.
+              let parse (s: string) =
+                  System.Double.Parse(s, System.Globalization.NumberStyles.Float, inv)
+
+              let bits (x: float) = System.BitConverter.DoubleToInt64Bits x
+
+              let sameCell (what: string) (model: FStar_Pervasives_Native.option<string>) (production: Cell) =
+                  match model, production with
+                  | FStar_Pervasives_Native.None, Cell.Null -> ()
+                  | FStar_Pervasives_Native.Some m, Cell.Float f when System.Double.IsNaN f ->
+                      Expect.isTrue (System.Double.IsNaN(parse m)) what
+                  | FStar_Pervasives_Native.Some m, Cell.Float f -> Expect.equal (bits (parse m)) (bits f) what
+                  | m, c -> failtestf "%s: the model answered %A, the evaluator %A" what m c
+
+              // The routine parameter, instantiated at the pinned functions over the carrier — the
+              // instantiation the premise `elementary-functions-pinned-by-transcription` names.
+              let pinnedPow (a: string) (b: string) =
+                  fFloat (LinearAlgebra.Elementary.pow (parse a) (parse b))
+
+              let pinned (f: float -> float) (a: string) = fFloat (f (parse a))
+              let nan = fFloat System.Double.NaN
               let mutable compared = 0
 
               for x in specials do
@@ -6656,54 +6677,79 @@ let proofOracleTests =
                       let model = ModelPipe.pow_table (classify x) (classify y)
 
                       let expected =
-                          match DataFrame.powSpecial x y with
-                          | DataFrame.PowSpecial.NaN -> ModelPipe.PNaN
-                          | DataFrame.PowSpecial.One -> ModelPipe.POne
-                          | DataFrame.PowSpecial.Null -> ModelPipe.PNull
-                          | DataFrame.PowSpecial.Host -> ModelPipe.PHost
+                          match LinearAlgebra.Elementary.powTable x y with
+                          | LinearAlgebra.SpecialValue.NaN -> ModelPipe.PNaN
+                          | LinearAlgebra.SpecialValue.Value _ -> ModelPipe.POne
+                          | LinearAlgebra.SpecialValue.Undefined -> ModelPipe.PNull
+                          | LinearAlgebra.SpecialValue.Compute -> ModelPipe.PHost
 
                       if model <> expected then
                           failtestf
-                              "pow_table and powSpecial DISAGREE at x=%g y=%g: model %A, production %A"
+                              "pow_table and Elementary.powTable DISAGREE at x=%g y=%g: model %A, production %A"
                               x
                               y
                               model
                               expected
 
+                      sameCell
+                          (sprintf "pow %g %g" x y)
+                          (ModelPipe.pow_float pinnedPow (parse >> classify) nan (fFloat 1.0) (fFloat x) (fFloat y))
+                          (DataFrame.powFloat x y)
+
                       compared <- compared + 1
 
-                  // `exp`: the table's verdict is what `expHost` answers, class for class.
-                  let ec: ModelPipe.eclass =
-                      { ModelPipe.eclass.e_nan = System.Double.IsNaN x
-                        ModelPipe.eclass.e_over = (x > 709.782712893384)
-                        ModelPipe.eclass.e_under = (x < -745.1332191019412) }
+                  // `exp`: the table's verdict is what `expCell` answers, class for class, and the
+                  // computed arm is the pinned routine.
+                  let ec (v: float) : ModelPipe.eclass =
+                      { ModelPipe.eclass.e_nan = System.Double.IsNaN v
+                        ModelPipe.eclass.e_over = (v > 709.782712893384)
+                        ModelPipe.eclass.e_under = (v < -745.1332191019412) }
 
-                  let e = DataFrame.expHost x
+                  let expectedExp =
+                      match LinearAlgebra.Elementary.expTable x with
+                      | LinearAlgebra.SpecialValue.NaN -> ModelPipe.EInput
+                      | LinearAlgebra.SpecialValue.Value v when v = 0.0 -> ModelPipe.EZero
+                      | LinearAlgebra.SpecialValue.Value _ -> ModelPipe.EInf
+                      | LinearAlgebra.SpecialValue.Undefined -> failtestf "exp %g: the table has no undefined row" x
+                      | LinearAlgebra.SpecialValue.Compute -> ModelPipe.EHost
 
-                  match ModelPipe.exp_table ec with
-                  | ModelPipe.EInput -> Expect.isTrue (System.Double.IsNaN e) (sprintf "exp %g: the input is a NaN" x)
-                  | ModelPipe.EInf -> Expect.equal e System.Double.PositiveInfinity (sprintf "exp %g overflows" x)
-                  | ModelPipe.EZero -> Expect.equal e 0.0 (sprintf "exp %g underflows" x)
-                  | ModelPipe.EHost -> Expect.equal e (System.Math.Exp x) (sprintf "exp %g is the host's" x)
+                  Expect.equal (ModelPipe.exp_table (ec x)) expectedExp (sprintf "exp_table and expTable at %g" x)
 
-                  // `ln` / `log10`: the same, over `logHost` at both host logarithms.
-                  let lc: ModelPipe.lclass =
-                      { ModelPipe.lclass.l_nan = System.Double.IsNaN x
-                        ModelPipe.lclass.l_nonpos = (x <= 0.0)
-                        ModelPipe.lclass.l_one = (x = 1.0)
-                        ModelPipe.lclass.l_pinf = System.Double.IsPositiveInfinity x }
+                  sameCell
+                      (sprintf "exp %g" x)
+                      (FStar_Pervasives_Native.Some(
+                          ModelPipe.exp_float
+                              (pinned LinearAlgebra.Elementary.exp)
+                              (parse >> ec)
+                              (fFloat System.Double.PositiveInfinity)
+                              (fFloat 0.0)
+                              (fFloat x)
+                      ))
+                      (DataFrame.expCell x)
 
-                  for name, log in [ "ln", (fun v -> System.Math.Log v); "log10", (fun v -> System.Math.Log10 v) ] do
-                      let l = DataFrame.logHost log x
+                  // `ln` / `log10`: the same, over `logCell` at both pinned logarithms.
+                  let lc (v: float) : ModelPipe.lclass =
+                      { ModelPipe.lclass.l_nan = System.Double.IsNaN v
+                        ModelPipe.lclass.l_nonpos = (v <= 0.0)
+                        ModelPipe.lclass.l_one = (v = 1.0)
+                        ModelPipe.lclass.l_pinf = System.Double.IsPositiveInfinity v }
 
-                      match ModelPipe.log_table lc, l with
-                      | ModelPipe.LInput, Cell.Float f ->
-                          Expect.isTrue (System.Double.IsNaN f) (sprintf "%s %g: a NaN" name x)
-                      | ModelPipe.LNull, Cell.Null -> ()
-                      | ModelPipe.LZero, Cell.Float f -> Expect.equal f 0.0 (sprintf "%s 1 is 0" name)
-                      | ModelPipe.LInf, Cell.Float f ->
-                          Expect.equal f System.Double.PositiveInfinity (sprintf "%s Inf" name)
-                      | ModelPipe.LHost, Cell.Float f -> Expect.equal f (log x) (sprintf "%s %g is the host's" name x)
-                      | verdict, cell -> failtestf "%s %g: log_table says %A, logHost answered %A" name x verdict cell
+                  let expectedLog =
+                      match LinearAlgebra.Elementary.lnTable x with
+                      | LinearAlgebra.SpecialValue.NaN -> ModelPipe.LInput
+                      | LinearAlgebra.SpecialValue.Undefined -> ModelPipe.LNull
+                      | LinearAlgebra.SpecialValue.Value v when v = 0.0 -> ModelPipe.LZero
+                      | LinearAlgebra.SpecialValue.Value _ -> ModelPipe.LInf
+                      | LinearAlgebra.SpecialValue.Compute -> ModelPipe.LHost
+
+                  Expect.equal (ModelPipe.log_table (lc x)) expectedLog (sprintf "log_table and lnTable at %g" x)
+
+                  for name, base10, f in
+                      [ "ln", false, LinearAlgebra.Elementary.ln
+                        "log10", true, LinearAlgebra.Elementary.log10 ] do
+                      sameCell
+                          (sprintf "%s %g" name x)
+                          (ModelPipe.log_float (pinned f) (parse >> lc) (fFloat 0.0) (fFloat x))
+                          (DataFrame.logCell base10 x)
 
               printfn "power table differential: pow pairs compared=%d" compared ]

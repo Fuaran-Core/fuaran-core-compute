@@ -128,11 +128,10 @@ module TransformVectorSample =
           "repeat-pivot-refused" ]
 
     /// The power shapes (Phase 557, D43), one vector each after the repeat shapes, over the decimal
-    /// table. An integer-exponent `Pow` is a BYTE-EXACT vector — the pinned routine, held equal bit
-    /// for bit to the repeated-multiplication spelling up to the cube — and so is every row of the
-    /// special-value table; a float-exponent `Pow`, `Exp`, `Ln` and `Log10` are HOST-ROUNDED, and
-    /// their vectors carry the per-column tolerance the exactness mark names; a decimal operand is
-    /// refused.
+    /// table. Every one is a BYTE-EXACT vector (Phase 594, D54): an integer-exponent `Pow` runs the
+    /// pinned routine, held equal bit for bit to the repeated-multiplication spelling up to the cube;
+    /// every row of the special-value table is the table's; and a float-exponent `Pow`, `Exp`, `Ln`
+    /// and `Log10` are the pinned `Elementary` routines. A decimal operand is refused.
     let private powerShapeNames =
         [ "power-int-exponent"
           "power-int-base"

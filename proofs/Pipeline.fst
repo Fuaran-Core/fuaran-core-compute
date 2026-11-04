@@ -3355,10 +3355,11 @@ let agg_unit_count (fn:agg_fn{fn = Count \/ fn = CountDistinct}) (source:option 
   : Lemma (ensures agg_unit fn source == None) = ()
 
 (* ======================================================================================
-   14. The power functions (Phase 557, `DECISIONS.md` D43) — `DataFrame.powInt` clause for clause
-       over an abstract multiply, the special-value tables `powSpecial`, `expHost` and `logHost`
-       concretely over a classification of the float, and the host's own `pow` / `exp` / `log` as
-       UNINTERPRETED functions the tables answer before.
+   14. The power functions (Phase 557, `DECISIONS.md` D43; Phase 594, D54) — `DataFrame.powInt`
+       clause for clause over an abstract multiply, the special-value tables `Elementary.powTable`,
+       `expTable` and `lnTable` concretely over a classification of the float, and the computed arm —
+       since Phase 594 the PINNED routines `Elementary.pow` / `exp` / `ln` / `log10` (D52), until then
+       the host's own library — as UNINTERPRETED functions the tables answer before.
 
    WHAT IS AND IS NOT CLAIMED. A float is the opaque carrier it is everywhere in this model, and its
    arithmetic is a PARAMETER (`fp`), as the cell primitives are: a multiply, a reciprocal and the
@@ -3371,12 +3372,16 @@ let agg_unit_count (fn:agg_fn{fn = Count \/ fn = CountDistinct}) (source:option 
    multiply commuting, which IEEE-754's does). From four the squaring tree is a DIFFERENT tree
    from the left fold's, and no equality is claimed: the pinned routine is what every host runs.
 
-   The host-rounded functions are not modelled: `pow_float`, `exp_float` and `log_float` take the
-   host's function as a parameter and reach it exactly where the table does not answer. The
-   theorems `pow_table_before_host`, `exp_table_before_host` and `log_table_before_host` say that two
-   hosts whose functions differ ARBITRARILY answer the same cell on every input the table decides —
-   so every special value is byte-identical across hosts by construction, and the 2 ulp bound D43
-   records is a claim about the inputs that reach the host, measured there, never proved here. *)
+   The routines are not modelled: `pow_float`, `exp_float` and `log_float` take the computed arm as a
+   parameter and reach it exactly where the table does not answer. The theorems
+   `pow_table_before_host`, `exp_table_before_host` and `log_table_before_host` say that two hosts
+   whose routines differ ARBITRARILY answer the same cell on every input the table decides — so every
+   special value is byte-identical across hosts by construction. `pow_float_pinned`,
+   `exp_float_pinned` and `log_float_pinned` say the rest: two hosts whose routines agree at an input
+   answer the same cell there. That every transcribing host's routine agrees with every other's at
+   every input is the premise `elementary-functions-pinned-by-transcription` (`proofs.json`, Phase
+   593), which the elementary vectors hold byte for byte; with it, the four functions are
+   byte-identical across hosts on every input (D54), and D43's 2 ulp bound no longer describes them. *)
 
 (* The float arithmetic the routine runs on. *)
 noeq type fp = {
@@ -3452,14 +3457,14 @@ type fclass = {
   c_int     : bool;
 }
 
-(* F#: `PowSpecial`. *)
+(* F#: `Elementary.powTable`'s verdict (`SpecialValue`): `NaN`, `Value 1.0`, `Undefined`, `Compute`. *)
 type pow_special =
   | PNaN
   | POne
   | PNull
   | PHost
 
-(* F#: `powSpecial`, test for test in the same order. *)
+(* F#: `Elementary.powTable`, test for test in the same order. *)
 let pow_table (x y:fclass) : Tot pow_special =
   if x.c_nan || y.c_nan then PNaN
   else if y.c_zero || x.c_one then POne
@@ -3468,7 +3473,8 @@ let pow_table (x y:fclass) : Tot pow_special =
   else if x.c_neg && not x.c_inf && not y.c_inf && not y.c_int then PNull
   else PHost
 
-(* F#: `powFloat` — the table, then the host, which is a PARAMETER. `None` is the `Null` cell. *)
+(* F#: `DataFrame.powFloat` — the table, then the pinned routine, which is a PARAMETER. `None` is the
+   `Null` cell. *)
 let pow_float (host:string -> string -> string) (classify:string -> fclass) (nan one:string) (x y:string)
   : Tot (option string) =
   match pow_table (classify x) (classify y) with
@@ -3499,8 +3505,8 @@ let pow_table_negative_base (x y:fclass)
                     /\ ~(x.c_neg_one /\ y.c_inf) /\ x.c_neg /\ ~x.c_inf /\ ~y.c_inf /\ ~y.c_int)
           (ensures pow_table x y == PNull) = ()
 
-(* F#: `expHost` — what the table reads: a NaN, above the natural log of the largest double, below
-   the natural log of half the smallest subnormal. *)
+(* F#: `Elementary.expTable`, read by `DataFrame.expCell` — a NaN, above the natural log of the largest
+   double, below the natural log of half the smallest subnormal. *)
 type eclass = { e_nan : bool; e_over : bool; e_under : bool }
 
 type exp_special =
@@ -3526,7 +3532,8 @@ let exp_table_before_host (h1 h2:string -> string) (classify:string -> eclass) (
   : Lemma (requires exp_table (classify x) <> EHost)
           (ensures exp_float h1 classify inf zero x == exp_float h2 classify inf zero x) = ()
 
-(* F#: `logHost` — a NaN, zero and below, one, positive infinity. *)
+(* F#: `Elementary.lnTable`, read by `DataFrame.logCell` — a NaN, zero and below, one, positive
+   infinity. *)
 type lclass = { l_nan : bool; l_nonpos : bool; l_one : bool; l_pinf : bool }
 
 type log_special =
@@ -3554,3 +3561,21 @@ let log_float (host:string -> string) (classify:string -> lclass) (zero:string) 
 let log_table_before_host (h1 h2:string -> string) (classify:string -> lclass) (zero:string) (x:string)
   : Lemma (requires log_table (classify x) <> LHost)
           (ensures log_float h1 classify zero x == log_float h2 classify zero x) = ()
+
+(* ---- 14.3 The computed arm is the pinned routine (Phase 594, D54) ---- *)
+
+(* Two hosts whose routines agree at an input answer the same cell there. With the table lemmas
+   above, and the premise `elementary-functions-pinned-by-transcription` that every transcribing
+   host's routine is the same function, a float `Pow`, `Exp`, `Ln` and `Log10` answer the same cell on
+   every host at every input. *)
+let pow_float_pinned (r1 r2:string -> string -> string) (classify:string -> fclass) (nan one:string) (x y:string)
+  : Lemma (requires r1 x y == r2 x y)
+          (ensures pow_float r1 classify nan one x y == pow_float r2 classify nan one x y) = ()
+
+let exp_float_pinned (r1 r2:string -> string) (classify:string -> eclass) (inf zero:string) (x:string)
+  : Lemma (requires r1 x == r2 x)
+          (ensures exp_float r1 classify inf zero x == exp_float r2 classify inf zero x) = ()
+
+let log_float_pinned (r1 r2:string -> string) (classify:string -> lclass) (zero:string) (x:string)
+  : Lemma (requires r1 x == r2 x)
+          (ensures log_float r1 classify zero x == log_float r2 classify zero x) = ()

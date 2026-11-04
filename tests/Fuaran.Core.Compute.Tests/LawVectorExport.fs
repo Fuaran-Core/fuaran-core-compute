@@ -121,7 +121,8 @@ module LawVectorExport =
 
     /// The cross-host bound on a host-rounded column, in ulps (Phase 557, `DECISIONS.md` D43): what
     /// a certifying host compares a `HostRounded` column within, where a pinned column is compared
-    /// byte for byte.
+    /// byte for byte. No column of the sample is host-rounded since Phase 594 (D54); the bound stays
+    /// for the vector whose walk marks one.
     let hostRoundedUlps = 2
 
     /// The columns of a pipeline's output the static walk marks `HostRounded` over the source's
@@ -377,17 +378,19 @@ module LawVectorExport =
         + "after the last unit shape, each takes the next REPEAT shape named in its vector id (Phase 468) "
         + "over the decimal table: a project, a group-by, an unpivot and a pivot whose output would name "
         + "one column twice are refused. From the iteration after the last repeat shape, each takes the "
-        + "next POWER shape named in its vector id (Phase 557) over the decimal table. An integer-exponent "
-        + "`pow` is BYTE-EXACT on every host — one pinned routine, binary exponentiation over IEEE-754 "
-        + "multiplication with one reciprocal for a negative exponent, equal bit for bit to the "
-        + "repeated-multiplication spelling up to the cube — and so is every row of the special-value "
-        + "table (`pow(0,0)`, `pow(1,y)`, `pow(0,negative)`, a negative base under a non-integer exponent, "
-        + "`ln` at and below zero, `ln 1`, `exp` underflow); the special-value vector carries the bound "
-        + "below because its columns read host-rounded functions, and what it pins is exact all the "
-        + "same — no wrong special value lies within the bound of the right one. "
-        + "A float-exponent `pow`, `exp`, `ln` and `log10` are HOST-ROUNDED: within one host deterministic, "
-        + "across hosts within a bound. Such a vector carries `expected.tolerance`, an object naming each "
-        + "output column the reference's static walk marks host-rounded with the bound in ULPS a host's "
+        + "next POWER shape named in its vector id (Phase 557) over the decimal table. Every power vector "
+        + "is BYTE-EXACT on every host (Phase 594): an integer-exponent `pow` runs one pinned routine, "
+        + "binary exponentiation over IEEE-754 multiplication with one reciprocal for a negative exponent, "
+        + "equal bit for bit to the repeated-multiplication spelling up to the cube; every row of the "
+        + "special-value table (`pow(0,0)`, `pow(1,y)`, `pow(0,negative)`, a negative base under a "
+        + "non-integer exponent, `ln` at and below zero, `ln 1`, `exp` underflow) is answered before any "
+        + "routine; and a float-exponent `pow`, `exp`, `ln` and `log10` run the pinned routines of "
+        + "`Fuaran.Compute.LinearAlgebra.Elementary` (fdlibm's reductions and coefficients in `+ - * /` "
+        + "and comparisons, `pow` as `exp(y * ln x)` in double-double, published with their own vectors in "
+        + "`linear-algebra-laws.json`), so a host transcribes those routines and matches the recorded bits. "
+        + "A vector whose output the reference's static walk marks HOST-ROUNDED — none in this file "
+        + "since Phase 594 — carries `expected.tolerance`, an object naming each such "
+        + "output column with the bound in ULPS a host's "
         + "value may sit from the recorded one, the distance between two doubles being the difference of "
         + "their IEEE-754 binary64 bit patterns read as ordered integers (a negative double's pattern "
         + "reflected below zero, so adjacent doubles are one apart). A host "
@@ -396,8 +399,8 @@ module LawVectorExport =
         + "non-finite float and any other cell equal exactly — and the rest of the table byte "
         + "for byte: its answer with every named column replaced by the recorded one encodes to "
         + "`expected.table` exactly (Phase 559). A host that does not implement the four functions reports "
-        + "the vector as unsupported and never skips it silently. A pinned column is never named, so a "
-        + "vector without the member is compared exactly as before. "
+        + "the power vectors as unsupported and never skips them silently. A pinned column is never named, "
+        + "so a vector without the member is compared byte for byte. "
         + "From the iteration after the last power shape, each takes the next OVERFLOW shape named in its "
         + "vector id (Phase 572) over the decimal table: `add`, `sub`, `mul` and an integer-exponent `pow` "
         + "over int32 operands, each first derived into a column so the operation runs over a column. An "

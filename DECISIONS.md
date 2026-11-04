@@ -1,5 +1,92 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D54: the evaluator's `Exp`, `Ln`, `Log10` and float-exponent `Pow` run on `Elementary`'s pinned routines behind its published special-value tables, so every column they compute is `Pinned` and byte-identical on every host; D43's host-rounded tier is superseded for the four functions; the `HostRounded` mark, the decision report and the vector tolerance stay as the seam a value declared host-rounded enters by, and no scalar function produces one
+
+**Context.** D43 (Phase 557) made a float-exponent `Pow`, `Exp`, `Ln` and `Log10` host-rounded: the special-value
+table first, then the host's own maths library, deterministic within one host and within two ulps across hosts,
+every column reading one marked `HostRounded`, every discrete decision such a value reaches reported, and the
+transform law vectors comparing those columns in ulps (D44). D52 (Phase 593) built the pinned replacement —
+`Fuaran.Compute.LinearAlgebra.Elementary`'s `exp`, `ln`, `log10` and `pow`, one reduction and one polynomial each
+over the correctly rounded basic operations, within one ulp of the true value and byte-identical on .NET and node —
+and published D43's table as data (`SpecialValue`, `expTable`, `lnTable`, `powTable`), but left the evaluator on
+the host. This entry moves it (Phase 594; operator ruling D6 = B, 2026-11-01: pin the functions before the GLM).
+
+**Premise check at take, against `main` at `ae3707c`.** `Elementary` is on `main` with the four routines and the
+three tables, and `Fuaran.Compute.DataFrame` already references `Fuaran.Compute.LinearAlgebra` (Phase 592). What read
+`HostRounded` or the host functions: the evaluator's `applyScalar` arms for the four functions, through D43's own
+copy of the table in `DataFrame.fs` (`PowSpecial`, `powSpecial`, `powFloat`, `expHost`, `logHost` — the copy D52
+said this phase deletes); the static walk's `hostRoundedOperand`, which named the four functions as sources of the
+mark (`integerExponent` deciding a power), and through it `exprExactness`, every verb's carried mark and
+`hostRoundedDecisions`; the four transform vectors carrying `expected.tolerance` (`power-special-values` at ten
+columns, `power-float-exponent`, `power-exp`, `power-ln-log10`); `proofs/Pipeline.fst` section 14 and the oracle
+differential, which compared the extracted tables to the `DataFrame.fs` copy; the tests asserting those marks. No
+native kernel computes any of the four (`Kernels.fs` has none), and the compiled derive and the incremental seam
+reach them only through `applyScalar`. The shard's "`SchemaWalk.exactnessOf` reports these columns `Exact`" names
+a case that does not exist: the pinned case is `Exactness.Pinned`, and that is what they report.
+
+**Decision.**
+
+1. **The evaluator reads `Elementary`, table first.** A float-exponent `Pow` answers from `Elementary.powTable`,
+   `Exp` from `expTable`, `Ln` and `Log10` from `lnTable`; a NaN is D16's one NaN, the table's value is that value,
+   `Undefined` is `Null` (as `Div` by zero is), and every input the table leaves (`Compute`) is
+   `Elementary.pow` / `exp` / `ln` / `log10`. One helper (`DataFrame.ofTable`) reads all three tables, and
+   `applyScalar` stays the one implementation the row evaluator, the compiled derive and the incremental seam share.
+   D43's copy of the table in `DataFrame.fs` is deleted: there is one table, the published one. The integer-exponent
+   routine (D43 item 2) is unchanged.
+2. **The four functions are `Pinned`.** The static walk no longer names them as sources of the mark, and
+   `integerExponent` (which existed only to decide a power's mark) is removed; a column computed by any of them over
+   pinned inputs is `Pinned`, and a pipeline over pinned input knowledge reports no host-rounded decision. Every
+   other rule of D43 items 5 and (c) is unchanged — the lineage rules, which verbs carry the mark, what counts as a
+   decision.
+3. **What remains `HostRounded`.** No scalar function of the evaluator. The mark enters only where a caller
+   declares it: an input column marked so in the knowledge handed to `SchemaWalk.ofPipelineFrom` /
+   `hostRoundedDecisionsFrom` (`ColumnKnowledge.withExactness`), and a call the walk cannot expand (Phase 596's
+   conservative reading, whose pipeline the evaluator refuses anyway). That is the seam Phase 599's registered host
+   functions stand on: a host function declares its own exactness, and one declared `HostRounded` reaches the walk,
+   the decision report and a vector's tolerance through exactly the machinery D43 built. So the `Exactness` type, the
+   decision report, `LawVectorExport.hostRoundedUlps`, the tolerance member and `VectorTolerance` (D44) all stay; the
+   suite now proves them over a declared mark rather than over a transcendental.
+4. **The corpus.** The four power vectors lose `expected.tolerance` and are compared byte for byte; their recorded
+   tables are unchanged, because the pinned routines answer the same bits .NET's library did at every drawn input
+   (the regenerated file differs from the committed one only in the four tolerance members and the description). No
+   vector of `transform-laws.json` carries a tolerance; the member, and its specification in the file's description,
+   stay for the vector whose walk marks a declared host-rounded column. The file's `iterations` and every other
+   vector are unchanged.
+5. **The proof model.** `proofs/Pipeline.fst` section 14 keeps its shape: the tables concretely over a classification
+   of the float, and the computed arm a PARAMETER. What the parameter stands for changes — the pinned routine, not
+   the host's library — so the section's header and the ladder row `pipeline-power-tables-before-host` say so, and
+   three lemmas are added (`pow_float_pinned`, `exp_float_pinned`, `log_float_pinned`): two hosts whose routines
+   agree at an input answer the same cell there. Their premise is the ladder row 593 recorded,
+   `elementary-functions-pinned-by-transcription`, so cross-host byte identity now reaches every input — the table's
+   by `*_table_before_host`, the rest by the transcription premise — and the extraction is unchanged (lemmas are
+   erased). The oracle differential instantiates the parameter at `Elementary` and holds the model's cell to the
+   evaluator's (`DataFrame.powFloat`, `expCell`, `logCell`) bit for bit over the special-value grid.
+6. **The twins follow.** `fuaran-ts` and every other host that certifies the transform laws must replace its host
+   `Math.pow` / `exp` / `log` / `log10` behind the table with a transcription of `Elementary` (its own vectors in
+   `linear-algebra-laws.json` certify the transcription) and adopt the rewritten corpus, where the four vectors are
+   now byte vectors. The follow-up is a language-side phase (the precedent is fuaran#2400); a Compute pin raise in a host re-emits the Compute-produced corpus files in the same change-set.
+7. **Classification.** BREAKING, `behaviour`: no public surface moves (every changed function is internal; the
+   regenerated baselines are byte-identical), but what a consumer receives does — a column the walk marked
+   `HostRounded` is now `Pinned`, `hostRoundedDecisions` reports nothing for a pipeline it used to report on, the
+   four vectors lose a member, and a value off the special-value table may differ in its last bit from the host
+   library's on some input. It rides the `0.43.0` draft, which already carries breaking moves.
+
+**Rejected.** *Removing the `HostRounded` mark, the decision report and the tolerance now that nothing produces
+one* — the smaller tree today, but Phase 599 reintroduces a producer (a registered host function declaring its
+exactness) with a class below this one (`Opaque`), and deleting the machinery a phase before it is needed again
+would be churn in a published surface twice; the mark is now proved over a declared input, so it is live code, not
+dead. *Keeping a host-rounded fallback behind a flag* (the host's library for speed, the pinned routine on demand) —
+two answers for one expression is exactly what D52 was built to end, and the measured cost of the pinned routines
+(D52) does not justify it. *Calling `Elementary.exp` and friends directly, without reading the table in the
+evaluator* — they answer NaN where the table says `Undefined`, and the evaluator's answer there is `Null`; reading
+the table first keeps the `Null` rule in one visible place, and `Compute` is the only arm that calls a routine.
+
+**Supersedes** D43's host-rounded tier for `Exp`, `Ln`, `Log10` and a float-exponent `Pow` — item 3's "then the
+host's" arms, ruling (a)'s 2 ulp bound as it applies to them, item 5's list of functions that mark a column, item 6's
+tolerance on the power vectors, item 7's reading of the parameter as the host's function, item 8's measurement as
+the evaluator's guarantee, and item 9's host-scoped digests for these columns. D43's ruling (b), ruling (c), items 1,
+2 and 4 and the mark's lineage rules stand. D43 carries the status line.
+
 ## 2026-11-04 — D53: a pipeline fits a regression with one `Fit` step — `FitSpec` names the response, the terms as expressions, the groups, the weights, an offset, a ridge penalty, the family and link and the table it answers; the frame-to-matrix bridge, units, the schema walk, the wire tag and the incremental state live in `DataFrame` while the algebra stays in `LinearAlgebra`; ordinary least squares is the one pairing evaluated, every other refused by name; a decimal response is estimated through a recorded cast and every output stated against it is decimal; an append to a group continues its stored factorization byte for byte
 
 **Context.** The plan's S3 (`fuaran-compute-linear-algebra-and-glm.md` §2.4, operator rulings D4, D5 and D7 of
@@ -1027,6 +1114,11 @@ walk to overflow without bounding any of them, and depth is item 7's question. *
 now:* item 4.
 
 ## 2026-10-21 — D43: `Pow`, `Exp`, `Ln` and `Log10` enter the scalar set — an integer power runs one pinned routine, exact on every host; the transcendentals are host-rounded within 2 ulp behind a special-value table; the static walk marks every host-rounded column and reports each discrete decision such a value reaches; the Pow/Log line of Fuaran.Core's D13 is superseded
+
+**Status (2026-11-04).** The host-rounded tier is SUPERSEDED for `Exp`, `Ln`, `Log10` and a float-exponent `Pow` by
+D54 (Phase 594): the evaluator runs `Elementary`'s pinned routines (D52) behind the published table, so their columns
+are `Pinned` and byte-identical on every host. Rulings (b) and (c), items 1, 2 and 4 and the mark's lineage rules
+stand; the mark, the decision report and the tolerance remain for a value its caller declares host-rounded.
 
 **Context.** Fuaran.Core's D13 (Phase 101, recorded in that repository's `DECISIONS.md` before the compute
 strand was cut from it; this repository's own D13 is unrelated) declined `Pow` and `Log`: IEEE-754 does not

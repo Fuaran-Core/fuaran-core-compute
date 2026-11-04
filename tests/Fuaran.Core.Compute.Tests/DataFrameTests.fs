@@ -2293,7 +2293,7 @@ let tests =
                   | Float f when System.Double.IsNaN f -> ()
                   | other -> failtestf "%s: expected NaN, got %A" what other
 
-              // The float path: the table first, then the host.
+              // The float path: the table first, then the pinned `Elementary.pow` (Phase 594, D54).
               Expect.equal (scalar (pow (Float 0.0) (Float 0.0))) (Float 1.0) "0.0^0.0 is 1"
               isNaN "1^NaN is NaN: a NaN propagates" (scalar (pow (Float 1.0) (Float System.Double.NaN)))
               isNaN "NaN^0 is NaN" (scalar (pow (Float System.Double.NaN) (Float 0.0)))
@@ -2315,10 +2315,20 @@ let tests =
               Expect.equal
                   (scalar (pow (Float -2.0) (Float 2.0)))
                   (Float 4.0)
-                  "a negative base under an integral float exponent is the host's"
+                  "a negative base under an integral float exponent is the routine's"
 
-              Expect.equal (scalar (pow (Float 2.0) (Float 0.5))) (Float(System.Math.Pow(2.0, 0.5))) "the host's pow"
-              Expect.equal (scalar (pow (Int 2) (Float 0.5))) (Float(System.Math.Pow(2.0, 0.5))) "an int base promotes"
+              Expect.equal (scalar (pow (Float 2.0) (Float 0.5))) (Float(sqrt 2.0)) "pow(x, 1/2) is the root"
+
+              Expect.equal
+                  (scalar (pow (Float 2.0) (Float 0.3)))
+                  (Float(LinearAlgebra.Elementary.pow 2.0 0.3))
+                  "the pinned pow"
+
+              Expect.equal
+                  (scalar (pow (Int 2) (Float 0.3)))
+                  (scalar (pow (Float 2.0) (Float 0.3)))
+                  "an int base promotes"
+
               Expect.equal (scalar (pow (Float 2.0) Null)) Null "null propagates"
               Expect.equal (scalar (pow Null (Int 2))) Null "null propagates"
 
@@ -2330,16 +2340,16 @@ let tests =
               | TypeError _ -> ()
               | other -> failtestf "expected a TypeError, got %A" other
 
-              // Exp: the table's two edges, then the host.
+              // Exp: the table's two edges, then the pinned `Elementary.exp` (D54).
               let exp' c = ApplyFn(Exp, [ Lit c ])
               Expect.equal (scalar (exp' (Float 0.0))) (Float 1.0) "exp 0"
               Expect.equal (scalar (exp' (Float 710.0))) (Float System.Double.PositiveInfinity) "exp overflow is Inf"
               Expect.equal (scalar (exp' (Float -746.0))) (Float 0.0) "exp underflow is 0"
               isNaN "exp NaN" (scalar (exp' (Float System.Double.NaN)))
-              Expect.equal (scalar (exp' (Int 1))) (Float(System.Math.Exp 1.0)) "the host's exp"
+              Expect.equal (scalar (exp' (Int 1))) (Float(LinearAlgebra.Elementary.exp 1.0)) "the pinned exp"
               Expect.equal (scalar (exp' Null)) Null "null propagates"
 
-              // Ln and Log10: Null at zero and below, 0 at one, Inf at Inf, then the host.
+              // Ln and Log10: Null at zero and below, 0 at one, Inf at Inf, then the pinned routines (D54).
               let ln c = ApplyFn(Ln, [ Lit c ])
               let log10' c = ApplyFn(Log10, [ Lit c ])
               Expect.equal (scalar (ln (Float 1.0))) (Float 0.0) "ln 1"
@@ -2352,8 +2362,9 @@ let tests =
                   "ln Inf"
 
               isNaN "ln NaN" (scalar (ln (Float System.Double.NaN)))
-              Expect.equal (scalar (ln (Int 10))) (Float(System.Math.Log 10.0)) "the host's ln"
-              Expect.equal (scalar (log10' (Float 1000.0))) (Float(System.Math.Log10 1000.0)) "the host's log10"
+              Expect.equal (scalar (ln (Int 10))) (Float(LinearAlgebra.Elementary.ln 10.0)) "the pinned ln"
+              Expect.equal (scalar (log10' (Float 1000.0))) (Float 3.0) "the pinned log10 is exact at a power of ten"
+              Expect.equal (scalar (log10' (Float 2.5))) (Float(LinearAlgebra.Elementary.log10 2.5)) "the pinned log10"
               Expect.equal (scalar (log10' (Int 0))) Null "log10 0 is Null"
 
               match refused (ln (Cell.decimal "2" |> Option.get)) with
@@ -2373,14 +2384,32 @@ let tests =
                       (sprintf "the row evaluator and the derive agree on %A" e)
 
           testCase
-              "Phase 557 — the schema walk marks every HostRounded column, types a power by its literal exponent, and reports each discrete decision a host-rounded value reaches"
+              "Phase 557, Phase 594 — every scalar function is pinned; the schema walk carries a declared HostRounded mark along the lineage, types a power by its literal exponent, and reports each discrete decision a host-rounded value reaches"
           <| fun _ ->
               let schema =
                   [ Field.create "x" FloatType
                     Field.create "n" IntType
                     Field.create "g" StringType ]
 
-              let walk pipeline = SchemaWalk.ofPipeline schema pipeline
+              // Since Phase 594 (D54) no scalar function produces a host-rounded value, so the mark
+              // enters where a caller declares it: `h` is an input column marked host-rounded, the
+              // seam a registered host function stands on.
+              let marked =
+                  match SchemaWalk.ofSchema (schema @ [ Field.create "h" FloatType ]) with
+                  | SchemaKnowledge.Closed cs ->
+                      SchemaKnowledge.Closed(
+                          cs
+                          |> List.map (fun c ->
+                              if c.Name = "h" then
+                                  ColumnKnowledge.withExactness Exactness.HostRounded c
+                              else
+                                  c)
+                      )
+                  | other -> failtestf "an input schema walks closed: %A" other
+
+              let walk pipeline =
+                  SchemaWalk.ofPipelineFrom SchemaWalk.noSources marked pipeline
+
               let markOf name k = SchemaWalk.exactnessOf name k
               let pinned = Some Exactness.Pinned
               let rounded = Some Exactness.HostRounded
@@ -2392,24 +2421,33 @@ let tests =
                     Derive("e", ApplyFn(Exp, [ Col "x" ]))
                     Derive("l", ApplyFn(Ln, [ Binary(Add, Col "x", Lit(Float 1.0)) ]))
                     Derive("l10", ApplyFn(Log10, [ Col "n" ]))
-                    Derive("viaE", Binary(Mul, Col "e", Lit(Float 2.0)))
-                    Derive("cased", Case([ Binary(Gt, Col "n", Lit(Int 0)), Col "x" ], Col "e"))
-                    Derive("isn", IsNull(Col "e"))
+                    Derive("eh", ApplyFn(Exp, [ Col "h" ]))
+                    Derive("viaH", Binary(Mul, Col "h", Lit(Float 2.0)))
+                    Derive("cased", Case([ Binary(Gt, Col "n", Lit(Int 0)), Col "x" ], Col "h"))
+                    Derive("isn", IsNull(Col "h"))
                     Derive("plain", Binary(Add, Col "x", Lit(Float 1.0))) ]
 
               let k = walk derives
               Expect.equal (markOf "x" k) pinned "an input column is pinned"
+              Expect.equal (markOf "h" k) rounded "an input column declared host-rounded keeps its mark"
               Expect.equal (markOf "sq" k) pinned "an integer-literal power is pinned"
               Expect.equal (markOf "pn" k) pinned "a power under an int column is pinned"
-              Expect.equal (markOf "pf" k) rounded "a power under a float exponent is host-rounded"
-              Expect.equal (markOf "e" k) rounded "exp is host-rounded"
-              Expect.equal (markOf "l" k) rounded "ln is host-rounded"
-              Expect.equal (markOf "l10" k) rounded "log10 is host-rounded"
-              Expect.equal (markOf "viaE" k) rounded "the mark rides the lineage"
+              Expect.equal (markOf "pf" k) pinned "a power under a float exponent is pinned (D54)"
+              Expect.equal (markOf "e" k) pinned "exp is pinned (D54)"
+              Expect.equal (markOf "l" k) pinned "ln is pinned (D54)"
+              Expect.equal (markOf "l10" k) pinned "log10 is pinned (D54)"
+              Expect.equal (markOf "eh" k) rounded "a pinned function over a host-rounded column carries the mark"
+              Expect.equal (markOf "viaH" k) rounded "the mark rides the lineage"
               Expect.equal (markOf "cased" k) rounded "an arm drawn from a host-rounded column marks the case"
               Expect.equal (markOf "isn" k) rounded "a boolean over a host-rounded value carries the mark"
               Expect.equal (markOf "plain" k) pinned "a pipeline step reading no such value is pinned"
               Expect.equal (markOf "absent" k) None "an absent column has no mark"
+
+              Expect.isTrue
+                  (SchemaWalk.ofPipeline schema derives.[0..5]
+                   |> SchemaWalk.columns
+                   |> List.forall (fun c -> c.Exactness = Exactness.Pinned))
+                  "over a pinned schema every power and transcendental column is pinned"
 
               // The typer: a literal exponent decides a power's type by its sign.
               Expect.equal (SchemaWalk.typeOf "sq" k) (Some FloatType) "a float base is a float"
@@ -2437,7 +2475,7 @@ let tests =
               let carried =
                   walk (
                       derives
-                      @ [ Project [ "g", "g"; "e", "ee"; "x", "x" ]
+                      @ [ Project [ "g", "g"; "h", "ee"; "x", "x" ]
                           GroupBy(
                               [ "g" ],
                               [ { Name = "s"; Fn = Sum; Of = "ee" }
@@ -2461,11 +2499,11 @@ let tests =
                               { PartitionBy = [ "g" ]
                                 OrderBy = [ "x", Asc ]
                                 Fn = Lag
-                                Of = "e"
+                                Of = "h"
                                 As = "prev" }
                           Window
                               { PartitionBy = [ "g" ]
-                                OrderBy = [ "e", Asc ]
+                                OrderBy = [ "h", Asc ]
                                 Fn = RowNumber
                                 Of = "x"
                                 As = "rn" }
@@ -2481,7 +2519,7 @@ let tests =
               Expect.equal (markOf "rn" windowed) rounded "a row number ordered by a host-rounded key"
               Expect.equal (markOf "rnp" windowed) pinned "a row number over pinned keys"
 
-              let melted = walk (derives @ [ Unpivot([ "g" ], [ "x"; "e" ]) ])
+              let melted = walk (derives @ [ Unpivot([ "g" ], [ "x"; "h" ]) ])
               Expect.equal (markOf "value" melted) rounded "an unpivot holding a host-rounded column"
               Expect.equal (markOf "variable" melted) pinned "the unpivot's names are pinned"
 
@@ -2494,12 +2532,13 @@ let tests =
 
               // The decisions (choice (c)): admitted, and each reported with its step and operand.
               let decisions =
-                  SchemaWalk.hostRoundedDecisions
-                      schema
-                      [ Derive("e", ApplyFn(Exp, [ Col "x" ]))
+                  SchemaWalk.hostRoundedDecisionsFrom
+                      SchemaWalk.noSources
+                      marked
+                      [ Derive("e", ApplyFn(Exp, [ Col "h" ]))
                         Filter(Binary(Gt, Col "e", Lit(Float 1.0)))
                         Derive("r", ApplyFn(Round, [ Col "e" ]))
-                        Derive("i", Cast(IntType, ApplyFn(Ln, [ Col "x" ])))
+                        Derive("i", Cast(IntType, ApplyFn(Ln, [ Col "h" ])))
                         Derive("f", Cast(FloatType, Col "e"))
                         Transform.sortBy [ "e", Desc ]
                         GroupBy(
@@ -2519,7 +2558,7 @@ let tests =
                       Operand = "e" }
                     { Step = 3
                       Verb = "cast int"
-                      Operand = "ln" }
+                      Operand = "h" }
                     { Step = 5
                       Verb = "sort key"
                       Operand = "e" }
@@ -2535,6 +2574,16 @@ let tests =
                         Filter(Binary(Gt, Col "sq", Lit(Float 1.0)))
                         Transform.sortBy [ "sq", Desc ] ])
                   "a pinned pipeline reports no decision"
+
+              Expect.isEmpty
+                  (SchemaWalk.hostRoundedDecisions
+                      schema
+                      [ Derive("e", ApplyFn(Exp, [ Col "x" ]))
+                        Filter(Binary(Gt, Col "e", Lit(Float 1.0)))
+                        Derive("i", Cast(IntType, ApplyFn(Ln, [ Col "x" ])))
+                        Derive("p", ApplyFn(Pow, [ Col "x"; Lit(Float 0.5) ]))
+                        Transform.sortBy [ "p", Desc ] ])
+                  "the transcendentals and a float power reach no host-rounded decision (D54)"
 
               // Admitted, never refused: the pipeline with every decision evaluates.
               let table =

@@ -91,20 +91,23 @@ response's fitted values, residuals and deviances are decimal. Every other famil
 refused by name. Incrementally, a group whose rows were appended continues its stored factorization by
 the new rows alone, byte-equal to a full evaluation; an edited group is refitted.
 
-**The power functions carry a stated guarantee each** (`DECISIONS.md` D43). `Pow` under an integer
-exponent is **exact and byte-identical on every host**: one pinned routine, binary exponentiation
-over IEEE-754 multiplication with one reciprocal for a negative exponent, equal bit for bit to the
-`x * x * x` a consumer would spell by hand up to the cube; an `Int` base under a non-negative exponent
-answers an `Int` and refuses int32 overflow by name. `Pow` under a float exponent, `Exp`, `Ln` and
-`Log10` are **host-rounded**: a special-value table answers every input the hosts' maths libraries
-disagree on (`pow(0, 0)`, `pow(1, NaN)`, a zero base under a negative exponent, a negative base under
-a non-integer exponent, `ln 0`, `exp` overflow and underflow — a NaN propagates, out of the reals'
-domain is `Null`, as `Div` by zero is), then the host's own function answers, deterministic within one
-host and within **2 ulp** of the correctly rounded result across hosts. The static walk marks every
-output column whose lineage passes through one of them `HostRounded` (`SchemaWalk.exactnessOf`), reports
-each discrete decision such a value reaches (`SchemaWalk.hostRoundedDecisions` — a filter, a key, a
-rounding, a cast to int), and the transform law vectors compare exactly those columns in ulps and every
-other column byte for byte.
+**The power functions are exact on every host** (`DECISIONS.md` D43, D54). `Pow` under an integer
+exponent runs one pinned routine, binary exponentiation over IEEE-754 multiplication with one
+reciprocal for a negative exponent, equal bit for bit to the `x * x * x` a consumer would spell by hand
+up to the cube; an `Int` base under a non-negative exponent answers an `Int` and refuses int32 overflow
+by name. `Pow` under a float exponent, `Exp`, `Ln` and `Log10` first read a special-value table that
+answers every input the hosts' maths libraries disagree on (`pow(0, 0)`, `pow(1, NaN)`, a zero base
+under a negative exponent, a negative base under a non-integer exponent, `ln 0`, `exp` overflow and
+underflow — a NaN propagates, out of the reals' domain is `Null`, as `Div` by zero is), and every other
+input goes to the pinned routines of `Fuaran.Compute.LinearAlgebra.Elementary` (D52): one argument
+reduction and one polynomial each, in `+ − × ÷` and comparisons, within one ulp of the true value and
+**byte-identical on every host** that transcribes them — never the host's own maths library. So a
+pipeline over these functions, and a named function built from them, answers the same bytes everywhere,
+and the transform law vectors compare every power column byte for byte. Until Phase 594 these four were
+host-rounded within 2 ulp (D43 item 4, superseded by D54). The static walk's `HostRounded` mark
+(`SchemaWalk.exactnessOf`) and its decision report (`SchemaWalk.hostRoundedDecisions` — a filter, a key,
+a rounding, a cast to int reached by such a value) remain for a value whose lineage the caller declares
+host-rounded; no scalar function produces one.
 
 ## Adoption, in five lines
 

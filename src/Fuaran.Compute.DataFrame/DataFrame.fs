@@ -104,16 +104,15 @@ type SortDir =
 //    (for the backtracking engines) worst-case time, so a pattern is not a cross-host
 //    value. Reach for `Contains` / `StartsWith` / `EndsWith` / `IndexOf` / `Substr` /
 //    `Replace`, or derive the column host-side before it enters the algebra.
-//  * `Pow` / `Exp` / `Ln` / `Log10` ARE present (Phase 557, D43), each with its guarantee
-//    stated rather than refused: an INTEGER-exponent `Pow` runs one pinned routine (binary
-//    exponentiation over IEEE-754 multiplication, one reciprocal for a negative exponent)
-//    and is byte-identical on every host; a non-integer `Pow`, `Exp`, `Ln` and `Log10` are
-//    HOST-ROUNDED — the special-value table answers first, then the host's own maths
-//    library, deterministic within one host and within 2 ulp of the correctly rounded
-//    result across hosts, never byte for byte. The static walk marks every column whose
-//    lineage passes through one of them `HostRounded` (`Exactness`), and the cross-host law
-//    compares exactly those columns in ulps. `Sqrt` IS pinned by IEEE-754 (exact, correctly
-//    rounded), which is why it carries no mark.
+//  * `Pow` / `Exp` / `Ln` / `Log10` ARE present (Phase 557, D43) and EXACT on every host
+//    (Phase 594, D54): an INTEGER-exponent `Pow` runs one pinned routine (binary
+//    exponentiation over IEEE-754 multiplication, one reciprocal for a negative exponent);
+//    a non-integer `Pow`, `Exp`, `Ln` and `Log10` read the special-value table first and
+//    then the pinned routines of `Fuaran.Compute.LinearAlgebra.Elementary` (D52), never the
+//    host's maths library, so every one is byte-identical across hosts. `Sqrt` is pinned
+//    by IEEE-754 itself (correctly rounded). The static walk's `HostRounded` mark
+//    (`Exactness`) is no longer reached by any scalar function here; it stays for a value
+//    whose lineage the caller declares host-rounded.
 //  * NO `Split` and NO explode/flatten — the columnar `Cell` is a closed FLAT scalar set,
 //    and a list-valued cell was explicitly rejected (D12) for blast radius and model
 //    coherence. Both verbs need a value shape the model does not have, so the gap is in
@@ -154,23 +153,24 @@ type ScalarFn =
     /// when absent (an empty needle is `0`). 0-based deliberately: `Substr` is 0-based here, so
     /// `Substr(s, IndexOf(s, t), n)` composes — the 1-based SQL `POSITION` convention would not.
     | IndexOf
-    // Phase 557 (D43) — the power functions, each carrying the guarantee the block above states.
+    // Phase 557 (D43) — the power functions, each exact on every host since Phase 594 (D54).
     /// `Pow(base, exponent)`. An INTEGER exponent (an `Int` cell) runs the one pinned routine —
     /// binary exponentiation over IEEE-754 multiplication, one reciprocal for a negative exponent
     /// (`DataFrame.powInt`) — so the bits are the same on every host; an `Int` base under an
     /// exponent `>= 0` answers an `Int` and refuses int32 overflow by name, as `Mul` does, and under a
-    /// negative one answers the float reciprocal. A FLOAT exponent is HOST-ROUNDED: the special-value
-    /// table (`DataFrame.powSpecial`) answers first, then the host's own `pow`, within 2 ulp of the
-    /// correctly rounded result across hosts. Outside the reals' domain — a finite negative base under
+    /// negative one answers the float reciprocal. A FLOAT exponent reads the special-value table
+    /// (`Elementary.powTable`) first, then the pinned `Elementary.pow` (D52), the same bits on every
+    /// host. Outside the reals' domain — a finite negative base under
     /// a non-integer exponent, a zero base under a negative one — the answer is `Null`, as `Div` by
     /// zero is; a NaN operand propagates as D16's one NaN. A `Decimal` operand is refused by name, as
     /// `Sqrt` refuses it.
     | Pow
-    /// `e` raised to the operand: host-rounded under the 2 ulp bound. Overflow is `Inf` and underflow
-    /// `0`, both decided by the table before the host is called. A `Decimal` operand is refused by name.
+    /// `e` raised to the operand: the pinned `Elementary.exp`, the same bits on every host. Overflow is
+    /// `Inf` and underflow `0`, both decided by the table before the routine is called. A `Decimal`
+    /// operand is refused by name.
     | Exp
-    /// The natural logarithm: host-rounded under the 2 ulp bound; `Null` at zero and below, as `Sqrt`
-    /// is below zero; `0` exactly at `1`, `Inf` at `Inf`. A `Decimal` operand is refused by name.
+    /// The natural logarithm: the pinned `Elementary.ln`, the same bits on every host; `Null` at zero
+    /// and below, as `Sqrt` is below zero; `0` exactly at `1`, `Inf` at `Inf`. A `Decimal` operand is refused by name.
     | Ln
     /// The base-10 logarithm, on `Ln`'s terms.
     | Log10
@@ -2866,17 +2866,19 @@ module DataFrame =
             | _, Float _ -> Error(decimalFloatMismatch "quotient")
             | _ -> Error(TypeError "quotient of a non-numeric")
 
-    // ---- Phase 557 (D43): the power functions ----------------------------------------------------
+    // ---- Phase 557 (D43), Phase 594 (D54): the power functions ---------------------------------
     //
-    // Two kinds of guarantee, stated per function rather than refused for the set. An INTEGER
-    // exponent is EXACT on every host: one pinned product tree over the host's IEEE-754 multiply,
-    // which every host rounds the same way, so the tree and not the host decides the bits. A float
-    // exponent, `Exp`, `Ln` and `Log10` are HOST-ROUNDED: IEEE-754 does not require them correctly
-    // rounded, so the special-value table below answers every input the hosts' libraries disagree
-    // on BEFORE the host is called, and what remains is the host's own answer — deterministic within
-    // one host, within 2 ulp of the correctly rounded result across hosts (the bound D43 records and
-    // the cross-host law compares in). `proofs/Pipeline.fst` section 14 models the routine and the
-    // tables clause for clause and the host functions as uninterpreted.
+    // Every one is EXACT on every host. An INTEGER exponent runs one pinned product tree over the
+    // host's IEEE-754 multiply, which every host rounds the same way, so the tree and not the host
+    // decides the bits. A float exponent, `Exp`, `Ln` and `Log10` read D43's special-value table
+    // FIRST — published as data by `Fuaran.Compute.LinearAlgebra.Elementary` — and every input the
+    // table does not answer goes to that module's pinned routine (D52): one argument reduction and
+    // one polynomial in `+ − × ÷` and comparisons, which a host that transcribes it computes to the
+    // same bits. Until Phase 594 that arm was the host's own maths library, deterministic within one
+    // host and within 2 ulp across hosts; D54 supersedes that tier for these four functions.
+    // `proofs/Pipeline.fst` section 14 models the routine and the tables clause for clause, and the
+    // pinned routine as the parameter the premise `elementary-functions-pinned-by-transcription`
+    // fixes.
 
     /// Binary exponentiation over the host's IEEE-754 multiply — the one pinned routine for an
     /// integer exponent. `n = 0` is `1.0` with no multiply, `n = 1` is `x` with none, `n = 2` is
@@ -2958,69 +2960,34 @@ module DataFrame =
 
         if n = 0 then Ok(Int 1) else go None (int64 x) n
 
-    /// What the special-value table answers for a float `Pow` before any host `pow` is reached:
-    /// a NaN operand propagates (`pow(1, NaN)` and `pow(NaN, 0)` included — the hosts disagree on
-    /// both, and D16's one NaN is the answer); a zero exponent and a base of one answer `1`, and so
-    /// does a base of minus one under an infinite exponent (C99 says `1`, JavaScript says NaN); a
-    /// zero base under a negative exponent and a finite negative base under a non-integer exponent
-    /// are outside the reals and answer `Null`; everything else is the host's.
-    [<RequireQualifiedAccess>]
-    type internal PowSpecial =
-        | NaN
-        | One
-        | Null
-        | Host
+    /// A cell from one of `Elementary`'s special-value tables (D43 item 3, carried by D52): a NaN
+    /// is D16's one NaN, the table's own value is that value, an input outside the reals is `Null`
+    /// (as `Div` by zero is), and every other input is the pinned routine's — `compute`, called only
+    /// there.
+    let private ofTable (table: LinearAlgebra.SpecialValue) (compute: unit -> float) : Cell =
+        match table with
+        | LinearAlgebra.SpecialValue.NaN -> Float System.Double.NaN
+        | LinearAlgebra.SpecialValue.Value v -> Float v
+        | LinearAlgebra.SpecialValue.Undefined -> Null
+        | LinearAlgebra.SpecialValue.Compute -> Float(compute ())
 
-    let internal powSpecial (x: float) (y: float) : PowSpecial =
-        if System.Double.IsNaN x || System.Double.IsNaN y then
-            PowSpecial.NaN
-        elif y = 0.0 || x = 1.0 then
-            PowSpecial.One
-        elif x = 0.0 && y < 0.0 then
-            PowSpecial.Null
-        elif x = -1.0 && System.Double.IsInfinity y then
-            PowSpecial.One
-        elif
-            x < 0.0
-            && not (System.Double.IsInfinity x)
-            && not (System.Double.IsInfinity y)
-            && y <> floor y
-        then
-            PowSpecial.Null
-        else
-            PowSpecial.Host
-
-    /// A float `Pow`: the table, then the host.
+    /// A float `Pow` (Phase 594, D54): the table, then the pinned `Elementary.pow`.
     let internal powFloat (x: float) (y: float) : Cell =
-        match powSpecial x y with
-        | PowSpecial.NaN -> Float System.Double.NaN
-        | PowSpecial.One -> Float 1.0
-        | PowSpecial.Null -> Null
-        | PowSpecial.Host -> Float(System.Math.Pow(x, y))
+        ofTable (LinearAlgebra.Elementary.powTable x y) (fun () -> LinearAlgebra.Elementary.pow x y)
 
-    /// `Exp`'s table: a NaN propagates; above the natural log of the largest double the answer is
-    /// `Inf`, and below the natural log of half the smallest subnormal it is `0` — the two edges where
-    /// a host's last-ulp rounding decides between a finite value and the limit; between them the
-    /// host answers.
-    let internal expHost (x: float) : float =
-        if System.Double.IsNaN x then
-            x
-        elif x > 709.782712893384 then
-            System.Double.PositiveInfinity
-        elif x < -745.1332191019412 then
-            0.0
-        else
-            System.Math.Exp x
+    /// `Exp` (Phase 594, D54): the table — a NaN, the overflow limit, the underflow to zero — then
+    /// the pinned `Elementary.exp`.
+    let internal expCell (x: float) : Cell =
+        ofTable (LinearAlgebra.Elementary.expTable x) (fun () -> LinearAlgebra.Elementary.exp x)
 
-    /// `Ln`'s and `Log10`'s table over a host logarithm `log`: a NaN propagates, zero and below is
-    /// `Null` (outside the reals, as a negative root is), one is exactly `0` and `Inf` is `Inf`; in
-    /// between the host answers.
-    let internal logHost (log: float -> float) (x: float) : Cell =
-        if System.Double.IsNaN x then Float x
-        elif x <= 0.0 then Null
-        elif x = 1.0 then Float 0.0
-        elif System.Double.IsPositiveInfinity x then Float x
-        else Float(log x)
+    /// `Ln` and `Log10` (Phase 594, D54): the one table — a NaN, `Null` at zero and below, `0` at
+    /// one, `Inf` at `Inf` — then the pinned `Elementary.ln` or `Elementary.log10`.
+    let internal logCell (base10: bool) (x: float) : Cell =
+        ofTable (LinearAlgebra.Elementary.lnTable x) (fun () ->
+            if base10 then
+                LinearAlgebra.Elementary.log10 x
+            else
+                LinearAlgebra.Elementary.ln x)
 
     let private applyScalar (fn: ScalarFn) (args: Cell list) : Result<Cell, EvalError> =
         let arity n =
@@ -3175,10 +3142,10 @@ module DataFrame =
                     // zero does. A `NaN` would not survive the canonical wire at all.
                     | Some f -> Ok(if f < 0.0 then Null else Float(sqrt f))
                     | None -> Error(TypeError "sqrt of a non-numeric"))
-        // Phase 557 (D43). A null operand propagates first, as the unary functions' does; a decimal
-        // is refused by name, as `Sqrt` refuses one; then the exponent's CELL decides the path — an
-        // `Int` exponent is the pinned routine (exact; an `Int` base under `n >= 0` answers an `Int`),
-        // a float exponent is the table and then the host.
+        // Phase 557 (D43), Phase 594 (D54). A null operand propagates first, as the unary functions'
+        // does; a decimal is refused by name, as `Sqrt` refuses one; then the exponent's CELL decides
+        // the path — an `Int` exponent is the product tree (exact; an `Int` base under `n >= 0`
+        // answers an `Int`), a float exponent is the table and then the pinned `Elementary.pow`.
         | Pow ->
             arity 2
             |> Result.bind (fun () ->
@@ -3205,7 +3172,7 @@ module DataFrame =
                 | Decimal _ -> Error(TypeError "exp of a decimal is not exact: write Exp(Cast(float, x))")
                 | _ ->
                     match asNum c with
-                    | Some f -> Ok(Float(expHost f))
+                    | Some f -> Ok(expCell f)
                     | None -> Error(TypeError "exp of a non-numeric"))
         | Ln
         | Log10 ->
@@ -3224,15 +3191,7 @@ module DataFrame =
                     )
                 | _ ->
                     match asNum c with
-                    | Some f ->
-                        Ok(
-                            logHost
-                                (if fn = Ln then
-                                     (fun v -> System.Math.Log v)
-                                 else
-                                     (fun v -> System.Math.Log10 v))
-                                f
-                        )
+                    | Some f -> Ok(logCell (fn = Log10) f)
                     | None -> Error(TypeError(name + " of a non-numeric")))
         | Least
         | Greatest ->
@@ -12087,12 +12046,14 @@ module DataFrame =
 //  FSharp.Core only, Fable-clean; evaluates nothing and allocates no table.
 // ============================================================================
 
-/// How exact a column's bytes are across hosts (Phase 557, `DECISIONS.md` D43). `Pinned`: every
-/// conformant host computes the same bits, so the cross-host law compares the column byte for byte.
-/// `HostRounded`: the column's lineage passes through a host-rounded function — `Exp`, `Ln`, `Log10`,
-/// or `Pow` under an exponent the typer cannot call an int — so two hosts agree within the stated ulp
-/// bound and the law compares the column in ulps. Within ONE host a `HostRounded` column is as
-/// deterministic as any other: repeated, reordered and incremental evaluation answer the same bytes.
+/// How exact a column's bytes are across hosts (Phase 557, `DECISIONS.md` D43; D54). `Pinned`: every
+/// conformant host computes the same bits, so the cross-host law compares the column byte for byte —
+/// every scalar function of the evaluator is pinned since Phase 594, `Exp`, `Ln`, `Log10` and a
+/// float-exponent `Pow` included. `HostRounded`: the column's lineage passes through a value its
+/// caller declares host-rounded (an input column marked so with `ColumnKnowledge.withExactness`, the
+/// seam a registered host function stands on), so two hosts agree within a stated ulp bound and the
+/// law compares the column in ulps. Within ONE host a `HostRounded` column is as deterministic as any
+/// other: repeated, reordered and incremental evaluation answer the same bytes.
 [<RequireQualifiedAccess>]
 type Exactness =
     | Pinned
@@ -12104,8 +12065,8 @@ type Exactness =
 /// REPORTED, never refused: two hosts a last ulp apart can decide it differently, so the cross-host
 /// law promises its tolerance only where the mark reaches no such decision. `Step` is the step's
 /// index in the pipeline, `Verb` the decision's kind, and `Operand` the host-rounded column the
-/// decision reads — or the function's wire tag where the value is computed inside the deciding
-/// expression itself.
+/// decision reads — or the name of a call the walk could not expand. Since Phase 594 (D54) no scalar
+/// function of the evaluator produces such a value; a pipeline over pinned inputs reports none.
 type HostRoundedDecision =
     { Step: int
       Verb: string
@@ -12133,9 +12094,9 @@ type ColumnKnowledge =
         Description: string option
         /// The field's extension metadata, on the same rule.
         Ext: Map<string, string>
-        /// How exact the column's bytes are across hosts (Phase 557, D43): an input field is
-        /// `Pinned`; a column a verb computes is `HostRounded` exactly when a host-rounded function
-        /// is in its lineage, and the verbs that keep or combine columns carry the mark along.
+        /// How exact the column's bytes are across hosts (Phase 557, D43; D54): an input field is
+        /// `Pinned`; a column a verb computes is `HostRounded` exactly when a column so marked is in
+        /// its lineage, and the verbs that keep or combine columns carry the mark along.
         Exactness: Exactness
     }
 
@@ -12306,21 +12267,13 @@ module SchemaWalk =
         |> Option.map _.Exactness
 
     /// A named column's mark; a column the walk cannot see is read as pinned, because the mark is a
-    /// claim about what a host-rounded function touched and an unseen column was touched by none.
+    /// claim about what a host-rounded value reached and an unseen column was reached by none.
     let private markOf (input: SchemaKnowledge) (name: string) : Exactness =
         exactnessOf name input |> Option.defaultValue Exactness.Pinned
 
-    /// Whether a power's exponent is an INTEGER exponent to the typer over the columns the walk
-    /// knows: a literal int, an int column, a cast to int. Anything else may be a float cell at
-    /// evaluation, so the walk reads the power as host-rounded — the conservative reading, since a
-    /// tolerance promised where none was needed costs a certifying host nothing.
-    let private integerExponent (input: SchemaKnowledge) (exponent: ColExpr) : bool =
-        let typed = columns input |> List.choose ColumnKnowledge.toField
-        DataFrame.typing typed exponent = DataFrame.Of IntType
-
     /// The host-rounded operand an expression reads first, in evaluation order: a column so marked,
-    /// or the wire tag of a host-rounded function computed inside the expression itself. `None`
-    /// where it reads none.
+    /// or the name of a call the walk could not expand. `None` where it reads none. No scalar
+    /// function is one since Phase 594 (D54): `Exp`, `Ln`, `Log10` and a float `Pow` are pinned.
     let rec private hostRoundedOperand (input: SchemaKnowledge) (e: ColExpr) : string option =
         let go = hostRoundedOperand input
 
@@ -12335,14 +12288,6 @@ module SchemaWalk =
         | Lit _
         | Param _
         | Now _ -> None
-        | ApplyFn(Exp, _) -> Some "exp"
-        | ApplyFn(Ln, _) -> Some "ln"
-        | ApplyFn(Log10, _) -> Some "log10"
-        | ApplyFn(Pow, [ b; ex ]) ->
-            if integerExponent input ex then
-                first [ b; ex ]
-            else
-                Some "pow"
         | ApplyFn(_, xs)
         | Coalesce xs -> first xs
         | Binary(_, a, b)
@@ -12361,9 +12306,8 @@ module SchemaWalk =
         | Call(name, _) -> Some name
         | Arg _ -> None
 
-    /// The mark a derive's column carries (Phase 557, D43): host-rounded exactly where the
-    /// expression's lineage passes through a transcendental, a power whose exponent the typer cannot
-    /// call an integer, or a column already so marked.
+    /// The mark a derive's column carries (Phase 557, D43; D54): host-rounded exactly where the
+    /// expression reads a column already so marked.
     let internal exprExactness (input: SchemaKnowledge) (expr: ColExpr) : Exactness =
         match hostRoundedOperand input expr with
         | Some _ -> Exactness.HostRounded
@@ -12884,7 +12828,8 @@ module SchemaWalk =
     /// `Rounded` over one or a `Cast` of one to an int or a decimal. Each is admitted — the pipeline
     /// evaluates — and reported, because two hosts a last ulp apart can decide it differently, so
     /// the cross-host law promises its tolerance only on a column no such decision reaches. A
-    /// pipeline reading no host-rounded value reports none.
+    /// pipeline reading no host-rounded value reports none, which is every pipeline over pinned input
+    /// knowledge since Phase 594 (D54).
     let hostRoundedDecisionsFrom
         (sources: string -> Schema option)
         (input: SchemaKnowledge)
