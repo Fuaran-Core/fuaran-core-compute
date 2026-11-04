@@ -7,6 +7,7 @@
 ctor Fuaran.Compute.LinearAlgebra.Dims..ctor(System.Int32, System.Int32)
 field Fuaran.Compute.LinearAlgebra.Exactness+Tags.HostRounded : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.Exactness+Tags.Pinned : System.Int32 (literal)
+field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.InvalidWeight : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.NotConverged : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.NotFinite : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.NotTriangular : System.Int32 (literal)
@@ -26,6 +27,17 @@ method Fuaran.Compute.LinearAlgebra.Givens.Equals(System.Object) : System.Boolea
 method Fuaran.Compute.LinearAlgebra.Givens.GetHashCode() : System.Int32
 method Fuaran.Compute.LinearAlgebra.GivensModule.apply(Fuaran.Compute.LinearAlgebra.Givens, System.Double, System.Double) : System.Tuple`2<System.Double, System.Double>
 method Fuaran.Compute.LinearAlgebra.GivensModule.make(System.Double, System.Double) : Fuaran.Compute.LinearAlgebra.Givens
+method Fuaran.Compute.LinearAlgebra.LeastSquares.ofAccumulator(Fuaran.Compute.LinearAlgebra.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.LeastSquares.requireFullRank(Fuaran.Compute.LinearAlgebra.LeastSquaresFit) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.LeastSquares.solve(Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.LinAlgWire.accumulatorOfJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.QRAccumulator, Fuaran.Core.DecodeError>
+method Fuaran.Compute.LinearAlgebra.LinAlgWire.accumulatorToJson(Fuaran.Compute.LinearAlgebra.QRAccumulator) : Fuaran.Core.JVal
+method Fuaran.Compute.LinearAlgebra.LinAlgWire.decodeAccumulator(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.QRAccumulator, Fuaran.Core.DecodeError>
+method Fuaran.Compute.LinearAlgebra.LinAlgWire.decodeMatrix(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.DecodeError>
+method Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeAccumulator(Fuaran.Compute.LinearAlgebra.QRAccumulator) : System.String
+method Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeMatrix(Fuaran.Compute.LinearAlgebra.Matrix) : System.String
+method Fuaran.Compute.LinearAlgebra.LinAlgWire.matrixOfJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.DecodeError>
+method Fuaran.Compute.LinearAlgebra.LinAlgWire.matrixToJson(Fuaran.Compute.LinearAlgebra.Matrix) : Fuaran.Core.JVal
 method Fuaran.Compute.LinearAlgebra.LinearAlgebraLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
 method Fuaran.Compute.LinearAlgebra.Matrix.Equals(System.Object) : System.Boolean
 method Fuaran.Compute.LinearAlgebra.Matrix.GetHashCode() : System.Int32
@@ -41,6 +53,16 @@ method Fuaran.Compute.LinearAlgebra.MatrixModule.rows(Fuaran.Compute.LinearAlgeb
 method Fuaran.Compute.LinearAlgebra.MatrixModule.toColumnMajor(Fuaran.Compute.LinearAlgebra.Matrix) : System.Double[]
 method Fuaran.Compute.LinearAlgebra.MatrixModule.transpose(Fuaran.Compute.LinearAlgebra.Matrix) : Fuaran.Compute.LinearAlgebra.Matrix
 method Fuaran.Compute.LinearAlgebra.Operations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.LinearAlgebra.Exactness>
+method Fuaran.Compute.LinearAlgebra.QR.householder(Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.UpperTriangular, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.QR.pivoted(Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.PivotedQR, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.addRow(Fuaran.Core.Vector`1<System.Double>, System.Double, System.Double, Fuaran.Compute.LinearAlgebra.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.QRAccumulator, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.addRows(Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.QRAccumulator, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.cols(Fuaran.Compute.LinearAlgebra.QRAccumulator) : System.Int32
+method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.count(Fuaran.Compute.LinearAlgebra.QRAccumulator) : System.Int32
+method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.empty(System.Int32) : Fuaran.Compute.LinearAlgebra.QRAccumulator
+method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.qty(Fuaran.Compute.LinearAlgebra.QRAccumulator) : Fuaran.Core.Vector`1<System.Double>
+method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.r(Fuaran.Compute.LinearAlgebra.QRAccumulator) : Fuaran.Compute.LinearAlgebra.Matrix
+method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.rss(Fuaran.Compute.LinearAlgebra.QRAccumulator) : System.Double
 method Fuaran.Compute.LinearAlgebra.UpperTriangular.Equals(System.Object) : System.Boolean
 method Fuaran.Compute.LinearAlgebra.UpperTriangular.GetHashCode() : System.Int32
 method Fuaran.Compute.LinearAlgebra.UpperTriangularModule.ofMatrix(Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.UpperTriangular, Fuaran.Compute.LinearAlgebra.LinAlgError>
@@ -52,11 +74,28 @@ property Fuaran.Compute.LinearAlgebra.Givens.Cos : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.Givens.IsIdentity : System.Boolean { get }
 property Fuaran.Compute.LinearAlgebra.Givens.Radius : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.Givens.Sin : System.Double { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Aliased : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Coefficients : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>> { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Count : System.Int32 { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Kept : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Qty : Fuaran.Core.Vector`1<System.Double> { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.R : Fuaran.Compute.LinearAlgebra.UpperTriangular { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.RInverse : Fuaran.Compute.LinearAlgebra.Matrix { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Rank : System.Int32 { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.ResidualDf : System.Int32 { get }
+property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Rss : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.Matrix.Cols : System.Int32 { get }
 property Fuaran.Compute.LinearAlgebra.Matrix.Dims : Fuaran.Compute.LinearAlgebra.Dims { get }
 property Fuaran.Compute.LinearAlgebra.Matrix.Item : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.Matrix.Rows : System.Int32 { get }
 property Fuaran.Compute.LinearAlgebra.Operations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.LinearAlgebra.Exactness>> { get }
+property Fuaran.Compute.LinearAlgebra.PivotedQR.Aliased : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
+property Fuaran.Compute.LinearAlgebra.PivotedQR.Permutation : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
+property Fuaran.Compute.LinearAlgebra.PivotedQR.R : Fuaran.Compute.LinearAlgebra.UpperTriangular { get }
+property Fuaran.Compute.LinearAlgebra.PivotedQR.Rank : System.Int32 { get }
+property Fuaran.Compute.LinearAlgebra.QRAccumulator.Cols : System.Int32 { get }
+property Fuaran.Compute.LinearAlgebra.QRAccumulator.Count : System.Int32 { get }
+property Fuaran.Compute.LinearAlgebra.QRAccumulator.Rss : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.UpperTriangular.Matrix : Fuaran.Compute.LinearAlgebra.Matrix { get }
 property Fuaran.Compute.LinearAlgebra.UpperTriangular.Order : System.Int32 { get }
 record-field Fuaran.Compute.LinearAlgebra.Dims.Cols #1 : System.Int32
@@ -67,7 +106,10 @@ type Fuaran.Compute.LinearAlgebra.Exactness (union)
 type Fuaran.Compute.LinearAlgebra.Exactness+Tags (type)
 type Fuaran.Compute.LinearAlgebra.Givens (type)
 type Fuaran.Compute.LinearAlgebra.GivensModule (module)
+type Fuaran.Compute.LinearAlgebra.LeastSquares (module)
+type Fuaran.Compute.LinearAlgebra.LeastSquaresFit (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError (union)
+type Fuaran.Compute.LinearAlgebra.LinAlgError+InvalidWeight (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError+NotConverged (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError+NotFinite (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError+NotTriangular (type)
@@ -75,14 +117,20 @@ type Fuaran.Compute.LinearAlgebra.LinAlgError+RankDeficient (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError+ShapeMismatch (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError+Singular (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError+Tags (type)
+type Fuaran.Compute.LinearAlgebra.LinAlgWire (module)
 type Fuaran.Compute.LinearAlgebra.LinearAlgebraLaws (module)
 type Fuaran.Compute.LinearAlgebra.Matrix (type)
 type Fuaran.Compute.LinearAlgebra.MatrixModule (module)
 type Fuaran.Compute.LinearAlgebra.Operations (module)
+type Fuaran.Compute.LinearAlgebra.PivotedQR (type)
+type Fuaran.Compute.LinearAlgebra.QR (module)
+type Fuaran.Compute.LinearAlgebra.QRAccumulator (type)
+type Fuaran.Compute.LinearAlgebra.QRAccumulatorModule (module)
 type Fuaran.Compute.LinearAlgebra.UpperTriangular (type)
 type Fuaran.Compute.LinearAlgebra.UpperTriangularModule (module)
 union-case Fuaran.Compute.LinearAlgebra.Exactness.HostRounded #1()
 union-case Fuaran.Compute.LinearAlgebra.Exactness.Pinned #0()
+union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewInvalidWeight #6(row: System.Int32)
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewNotConverged #5(iterations: System.Int32)
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewNotFinite #3(row: System.Int32, col: System.Int32)
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewNotTriangular #4(row: System.Int32, col: System.Int32)

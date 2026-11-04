@@ -458,6 +458,13 @@ let main argv =
 
     runsRef.Value <- runs
 
+    // `qr` times the streaming least-squares kernel alone (Phase 591); a third argument is the largest
+    // row count measured on this host.
+    let onlyQr = argv.Length > 1 && argv.[1] = "qr"
+
+    if onlyQr then
+        QrBench.run runs (if argv.Length > 2 then int argv.[2] else 1_000_000)
+
     // `typed` as the second argument times the typed family alone (Phase 280).
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
@@ -471,7 +478,7 @@ let main argv =
 
     if onlyChain then
         chainTable ()
-    elif not onlyTyped && not onlyState then
+    elif not onlyTyped && not onlyState && not onlyQr then
         table
             "Sheet"
             [ for n in Corpus.sheetSizes do
@@ -521,7 +528,7 @@ let main argv =
                             (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                           n ]
 
-    if onlyChain then ()
+    if onlyChain || onlyQr then ()
     elif onlyState then stateTable ()
     else typedTable ()
 

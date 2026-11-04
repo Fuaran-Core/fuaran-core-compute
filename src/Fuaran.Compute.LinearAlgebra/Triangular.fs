@@ -178,7 +178,7 @@ module Givens =
         if b = 0.0 then
             Givens(1.0, 0.0, Kernels.canonical a, true)
         else
-            let r = Kernels.norm2 [| a; b |] 0 2
+            let r = Kernels.norm2Pair a b
             Givens(Kernels.canonical (a / r), Kernels.canonical (b / r), Kernels.canonical r, false)
 
     /// The rotation applied to a pair: `x' = c·x + s·y` and `y' = c·y − s·x`, each two rounded products

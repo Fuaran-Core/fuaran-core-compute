@@ -1,5 +1,108 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D51: least squares is a streaming Givens QR over an immutable `QRAccumulator` whose state is `R` beside `Qᵀy`, row by row; a weight is refused by its own case, `InvalidWeight`; an overflowing state is refused when it is read, not as it is built; an aliased column is removed and the rest re-triangularised in column order; the batch Householder factorizations are pinned in their own order and held to the streaming one by tolerance; the accumulator and a matrix travel by IEEE-754 bit patterns through `Fuaran.Core.Wire`
+
+**Context.** Phase 591, stage S2 of the linear-algebra plan: the accumulator, the batch and pivoted
+factorizations, the solve, the wire codec the incremental state needs, the native rotation and the benchmarks.
+D49 items 8 to 12 fix the arithmetic; this entry rules the calls the shard left to the phase and the ones
+implementing D49 surfaced. The operator's standing instruction of 2026-11-04 (work unsupervised, take the
+long-term option, record the alternatives) applies to every item.
+
+**Premise check** (on `7da5005`). 590's `Matrix`, `Givens.make` / `apply`, the checked `UpperTriangular` and both
+triangular solves are on main as D50 describes. The shard cites "D48's Givens convention and rank tolerance";
+those are D49 items 8 and 11 (589 took D49, 596 D48), and the code agrees with item 8 exactly: the identity when
+`b = 0` of either sign, else `r = norm2 [a; b]`, `c = a / r`, `s = b / r`. No rank test existed in 590 (it is a
+factorization's, D50 item 5), so item 11 is implemented here for the first time, as written. The package took
+Column alone; D50 item 3 named Wire as the dependency a codec would add, under D49 item 20's bound.
+
+**Ruled.**
+
+1. **The accumulator's shape.** `QRAccumulator` is opaque and immutable: `p` rows of `p + 1` floats, row `j` of
+   `R` beside `(Qᵀy)[j]`, so rotating a design row into row `j` and the response into `Qᵀy` is ONE contiguous
+   pass of pairs — which is what lets the native member be a SIMD loop at all, since `R` stored column-major
+   would put a row's pairs `p` apart. `addRow x y weight` and `addRows x y weights` answer a new state (the
+   batch copies the state once, not per row); `r` (a plain `Matrix`), `qty`, `rss`, `count` and `cols` read it.
+   The residual sum of squares is the fold, in row order from `+0.0`, of the square of the residual each row
+   leaves in the response slot after its `p` rotations — so σ̂² needs no second pass. Alternatives considered:
+   a mutable accumulator with an explicit copy (rejected: the package's public surface is immutable, D49 item
+   20); a separate unweighted `addRow` (rejected: a weight of `1` scales by exactly `1`, so one entry point with
+   the weight explicit answers the same bits and halves the surface).
+2. **The diagonal is replaced by the radius, and the zeroed cell is set to `+0.0`** — D49 item 8 read
+   literally, not `apply` run on the pivot pair (whose first output is `r` only to within rounding). The radius
+   is computed by an allocation-free `norm2Pair`, held byte-equal to `norm2 [| a; b |]` by a law, and
+   `Givens.make` now calls it too.
+3. **A weight has its own refusal.** `LinAlgError` gains `InvalidWeight of row`, for a negative, NaN or
+   infinite prior weight (D49 item 9). `NotFinite` was considered and rejected: a negative weight is finite, and
+   its column would be a fiction. A row is checked before it is rotated, in this order: the weight, then the
+   design cells ascending (`NotFinite (row, column)`), then the response as column `p`. `addRows` names the
+   row's index in `x` and folds nothing; `addRow` names row `0`. A weight of zero, of either sign, is accepted,
+   rotates nothing and is not counted. The case is appended last, so no existing tag moves; the package is new
+   in this draft, so no released consumer matches on it.
+4. **An overflowing state is refused when it is read.** Finite rows can still leave an infinity in `R` (a
+   column norm past `Double.MaxValue`). Checking every touched entry per row would cost a pass as long as the
+   rotation's; instead `LeastSquares.ofAccumulator` refuses `NotFinite` naming the first non-finite entry of
+   `[R | Qᵀy]` in column-major order, and `r` is a plain matrix that `UpperTriangular.ofMatrix` checks. `rss`
+   may be `+∞` honestly (a sum of squares past `1.3e154`).
+5. **Aliasing in the streaming solve** (D49 item 11 made concrete). In column order, a column whose
+   `|R[j,j]| ≤ τ · norm2 R[0..j, j]` is removed; rows `c` and `c + 1`, `c` ascending from the removed position,
+   are rotated with the item-8 construction across every pair to the right of the diagonal and `Qᵀy`; the
+   `Qᵀy` entry left alone in the last row is squared into the residual sum of squares (in removal order); and
+   the test resumes at the SAME position against the re-triangularised column. The coefficient of a removed
+   column is `None`. A column of zeros is always removed (`0 ≤ τ · 0`), so a kept diagonal is never zero and
+   `Singular` does not arise from `ofAccumulator`; `requireFullRank` turns any aliasing into
+   `RankDeficient rank`. `R⁻¹` is `solveUpper` of each unit vector, so its order is the solve's. Alternative
+   considered: refusing rank deficiency outright (rejected: R's `lm` convention, which the plan's `Fit` follows,
+   reports aliased columns; the strict reading is one call away).
+6. **The batch factorizations' order.** `QR.householder` and `QR.pivoted` share one kernel: at step `k`, with
+   pivoting the remaining column of largest scaled norm over rows `k..` (recomputed every step, never
+   downdated; the lowest index on a tie) moves to position `k`; `α = norm2 a[k.., k]`; `σ = −1` when
+   `a[k,k] < 0` else `1`; `v₀ = a[k,k] + σα`; each later column is updated by `f = (2·(v·a_j)) / (v·v)` and
+   `a_ij ← a_ij − f·v_i`; a row of `R` with a negative diagonal is then negated, so both kernels' diagonals are
+   non-negative. Rows past `n` are zero. The two are NOT byte-equal to the streaming kernel (D49 item 10) and
+   are held to it by a law within `256 · (n + p) · u · ‖a_j‖` on well-conditioned designs. The pivoted rank is
+   D49 item 11's test at each position; its aliased columns are reported by original index, ascending.
+7. **The codec.** `LinAlgWire` writes a matrix as `{"$type":"matrix","bits":…,"cols":c,"rows":r}` and an
+   accumulator as `{"$type":"qrAccumulator","cols":p,"count":n,"qty":…,"r":…,"rss":…}`, canonical JSON
+   (`Rendering.CrossHost`) with closed member sets, each float its binary64 bit pattern in sixteen lowercase hex
+   digits, a member's floats concatenated, `r` the upper triangle row by row. A NaN is written
+   `7ff8000000000000` on every host and read as the host's NaN, so a state encodes to the same bytes on every
+   host (D50 item 10's observation, that the canonical NaN is one value but not one bit pattern across hosts,
+   applied to a codec). A decoder refuses a diagonal of `R` or a residual sum of squares with the sign bit set
+   (no accumulator builds one) and any shape whose element count would pass `2³¹ / 16`. Alternatives
+   considered: the shortest round-trip decimal the incremental state codec writes (rejected: it reads back the
+   same value only through every host's parser being correct, needs tokens for `-0` and the non-finite values,
+   and is longer for full-precision floats — the bits ARE the claim); a JSON array of one hex string per float
+   (rejected: three bytes of punctuation per float and nothing gained). The package now references
+   `Fuaran.Core.Wire`, registers a wire root (`api/wire/Fuaran.Compute.LinearAlgebra.txt`) and leaves
+   `WireSurfaceTests.notWire`.
+8. **The native rotation.** `Kernels.rotateNative` runs a SIMD lane per pair on .NET — four rounded products
+   and two rounded sums per lane, no fused multiply-add — and is the portable member under Fable; a law holds
+   the two byte-equal over every length to 37 and over whole accumulators to 21 columns, and a probe shows a
+   fused rotation answering otherwise. Both the accumulator and the aliasing re-triangularisation call it.
+9. **The laws' bounds** (D49 item 10 asked 591 to state them). With `u = 2⁻⁵³`: `|RᵀR − XᵀWX|ᵢⱼ ≤ 16 (n + p
+   + 2) u ‖xᵢ‖ ‖xⱼ‖`; `|Xᵀ(y − Xβ)|ⱼ ≤ 64 (n + p) u ‖xⱼ‖ (‖y‖ + Σₖ |βₖ| ‖xₖ‖)` on a well-conditioned design
+   (the identity's multiple added to the top rows, `n ≥ 3p + 2`); Householder against streaming as in item 6.
+   The byte laws are exact: `addRows` is `addRow` row by row, refusals included; an append is a fresh fold; a
+   state through the codec continues, and fits, to the same bits; the accumulator is its own spelling through
+   the public `Givens.make` / `apply`.
+10. **The benchmarks** (`benchmarks/results/2026-11-04-i7-8650u-phase-591.md`) time the fold at the plan's
+    sizes with rows generated as they are folded, portable against native on .NET and the one member under
+    node, and state the gap to a vendor BLAS as an estimate, because no vendor BLAS is installed on the
+    machine that measured. The first node run showed the rotation loop paying for Fable's shared
+    bounds-checked array helper (0.09 GFLOP/s at 10⁶ × 64); the loop now indexes through unchecked accessors
+    under JavaScript (`Kernels.get` / `set`, the plain index on .NET), the dataframe package's Phase 326
+    pattern, which cut node's cost 9.5 times with no bit moved. The accessors are a second copy of that
+    package's internal `Raw.get` / `set` rather than a shared seam: the dataframe package sits above this one,
+    and two internal one-line emits do not meet D49 item 20's bar for a new substrate dependency.
+
+**What a consumer does.** Nothing changes for an existing consumer: new types and modules, one new
+`LinAlgError` case, a new wire baseline, all within the `0.43.0` draft in which the package itself is new
+(`STABILITY.md`).
+
+**Tidy.** Reviewed every key file the phase touched. `Givens.make` allocated a two-element array per rotation
+to call `norm2`; it now calls the allocation-free `norm2Pair`, which the accumulator needed anyway. The census in
+`LinearAlgebraTests` and `Operations.exactness` were extended rather than duplicated. Nothing was made dead.
+
 ## 2026-11-04 — D50: `Fuaran.Compute.LinearAlgebra` ships in its own namespace with modules `Matrix`, `Blas`, `UpperTriangular` and `Givens`; it takes `Fuaran.Core.Column` alone; exactness is D43's `Pinned | HostRounded`; the two triangular solves' fold orders are pinned; its laws live in the package and its hard-input vectors render through the one corpus writer, with a NaN written as a token
 
 **Context.** Phase 590, stage S1 of the linear-algebra plan: the first kernels under D49. The shard left five

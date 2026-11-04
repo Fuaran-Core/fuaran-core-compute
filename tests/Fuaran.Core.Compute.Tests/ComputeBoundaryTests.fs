@@ -41,7 +41,8 @@ let compute: Set<string> =
           "Fuaran.Compute.ColumnOps"
           "Fuaran.Compute.Conformance"
           "Fuaran.Compute.PipelineQuery"
-          // Phase 590: the dense-matrix library, below DataFrame; it takes Column alone.
+          // Phase 590: the dense-matrix library, below DataFrame; it takes Column, and (Phase 591, its
+          // codec) Wire.
           "Fuaran.Compute.LinearAlgebra" ]
 
 /// The substrate packages the compute strand stands on — and nothing above them. `Fuaran.Core.Unit`

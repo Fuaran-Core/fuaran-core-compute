@@ -93,6 +93,8 @@ module LinearAlgebraVectors =
                   "col", CorpusFile.num c ]
         | LinAlgError.NotConverged n ->
             CorpusCell.Row [ "case", CorpusFile.str "notConverged"; "iterations", CorpusFile.num n ]
+        | LinAlgError.InvalidWeight r ->
+            CorpusCell.Row [ "case", CorpusFile.str "invalidWeight"; "row", CorpusFile.num r ]
 
     let private okCell (value: CorpusCell) : CorpusCell =
         CorpusCell.Row [ "verdict", CorpusFile.str "ok"; "value", value ]
@@ -133,6 +135,45 @@ module LinearAlgebraVectors =
 
     let private vecCell (v: Vector<float>) : CorpusCell = floats (Vector.toArray v)
 
+    let private ints (xs: int list) : CorpusCell =
+        CorpusCell.List [ for x in xs -> CorpusFile.num x ]
+
+    /// The rows `x`, `y` and weights `w` folded into an empty accumulator by `addRows`.
+    let private accumulate (c: Case) : Result<QRAccumulator, LinAlgError> =
+        let x = mat c "x"
+
+        QRAccumulator.empty x.Cols |> QRAccumulator.addRows x (vec c "y") (vec c "w")
+
+    let private accumulatorCell (acc: QRAccumulator) : CorpusCell =
+        CorpusCell.Row
+            [ "r", matrixCell (QRAccumulator.r acc)
+              "qty", vecCell (QRAccumulator.qty acc)
+              "rss", CorpusFile.str (hex (QRAccumulator.rss acc))
+              "count", CorpusFile.num (QRAccumulator.count acc) ]
+
+    /// A fit: each coefficient's bits, or the token `aliased`.
+    let private fitCell (fit: LeastSquaresFit) : CorpusCell =
+        CorpusCell.Row
+            [ "coefficients",
+              CorpusCell.List
+                  [ for b in fit.Coefficients ->
+                        match b with
+                        | Some v -> CorpusFile.str (hex v)
+                        | None -> CorpusFile.str "aliased" ]
+              "rank", CorpusFile.num fit.Rank
+              "aliased", ints fit.Aliased
+              "rss", CorpusFile.str (hex fit.Rss)
+              "count", CorpusFile.num fit.Count
+              "qty", vecCell fit.Qty
+              "rInverse", matrixCell fit.RInverse ]
+
+    let private pivotedCell (q: PivotedQR) : CorpusCell =
+        CorpusCell.Row
+            [ "r", matrixCell (UpperTriangular.toMatrix q.R)
+              "permutation", ints q.Permutation
+              "rank", CorpusFile.num q.Rank
+              "aliased", ints q.Aliased ]
+
     /// The reference answer for one case, by calling the package.
     let expected (c: Case) : CorpusCell =
         match c.Op with
@@ -163,6 +204,11 @@ module LinearAlgebraVectors =
                 Givens.apply (Givens.make (scalar c "a") (scalar c "b")) (scalar c "x") (scalar c "y")
 
             Ok [ x; y ] |> answer floats
+        | "qrAccumulator" -> accumulate c |> answer accumulatorCell
+        | "accumulatorWire" -> accumulate c |> answer (LinAlgWire.encodeAccumulator >> CorpusFile.str)
+        | "leastSquares" -> accumulate c |> Result.bind LeastSquares.ofAccumulator |> answer fitCell
+        | "householder" -> QR.householder (mat c "a") |> answer (UpperTriangular.toMatrix >> matrixCell)
+        | "pivoted" -> QR.pivoted (mat c "a") |> answer pivotedCell
         | other -> failwithf "linear-algebra vector %s: no operation %s" c.Id other
 
     // ---- the authored inputs ---------------------------------------------------------------------
@@ -264,7 +310,120 @@ module LinearAlgebraVectors =
           case "gemv-no-columns" "gemv" [ "a", Mat(2, 0, []); "x", Vec [] ]
           case "gemm-no-inner" "gemm" [ "a", Mat(2, 0, []); "b", Mat(0, 3, []) ]
           case "gemv-nan-reaches-every-row" "gemv" [ "a", Mat(2, 2, [ 1.0; 2.0; 3.0; 4.0 ]); "x", Vec [ nan; 1.0 ] ]
-          case "transpose" "transpose" [ "a", Mat(2, 3, [ 1.0; -0.0; tiny; inf; 5.0; 6.0 ]) ] ]
+          case "transpose" "transpose" [ "a", Mat(2, 3, [ 1.0; -0.0; tiny; inf; 5.0; 6.0 ]) ]
+          // Phase 591 — the streaming QR: the state, the fit, the batch factorizations, the wire form.
+          // A design is `x` (column-major), `y` the responses, `w` the prior weights.
+          case
+              "qr-state-diagonal-non-negative"
+              "qrAccumulator"
+              [ "x", Mat(3, 2, [ -3.0; 4.0; -1.0; 2.0; -5.0; 0.5 ])
+                "y", Vec [ -1.0; 2.0; 3.0 ]
+                "w", Vec [ 1.0; 1.0; 1.0 ] ]
+          case
+              "qr-state-weights-scale-by-root"
+              "qrAccumulator"
+              [ "x", Mat(3, 2, [ 1.0; 1.0; 1.0; 0.0; 1.0; 2.0 ])
+                "y", Vec [ 1.0; 2.0; 5.0 ]
+                "w", Vec [ 2.0; 0.0; 0.25 ] ]
+          case
+              "qr-state-zero-cell-is-identity"
+              "qrAccumulator"
+              [ "x", Mat(2, 2, [ 0.0; -0.0; 3.0; 4.0 ])
+                "y", Vec [ 1.0; 1.0 ]
+                "w", Vec [ 1.0; 1.0 ] ]
+          case
+              "qr-state-tiny-and-huge-rows"
+              "qrAccumulator"
+              [ "x", Mat(3, 2, [ 1e-300; 1e300; 1.0; tiny; -1e200; 1.0 ])
+                "y", Vec [ 1e-300; 1e100; 1.0 ]
+                "w", Vec [ 1.0; 1.0; 1.0 ] ]
+          case
+              "qr-refuses-negative-weight"
+              "qrAccumulator"
+              [ "x", Mat(2, 1, [ 1.0; 2.0 ]); "y", Vec [ 1.0; 1.0 ]; "w", Vec [ 1.0; -0.5 ] ]
+          case
+              "qr-refuses-nan-cell"
+              "qrAccumulator"
+              [ "x", Mat(2, 2, [ 1.0; 2.0; 3.0; nan ])
+                "y", Vec [ 1.0; 1.0 ]
+                "w", Vec [ 1.0; 1.0 ] ]
+          case
+              "qr-refuses-infinite-response"
+              "qrAccumulator"
+              [ "x", Mat(1, 1, [ 1.0 ]); "y", Vec [ -inf ]; "w", Vec [ 1.0 ] ]
+          case
+              "qr-refuses-infinite-weight"
+              "qrAccumulator"
+              [ "x", Mat(1, 1, [ 1.0 ]); "y", Vec [ 1.0 ]; "w", Vec [ inf ] ]
+          case
+              "qr-shape-mismatch"
+              "qrAccumulator"
+              [ "x", Mat(2, 1, [ 1.0; 2.0 ]); "y", Vec [ 1.0 ]; "w", Vec [ 1.0; 1.0 ] ]
+          case
+              "lsq-exact-line"
+              "leastSquares"
+              [ "x", Mat(5, 2, [ 1.0; 1.0; 1.0; 1.0; 1.0; 0.0; 1.0; 2.0; 3.0; 4.0 ])
+                "y", Vec [ 2.0; 5.0; 8.0; 11.0; 14.0 ]
+                "w", Vec [ 1.0; 1.0; 1.0; 1.0; 1.0 ] ]
+          case
+              "lsq-noisy-line"
+              "leastSquares"
+              [ "x", Mat(6, 2, [ 1.0; 1.0; 1.0; 1.0; 1.0; 1.0; 0.1; 0.7; 1.3; 2.2; 2.9; 4.1 ])
+                "y", Vec [ 0.3; 1.9; 2.8; 5.3; 6.6; 9.1 ]
+                "w", Vec [ 1.0; 1.0; 1.0; 1.0; 1.0; 1.0 ] ]
+          case
+              "lsq-zero-weight-outlier-ignored"
+              "leastSquares"
+              [ "x", Mat(4, 2, [ 1.0; 1.0; 1.0; 1.0; 0.0; 1.0; 2.0; 3.0 ])
+                "y", Vec [ 1.0; 3.0; 1e6; 7.0 ]
+                "w", Vec [ 1.0; 3.0; 0.0; 0.5 ] ]
+          case
+              "lsq-duplicate-column-aliased"
+              "leastSquares"
+              [ "x", Mat(4, 3, [ 1.0; 1.0; 1.0; 1.0; 0.5; 1.5; 2.0; 4.0; 0.5; 1.5; 2.0; 4.0 ])
+                "y", Vec [ 1.0; 2.0; 2.5; 5.0 ]
+                "w", Vec [ 1.0; 1.0; 1.0; 1.0 ] ]
+          case
+              "lsq-zero-column-aliased"
+              "leastSquares"
+              [ "x", Mat(3, 2, [ 0.0; 0.0; 0.0; 1.0; 2.0; 3.0 ])
+                "y", Vec [ 1.0; 2.0; 4.0 ]
+                "w", Vec [ 1.0; 1.0; 1.0 ] ]
+          case
+              "lsq-collinear-within-tolerance"
+              "leastSquares"
+              [ "x", Mat(3, 2, [ 1.0; 2.0; 3.0; 1.0; 2.0; 3.0 + 1.0 / 562949953421312.0 ])
+                "y", Vec [ 1.0; 2.0; 3.0 ]
+                "w", Vec [ 1.0; 1.0; 1.0 ] ]
+          case
+              "lsq-more-columns-than-rows"
+              "leastSquares"
+              [ "x", Mat(2, 3, [ 1.0; 2.0; 3.0; -1.0; 0.5; 0.25 ])
+                "y", Vec [ 1.0; 2.0 ]
+                "w", Vec [ 1.0; 1.0 ] ]
+          case "lsq-no-rows" "leastSquares" [ "x", Mat(0, 2, []); "y", Vec []; "w", Vec [] ]
+          case
+              "lsq-ill-scaled-columns"
+              "leastSquares"
+              [ "x", Mat(3, 2, [ 1e-150; 2e-150; 4e-150; 1e150; -1e150; 3e150 ])
+                "y", Vec [ 1.0; 0.0; 1.0 ]
+                "w", Vec [ 1.0; 1.0; 1.0 ] ]
+          case
+              "lsq-overflowing-state-refused"
+              "leastSquares"
+              [ "x", Mat(2, 1, [ Double.MaxValue; Double.MaxValue ])
+                "y", Vec [ 0.0; 0.0 ]
+                "w", Vec [ 1.0; 1.0 ] ]
+          case "householder-signs-normalised" "householder" [ "a", Mat(3, 2, [ -3.0; 4.0; 0.0; 1.0; -2.0; 2.0 ]) ]
+          case "householder-wide" "householder" [ "a", Mat(1, 2, [ -2.0; 3.0 ]) ]
+          case "pivoted-duplicate-column" "pivoted" [ "a", Mat(3, 3, [ 1.0; 0.0; 1.0; 2.0; 1.0; 0.0; 2.0; 1.0; 0.0 ]) ]
+          case "pivoted-largest-first" "pivoted" [ "a", Mat(2, 3, [ 1.0; 0.0; 0.0; 5.0; 3.0; 4.0 ]) ]
+          case
+              "accumulator-wire"
+              "accumulatorWire"
+              [ "x", Mat(3, 2, [ 1.0; 1.0; 1.0; -0.5; 2.0; 1e-300 ])
+                "y", Vec [ 0.1; -0.0; 3.0 ]
+                "w", Vec [ 1.0; 0.0; 2.0 ] ] ]
 
     let private caseCell (c: Case) : CorpusCell =
         CorpusCell.Row
@@ -274,7 +433,7 @@ module LinearAlgebraVectors =
               "expected", expected c ]
 
     let private description =
-        "The reference answers for Fuaran.Compute.LinearAlgebra over AUTHORED hard inputs (Phase 590): "
+        "The reference answers for Fuaran.Compute.LinearAlgebra over AUTHORED hard inputs (Phases 590 and 591): "
         + "cancellation that a fused multiply-add or a reordered fold would answer differently, subnormals, "
         + "scaling extremes that a naive sum of squares overflows or flushes, rank deficiency, and every "
         + "refusal. Each answer is computed by calling the package, whose every operation runs in the one "
@@ -285,7 +444,13 @@ module LinearAlgebraVectors =
         + "(`givensApply` makes the rotation from `a` and `b` and applies it to `x` and `y`; `solveUpper` and "
         + "`solveUpperT` build the factor from `r` through the checked `ofMatrix` first). `expected` is "
         + "`{ verdict: ok, value }` or `{ verdict: error, error: { case, … } }`, the error's case and fields "
-        + "compared exactly."
+        + "compared exactly. Phase 591 adds the streaming least-squares kernel: `x`, `y` and `w` are a design "
+        + "(column-major), its responses and prior weights folded by `QRAccumulator.addRows` into an empty "
+        + "accumulator; `qrAccumulator` answers the state (`r`, `qty`, `rss`, `count`), `leastSquares` the fit "
+        + "`LeastSquares.ofAccumulator` reads off it (each coefficient its bits or the token `aliased`), and "
+        + "`accumulatorWire` the state's canonical wire text, compared byte for byte; `householder` and "
+        + "`pivoted` are the batch factorizations, pinned in their own order and not byte-equal to the "
+        + "streaming kernel."
 
     /// The family's document as the one corpus writer renders it.
     let render () : string =

@@ -37,7 +37,28 @@ module Operations =
           "UpperTriangular.solveUpper", Exactness.Pinned
           "UpperTriangular.solveUpperT", Exactness.Pinned
           "Givens.make", Exactness.Pinned
-          "Givens.apply", Exactness.Pinned ]
+          "Givens.apply", Exactness.Pinned
+          "QRAccumulator.empty", Exactness.Pinned
+          "QRAccumulator.cols", Exactness.Pinned
+          "QRAccumulator.count", Exactness.Pinned
+          "QRAccumulator.rss", Exactness.Pinned
+          "QRAccumulator.r", Exactness.Pinned
+          "QRAccumulator.qty", Exactness.Pinned
+          "QRAccumulator.addRow", Exactness.Pinned
+          "QRAccumulator.addRows", Exactness.Pinned
+          "QR.householder", Exactness.Pinned
+          "QR.pivoted", Exactness.Pinned
+          "LeastSquares.ofAccumulator", Exactness.Pinned
+          "LeastSquares.solve", Exactness.Pinned
+          "LeastSquares.requireFullRank", Exactness.Pinned
+          "LinAlgWire.matrixToJson", Exactness.Pinned
+          "LinAlgWire.matrixOfJson", Exactness.Pinned
+          "LinAlgWire.encodeMatrix", Exactness.Pinned
+          "LinAlgWire.decodeMatrix", Exactness.Pinned
+          "LinAlgWire.accumulatorToJson", Exactness.Pinned
+          "LinAlgWire.accumulatorOfJson", Exactness.Pinned
+          "LinAlgWire.encodeAccumulator", Exactness.Pinned
+          "LinAlgWire.decodeAccumulator", Exactness.Pinned ]
 
     /// The class of one operation, or `None` for a name this package does not publish.
     let exactnessOf (operation: string) : Exactness option =

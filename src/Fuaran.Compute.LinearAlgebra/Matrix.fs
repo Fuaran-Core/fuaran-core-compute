@@ -38,6 +38,8 @@ type LinAlgError =
     | NotTriangular of row: int * col: int
     /// An iteration stopped at its bound without meeting its stopping rule; the iterations run.
     | NotConverged of iterations: int
+    /// A row's prior weight is negative, a NaN or an infinity (DECISIONS.md D49 item 9); the row.
+    | InvalidWeight of row: int
 
 /// How exact an operation's bytes are across hosts — the vocabulary `SchemaWalk` reads a column's
 /// lineage in (DECISIONS.md D43): `Pinned`, every conformant host computes the same bits; `HostRounded`,
@@ -92,6 +94,24 @@ type Matrix internal (rows: int, cols: int, storage: Vector<float>) =
 /// public operation borrows its inputs' backing arrays, runs a kernel into a fresh array it owns, and
 /// adopts that array — so no input is copied and no output is shared.
 module internal Kernels =
+
+#if FABLE_COMPILER
+    /// `a[i]` with no bounds check under JavaScript (Phase 591), where Fable's shared checked helper
+    /// costs more than the rotation around it (the dataframe package's `Raw` measured the same in Phase
+    /// 326). Used only in the rotation loops, whose callers allocate every array they index.
+    [<Fable.Core.Emit("$1[$0]")>]
+    let get (i: int) (a: float[]) : float = Fable.Core.Util.jsNative
+
+    /// `a[i] <- v` with no bounds check under JavaScript; the same rule as `get`.
+    [<Fable.Core.Emit("$0[$1] = $2")>]
+    let set (a: float[]) (i: int) (v: float) : unit = Fable.Core.Util.jsNative
+#else
+    /// `a[i]`: the plain index on .NET.
+    let inline get (i: int) (a: float[]) : float = a[i]
+
+    /// `a[i] <- v`: the plain index on .NET.
+    let inline set (a: float[]) (i: int) (v: float) : unit = a[i] <- v
+#endif
 
     /// THE NaN a float leaves this package with (D49 item 5, D16): `Double.NaN`'s bit pattern.
     let inline canonical (x: float) : float =
@@ -208,6 +228,81 @@ module internal Kernels =
                 acc <- acc + sq
 
             m * sqrt acc
+
+    /// `norm2 [| a; b |]` without the array: the same comparisons, the same two quotients squared and
+    /// folded from `+0.0` in the order `a`, `b`, the same product with the root — so the same bits,
+    /// which `LinearAlgebraLaws` holds. The radius of every Givens rotation (D49 item 8).
+    let norm2Pair (a: float) (b: float) : float =
+        if System.Double.IsNaN a || System.Double.IsNaN b then
+            System.Double.NaN
+        else
+            let mutable m = 0.0
+
+            if abs a > m then
+                m <- abs a
+
+            if abs b > m then
+                m <- abs b
+
+            if System.Double.IsPositiveInfinity m then
+                System.Double.PositiveInfinity
+            elif m = 0.0 then
+                0.0
+            else
+                let qa = a / m
+                let qb = b / m
+                let mutable acc = 0.0
+                let sa = qa * qa
+                acc <- acc + sa
+                let sb = qb * qb
+                acc <- acc + sb
+                m * sqrt acc
+
+    /// The rotation `(c, s)` applied to `n` pairs, `u[uo + k]` the first element of pair `k` and
+    /// `v[vo + k]` the second: `u' = c·u + s·v`, `v' = c·v − s·u`, each two rounded products and one
+    /// rounded sum or difference in that operand order (D49 items 2 and 8) — `Givens.apply` pair by
+    /// pair. The portable member.
+    let rotatePortable (c: float) (s: float) (u: float[]) (uo: int) (v: float[]) (vo: int) (n: int) : unit =
+        for k in 0 .. n - 1 do
+            let x = get (uo + k) u
+            let y = get (vo + k) v
+            let cx = c * x
+            let sy = s * y
+            let cy = c * y
+            let sx = s * x
+            set u (uo + k) (cx + sy)
+            set v (vo + k) (cy - sx)
+
+    /// The same rotation, a SIMD lane per pair on .NET (D49 item 3): each lane forms the same four
+    /// rounded products and two rounded sums for its own pair, with no fused multiply-add, so the
+    /// answer is the portable member's byte for byte — which `LinearAlgebraLaws` holds. Under Fable it
+    /// IS the portable member.
+    let rotateNative (c: float) (s: float) (u: float[]) (uo: int) (v: float[]) (vo: int) (n: int) : unit =
+#if FABLE_COMPILER
+        rotatePortable c s u uo v vo n
+#else
+        let width = System.Numerics.Vector<float>.Count
+
+        if System.Numerics.Vector.IsHardwareAccelerated && n >= width then
+            let cv = System.Numerics.Vector<float>(c)
+            let sv = System.Numerics.Vector<float>(s)
+            let mutable k = 0
+
+            while k <= n - width do
+                let xv = System.Numerics.Vector<float>(u, uo + k)
+                let yv = System.Numerics.Vector<float>(v, vo + k)
+                let cx = System.Numerics.Vector.Multiply(cv, xv)
+                let sy = System.Numerics.Vector.Multiply(sv, yv)
+                let cy = System.Numerics.Vector.Multiply(cv, yv)
+                let sx = System.Numerics.Vector.Multiply(sv, xv)
+                System.Numerics.Vector.Add(cx, sy).CopyTo(u, uo + k)
+                System.Numerics.Vector.Subtract(cy, sx).CopyTo(v, vo + k)
+                k <- k + width
+
+            rotatePortable c s u (uo + k) v (vo + k) (n - k)
+        else
+            rotatePortable c s u uo v vo n
+#endif
 
 /// The storage operations over `Matrix`: construction, reads and the transpose. Every constructor
 /// takes a fresh backing it owns; every read that answers a column answers a zero-copy view.

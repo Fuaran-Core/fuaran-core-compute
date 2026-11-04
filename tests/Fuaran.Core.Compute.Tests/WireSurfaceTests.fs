@@ -292,15 +292,53 @@ let internal roots: WireRoot list =
       derived<PipelineQuery> "Fuaran.Compute.PipelineQuery" "pipelineQuery" PipelineQueryCodec.encode
       derived<Transform list> "Fuaran.Compute.DataFrame" "pipeline" DataFrameCodec.encodePipeline
       derived<TableDelta> "Fuaran.Compute.DataFrame" "tableDelta" DeltaCodec.encode
-      derived<ColumnOp> "Fuaran.Compute.ColumnOps" "columnOp" ColumnOps.encode ]
+      derived<ColumnOp> "Fuaran.Compute.ColumnOps" "columnOp" ColumnOps.encode
+      // Phase 591 — the dense-matrix library's codec. `Matrix` and `QRAccumulator` are opaque, so
+      // their documents are written by hand: every member, and the float spellings a bit-pattern
+      // codec must keep (a negative zero, a subnormal, the infinities, a NaN).
+      Specimens(
+          "Fuaran.Compute.LinearAlgebra",
+          "linearAlgebra",
+          fun () ->
+              let matrix =
+                  Fuaran.Compute.LinearAlgebra.Matrix.init 2 3 (fun i j ->
+                      match i, j with
+                      | 0, 0 -> 1.5
+                      | 1, 0 -> -0.0
+                      | 0, 1 -> Double.Epsilon
+                      | 1, 1 -> Double.PositiveInfinity
+                      | 0, 2 -> Double.NegativeInfinity
+                      | _ -> nan)
+
+              let rows =
+                  Fuaran.Compute.LinearAlgebra.Matrix.init 3 2 (fun i j ->
+                      float (i + 1) * (if j = 0 then 1.0 else -0.5))
+
+              let acc =
+                  Fuaran.Compute.LinearAlgebra.QRAccumulator.empty 2
+                  |> Fuaran.Compute.LinearAlgebra.QRAccumulator.addRows
+                      rows
+                      (Vector.ofList [ 1.0; 0.0; 2.0 ])
+                      (Vector.ofList [ 1.0; 0.0; 4.0 ])
+                  |> Result.defaultWith (failwithf "the accumulator specimen was refused: %A")
+
+              [ "linearAlgebra / matrix", Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeMatrix matrix
+                "linearAlgebra / matrix (empty)",
+                Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeMatrix (
+                    Fuaran.Compute.LinearAlgebra.Matrix.init 0 0 (fun _ _ -> 0.0)
+                )
+                "linearAlgebra / qrAccumulator", Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeAccumulator acc
+                "linearAlgebra / qrAccumulator (empty)",
+                Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeAccumulator (
+                    Fuaran.Compute.LinearAlgebra.QRAccumulator.empty 0
+                ) ]
+      ) ]
 
 /// Packable packages that emit no wire document of their own, each with the reason. A package
 /// here that stops being packable, or that gains a root above, fails the roster test.
 let internal notWire: (string * string) list =
     [ "Fuaran.Compute.Conformance",
-      "the law families over the dataframe layer; the transform law corpus is pinned by its own emission test (`--emit-laws`)"
-      "Fuaran.Compute.LinearAlgebra",
-      "the dense-matrix library (Phase 590) has no codec; its law vectors are pinned by their own emission test (`--emit-laws`)" ]
+      "the law families over the dataframe layer; the transform law corpus is pinned by its own emission test (`--emit-laws`)" ]
 
 /// Build every document of one root: `(name, emitted bytes)`, plus the construction logs for the
 /// per-case documents so the suite can prove each reached its case.

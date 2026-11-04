@@ -12,6 +12,10 @@ module Fuaran.Compute.Tests.LinearAlgebraTests
 //   * The node leg: the same laws and the same document under Fable, the document
 //     compared with the committed file byte for byte.
 //   * `Operations.exactness` is the published operation set, both ways.
+//
+// Phase 591 adds the streaming QR, least squares and the codec to the same laws,
+// vectors and node leg, and the probes that show the new byte laws discriminate:
+// a fused rotation and a reordered fold each answer different bits.
 // ---------------------------------------------------------------------------
 
 open System
@@ -44,7 +48,16 @@ let private lineOf (id: string) : string =
 /// The public functions of the package's operation modules, spelled `<Module>.<function>` — the census
 /// `Operations.exactness` is held to.
 let private publishedOperations () : Set<string> =
-    let modules = set [ "Matrix"; "Blas"; "UpperTriangular"; "Givens" ]
+    let modules =
+        set
+            [ "Matrix"
+              "Blas"
+              "UpperTriangular"
+              "Givens"
+              "QRAccumulator"
+              "QR"
+              "LeastSquares"
+              "LinAlgWire" ]
 
     typeof<Matrix>.Assembly.GetExportedTypes()
     |> Array.filter (fun t -> t.IsAbstract && t.IsSealed && t.Namespace = "Fuaran.Compute.LinearAlgebra")
@@ -115,6 +128,72 @@ let tests =
                   "native = portable"
 
               Expect.notEqual (fused |> Array.map bits) (portable |> Array.map bits) "a fused update differs somewhere"
+
+          testCase "a rotation that rounds differently is caught by the native-versus-portable comparison"
+          <| fun () ->
+              // The pair (1 + 2^-30, -(1 + 2^-29)) rotated by c = 1 + 2^-30, s = 1: the first output is
+              // c·x + s·y, +0 rounded twice and 2^-60 fused — nine pairs, so the SIMD lanes are reached.
+              let fa = 1.0 + 1.0 / 1073741824.0
+              let fc = -(1.0 + 1.0 / 536870912.0)
+              let fresh () = Array.create 9 fa, Array.create 9 fc
+              let pu, pv = fresh ()
+              Kernels.rotatePortable fa 1.0 pu 0 pv 0 9
+              let nu, nv = fresh ()
+              Kernels.rotateNative fa 1.0 nu 0 nv 0 9
+              let fu, fv = fresh ()
+
+              for k in 0..8 do
+                  let x, y = fu[k], fv[k]
+                  fu[k] <- Math.FusedMultiplyAdd(fa, x, 1.0 * y)
+                  fv[k] <- fa * y - 1.0 * x
+
+              Expect.equal (Array.map bits nu) (Array.map bits pu) "native = portable"
+              Expect.equal (Array.map bits pu) (Array.create 9 (bits 0.0)) "pinned: +0 in every pair"
+              Expect.notEqual (Array.map bits fu) (Array.map bits pu) "a fused rotation differs"
+
+          testCase "rows folded in another order answer other bits, so the byte laws see an order"
+          <| fun () ->
+              // The fold is the contract (DECISIONS.md D49 items 1 and 9): reversing the rows of a
+              // generic design moves the last bits of R, which is why the append and codec laws can fail.
+              let x = Matrix.init 7 3 (fun i j -> float ((i * 7 + j * 3) % 11) / 7.0 - 0.6)
+              let y = Vector.init 7 (fun i -> float (i * i % 5) / 3.0)
+              let w = Vector.init 7 (fun _ -> 1.0)
+              let rev = Matrix.init 7 3 (fun i j -> x[6 - i, j])
+              let ry = Vector.init 7 (fun i -> y[6 - i])
+
+              let fold a b =
+                  QRAccumulator.empty 3 |> QRAccumulator.addRows a b w
+
+              let state (r: Result<QRAccumulator, LinAlgError>) =
+                  match r with
+                  | Ok acc ->
+                      Array.append (Matrix.toColumnMajor (QRAccumulator.r acc)) (Vector.toArray (QRAccumulator.qty acc))
+                      |> Array.map bits
+                  | Error e -> failtestf "refused: %A" e
+
+              Expect.notEqual (state (fold rev ry)) (state (fold x y)) "a reversed fold differs in its bits"
+
+          testCase "the least-squares vectors answer what was worked by hand"
+          <| fun () ->
+              let has (id: string) (fragment: string) =
+                  Expect.stringContains (lineOf id) fragment (sprintf "%s answers %s" id fragment)
+
+              let h = LinearAlgebraVectors.hex
+              // y = 2 + 3t exactly: the coefficients are 2 and 3 to the bit.
+              has "lsq-exact-line" (sprintf "\"coefficients\": [\"%s\", \"%s\"]" (h 2.0) (h 3.0))
+              // The later copy of a column is aliased, its coefficient the token.
+              has "lsq-duplicate-column-aliased" "\"aliased\"], \"rank\": 2, \"aliased\": [2]"
+              has "lsq-zero-column-aliased" "\"rank\": 1, \"aliased\": [0]"
+              has "lsq-no-rows" "\"rank\": 0, \"aliased\": [0, 1]"
+              // A zero weight is not counted; a negative or infinite one is refused by row.
+              has "lsq-zero-weight-outlier-ignored" "\"count\": 3"
+              has "qr-refuses-negative-weight" "{ \"case\": \"invalidWeight\", \"row\": 1 }"
+              has "qr-refuses-nan-cell" "{ \"case\": \"notFinite\", \"row\": 1, \"col\": 1 }"
+              has "qr-refuses-infinite-response" "{ \"case\": \"notFinite\", \"row\": 0, \"col\": 1 }"
+              // A Householder R is normalised to a non-negative diagonal: |(-3, 4, 0)| = 5.
+              has "householder-signs-normalised" (sprintf "\"data\": [\"%s\"" (h 5.0))
+              // Pivoting takes the largest column first, the lower index of two of norm 5.
+              has "pivoted-largest-first" "\"permutation\": [1, 2, 0]"
 
           testCase "a column is a zero-copy view, and an offset vector is read where it lies"
           <| fun () ->
