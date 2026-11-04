@@ -180,6 +180,9 @@ module LawVectorExport =
             Some "OverflowError"
         elif shape.StartsWith "fit-" then
             Some "FitError"
+        // Phase 597 (D56): every prediction refusal is a `FitError` naming what it refuses.
+        elif shape.StartsWith "predict-" && shape.EndsWith "-refused" then
+            Some "FitError"
         else
             None
 
@@ -191,6 +194,7 @@ module LawVectorExport =
         || shape.StartsWith "function-"
         || shape.StartsWith "curve-"
         || shape.StartsWith "fit-"
+        || shape.StartsWith "predict-"
 
     /// The class a named family's refused shape carries, checked against what the reference answered:
     /// a refused shape the reference answers otherwise, or an answered one it refuses, is a broken
@@ -432,7 +436,14 @@ module LawVectorExport =
         + "by the streaming Givens QR of the linear-algebra package, so every estimate, standard error and "
         + "statistic is pinned bytes; an aliased column is named with null estimates, a decimal response's "
         + "fitted values, residuals and deviances are decimal, and a family the version does not evaluate "
-        + "(`UnsupportedFit`) or a non-finite term (`FitError`) is refused by the class `expected.error` names."
+        + "(`UnsupportedFit`) or a non-finite term (`FitError`) is refused by the class `expected.error` names. "
+        + "After the fit shapes, each iteration takes the next PREDICT shape named in its vector id (Phase 597) "
+        + "over the same table, which is also each model's training rows: the appended `predicted`, `se_fit`, "
+        + "`se_pred`, `lower` and `upper` are pinned bytes — a row's prediction is its fitted value, the "
+        + "standard errors one triangular solve and a sum of squares, and an interval's quantile a row of the "
+        + "t table read by `Interpolate` — and an untabled level, a prediction interval outside the gaussian "
+        + "family, a level or a group the model does not hold and a term a coefficient table lacks are each "
+        + "refused as `FitError`."
 
     let renderTransformVectors () : string =
         CorpusFile.render

@@ -55,6 +55,7 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `Union` / `Intersect` / `Except` | set operations against another source |
 | `Define of FnDef` | a named function the pipeline carries (below); it changes no frame |
 | `Fit of FitSpec` | fit a regression per group by the pinned streaming Givens QR (below): coefficients, a summary, fitted values or residuals |
+| `Predict of PredictSpec` | score rows against a fitted model (below): the prediction, its standard errors and an interval read from a pinned t table |
 
 | `ColExpr` | |
 |---|---|
@@ -92,6 +93,18 @@ fitted by iteratively reweighted least squares over the same kernel and the pinn
 (D55), so their coefficients and iteration counts are byte-identical on every host too; every other
 family and link is typed and refused by name. Incrementally, a group whose rows were appended continues its stored factorization by
 the new rows alone, byte-equal to a full evaluation; an edited group is refitted.
+
+**A fitted model scores rows with its uncertainty attached** (`DECISIONS.md` D56). `Predict` carries a
+`Fit` spec and where its model comes from — the training rows, which it fits exactly as `Fit` would, or a
+table of the `Coefficients` schema — and appends `predicted` on the link or the response scale (`exp η`
+under the log link, through the pinned `Elementary.exp`). A row is coded as the fit coded its training
+rows, a categorical term against the fit's own reference level; a level, a group or a term the model does
+not hold is refused by name, and a term in another unit than the fit's is refused rather than mis-scored.
+From the training rows it also appends `se_fit` and `se_pred` (`σ̂·√(x₀ᵀ(RᵀR)⁻¹x₀)` and
+`σ̂·√(1 + x₀ᵀ(RᵀR)⁻¹x₀)`, one triangular solve against the fit's `R` and a sum of squares) and, at a
+declared level, a confidence or prediction interval's `lower` and `upper`, whose quantile is a row of a
+**Student t table carried as data** and read through `Interpolate` — so a training row's prediction is
+its fitted value bit for bit, and every column is byte-identical on every host.
 
 **The power functions are exact on every host** (`DECISIONS.md` D43, D54). `Pow` under an integer
 exponent runs one pinned routine, binary exponentiation over IEEE-754 multiplication with one

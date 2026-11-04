@@ -356,6 +356,18 @@
     },
     {
       "members": [
+        "PredictSpec.mapExprs",
+        "PredictSpec.ofTraining",
+        "PredictSpec.slotParams",
+        "PredictSpec.substituteSlots",
+        "Transform.Predict"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "Rows scored against a fitted model (Phase 597, D56). The model carries no regression; a training row's prediction is held byte for byte to the fit's fitted value, the standard errors to the textbook formulae, the interval to the t table's row exactly, with the coding, the units, the refusals, the wire round trip and the static walk tested, and the transform law vectors carry the predict shapes under .NET and node.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PredictTests.fs"
+    },
+    {
+      "members": [
         "Slot.isParam",
         "Slot.paramName",
         "Slot.tryLit"

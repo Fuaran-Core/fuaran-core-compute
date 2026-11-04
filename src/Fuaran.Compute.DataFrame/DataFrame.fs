@@ -623,6 +623,94 @@ module FitSpec =
                 { MaxIter = bindInt spec.Control.MaxIter
                   Tol = bindFloat spec.Control.Tol } }
 
+/// The scale a `Predict` answers on (Phase 597).
+[<RequireQualifiedAccess>]
+type PredictScale =
+    /// The linear predictor `η = Σ xⱼ·βⱼ + offset`.
+    | Link
+    /// The mean `μ`: `η` under `FitLink.Identity`, `exp η` (the pinned `Elementary.exp`) under
+    /// `FitLink.Log`.
+    | Response
+
+/// Which interval a `Predict` states about a row (Phase 597, `DECISIONS.md` D56).
+[<RequireQualifiedAccess>]
+type IntervalKind =
+    /// For the mean at the row: `η ± q·se_fit`.
+    | Confidence
+    /// For one new observation at the row: `η ± q·se_pred`. The gaussian family's only.
+    | Prediction
+
+/// A `Predict` interval: its kind and its level, a two-sided coverage the t table carries
+/// (`0.5`, `0.8`, `0.9`, `0.95`, `0.98`, `0.99` or `0.999`), a `Slot` so a host can bind it.
+type PredictInterval =
+    { Kind: IntervalKind
+      Level: Slot<float> }
+
+/// Where a `Predict` reads its model (Phase 597).
+[<RequireQualifiedAccess>]
+type PredictModel =
+    /// The training rows: the step fits its spec over this source — the factorization a `Fit` step
+    /// over the same rows makes, bit for bit — and scores its input rows against every group's fit.
+    /// The standard errors and the interval need this form: they read the fit's `R`.
+    | Training of DataSource
+    /// A table of `FitOutput.Coefficients`'s schema: the spec's group keys, `term` and `estimate`
+    /// (other columns are not read). It carries neither `R` nor a categorical term's reference
+    /// level, so it scores a point estimate over numeric terms only.
+    | Coefficients of DataSource
+
+/// Score rows against a fitted model (Phase 597, `DECISIONS.md` D56). The model's terms, intercept,
+/// groups, weights, offset, ridge, family, link and control are the `Fit` spec's (its `Output` is not
+/// read): a row is coded exactly as the fit coded its training rows, a categorical term against the
+/// fit's own reference level, and its group's fit scores it.
+type PredictSpec =
+    {
+        /// The model's spec, as a `Fit` step of it would carry it.
+        Fit: FitSpec
+        Model: PredictModel
+        Scale: PredictScale
+        /// The interval, if any: `lower` and `upper` columns appended after the standard errors.
+        Interval: PredictInterval option
+    }
+
+/// Construction and derivations of a `PredictSpec` (Phase 597).
+[<RequireQualifiedAccess>]
+module PredictSpec =
+
+    /// Score against `fit` refitted over the training rows `training`, on the response scale, with no
+    /// interval.
+    let ofTraining (fit: FitSpec) (training: DataSource) : PredictSpec =
+        { Fit = fit
+          Model = PredictModel.Training training
+          Scale = PredictScale.Response
+          Interval = None }
+
+    /// The spec with `f` applied to every expression its model carries.
+    let mapExprs (f: ColExpr -> ColExpr) (spec: PredictSpec) : PredictSpec =
+        { spec with
+            Fit = FitSpec.mapExprs f spec.Fit }
+
+    /// The params the spec's slots name: the model's (`FitSpec.slotParams`), then the interval's
+    /// level.
+    let slotParams (spec: PredictSpec) : string list =
+        FitSpec.slotParams spec.Fit
+        @ (spec.Interval
+           |> Option.map (fun i -> Slot.paramName i.Level)
+           |> Option.defaultValue [])
+
+    /// The spec with every slot param bound in `env` replaced by its literal.
+    let substituteSlots (env: Map<string, Cell>) (spec: PredictSpec) : PredictSpec =
+        let bindLevel (i: PredictInterval) =
+            match i.Level with
+            | Slot.Param n ->
+                match Map.tryFind n env with
+                | Some(Float v) -> { i with Level = Slot.Lit v }
+                | _ -> i
+            | Slot.Lit _ -> i
+
+        { spec with
+            Fit = FitSpec.substituteSlots env spec.Fit
+            Interval = spec.Interval |> Option.map bindLevel }
+
 /// One transform step — the full v1 verb set (spec §2). A pipeline is an ordered `Transform list`
 /// over a `DataSource`.
 type Transform =
@@ -671,6 +759,12 @@ type Transform =
     /// "groupBy":[…],"weights":…?,"offset":…?,"ridge":<slot>?,"family":…,"link":…,
     /// "control":{"maxIter":<slot>,"tol":<slot>},"output":…}`.
     | Fit of FitSpec
+    /// Phase 597 — score the step's input rows against a fitted model (`DECISIONS.md` D56), appending
+    /// `predicted` and, from training rows, `se_fit`, `se_pred` and an interval's `lower` and `upper`.
+    /// Wire: `{"$type":"predict","fit":{<the fit step's members>},"model":{"from":"training"|
+    /// "coefficients","source":…},"scale":"link"|"response","interval":{"kind":"confidence"|
+    /// "prediction","level":<slot>}?}`.
+    | Predict of PredictSpec
 
 // ---------------------------------------------------------------------------
 //  Phase 269 — the planner's report vocabulary. The planner itself is `Plan` (Plan.fs), over the
@@ -946,6 +1040,10 @@ module Transform =
         | Fit spec ->
             (FitSpec.exprs spec |> List.collect ColExpr.paramNames)
             @ FitSpec.slotParams spec
+        // Phase 597: the model's, as its `Fit` would report them, then the interval's level.
+        | Predict spec ->
+            (FitSpec.exprs spec.Fit |> List.collect ColExpr.paramNames)
+            @ PredictSpec.slotParams spec
         | Project _
         | GroupBy _
         | Join _
@@ -1009,6 +1107,12 @@ module Transform =
                         Params = fd.Params |> List.map bindCell
                         Body = ColExpr.substitute env fd.Body }
             | Fit spec -> Fit(spec |> FitSpec.mapExprs (ColExpr.substitute env) |> FitSpec.substituteSlots env)
+            | Predict spec ->
+                Predict(
+                    spec
+                    |> PredictSpec.mapExprs (ColExpr.substitute env)
+                    |> PredictSpec.substituteSlots env
+                )
             | other -> other)
 
     /// Substitute every LIST param bound in `listEnv` through the whole pipeline (Phase 91) —
@@ -1024,6 +1128,7 @@ module Transform =
                     { fd with
                         Body = ColExpr.substituteListParams listEnv fd.Body }
             | Fit spec -> Fit(FitSpec.mapExprs (ColExpr.substituteListParams listEnv) spec)
+            | Predict spec -> Predict(PredictSpec.mapExprs (ColExpr.substituteListParams listEnv) spec)
             | other -> other)
 
     /// Pin the clock through the whole pipeline (Phase 125): every `ColExpr.Now` becomes the
@@ -1044,6 +1149,7 @@ module Transform =
                     { fd with
                         Body = ColExpr.substituteWithPinned pinned fd.Body }
             | Fit spec -> Fit(FitSpec.mapExprs (ColExpr.substituteWithPinned pinned) spec)
+            | Predict spec -> Predict(PredictSpec.mapExprs (ColExpr.substituteWithPinned pinned) spec)
             | other -> other)
 
     /// The literal `Limit` — `Transform.limit 10 0` for the common case, so a call site that never
@@ -1065,6 +1171,7 @@ module Transform =
             | Sort by -> by |> List.collect (fun (c, _) -> Slot.paramName c)
             | Limit(n, offset) -> Slot.paramName n @ Slot.paramName offset
             | Fit spec -> FitSpec.slotParams spec
+            | Predict spec -> PredictSpec.slotParams spec
             | _ -> [])
         |> List.distinct
 
@@ -1078,6 +1185,7 @@ module Transform =
             | Derive(_, e) -> ColExpr.usesNow e
             | Define fd -> ColExpr.usesNow fd.Body
             | Fit spec -> FitSpec.exprs spec |> List.exists ColExpr.usesNow
+            | Predict spec -> FitSpec.exprs spec.Fit |> List.exists ColExpr.usesNow
             | _ -> false)
 
 /// The reference evaluator's recoverable error envelope — names the failure, enumerates the
@@ -1321,6 +1429,372 @@ module internal Interpolation =
                         elif y > hi then hi
                         else y
                     )
+
+/// The two-sided Student t quantiles a `Predict` interval reads (Phase 597, `DECISIONS.md` D56): for a
+/// level `L` and `ν` residual degrees of freedom, the `t` with `P(|T| < t) = L`, the `(1 + L)/2`
+/// quantile of Student's t. One row per tabled `ν` (1 to 30, 40, 50, 60, 80, 100, 120, 200, 500 and
+/// 1000) and the normal row (`ν = ∞`), one column per level. Every entry is the nearest double to the
+/// exact quantile, computed once in 70-digit decimal arithmetic from Abramowitz and Stegun's closed
+/// forms 26.7.3 and 26.7.4 (the error function for the normal row) and checked by quadrature; the
+/// table is data, so no transcendental function is on the path and every host reads the same bits.
+/// Between rows the quantile is read by `Interpolate` (`InterpKind.Linear`) in `1/ν`, the normal row
+/// at `1/ν = 0`, so a tabled `ν` answers its row exactly and a `ν` above 1000 reads between the 1000
+/// row and the normal one.
+[<RequireQualifiedAccess>]
+module internal StudentT =
+
+    /// The tabled coverage levels, ascending.
+    let levels: float[] = [| 0.5; 0.8; 0.9; 0.95; 0.98; 0.99; 0.999 |]
+
+    /// `(ν, the quantile at each level)`, `ν` ascending; `0` is the normal row (`ν = ∞`).
+    let rows: (int * float[]) list =
+        [ 1,
+          [| 1.0
+             3.0776835371752536
+             6.313751514675043
+             12.706204736174705
+             31.82051595377396
+             63.65674116287158
+             636.6192487687197 |]
+          2,
+          [| 0.816496580927726
+             1.8856180831641267
+             2.9199855803537256
+             4.302652729749464
+             6.964556734283274
+             9.924843200918293
+             31.59905457644362 |]
+          3,
+          [| 0.7648923284043453
+             1.6377443536962102
+             2.3533634348018238
+             3.1824463052837095
+             4.5407028585681335
+             5.840909309733357
+             12.923978636687483 |]
+          4,
+          [| 0.7406970841126826
+             1.5332062740589438
+             2.1318467863266504
+             2.7764451051977943
+             3.746947387979197
+             4.604094871349993
+             8.610301581379275 |]
+          5,
+          [| 0.7266868438004227
+             1.475884048824481
+             2.0150483733330242
+             2.5705818356363155
+             3.3649299989072188
+             4.032142983555228
+             6.86882662588111 |]
+          6,
+          [| 0.7175581964914126
+             1.4397557472651483
+             1.9431802805153031
+             2.44691185114497
+             3.1426684032909833
+             3.70742802132478
+             5.9588161788187595 |]
+          7,
+          [| 0.7111417780817864
+             1.4149239276505086
+             1.8945786050900073
+             2.3646242515927853
+             2.9979515668685286
+             3.499483297350494
+             5.407882520861725 |]
+          8,
+          [| 0.7063866126448386
+             1.3968153097438647
+             1.8595480375308984
+             2.3060041352041667
+             2.8964594477096224
+             3.3553873313333953
+             5.041305433373368 |]
+          9,
+          [| 0.7027221467513264
+             1.3830287383966322
+             1.8331129326562372
+             2.2621571627982053
+             2.821437925025809
+             3.2498355415921263
+             4.780912585931139 |]
+          10,
+          [| 0.6998120613124317
+             1.3721836411103356
+             1.8124611228116765
+             2.228138851986275
+             2.763769458112696
+             3.1692726726169513
+             4.586893858702636 |]
+          11,
+          [| 0.6974453275598815
+             1.3634303180205407
+             1.7958848187040442
+             2.2009851600916397
+             2.7180791838138623
+             3.105806515539281
+             4.436979338234449 |]
+          12,
+          [| 0.6954828655117926
+             1.3562173340232053
+             1.78228755564932
+             2.178812829667229
+             2.680997993120915
+             3.054539589392902
+             4.3177912836061845 |]
+          13,
+          [| 0.6938293042354409
+             1.350171288780055
+             1.770933395986873
+             2.1603686564627926
+             2.6503088379121915
+             3.0122758387165787
+             4.220831727707121 |]
+          14,
+          [| 0.6924170695700052
+             1.3450303744546506
+             1.7613101357748921
+             2.144786687917804
+             2.624494067590052
+             2.976842734370835
+             4.140454112738203 |]
+          15,
+          [| 0.6911969489584898
+             1.3406056078504556
+             1.7530503556925736
+             2.1314495455597755
+             2.6024802950111234
+             2.946712883475239
+             4.072765195903791 |]
+          16,
+          [| 0.6901322538105608
+             1.3367571673273146
+             1.74588367627625
+             2.1199052992212546
+             2.5834871852759913
+             2.9207816224251
+             4.014996327184056 |]
+          17,
+          [| 0.6891950751539389
+             1.3333793897216268
+             1.739606726075073
+             2.109815577833317
+             2.566933983724718
+             2.8982305196774187
+             3.9651262721190315 |]
+          18,
+          [| 0.6883638064662002
+             1.330390943569909
+             1.7340636066175388
+             2.1009220402410387
+             2.5523796301822514
+             2.878440472738608
+             3.9216458250851596 |]
+          19,
+          [| 0.6876214602039603
+             1.3277282090267983
+             1.7291328115213696
+             2.0930240544083096
+             2.5394831906239625
+             2.860934606464979
+             3.883405852592083 |]
+          20,
+          [| 0.6869544964488035
+             1.3253407069850462
+             1.7247182429207872
+             2.085963447265865
+             2.5279770027415736
+             2.8453397097861086
+             3.8495162749308274 |]
+          21,
+          [| 0.6863519907269535
+             1.3231878738651726
+             1.7207429028118786
+             2.0796138447276804
+             2.5176480160447423
+             2.83135955802305
+             3.8192771642744625 |]
+          22,
+          [| 0.6858050317218864
+             1.3212367416133617
+             1.7171443743802428
+             2.0738730679040263
+             2.5083245528990803
+             2.8187560606001436
+             3.792130671698391 |]
+          23,
+          [| 0.6853062780612957
+             1.319460239816162
+             1.713871527747048
+             2.0686576104190486
+             2.499866739494668
+             2.807335683769999
+             3.7676268043117807 |]
+          24,
+          [| 0.6848496272369818
+             1.3178359336731496
+             1.7108820799094284
+             2.063898561628026
+             2.492159473157756
+             2.796939504774456
+             3.7453986192900524 |]
+          25,
+          [| 0.6844299649042703
+             1.3163450726738701
+             1.7081407612518993
+             2.0595385527532977
+             2.485107175410763
+             2.7874358136769706
+             3.72514394972865 |]
+          26,
+          [| 0.6840429726828732
+             1.3149718642705168
+             1.7056179197592731
+             2.055529438642873
+             2.478629823591242
+             2.778714533329683
+             3.7066117434809107 |]
+          27,
+          [| 0.683684979131031
+             1.3137029128292739
+             1.7032884457221271
+             2.0518305164802855
+             2.472659911956007
+             2.770682957122212
+             3.689591713459236 |]
+          28,
+          [| 0.6833528429885058
+             1.3125267815926667
+             1.7011309342659315
+             2.048407141795245
+             2.4671400979674725
+             2.7632624554614447
+             3.6739064007012767 |]
+          29,
+          [| 0.6830438608216132
+             1.311433647301551
+             1.6991270265334977
+             2.0452296421327043
+             2.462021360150412
+             2.7563859036706053
+             3.659405019466333 |]
+          30,
+          [| 0.6827556933212926
+             1.3104150253913955
+             1.6972608865939578
+             2.042272456301238
+             2.4572615424005915
+             2.7499956535672254
+             3.645958635042022 |]
+          40,
+          [| 0.680672717164449
+             1.3030770526071946
+             1.6838510133356526
+             2.0210753903062733
+             2.4232567793348583
+             2.7044592674331627
+             3.550965760863311 |]
+          50,
+          [| 0.679428200326346
+             1.2987136941948096
+             1.6759050251630976
+             2.008559112100761
+             2.403271916674172
+             2.6777932709408443
+             3.496012881811139 |]
+          60,
+          [| 0.6786007206481358
+             1.2958210935157308
+             1.6706488649046365
+             2.0002978220142604
+             2.3901194726249133
+             2.660283028855037
+             3.460200469196356 |]
+          80,
+          [| 0.6775688463948343
+             1.2922235830591335
+             1.6641245785896674
+             1.9900634212544461
+             2.3738682729673433
+             2.638690596344183
+             3.416337458476946 |]
+          100,
+          [| 0.6769510430114715
+             1.290074761346516
+             1.6602343260853396
+             1.9839715185235522
+             2.364217366238482
+             2.6258905214380177
+             3.39049131116423 |]
+          120,
+          [| 0.6765397249125202
+             1.288646233656378
+             1.6576508993552357
+             1.979930405082441
+             2.3578246126487556
+             2.617421145106866
+             3.3734537685625003 |]
+          200,
+          [| 0.6757184114042202
+             1.285798793994801
+             1.6525081009108775
+             1.9718962236339095
+             2.3451370822594684
+             2.600634436191558
+             3.3398354062756783 |]
+          500,
+          [| 0.674980737965939
+             1.2832470207103743
+             1.6479068539295112
+             1.9647198374673678
+             2.333828955352305
+             2.585697835141942
+             3.31009115152267 |]
+          1000,
+          [| 0.6747351646070094
+             1.2823987214609245
+             1.6463788172854648
+             1.9623390808264085
+             2.330082674755513
+             2.580754698065951
+             3.300282648423913 |]
+          0,
+          [| 0.6744897501960817
+             1.2815515655446004
+             1.6448536269514726
+             1.9599639845400543
+             2.326347874040841
+             2.575829303548901
+             3.290526731491895 |] ]
+
+    /// The knots of one level's curve, `x = 1/ν` ascending: the normal row at `0`, then `ν` descending.
+    let private knots (column: int) : (float * float) list =
+        let normal = rows |> List.find (fun (v, _) -> v = 0) |> snd
+        let tabled = rows |> List.filter (fun (v, _) -> v > 0) |> List.rev
+
+        (0.0, normal[column])
+        :: (tabled |> List.map (fun (v, qs) -> 1.0 / float v, qs[column]))
+
+    /// One prepared curve per level.
+    let private curves: PreparedCurve[] =
+        Array.init levels.Length (fun c ->
+            match Interpolation.prepare (knots c) InterpKind.Linear InterpOutside.Clamp with
+            | Ok curve -> curve
+            | Error _ -> failwith "the t table is malformed")
+
+    /// The quantile at `level` for `df` residual degrees of freedom (`None`: the normal row); `None`
+    /// where the level is not tabled or `df` is not positive.
+    let quantile (level: float) (df: int option) : float option =
+        match Array.tryFindIndex (fun l -> l = level) levels with
+        | None -> None
+        | Some c ->
+            match df with
+            | None -> Interpolation.at curves[c] 0.0
+            | Some v when v > 0 -> Interpolation.at curves[c] (1.0 / float v)
+            | Some _ -> None
+
 
 /// Named functions over a pipeline (Phase 596, `DECISIONS.md` D48): registration and inline
 /// expansion. A pipeline's `Transform.Define` steps are its functions; `expand` checks them and every
@@ -1655,6 +2129,7 @@ module FnDef =
                 | Derive(name, e) -> [ "derive '" + name + "'", e ]
                 // Phase 592: a fit's terms and offset are expressions of the step like any other.
                 | Fit spec -> FitSpec.exprs spec |> List.map (fun e -> "fit", e)
+                | Predict spec -> FitSpec.exprs spec.Fit |> List.map (fun e -> "predict", e)
                 | _ -> [])
 
 
@@ -1690,6 +2165,7 @@ module FnDef =
                         | Filter p -> Some(Filter(inline' defs Map.empty p))
                         | Derive(name, e) -> Some(Derive(name, inline' defs Map.empty e))
                         | Fit spec -> Some(Fit(FitSpec.mapExprs (inline' defs Map.empty) spec))
+                        | Predict spec -> Some(Predict(PredictSpec.mapExprs (inline' defs Map.empty) spec))
                         | other -> Some other))
 
 /// A description of what changed in a source table between a prior evaluation and now (Phase 34) — the
@@ -4684,7 +5160,9 @@ module DataFrame =
             // A definition changes no frame.
             | Define _ -> true
             // Phase 592: a fit reaches the factorization, whose refusals the schema cannot vouch for.
-            | Fit _ -> false
+            | Fit _
+            // Phase 597: and so does a prediction, which also reads a model source.
+            | Predict _ -> false
             | GroupBy _
             | Join _
             | Window _
@@ -4727,6 +5205,8 @@ module DataFrame =
                     )
                 | FitOutput.Fitted
                 | FitOutput.Residuals -> None
+            // Phase 597: a prediction hands every input column on.
+            | Predict _
             | Join _
             | Window _
             | Unpivot _
@@ -4827,6 +5307,7 @@ module DataFrame =
             | Except _ -> "except"
             | Define _ -> "define"
             | Fit _ -> "fit"
+            | Predict _ -> "predict"
 
         // ---- reordering: a Filter bubbles ahead of the Sort / Derive it follows ----
 
@@ -10188,6 +10669,38 @@ module DataFrame =
               Dispersion = None
               DecimalDeviance = false }
 
+    /// The units a `Predict` states its columns in (Phase 597, D56): the prediction and an interval's
+    /// bounds on the scale it answers — the linear predictor's unit (`fitStatUnits`'s `Eta`) on the
+    /// link scale, the response's on the response scale — and the standard errors, which are on the
+    /// link scale whatever the prediction's.
+    type internal PredictUnits =
+        { Predicted: UnitOfMeasure option
+          StdError: UnitOfMeasure option }
+
+        /// The unit of one appended column: a standard error's, or the prediction's scale's.
+        member u.Of(column: string) : UnitOfMeasure option =
+            if column.StartsWith "se_" then u.StdError else u.Predicted
+
+    let internal predictUnits (spec: PredictSpec) (yUnit: UnitOfMeasure option) : PredictUnits =
+        let eta = (fitStatUnits spec.Fit yUnit).Eta
+
+        { Predicted =
+            (match spec.Scale with
+             | PredictScale.Link -> eta
+             | PredictScale.Response -> yUnit)
+          StdError = eta }
+
+    /// The columns a `Predict` appends, in order (Phase 597, D56).
+    let internal predictColumns (spec: PredictSpec) : string list =
+        match spec.Model with
+        | PredictModel.Coefficients _ -> [ "predicted" ]
+        | PredictModel.Training _ ->
+            [ "predicted"; "se_fit"; "se_pred" ]
+            @ (if Option.isSome spec.Interval then
+                   [ "lower"; "upper" ]
+               else
+                   [])
+
     /// The name of the coefficient of the design's constant column (R's spelling).
     let internal interceptTerm = "(Intercept)"
 
@@ -10268,6 +10781,13 @@ module DataFrame =
                                 Error(FitError "fit: tol must be finite and positive"))))
         | family, link -> Error(UnsupportedFit(fitFamilyTag family, fitLinkTag link))
 
+    /// How the bridge coded one term (Phase 597): a numeric term is its value; a categorical term is
+    /// one indicator per coded level, against the levels the training rows held — the first of
+    /// which is the reference level unless every level is coded.
+    type internal TermCoding =
+        | NumericCoding of name: string * unit: UnitOfMeasure option
+        | CategoricalCoding of name: string * levels: string[] * coded: string[]
+
     /// The design a `Fit` step assembles over its input frame (D53 items 3 to 6): one row per logical
     /// row of the frame, in the frame's order.
     type internal FitDesign =
@@ -10301,6 +10821,9 @@ module DataFrame =
             KeyCells: Cell[][]
             /// The key fields, in `GroupBy` order.
             KeyCols: Field list
+            /// How each term was coded, in term order: what a `Predict` codes another frame's rows by
+            /// (Phase 597).
+            Coding: TermCoding list
         }
 
     /// The text a level of a categorical term is named by in its coefficient: the string itself, or
@@ -10546,37 +11069,43 @@ module DataFrame =
                                     let yUnit = colUnit f.Cols spec.Response
                                     let etaUnit = (fitStatUnits spec yUnit).Eta
 
+                                    let coding =
+                                        terms
+                                        |> List.mapi (fun ti t ->
+                                            match t with
+                                            | NumericTerm(name, _, unit) -> NumericCoding(name, unit)
+                                            | CategoricalTerm(name, cells) ->
+                                                let levels = levelsOf cells |> Array.map levelText
+
+                                                let coded =
+                                                    if not spec.Intercept && firstCategorical = Some ti then
+                                                        levels
+                                                    else
+                                                        Array.skip (min 1 levels.Length) levels
+
+                                                CategoricalCoding(name, levels, coded))
+
                                     // Each design column: its name, its unit, and its value at a row.
                                     let columns: (string * UnitOfMeasure option * (int -> float)) list =
                                         (if spec.Intercept then
                                              [ interceptTerm, etaUnit, (fun _ -> 1.0) ]
                                          else
                                              [])
-                                        @ (terms
-                                           |> List.mapi (fun ti t ->
-                                               match t with
-                                               | NumericTerm(name, cells, unit) ->
+                                        @ (List.zip terms coding
+                                           |> List.map (fun (t, c) ->
+                                               match t, c with
+                                               | NumericTerm(name, cells, unit), _ ->
                                                    [ name,
                                                      unitQuotient etaUnit unit,
                                                      (fun i -> fitFloat cells[i] |> Option.defaultValue nan) ]
-                                               | CategoricalTerm(name, cells) ->
-                                                   let levels = levelsOf cells
-                                                   // Without an intercept the first categorical term
-                                                   // keeps every level, as R's treatment coding does.
-                                                   let coded =
-                                                       if not spec.Intercept && firstCategorical = Some ti then
-                                                           levels
-                                                       else
-                                                           Array.skip (min 1 levels.Length) levels
-
+                                               | CategoricalTerm(name, cells), CategoricalCoding(_, _, coded) ->
                                                    coded
                                                    |> Array.toList
-                                                   |> List.map (fun level ->
-                                                       let token = levelText level
-
+                                                   |> List.map (fun token ->
                                                        name + "[" + token + "]",
                                                        etaUnit,
-                                                       (fun i -> if levelText cells[i] = token then 1.0 else 0.0)))
+                                                       (fun i -> if levelText cells[i] = token then 1.0 else 0.0))
+                                               | CategoricalTerm _, NumericCoding _ -> [])
                                            |> List.concat)
 
                                     let names = columns |> List.map (fun (nm, _, _) -> nm) |> List.toArray
@@ -10691,7 +11220,8 @@ module DataFrame =
                                                   KeyCols =
                                                     spec.GroupBy
                                                     |> List.map (fun key ->
-                                                        f.Cols |> List.find (fun fd -> fd.Name = key)) })))))
+                                                        f.Cols |> List.find (fun fd -> fd.Name = key))
+                                                  Coding = coding })))))
 
     /// The data accumulator of one group: its member rows from `from` on folded onto `acc`, in member
     /// order (D49 items 8 and 9). `addRows` over the batch, which `LinearAlgebraLaws` holds byte-equal
@@ -10755,6 +11285,9 @@ module DataFrame =
             Residuals: Cell[]
             /// The IRLS iterations run: one for least squares (Phase 595).
             Iterations: int
+            /// The factorization the standard errors read — for a GLM its last weighted solve — which a
+            /// `Predict` reads a row's standard errors from (Phase 597).
+            Ls: LinearAlgebra.LeastSquaresFit
         }
 
     /// `t = estimate / std_error` per design column, null where the error is zero or null (D53 item 8).
@@ -10971,7 +11504,8 @@ module DataFrame =
                   NullDeviance = nulCell
                   Fitted = fittedCells
                   Residuals = residCells
-                  Iterations = 1 }))
+                  Iterations = 1
+                  Ls = ls }))
 
     /// One group's generalised linear model (Phase 595): `LinearAlgebra.Glm.fit` over the group's rows
     /// in member order — the design, the estimation response, the prior weights and the offset as the
@@ -11091,7 +11625,25 @@ module DataFrame =
                       NullDeviance = Float nul
                       Fitted = fitted
                       Residuals = resid
-                      Iterations = g.Iterations }))
+                      Iterations = g.Iterations
+                      Ls = g.LeastSquares }))
+
+    /// One group's fit (D53; Phase 595): a generalised linear model from the pinned start, a least-squares
+    /// fit by its member rows from `from` on folded onto `acc0`. Answers the data accumulator with the
+    /// fit — `acc0` unchanged for a GLM, which keeps no state.
+    let private fitOneGroup
+        (d: FitDesign)
+        (r: FitResolved)
+        (spec: FitSpec)
+        (members: int[])
+        (acc0: LinearAlgebra.QRAccumulator)
+        (from: int)
+        : Result<LinearAlgebra.QRAccumulator * FitGroup, EvalError> =
+        if spec.Family <> FitFamily.Gaussian then
+            fitGlmGroupOf d r spec members |> Result.map (fun fg -> acc0, fg)
+        else
+            fitFold d members from acc0
+            |> Result.bind (fun acc -> fitGroupOf d r spec members acc |> Result.map (fun fg -> acc, fg))
 
     /// What a maintained fit carries from one evaluation to the next (D53 item 12): the design's layout
     /// and, per group token, the group's member row tokens in order and its data accumulator.
@@ -11173,14 +11725,7 @@ module DataFrame =
                     if from = 0 then
                         refit <- refit + 1
 
-                    match
-                        if glm then
-                            fitGlmGroupOf d resolved spec d.Members[gi] |> Result.map (fun fg -> acc0, fg)
-                        else
-                            fitFold d d.Members[gi] from acc0
-                            |> Result.bind (fun acc ->
-                                fitGroupOf d resolved spec d.Members[gi] acc |> Result.map (fun fg -> acc, fg))
-                    with
+                    match fitOneGroup d resolved spec d.Members[gi] acc0 from with
                     | Ok(acc, fg) ->
                         accs[gi] <- acc
                         fits[gi] <- fg
@@ -11306,6 +11851,593 @@ module DataFrame =
         evalFitWith k env f spec None emptyFitMemo
         |> Result.map (fun (out, _, _) -> out)
 
+    // -----------------------------------------------------------------------------------------
+    //  Phase 597 — `Predict` (D56): a row coded as the fit coded its training rows, scored against its
+    //  group's fit; its standard errors read the fit's `R` by one triangular solve and a sum of
+    //  squares, and an interval's quantile is read from the t table through `Interpolate`.
+    // -----------------------------------------------------------------------------------------
+
+    /// A prediction's refusal, in the words the evaluator reports it.
+    let private predictError (what: string) : EvalError = FitError("predict: " + what)
+
+    /// A row of the step's input a prediction refuses.
+    let private predictRowError (row: int) (what: string) : EvalError =
+        predictError ("row " + string row + ": " + what)
+
+    /// Group key cells as a refusal names them.
+    let private keyText (cells: Cell[]) : string =
+        "(" + System.String.Join(", ", cells |> Array.map cellString) + ")"
+
+    /// The interval resolved before any row is read: its kind and its level. A level the t table does
+    /// not carry is refused naming the tabled ones; a prediction interval outside the gaussian family,
+    /// and any interval from a coefficient table, are refused by name.
+    let private predictInterval
+        (env: Map<string, Cell>)
+        (spec: PredictSpec)
+        : Result<(IntervalKind * float) option, EvalError> =
+        match spec.Interval with
+        | None -> Ok None
+        | Some i ->
+            match spec.Model with
+            | PredictModel.Coefficients _ ->
+                Error(predictError "a coefficient table carries no factorization; an interval needs the training rows")
+            | PredictModel.Training _ ->
+                resolveFloatSlot env "predict level" i.Level
+                |> Result.bind (fun level ->
+                    if not (Array.contains level StudentT.levels) then
+                        Error(
+                            predictError (
+                                "the level "
+                                + cellString (Float level)
+                                + " is not tabled; a level is one of "
+                                + System.String.Join(", ", StudentT.levels |> Array.map (Float >> cellString))
+                            )
+                        )
+                    elif i.Kind = IntervalKind.Prediction && spec.Fit.Family <> FitFamily.Gaussian then
+                        Error(predictError "a prediction interval is stated for the gaussian family only")
+                    else
+                        Ok(Some(i.Kind, level)))
+
+    /// The step's input rows coded by the training coding (D56 item 2): per logical row, the design row
+    /// and the offset, or `None` where a term or the offset is null. Every term is evaluated over the
+    /// input as the fit evaluated it over the training rows; a term whose kind or unit differs from the
+    /// training term's, a level the training rows did not hold and a non-finite value are refused by
+    /// name.
+    let private predictDesign
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (fit: FitSpec)
+        (coding: TermCoding list)
+        (p: int)
+        : Result<(float[] * float) option[], EvalError> =
+        let n = Frame.rows f
+
+        let isNumeric (ty: ColumnType) =
+            match ty with
+            | IntType
+            | FloatType
+            | DecimalType -> true
+            | _ -> false
+
+        let unitText (u: UnitOfMeasure option) =
+            match u with
+            | Some u -> Unit.render u
+            | None -> "no unit"
+
+        List.zip fit.Predictors coding
+        |> List.map (fun ((name, e), c) ->
+            fitColumn k env f ("predict term '" + name + "'") e
+            |> Result.bind (fun (cells, ty, unit) ->
+                match c with
+                | NumericCoding(_, trained) when isNumeric ty ->
+                    if unit = trained then
+                        Ok(c, cells)
+                    else
+                        Error(
+                            predictError (
+                                "the term '"
+                                + name
+                                + "' is in "
+                                + unitText unit
+                                + "; the fit's was in "
+                                + unitText trained
+                            )
+                        )
+                | CategoricalCoding _ when ty = StringType || ty = BoolType -> Ok(c, cells)
+                | _ ->
+                    Error(
+                        TypeError(
+                            "predict: the term '"
+                            + name
+                            + "' is a "
+                            + ColumnType.tag ty
+                            + " expression; the fit coded it as "
+                            + (match c with
+                               | NumericCoding _ -> "numeric"
+                               | CategoricalCoding _ -> "categorical")
+                        )
+                    )))
+        |> sequenceR
+        |> Result.bind (fun terms ->
+            match fit.Offset with
+            | None -> Ok(terms, None)
+            | Some e ->
+                fitColumn k env f "predict offset" e
+                |> Result.bind (fun (cells, ty, _) ->
+                    if isNumeric ty then
+                        Ok(terms, Some cells)
+                    else
+                        Error(
+                            TypeError(
+                                "predict: the offset is a "
+                                + ColumnType.tag ty
+                                + " expression; an offset is numeric"
+                            )
+                        )))
+        |> Result.bind (fun (terms, offset) ->
+            let rows = Array.create n None
+            let mutable failure = None
+            let mutable i = 0
+
+            let isNull (c: Cell) =
+                match c with
+                | Null -> true
+                | _ -> false
+
+            while Option.isNone failure && i < n do
+                let present =
+                    terms |> List.forall (fun (_, cells) -> not (isNull cells[i]))
+                    && (match offset with
+                        | Some cells -> not (isNull cells[i])
+                        | None -> true)
+
+                if present then
+                    let x = Array.zeroCreate<float> p
+                    let mutable j = 0
+
+                    if fit.Intercept then
+                        x[0] <- 1.0
+                        j <- 1
+
+                    for (c, cells) in terms do
+                        if Option.isNone failure then
+                            match c with
+                            | NumericCoding(name, _) ->
+                                match fitFloat cells[i] with
+                                | Some v when finite v -> x[j] <- v
+                                | _ -> failure <- Some(predictRowError i ("the term '" + name + "' is not finite"))
+
+                                j <- j + 1
+                            | CategoricalCoding(name, levels, coded) ->
+                                let token = levelText cells[i]
+
+                                if not (Array.contains token levels) then
+                                    failure <-
+                                        Some(
+                                            predictRowError
+                                                i
+                                                ("the term '"
+                                                 + name
+                                                 + "' has the level '"
+                                                 + token
+                                                 + "', which the fit's rows did not hold")
+                                        )
+                                else
+                                    for level in coded do
+                                        x[j] <- (if level = token then 1.0 else 0.0)
+                                        j <- j + 1
+
+                    let off =
+                        match offset with
+                        | Some cells ->
+                            match fitFloat cells[i] with
+                            | Some v when finite v -> v
+                            | _ ->
+                                if Option.isNone failure then
+                                    failure <- Some(predictRowError i "the offset is not finite")
+
+                                0.0
+                        | None -> 0.0
+
+                    if Option.isNone failure then
+                        rows[i] <- Some(x, off)
+
+                i <- i + 1
+
+            match failure with
+            | Some e -> Error e
+            | None -> Ok rows)
+
+    /// The group each input row is scored by: its key cells looked up among the model's groups, a key
+    /// the model has no group for refused by name. Keys are matched by the token `GroupBy` groups on.
+    let private predictGroups
+        (f: Frame)
+        (groupBy: string list)
+        (groups: Cell[][])
+        (rows: (float[] * float) option[])
+        : Result<int[], EvalError> =
+        let index =
+            groups
+            |> Array.mapi (fun g cells -> rowTokenStringOfArray cells, g)
+            |> Map.ofArray
+
+        groupBy
+        |> List.map (fun key ->
+            match colIndex f.Cols key with
+            | Some ci -> Ok ci
+            | None -> Error(UnknownColumn(key, available f.Cols)))
+        |> sequenceR
+        |> Result.bind (fun keyIdx ->
+            let phys = Frame.physical f
+            let out = Array.create rows.Length (-1)
+            let mutable failure = None
+            let mutable i = 0
+
+            while Option.isNone failure && i < rows.Length do
+                if Option.isSome rows[i] then
+                    let cells =
+                        keyIdx |> List.map (fun ci -> Vec.cellAt f.Vecs[ci] phys[i]) |> List.toArray
+
+                    match Map.tryFind (rowTokenStringOfArray cells) index with
+                    | Some g -> out[i] <- g
+                    | None -> failure <- Some(predictRowError i ("the model has no group " + keyText cells))
+
+                i <- i + 1
+
+            match failure with
+            | Some e -> Error e
+            | None -> Ok out)
+
+    /// `η = Σⱼ xⱼ·βⱼ + offset`, the columns `j` ascending from `+0` and the offset added last, an aliased
+    /// column contributing nothing: the order a `Fit`'s fitted value is formed in, so a training row's
+    /// prediction is its fitted value bit for bit (D56 item 3).
+    let private linearPredictor (beta: float option[]) (x: float[]) (off: float) : float =
+        let mutable acc = 0.0
+
+        for j in 0 .. beta.Length - 1 do
+            match beta[j] with
+            | Some b -> acc <- acc + x[j] * b
+            | None -> ()
+
+        acc + off
+
+    /// The quadratic form `x₀ᵀ(RᵀR)⁻¹x₀` over the kept columns (D56 item 4): `z` with `Rᵀz = x₀` by
+    /// `UpperTriangular.solveUpperT`, then `Σ zᵢ²` left to right.
+    let private quadraticForm (ls: LinearAlgebra.LeastSquaresFit) (x: float[]) : Result<float, EvalError> =
+        let kept = ls.Kept |> List.toArray
+        let b = Vector.adopt (kept |> Array.map (fun j -> x[j]))
+
+        LinearAlgebra.UpperTriangular.solveUpperT ls.R b
+        |> Result.mapError (fun e -> predictError (linAlgText e))
+        |> Result.map (fun z ->
+            let mutable q = 0.0
+
+            for v in Vector.toArray z do
+                q <- q + v * v
+
+            q)
+
+    /// Append the prediction's columns to `f`, each a float column stated in its unit.
+    let private appendPredicted (f: Frame) (columns: (string * Cell[] * UnitOfMeasure option) list) : Frame =
+        let phys = Frame.physical f
+
+        columns
+        |> List.fold
+            (fun acc (name, cells, unit) ->
+                let v = Vec.packAt FloatType f.Count (fun i -> phys[i]) cells
+                Frame.appendColumn acc name FloatType v |> unitised name unit)
+            f
+
+    /// The response-scale value of a linear predictor under the fit's link.
+    let private inverseLink (link: FitLink) (eta: float) : float =
+        match link with
+        | FitLink.Identity -> eta
+        | FitLink.Log -> LinearAlgebra.Elementary.exp eta
+
+    /// `Predict` against the training rows (D56): the fit of every group, exactly as `Fit` makes it, then
+    /// every input row coded, matched to its group and scored, with its standard errors and interval.
+    let private predictFromTraining
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (spec: PredictSpec)
+        (training: Frame)
+        (interval: (IntervalKind * float) option)
+        : Result<Frame, EvalError> =
+        // The training design is the fit's; the output it names is not read.
+        let fit =
+            { spec.Fit with
+                Output = FitOutput.Coefficients }
+
+        fitResolve env fit
+        |> Result.bind (fun resolved ->
+            fitDesign k env training fit
+            |> Result.bind (fun d ->
+                d.Members
+                |> Array.toList
+                |> List.map (fun members ->
+                    fitOneGroup d resolved fit members (LinearAlgebra.QRAccumulator.empty d.P) 0
+                    |> Result.map snd)
+                |> sequenceR
+                |> Result.bind (fun fits ->
+                    predictDesign k env f fit d.Coding d.P
+                    |> Result.map (fun rows -> List.toArray fits, rows))
+                |> Result.bind (fun (fits, rows) ->
+                    predictGroups f fit.GroupBy d.KeyCells rows
+                    |> Result.bind (fun groupOf ->
+                        let n = rows.Length
+                        let predicted = Array.create n Null
+                        let seFit = Array.create n Null
+                        let sePred = Array.create n Null
+                        let lower = Array.create n Null
+                        let upper = Array.create n Null
+                        let gaussian = fit.Family = FitFamily.Gaussian
+                        let mutable failure = None
+                        let mutable i = 0
+
+                        while Option.isNone failure && i < n do
+                            match rows[i] with
+                            | None -> ()
+                            | Some(x, off) ->
+                                let fg = fits[groupOf[i]]
+                                let eta = linearPredictor fg.Estimates x off
+
+                                let scaled (v: float) =
+                                    match spec.Scale with
+                                    | PredictScale.Link -> v
+                                    | PredictScale.Response -> inverseLink fit.Link v
+
+                                predicted[i] <- Float(scaled eta)
+
+                                match fg.Dispersion with
+                                | None -> ()
+                                | Some phi ->
+                                    match quadraticForm fg.Ls x with
+                                    | Error e -> failure <- Some e
+                                    | Ok q ->
+                                        let sf = sqrt (phi * q)
+                                        let sp = sqrt (phi * (1.0 + q))
+                                        seFit[i] <- Float sf
+
+                                        if gaussian then
+                                            sePred[i] <- Float sp
+
+                                        match interval with
+                                        | None -> ()
+                                        | Some(kind, level) ->
+                                            // A dispersion the family fixes (Poisson's) reads the
+                                            // normal row; an estimated one the t at the residual df.
+                                            let df = if fit.Family = FitFamily.Poisson then None else Some fg.Df
+
+                                            match StudentT.quantile level df with
+                                            | None -> ()
+                                            | Some t ->
+                                                let se =
+                                                    match kind with
+                                                    | IntervalKind.Confidence -> sf
+                                                    | IntervalKind.Prediction -> sp
+
+                                                lower[i] <- Float(scaled (eta - t * se))
+                                                upper[i] <- Float(scaled (eta + t * se))
+
+                            i <- i + 1
+
+                        match failure with
+                        | Some e -> Error e
+                        | None ->
+                            let units = predictUnits spec d.YUnit
+
+                            let bounds =
+                                match interval with
+                                | Some _ -> [ "lower", lower, units.Predicted; "upper", upper, units.Predicted ]
+                                | None -> []
+
+                            Ok(
+                                appendPredicted
+                                    f
+                                    ([ "predicted", predicted, units.Predicted
+                                       "se_fit", seFit, units.StdError
+                                       "se_pred", sePred, units.StdError ]
+                                     @ bounds)
+                            )))))
+
+    /// `Predict` against a coefficient table (D56 item 6): the table's estimates per group and term, every
+    /// term of the spec present and every term of the table one of the spec's; numeric terms and the
+    /// intercept only, since the table records no categorical term's reference level.
+    let private predictFromCoefficients
+        (k: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (spec: PredictSpec)
+        (table: Frame)
+        : Result<Frame, EvalError> =
+        let fit = spec.Fit
+
+        let need (name: string) (ok: ColumnType -> bool) (what: string) =
+            match colType table.Cols name with
+            | None -> Error(UnknownColumn(name, available table.Cols))
+            | Some ty when ok ty -> Ok()
+            | Some ty ->
+                Error(
+                    TypeError(
+                        "predict: the coefficient table's '"
+                        + name
+                        + "' is a "
+                        + ColumnType.tag ty
+                        + " column; "
+                        + what
+                    )
+                )
+
+        let numeric (ty: ColumnType) =
+            match ty with
+            | IntType
+            | FloatType
+            | DecimalType -> true
+            | _ -> false
+
+        fitResolve env fit
+        |> Result.bind (fun _ ->
+            (fit.GroupBy |> List.map (fun key -> need key (fun _ -> true) ""))
+            @ [ need "term" (fun ty -> ty = StringType) "a term is a string"
+                need "estimate" numeric "an estimate is numeric" ]
+            |> sequenceR)
+        |> Result.bind (fun _ ->
+            // Each term is evaluated once over the input to learn its kind; a categorical one is refused.
+            fit.Predictors
+            |> List.map (fun (name, e) ->
+                fitColumn k env f ("predict term '" + name + "'") e
+                |> Result.bind (fun (_, ty, unit) ->
+                    if numeric ty then
+                        Ok(NumericCoding(name, unit))
+                    elif ty = StringType || ty = BoolType then
+                        Error(
+                            predictError (
+                                "the term '"
+                                + name
+                                + "' is categorical; a coefficient table does not record its reference level"
+                            )
+                        )
+                    else
+                        Error(
+                            TypeError(
+                                "predict: the term '"
+                                + name
+                                + "' is a "
+                                + ColumnType.tag ty
+                                + " expression; a term is numeric, string or boolean"
+                            )
+                        )))
+            |> sequenceR)
+        |> Result.bind (fun coding ->
+            let names =
+                (if fit.Intercept then [ interceptTerm ] else [])
+                @ (fit.Predictors |> List.map fst)
+                |> List.toArray
+
+            let p = names.Length
+            let tphys = Frame.physical table
+
+            let cellOf (name: string) (r: int) =
+                let ci = colIndex table.Cols name |> Option.get
+                Vec.cellAt table.Vecs[ci] tphys[r]
+
+            // Per group token: its key cells and its estimates by term, in the table's order.
+            let groups =
+                System.Collections.Generic.Dictionary<string, Cell[] * Map<string, float option>>()
+
+            let order = ResizeArray<string>()
+            let mutable failure = None
+            let mutable r = 0
+
+            while Option.isNone failure && r < tphys.Length do
+                let keys = fit.GroupBy |> List.map (fun key -> cellOf key r) |> List.toArray
+                let token = rowTokenStringOfArray keys
+
+                let term =
+                    match cellOf "term" r with
+                    | Str t -> Some t
+                    | _ -> None
+
+                match term with
+                | None -> failure <- Some(predictError ("the coefficient table's row " + string r + " names no term"))
+                | Some term when not (Array.contains term names) ->
+                    failure <-
+                        Some(predictError ("the coefficient table's term '" + term + "' is not a term of the model"))
+                | Some term ->
+                    let estimate = fitFloat (cellOf "estimate" r)
+
+                    let keysNow, terms =
+                        match groups.TryGetValue token with
+                        | true, v -> v
+                        | _ ->
+                            order.Add token
+                            keys, Map.empty
+
+                    if Map.containsKey term terms then
+                        failure <-
+                            Some(
+                                predictError (
+                                    "the coefficient table names the term '"
+                                    + term
+                                    + "' twice for the group "
+                                    + keyText keys
+                                )
+                            )
+                    else
+                        groups[token] <- (keysNow, Map.add term estimate terms)
+
+                r <- r + 1
+
+            match failure with
+            | Some e -> Error e
+            | None ->
+                let keyCells = order |> Seq.map (fun t -> fst groups[t]) |> Seq.toArray
+
+                let betas =
+                    order
+                    |> Seq.map (fun t ->
+                        let keys, terms = groups[t]
+
+                        match names |> Array.tryFind (fun nm -> not (Map.containsKey nm terms)) with
+                        | Some missing ->
+                            Error(
+                                predictError (
+                                    "the coefficient table has no term '"
+                                    + missing
+                                    + "' for the group "
+                                    + keyText keys
+                                )
+                            )
+                        | None -> Ok(names |> Array.map (fun nm -> terms[nm])))
+                    |> Seq.toList
+                    |> sequenceR
+
+                betas
+                |> Result.bind (fun betas ->
+                    let betas = List.toArray betas
+
+                    predictDesign k env f fit coding p
+                    |> Result.bind (fun rows ->
+                        predictGroups f fit.GroupBy keyCells rows
+                        |> Result.map (fun groupOf ->
+                            let predicted =
+                                rows
+                                |> Array.mapi (fun i row ->
+                                    match row with
+                                    | None -> Null
+                                    | Some(x, off) ->
+                                        let eta = linearPredictor betas[groupOf[i]] x off
+
+                                        match spec.Scale with
+                                        | PredictScale.Link -> Float eta
+                                        | PredictScale.Response -> Float(inverseLink fit.Link eta))
+
+                            appendPredicted f [ "predicted", predicted, None ]))))
+
+    /// `Predict` over the frame (Phase 597, D56): the appended names checked free, the interval
+    /// resolved, the model source read, then the rows scored.
+    let private evalPredict
+        (k: KernelSet)
+        (resolve: string -> Result<Table, EvalError>)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (spec: PredictSpec)
+        : Result<Frame, EvalError> =
+        match predictColumns spec |> List.tryFind (fun c -> Option.isSome (colIndex f.Cols c)) with
+        | Some c -> Error(predictError ("the input already has a column '" + c + "'"))
+        | None ->
+            predictInterval env spec
+            |> Result.bind (fun interval ->
+                match spec.Model with
+                | PredictModel.Training source ->
+                    evalSource resolve source
+                    |> Result.bind (fun t -> predictFromTraining k env f spec (Frame.ofTable t) interval)
+                | PredictModel.Coefficients source ->
+                    evalSource resolve source
+                    |> Result.bind (fun t -> predictFromCoefficients k env f spec (Frame.ofTable t)))
+
     /// A table's rows for the right-hand side of a two-table verb — the same transpose the left
     /// side paid at the boundary, without unpacking a frame it would only gather again.
     /// One step over the frame, running the row-local verbs through the kernel set `k` (Phase 270).
@@ -11359,6 +12491,8 @@ module DataFrame =
         | Define _ -> Ok f
         // Phase 592: one factorization per group (D53).
         | Fit spec -> evalFit k env f spec
+        // Phase 597: the model, then every input row scored against its group's fit (D56).
+        | Predict spec -> evalPredict k resolve env f spec
 
     /// One step over the frame through the host kernels (`Kernels.host`, chosen when the package is
     /// compiled). Internal so the suite can hold the frame's well-formedness after every step of a
@@ -11409,7 +12543,9 @@ module DataFrame =
                 | Filter _
                 | Derive _
                 // Phase 592: a fit evaluates its terms at every input row, once per step.
-                | Fit _ -> Frame.rows f
+                | Fit _
+                // Phase 597: and so does a prediction (its training rows are another table's).
+                | Predict _ -> Frame.rows f
                 | _ -> 0
 
             evalStepWith k resolve env f step |> Result.map (fun f' -> f', cost, rest)
@@ -12037,6 +13173,9 @@ module DataFrame =
                 Set.ofList (spec.Response :: spec.GroupBy @ Option.toList spec.Weights)
                 :: (FitSpec.exprs spec |> List.map exprCols)
             )
+        // Phase 597: the keys and every column a term or the offset reads; the model's source is
+        // another table, as a join's right side is.
+        | Predict spec -> unionAll (Set.ofList spec.Fit.GroupBy :: (FitSpec.exprs spec.Fit |> List.map exprCols))
         | Distinct
         | Limit _
         | Union _
@@ -12755,6 +13894,46 @@ module SchemaWalk =
                 let name = DataFrame.fitAppendedColumn spec.Output |> Option.get
                 input |> appendColumn (col name againstY yUnit)
 
+        // Phase 597 (D56) — a prediction appends closed float columns to its input: `predicted`, and from
+        // training rows `se_fit`, `se_pred` and an interval's bounds. Every value is a pinned operation
+        // (the t table is read by `Interpolate`, `exp` is `Elementary`'s), so a column is host-rounded
+        // only where a term, a key or the training rows it reads already are.
+        | Predict spec ->
+            let fit = spec.Fit
+
+            let inputMark =
+                (fit.GroupBy |> List.map (markOf input))
+                @ (FitSpec.exprs fit |> List.map (exprExactness input))
+
+            let col (mark: Exactness) (name: string) (unit: UnitOfMeasure option) =
+                ColumnKnowledge.named name (Some FloatType)
+                |> ColumnKnowledge.withUnit unit
+                |> ColumnKnowledge.withExactness mark
+
+            match spec.Model with
+            | PredictModel.Coefficients source ->
+                let table = ofSource sources source
+
+                let mark =
+                    (markOf table "estimate" :: inputMark)
+                    |> List.fold ColumnKnowledge.joinExactness Exactness.Pinned
+
+                input |> appendColumn (col mark "predicted" None)
+            | PredictModel.Training source ->
+                let training = ofSource sources source
+
+                let mark =
+                    ((fit.Response :: fit.GroupBy @ Option.toList fit.Weights)
+                     |> List.map (markOf training))
+                    @ (FitSpec.exprs fit |> List.map (exprExactness training))
+                    @ inputMark
+                    |> List.fold ColumnKnowledge.joinExactness Exactness.Pinned
+
+                let units = DataFrame.predictUnits spec (unitOf fit.Response training)
+
+                DataFrame.predictColumns spec
+                |> List.fold (fun k name -> appendColumn (col mark name (units.Of name)) k) input
+
         // A window column's lineage is its source column and its keys (Phase 557): a value window
         // reads the source, and every window's partition and order are decided over the keys.
         | Window spec ->
@@ -12989,6 +14168,19 @@ module SchemaWalk =
                     | Some operand ->
                         [ { Step = i
                             Verb = "fit rank"
+                            Operand = operand } ]
+                    | None -> [])
+                   @ decisionsIn i input e))
+        // Phase 597: a prediction finds each row's group by its keys and codes a categorical term by the
+        // fit's levels, over the values its terms compute on the step's input.
+        | Predict spec ->
+            keyed "predict key" spec.Fit.GroupBy
+            @ (FitSpec.exprs spec.Fit
+               |> List.collect (fun e ->
+                   (match hostRoundedOperand input e with
+                    | Some operand ->
+                        [ { Step = i
+                            Verb = "predict level"
                             Operand = operand } ]
                     | None -> [])
                    @ decisionsIn i input e))
@@ -13880,6 +15072,32 @@ module DataFrameCodec =
 
     // ---- Transform ----
 
+
+    /// A fit spec's members, as the fit step writes them and a predict step's `fit` nests them (Phase
+    /// 592, D53; Phase 597).
+    let private fitFields (spec: FitSpec) : (string * JVal) list =
+        ([ "response", JStr spec.Response
+           "predictors",
+           JArr(
+               spec.Predictors
+               |> List.map (fun (name, e) -> JObj [ "name", JStr name; "expr", encodeExpr e ])
+           )
+           "intercept", JBool spec.Intercept
+           "groupBy", strList spec.GroupBy
+           "family", JStr(DataFrame.fitFamilyTag spec.Family)
+           "link", JStr(DataFrame.fitLinkTag spec.Link)
+           "control",
+           JObj
+               [ "maxIter", slotJson JInt spec.Control.MaxIter
+                 "tol", slotJson JFloat spec.Control.Tol ]
+           "output", JStr(DataFrame.fitOutputTag spec.Output) ]
+         @ (match spec.Family with
+            | FitFamily.Tweedie power -> [ "power", JFloat power ]
+            | _ -> [])
+         @ (spec.Weights |> Option.map (fun w -> "weights", JStr w) |> Option.toList)
+         @ (spec.Offset |> Option.map (fun e -> "offset", encodeExpr e) |> Option.toList)
+         @ (spec.Ridge |> Option.map (fun r -> "ridge", slotJson JFloat r) |> Option.toList))
+
     let encodeTransform (t: Transform) : JVal =
         match t with
         | Filter pred -> Canonical.typed "filter" [ "pred", encodeExpr pred ]
@@ -13944,30 +15162,38 @@ module DataFrameCodec =
                   "body", encodeExpr fd.Body ]
         // Phase 592 (D53): every member is emitted; `power` only for a Tweedie family, and `weights`,
         // `offset` and `ridge` only where the spec carries them.
-        | Fit spec ->
+        | Fit spec -> Canonical.typed "fit" (fitFields spec)
+        // Phase 597 (D56): the model's spec as the fit step's members, the model's source, the scale,
+        // and `interval` only where the spec carries one.
+        | Predict spec ->
+            let model =
+                match spec.Model with
+                | PredictModel.Training src -> JObj [ "from", JStr "training"; "source", ColumnCodec.encodeJson src ]
+                | PredictModel.Coefficients src ->
+                    JObj [ "from", JStr "coefficients"; "source", ColumnCodec.encodeJson src ]
+
             Canonical.typed
-                "fit"
-                ([ "response", JStr spec.Response
-                   "predictors",
-                   JArr(
-                       spec.Predictors
-                       |> List.map (fun (name, e) -> JObj [ "name", JStr name; "expr", encodeExpr e ])
-                   )
-                   "intercept", JBool spec.Intercept
-                   "groupBy", strList spec.GroupBy
-                   "family", JStr(DataFrame.fitFamilyTag spec.Family)
-                   "link", JStr(DataFrame.fitLinkTag spec.Link)
-                   "control",
-                   JObj
-                       [ "maxIter", slotJson JInt spec.Control.MaxIter
-                         "tol", slotJson JFloat spec.Control.Tol ]
-                   "output", JStr(DataFrame.fitOutputTag spec.Output) ]
-                 @ (match spec.Family with
-                    | FitFamily.Tweedie power -> [ "power", JFloat power ]
-                    | _ -> [])
-                 @ (spec.Weights |> Option.map (fun w -> "weights", JStr w) |> Option.toList)
-                 @ (spec.Offset |> Option.map (fun e -> "offset", encodeExpr e) |> Option.toList)
-                 @ (spec.Ridge |> Option.map (fun r -> "ridge", slotJson JFloat r) |> Option.toList))
+                "predict"
+                ([ "fit", JObj(fitFields spec.Fit)
+                   "model", model
+                   "scale",
+                   JStr(
+                       match spec.Scale with
+                       | PredictScale.Link -> "link"
+                       | PredictScale.Response -> "response"
+                   ) ]
+                 @ (spec.Interval
+                    |> Option.map (fun i ->
+                        "interval",
+                        JObj
+                            [ "kind",
+                              JStr(
+                                  match i.Kind with
+                                  | IntervalKind.Confidence -> "confidence"
+                                  | IntervalKind.Prediction -> "prediction"
+                              )
+                              "level", slotJson JFloat i.Level ])
+                    |> Option.toList))
 
     /// A function parameter (Phase 596): its `name`, and an optional `default` — a literal cell, or
     /// `{"$param": <name>}`, the slot form every other slot on the wire takes.
@@ -14091,6 +15317,46 @@ module DataFrameCodec =
                                                       Link = link
                                                       Control = control
                                                       Output = output })))))))))))
+
+    /// A predict step's spec (Phase 597, D56): `fit` (a fit step's members), `model`, `scale` and an
+    /// optional `interval`.
+    let private predictSpecOf (el: JVal) : Result<PredictSpec, ColumnError> =
+        let tag (table: (string * 'a) list) (s: string) : Result<'a, ColumnError> =
+            match table |> List.tryFind (fun (t, _) -> t = s) with
+            | Some(_, v) -> Ok v
+            | None -> Error(WireRefusal.unknownTag (s, table |> List.map fst))
+
+        field "fit" el
+        |> Result.bind fitSpecOf
+        |> Result.bind (fun fit ->
+            field "model" el
+            |> Result.bind (fun m ->
+                field "from" m
+                |> Result.bind strOf
+                |> Result.bind (tag [ "training", PredictModel.Training; "coefficients", PredictModel.Coefficients ])
+                |> Result.bind (fun from -> field "source" m |> Result.bind ColumnCodec.decodeJson |> Result.map from))
+            |> Result.bind (fun model ->
+                field "scale" el
+                |> Result.bind strOf
+                |> Result.bind (tag [ "link", PredictScale.Link; "response", PredictScale.Response ])
+                |> Result.bind (fun scale ->
+                    match tryField "interval" el with
+                    | None -> Ok None
+                    | Some i ->
+                        field "kind" i
+                        |> Result.bind strOf
+                        |> Result.bind (
+                            tag [ "confidence", IntervalKind.Confidence; "prediction", IntervalKind.Prediction ]
+                        )
+                        |> Result.bind (fun kind ->
+                            field "level" i
+                            |> Result.bind (slotOf floatOf "predict level")
+                            |> Result.map (fun level -> Some { Kind = kind; Level = level }))
+                    |> Result.map (fun interval ->
+                        { Fit = fit
+                          Model = model
+                          Scale = scale
+                          Interval = interval }))))
 
     let decodeTransform (el: JVal) : Result<Transform, ColumnError> =
         // Phase 88 DIDACTIC — a step without `$type` names the op roster (the
@@ -14364,6 +15630,7 @@ module DataFrameCodec =
                                       Params = ps
                                       Body = body })))
                 | "fit" -> fitSpecOf el |> Result.map Fit
+                | "predict" -> predictSpecOf el |> Result.map Predict
                 | other ->
                     Error(
                         WireRefusal.unknownTag (
@@ -14383,7 +15650,8 @@ module DataFrameCodec =
                               "intersect"
                               "except"
                               "define"
-                              "fit" ]
+                              "fit"
+                              "predict" ]
                         )
                     ))
 

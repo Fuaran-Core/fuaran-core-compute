@@ -1,5 +1,111 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D56: a fitted model scores rows with one `Predict` step — the model is the `Fit` spec over its training rows, refitted bit for bit, or a coefficient table for point estimates; a row is coded as the fit coded its training rows; `se_fit` and `se_pred` read the fit's `R` by one triangular solve and a sum of squares; an interval's quantile is a row of a Student t table carried as data and read through `Interpolate` in `1/df`, the normal row at infinity
+
+**Context.** The scoring half of the plan's S5 (`fuaran-compute-linear-algebra-and-glm.md`), amended by ruling F9
+of 2026-11-01 (the forecasts plan §4.2): `Predict` returns prediction intervals, and the t quantile is a pinned
+data table evaluated through `Interpolate` (option (a)), not computed from `Elementary` (option (b)). **The premise
+check at take**, against `main` at `0b1329a`: 596's `Interpolate` is on main (D48), and 592's `Fit` (D53, with 595's
+GLMs, D55) is on main — but its OUTPUT does not carry everything scoring needs. `Coefficients` carries the estimates
+in pinned term order with their standard errors, and `Summary` carries `σ̂` and the residual df, but no table
+carries `R⁻¹` (only its diagonal, through `std_error`), and none records a categorical term's reference level: a
+scoring level absent from the coefficient rows is either the reference or a level the fit never saw, and the table
+cannot say which. Item 1 is the corrected model.
+
+**Decided.**
+
+1. **The model.** `Predict of PredictSpec`, `PredictSpec = { Fit: FitSpec; Model: PredictModel; Scale:
+   PredictScale; Interval: PredictInterval option }`. `PredictModel.Training source` fits the spec over the
+   training rows exactly as a `Fit` step over them does (`fitResolve`, `fitDesign`, then one group fit per group
+   by the same `fitOneGroup` the `Fit` evaluator reads), so the estimates, `R`, the dispersion and the df are the
+   fit's own bits; the spec's `Output` is not read. `PredictModel.Coefficients source` reads a table of the
+   `Coefficients` schema — the spec's group keys, `term` and `estimate` — for point estimates over the intercept
+   and numeric terms only: a categorical term is refused by name (the table records no reference level), every
+   term of the spec must have a row per group and every row's term must be one of the spec's (each refused by
+   name), an estimate that is null (an aliased column) contributes nothing, as in the fit, and an interval is
+   refused (the table carries no `R`).
+2. **Coding a row.** Each term is evaluated over the step's input as the fit evaluated it over the training rows
+   (the derive's typing and unit check), then coded by the training design's coding, which `FitDesign` now
+   records (`TermCoding`): a numeric term is its value, and must be numeric in the same unit as the training term
+   (a term in another unit is refused naming both — a metre beside a kilometre would otherwise be mis-scored); a
+   categorical term is one indicator per coded level against the training rows' levels, so the reference level
+   scores no indicator, exactly D53 item 4's treatment coding, and a level the training rows did not hold is
+   refused naming the term and the level. A row with a null term or offset answers null in every appended
+   column (listwise, as the fit deletes). Each row is scored by its own group's fit, found by the token `GroupBy`
+   groups on; a group the model has none for is refused naming its keys. The offset is the scoring row's.
+3. **The prediction.** `η = Σⱼ xⱼ·βⱼ + offset`, the columns ascending from `+0`, an aliased column contributing
+   nothing, the offset added last — the order a `Fit`'s fitted value and `Glm`'s linear predictor are formed in,
+   so `Predict` on the training rows reproduces `Fitted` byte for byte under every family. `Scale = Link` answers
+   `η`; `Response` answers `μ`, which is `η` under `Identity` and `Elementary.exp η` under `Log`. `predicted` is
+   a float column whatever the response's type: a decimal response's `Fitted` is the exact decimal of this float
+   (`DecimalArith.ofFloat`, D53 item 10).
+4. **The standard errors** are on the link scale. With `x₀` restricted to the fit's kept columns, `z` solves
+   `Rᵀz = x₀` by `UpperTriangular.solveUpperT` and `q = Σ zᵢ²` left to right, so `q = x₀ᵀ(RᵀR)⁻¹x₀` from one
+   pinned triangular solve and a sum of squares — no inverse is formed. `se_fit = √(φ·q)` and, under the gaussian
+   family, `se_pred = √(φ·(1 + q))`, with `φ = σ̂²` the dispersion the fit's `Summary` reports; written with `φ`
+   rather than `σ̂·√q` so that the one correctly rounded square root is the last operation, as
+   `LeastSquares.standardErrors` writes a coefficient's. `R` is the factorization the coefficients' `std_error`
+   reads — a ridge fit's penalised `R`, a GLM's last weighted solve — so `se_fit` at a unit row is that
+   coefficient's error up to rounding. `se_pred` is null outside the gaussian family: a GLM's predictive
+   distribution is not `η ± σ̂√(1 + q)` on the link scale. With no residual df there is no dispersion, and the
+   errors and bounds are null.
+5. **The interval.** `PredictInterval = { Kind: Confidence | Prediction; Level: Slot<float> }`; the bounds are
+   `η ∓ t·se_fit` (confidence) or `η ∓ t·se_pred` (prediction, the gaussian family only, refused by name
+   otherwise), mapped through the inverse link on the response scale — so a log-link interval is the link-scale
+   interval transformed by `Elementary.exp`, and is pinned (594 and 595 are on main; no host-rounded mark
+   arises). `t` is the quantile at the fit's residual df where the family estimates its dispersion (gaussian,
+   gamma), and the normal row where the family fixes it (Poisson), as R's `summary.glm` reads its tests.
+6. **The t table** (`StudentT`, internal to the DataFrame package). **Levels:** two-sided coverage `0.5`, `0.8`,
+   `0.9`, `0.95`, `0.98`, `0.99`, `0.999`; a level not tabled is refused naming the tabled ones. **Grid:** `ν` = 1
+   to 30, 40, 50, 60, 80, 100, 120, 200, 500, 1000 and the normal row `ν = ∞`. **Values:** the `(1 + L)/2`
+   quantile of Student's t, each the double nearest the exact value, computed once in 70-digit decimal arithmetic
+   from Abramowitz and Stegun's closed forms 26.7.3 (odd `ν`) and 26.7.4 (even `ν`) for `P(|T| < t)` — the error
+   function for the normal row — solved by bisection to `10⁻⁵⁰`, and checked by quadrature of the density (spot
+   values: `t(0.975, 10) = 2.228138851986275`, `t(0.975, 1) = 12.706204736174705 = tan(0.475π)`,
+   `z(0.975) = 1.9599639845400543`; the last two are one ulp above what common statistics libraries print, whose
+   own routines are faithful rather than correctly rounded). **Read:** one `Interpolate` curve per level,
+   `InterpKind.Linear` over the knots `x = 1/ν`, with the normal row at `x = 0`; a tabled `ν` meets its own knot and
+   answers its row exactly (the curve's knot rule), a `ν` between rows reads linearly in `1/ν` (within `2·10⁻⁴` of
+   the exact quantile at `ν = 35`, level `0.95`), and a `ν` above 1000 reads between the 1000 row and the normal
+   row — the shard's "df beyond the table clamps to the normal row" is met by the limit rather than by a step,
+   which is the more accurate reading, and is stated here rather than silent. No transcendental function is on the
+   path.
+7. **Units.** On the link scale `predicted` and the bounds are in the linear predictor's unit — `unit(y)` under
+   `Identity`, a pure number under `Log` (`fitStatUnits`' `Eta`); on the response scale `unit(y)`; `se_fit` and
+   `se_pred` are on the link scale, so `unit(y)` under `Identity`. A coefficient table states no response unit, so
+   its `predicted` carries none.
+8. **Where it stands.** Every refusal is `EvalError.FitError` with a `predict:` text, or the evaluator's own
+   `UnknownColumn` / `TypeError`; no `EvalError` case is added. The static walk appends the closed float columns,
+   `Pinned` where the training rows, the terms and the keys are. The step is a fall-back for the incremental seam
+   (`StepNotRowLocal "predict"`): its model source can change between evaluations, and refitting it is the whole
+   of its cost. `PipelineQuery` reads its params and its model source. Wire:
+   `{"$type":"predict","fit":{<the fit step's members>},"model":{"from":"training"|"coefficients","source":…},
+   "scale":"link"|"response","interval":{"kind":"confidence"|"prediction","level":<slot>}?}`.
+9. **Laws.** `PredictTests` holds: a training row's prediction is its fitted value bit for bit (gaussian with
+   groups, levels and an offset; Poisson); `se_fit` is the textbook `σ̂·√(1/n + (x₀ − x̄)²/Sxx)` and
+   `se_pred² = se_fit² + σ̂²` within `1e-9`; an interval at a tabled df uses the tabled quantile exactly; every
+   table row is exact at its knot. Eleven transform law vectors (iterations 139 to 149) pin the answers, the node
+   leg holds them under Fable line for line, and five name their refusal class.
+
+**Rejected.** *Widening `Coefficients` with the covariance or `R⁻¹`* — a closed per-term schema cannot carry a
+`p × p` matrix without a column per term (a schema the data decides), and a new `FitOutput` case for it would still
+leave the reference level unrecorded; refitting the training rows is pinned and costs one factorization. *Computing
+the quantile from `Elementary`* — ruling F9 chose the table. *Interpolating in `ν` and clamping above the table* —
+it answers `t(1000)` for every larger `ν` and is coarser between rows than `1/ν`. *A delta-method standard error
+on the response scale* (`μ·se_η`) — it is not what the interval is built from, and two scales in one column would be
+read wrongly; the errors stay on the link scale. *A decimal `predicted` for a decimal response* — the interval and
+the errors are floats, and the decimal is one conversion away. *A new `EvalError` case* — `FitError` already names
+the model's refusals. *Maintaining a prediction incrementally* — item 8.
+
+**What a consumer does.** Add the `Predict` arm to any exhaustive `match` over `Transform`. A language twin that
+certifies the transform laws ports items 2 to 6 (the t table is data to copy), and the eleven new vectors are red on
+it until it does.
+
+**Tidy.** Reviewed every key file. The design's categorical coding was computed inside the column builder; it is
+now the recorded `TermCoding` the builder reads, so the fit and the prediction share one definition. The per-group
+fit the `Fit` evaluator inlined is `fitOneGroup`, read by both. The fit step's wire members are one `fitFields`,
+written by both steps. Nothing else in the files touched is made dead or obsolete.
+
 ## 2026-11-04 — D55: a log-link GLM fits by IRLS in `LinearAlgebra.Glm` — Poisson and Gamma under `Log`, every step a pinned operation, so the coefficients, the iteration count and the convergence decision are the same bits on every host; the `Fit` verb's refusal lifts for the two pairings; the first iteration is not compared with the saturated start, and a rise smaller than the tolerance is not a rise; the null model with an intercept and an offset is the intercept-only fit with that offset
 
 **Context.** The plan's S4 (`fuaran-compute-linear-algebra-and-glm.md` §2.5; operator rulings D5, D6 = B, D7 and

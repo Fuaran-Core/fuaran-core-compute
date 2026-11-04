@@ -1065,6 +1065,7 @@ let private pTransformToModel (t: Transform) : ModelPipe.transform =
     | Define _ -> failtestf "not in the model (Phase 596, D48): %A" t
     // Phase 592 (D53): the model carries no regression; `Fit` is measured elsewhere (FitTests).
     | Fit _ -> failtestf "not in the model (Phase 592, D53): %A" t
+    | Predict _ -> failtestf "not in the model (Phase 597, D56): %A" t
 
 let private pTransformOfModel (t: ModelPipe.transform) : Transform =
     match t with
@@ -1280,6 +1281,7 @@ let private pVerbTag (t: Transform) : string =
     | Except _ -> "Except"
     | Define _ -> "Define"
     | Fit _ -> "Fit"
+    | Predict _ -> "Predict"
 
 let rec private pExprTags (e: ColExpr) : string list =
     match e with
@@ -1457,11 +1459,13 @@ let private pLawVectors () : (string * Transform list * Table * bool) list =
                 | Derive(_, e) -> pExprTags e |> List.contains "Interpolate"
                 | _ -> false)
 
-        // Phase 592 (D53): a fit is outside the model too, held by `FitTests`.
+        // Phase 592 (D53): a fit is outside the model too, held by `FitTests`; and (Phase 597, D56) a
+        // prediction, held by `PredictTests`.
         let fits (p: Transform list) =
             p
             |> List.exists (function
-                | Fit _ -> true
+                | Fit _
+                | Predict _ -> true
                 | _ -> false)
 
         match FnDef.expand pipeline with
@@ -1469,7 +1473,8 @@ let private pLawVectors () : (string * Transform list * Table * bool) list =
         | _ -> None)
 
 /// How many law vectors `pLawVectors` leaves out (Phase 596, D48): every curve shape, every
-/// named-function shape refused at registration, and (Phase 592, D53) every fit shape — counted from the shape names, so a vector dropped
+/// named-function shape refused at registration, (Phase 592, D53) every fit shape and (Phase 597, D56)
+/// every predict shape — counted from the shape names, so a vector dropped
 /// for any other reason still turns a count red.
 let private pOutOfModelVectors () : int =
     [ 0 .. LawVectorExport.iterations - 1 ]
@@ -1478,7 +1483,8 @@ let private pOutOfModelVectors () : int =
 
         shape.StartsWith "curve-"
         || (shape.StartsWith "function-" && shape.EndsWith "-refused")
-        || shape.StartsWith "fit-")
+        || shape.StartsWith "fit-"
+        || shape.StartsWith "predict-")
     |> List.length
 
 /// The generated sample — the vectors' own draw recipe for the table (a tie-heavy string key, an

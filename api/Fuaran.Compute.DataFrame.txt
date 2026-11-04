@@ -17,6 +17,8 @@ ctor Fuaran.Compute.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<Sy
 ctor Fuaran.Compute.PlanDeclined..ctor(Fuaran.Compute.RewriteClass, System.Int32, System.String)
 ctor Fuaran.Compute.PlanReport..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanRewrite>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanDeclined>)
 ctor Fuaran.Compute.PlanRewrite..ctor(Fuaran.Compute.RewriteClass, System.Int32, System.String)
+ctor Fuaran.Compute.PredictInterval..ctor(Fuaran.Compute.IntervalKind, Fuaran.Compute.Slot`1<System.Double>)
+ctor Fuaran.Compute.PredictSpec..ctor(Fuaran.Compute.FitSpec, Fuaran.Compute.PredictModel, Fuaran.Compute.PredictScale, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.PredictInterval>)
 ctor Fuaran.Compute.RecomputeFootprint..ctor(System.Int32, System.Int32, Fuaran.Compute.Recompute)
 ctor Fuaran.Compute.Rounding..ctor(Fuaran.Compute.Slot`1<System.Int32>, Fuaran.Compute.RoundingMode)
 ctor Fuaran.Compute.RowIdentity`1..ctor(System.String, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Core.Table, Microsoft.FSharp.Core.FSharpFunc`2<System.Int32, Microsoft.FSharp.Core.FSharpOption`1<!0>>>, Microsoft.FSharp.Core.FSharpFunc`2<!0, System.String>)
@@ -121,6 +123,8 @@ field Fuaran.Compute.InterpKind+Tags.MonotoneCubic : System.Int32 (literal)
 field Fuaran.Compute.InterpKind+Tags.Step : System.Int32 (literal)
 field Fuaran.Compute.InterpOutside+Tags.Clamp : System.Int32 (literal)
 field Fuaran.Compute.InterpOutside+Tags.Null : System.Int32 (literal)
+field Fuaran.Compute.IntervalKind+Tags.Confidence : System.Int32 (literal)
+field Fuaran.Compute.IntervalKind+Tags.Prediction : System.Int32 (literal)
 field Fuaran.Compute.JoinKind+Tags.Anti : System.Int32 (literal)
 field Fuaran.Compute.JoinKind+Tags.Inner : System.Int32 (literal)
 field Fuaran.Compute.JoinKind+Tags.Left : System.Int32 (literal)
@@ -133,6 +137,10 @@ field Fuaran.Compute.KeyEqualityDisagreement+Tags.NotDeclared : System.Int32 (li
 field Fuaran.Compute.KeyEqualityDisagreement+Tags.UnequalHashes : System.Int32 (literal)
 field Fuaran.Compute.NowGrain+Tags.Date : System.Int32 (literal)
 field Fuaran.Compute.NowGrain+Tags.Timestamp : System.Int32 (literal)
+field Fuaran.Compute.PredictModel+Tags.Coefficients : System.Int32 (literal)
+field Fuaran.Compute.PredictModel+Tags.Training : System.Int32 (literal)
+field Fuaran.Compute.PredictScale+Tags.Link : System.Int32 (literal)
+field Fuaran.Compute.PredictScale+Tags.Response : System.Int32 (literal)
 field Fuaran.Compute.Recompute+Tags.FullRecompute : System.Int32 (literal)
 field Fuaran.Compute.Recompute+Tags.GroupsRecomputed : System.Int32 (literal)
 field Fuaran.Compute.Recompute+Tags.Primed : System.Int32 (literal)
@@ -203,6 +211,7 @@ field Fuaran.Compute.Transform+Tags.Intersect : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Join : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Limit : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Pivot : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Predict : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Project : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Sort : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Union : System.Int32 (literal)
@@ -356,6 +365,10 @@ method Fuaran.Compute.NowGrainModule.tag(Fuaran.Compute.NowGrain) : System.Strin
 method Fuaran.Compute.Plan.explain(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.PlanReport
 method Fuaran.Compute.Plan.isTotal(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Fuaran.Compute.Transform) : System.Boolean
 method Fuaran.Compute.Plan.rewrite(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+method Fuaran.Compute.PredictSpecModule.mapExprs(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr>, Fuaran.Compute.PredictSpec) : Fuaran.Compute.PredictSpec
+method Fuaran.Compute.PredictSpecModule.ofTraining(Fuaran.Compute.FitSpec, Fuaran.Core.DataSource) : Fuaran.Compute.PredictSpec
+method Fuaran.Compute.PredictSpecModule.slotParams(Fuaran.Compute.PredictSpec) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.PredictSpecModule.substituteSlots(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.PredictSpec) : Fuaran.Compute.PredictSpec
 method Fuaran.Compute.RowIdentity.byColumn(System.String) : Fuaran.Compute.RowIdentity`1<Fuaran.Core.Cell>
 method Fuaran.Compute.RowIdentity.byColumns(Microsoft.FSharp.Collections.FSharpList`1<System.String>) : Fuaran.Compute.RowIdentity`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>
 method Fuaran.Compute.RowIdentity.checkKeyEquality`1(Fuaran.Compute.RowIdentity`1<!!0>, Fuaran.Core.Table) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Compute.KeyEqualityDisagreement>
@@ -446,6 +459,12 @@ record-field Fuaran.Compute.PlanReport.Written #0 : Microsoft.FSharp.Collections
 record-field Fuaran.Compute.PlanRewrite.At #1 : System.Int32
 record-field Fuaran.Compute.PlanRewrite.Class #0 : Fuaran.Compute.RewriteClass
 record-field Fuaran.Compute.PlanRewrite.Detail #2 : System.String
+record-field Fuaran.Compute.PredictInterval.Kind #0 : Fuaran.Compute.IntervalKind
+record-field Fuaran.Compute.PredictInterval.Level #1 : Fuaran.Compute.Slot`1<System.Double>
+record-field Fuaran.Compute.PredictSpec.Fit #0 : Fuaran.Compute.FitSpec
+record-field Fuaran.Compute.PredictSpec.Interval #3 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.PredictInterval>
+record-field Fuaran.Compute.PredictSpec.Model #1 : Fuaran.Compute.PredictModel
+record-field Fuaran.Compute.PredictSpec.Scale #2 : Fuaran.Compute.PredictScale
 record-field Fuaran.Compute.RecomputeFootprint.Recompute #2 : Fuaran.Compute.Recompute
 record-field Fuaran.Compute.RecomputeFootprint.ResultRows #1 : System.Int32
 record-field Fuaran.Compute.RecomputeFootprint.SourceRows #0 : System.Int32
@@ -562,6 +581,8 @@ type Fuaran.Compute.InterpKind (union)
 type Fuaran.Compute.InterpKind+Tags (type)
 type Fuaran.Compute.InterpOutside (union)
 type Fuaran.Compute.InterpOutside+Tags (type)
+type Fuaran.Compute.IntervalKind (union)
+type Fuaran.Compute.IntervalKind+Tags (type)
 type Fuaran.Compute.JoinKind (union)
 type Fuaran.Compute.JoinKind+Tags (type)
 type Fuaran.Compute.KeyEqualityDisagreement (union)
@@ -579,6 +600,15 @@ type Fuaran.Compute.Plan (module)
 type Fuaran.Compute.PlanDeclined (record)
 type Fuaran.Compute.PlanReport (record)
 type Fuaran.Compute.PlanRewrite (record)
+type Fuaran.Compute.PredictInterval (record)
+type Fuaran.Compute.PredictModel (union)
+type Fuaran.Compute.PredictModel+Coefficients (type)
+type Fuaran.Compute.PredictModel+Tags (type)
+type Fuaran.Compute.PredictModel+Training (type)
+type Fuaran.Compute.PredictScale (union)
+type Fuaran.Compute.PredictScale+Tags (type)
+type Fuaran.Compute.PredictSpec (record)
+type Fuaran.Compute.PredictSpecModule (module)
 type Fuaran.Compute.Prepared (record)
 type Fuaran.Compute.Recompute (union)
 type Fuaran.Compute.Recompute+FullRecompute (type)
@@ -638,6 +668,7 @@ type Fuaran.Compute.Transform+Intersect (type)
 type Fuaran.Compute.Transform+Join (type)
 type Fuaran.Compute.Transform+Limit (type)
 type Fuaran.Compute.Transform+Pivot (type)
+type Fuaran.Compute.Transform+Predict (type)
 type Fuaran.Compute.Transform+Project (type)
 type Fuaran.Compute.Transform+Sort (type)
 type Fuaran.Compute.Transform+Tags (type)
@@ -749,6 +780,8 @@ union-case Fuaran.Compute.InterpKind.MonotoneCubic #2()
 union-case Fuaran.Compute.InterpKind.Step #1()
 union-case Fuaran.Compute.InterpOutside.Clamp #0()
 union-case Fuaran.Compute.InterpOutside.Null #1()
+union-case Fuaran.Compute.IntervalKind.Confidence #0()
+union-case Fuaran.Compute.IntervalKind.Prediction #1()
 union-case Fuaran.Compute.JoinKind.Anti #5()
 union-case Fuaran.Compute.JoinKind.Inner #0()
 union-case Fuaran.Compute.JoinKind.Left #1()
@@ -761,6 +794,10 @@ union-case Fuaran.Compute.KeyEqualityDisagreement.NewNotDeclared #0(scheme: Syst
 union-case Fuaran.Compute.KeyEqualityDisagreement.NewUnequalHashes #3(row: System.Int32, other: System.Int32, key: System.String)
 union-case Fuaran.Compute.NowGrain.Date #0()
 union-case Fuaran.Compute.NowGrain.Timestamp #1()
+union-case Fuaran.Compute.PredictModel.NewCoefficients #1(Item: Fuaran.Core.DataSource)
+union-case Fuaran.Compute.PredictModel.NewTraining #0(Item: Fuaran.Core.DataSource)
+union-case Fuaran.Compute.PredictScale.Link #0()
+union-case Fuaran.Compute.PredictScale.Response #1()
 union-case Fuaran.Compute.Recompute.NewFullRecompute #4(rowsEvaluated: System.Int32, reason: Fuaran.Compute.FallBackReason)
 union-case Fuaran.Compute.Recompute.NewGroupsRecomputed #3(rowsEvaluated: System.Int32, groupsRecomputed: System.Int32)
 union-case Fuaran.Compute.Recompute.NewPrimed #0(rowsEvaluated: System.Int32)
@@ -831,6 +868,7 @@ union-case Fuaran.Compute.Transform.NewIntersect #12(Item: Fuaran.Core.DataSourc
 union-case Fuaran.Compute.Transform.NewJoin #4(Item1: Fuaran.Core.DataSource, Item2: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, System.String>>, Item3: Fuaran.Compute.JoinKind)
 union-case Fuaran.Compute.Transform.NewLimit #10(n: Fuaran.Compute.Slot`1<System.Int32>, offset: Fuaran.Compute.Slot`1<System.Int32>)
 union-case Fuaran.Compute.Transform.NewPivot #6(Item: Fuaran.Compute.PivotSpec)
+union-case Fuaran.Compute.Transform.NewPredict #16(Item: Fuaran.Compute.PredictSpec)
 union-case Fuaran.Compute.Transform.NewProject #1(Item: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, System.String>>)
 union-case Fuaran.Compute.Transform.NewSort #8(Item: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<Fuaran.Compute.Slot`1<System.String>, Fuaran.Compute.SortDir>>)
 union-case Fuaran.Compute.Transform.NewUnion #11(Item: Fuaran.Core.DataSource)

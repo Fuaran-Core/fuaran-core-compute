@@ -194,7 +194,7 @@ module PipelineQuery =
 
     /// The reads in one step over the typed columns alive at it. Closed over `Transform` with no
     /// catch-all, for the reason `exprReads` is.
-    let private stepReads (cols: Schema) (step: Transform) : (string * ParamRead) list =
+    let rec private stepReads (cols: Schema) (step: Transform) : (string * ParamRead) list =
         match step with
         | Filter p -> exprReads cols (Some BoolType) p
         | Derive(_, e) -> exprReads cols None e
@@ -215,6 +215,12 @@ module PipelineQuery =
             @ (spec.Ridge |> Option.map (slotRead FloatType) |> Option.defaultValue [])
             @ slotRead IntType spec.Control.MaxIter
             @ slotRead FloatType spec.Control.Tol
+        // Phase 597: the model's reads as its `Fit` would make them, then the interval's level.
+        | Predict spec ->
+            stepReads cols (Fit spec.Fit)
+            @ (spec.Interval
+               |> Option.map (fun i -> slotRead FloatType i.Level)
+               |> Option.defaultValue [])
         | Project _
         | GroupBy _
         | Join _
@@ -263,6 +269,11 @@ module PipelineQuery =
             | Union source
             | Intersect source
             | Except source -> refOf source
+            // Phase 597: the model's training rows or coefficient table.
+            | Predict spec ->
+                match spec.Model with
+                | PredictModel.Training source
+                | PredictModel.Coefficients source -> refOf source
             | Filter _
             | Project _
             | Derive _

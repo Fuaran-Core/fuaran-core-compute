@@ -83,12 +83,13 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `MorselWorker` | 3 | 0 | 0 | 0 | 0 | 3 | 0 |
 | `Fuaran.Compute.DataFrame` | `NowGrain` | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `Plan` | 3 | 0 | 0 | 0 | 0 | 0 | 3 |
+| `Fuaran.Compute.DataFrame` | `PredictSpec` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
 | `Fuaran.Compute.DataFrame` | `RowIdentity` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
 | `Fuaran.Compute.DataFrame` | `SchemaWalk` | 17 | 2 | 0 | 1 | 0 | 0 | 14 |
 | `Fuaran.Compute.DataFrame` | `Slot` | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
-| `Fuaran.Compute.DataFrame` | `Transform` | 24 | 14 | 0 | 0 | 0 | 0 | 10 |
+| `Fuaran.Compute.DataFrame` | `Transform` | 25 | 14 | 0 | 0 | 0 | 0 | 11 |
 | `Fuaran.Compute.DataFrame` | `WorkerPool` | 5 | 0 | 0 | 0 | 0 | 2 | 3 |
-| **Total** |  | 204 | 35 | 16 | 8 | 0 | 5 | 140 |
+| **Total** |  | 209 | 35 | 16 | 8 | 0 | 5 | 145 |
 <!-- operation-coverage:end -->
 
 ## Adopted from the kit's release asset

@@ -1713,6 +1713,7 @@ module Incremental =
         | Except _ -> "except"
         | Define _ -> "define"
         | Fit _ -> "fit"
+        | Predict _ -> "predict"
 
     /// The stable name of a window function — the spelling `WindowFrameUnbounded` carries (Phase
     /// 120). These are the canonical wire tags, spelled here for the same reason `verbName` spells

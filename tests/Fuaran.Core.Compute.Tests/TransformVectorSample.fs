@@ -239,6 +239,26 @@ module TransformVectorSample =
           "fit-poisson-separation-refused"
           "fit-poisson-not-converged-refused" ]
 
+    /// The prediction shapes (Phase 597, `DECISIONS.md` D56), over the same table, which is also each
+    /// model's training rows: the training rows scored on the response scale (each prediction its row's
+    /// fitted value), a grouped model over a categorical term with a prediction interval, a confidence
+    /// interval on the link scale, Poisson and Gamma means with intervals read from the normal and the
+    /// t rows, a coefficient table's point estimates, and the five refusals by name — an untabled level,
+    /// a prediction interval outside the gaussian family, a level the training rows did not hold, a term
+    /// a coefficient table lacks, and a group the model has none for.
+    let private predictShapeNames =
+        [ "predict-training"
+          "predict-grouped-prediction-interval"
+          "predict-confidence-link"
+          "predict-poisson-response"
+          "predict-gamma-link"
+          "predict-coefficients"
+          "predict-level-refused"
+          "predict-poisson-prediction-refused"
+          "predict-unseen-level-refused"
+          "predict-missing-term-refused"
+          "predict-unknown-group-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
         decimalShapeNames
@@ -251,6 +271,7 @@ module TransformVectorSample =
         @ unionShapeNames
         @ functionShapeNames
         @ fitShapeNames
+        @ predictShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -805,7 +826,7 @@ module TransformVectorSample =
                   [ for i in 0 .. rows - 1 -> cents (100000 + 12500 * i + (53 * i) % 17 - 8) ] ] }
 
     /// The regression shapes (Phase 592, D53) over `fitTable`.
-    let private fitPipelineOf (shape: string) : Transform list =
+    let rec private fitPipelineOf (shape: string) : Transform list =
         let x = Col "x"
         let ols = FitSpec.ols "y" [ "x", x ]
 
@@ -901,14 +922,89 @@ module TransformVectorSample =
                       Control =
                           { MaxIter = Slot.Lit 2
                             Tol = Slot.Lit 1e-8 } } ]
-        | _ -> [ Fit(FitSpec.ols "y" [ "huge", Binary(Mul, x, Lit(Float 1e308)) ]) ]
+        | "fit-nonfinite-refused" -> [ Fit(FitSpec.ols "y" [ "huge", Binary(Mul, x, Lit(Float 1e308)) ]) ]
+        | _ -> predictPipelineOf shape
+
+    /// The prediction shapes (Phase 597, D56) over `fitTable`, each model trained on `fitTable` itself.
+    and private predictPipelineOf (shape: string) : Transform list =
+        let x = Col "x"
+        let ols = FitSpec.ols "y" [ "x", x ]
+        let training = Embedded fitTable
+
+        let poisson =
+            { ols with
+                Family = FitFamily.Poisson
+                Link = FitLink.Log }
+
+        let predict (fit: FitSpec) = PredictSpec.ofTraining fit training
+
+        let interval (kind: IntervalKind) (level: float) =
+            Some { Kind = kind; Level = Slot.Lit level }
+
+        let coefficients =
+            match DataFrame.evalPipeline [ Fit ols ] fitTable with
+            | Ok t -> Embedded t
+            | Error e -> failwithf "the coefficient table: %s" (DataFrame.errorString e)
+
+        match shape with
+        | "predict-training" -> [ Predict(predict ols) ]
+        | "predict-grouped-prediction-interval" ->
+            [ Predict
+                  { predict
+                        { ols with
+                            Predictors = [ "x", x; "c", Col "c" ]
+                            GroupBy = [ "g" ] } with
+                      Interval = interval IntervalKind.Prediction 0.95 } ]
+        | "predict-confidence-link" ->
+            [ Predict
+                  { predict { ols with Weights = Some "w" } with
+                      Scale = PredictScale.Link
+                      Interval = interval IntervalKind.Confidence 0.9 } ]
+        | "predict-poisson-response" ->
+            [ Predict
+                  { predict poisson with
+                      Interval = interval IntervalKind.Confidence 0.95 } ]
+        | "predict-gamma-link" ->
+            [ Predict
+                  { predict
+                        { poisson with
+                            Family = FitFamily.Gamma
+                            Predictors = [ "x", x; "c", Col "c" ] } with
+                      Scale = PredictScale.Link
+                      Interval = interval IntervalKind.Confidence 0.99 } ]
+        | "predict-coefficients" ->
+            [ Predict
+                  { predict ols with
+                      Model = PredictModel.Coefficients coefficients } ]
+        | "predict-level-refused" ->
+            [ Predict
+                  { predict ols with
+                      Interval = interval IntervalKind.Confidence 0.97 } ]
+        | "predict-poisson-prediction-refused" ->
+            [ Predict
+                  { predict poisson with
+                      Interval = interval IntervalKind.Prediction 0.95 } ]
+        | "predict-unseen-level-refused" ->
+            [ Derive("c", Lit(Str "top"))
+              Predict(
+                  predict
+                      { ols with
+                          Predictors = [ "x", x; "c", Col "c" ] }
+              ) ]
+        | "predict-missing-term-refused" ->
+            [ Predict
+                  { predict
+                        { ols with
+                            Predictors = [ "x", x; "z", Col "z" ] } with
+                      Model = PredictModel.Coefficients coefficients } ]
+        | _ -> [ Derive("g", Lit(Str "c")); Predict(predict { ols with GroupBy = [ "g" ] }) ]
 
     /// Every fit shape's answer over `fitTable`, one line each — the shape, then the canonical wire string
     /// of the result table or `error <errorString>` — in shape order. The node leg prints it under
     /// Fable and the suite holds it equal to this host's, line for line (Phase 592): the estimates, the
     /// statistics, the decimal outputs and the refusals' texts, byte for byte.
     let fitRender () : string =
-        fitShapeNames
+        fitShapeNames @ predictShapeNames
         |> List.map (fun shape ->
             shape
             + " "
@@ -987,7 +1083,7 @@ module TransformVectorSample =
                 (decimalTable rows offset, unionPipelineOf shape rows), r2
             elif shape.StartsWith "function-" || shape.StartsWith "curve-" then
                 (decimalTable rows offset, functionPipelineOf shape), r2
-            elif shape.StartsWith "fit-" then
+            elif shape.StartsWith "fit-" || shape.StartsWith "predict-" then
                 (fitTable, fitPipelineOf shape), r2
             else
                 (decimalTable rows offset, decimalPipelineOf shape rows offset), r2
