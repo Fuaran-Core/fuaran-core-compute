@@ -1,5 +1,154 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D52: `exp`, `ln`, `log10` and the float-exponent `pow` are pinned in `Fuaran.Compute.LinearAlgebra.Elementary` — one reduction and one polynomial each, `+ − × ÷` and comparisons over a table of the powers of two, no fused multiply-add and no host mathematics call, behind D43's special-value table published as data; the faithful-pinned build is chosen over a correctly rounded one on the measurement, which puts the pinned routines within one ulp of the true value and byte-identical on .NET and node, and the correctly rounded candidate at five to twenty-five times the cost with a multiprecision library in every twin
+
+**Context.** D43 (Phase 557) made the transcendentals host-rounded: deterministic within one host, within two ulps
+across hosts, every column that reads one marked `HostRounded`. The plan for the linear-algebra chain
+(`fuaran-core-compute`'s S6; operator ruling D6 = B, 2026-11-01) says that is not enough for a generalised linear
+model: an IRLS loop passes the differences through every iteration, the condition number amplifies them, and the
+convergence test is a discrete decision over them, so two hosts can stop at different iterations. Byte identity
+needs a *pinned* algorithm, not necessarily a *correctly rounded* one, and the plan's §7 question 1 asked for a
+measurement before the build: the faithful-pinned candidate against the correctly rounded one, in cost per value
+on .NET and under node, in error against a high-precision reference, and in lines per twin. This entry records
+the measurement, the choice it makes, and the build. The premise check at take found D43's table in
+`DataFrame.fs` as the entry states, Phase 559's tolerance vectors present (`e`, `l`, `l10`, `p` and the table's
+rows, each at two ulps), and Phases 590 and 591 on `main`.
+
+**Measured, on 2026-11-04 (Intel Core i7-8650U, Windows 11; .NET 10 Release, x64 native; node v22.20.0 over
+Fable 5.0.0).** The harness is the node timing program's `elementary` family
+(`benchmarks/Fuaran.Core.Compute.Benchmarks/ElementaryBench.fs`), the same program on both hosts; the write-up
+is `benchmarks/results/2026-11-04-i7-8650u-phase-593.md` with the reference checker beside it. The sample is a
+seeded draw at 593 through the pinned Park–Miller generator (the same values on every host): `exp` over 3,320
+inputs (uniform across the computed range, with clusters round zero, the half-ln2 reduction boundary and both
+edges), `ln` and `log10` over 3,107 (log-uniform across the positive doubles, a cluster round one, the subnormals
+and the extremes), `pow` over 3,847 pairs (bases across two hundred binary decades and round one, exponents to
+`±10¹⁶`, negative bases under integer exponents, every pair with a finite non-zero answer) — 13,381 values in all.
+The reference is Python's `decimal` at eighty digits (`exp`, `ln`, `log10`, and `pow` as `exp(y · ln x)`) rounded
+once to the nearest double; the distance is the difference of ordered bit patterns.
+
+1. **The faithful-pinned candidate** (the build below): the worst distance from the reference is **one ulp on
+   every function**, with the mean at 0.093 (`exp`), 0.010 (`ln`), 0.076 (`log10`) and 0.103 (`pow`) — off by
+   one on 310, 31, 237 and 397 of the samples respectively, never by two. Cost per value, .NET: **18, 66, 91
+   and 204 ns**; node: **51, 246, 423 and 487 ns**. The .NET and node captures agree on **all 13,381 lines,
+   byte for byte.** Size: `Elementary.fs` is 436 lines with its comments, of which the routines are about
+   forty-five (`exp`), fifty (`ln`), fifteen (`log10`) and a hundred and ten (`pow`, sixty of them the
+   double-double helpers), plus the two-thousand-entry table of the powers of two a twin builds in a loop; the
+   constants are fdlibm's twenty-one published coefficients and six split constants.
+2. **The correctly rounded candidate** (a Ziv two-phase prototype kept in the harness and nowhere else: the same
+   reductions carried in double-double arithmetic to about `2⁻⁹⁵`, a rounding test on the result, and a
+   320-bit fixed-point `BigInteger` slow path where the test cannot decide or the double-double scaling cannot
+   reach). Cost per value, .NET: 544 (`ln`), 477 (`log10`) and 1,135 ns (`pow`) on the fast path alone — 8, 5
+   and 6 times the pinned build — and 4,745 ns for `exp`, because 651 of its 3,320 samples lie where the fast
+   path withdraws (a subnormal or near-overflow result) and pay the slow path; node: 9,339, 5,633, 5,230 and
+   18,195 ns. The slow path alone costs **22 to 68 µs** per value on .NET and 34 to 65 µs under node; the
+   rounding test sent 3 `exp`, 11 `ln` and no `log10` or `pow` samples to it. Accuracy: `exp` is at zero ulps on
+   every sample, but `ln`, `log10` and `pow` are off by one on 1, 9 and 84 — the prototype as written is NOT
+   yet correctly rounded (the sloppy double-double sum and the `2⁻⁹⁵` bound it assumes are the likely cause),
+   and making it so is more of exactly the work that distinguishes the candidates. Size: about three hundred
+   lines beyond the pinned build, plus a multiprecision integer in every twin — JavaScript, Python and .NET have
+   one; C, Rust, Go, Swift and Kotlin take a dependency or write one.
+
+**The falsifiers, named.** A sample at which the pinned routine sits two or more ulps from the reference; a line
+on which the two hosts' captures differ. The instrument sees both: the correctly rounded column differs from the
+pinned one on hundreds of lines (every off-by-one), the first run of the prototype was caught at 256 ulps on
+`ln` just below one (a cancellation its `ln` did not fold away, fixed before the figures above), and the first
+run of the harness measured unoptimised .NET code and a BigInt checksum under node, each corrected and each named
+in the harness so the next reader does not repeat it. The sample and the checker are reproducible from the seed
+and the recipe in the results file.
+
+**Decision.**
+
+1. **The faithful-pinned build ships, and the correctly rounded one is declined on the measurement.** The
+   plan's rule was that the choice is the measurement's unless the correctly rounded cost proves out of
+   proportion, in which case it is surfaced to the operator; it has, and the operator's standing instruction
+   for this chain of phases is to take the long-term option and record it here. The pinned build answers the
+   question D6 asked — the same bits on every host — within one ulp of the truth, at the cost of the host's own
+   libm; the correctly rounded one would add agreement with other correctly rounded libraries, which nothing
+   downstream reads, at five to twenty-five times the cost, a slow path of tens of microseconds, a prototype that
+   is not yet correct, and a multiprecision dependency in five twins. The door stays open as D43's did: a
+   correctly rounded routine is pinned by definition, and a host that ships one changes nothing here but the
+   `ulps` cells.
+2. **The module `Elementary`, in `Fuaran.Compute.LinearAlgebra`** (D49 item 20's boundary: FSharp.Core and the
+   substrate's column; Fable-clean): `exp`, `ln`, `log10`, `pow`, and the table functions `expTable`, `lnTable`
+   and `powTable`, each `Pinned` in `Operations.exactness`. The arithmetic is `+ − × ÷` and comparisons; the
+   one further thing read is the binary64 format itself, as a **table of `2ᵏ` for `k` in `−1074 .. 1023` built
+   by exact doubling and halving** at module load: a float's exponent is found by binary search over it and
+   its mantissa by one exact product, and `y · 2ᵏ` is one exact product into the normal range, or two where the
+   answer is subnormal or beyond `2¹⁰²³` (fdlibm's `scalbn` route, the second product rounding once). No bit
+   pattern is read or written; a twin transcribes a loop, not a layout. The square root `pow(x, ½)` takes is
+   the F# operator over the correctly rounded root the linear-algebra premise names. A source-reading test holds
+   `Elementary.fs` to no `Math.*` call and no `**`.
+3. **The algorithms.** `exp` is fdlibm's `e_exp.c`: `k` the nearest integer to `x / ln 2` (rounding half away
+   from zero), `hi = x − k · ln2Hi` exact (the high part carries twenty-one trailing zeros), `lo = k · ln2Lo`,
+   the degree-five polynomial for `x − expm1(x)` over `x = hi − lo`, the compensated assembly
+   `1 − ((lo − x·c / (2 − c)) − hi)`, then `2ᵏ`; `|x| < 2⁻²⁸` answers `1 + x`. Two simplifications of fdlibm,
+   both deliberate: `k` is formed by the one formula at every magnitude (fdlibm hand-sets `k = ±1` in the band
+   below `1.5 · ln 2`, which the formula answers the same except at the band's edge, where either reduction is
+   valid), and `ln` takes the `hfsq` assembly throughout (fdlibm's narrow band without it is not reproduced).
+   `ln` is `e_log.c`: `x = 2ᵏ · (1 + f)` with `1 + f` folded into `[√2/2, √2)`, `s = f / (2 + f)`, the two
+   even polynomials over `s²`, and `k · ln2Hi − ((hfsq − (s · (hfsq + R) + k · ln2Lo)) − f)`, with the
+   `|f| < 2⁻²⁰` short form. `log10` is `e_log10.c` over the same `ln` core: the mantissa in `[1, 2)` or, under
+   a negative exponent, `[½, 1)` with the exponent raised by one so the two terms carry one sign, then
+   `(n · log10(2)_lo + ln(m) / ln 10) + n · log10(2)_hi`. `pow` is `exp(y · ln x)` with **`ln x` and the
+   product in double-double** (Dekker's error-free transformations — `twoSum`, Veltkamp's split, `twoProd`):
+   `ln(1 + f) = 2s · (1 + z · (⅓ + z · (⅕ + T)))` with `s` and `z = s²` double-double and the tail
+   `T = z/7 + … + z¹⁰/25` plain, where it weighs below `2⁻⁶⁶` of the whole; `k · ln 2` from the split
+   constant; then `y · ln x` as `twoProd` plus `y · ln_lo`, so the `exp` core receives the part a plain product
+   would have rounded away — which is why its one-ulp bound carries over to `pow`, and why `pow` near one under
+   an exponent of `10¹⁶` is within one ulp. The split needs `|y| < 2⁹⁹⁶`; a plain estimate of `y · ln x`
+   answers the overflow and underflow first, so the split is never reached beyond it. Before the core, IEEE-754's
+   rules for an infinite or zero operand and for a negative base under an integer exponent (the sign by the
+   exponent's parity, the parity found with `+` and `−` through the `2⁵²` rounding trick, never a `floor`),
+   and **four exact cases**, `y = 1`, `−1`, `2` and `½` — the operand, its reciprocal, its square and its root,
+   each one correctly rounded operation and so the same bits as the spelling a consumer would write with `Mul`,
+   `Div` or `Sqrt`, and as D43's integer routine answers `x¹` and `x²`.
+4. **D43's special-value table is kept exactly and published as data.** `SpecialValue` is
+   `NaN | Value of float | Undefined | Compute`, and `expTable`, `lnTable` and `powTable` answer it clause for
+   clause as `DataFrame.powSpecial`, `expHost` and `logHost` do today, including the two edges of `exp`
+   (`709.782712893384` and `−745.1332191019412` — D43's literals; the second is one ulp above fdlibm's own
+   underflow threshold and is kept as D43 wrote it, since the table is D43's), `pow(1, NaN)` and `pow(NaN, 0)`
+   as NaN, and a zero base under a negative exponent and a negative base under a non-integer exponent as
+   `Undefined`. The functions answer **NaN where the table says `Undefined`** — `ln 0` is NaN here, not
+   `−Inf` — because the table, not the function, is the contract for those inputs: the evaluator reads the
+   table first and answers `Null`, as it does today, and a consumer wanting IEEE's `−Inf` is asking a question
+   the table has already answered otherwise. The evaluator's move (Phase 594) is the one that deletes the
+   `DataFrame.fs` copies and reads these.
+5. **The vectors carry the truth beside the answer.** The elementary vectors of
+   `conformance/laws/linear-algebra-laws.json` answer `{ verdict: ok, value, table }`, and every vector the
+   routine computed also carries `reference` — the correctly rounded bits of the true value, authored from the
+   eighty-digit computation — and `ulps`, the package's distance from them, which is at most one on every such
+   vector and is itself part of the document a host must reproduce byte for byte. A host that ports the
+   routines therefore checks two things from one file: that its bits are ours, and how far ours are from the
+   truth. A vector the table answers carries no reference. The suite also holds, as a go-red, that the host's
+   own libm answers other bits on at least one vector, so the byte comparison is known to see a port that calls
+   the host instead of transcribing.
+6. **Laws.** `LinearAlgebraLaws.laws` gains four: every table row and IEEE edge answered as stated (the canonical
+   NaN included); `pow`'s four exact cases and the sign rule byte for byte; `ln (exp x)` within `4u · (|x| + 1)`
+   of `x` and `exp (ln y)` within `4u · y · (|ln y| + 1)` of `y`; and the functional equations
+   (`exp(a + b)` against the product, `ln(xy)` against the sum, `pow(x, y) · pow(x, −y)` against one, `log10`
+   against `ln / ln 10`) within the bounds a one-ulp routine admits. The byte law across hosts is the vector
+   file under the node leg, as for every other operation of the package.
+7. **The claims ladder** gains the assumed premise `elementary-functions-pinned-by-transcription`: byte identity
+   rests on the linear-algebra premise and on exact transcription, never on a host's own `exp` or `log`; the
+   accuracy claim is the measurement above, a faithful bound and never a theorem. `ProofsLadderTests` requires
+   it beside the two arithmetic premises.
+8. **What Phase 594 does**, stated here so the two halves read as one: the evaluator's `Exp`, `Ln`, `Log10` and
+   float-exponent `Pow` move onto `Elementary` behind the published table, the `HostRounded` mark and D43's
+   two-ulp tolerance come off those columns, and the transform vectors that carry `expected.tolerance` lose
+   it — the corpus change every twin must follow. The integer-exponent routine (D43 item 2) is untouched.
+
+**Rejected.** *A port of fdlibm's `e_pow.c`* — three hundred lines of word-splitting over the mantissa's bit
+pattern, whose accuracy argument is tied to that splitting; the double-double route reuses the `exp` core,
+rests on Dekker's lemmas rather than on a layout, and measured within one ulp. *A table of logarithms at 128
+centres* (musl's shape) — fewer operations per `pow`, at 384 further constants in every twin, and the band round
+one would still need the table-free arm; declined while `pow` costs 0.2 µs. *Reading the exponent from the bit
+pattern* — exact and cheap, but it makes the claim "`+ − × ÷` and a table" false and asks every twin to carry a
+layout as well as a loop; the binary search costs eleven comparisons. *Answering `−Inf` for `ln 0`* — item 4.
+*Correct rounding* — item 1, on the measurement.
+
+**Supersedes nothing yet.** D43 stands in full until Phase 594 moves the evaluator; this entry adds the routines
+and the table's data form beside it.
+
 ## 2026-11-04 — D51: least squares is a streaming Givens QR over an immutable `QRAccumulator` whose state is `R` beside `Qᵀy`, row by row; a weight is refused by its own case, `InvalidWeight`; an overflowing state is refused when it is read, not as it is built; an aliased column is removed and the rest re-triangularised in column order; the batch Householder factorizations are pinned in their own order and held to the streaming one by tolerance; the accumulator and a matrix travel by IEEE-754 bit patterns through `Fuaran.Core.Wire`
 
 **Context.** Phase 591, stage S2 of the linear-algebra plan: the accumulator, the batch and pivoted

@@ -178,10 +178,12 @@ let internal treeFindings
 // ---- the live readings ------------------------------------------------------------------------
 
 /// The host-arithmetic premises that the byte-identity claims of the pinned kernels cite (D43's
-/// integer `Pow`, D49's linear algebra), each required to be an `assumed` row of class `premise`.
+/// integer `Pow`, D49's linear algebra, D52's elementary functions), each required to be an `assumed`
+/// row of class `premise`.
 let internal arithmeticPremises =
     [ "pipeline-ieee-multiply-is-host-independent"
-      "linear-algebra-basic-ops-host-independent" ]
+      "linear-algebra-basic-ops-host-independent"
+      "elementary-functions-pinned-by-transcription" ]
 
 /// One finding per arithmetic premise that is absent, or present at another level or class.
 let internal premiseFindings (rows: Row list) : string list =
@@ -264,19 +266,19 @@ let ladderTests =
 
           testCase "the arithmetic premises the pinned kernels stand on are assumed premises on the ladder"
           <| fun _ ->
-              // DECISIONS.md D49: the integer `Pow` routine (D43) and every linear-algebra kernel claim
-              // byte identity across hosts on these two rows; dropping or promoting one would leave the
-              // claim standing on nothing the ladder states.
+              // DECISIONS.md D49 and D52: the integer `Pow` routine (D43), every linear-algebra kernel and
+              // the elementary functions claim byte identity across hosts on these three rows; dropping or
+              // promoting one would leave the claim standing on nothing the ladder states.
               let premises = premiseFindings (liveRows ())
-              Expect.isEmpty premises "both arithmetic premises are present as assumed premises"
+              Expect.isEmpty premises "the three arithmetic premises are present as assumed premises"
 
               Expect.equal
                   (premiseFindings
                       [ { row "pipeline-ieee-multiply-is-host-independent" "proved" with
                             Class = None } ]
                    |> List.length)
-                  2
-                  "a promoted row and a missing row are each named"
+                  arithmeticPremises.Length
+                  "a promoted row and every missing row are each named"
 
           testCase "the form rules go red on a bad level, a missing class, a bad closes and a bad phase"
           <| fun _ ->

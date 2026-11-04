@@ -465,6 +465,13 @@ let main argv =
     if onlyQr then
         QrBench.run runs (if argv.Length > 2 then int argv.[2] else 1_000_000)
 
+    // `elementary` measures the two candidate builds of exp, ln, log10 and the float-exponent pow,
+    // the faithful-pinned one the package ships against a correctly rounded prototype (Phase 593).
+    let onlyElementary = argv.Length > 1 && argv.[1] = "elementary"
+
+    if onlyElementary then
+        ElementaryBench.run runs
+
     // `typed` as the second argument times the typed family alone (Phase 280).
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
@@ -478,7 +485,7 @@ let main argv =
 
     if onlyChain then
         chainTable ()
-    elif not onlyTyped && not onlyState && not onlyQr then
+    elif not onlyTyped && not onlyState && not onlyQr && not onlyElementary then
         table
             "Sheet"
             [ for n in Corpus.sheetSizes do
@@ -528,7 +535,7 @@ let main argv =
                             (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                           n ]
 
-    if onlyChain || onlyQr then ()
+    if onlyChain || onlyQr || onlyElementary then ()
     elif onlyState then stateTable ()
     else typedTable ()
 

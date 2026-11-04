@@ -31,6 +31,9 @@
     <Compile Include="..\..\..\tests\Fuaran.Core.Compute.Tests\PreparedResultLaw.fs" Link="PreparedResultLaw.fs" />
     <!-- Phase 591: the streaming Givens QR at the target sizes (`node Program.js 3 qr`). -->
     <Compile Include="..\QrBench.fs" Link="QrBench.fs" />
+    <!-- Phase 593: the elementary functions, faithful-pinned against correctly rounded
+         (`node Program.js 10 elementary`). -->
+    <Compile Include="..\ElementaryBench.fs" Link="ElementaryBench.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

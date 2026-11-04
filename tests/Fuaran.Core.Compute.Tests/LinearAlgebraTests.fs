@@ -57,7 +57,8 @@ let private publishedOperations () : Set<string> =
               "QRAccumulator"
               "QR"
               "LeastSquares"
-              "LinAlgWire" ]
+              "LinAlgWire"
+              "Elementary" ]
 
     typeof<Matrix>.Assembly.GetExportedTypes()
     |> Array.filter (fun t -> t.IsAbstract && t.IsSealed && t.Namespace = "Fuaran.Compute.LinearAlgebra")
@@ -255,6 +256,105 @@ let tests =
               has "ofMatrix-not-triangular" "{ \"case\": \"notTriangular\", \"row\": 1, \"col\": 0 }"
               has "ofMatrix-not-finite" "{ \"case\": \"notFinite\", \"row\": 0, \"col\": 1 }"
               has "ofMatrix-negative-zero-below" "\"verdict\": \"ok\""
+
+          // Phase 593 — the elementary functions.
+          testCase "every elementary vector with a reference is within one ulp of it, and says so in its ulps cell"
+          <| fun () ->
+              let elementaryOps = set [ "exp"; "ln"; "log10"; "pow" ]
+
+              let referenced =
+                  LinearAlgebraVectors.cases
+                  |> List.filter (fun c -> elementaryOps.Contains c.Op)
+                  |> List.choose (fun c ->
+                      LinearAlgebraVectors.references
+                      |> List.tryFind (fun (id, _) -> id = c.Id)
+                      |> Option.map (fun (_, h) -> c, h))
+
+              Expect.equal referenced.Length LinearAlgebraVectors.references.Length "every reference names a vector"
+              Expect.isGreaterThan referenced.Length 60 "the hard inputs are referenced"
+
+              for c, h in referenced do
+                  let line = lineOf c.Id
+                  Expect.stringContains line (sprintf "\"reference\": \"%s\"" h) (c.Id + " carries its reference")
+
+                  let ulps =
+                      line.Substring(line.IndexOf "\"ulps\": " + 8).TrimEnd(' ', '}', ',', '\r')
+                      |> int
+
+                  Expect.isLessThanOrEqual
+                      ulps
+                      LinearAlgebraVectors.referenceUlps
+                      (sprintf "%s is %d ulps from the reference" c.Id ulps)
+
+          testCase "the elementary vectors answer what was worked by hand"
+          <| fun () ->
+              let has (id: string) (fragment: string) =
+                  Expect.stringContains (lineOf id) fragment (sprintf "%s answers %s" id fragment)
+
+              let h = LinearAlgebraVectors.hex
+              has "exp-zero" (sprintf "\"value\": \"%s\", \"table\": \"compute\"" (h 1.0))
+
+              has
+                  "exp-above-overflow-edge"
+                  (sprintf "\"value\": \"%s\", \"table\": \"value\"" (h Double.PositiveInfinity))
+
+              has "exp-minus-thousand" (sprintf "\"value\": \"%s\", \"table\": \"value\"" (h 0.0))
+              has "exp-nan" "\"value\": \"nan\", \"table\": \"nan\""
+              has "ln-zero" "\"value\": \"nan\", \"table\": \"undefined\""
+              has "ln-one" (sprintf "\"value\": \"%s\", \"table\": \"value\"" (h 0.0))
+              has "ln-two" (sprintf "\"value\": \"%s\"" (h 0.6931471805599453))
+              has "log10-thousand" (sprintf "\"value\": \"%s\"" (h 3.0))
+              has "pow-square-shortcut" (sprintf "\"value\": \"%s\"" (h 100.0))
+              has "pow-root-shortcut" (sprintf "\"value\": \"%s\"" (h (sqrt 2.0)))
+              has "pow-negative-zero-odd" (sprintf "\"value\": \"%s\", \"table\": \"compute\"" (h -0.0))
+              has "pow-negative-base-non-integer" "\"value\": \"nan\", \"table\": \"undefined\""
+              has "pow-one-nan" "\"value\": \"nan\", \"table\": \"nan\""
+              has "pow-zero-zero" (sprintf "\"value\": \"%s\", \"table\": \"value\"" (h 1.0))
+              has "pow-two-cubed" (sprintf "\"value\": \"%s\"" (h 8.0))
+
+          testCase
+              "the host's own libm answers other bits on at least one elementary vector, so the byte comparison sees a port that cheats"
+          <| fun () ->
+              let differing =
+                  LinearAlgebraVectors.cases
+                  |> List.choose (fun c ->
+                      let scalar name =
+                          match c.Input |> List.find (fun (n, _) -> n = name) with
+                          | _, LinearAlgebraVectors.Scalar x -> x
+                          | _ -> failtestf "%s: %s is not a scalar" c.Id name
+
+                      match c.Op with
+                      | "exp" -> Some(c.Id, Elementary.exp (scalar "x"), Math.Exp(scalar "x"))
+                      | "ln" -> Some(c.Id, Elementary.ln (scalar "x"), Math.Log(scalar "x"))
+                      | "log10" -> Some(c.Id, Elementary.log10 (scalar "x"), Math.Log10(scalar "x"))
+                      | "pow" -> Some(c.Id, Elementary.pow (scalar "x") (scalar "y"), Math.Pow(scalar "x", scalar "y"))
+                      | _ -> None)
+                  |> List.filter (fun (_, pinned, host) ->
+                      not (Double.IsNaN pinned) && not (Double.IsNaN host) && bits pinned <> bits host)
+
+              Expect.isNonEmpty differing "the host's libm and the pinned routine differ somewhere on the vectors"
+
+          testCase "Elementary's source reaches no host mathematics call"
+          <| fun () ->
+              let source =
+                  File.ReadAllText(
+                      Snapshots.repoFile (Path.Combine("src", "Fuaran.Compute.LinearAlgebra", "Elementary.fs"))
+                  )
+
+              let hostCall =
+                  Text.RegularExpressions.Regex(
+                      @"Math\.(Exp|Log|Log10|Log2|Pow|Floor|Ceiling|Round|Truncate|FusedMultiplyAdd|ScaleB|ILogB|Sqrt|Cbrt)\b|\*\*"
+                  )
+
+              let hits =
+                  hostCall.Matches source
+                  |> Seq.map (fun m -> m.Value)
+                  |> Seq.distinct
+                  |> List.ofSeq
+
+              Expect.isEmpty
+                  hits
+                  "no host mathematics call in Elementary.fs (the square root is the F# operator over the premise's correctly rounded root)"
 
           testCase "Operations.exactness classifies exactly the published operations, every one Pinned"
           <| fun () ->
