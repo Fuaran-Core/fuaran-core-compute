@@ -1,5 +1,122 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D57: `Fit` fits Tweedie(p) and quasi-Poisson under the log link and states heteroskedasticity-consistent standard errors HC0 to HC3 — Tweedie from R's `statmod` start with `w·μ^(2−p)` working weights through the pinned `pow`, quasi-Poisson as Poisson's iterations with Pearson's dispersion; the sandwich is one pass over the rows in a pinned order in the working weights and residuals; a caller asking for robust errors without naming a variant gets HC3, resolved when the spec is made
+
+**Context.** The families half of the plan's S5 (`fuaran-compute-linear-algebra-and-glm.md`), operator rulings D9
+and D10 of 2026-11-01 (sandwich errors HC0 to HC3 ship here, as an option on `Fit`'s standard errors) and the
+ruling of 2026-11-03 on the plan's §7 Q2 (the default variant is HC3). **The premise check at take**, against
+`main` at `63dd667`: 595's IRLS (`Glm.fit`, D55) and 597's scoring (`Predict`, D56) are on main, and
+`Elementary.pow` (D52) is the pinned float-exponent power — exact at `y = 1`, `−1`, `2` and `½`, `exp(y · ln x)` in
+double-double otherwise — so Tweedie's working weight `μ^(2−p)` takes it and nothing else. The `FitFamily` cases
+`Tweedie of power` and `QuasiPoisson` were already typed (D53) and refused as `UnsupportedFit`, with a wire
+spelling; this entry evaluates them.
+
+**Decided.**
+
+1. **The two families, in `LinearAlgebra.Glm`.** `GlmFamily` gains, appended, `Tweedie of power: float` and
+   `QuasiPoisson`; both are fitted under `GlmLink.Log` only, every other pairing `UnsupportedModel`.
+   *Quasi-Poisson* is Poisson's mean model and Poisson's iteration exactly — the start `μ₀ = y + 0.1`, the working
+   weight `w·μ`, the unit deviance — so its coefficients, means, deviance and iteration count are Poisson's bit for
+   bit; only the dispersion differs: Pearson's `Σ w·(y − μ)²/μ` over the rows of positive weight, in row order,
+   divided by `n − rank` (null where that is zero), and the classical standard errors are read under it.
+   *Tweedie(p)* has `V(μ) = μᵖ`: the start is R's `statmod::tweedie` — `μ₀ = y`, with `0.1` in place of a zero;
+   the working weight `w·μ^(2−p)` through `Elementary.pow`, so at `p = 1` it is `w·μ` and at `p = 2` exactly `w`
+   (the exact cases of D52); the unit deviance is Poisson's at `p = 1`, Gamma's at `p = 2`, and otherwise
+   `statmod`'s `2 (y·(y₁^(1−p) − μ^(1−p))/(1 − p) − (y^(2−p) − μ^(2−p))/(2 − p))` with `y₁ = y`, or `1` at `y = 0`,
+   every power through `Elementary.pow`; the dispersion is Pearson's `Σ w·(y − μ)²/μᵖ` over `n − rank`. Every other
+   rule of the loop — the first iteration, the halving, the stopping rule, the null deviance — is D55's, unchanged.
+2. **The power and the response.** A power strictly between zero and one, a NaN or an infinity is refused before
+   any row is read: no Tweedie distribution has such a power. `LinAlgError` gains, appended, `InvalidPower of
+   power`; the verb refuses it at resolution as a `FitError`. A power of zero or below is admitted — it names a
+   Tweedie distribution — and so is every power from one up. The response must be finite and, under the log link,
+   not negative (the start needs `μ₀ > 0`); from `p = 2` up it must be positive, since `y^(2−p)` is infinite at a
+   zero once `p > 2` and Gamma's deviance needs `y > 0` at `p = 2`. Quasi-Poisson admits Poisson's responses.
+   Outside the range is `InvalidResponse` naming the first row, a `FitError` at the verb (D55 item 7).
+3. **Tweedie at `p = 1` agrees with quasi-Poisson; it is not the same bits.** The variance function, working
+   weights, deviance and dispersion formula coincide (`pow μ 1` is `μ`), but the starts differ — `statmod`'s
+   `y + 0.1·[y = 0]` against R's quasi-Poisson `y + 0.1` — so the two converge to one estimate by different paths
+   and agree within the stopping rule's order. That is the law. Tweedie at `p = 2` *is* Gamma's iteration bit for
+   bit — the start, the weights and the deviance all coincide — which is a second law; its dispersion differs in
+   the last place (`d·d/μ²` against Gamma's `((y − μ)/μ)²`).
+4. **The sandwich.** `LeastSquares.robustStandardErrors variant x weights residuals fit` states, per design
+   column, `√diag((RᵀR)⁻¹ · Σᵢ ψᵢψᵢᵀ · (RᵀR)⁻¹)` with the score `ψᵢ = wᵢ·rᵢ·xᵢ` over the kept columns and `R` the
+   fit's, read as R's `sandwich::vcovHC`. One pass over the rows of positive weight in row order (a zero-weight row
+   is not counted, D49 item 13), each a fixed sequence: `u = R⁻ᵀxᵢ` (`k` ascending to `t`, from `+0`), the leverage
+   `hᵢ = wᵢ·Σₜ u[t]²`, the multiplier `s = wᵢ·rᵢ` — divided by `√(1 − hᵢ)` under HC2 and by `1 − hᵢ` under HC3 —
+   then `v[t] = s · Σₖ R⁻¹[t,k]·u[k]` (`k` ascending from `t`), which is `(RᵀR)⁻¹ψᵢ`, and `v[t]²` added to the
+   `t`-th sum. HC1 multiplies each sum by `n / (n − rank)`, `n` the rows of positive weight. Only the diagonal is
+   formed, row by row, so the cost is one O(p²) step per row and no p × p meat. `RobustVariant` = `HC0 | HC1 | HC2
+   | HC3` is the package's type. For least squares the residuals are `y − ŷ` and the weights the prior weights;
+   for a generalised linear model, `Glm.robustStandardErrors`, the working weights the final iteration's solve was
+   folded under and the working residuals `(y − μ)/μ` at the final mean — R's `weights(fit, "working")` and
+   `residuals(fit, "working")`, so the answer is free of the dispersion, as `vcovHC` on a `glm` is. `GlmFit` gains
+   `WorkingWeights` and `WorkingResiduals` to carry them.
+5. **Where the sandwich is undefined.** Under HC1 with `n ≤ rank` (no residual degree of freedom), and under HC2
+   and HC3 when any row's leverage is one or more — its adjusted score is `0/0`, which R answers as `NaN` in every
+   column — every error is null, as a classical error is null without a residual degree of freedom (D53 item 8).
+   HC0 is defined there. Refused: a shape mismatch, a negative or non-finite weight, a non-finite design cell or
+   residual at a row of positive weight.
+6. **`n` counts the rows of positive weight, and R's HC1 does not always.** `sandwich::meatHC` takes `n` as the
+   model matrix's rows, zero-weight rows included, while the bread takes the rows of positive weight; with a zero
+   prior weight R's errors are scaled by the ratio of the two. This package counts the rows the fit counts (D49
+   item 13), so its errors are the textbook estimator's; where no weight is zero the two agree.
+7. **The default variant is HC3, resolved when the spec is made.** `FitStdErrors` = `Classical | HC0 | HC1 | HC2
+   | HC3` is a member of `FitSpec` (`StdErrors`), classical in `FitSpec.ols`. A caller asking for robust errors
+   without naming a variant writes `FitStdErrors.Robust`, which IS `HC3`, or the wire spelling `robust`, which
+   decodes to `hc3`. The spec never stores "robust": a stored pipeline means one estimator whatever a later version
+   says the default is, and its wire bytes say which. The wire member `stdErrors` (`classical`, `hc0` … `hc3`,
+   `robust` on decode) is emitted only when it is not classical, so every existing pipeline's wire bytes, and
+   every wire baseline document, are unchanged.
+8. **What the option moves.** The `Coefficients` table's `std_error` and `t` — nothing else: the estimates, the
+   units, `Summary`, `Fitted` and `Residuals` are the classical fit's, byte for byte. A positive ridge penalty with
+   robust errors is a `FitError` (the sandwich of a penalised estimator is not an estimator this version states; a
+   zero penalty folds nothing and is admitted). `Predict` refuses a spec whose errors are robust, under either
+   model form, as a `FitError`: its `se_fit` and `se_pred` read the classical covariance off `R` (D56), and a
+   prediction answering classical errors for a model that asked for robust ones would be read wrongly.
+9. **Units** (D53 item 10, D55 item 8). Under the log link a coefficient is in `1 / unit(x)` for both families. A
+   unit deviance is in `unit(y)^(2 − p)`: quasi-Poisson's in `unit(y)`, Tweedie's stated where `2 − p` is an
+   integer other than zero the algebra carries and none otherwise (`p = 1.5` states none). The dispersion is a pure
+   number.
+10. **Incremental.** Neither family keeps state, as D55 item 9 has it for every GLM. A robust least-squares fit is
+    still maintained: `R` is the stored accumulator's, byte-equal to a fresh fold, and the sandwich's pass reads
+    the group's rows at each evaluation, as the fitted values already do, so an append refresh is byte-equal to a
+    full evaluation and the state codec is unchanged.
+11. **Laws, vectors and the reference.** `LinearAlgebraLaws` gains four laws: quasi-Poisson is Poisson's iteration
+    byte for byte with Pearson's dispersion; Tweedie at `p = 1` agrees with quasi-Poisson within the tolerance's
+    order and at `p = 2` is Gamma's iteration byte for byte; HC0 on a thousand homoskedastic rows is within a
+    quarter of the classical errors, HC1 is HC0 scaled by `√(n/(n − rank))`, and HC0 ≤ HC2 ≤ HC3 per column; every
+    new refusal and undefined answer fires. `transform-laws.json` gains thirteen vectors (iterations 150 to 162):
+    a grouped quasi-Poisson summary, Tweedie at `p = 1.5` over coefficients and a weighted summary, least squares
+    under each of HC0 to HC3, Poisson and Tweedie coefficients with robust errors, and four refusals by class
+    (`FitError`: a power, a response, a ridge with robust errors, a prediction from a robust model); the pooled
+    node leg renders them under Fable line for line. The reference computation is
+    `tests/Fuaran.Core.Compute.Tests/fixtures/glm-reference/reference.py` — Python's standard `decimal` at sixty
+    digits, the normal equations by Gauss–Jordan elimination, IRLS run to the maximum-likelihood estimate — and its
+    output `reference.json` beside it: Dobson's trial (R's `?glm`) under Poisson, quasi-Poisson and Tweedie(1.5), a
+    response with zeros under Tweedie(1.5) and Tweedie(1.3), and heteroskedastic least squares unweighted and
+    weighted with a zero weight, each with its estimates, dispersion, deviance, classical errors and HC0 to HC3.
+    `FitFamiliesTests` holds the verb to it within a relative `1e-7` under a tight control, which measures the
+    estimator rather than the default stopping point (the GLM sandwich reads the final iteration's working weights,
+    as R does, so under the default control it differs from the estimate's own by the stopping rule's order).
+
+**Rejected.** *A `Robust` case resolved at evaluation* — item 7: a stored spec would change meaning with the
+default. *Tweedie at `p = 1` taking quasi-Poisson's start*, to make the two the same bits — item 3: the family
+would then not be `statmod`'s on the one power where the two meet. *Refusing powers of zero and below* — they are
+Tweedie distributions; the log link's start bounds the response instead (item 2). *Forming the p × p meat and two
+matrix products* — the diagonal row by row is the same estimator with one pinned order and no intermediate matrix.
+*R's `n` for HC1 with zero weights* — item 6. *A sandwich for a ridge fit, and robust errors for `Predict`* —
+item 8; each is its own phase when asked for.
+
+**What a consumer does.** Nothing to adopt: a pipeline that named Tweedie or quasi-Poisson under `Log` and met
+`UnsupportedFit` now gets the fit, and robust errors are opt-in. A full-literal `FitSpec` construction gains the
+`StdErrors` field (`FitSpec` is new in this draft). A language twin certifying the transform laws ports items 1 to
+4 and 7; the thirteen new vectors are red on it until it does.
+
+**Tidy.** Reviewed every key file. `fitGlmGroupOf` and the least-squares group now build the group's design through
+one helper (`fitGroupMatrix`), which the sandwich reads too; Gamma's Pearson loop became the one `pearson` fold all
+three estimated-dispersion families share, its bits unchanged. Nothing else in the files touched is made dead or
+obsolete.
+
 ## 2026-11-04 — D56: a fitted model scores rows with one `Predict` step — the model is the `Fit` spec over its training rows, refitted bit for bit, or a coefficient table for point estimates; a row is coded as the fit coded its training rows; `se_fit` and `se_pred` read the fit's `R` by one triangular solve and a sum of squares; an interval's quantile is a row of a Student t table carried as data and read through `Interpolate` in `1/df`, the normal row at infinity
 
 **Context.** The scoring half of the plan's S5 (`fuaran-compute-linear-algebra-and-glm.md`), amended by ruling F9

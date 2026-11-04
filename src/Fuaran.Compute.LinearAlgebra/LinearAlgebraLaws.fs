@@ -1305,6 +1305,224 @@ module LinearAlgebraLaws =
         | failed ->
             Some(sprintf "Glm refusals not answered as stated: %s" (failed |> List.map fst |> String.concat ", "))
 
+    /// Quasi-Poisson iterates exactly as Poisson (Phase 598, D57): its coefficients, means, deviance and
+    /// iteration count are Poisson's, byte for byte; its dispersion is Pearson's `Σ w·(y − μ)²/μ` over the
+    /// residual degrees of freedom, and its standard errors are the classical ones under it.
+    let private quasiPoissonIsPoisson (d: Draw) =
+        let x, w, o, k = glmDesign d
+        let n = x.Rows
+        let y = counts d n k
+        let ya, wa = Vector.toArray y, Vector.toArray w
+
+        match
+            Glm.fit GlmFamily.Poisson GlmLink.Log GlmControl.defaults x y w o,
+            Glm.fit GlmFamily.QuasiPoisson GlmLink.Log GlmControl.defaults x y w o
+        with
+        | Ok p, Ok q ->
+            let mu = vecBits q.Fitted
+            let df = q.ResidualDf
+            let mutable pearson = 0.0
+
+            for i in 0 .. n - 1 do
+                if wa[i] > 0.0 then
+                    let r = ya[i] - mu[i]
+                    pearson <- pearson + wa[i] * (r * r / mu[i])
+
+            let phi = if df > 0 then Some(pearson / float df) else None
+
+            let se =
+                match phi with
+                | Some f -> LeastSquares.standardErrors f q.LeastSquares
+                | None -> List.replicate x.Cols None
+
+            check
+                (optBits p.Coefficients = optBits q.Coefficients
+                 && sameBits (vecBits p.Fitted) mu
+                 && bits p.Deviance = bits q.Deviance
+                 && p.Iterations = q.Iterations
+                 && (q.Dispersion |> Option.map bits) = (phi |> Option.map bits)
+                 && optBits q.StdErrors = optBits se)
+                (fun () -> sprintf "quasi-Poisson is not Poisson: %A against %A" q.Coefficients p.Coefficients)
+        | a, b -> Some(sprintf "refused: %A, %A" a b)
+
+    /// Tweedie at `p = 1` agrees with quasi-Poisson (Phase 598, D57): the same variance function and
+    /// working weights (`Elementary.pow μ 1` is `μ`), from Tweedie's own start, so the coefficients, the
+    /// means and the dispersion agree within the tolerance's order; and Tweedie at `p = 2` is Gamma's
+    /// iteration, its coefficients and deviance byte for byte.
+    let private tweedieEndpoints (d: Draw) =
+        let x, w, o, k = glmDesign d
+        let n = x.Rows
+        let y = counts d n k
+        let yPos = positives d n
+
+        let fit family y =
+            Glm.fit family GlmLink.Log GlmControl.defaults x y w o
+
+        let near (p: float) (q: float) = abs (p - q) <= 1e-4 * (1.0 + abs p)
+
+        let nearAll (a: float option list) (b: float option list) =
+            List.forall2 (fun p q -> Option.map2 near p q |> Option.defaultValue (p = q)) a b
+
+        let pOne =
+            match fit (GlmFamily.Tweedie 1.0) y, fit GlmFamily.QuasiPoisson y with
+            | Ok t1, Ok q ->
+                check
+                    (nearAll t1.Coefficients q.Coefficients
+                     && Array.forall2 near (vecBits t1.Fitted) (vecBits q.Fitted)
+                     && nearAll [ t1.Dispersion ] [ q.Dispersion ])
+                    (fun () -> sprintf "Tweedie(1) %A against quasi-Poisson %A" t1.Coefficients q.Coefficients)
+            | a, b -> Some(sprintf "refused: %A, %A" a b)
+
+        // Gamma's iteration may refuse (no convergence) on a draw; Tweedie at p = 2 then refuses alike.
+        let pTwo =
+            match fit (GlmFamily.Tweedie 2.0) yPos, fit GlmFamily.Gamma yPos with
+            | Ok t2, Ok g ->
+                check
+                    (optBits t2.Coefficients = optBits g.Coefficients
+                     && bits t2.Deviance = bits g.Deviance
+                     && t2.Iterations = g.Iterations)
+                    (fun () -> sprintf "Tweedie(2) %A against Gamma %A" t2.Coefficients g.Coefficients)
+            | Error a, Error b -> check (a = b) (fun () -> sprintf "Tweedie(2) refused %A, Gamma %A" a b)
+            | a, b -> Some(sprintf "Tweedie(2) %A against Gamma %A" a b)
+
+        Option.orElse pTwo pOne
+
+    /// The sandwich (Phase 598, D57) on a homoskedastic least-squares fit: with noise of one scale on
+    /// every row, HC0 approaches the classical errors (within a quarter of them over a thousand rows);
+    /// HC1 is HC0 scaled by `√(n / (n − rank))`; and each column's HC0 ≤ HC2 ≤ HC3, every row's
+    /// adjustment dividing by a leverage complement no greater than one.
+    let private sandwichHomoskedastic (d: Draw) =
+        let k = d.Int 1 3
+        let n = 1000
+        let x = Matrix.init n (k + 1) (fun _ j -> if j = 0 then 1.0 else d.Unit())
+        let beta = Array.init (k + 1) (fun _ -> d.Unit())
+
+        let y =
+            Array.init n (fun i ->
+                let mutable acc = 0.0
+
+                for j in 0..k do
+                    acc <- acc + x[i, j] * beta[j]
+
+                acc + d.Unit())
+
+        let ones = Vector.adopt (Array.create n 1.0)
+        let ls = LeastSquares.solve x (Vector.adopt y) |> ok
+        let b = ls.Coefficients |> List.map (Option.defaultValue 0.0) |> List.toArray
+
+        let resid =
+            Array.init n (fun i ->
+                let mutable acc = 0.0
+
+                for j in 0..k do
+                    acc <- acc + x[i, j] * b[j]
+
+                y[i] - acc)
+
+        let rss = resid |> Array.fold (fun acc r -> acc + r * r) 0.0
+
+        let classical =
+            LeastSquares.standardErrors (rss / float (n - k - 1)) ls |> List.map Option.get
+
+        let sandwich v =
+            LeastSquares.robustStandardErrors v x ones (Vector.adopt resid) ls
+            |> ok
+            |> List.map Option.get
+
+        let hc0 = sandwich RobustVariant.HC0
+        let hc1 = sandwich RobustVariant.HC1
+        let hc2 = sandwich RobustVariant.HC2
+        let hc3 = sandwich RobustVariant.HC3
+        let scale = sqrt (float n / float (n - k - 1))
+        let slack (a: float) (b: float) = a <= b * (1.0 + 1e-12)
+
+        check
+            (List.forall2 (fun h c -> abs (h / c - 1.0) <= 0.25) hc0 classical
+             && List.forall2 (fun h1 h0 -> abs (h1 - h0 * scale) <= 1e-12 * h1) hc1 hc0
+             && List.forall2 slack hc0 hc2
+             && List.forall2 slack hc2 hc3)
+            (fun () -> sprintf "HC0 %A, HC2 %A, HC3 %A against the classical %A" hc0 hc2 hc3 classical)
+
+    /// Every refusal and undefined answer Phase 598 adds is answered as stated: a Tweedie power strictly
+    /// between zero and one or not finite, a response outside Tweedie's range for its power, quasi-Poisson
+    /// outside its range and link, the sandwich's shape, weight and residual refusals, HC1 with no
+    /// residual degree of freedom, and HC2 and HC3 at a row of leverage one (where HC0 is defined).
+    let private robustAndTweedieRefusals (d: Draw) =
+        let x, w, o, k = glmDesign d
+        let n = x.Rows
+        let y = counts d n k
+        let yPos = positives d n
+        let at = d.Int 0 (n - 1)
+        let c = GlmControl.defaults
+
+        let withAt (v: Vector<float>) (value: float) =
+            Vector.adopt (Vector.toArray v |> Array.mapi (fun i e -> if i = at then value else e))
+
+        let tweedie p y =
+            Glm.fit (GlmFamily.Tweedie p) GlmLink.Log c x y w o
+
+        let ls = LeastSquares.solve x y |> ok
+        let ones = Vector.adopt (Array.create n 1.0)
+        let short = Vector.adopt (Array.zeroCreate (n - 1))
+
+        let robust v w r =
+            LeastSquares.robustStandardErrors v x w r ls
+
+        // A square design: every row's leverage is one and no residual degree of freedom is left.
+        let p = x.Cols
+        let sq = Matrix.init p p (fun i j -> if i = j then 1.0 else 0.0)
+        let sqY = Vector.adopt (Array.init p (fun i -> float (i + 1)))
+        let sqLs = LeastSquares.solve sq sqY |> ok
+        let sqOnes = Vector.adopt (Array.create p 1.0)
+        let sqZero = Vector.adopt (Array.zeroCreate p)
+
+        let allNone v =
+            LeastSquares.robustStandardErrors v sq sqOnes sqZero sqLs = Ok(List.replicate p None)
+
+        let refusedAsPower (r: Result<GlmFit, LinAlgError>) (isPower: float -> bool) =
+            match r with
+            | Error(LinAlgError.InvalidPower v) -> isPower v
+            | _ -> false
+
+        let expected: (string * bool) list =
+            [ "power half", refusedAsPower (tweedie 0.5 y) (fun v -> v = 0.5)
+              "power nan", refusedAsPower (tweedie nan y) Double.IsNaN
+              "power infinite", refusedAsPower (tweedie Double.PositiveInfinity y) Double.IsPositiveInfinity
+              "power zero admitted",
+              (match tweedie 0.0 yPos with
+               | Error(LinAlgError.InvalidPower _)
+               | Error(LinAlgError.UnsupportedModel _) -> false
+               | _ -> true)
+              "tweedie negative", tweedie 1.5 (withAt y -1.0) = Error(LinAlgError.InvalidResponse at)
+              "tweedie zero at p = 3", tweedie 3.0 (withAt yPos 0.0) = Error(LinAlgError.InvalidResponse at)
+              "quasi-Poisson negative",
+              Glm.fit GlmFamily.QuasiPoisson GlmLink.Log c x (withAt y -1.0) w o = Error(LinAlgError.InvalidResponse at)
+              "quasi-Poisson identity",
+              Glm.fit GlmFamily.QuasiPoisson GlmLink.Identity c x y w o =
+                  Error(LinAlgError.UnsupportedModel("quasiPoisson", "identity"))
+              "robust weights shape",
+              robust RobustVariant.HC3 short y =
+                  Error(
+                      LinAlgError.ShapeMismatch("LeastSquares.robustStandardErrors", x.Dims, { Rows = n - 1; Cols = 1 })
+                  )
+              "robust weight", robust RobustVariant.HC0 (withAt ones -1.0) y = Error(LinAlgError.InvalidWeight at)
+              "robust residual", robust RobustVariant.HC0 ones (withAt y nan) = Error(LinAlgError.NotFinite(at, p))
+              "HC1 no df", allNone RobustVariant.HC1
+              "HC2 leverage one", allNone RobustVariant.HC2
+              "HC3 leverage one", allNone RobustVariant.HC3
+              "HC0 leverage one",
+              LeastSquares.robustStandardErrors RobustVariant.HC0 sq sqOnes sqZero sqLs =
+                  Ok(List.replicate p (Some 0.0)) ]
+
+        match expected |> List.filter (snd >> not) with
+        | [] -> None
+        | failed ->
+            Some(
+                sprintf
+                    "Tweedie and sandwich refusals not answered as stated: %s"
+                    (failed |> List.map fst |> String.concat ", ")
+            )
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "transpose is an involution, byte for byte", transposeInvolution
@@ -1344,5 +1562,9 @@ module LinearAlgebraLaws =
           "a Poisson log-link fit meets its score equations at convergence", poissonScore
           "an offset of c is the intercept shifted by c", offsetShiftsIntercept
           "Gamma working weights are the prior weights, exactly, on every iteration", gammaWeightsArePrior
-          "every Glm refusal is answered as stated", glmRefusals ]
+          "every Glm refusal is answered as stated", glmRefusals
+          "quasi-Poisson iterates as Poisson, byte for byte, its dispersion Pearson's", quasiPoissonIsPoisson
+          "Tweedie at p = 1 agrees with quasi-Poisson, and at p = 2 is Gamma byte for byte", tweedieEndpoints
+          "HC0 on homoskedastic rows approaches the classical errors, and HC0 <= HC2 <= HC3", sandwichHomoskedastic
+          "every Tweedie and sandwich refusal is answered as stated", robustAndTweedieRefusals ]
         |> List.map (fun (name, body) -> name, law seed count body)

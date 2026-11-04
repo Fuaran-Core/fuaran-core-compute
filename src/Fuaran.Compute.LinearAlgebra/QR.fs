@@ -388,6 +388,21 @@ module QR =
 
             PivotedQR(r, List.ofArray perm, p - List.length aliased, aliased))
 
+/// Which heteroskedasticity-consistent ("sandwich") covariance `LeastSquares.robustStandardErrors`
+/// forms (Phase 598, DECISIONS.md D57): `(RᵀR)⁻¹ · Σᵢ ψᵢψᵢᵀ · (RᵀR)⁻¹` with the score
+/// `ψᵢ = wᵢ · rᵢ · xᵢ`, each row's score adjusted by the variant. A caller that asks for robust errors
+/// without naming a variant is given `HC3` (D57).
+[<RequireQualifiedAccess>]
+type RobustVariant =
+    /// White's estimator: each row's score as it stands.
+    | HC0
+    /// HC0 scaled by `n / (n − rank)`.
+    | HC1
+    /// Each row's score divided by `√(1 − hᵢ)`, `hᵢ` the row's hat diagonal.
+    | HC2
+    /// Each row's score divided by `1 − hᵢ`.
+    | HC3
+
 /// A least-squares fit read off a `QRAccumulator` (DECISIONS.md D49 item 11): the coefficients, with
 /// `None` at an aliased column (the `NA` convention of R's `lm`), the residual sum of squares, the
 /// rank and what the covariance needs.
@@ -608,3 +623,145 @@ module LeastSquares =
             se[kept[t]] <- Some(Kernels.canonical (sqrt (phi * c)))
 
         List.ofArray se
+
+    /// The heteroskedasticity-consistent standard errors of `fit` (Phase 598, DECISIONS.md D57), one
+    /// per design column: the square roots of the diagonal of `(RᵀR)⁻¹ · Σᵢ ψᵢψᵢᵀ · (RᵀR)⁻¹` over the
+    /// fit's `R`, with the score `ψᵢ = wᵢ · rᵢ · xᵢ` over the kept columns. `x` is the design the fit
+    /// was folded from, `weights` the weights its rows were scaled by (`√w`) and `residuals` the
+    /// residuals the scores are stated in — for least squares the response residuals `y − ŷ`, for a
+    /// generalised linear model its working weights and working residuals (`Glm.robustStandardErrors`).
+    ///
+    /// One pass over the rows of positive weight, in row order — a zero-weight row is not counted —
+    /// each a fixed sequence: `u = R⁻ᵀxᵢ` (`u[t] = Σₖ R⁻¹[k,t]·xᵢ[k]`, `k` ascending to `t`, from `+0`);
+    /// the hat diagonal `hᵢ = wᵢ · Σₜ u[t]²` (`t` ascending); the score's multiplier `s = wᵢ·rᵢ`, then
+    /// `s / √(1 − hᵢ)` under `HC2` and `s / (1 − hᵢ)` under `HC3`; `v[t] = s · Σₖ R⁻¹[t,k]·u[k]` (`k`
+    /// ascending from `t`), which is `(RᵀR)⁻¹ψᵢ`; and `v[t]²` added to the `t`-th sum. `HC1` multiplies
+    /// each sum by `n / (n − rank)`, `n` the rows of positive weight. The error is the square root.
+    ///
+    /// `None` at an aliased column; everywhere under `HC1` when `n ≤ rank`, and under `HC2` and `HC3`
+    /// when a row's leverage is one or more (`1 − hᵢ ≤ 0`, where the row's adjusted score is `0 / 0`).
+    /// Refused on a shape mismatch, a negative or non-finite weight (`InvalidWeight`), and a non-finite
+    /// design cell or residual at a row of positive weight (`NotFinite (row, column)`, the residual as
+    /// column `cols x`).
+    let robustStandardErrors
+        (variant: RobustVariant)
+        (x: Matrix)
+        (weights: Vector<float>)
+        (residuals: Vector<float>)
+        (fit: LeastSquaresFit)
+        : Result<float option list, LinAlgError> =
+        let rows = x.Rows
+        let cols = fit.Rank + fit.Aliased.Length
+
+        let finite (v: float) =
+            not (System.Double.IsNaN v || System.Double.IsInfinity v)
+
+        if x.Cols <> cols then
+            Error(LinAlgError.ShapeMismatch("LeastSquares.robustStandardErrors", x.Dims, { Rows = cols; Cols = 1 }))
+        elif weights.Length <> rows || residuals.Length <> rows then
+            Error(
+                LinAlgError.ShapeMismatch(
+                    "LeastSquares.robustStandardErrors",
+                    x.Dims,
+                    { Rows =
+                        (if weights.Length <> rows then
+                             weights.Length
+                         else
+                             residuals.Length)
+                      Cols = 1 }
+                )
+            )
+        else
+            let w = Vector.toArray weights
+            let r = Vector.toArray residuals
+            let xs = Matrix.toColumnMajor x
+            let kept = fit.Kept |> List.toArray
+            let m = kept.Length
+            let inv = Matrix.toColumnMajor fit.RInverse
+            let sums = Array.zeroCreate<float> m
+            let u = Array.zeroCreate<float> m
+            let mutable n = 0
+            let mutable undefined = false
+            let mutable refusal = None
+            let mutable i = 0
+
+            while Option.isNone refusal && i < rows do
+                let wi = w[i]
+
+                if not (finite wi) || wi < 0.0 then
+                    refusal <- Some(LinAlgError.InvalidWeight i)
+                elif wi > 0.0 then
+                    let mutable j = 0
+
+                    while Option.isNone refusal && j < cols do
+                        if not (finite xs[j * rows + i]) then
+                            refusal <- Some(LinAlgError.NotFinite(i, j))
+
+                        j <- j + 1
+
+                    if Option.isNone refusal && not (finite r[i]) then
+                        refusal <- Some(LinAlgError.NotFinite(i, cols))
+
+                    if Option.isNone refusal then
+                        n <- n + 1
+
+                        for t in 0 .. m - 1 do
+                            let mutable acc = 0.0
+
+                            for k in 0..t do
+                                acc <- acc + inv[t * m + k] * xs[kept[k] * rows + i]
+
+                            u[t] <- acc
+
+                        let mutable q = 0.0
+
+                        for t in 0 .. m - 1 do
+                            q <- q + u[t] * u[t]
+
+                        let h = wi * q
+                        let s0 = wi * r[i]
+
+                        let s =
+                            match variant with
+                            | RobustVariant.HC0
+                            | RobustVariant.HC1 -> s0
+                            | RobustVariant.HC2
+                            | RobustVariant.HC3 when 1.0 - h <= 0.0 ->
+                                undefined <- true
+                                0.0
+                            | RobustVariant.HC2 -> s0 / sqrt (1.0 - h)
+                            | RobustVariant.HC3 -> s0 / (1.0 - h)
+
+                        for t in 0 .. m - 1 do
+                            let mutable acc = 0.0
+
+                            for k in t .. m - 1 do
+                                acc <- acc + inv[k * m + t] * u[k]
+
+                            let v = s * acc
+                            sums[t] <- sums[t] + v * v
+
+                i <- i + 1
+
+            match refusal with
+            | Some e -> Error e
+            | None ->
+                let se = Array.create cols None
+
+                let scale =
+                    match variant with
+                    | RobustVariant.HC1 -> if n > m then Some(float n / float (n - m)) else None
+                    | _ -> if undefined then None else Some 1.0
+
+                match scale with
+                | None -> ()
+                | Some c ->
+                    for t in 0 .. m - 1 do
+                        let v =
+                            match variant with
+                            | RobustVariant.HC1 -> sums[t] * c
+                            | _ -> sums[t]
+
+                        se[kept[t]] <- Some(Kernels.canonical (sqrt v))
+
+                Ok(List.ofArray se)

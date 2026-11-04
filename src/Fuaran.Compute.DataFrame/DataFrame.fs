@@ -482,16 +482,19 @@ type FnDef =
 
 /// The error distribution a `Fit` assumes (Phase 592, `DECISIONS.md` D5 of the accepted plan): one
 /// verb, the family and the link as data. `Gaussian` under `FitLink.Identity` is ordinary least
-/// squares; `Poisson` and `Gamma` under `FitLink.Log` are generalised linear models fitted by IRLS
-/// through `Fuaran.Compute.LinearAlgebra.Glm` (Phase 595). Every other pairing is typed here so a
-/// pipeline can carry it, and refused by name when the step runs (`EvalError.UnsupportedFit`).
+/// squares; `Poisson` and `Gamma` (Phase 595), `Tweedie` and `QuasiPoisson` (Phase 598) under
+/// `FitLink.Log` are generalised linear models fitted by IRLS through
+/// `Fuaran.Compute.LinearAlgebra.Glm`. Every other pairing is typed here so a pipeline can carry it,
+/// and refused by name when the step runs (`EvalError.UnsupportedFit`).
 [<RequireQualifiedAccess>]
 type FitFamily =
     | Gaussian
     | Poisson
     | Gamma
-    /// The Tweedie family with variance power `power` (`V(μ) = μ^power`).
+    /// The Tweedie family with variance power `power` (`V(μ) = μ^power`): a power strictly between
+    /// zero and one, or not finite, is refused when the step resolves (Phase 598, D57).
     | Tweedie of power: float
+    /// Poisson's mean model and iterations, the dispersion estimated (Phase 598).
     | QuasiPoisson
 
 /// The link function a `Fit` relates the linear predictor to the mean through (Phase 592).
@@ -521,6 +524,26 @@ type FitOutput =
     /// The step's input rows, in order, with a `residual` column appended.
     | Residuals
 
+/// Which standard errors a `Fit` states in its `Coefficients` table's `std_error` and `t` (Phase 598,
+/// `DECISIONS.md` D57): the classical `√(φ · diag((RᵀR)⁻¹))`, or a heteroskedasticity-consistent
+/// ("sandwich") variant, HC0 to HC3.
+[<RequireQualifiedAccess>]
+type FitStdErrors =
+    /// `√(φ · diag((RᵀR)⁻¹))` over the final solve's `R`.
+    | Classical
+    /// White's sandwich: `(RᵀR)⁻¹ · Σ ψᵢψᵢᵀ · (RᵀR)⁻¹`, `ψᵢ` row `i`'s score.
+    | HC0
+    /// HC0 scaled by `n / (n − rank)`.
+    | HC1
+    /// Each score divided by `√(1 − hᵢ)`, `hᵢ` the row's leverage.
+    | HC2
+    /// Each score divided by `1 − hᵢ`.
+    | HC3
+
+    /// The variant a caller that asks for robust standard errors without naming one is given: `HC3`
+    /// (`DECISIONS.md` D57; wire spelling `robust`, which decodes to `hc3`).
+    static member Robust: FitStdErrors = FitStdErrors.HC3
+
 /// A regression a pipeline fits (Phase 592; plan §2.4, `DECISIONS.md` of this phase). The response is
 /// a column; each predictor is a named `ColExpr`, so an interaction is a `Mul` and a polynomial an
 /// integer `Pow`; a string or boolean predictor is a categorical term, one-hot coded against its first
@@ -548,6 +571,9 @@ type FitSpec =
         Link: FitLink
         Control: FitControl
         Output: FitOutput
+        /// The standard errors the `Coefficients` table states (Phase 598): classical unless a
+        /// sandwich variant is named.
+        StdErrors: FitStdErrors
     }
 
 /// Construction and derivations of a `FitSpec` (Phase 592).
@@ -573,7 +599,8 @@ module FitSpec =
           Family = FitFamily.Gaussian
           Link = FitLink.Identity
           Control = defaultControl
-          Output = FitOutput.Coefficients }
+          Output = FitOutput.Coefficients
+          StdErrors = FitStdErrors.Classical }
 
     /// The response the estimation reads: `Cast(FloatType, Col response)`, the evaluator's own cast, so
     /// an int or a decimal response reaches the factorization exactly as a pipeline's `Cast` would hand
@@ -10665,7 +10692,16 @@ module DataFrame =
         | FitLink.Log ->
             { Eta = None
               Sigma = None
-              Deviance = (if spec.Family = FitFamily.Poisson then yUnit else None)
+              // A unit deviance is in `unit(y)^(2 − p)` for a variance power `p` (Poisson's and
+              // quasi-Poisson's `p` is one, Gamma's two): stated where `2 − p` is an integer the
+              // algebra can carry, none otherwise (Phase 598).
+              Deviance =
+                (match spec.Family with
+                 | FitFamily.Poisson
+                 | FitFamily.QuasiPoisson -> yUnit
+                 | FitFamily.Tweedie p when p = System.Math.Floor p && p <> 2.0 && abs p < 1e9 ->
+                     yUnit |> Option.bind (fun u -> unitPower u (2 - int p))
+                 | _ -> None)
               Dispersion = None
               DecimalDeviance = false }
 
@@ -10745,9 +10781,14 @@ module DataFrame =
 
     let internal fitResolve (env: Map<string, Cell>) (spec: FitSpec) : Result<FitResolved, EvalError> =
         match spec.Family, spec.Link with
+        | FitFamily.Tweedie p, FitLink.Log when not (finite p) || (p > 0.0 && p < 1.0) ->
+            // Phase 598 (D57): no Tweedie distribution has a power strictly between zero and one.
+            Error(FitError "fit: the tweedie power is not finite, or lies strictly between 0 and 1")
         | FitFamily.Gaussian, FitLink.Identity
         | FitFamily.Poisson, FitLink.Log
-        | FitFamily.Gamma, FitLink.Log ->
+        | FitFamily.Gamma, FitLink.Log
+        | FitFamily.Tweedie _, FitLink.Log
+        | FitFamily.QuasiPoisson, FitLink.Log ->
             let ridge =
                 match spec.Ridge with
                 | None -> Ok 0.0
@@ -10760,6 +10801,10 @@ module DataFrame =
                         // folds nothing, so it is no penalty under any family.
                         elif l > 0.0 && spec.Family <> FitFamily.Gaussian then
                             Error(FitError "fit: a ridge penalty is fitted under the gaussian family only")
+                        // Phase 598 (D57): the sandwich of a penalised fit is not a covariance this
+                        // version states.
+                        elif l > 0.0 && spec.StdErrors <> FitStdErrors.Classical then
+                            Error(FitError "fit: robust standard errors are not stated for a ridge fit")
                         else
                             Ok l)
 
@@ -10883,6 +10928,7 @@ module DataFrame =
         | LinearAlgebra.LinAlgError.InvalidResponse r -> "a response outside the family at " + string r
         | LinearAlgebra.LinAlgError.Separation r -> "the mean left its range at " + string r
         | LinearAlgebra.LinAlgError.UnsupportedModel(f, l) -> "no fit of the " + f + " family under the " + l + " link"
+        | LinearAlgebra.LinAlgError.InvalidPower _ -> "a tweedie power no tweedie distribution has"
 
     /// One predictor as the bridge codes it.
     type private FitTerm =
@@ -11290,6 +11336,19 @@ module DataFrame =
             Ls: LinearAlgebra.LeastSquaresFit
         }
 
+    /// The sandwich variant a spec's standard errors name, if any (Phase 598, D57).
+    let private fitRobustVariant (e: FitStdErrors) : LinearAlgebra.RobustVariant option =
+        match e with
+        | FitStdErrors.Classical -> None
+        | FitStdErrors.HC0 -> Some LinearAlgebra.RobustVariant.HC0
+        | FitStdErrors.HC1 -> Some LinearAlgebra.RobustVariant.HC1
+        | FitStdErrors.HC2 -> Some LinearAlgebra.RobustVariant.HC2
+        | FitStdErrors.HC3 -> Some LinearAlgebra.RobustVariant.HC3
+
+    /// A group's design over its members, row `t` the member `members[t]`'s design row.
+    let private fitGroupMatrix (d: FitDesign) (members: int[]) : LinearAlgebra.Matrix =
+        LinearAlgebra.Matrix.init members.Length d.P (fun t j -> d.X[members[t] * d.P + j])
+
     /// `t = estimate / std_error` per design column, null where the error is zero or null (D53 item 8).
     let private fitTStats (beta: float option[]) (se: float option[]) : float option[] =
         Array.init beta.Length (fun j ->
@@ -11476,36 +11535,48 @@ module DataFrame =
                     Ok(Float dev, Float nul, dev, nul, fitted |> Array.map Float, resid |> Array.map Float)
 
             devianceAndCells
-            |> Result.map (fun (devCell, nulCell, dev, nul, fittedCells, residCells) ->
+            |> Result.bind (fun (devCell, nulCell, dev, nul, fittedCells, residCells) ->
                 let dispersion = if df > 0 then Some(dev / float df) else None
-                let sigma = dispersion |> Option.map sqrt
 
-                let se =
-                    match dispersion with
-                    | Some phi -> LinearAlgebra.LeastSquares.standardErrors phi ls |> List.toArray
-                    | None -> Array.create p None
+                // Phase 598 (D57): the sandwich over the group's rows, the scores `w·(y − ŷ)·x` in
+                // member order; otherwise the classical errors.
+                let stdErrors =
+                    match fitRobustVariant spec.StdErrors with
+                    | Some variant ->
+                        LinearAlgebra.LeastSquares.robustStandardErrors
+                            variant
+                            (fitGroupMatrix d members)
+                            (Vector.adopt (Array.init m (fun t -> d.W[members[t]])))
+                            (Vector.adopt (Array.init m (fun t -> d.Y[members[t]] - fitted[t])))
+                            ls
+                        |> Result.map List.toArray
+                        |> Result.mapError (fun e -> FitError("fit: " + linAlgText e))
+                    | None ->
+                        match dispersion with
+                        | Some phi -> Ok(LinearAlgebra.LeastSquares.standardErrors phi ls |> List.toArray)
+                        | None -> Ok(Array.create p None)
 
-                let tStat = fitTStats beta se
-
-                { Estimates = beta
-                  StdErrors = se
-                  T = tStat
-                  N = n
-                  Rank = rank
-                  Df = df
-                  Sigma = sigma
-                  Dispersion = dispersion
-                  R2 =
-                    (if sw > 0.0 && nul > 0.0 then
-                         Some(1.0 - dev / nul)
-                     else
-                         None)
-                  Deviance = devCell
-                  NullDeviance = nulCell
-                  Fitted = fittedCells
-                  Residuals = residCells
-                  Iterations = 1
-                  Ls = ls }))
+                stdErrors
+                |> Result.map (fun se ->
+                    { Estimates = beta
+                      StdErrors = se
+                      T = fitTStats beta se
+                      N = n
+                      Rank = rank
+                      Df = df
+                      Sigma = dispersion |> Option.map sqrt
+                      Dispersion = dispersion
+                      R2 =
+                        (if sw > 0.0 && nul > 0.0 then
+                             Some(1.0 - dev / nul)
+                         else
+                             None)
+                      Deviance = devCell
+                      NullDeviance = nulCell
+                      Fitted = fittedCells
+                      Residuals = residCells
+                      Iterations = 1
+                      Ls = ls })))
 
     /// One group's generalised linear model (Phase 595): `LinearAlgebra.Glm.fit` over the group's rows
     /// in member order — the design, the estimation response, the prior weights and the offset as the
@@ -11522,8 +11593,7 @@ module DataFrame =
         (members: int[])
         : Result<FitGroup, EvalError> =
         let m = members.Length
-        let p = d.P
-        let x = LinearAlgebra.Matrix.init m p (fun t j -> d.X[members[t] * p + j])
+        let x = fitGroupMatrix d members
 
         let column (a: float[]) =
             Vector.adopt (Array.init m (fun t -> a[members[t]]))
@@ -11536,7 +11606,9 @@ module DataFrame =
             match spec.Family with
             | FitFamily.Poisson -> LinearAlgebra.GlmFamily.Poisson
             | FitFamily.Gamma -> LinearAlgebra.GlmFamily.Gamma
-            | _ -> LinearAlgebra.GlmFamily.Gaussian
+            | FitFamily.Tweedie p -> LinearAlgebra.GlmFamily.Tweedie p
+            | FitFamily.QuasiPoisson -> LinearAlgebra.GlmFamily.QuasiPoisson
+            | FitFamily.Gaussian -> LinearAlgebra.GlmFamily.Gaussian
 
         let link =
             match spec.Link with
@@ -11560,9 +11632,15 @@ module DataFrame =
             LinearAlgebra.Glm.fit family link control x y w o
             |> Result.bind (fun g ->
                 LinearAlgebra.Glm.nullDeviance family link control spec.Intercept y w o
-                |> Result.map (fun nul -> g, nul))
+                |> Result.bind (fun nul ->
+                    // Phase 598 (D57): the sandwich in the fit's working weights and residuals.
+                    match fitRobustVariant spec.StdErrors with
+                    | Some variant ->
+                        LinearAlgebra.Glm.robustStandardErrors variant x g
+                        |> Result.map (fun se -> g, nul, List.toArray se)
+                    | None -> Ok(g, nul, List.toArray g.StdErrors)))
             |> Result.mapError refuse
-            |> Result.bind (fun (g, nul) ->
+            |> Result.bind (fun (g, nul, se) ->
                 let mu = Vector.toArray g.Fitted
                 let fail (what: string) = FitError("fit: " + what)
 
@@ -11606,7 +11684,6 @@ module DataFrame =
                         sw <- sw + v
 
                     let beta = g.Coefficients |> List.toArray
-                    let se = g.StdErrors |> List.toArray
 
                     { Estimates = beta
                       StdErrors = se
@@ -12427,6 +12504,10 @@ module DataFrame =
         : Result<Frame, EvalError> =
         match predictColumns spec |> List.tryFind (fun c -> Option.isSome (colIndex f.Cols c)) with
         | Some c -> Error(predictError ("the input already has a column '" + c + "'"))
+        // Phase 598 (D57): a prediction's standard errors are the classical ones read off `R`; a model
+        // whose spec names a sandwich is refused rather than answered with errors it did not ask for.
+        | None when spec.Fit.StdErrors <> FitStdErrors.Classical ->
+            Error(predictError "the model's standard errors are robust; predict states classical errors only")
         | None ->
             predictInterval env spec
             |> Result.bind (fun interval ->
@@ -15096,7 +15177,14 @@ module DataFrameCodec =
             | _ -> [])
          @ (spec.Weights |> Option.map (fun w -> "weights", JStr w) |> Option.toList)
          @ (spec.Offset |> Option.map (fun e -> "offset", encodeExpr e) |> Option.toList)
-         @ (spec.Ridge |> Option.map (fun r -> "ridge", slotJson JFloat r) |> Option.toList))
+         @ (spec.Ridge |> Option.map (fun r -> "ridge", slotJson JFloat r) |> Option.toList)
+         // Phase 598 (D57): `stdErrors` only where the spec names a sandwich variant.
+         @ (match spec.StdErrors with
+            | FitStdErrors.Classical -> []
+            | FitStdErrors.HC0 -> [ "stdErrors", JStr "hc0" ]
+            | FitStdErrors.HC1 -> [ "stdErrors", JStr "hc1" ]
+            | FitStdErrors.HC2 -> [ "stdErrors", JStr "hc2" ]
+            | FitStdErrors.HC3 -> [ "stdErrors", JStr "hc3" ]))
 
     let encodeTransform (t: Transform) : JVal =
         match t with
@@ -15161,7 +15249,8 @@ module DataFrameCodec =
                   "params", JArr(fd.Params |> List.map paramJson)
                   "body", encodeExpr fd.Body ]
         // Phase 592 (D53): every member is emitted; `power` only for a Tweedie family, and `weights`,
-        // `offset` and `ridge` only where the spec carries them.
+        // `offset` and `ridge` only where the spec carries them; `stdErrors` (Phase 598) only where it
+        // is not classical.
         | Fit spec -> Canonical.typed "fit" (fitFields spec)
         // Phase 597 (D56): the model's spec as the fit step's members, the model's source, the scale,
         // and `interval` only where the spec carries one.
@@ -15228,8 +15317,10 @@ module DataFrameCodec =
         | JBool b -> Ok b
         | _ -> Error(MalformedShape "expected boolean")
 
-    /// A fit step's spec (Phase 592, D53). Every member but `weights`, `offset`, `ridge` and `power` is
-    /// required; `power` is required for, and only read with, a Tweedie family.
+    /// A fit step's spec (Phase 592, D53). Every member but `weights`, `offset`, `ridge`, `power` and
+    /// `stdErrors` is required; `power` is required for, and only read with, a Tweedie family.
+    /// `stdErrors` (Phase 598, D57) is `classical`, `hc0` to `hc3`, or `robust` — the default variant,
+    /// `hc3` — and classical where absent.
     let private fitSpecOf (el: JVal) : Result<FitSpec, ColumnError> =
         let tag (table: (string * 'a) list) (s: string) : Result<'a, ColumnError> =
             match table |> List.tryFind (fun (t, _) -> t = s) with
@@ -15305,18 +15396,34 @@ module DataFrameCodec =
                                             optional "offset" decodeExpr
                                             |> Result.bind (fun offset ->
                                                 optional "ridge" (slotOf floatOf "fit ridge")
-                                                |> Result.map (fun ridge ->
-                                                    { Response = response
-                                                      Predictors = predictors
-                                                      Intercept = intercept
-                                                      GroupBy = groupBy
-                                                      Weights = weights
-                                                      Offset = offset
-                                                      Ridge = ridge
-                                                      Family = family
-                                                      Link = link
-                                                      Control = control
-                                                      Output = output })))))))))))
+                                                |> Result.bind (fun ridge ->
+                                                    optional
+                                                        "stdErrors"
+                                                        (strOf
+                                                         >> Result.bind (
+                                                             tag
+                                                                 [ "classical", FitStdErrors.Classical
+                                                                   "hc0", FitStdErrors.HC0
+                                                                   "hc1", FitStdErrors.HC1
+                                                                   "hc2", FitStdErrors.HC2
+                                                                   "hc3", FitStdErrors.HC3
+                                                                   "robust", FitStdErrors.Robust ]
+                                                         ))
+                                                    |> Result.map (fun stdErrors ->
+                                                        { Response = response
+                                                          Predictors = predictors
+                                                          Intercept = intercept
+                                                          GroupBy = groupBy
+                                                          Weights = weights
+                                                          Offset = offset
+                                                          Ridge = ridge
+                                                          Family = family
+                                                          Link = link
+                                                          Control = control
+                                                          Output = output
+                                                          StdErrors =
+                                                            stdErrors
+                                                            |> Option.defaultValue FitStdErrors.Classical }))))))))))))
 
     /// A predict step's spec (Phase 597, D56): `fit` (a fit step's members), `model`, `scale` and an
     /// optional `interval`.

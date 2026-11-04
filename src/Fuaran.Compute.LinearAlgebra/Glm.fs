@@ -3,8 +3,8 @@ namespace Fuaran.Compute.LinearAlgebra
 open Fuaran.Core
 
 /// The error distribution a generalised linear model assumes (Phase 595, DECISIONS.md D49 items 14 to
-/// 19 and this phase's entry). `Gaussian` under `GlmLink.Identity` is weighted least squares; `Poisson`
-/// and `Gamma` are fitted under `GlmLink.Log`.
+/// 19 and D55; Phase 598, D57). `Gaussian` under `GlmLink.Identity` is weighted least squares; every
+/// other family is fitted under `GlmLink.Log`.
 [<RequireQualifiedAccess>]
 type GlmFamily =
     /// Variance `V(μ) = 1`.
@@ -13,6 +13,12 @@ type GlmFamily =
     | Poisson
     /// Variance `V(μ) = μ²`, dispersion estimated by Pearson's statistic.
     | Gamma
+    /// Variance `V(μ) = μ^power` (Phase 598), dispersion estimated by Pearson's statistic. A power
+    /// strictly between zero and one, or not finite, is refused (`LinAlgError.InvalidPower`).
+    | Tweedie of power: float
+    /// Poisson's mean model and iterations (`V(μ) = μ`), the dispersion estimated by Pearson's statistic
+    /// rather than fixed at one (Phase 598).
+    | QuasiPoisson
 
 /// The link a generalised linear model relates the linear predictor `η` to the mean through.
 [<RequireQualifiedAccess>]
@@ -66,7 +72,9 @@ type GlmFit
         deviance: float,
         dispersion: float option,
         iterations: int,
-        last: LeastSquaresFit
+        last: LeastSquaresFit,
+        workingWeights: Vector<float>,
+        workingResiduals: Vector<float>
     ) =
 
     /// One coefficient per design column, in column order; `None` at a column the final iteration's
@@ -87,7 +95,8 @@ type GlmFit
     member _.Deviance: float = deviance
 
     /// The dispersion `φ`: one for Poisson; Pearson's statistic over the residual degrees of freedom
-    /// for Gamma, and the deviance over them for Gaussian; `None` where those are zero.
+    /// for Gamma, quasi-Poisson and Tweedie (`Σ w·(y − μ)²/V(μ)`), and the deviance over them for
+    /// Gaussian; `None` where those are zero.
     member _.Dispersion: float option = dispersion
 
     /// The iterations run; one for Gaussian under Identity.
@@ -105,6 +114,15 @@ type GlmFit
     /// The final iteration's weighted least-squares fit: its `R`, `R⁻¹` and aliased columns.
     member _.LeastSquares: LeastSquaresFit = last
 
+    /// The working weights the final iteration's solve was folded under (Phase 598): the prior weights
+    /// under Gaussian, `w · μ²/V(μ)` at the mean the final iteration started from under the log link —
+    /// R's `weights(fit, "working")`.
+    member _.WorkingWeights: Vector<float> = workingWeights
+
+    /// The working residuals at the final mean (Phase 598): `y − μ` under the identity link,
+    /// `(y − μ)/μ` under the log link — R's `residuals(fit, "working")`.
+    member _.WorkingResiduals: Vector<float> = workingResiduals
+
 /// Generalised linear models by iteratively reweighted least squares over the streaming Givens QR
 /// (Phase 595, DECISIONS.md D49 items 14 to 19). Every step is a pinned operation — `+ − × ÷ √`,
 /// `Elementary.exp` and `Elementary.ln` — in one stated order, so the coefficients, the iteration count
@@ -117,6 +135,8 @@ module Glm =
         | GlmFamily.Gaussian -> "gaussian"
         | GlmFamily.Poisson -> "poisson"
         | GlmFamily.Gamma -> "gamma"
+        | GlmFamily.Tweedie _ -> "tweedie"
+        | GlmFamily.QuasiPoisson -> "quasiPoisson"
 
     let private linkText (l: GlmLink) : string =
         match l with
@@ -131,29 +151,55 @@ module Glm =
         match family, link with
         | GlmFamily.Gaussian, GlmLink.Identity
         | GlmFamily.Poisson, GlmLink.Log
-        | GlmFamily.Gamma, GlmLink.Log -> true
+        | GlmFamily.Gamma, GlmLink.Log
+        | GlmFamily.Tweedie _, GlmLink.Log
+        | GlmFamily.QuasiPoisson, GlmLink.Log -> true
         | _ -> false
 
-    /// A response the family admits (D49 item 15): finite; not negative under Poisson; positive under
-    /// Gamma.
+    /// A Tweedie power some Tweedie distribution has: finite, and not strictly between zero and one
+    /// (Phase 598).
+    let private invalidPower (family: GlmFamily) : float option =
+        match family with
+        | GlmFamily.Tweedie p when not (finite p) || (p > 0.0 && p < 1.0) -> Some p
+        | _ -> None
+
+    /// A response the family admits (D49 item 15; Phase 598): finite; not negative under Poisson and
+    /// quasi-Poisson; positive under Gamma; under Tweedie, positive at a power of two or more and not
+    /// negative below it (the log link's start `ln μ₀` needs `μ₀ > 0`, and `y^(2 − p)` is infinite at
+    /// `y = 0` once `p > 2`).
     let private admits (family: GlmFamily) (y: float) : bool =
         finite y
         && (match family with
             | GlmFamily.Gaussian -> true
-            | GlmFamily.Poisson -> y >= 0.0
-            | GlmFamily.Gamma -> y > 0.0)
+            | GlmFamily.Poisson
+            | GlmFamily.QuasiPoisson -> y >= 0.0
+            | GlmFamily.Gamma -> y > 0.0
+            | GlmFamily.Tweedie p -> if p >= 2.0 then y > 0.0 else y >= 0.0)
 
-    /// One row's unit deviance (D49 item 18): Gaussian `(y − μ)²`; Poisson `2 (y·ln(y/μ) − (y − μ))`
-    /// with `y·ln(y/μ)` pinned to zero at `y = 0`; Gamma `2 (−ln(y/μ) + (y − μ)/μ)`.
-    let internal unitDeviance (family: GlmFamily) (y: float) (mu: float) : float =
+    /// One row's unit deviance (D49 item 18; Phase 598, D57): Gaussian `(y − μ)²`; Poisson and
+    /// quasi-Poisson `2 (y·ln(y/μ) − (y − μ))` with `y·ln(y/μ)` pinned to zero at `y = 0`; Gamma
+    /// `2 (−ln(y/μ) + (y − μ)/μ)`; Tweedie at `p = 1` Poisson's and at `p = 2` Gamma's, and otherwise
+    /// `2 (y·(y₁^(1−p) − μ^(1−p))/(1 − p) − (y^(2−p) − μ^(2−p))/(2 − p))` with `y₁ = y`, or `1` at
+    /// `y = 0` (R's `statmod::tweedie`), every power through `Elementary.pow`.
+    let rec internal unitDeviance (family: GlmFamily) (y: float) (mu: float) : float =
         match family with
         | GlmFamily.Gaussian ->
             let r = y - mu
             r * r
-        | GlmFamily.Poisson ->
+        | GlmFamily.Poisson
+        | GlmFamily.QuasiPoisson ->
             let term = if y = 0.0 then 0.0 else y * Elementary.ln (y / mu)
             2.0 * (term - (y - mu))
         | GlmFamily.Gamma -> 2.0 * (-(Elementary.ln (y / mu)) + (y - mu) / mu)
+        | GlmFamily.Tweedie p when p = 1.0 -> unitDeviance GlmFamily.Poisson y mu
+        | GlmFamily.Tweedie p when p = 2.0 -> unitDeviance GlmFamily.Gamma y mu
+        | GlmFamily.Tweedie p ->
+            let y1 = if y = 0.0 then 1.0 else y
+            let a = 1.0 - p
+            let b = 2.0 - p
+            let theta = (Elementary.pow y1 a - Elementary.pow mu a) / a
+            let kappa = (Elementary.pow y b - Elementary.pow mu b) / b
+            2.0 * (y * theta - kappa)
 
     /// The first row whose mean leaves the link's range — not finite, or not positive under the log
     /// link — or, at a row of positive weight, whose unit deviance is not finite.
@@ -253,33 +299,36 @@ module Glm =
         elif not (supported family link) then
             Error(LinAlgError.UnsupportedModel(familyText family, linkText link))
         else
-            match firstIndex (fun v -> not (finite v) || v < 0.0) w with
-            | Some r -> Error(LinAlgError.InvalidWeight r)
+            match invalidPower family with
+            | Some p -> Error(LinAlgError.InvalidPower p)
             | None ->
-                match firstIndex (fun v -> not (admits family v)) y with
-                | Some r -> Error(LinAlgError.InvalidResponse r)
+                match firstIndex (fun v -> not (finite v) || v < 0.0) w with
+                | Some r -> Error(LinAlgError.InvalidWeight r)
                 | None ->
-                    let xs = Matrix.toColumnMajor x
-                    let mutable bad = None
-                    let mutable i = 0
-
-                    while Option.isNone bad && i < n do
-                        let mutable j = 0
-
-                        while Option.isNone bad && j < x.Cols do
-                            if not (finite xs[j * n + i]) then
-                                bad <- Some(LinAlgError.NotFinite(i, j))
-
-                            j <- j + 1
-
-                        i <- i + 1
-
-                    match bad with
-                    | Some e -> Error e
+                    match firstIndex (fun v -> not (admits family v)) y with
+                    | Some r -> Error(LinAlgError.InvalidResponse r)
                     | None ->
-                        match firstIndex (fun v -> not (finite v)) o with
-                        | Some r -> Error(LinAlgError.NotFinite(r, x.Cols))
-                        | None -> Ok()
+                        let xs = Matrix.toColumnMajor x
+                        let mutable bad = None
+                        let mutable i = 0
+
+                        while Option.isNone bad && i < n do
+                            let mutable j = 0
+
+                            while Option.isNone bad && j < x.Cols do
+                                if not (finite xs[j * n + i]) then
+                                    bad <- Some(LinAlgError.NotFinite(i, j))
+
+                                j <- j + 1
+
+                            i <- i + 1
+
+                        match bad with
+                        | Some e -> Error e
+                        | None ->
+                            match firstIndex (fun v -> not (finite v)) o with
+                            | Some r -> Error(LinAlgError.NotFinite(r, x.Cols))
+                            | None -> Ok()
 
     /// The standard errors over a solve's `R` under dispersion `phi` (D53 item 8).
     let private standardErrors (phi: float option) (ls: LeastSquaresFit) (p: int) : float option list =
@@ -309,27 +358,52 @@ module Glm =
             let p = x.Cols
             let xs = Matrix.toColumnMajor x
 
-            let finish (beta: float option[]) (eta: float[]) (mu: float[]) (dev: float) (iterations: int) ls =
+            let finish
+                (beta: float option[])
+                (eta: float[])
+                (mu: float[])
+                (dev: float)
+                (iterations: int)
+                (ww: float[])
+                ls
+                =
                 let df = max 0 ((ls: LeastSquaresFit).Count - ls.Rank)
+
+                // Pearson's statistic over the rows of positive weight, in row order, from `+0`, over
+                // the residual degrees of freedom; null where those are zero.
+                let pearson (term: int -> float) =
+                    if df > 0 then
+                        let mutable acc = 0.0
+
+                        for i in 0 .. n - 1 do
+                            if w[i] > 0.0 then
+                                acc <- acc + term i
+
+                        Some(acc / float df)
+                    else
+                        None
+
+                // `w·(y − μ)²/V(μ)`, `V` the variance function.
+                let pearsonTerm (variance: float -> float) (i: int) =
+                    let d = ya[i] - mu[i]
+                    w[i] * (d * d / variance mu[i])
 
                 let phi =
                     match family with
                     | GlmFamily.Poisson -> Some 1.0
                     | GlmFamily.Gaussian -> if df > 0 then Some(dev / float df) else None
                     | GlmFamily.Gamma ->
-                        if df > 0 then
-                            // Pearson's statistic: Σ w·r² over the rows of positive weight, r = (y − μ)/μ
-                            // the working residual of the log link.
-                            let mutable acc = 0.0
+                        // Σ w·r², r = (y − μ)/μ the working residual of the log link.
+                        pearson (fun i ->
+                            let r = (ya[i] - mu[i]) / mu[i]
+                            w[i] * (r * r))
+                    | GlmFamily.QuasiPoisson -> pearson (pearsonTerm id)
+                    | GlmFamily.Tweedie p -> pearson (pearsonTerm (fun m -> Elementary.pow m p))
 
-                            for i in 0 .. n - 1 do
-                                if w[i] > 0.0 then
-                                    let r = (ya[i] - mu[i]) / mu[i]
-                                    acc <- acc + w[i] * (r * r)
-
-                            Some(acc / float df)
-                        else
-                            None
+                let residuals =
+                    match link with
+                    | GlmLink.Identity -> Array.init n (fun i -> ya[i] - mu[i])
+                    | GlmLink.Log -> Array.init n (fun i -> (ya[i] - mu[i]) / mu[i])
 
                 GlmFit(
                     List.ofArray beta |> List.map (Option.map Kernels.canonical),
@@ -339,7 +413,9 @@ module Glm =
                     Kernels.canonical dev,
                     phi |> Option.map Kernels.canonical,
                     iterations,
-                    ls
+                    ls,
+                    Kernels.adopt (Array.copy ww),
+                    Kernels.adopt residuals
                 )
 
             match family, link with
@@ -354,13 +430,16 @@ module Glm =
                     let beta = ls.Coefficients |> List.toArray
                     let eta = predictor xs n beta o
                     let mu = eta |> Array.map (inverseLink link)
-                    finish beta eta mu (deviance family ya w mu) 1 ls)
+                    finish beta eta mu (deviance family ya w mu) 1 w ls)
             | _ ->
-                // D49 item 14: μ₀ = y + 0.1 for Poisson, y for Gamma; η₀ = ln μ₀; the deviance of μ₀ is
-                // the first iteration's previous deviance.
+                // D49 item 14: μ₀ = y + 0.1 for Poisson and quasi-Poisson, y for Gamma, and for Tweedie
+                // y with 0.1 in place of a zero (R's `statmod::tweedie`, Phase 598); η₀ = ln μ₀; the
+                // deviance of μ₀ is the first iteration's previous deviance.
                 let mu0 =
                     match family with
-                    | GlmFamily.Poisson -> ya |> Array.map (fun v -> v + 0.1)
+                    | GlmFamily.Poisson
+                    | GlmFamily.QuasiPoisson -> ya |> Array.map (fun v -> v + 0.1)
+                    | GlmFamily.Tweedie _ -> ya |> Array.map (fun v -> if v = 0.0 then 0.1 else v)
                     | _ -> Array.copy ya
 
                 let eta0 = mu0 |> Array.map Elementary.ln
@@ -378,12 +457,15 @@ module Glm =
                     (devPrev: float)
                     : Result<GlmFit, LinAlgError> =
                     // The working response and weight of the log link: z = (η − offset) + (y − μ)/μ, and
-                    // w·μ²/V(μ) — w·μ under Poisson, exactly the prior weight under Gamma.
+                    // w·μ²/V(μ) — w·μ under Poisson and quasi-Poisson, exactly the prior weight under
+                    // Gamma, w·μ^(2−p) under Tweedie (`Elementary.pow`, exact at p = 1 and p = 2).
                     let z = Array.init n (fun i -> (eta[i] - o[i]) + (ya[i] - mu[i]) / mu[i])
 
                     let ww =
                         match family with
-                        | GlmFamily.Poisson -> Array.init n (fun i -> w[i] * mu[i])
+                        | GlmFamily.Poisson
+                        | GlmFamily.QuasiPoisson -> Array.init n (fun i -> w[i] * mu[i])
+                        | GlmFamily.Tweedie p -> Array.init n (fun i -> w[i] * Elementary.pow mu[i] (2.0 - p))
                         | _ -> Array.copy w
 
                     observe iteration ww
@@ -444,7 +526,7 @@ module Glm =
                         |> Result.bind (fun (beta, eta', mu', dev) ->
                             // D49 item 17, in that order, the comparison strict.
                             if abs (dev - devPrev) / (abs dev + 0.1) < control.Tol then
-                                Ok(finish beta eta' mu' dev iteration ls)
+                                Ok(finish beta eta' mu' dev iteration ww ls)
                             elif iteration >= control.MaxIter then
                                 Error(LinAlgError.NotConverged iteration)
                             else
@@ -458,13 +540,17 @@ module Glm =
     /// `Gaussian` under `Identity` is one weighted least-squares solve of `y − offset` — the same fold as
     /// `QRAccumulator.addRows` into an empty accumulator and `LeastSquares.ofAccumulator`, byte for byte
     /// — and reports one iteration. `Poisson` and `Gamma` under `Log` iterate from `μ₀ = y + 0.1` and
-    /// `μ₀ = y`, solving for `z = (η − offset) + (y − μ)/μ` under working weights `w·μ` and `w`, halving
+    /// `μ₀ = y`, solving for `z = (η − offset) + (y − μ)/μ` under working weights `w·μ` and `w`; under
+    /// `Log` too, `QuasiPoisson` iterates exactly as `Poisson` (its coefficients are Poisson's, bit for
+    /// bit) and `Tweedie p` from `μ₀ = y` (`0.1` at a zero) under working weights `w·μ^(2−p)` (Phase
+    /// 598, D57); each of the three estimates its dispersion by Pearson's statistic. Each family halves
     /// a step at most ten times on a mean out of range or a deviance rise the stopping rule would see
     /// (`(dev − dev_prev) / (|dev| + 0.1) ≥ tol`, from the second iteration),
     /// and stop when `|dev − dev_prev| / (|dev| + 0.1) < tol`.
     ///
     /// Refused before any iteration, each naming the first offending row: a shape mismatch, a pairing
-    /// not fitted (`UnsupportedModel`), a negative or non-finite weight (`InvalidWeight`), a response
+    /// not fitted (`UnsupportedModel`), a Tweedie power strictly between zero and one or not finite
+    /// (`InvalidPower`), a negative or non-finite weight (`InvalidWeight`), a response
     /// outside the family (`InvalidResponse`), a non-finite design cell (`NotFinite (row, column)`) or
     /// offset (`NotFinite (row, cols x)`). Refused while iterating: a mean no halving brings into range
     /// (`Separation`), a deviance no halving brings down, or no convergence by `MaxIter`
@@ -529,3 +615,15 @@ module Glm =
                 | GlmLink.Log ->
                     fit family link control ones y weights offset
                     |> Result.map (fun f -> f.Deviance))
+
+    /// The heteroskedasticity-consistent standard errors of `fit` (Phase 598, DECISIONS.md D57): the
+    /// sandwich `LeastSquares.robustStandardErrors` forms over the final iteration's `R`, with the
+    /// scores stated in the fit's working weights and working residuals — R's `sandwich::vcovHC` on a
+    /// `glm`, which is free of the dispersion. `x` is the design `fit` was fitted on; refused as
+    /// `robustStandardErrors` refuses.
+    let robustStandardErrors
+        (variant: RobustVariant)
+        (x: Matrix)
+        (fit: GlmFit)
+        : Result<float option list, LinAlgError> =
+        LeastSquares.robustStandardErrors variant x fit.WorkingWeights fit.WorkingResiduals fit.LeastSquares

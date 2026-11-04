@@ -49,6 +49,9 @@ type LinAlgError =
     | Separation of row: int
     /// A family and link this package does not fit (Phase 595), each by its spelling.
     | UnsupportedModel of family: string * link: string
+    /// A Tweedie variance power no Tweedie distribution has — strictly between zero and one — or a NaN
+    /// or an infinity (Phase 598); the power.
+    | InvalidPower of power: float
 
 /// How exact an operation's bytes are across hosts — the vocabulary `SchemaWalk` reads a column's
 /// lineage in (DECISIONS.md D43): `Pinned`, every conformant host computes the same bits; `HostRounded`,

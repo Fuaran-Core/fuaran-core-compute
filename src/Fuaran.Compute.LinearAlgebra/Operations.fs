@@ -53,6 +53,7 @@ module Operations =
           "LeastSquares.solve", Exactness.Pinned
           "LeastSquares.requireFullRank", Exactness.Pinned
           "LeastSquares.standardErrors", Exactness.Pinned
+          "LeastSquares.robustStandardErrors", Exactness.Pinned
           "LinAlgWire.matrixToJson", Exactness.Pinned
           "LinAlgWire.matrixOfJson", Exactness.Pinned
           "LinAlgWire.encodeMatrix", Exactness.Pinned
@@ -70,7 +71,8 @@ module Operations =
           "Elementary.pow", Exactness.Pinned
           "GlmControl.create", Exactness.Pinned
           "Glm.fit", Exactness.Pinned
-          "Glm.nullDeviance", Exactness.Pinned ]
+          "Glm.nullDeviance", Exactness.Pinned
+          "Glm.robustStandardErrors", Exactness.Pinned ]
 
     /// The class of one operation, or `None` for a name this package does not publish.
     let exactnessOf (operation: string) : Exactness option =

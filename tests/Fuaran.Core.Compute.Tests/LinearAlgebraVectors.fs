@@ -103,6 +103,8 @@ module LinearAlgebraVectors =
                 [ "case", CorpusFile.str "unsupportedModel"
                   "family", CorpusFile.str family
                   "link", CorpusFile.str link ]
+        | LinAlgError.InvalidPower p ->
+            CorpusCell.Row [ "case", CorpusFile.str "invalidPower"; "power", CorpusFile.str (hex p) ]
 
     let private okCell (value: CorpusCell) : CorpusCell =
         CorpusCell.Row [ "verdict", CorpusFile.str "ok"; "value", value ]

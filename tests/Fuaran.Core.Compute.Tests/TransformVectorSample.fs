@@ -259,6 +259,28 @@ module TransformVectorSample =
           "predict-missing-term-refused"
           "predict-unknown-group-refused" ]
 
+    /// The family and standard-error shapes (Phase 598, `DECISIONS.md` D57), over the fit table: quasi-Poisson's
+    /// grouped summary, carrying its Pearson dispersion; Tweedie at p = 1.5 over the coefficients and over a
+    /// weighted summary; least squares with each sandwich variant HC0 to HC3 (unweighted, grouped, weighted
+    /// with a zero weight, and over a categorical term); Poisson and Tweedie coefficient tables with robust
+    /// errors; and the four refusals by name — a Tweedie power between zero and one, a response outside
+    /// Tweedie's range for its power, robust errors beside a ridge penalty, and a prediction from a model
+    /// whose errors are robust.
+    let private fitFamilyShapeNames =
+        [ "fit-quasipoisson-summary"
+          "fit-tweedie"
+          "fit-tweedie-weighted-summary"
+          "fit-ols-hc0"
+          "fit-ols-hc1-grouped"
+          "fit-ols-hc2-weighted"
+          "fit-ols-hc3-categorical"
+          "fit-poisson-hc3"
+          "fit-tweedie-hc1"
+          "fit-tweedie-power-refused"
+          "fit-tweedie-response-refused"
+          "fit-robust-ridge-refused"
+          "predict-robust-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
         decimalShapeNames
@@ -272,6 +294,7 @@ module TransformVectorSample =
         @ functionShapeNames
         @ fitShapeNames
         @ predictShapeNames
+        @ fitFamilyShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -839,6 +862,10 @@ module TransformVectorSample =
             { poisson with
                 Family = FitFamily.Gamma }
 
+        let tweedie =
+            { poisson with
+                Family = FitFamily.Tweedie 1.5 }
+
         match shape with
         | "fit-ols" -> [ Fit ols ]
         | "fit-grouped-summary" ->
@@ -923,6 +950,56 @@ module TransformVectorSample =
                           { MaxIter = Slot.Lit 2
                             Tol = Slot.Lit 1e-8 } } ]
         | "fit-nonfinite-refused" -> [ Fit(FitSpec.ols "y" [ "huge", Binary(Mul, x, Lit(Float 1e308)) ]) ]
+        // Phase 598 (D57): the families and the sandwich.
+        | "fit-quasipoisson-summary" ->
+            [ Fit
+                  { poisson with
+                      Family = FitFamily.QuasiPoisson
+                      GroupBy = [ "g" ]
+                      Output = FitOutput.Summary } ]
+        | "fit-tweedie" -> [ Fit tweedie ]
+        | "fit-tweedie-weighted-summary" ->
+            [ Fit
+                  { tweedie with
+                      Weights = Some "w"
+                      Output = FitOutput.Summary } ]
+        | "fit-ols-hc0" ->
+            [ Fit
+                  { ols with
+                      StdErrors = FitStdErrors.HC0 } ]
+        | "fit-ols-hc1-grouped" ->
+            [ Fit
+                  { ols with
+                      GroupBy = [ "g" ]
+                      StdErrors = FitStdErrors.HC1 } ]
+        | "fit-ols-hc2-weighted" ->
+            [ Fit
+                  { ols with
+                      Weights = Some "w"
+                      StdErrors = FitStdErrors.HC2 } ]
+        | "fit-ols-hc3-categorical" ->
+            [ Fit
+                  { FitSpec.ols "y" [ "x", x; "c", Col "c" ] with
+                      StdErrors = FitStdErrors.HC3 } ]
+        | "fit-poisson-hc3" ->
+            [ Fit
+                  { poisson with
+                      StdErrors = FitStdErrors.HC3 } ]
+        | "fit-tweedie-hc1" ->
+            [ Fit
+                  { tweedie with
+                      Predictors = [ "x", x; "c", Col "c" ]
+                      StdErrors = FitStdErrors.HC1 } ]
+        | "fit-tweedie-power-refused" ->
+            [ Fit
+                  { tweedie with
+                      Family = FitFamily.Tweedie 0.5 } ]
+        | "fit-tweedie-response-refused" -> [ Fit { tweedie with Response = "n" } ]
+        | "fit-robust-ridge-refused" ->
+            [ Fit
+                  { ols with
+                      Ridge = Some(Slot.Lit 0.5)
+                      StdErrors = FitStdErrors.HC3 } ]
         | _ -> predictPipelineOf shape
 
     /// The prediction shapes (Phase 597, D56) over `fitTable`, each model trained on `fitTable` itself.
@@ -997,6 +1074,12 @@ module TransformVectorSample =
                         { ols with
                             Predictors = [ "x", x; "z", Col "z" ] } with
                       Model = PredictModel.Coefficients coefficients } ]
+        | "predict-robust-refused" ->
+            [ Predict(
+                  predict
+                      { ols with
+                          StdErrors = FitStdErrors.HC3 }
+              ) ]
         | _ -> [ Derive("g", Lit(Str "c")); Predict(predict { ols with GroupBy = [ "g" ] }) ]
 
     /// Every fit shape's answer over `fitTable`, one line each — the shape, then the canonical wire string

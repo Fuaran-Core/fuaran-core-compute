@@ -443,7 +443,13 @@ module LawVectorExport =
         + "standard errors one triangular solve and a sum of squares, and an interval's quantile a row of the "
         + "t table read by `Interpolate` — and an untabled level, a prediction interval outside the gaussian "
         + "family, a level or a group the model does not hold and a term a coefficient table lacks are each "
-        + "refused as `FitError`."
+        + "refused as `FitError`. "
+        + "After the predict shapes, each iteration takes the next FAMILY shape named in its vector id (Phase "
+        + "598) over the same table: quasi-Poisson (Poisson's iterations, Pearson's dispersion) and Tweedie at "
+        + "p = 1.5 (working weights w·μ^(2−p) through the pinned pow) under the log link, and the sandwich "
+        + "standard errors HC0 to HC3 in a fit's `std_error` and `t` — one pass over the rows in a pinned "
+        + "order — all pinned bytes; a Tweedie power between zero and one, a response outside Tweedie's range, "
+        + "robust errors beside a ridge penalty and a prediction from a robust model are refused as `FitError`."
 
     let renderTransformVectors () : string =
         CorpusFile.render

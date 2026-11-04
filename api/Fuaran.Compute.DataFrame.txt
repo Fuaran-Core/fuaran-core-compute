@@ -7,7 +7,7 @@
 ctor Fuaran.Compute.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
 ctor Fuaran.Compute.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>, Fuaran.Compute.Exactness)
 ctor Fuaran.Compute.FitControl..ctor(Fuaran.Compute.Slot`1<System.Int32>, Fuaran.Compute.Slot`1<System.Double>)
-ctor Fuaran.Compute.FitSpec..ctor(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ColExpr>>, System.Boolean, Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.ColExpr>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Slot`1<System.Double>>, Fuaran.Compute.FitFamily, Fuaran.Compute.FitLink, Fuaran.Compute.FitControl, Fuaran.Compute.FitOutput)
+ctor Fuaran.Compute.FitSpec..ctor(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ColExpr>>, System.Boolean, Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.ColExpr>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Slot`1<System.Double>>, Fuaran.Compute.FitFamily, Fuaran.Compute.FitLink, Fuaran.Compute.FitControl, Fuaran.Compute.FitOutput, Fuaran.Compute.FitStdErrors)
 ctor Fuaran.Compute.FnDef..ctor(System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.FnParam>, Fuaran.Compute.ColExpr)
 ctor Fuaran.Compute.FnParam..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Slot`1<Fuaran.Core.Cell>>)
 ctor Fuaran.Compute.HostRoundedDecision..ctor(System.Int32, System.String, System.String)
@@ -115,6 +115,11 @@ field Fuaran.Compute.FitOutput+Tags.Coefficients : System.Int32 (literal)
 field Fuaran.Compute.FitOutput+Tags.Fitted : System.Int32 (literal)
 field Fuaran.Compute.FitOutput+Tags.Residuals : System.Int32 (literal)
 field Fuaran.Compute.FitOutput+Tags.Summary : System.Int32 (literal)
+field Fuaran.Compute.FitStdErrors+Tags.Classical : System.Int32 (literal)
+field Fuaran.Compute.FitStdErrors+Tags.HC0 : System.Int32 (literal)
+field Fuaran.Compute.FitStdErrors+Tags.HC1 : System.Int32 (literal)
+field Fuaran.Compute.FitStdErrors+Tags.HC2 : System.Int32 (literal)
+field Fuaran.Compute.FitStdErrors+Tags.HC3 : System.Int32 (literal)
 field Fuaran.Compute.IncrementalStrategy+Tags.ReferenceOnly : System.Int32 (literal)
 field Fuaran.Compute.IncrementalStrategy+Tags.RowLocal : System.Int32 (literal)
 field Fuaran.Compute.IncrementalStrategy+Tags.RowLocalThenGroups : System.Int32 (literal)
@@ -408,6 +413,7 @@ method Fuaran.Compute.WorkerPool.serve(Microsoft.FSharp.Core.FSharpFunc`2<System
 method Fuaran.Compute.WorkerPool.warm() : Microsoft.FSharp.Control.FSharpAsync`1<Microsoft.FSharp.Core.Unit>
 property Fuaran.Compute.DataFrameCodec.pipelineCodec : Fuaran.Core.Corpus+Codec`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>> { get }
 property Fuaran.Compute.FitSpecModule.defaultControl : Fuaran.Compute.FitControl { get }
+property Fuaran.Compute.FitStdErrors.Robust : Fuaran.Compute.FitStdErrors { get }
 property Fuaran.Compute.NowGrainModule.allTags : Microsoft.FSharp.Collections.FSharpList`1<System.String> { get }
 property Fuaran.Compute.RowIdentity.ordinalScheme : System.String { get }
 record-field Fuaran.Compute.Agg.Fn #1 : Fuaran.Core.AggFn
@@ -432,6 +438,7 @@ record-field Fuaran.Compute.FitSpec.Output #10 : Fuaran.Compute.FitOutput
 record-field Fuaran.Compute.FitSpec.Predictors #1 : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ColExpr>>
 record-field Fuaran.Compute.FitSpec.Response #0 : System.String
 record-field Fuaran.Compute.FitSpec.Ridge #6 : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Slot`1<System.Double>>
+record-field Fuaran.Compute.FitSpec.StdErrors #11 : Fuaran.Compute.FitStdErrors
 record-field Fuaran.Compute.FitSpec.Weights #4 : Microsoft.FSharp.Core.FSharpOption`1<System.String>
 record-field Fuaran.Compute.FnDef.Body #2 : Fuaran.Compute.ColExpr
 record-field Fuaran.Compute.FnDef.Name #0 : System.String
@@ -565,6 +572,8 @@ type Fuaran.Compute.FitOutput (union)
 type Fuaran.Compute.FitOutput+Tags (type)
 type Fuaran.Compute.FitSpec (record)
 type Fuaran.Compute.FitSpecModule (module)
+type Fuaran.Compute.FitStdErrors (union)
+type Fuaran.Compute.FitStdErrors+Tags (type)
 type Fuaran.Compute.FnDef (record)
 type Fuaran.Compute.FnDefModule (module)
 type Fuaran.Compute.FnParam (record)
@@ -772,6 +781,11 @@ union-case Fuaran.Compute.FitOutput.Coefficients #0()
 union-case Fuaran.Compute.FitOutput.Fitted #2()
 union-case Fuaran.Compute.FitOutput.Residuals #3()
 union-case Fuaran.Compute.FitOutput.Summary #1()
+union-case Fuaran.Compute.FitStdErrors.Classical #0()
+union-case Fuaran.Compute.FitStdErrors.HC0 #1()
+union-case Fuaran.Compute.FitStdErrors.HC1 #2()
+union-case Fuaran.Compute.FitStdErrors.HC2 #3()
+union-case Fuaran.Compute.FitStdErrors.HC3 #4()
 union-case Fuaran.Compute.IncrementalStrategy.NewReferenceOnly #2(reason: Fuaran.Compute.FallBackReason)
 union-case Fuaran.Compute.IncrementalStrategy.RowLocal #0()
 union-case Fuaran.Compute.IncrementalStrategy.RowLocalThenGroups #1()
