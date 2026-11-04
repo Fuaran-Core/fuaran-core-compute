@@ -15,7 +15,8 @@
 ///     declaration of that model;
 ///   * every checked model carries at least one proved row;
 ///   * a TESTED row on the `Proofs.Oracle` family names a model with a proved row, and every case it
-///     lists is a test of that family, word for word.
+///     lists is a test of that family, word for word;
+///   * the host-arithmetic premises the pinned kernels cite (D43, D49) are present as assumed premises.
 ///
 /// `Proofs.Coverage` lives in `ProofCoverageTests.fs` (Phase 432), beside the operation census.
 ///
@@ -176,6 +177,21 @@ let internal treeFindings
 
 // ---- the live readings ------------------------------------------------------------------------
 
+/// The host-arithmetic premises that the byte-identity claims of the pinned kernels cite (D43's
+/// integer `Pow`, D49's linear algebra), each required to be an `assumed` row of class `premise`.
+let internal arithmeticPremises =
+    [ "pipeline-ieee-multiply-is-host-independent"
+      "linear-algebra-basic-ops-host-independent" ]
+
+/// One finding per arithmetic premise that is absent, or present at another level or class.
+let internal premiseFindings (rows: Row list) : string list =
+    [ for id in arithmeticPremises do
+          match rows |> List.tryFind (fun r -> r.Id = id) with
+          | None -> yield sprintf "%s: the premise is missing from the ladder" id
+          | Some r when r.Level <> "assumed" || r.Class <> Some "premise" ->
+              yield sprintf "%s: level `%s`, class %A — a premise is an assumed row of class premise" id r.Level r.Class
+          | Some _ -> () ]
+
 let private root () = Snapshots.repoFile ""
 
 /// The `$modules` literal line of proofs/check.ps1, parsed.
@@ -245,6 +261,22 @@ let ladderTests =
                   "the ladder carries proved rows at all"
 
               Expect.isEmpty (treeFindings checkedModules sourceOf (oracleSource ()) rows) "the ladder against the tree"
+
+          testCase "the arithmetic premises the pinned kernels stand on are assumed premises on the ladder"
+          <| fun _ ->
+              // DECISIONS.md D49: the integer `Pow` routine (D43) and every linear-algebra kernel claim
+              // byte identity across hosts on these two rows; dropping or promoting one would leave the
+              // claim standing on nothing the ladder states.
+              let premises = premiseFindings (liveRows ())
+              Expect.isEmpty premises "both arithmetic premises are present as assumed premises"
+
+              Expect.equal
+                  (premiseFindings
+                      [ { row "pipeline-ieee-multiply-is-host-independent" "proved" with
+                            Class = None } ]
+                   |> List.length)
+                  2
+                  "a promoted row and a missing row are each named"
 
           testCase "the form rules go red on a bad level, a missing class, a bad closes and a bad phase"
           <| fun _ ->

@@ -1,5 +1,168 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D49: the linear-algebra rules, recorded before any kernel lands — every reduction a pinned left-to-right fold, no fused multiply-add on any host, one Givens rotation with a non-negative diagonal, one rank tolerance, listwise deletion at the frame bridge, the IRLS start, step-halving and stopping rules, and the package boundary; D48 item 7's "a JavaScript host does not promise a correctly rounded square root" is corrected
+
+**Context.** Phase 589, stage S0 of the accepted linear-algebra plan: a pinned matrix library
+(`Fuaran.Compute.LinearAlgebra`), a streaming Givens QR, a `Fit` verb in `DataFrame` and log-link GLMs by IRLS.
+Every one of those inherits the rules below, so they are written before the first kernel (Phase 590), and a
+review of 590 onward cites "D49 item n" rather than arguing from first principles. A twin author porting the
+library reads this entry as its contract. The operator's rulings of 2026-11-01 on the plan are numbered D1–D15
+in the plan itself; to keep them apart from this record's numbers they are cited here as **ruling L1 … L15**
+(L3: pinned and byte-identical, no fast host-rounded path; L4: the streaming Givens QR is the kernel; L5: one
+`Fit` verb; L6 = B: pinned elementary functions before the GLM; L7: warm start never certified; L8: no
+tall-skinny QR; L9 and L15: the scope boundary; L10: sandwich errors in). Nothing in the evaluator moves; no
+public surface moves.
+
+**Premise check** (on `de96fe9`, the tree this phase was cut from). The shard named D47 as the newest entry;
+Phase 596 took D48 the same day, so this entry is D49. `proofs.json` still carries
+`pipeline-ieee-multiply-is-host-independent`. No linear-algebra code exists: `src/` holds `ColumnOps`,
+`Conformance`, `DataFrame` and `PipelineQuery` only, and no source calls a fused multiply-add. One premise
+did not hold as written. D48 item 7 says a square root is "the one operation here whose correct rounding a
+JavaScript host does not promise". That was true of ECMA-262 up to its 2024 edition, where `Math.sqrt` was
+implementation-approximated. tc39/ecma262#3345 ("Normative: fully define Math.sqrt", merged 2024-08) made it
+the correctly rounded `𝔽(√ℝ(n))` from ECMAScript 2025, which matches what every engine already did (each
+compiles it to the hardware square root, which IEEE 754 requires to be correctly rounded). .NET's
+`Math.Sqrt` is the same instruction. So `√` joins `+ − × ÷` as an operation this library may use and
+still be pinned, which the plan's scaled norm and Givens construction need. D48's choice of the square
+region over Fritsch and Carlson's circle stands, because it needs no square root at all; only its stated
+reason is corrected.
+
+**Ruled — the determinism rules (L3; this record's D3 and D9 applied to linear algebra).**
+
+1. **Every reduction is a pinned left-to-right fold.** A dot product sums indices `0 .. n−1` in order,
+   starting from `+0.0` and adding each product as it is formed. In a matrix product, `C[i,j]` is the dot of
+   row `i` of `A` and column `j` of `B` in `k` order. Blocking over `i` and `j` is allowed; splitting,
+   reordering or unrolling-with-separate-accumulators over `k` is forbidden, as D9 forbids it for float `Sum`.
+   A matrix-vector product `y = A·x` is computed column by column (`y += x_j · A[:,j]`, `j` ascending), so
+   each `y_i` accumulates in `j` order. Every other sum in the library — a Gram entry, a residual sum of
+   squares, a deviance, a Pearson statistic, a column norm — is a fold in its stated index order, and the
+   order is part of the operation's contract.
+2. **No fused multiply-add, ever, on any host.** `a·b + c` is a rounded product followed by a rounded sum.
+   No member calls `Math.FusedMultiplyAdd`, `MultiplyAddEstimate` or a vector FMA intrinsic, native member
+   included. Neither .NET's JIT nor a JavaScript engine contracts one unasked, but some twin languages do: Go's
+   specification lets a compiler fuse `x*y + z` (an explicit `float64(x*y)` conversion forbids it), and C or
+   C++ needs `-ffp-contract=off`. A twin carries whatever its language needs to keep the product rounded, and
+   says so beside its kernel.
+3. **SIMD only across independent outputs.** A vector lane computes a different output (a different `y_i`, a
+   different element of a rotated row), never a part of one output's sum. The column-major `gemv` above and a
+   Givens rotation of two rows are both elementwise in this sense. Where a kernel has a portable member and a
+   native one, as `Kernels.fs` does, a law holds them byte-equal on the same inputs.
+4. **One 2-norm, scaled, never `hypot`.** `norm2 x` is: `m = max |x_i|` (exact, and independent of order);
+   `0` when `m = 0`; NaN when any element is NaN; `+∞` when `m = +∞`; otherwise `m · √(Σ (x_i / m)²)` with the
+   sum folded in index order. The host's `hypot` is host-rounded and is never called. A Givens rotation's
+   radius is `norm2 [a; b]` by the same rule.
+5. **Canonical NaN on the way out** (D16). Every float the library returns carries `Double.NaN`'s bits when it
+   is a NaN, applied where the answer leaves a public function, never per arithmetic step.
+6. **Typed errors, not exceptions.** A public operation returns `Result<_, LinAlgError>` where it can fail:
+   a shape mismatch, a singular triangular solve (naming the diagonal index), rank deficiency (naming the
+   rank), a non-finite input (naming the row and column) and IRLS non-convergence (naming the iterations).
+   The case names are 590's to fix in the package; the classes are fixed here. Nothing throws on bad data.
+7. **Every operation is `Exact` (pinned) in the D43 / D48 sense.** Under L6 = B the transcendentals the GLM
+   needs are pinned in an `Elementary` module (Phase 593) before the GLM lands, so `exp`, `ln` and float
+   `pow` stop being host-rounded inside this library. The classification is kept on each operation so
+   `SchemaWalk` reads through it, and so a registered host function (L14) can be marked otherwise.
+
+**Ruled — the factorization rules (L4, L8).**
+
+8. **The one Givens construction and its sign convention.** Given `(a, b)`: when `b = 0` the rotation is the
+   identity `(c, s, r) = (1, 0, a)` and applying it changes nothing; otherwise `r = norm2 [a; b]` (item 4),
+   `c = a / r`, `s = b / r`, so `r > 0`. Applying it to a pair `(x, y)` gives `x' = c·x + s·y` and
+   `y' = c·y − s·x`, each as two rounded products and one rounded sum or difference, in that operand order
+   (item 2). Because a diagonal entry of the streaming `R` starts at zero and is only ever replaced by a
+   radius, **every diagonal entry of `R` is non-negative** — the sign convention that makes `R` unique, and the
+   one a batch factorization is normalised to before it is compared with the streaming one.
+9. **A weighted row enters scaled by `√w`.** `addRow` with prior weight `w` multiplies every element of the
+   row and its response by `√w` (correctly rounded, item 4's premise) before rotating; `w = 0` is accepted,
+   rotates nothing and is not counted; a negative or non-finite weight is refused before any rotation.
+   Rows are rotated into `R` in row order, one at a time, columns ascending.
+10. **The streaming Givens QR is the `Fit` kernel; batch Householder is secondary and not byte-equal to it**
+    (L4). The two agree within a tolerance law (590/591 state its bound), never byte for byte; a fit that the
+    law vectors pin is always the streaming one.
+11. **The rank tolerance.** A column `j` of `R` is negligible — aliased — when
+    `|R[j,j]| ≤ τ · norm2 R[0..j, j]` with `τ = max(n, p) · 2⁻⁵²`, `n` the counted rows and `p` the columns,
+    `τ` computed as `float (max n p) * 2⁻⁵²` and the comparison taken after it. The column's own norm is read
+    off `R` (it equals the weighted design column's norm in exact arithmetic), so the streaming accumulator
+    needs no second running sum. `QR.pivoted` pivots on the largest remaining column norm, the lowest index on
+    a tie, and states its rank by the same test. An aliased column is dropped, the remaining columns are
+    re-triangularised with the item-8 rotation in column order, its coefficient is reported null (the `NA`
+    convention of R's `lm`), and the rank is `p` less the aliased count. Alternatives considered: R's `lm`
+    tolerance (`1e-7`, relative, with limited pivoting) — rejected because a fixed constant is too loose for a
+    well-scaled design and drops genuine columns of large-`n` fits; a tolerance relative to `|R[0,0]|` alone
+    — rejected because without pivoting the first column need not be the largest, so the test would depend on
+    column order.
+12. **Parallelism across groups only; no tall-skinny QR** (L8). One group's fit is one sequence of rotations
+    on one thread; splitting it changes the last bits and needs its own ruling, as D9 was for `Sum`. Groups
+    are independent and may run alongside one another.
+13. **The frame bridge deletes listwise.** A row with a null in the response, any predictor term, the weight
+    or the offset is left out of the fit before the matrix is built, and the count left out is reported. A
+    non-finite value in a present cell (NaN or an infinity) is not a null: it is refused by name (row and
+    column), never silently deleted. Rows of weight zero are kept in the frame and fitted values are produced
+    for them, but they are not counted in `n` or the degrees of freedom.
+
+**Ruled — the IRLS rules (plan §2.5; L6 = B).**
+
+14. **Starting values.** `μ₀ = y + 0.1` for Poisson and Tweedie (`y = 0` is allowed, and `ln 0` is never
+    taken); `μ₀ = y` for Gamma and for Gaussian under the log link. `η₀ = ln μ₀` through the pinned `Elementary`
+    `ln`. The deviance of `μ₀` is the "previous" deviance of the first iteration.
+15. **The refusals before any iteration.** Poisson and Tweedie (`1 < p < 2`) need `y ≥ 0`; Gamma needs
+    `y > 0`; Gaussian under the log link needs `y > 0`; every weight is `≥ 0` and finite. Each is refused by
+    name with the first offending row in row order.
+16. **Step-halving, a fixed count.** When an iteration's new `μ` has a non-finite element, or its deviance is
+    greater than the previous iteration's, the step is halved — `β ← 0.5·β_old + 0.5·β_new`, element by
+    element (each product by `0.5` exact, one rounding for the sum, no overflow) — and `η`, `μ` and the
+    deviance recomputed, at most **10** times. If the tenth halving still leaves a non-finite `μ`, the fit is
+    refused naming the first row whose `μ` is non-finite (the separation refusal); if it still leaves the
+    deviance above the previous one, it is refused as non-converged at that iteration. A fit never returns a
+    non-monotone path. Ten bounds the work of one iteration to eleven deviance evaluations, and a step cut to
+    `2⁻¹⁰` of itself is below anything a useful iteration moves.
+17. **The stopping rule.** Stop when `|dev − dev_prev| / (|dev| + 0.1) < tol`, computed in that order, the
+    comparison strict; or at `MaxIter`, where the fit is the named refusal `NotConverged` carrying the
+    iteration count. The defaults are R's `glm.control`: `tol = 1e-8`, `MaxIter = 25`.
+18. **The deviance.** A fold in row order of `prior weight · unit deviance`. Poisson: `2 (y·ln(y/μ) − (y − μ))`;
+    Gamma: `2 (−ln(y/μ) + (y − μ)/μ)`; and `y·ln(y/μ)` is pinned to `0` at `y = 0` without evaluating the
+    logarithm. Tweedie's unit deviance is 595's to state under the same rule.
+19. **No conditioning-based tolerance** (L6 = B). Because every IRLS step is built from pinned operations, the
+    coefficients, the iteration count and the convergence decision are identical on every host and the law
+    vectors compare them byte for byte; the GLM waits for Phase 593's `Elementary` and does not ship ahead of
+    it. A link or family added later (the logit link, Phase 600) records its starting value and its unit
+    deviance in its own entry under items 14–18.
+
+**Ruled — the boundaries.**
+
+20. **The package** (L1, L2). `Fuaran.Compute.LinearAlgebra` is a new packable cohort member, ahead of
+    `DataFrame` in the build order, depending on `Fuaran.Core.Column`, `Fuaran.Core.Wire` and FSharp.Core
+    only, and Fable-clean. Its vectors are Core's `Vector<float>`, not a new type, so a frame's float column
+    becomes a regression input without a copy. Matrices are dense and column-major; the public surface is
+    immutable and mutation stays internal, following Core's `adopt` / `borrow` pattern. It knows nothing of
+    tables, nulls or units: those are `DataFrame`'s, at the bridge (item 13).
+21. **One `Fit` verb with `Family` and `Link`** (L5); `Gaussian` with `Identity` is ordinary least squares and
+    runs no iteration.
+22. **Incremental behaviour** (L7, plan §2.6). Least squares over rows appended last in group order rotates
+    the new rows onto the stored `R` and is certified byte-equal to a full evaluation; a deleted or edited row
+    re-fits its group (downdating is not stable), certified as float `Sum` is; a GLM re-fits an affected group
+    from the pinned start, certified. A warm start from the previous `β` converges to different bits and is
+    **never certified**: if it exists at all, it is an opt-in mode outside the certified evaluator.
+23. **Scope** (L9, L15). This repository ships generic estimation — ordinary, weighted and ridge least
+    squares, IRLS over the standard families, classical standard errors and the heteroskedasticity-robust
+    sandwich estimators HC0–HC3 (L10, Phase 598) — and generic transforms — named functions, interpolation,
+    convolution, recurrence and scan. Domain-specific methods built on top of these (the endogeneity
+    corrections, bootstrap decompositions and named response-curve families of a particular modelling
+    discipline) are out of scope here; a consumer expresses them over the generic steps.
+
+**Ladder.** `proofs.json` gains `linear-algebra-basic-ops-host-independent`, an `assumed` premise beside
+`pipeline-ieee-multiply-is-host-independent`: `+ − × ÷ √` are correctly rounded binary64 operations on every
+host this library runs on, and no host contracts a product and a sum into one rounding. The byte-identity
+claims of 590 onward stand on it; the law vectors' byte comparison on every certifying host is what holds it,
+not a theorem. `ProofsLadderTests` gains a case naming both premises, so neither row can be dropped while
+the rules above cite it.
+
+**What a consumer does.** Nothing: no surface moves, so `STABILITY.md` has no entry. A twin porting the
+library reads items 1–19 as its contract.
+
+**Tidy.** Reviewed `DECISIONS.md`, `proofs.json` and `ProofsLadderTests.fs`. Nothing in them is made dead or
+obsolete by this entry; D48's square-root sentence is corrected here rather than rewritten in place, as the
+record corrects an earlier entry's sentence elsewhere (D41 on D38 item 1).
+
 ## 2026-11-04 — D48: a pipeline carries its own named functions as `Define` steps, every `Call` is expanded inline before evaluation under §21.8's 512-node bound with recursion refused, and `Interpolate` reads an operand through knots as data — linear, step, or a monotone cubic under a pinned Fritsch–Carlson slope rule — exact at every knot and byte-identical on every host
 
 **Context.** Phase 596, stage S8 of the accepted linear-algebra plan (its rulings D11 and D12, and its §7 Q7,
