@@ -95,6 +95,14 @@ module LinearAlgebraVectors =
             CorpusCell.Row [ "case", CorpusFile.str "notConverged"; "iterations", CorpusFile.num n ]
         | LinAlgError.InvalidWeight r ->
             CorpusCell.Row [ "case", CorpusFile.str "invalidWeight"; "row", CorpusFile.num r ]
+        | LinAlgError.InvalidResponse r ->
+            CorpusCell.Row [ "case", CorpusFile.str "invalidResponse"; "row", CorpusFile.num r ]
+        | LinAlgError.Separation r -> CorpusCell.Row [ "case", CorpusFile.str "separation"; "row", CorpusFile.num r ]
+        | LinAlgError.UnsupportedModel(family, link) ->
+            CorpusCell.Row
+                [ "case", CorpusFile.str "unsupportedModel"
+                  "family", CorpusFile.str family
+                  "link", CorpusFile.str link ]
 
     let private okCell (value: CorpusCell) : CorpusCell =
         CorpusCell.Row [ "verdict", CorpusFile.str "ok"; "value", value ]

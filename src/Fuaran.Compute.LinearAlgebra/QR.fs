@@ -589,3 +589,22 @@ module LeastSquares =
             Ok fit
         else
             Error(LinAlgError.RankDeficient fit.Rank)
+
+    /// The classical standard errors under dispersion `phi`, one per design column: at a kept column,
+    /// the `t`-th, `√(phi · Σₖ R⁻¹[t,k]²)` with `k` ascending from `t` (`R⁻¹` is upper triangular, so the
+    /// sum is `diag((RᵀR)⁻¹)[t]`); `None` at an aliased column (DECISIONS.md D53 item 8, Phase 595).
+    let standardErrors (phi: float) (fit: LeastSquaresFit) : float option list =
+        let kept = fit.Kept |> List.toArray
+        let inv = fit.RInverse
+        let se = Array.create (kept.Length + fit.Aliased.Length) None
+
+        for t in 0 .. kept.Length - 1 do
+            let mutable c = 0.0
+
+            for k in t .. kept.Length - 1 do
+                let v = Matrix.item t k inv
+                c <- c + v * v
+
+            se[kept[t]] <- Some(Kernels.canonical (sqrt (phi * c)))
+
+        List.ofArray se

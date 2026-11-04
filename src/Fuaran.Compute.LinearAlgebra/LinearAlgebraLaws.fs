@@ -1069,6 +1069,242 @@ module LinearAlgebraLaws =
         else
             None
 
+    // ---- generalised linear models (Phase 595) ---------------------------------------------------
+
+    /// A drawn GLM design: `n` rows, an intercept column then `k` drawn columns; prior weights with
+    /// zeros among the later rows (the first `k + 3` positive); an offset in `(−½, ½)`.
+    let private glmDesign (d: Draw) : Matrix * Vector<float> * Vector<float> * int =
+        let k = d.Int 1 3
+        let n = d.Int (k + 6) 24
+        let x = Matrix.init n (k + 1) (fun _ j -> if j = 0 then 1.0 else d.Unit())
+
+        let w =
+            Vector.adopt (
+                Array.init n (fun i ->
+                    if i >= k + 3 && d.Int 0 4 = 0 then
+                        0.0
+                    else
+                        0.5 + abs (d.Unit()))
+            )
+
+        let o = Vector.adopt (Array.init n (fun _ -> 0.5 * d.Unit()))
+        x, w, o, k
+
+    /// Counts in `0 .. 6`, every one of the first `k + 3` at least one, so the maximum-likelihood
+    /// estimate exists.
+    let private counts (d: Draw) (n: int) (k: int) : Vector<float> =
+        Vector.adopt (Array.init n (fun i -> float (d.Int (if i < k + 3 then 1 else 0) 6)))
+
+    /// Positive responses in `(0.25, 4.25)`.
+    let private positives (d: Draw) (n: int) : Vector<float> =
+        Vector.adopt (Array.init n (fun _ -> 2.25 + 2.0 * d.Unit()))
+
+    let private optBits (xs: float option list) : int64 option list = xs |> List.map (Option.map bits)
+
+    /// `Gaussian` under `Identity` through `Glm.fit` is the least-squares fold of `y − offset` under the
+    /// prior weights, byte for byte: its coefficients, its fitted values (`Σⱼ xᵢⱼβⱼ` then the offset), its
+    /// deviance, its standard errors, and one iteration.
+    let private gaussianIsLeastSquares (d: Draw) =
+        let x, w, o, _ = glmDesign d
+        let n = x.Rows
+        let y = vector d n
+        let ya, oa, wa = Vector.toArray y, Vector.toArray o, Vector.toArray w
+
+        let ls =
+            QRAccumulator.empty x.Cols
+            |> QRAccumulator.addRows x (Vector.adopt (Array.init n (fun i -> ya[i] - oa[i]))) w
+            |> Result.bind LeastSquares.ofAccumulator
+            |> ok
+
+        let beta = ls.Coefficients |> List.toArray
+
+        let fitted =
+            Array.init n (fun i ->
+                let mutable acc = 0.0
+
+                for j in 0 .. x.Cols - 1 do
+                    match beta[j] with
+                    | Some b -> acc <- acc + x[i, j] * b
+                    | None -> ()
+
+                acc + oa[i])
+
+        let mutable dev = 0.0
+
+        for i in 0 .. n - 1 do
+            let r = ya[i] - fitted[i]
+            dev <- dev + wa[i] * (r * r)
+
+        let df = ls.Count - ls.Rank
+        let se = LeastSquares.standardErrors (dev / float df) ls
+
+        match Glm.fit GlmFamily.Gaussian GlmLink.Identity GlmControl.defaults x y w o with
+        | Error e -> Some(sprintf "refused: %A" e)
+        | Ok g ->
+            check
+                (optBits g.Coefficients = optBits ls.Coefficients
+                 && sameBits (vecBits g.Fitted) fitted
+                 && bits g.Deviance = bits dev
+                 && optBits g.StdErrors = optBits se
+                 && g.Iterations = 1)
+                (fun () ->
+                    sprintf "the IRLS fit is not the least-squares fit: %A against %A" g.Coefficients ls.Coefficients)
+
+    /// The maximum-likelihood equations at convergence: `Xᵀ W (y − μ) = 0` for the canonical Poisson
+    /// log link, within a bound of the tolerance's order times the terms' scale — with the intercept,
+    /// `Σ w μ̂ = Σ w y`.
+    let private poissonScore (d: Draw) =
+        let x, w, o, k = glmDesign d
+        let n = x.Rows
+        let y = counts d n k
+        let ya, wa = Vector.toArray y, Vector.toArray w
+
+        match Glm.fit GlmFamily.Poisson GlmLink.Log GlmControl.defaults x y w o with
+        | Error e -> Some(sprintf "refused: %A" e)
+        | Ok g ->
+            let mu = vecBits g.Fitted
+
+            [ 0 .. x.Cols - 1 ]
+            |> List.tryPick (fun j ->
+                let mutable score = 0.0
+                let mutable scale = 0.0
+
+                for i in 0 .. n - 1 do
+                    score <- score + wa[i] * x[i, j] * (ya[i] - mu[i])
+                    scale <- scale + wa[i] * abs x[i, j] * (ya[i] + mu[i])
+
+                check (abs score <= 1e-5 * scale) (fun () ->
+                    sprintf "the score of column %d is %.17g over a scale of %.17g" j score scale))
+
+    /// An offset of `c` on every row is the intercept shifted by `c`: the other coefficients and the
+    /// means agree, within the tolerance's order, with the fit without it.
+    let private offsetShiftsIntercept (d: Draw) =
+        let x, w, _, k = glmDesign d
+        let n = x.Rows
+        let y = counts d n k
+        let c = d.Unit()
+        let zero = Vector.adopt (Array.zeroCreate n)
+        let shifted = Vector.adopt (Array.create n c)
+
+        match
+            Glm.fit GlmFamily.Poisson GlmLink.Log GlmControl.defaults x y w zero,
+            Glm.fit GlmFamily.Poisson GlmLink.Log GlmControl.defaults x y w shifted
+        with
+        | Ok a, Ok b ->
+            let ca = a.Coefficients |> List.map (Option.defaultValue nan) |> List.toArray
+            let cb = b.Coefficients |> List.map (Option.defaultValue nan) |> List.toArray
+            let near (p: float) (q: float) = abs (p - q) <= 1e-4 * (1.0 + abs p)
+
+            let coefficientsAgree =
+                near ca[0] (cb[0] + c) && Array.forall2 near (Array.skip 1 ca) (Array.skip 1 cb)
+
+            let meansAgree = Array.forall2 near (vecBits a.Fitted) (vecBits b.Fitted)
+
+            check (coefficientsAgree && meansAgree) (fun () ->
+                sprintf "an offset of %.17g: %A against %A" c a.Coefficients b.Coefficients)
+        | a, b -> Some(sprintf "refused: %A, %A" a b)
+
+    /// Under the Gamma family and the log link every iteration's working weight is the prior weight,
+    /// exactly, and observing the iterations changes nothing.
+    let private gammaWeightsArePrior (d: Draw) =
+        let x, w, o, _ = glmDesign d
+        let y = positives d x.Rows
+        let seen = ResizeArray<float[]>()
+
+        let observed =
+            Glm.fitObserved
+                (fun _ ww -> seen.Add(Array.copy ww))
+                GlmFamily.Gamma
+                GlmLink.Log
+                GlmControl.defaults
+                x
+                y
+                w
+                o
+
+        let plain = Glm.fit GlmFamily.Gamma GlmLink.Log GlmControl.defaults x y w o
+        let prior = vecBits w
+
+        match observed, plain with
+        | Ok a, Ok b ->
+            check
+                (seen.Count = a.Iterations
+                 && seen |> Seq.forall (fun ww -> sameBits ww prior)
+                 && optBits a.Coefficients = optBits b.Coefficients)
+                (fun () ->
+                    sprintf
+                        "a working weight is not the prior weight, or %d iterations observed against %d reported"
+                        seen.Count
+                        a.Iterations)
+        | a, _ -> Some(sprintf "refused: %A" a)
+
+    /// Every Glm refusal is answered as stated, naming the first offending row.
+    let private glmRefusals (d: Draw) =
+        let x, w, o, k = glmDesign d
+        let n = x.Rows
+        let y = counts d n k
+        let yPos = positives d n
+        let at = d.Int 0 (n - 1)
+        let c = GlmControl.defaults
+
+        let withAt (v: Vector<float>) (value: float) =
+            Vector.adopt (Vector.toArray v |> Array.mapi (fun i e -> if i = at then value else e))
+
+        let fit family link x y w o = Glm.fit family link c x y w o
+        let vd (len: int) : Dims = { Rows = len; Cols = 1 }
+        let short = Vector.adopt (Array.zeroCreate (n - 1))
+
+        let xNaN =
+            Matrix.init n x.Cols (fun i j -> if i = at && j = x.Cols - 1 then nan else x[i, j])
+
+        // A zero-weight row far out along the last column: its mean overflows unless the slope is
+        // exactly zero, which leaves the row in range.
+        let farW = withAt w 0.0
+
+        let xFar =
+            Matrix.init n x.Cols (fun i j -> if i = at && j = x.Cols - 1 then 1e300 else x[i, j])
+
+        let separated =
+            match fit GlmFamily.Poisson GlmLink.Log xFar y farW o with
+            | Error(LinAlgError.Separation r) -> r = at
+            | Ok g -> (List.last g.Coefficients |> Option.defaultValue 0.0) = 0.0
+            | Error _ -> false
+
+        let poisson = fit GlmFamily.Poisson GlmLink.Log
+
+        let expected: (string * bool) list =
+            [ "shape", poisson x short w o = Error(LinAlgError.ShapeMismatch("Glm.fit", x.Dims, vd (n - 1)))
+              "pairing",
+              fit GlmFamily.Poisson GlmLink.Identity x y w o =
+                  Error(LinAlgError.UnsupportedModel("poisson", "identity"))
+              "gaussian log",
+              fit GlmFamily.Gaussian GlmLink.Log x y w o = Error(LinAlgError.UnsupportedModel("gaussian", "log"))
+              "weight", poisson x y (withAt w -1.0) o = Error(LinAlgError.InvalidWeight at)
+              "weight nan", poisson x y (withAt w nan) o = Error(LinAlgError.InvalidWeight at)
+              "poisson negative", poisson x (withAt y -1.0) w o = Error(LinAlgError.InvalidResponse at)
+              "poisson infinite",
+              poisson x (withAt y Double.PositiveInfinity) w o = Error(LinAlgError.InvalidResponse at)
+              "gamma zero",
+              fit GlmFamily.Gamma GlmLink.Log x (withAt yPos 0.0) w o = Error(LinAlgError.InvalidResponse at)
+              "design", poisson xNaN y w o = Error(LinAlgError.NotFinite(at, x.Cols - 1))
+              "offset", poisson x y w (withAt o nan) = Error(LinAlgError.NotFinite(at, x.Cols))
+              "separation", separated
+              "not converged",
+              Glm.fit GlmFamily.Poisson GlmLink.Log (GlmControl.create 1 1e-8 |> Option.get) x y w o =
+                  Error(LinAlgError.NotConverged 1)
+              "control",
+              GlmControl.create 0 1e-8 = None
+              && GlmControl.create 1 0.0 = None
+              && GlmControl.create 1 nan = None
+              "null shape",
+              Glm.nullDeviance GlmFamily.Poisson GlmLink.Log c true y short o =
+                  Error(LinAlgError.ShapeMismatch("Glm.fit", { Rows = n; Cols = 1 }, vd (n - 1))) ]
+
+        match expected |> List.filter (snd >> not) with
+        | [] -> None
+        | failed ->
+            Some(sprintf "Glm refusals not answered as stated: %s" (failed |> List.map fst |> String.concat ", "))
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "transpose is an involution, byte for byte", transposeInvolution
@@ -1103,5 +1339,10 @@ module LinearAlgebraLaws =
           "every special-value row and IEEE edge of the elementary functions is answered as stated", elementaryTables
           "pow's exact cases and the sign of a negative base are the named operations, byte for byte", powExactCases
           "exp and ln invert within their one-ulp bounds", elementaryInverses
-          "the elementary functional equations hold within their bounds", elementaryIdentities ]
+          "the elementary functional equations hold within their bounds", elementaryIdentities
+          "Gaussian under Identity through Glm.fit is the least-squares fit, byte for byte", gaussianIsLeastSquares
+          "a Poisson log-link fit meets its score equations at convergence", poissonScore
+          "an offset of c is the intercept shifted by c", offsetShiftsIntercept
+          "Gamma working weights are the prior weights, exactly, on every iteration", gammaWeightsArePrior
+          "every Glm refusal is answered as stated", glmRefusals ]
         |> List.map (fun (name, body) -> name, law seed count body)

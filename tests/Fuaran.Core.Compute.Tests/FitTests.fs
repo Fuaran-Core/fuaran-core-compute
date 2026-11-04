@@ -14,6 +14,11 @@ module Fuaran.Compute.Tests.FitTests
 //  refusals by name; the wire round trip; and the incremental law — an
 //  append refresh is byte-equal to a full evaluation, an edit refits only the
 //  group it touched, and the state codec carries the factorizations.
+//
+//  Phase 595 — the log-link families (`DECISIONS.md` D55): Poisson and Gamma
+//  through `LinearAlgebra.Glm`, held to the package byte for byte and to R's
+//  published Dobson example; the statistics' units under the log link; the
+//  refusals; and a maintained GLM refitting every group from the pinned start.
 // ============================================================================
 
 open Expecto
@@ -349,10 +354,10 @@ let tests =
                   (fit
                       { ols with
                           Family = FitFamily.Poisson
-                          Link = FitLink.Log }
+                          Link = FitLink.Identity }
                       sales)
-                  (Error(UnsupportedFit("poisson", "log")))
-                  "a family this version does not evaluate"
+                  (Error(UnsupportedFit("poisson", "identity")))
+                  "a pairing this version does not evaluate"
 
               Expect.equal
                   (fit
@@ -609,3 +614,326 @@ let tests =
                         As = "prev" }
 
               Expect.equal (reason [ window; Fit ols ]) (Some(FitInputNotMaintained "window")) "after a window" ]
+
+/// Dobson's (1990) randomised controlled trial, R's `?glm` example: nine counts over two
+/// three-level factors.
+let private dobson: Table =
+    let counts = [ 18; 17; 15; 20; 10; 20; 25; 13; 12 ]
+
+    table
+        [ Field.create "id" StringType, [ for i in 0..8 -> Str("d" + string i) ]
+          Field.create "outcome" StringType, [ for i in 0..8 -> Str(string (i % 3 + 1)) ]
+          Field.create "treatment" StringType, [ for i in 0..8 -> Str(string (i / 3 + 1)) ]
+          Field.create "counts" IntType, [ for c in counts -> Int c ] ]
+
+let private poisson (response: string) (terms: (string * ColExpr) list) : FitSpec =
+    { FitSpec.ols response terms with
+        Family = FitFamily.Poisson
+        Link = FitLink.Log }
+
+let private gamma (response: string) (terms: (string * ColExpr) list) : FitSpec =
+    { FitSpec.ols response terms with
+        Family = FitFamily.Gamma
+        Link = FitLink.Log }
+
+let private floats (name: string) (t: Table) : float list = column name t |> List.map floatOf
+
+[<Tests>]
+let glmTests =
+    testList
+        "Fit, the log-link families (Phase 595)"
+        [ testCase "Poisson reproduces R's Dobson example: estimates, errors, deviances and four iterations"
+          <| fun _ ->
+              let spec =
+                  poisson "counts" [ "outcome", Col "outcome"; "treatment", Col "treatment" ]
+
+              let coef = ok (fit spec dobson)
+
+              Expect.equal
+                  (column "term" coef)
+                  [ Str "(Intercept)"
+                    Str "outcome[2]"
+                    Str "outcome[3]"
+                    Str "treatment[2]"
+                    Str "treatment[3]" ]
+                  "treatment coding against the first level"
+
+              // R 4.x: summary(glm(counts ~ outcome + treatment, family = poisson())).
+              let estimates = floats "estimate" coef
+
+              List.iter2
+                  (fun a b -> Expect.isTrue (abs (a - b) <= 1e-6) (sprintf "estimate %.17g against R's %.17g" a b))
+                  estimates
+                  [ 3.044522; -0.4542553; -0.2929871; 0.0; 0.0 ]
+
+              List.iter2
+                  (fun a b -> Expect.isTrue (abs (a - b) <= 1e-6) (sprintf "error %.17g against R's %.17g" a b))
+                  (floats "std_error" coef)
+                  [ 0.1708987; 0.2021708; 0.1927423; 0.2; 0.2 ]
+
+              let summary = ok (fit { spec with Output = FitOutput.Summary } dobson)
+
+              let near (a: float) (b: float) what =
+                  Expect.isTrue (abs (a - b) <= 1e-4) (sprintf "%s: %.17g against R's %.17g" what a b)
+
+              near (floatOf (List.head (column "deviance" summary))) 5.1291 "the residual deviance"
+              near (floatOf (List.head (column "null_deviance" summary))) 10.5814 "the null deviance"
+              Expect.equal (column "iterations" summary) [ Int 4 ] "R's four Fisher scoring iterations"
+              Expect.equal (column "converged" summary) [ Bool true ] "converged"
+              Expect.equal (column "dispersion" summary) [ Float 1.0 ] "Poisson's dispersion is one"
+              Expect.equal (column "df" summary) [ Int 4 ] "nine counts, five columns"
+
+          testCase "the estimates are Glm.fit's over the bridge's design, byte for byte"
+          <| fun _ ->
+              let n = xs.Length
+              let x = Matrix.init n 2 (fun i j -> if j = 0 then 1.0 else xs[i])
+              let y = Vector.adopt (List.toArray ys)
+              let ones = Vector.adopt (Array.create n 1.0)
+              let zeros = Vector.adopt (Array.zeroCreate n)
+
+              for family, glmFamily in [ FitFamily.Poisson, GlmFamily.Poisson; FitFamily.Gamma, GlmFamily.Gamma ] do
+                  let spec =
+                      { poisson "y" [ "x", Col "x" ] with
+                          Family = family }
+
+                  let out = ok (fit spec sales)
+                  let g = ok (Glm.fit glmFamily GlmLink.Log GlmControl.defaults x y ones zeros)
+
+                  Expect.equal
+                      (column "estimate" out |> List.map (floatOf >> bits))
+                      (g.Coefficients |> List.map (Option.get >> bits))
+                      (sprintf "%A: the estimates' bits" family)
+
+                  Expect.equal
+                      (column "std_error" out |> List.map (floatOf >> bits))
+                      (g.StdErrors |> List.map (Option.get >> bits))
+                      (sprintf "%A: the errors' bits" family)
+
+                  let fitted = ok (fit { spec with Output = FitOutput.Fitted } sales)
+
+                  Expect.equal
+                      (floats "fitted" fitted |> List.map bits)
+                      (g.Fitted |> Vector.toArray |> Array.toList |> List.map bits)
+                      (sprintf "%A: the means' bits" family)
+
+          testCase "Gaussian under Identity through Glm.fit is the pipeline's least squares, byte for byte"
+          <| fun _ ->
+              let n = xs.Length
+              let x = Matrix.init n 2 (fun i j -> if j = 0 then 1.0 else xs[i])
+
+              let w =
+                  Vector.adopt [| for i in 0..7 -> if i = 3 then 0.0 else 1.0 + float i / 4.0 |]
+
+              let g =
+                  ok (
+                      Glm.fit
+                          GlmFamily.Gaussian
+                          GlmLink.Identity
+                          GlmControl.defaults
+                          x
+                          (Vector.adopt (List.toArray ys))
+                          w
+                          (Vector.adopt (Array.zeroCreate n))
+                  )
+
+              let spec = { ols with Weights = Some "w" }
+              let out = ok (fit spec sales)
+
+              Expect.equal
+                  (column "estimate" out |> List.map (floatOf >> bits))
+                  (g.Coefficients |> List.map (Option.get >> bits))
+                  "the estimates' bits"
+
+              Expect.equal
+                  (column "std_error" out |> List.map (floatOf >> bits))
+                  (g.StdErrors |> List.map (Option.get >> bits))
+                  "the errors' bits"
+
+              let summary = ok (fit { spec with Output = FitOutput.Summary } sales)
+              Expect.equal (column "deviance" summary) [ Float g.Deviance ] "the deviance's bits"
+              Expect.equal (column "iterations" summary) [ Int g.Iterations ] "one iteration"
+
+          testCase "Gamma: the dispersion is Pearson's statistic over the residual degrees of freedom"
+          <| fun _ ->
+              let spec = gamma "y" [ "x", Col "x" ]
+              let mu = floats "fitted" (ok (fit { spec with Output = FitOutput.Fitted } sales))
+              let summary = ok (fit { spec with Output = FitOutput.Summary } sales)
+
+              let pearson =
+                  List.fold2 (fun acc y m -> let r = (y - m) / m in acc + r * r) 0.0 ys mu
+
+              Expect.equal (column "dispersion" summary) [ Float(pearson / 6.0) ] "Σ((y − μ)/μ)² / (n − p)"
+              Expect.equal (column "sigma" summary) [ Float(sqrt (pearson / 6.0)) ] "sigma is its root"
+
+          testCase "an offset ln(exposure) is a rate model: the intercept moves, the slope stays"
+          <| fun _ ->
+              let plain = ok (fit (poisson "y" [ "k", Col "k" ]) sales)
+
+              let exposed =
+                  ok (
+                      fit
+                          { poisson "y" [ "k", Col "k" ] with
+                              Offset = Some(ApplyFn(Ln, [ Lit(Float 2.0) ])) }
+                          sales
+                  )
+
+              let a, b = floats "estimate" plain, floats "estimate" exposed
+              nearly b[0] (a[0] - log 2.0) "the intercept shifted by ln 2"
+              nearly b[1] a[1] "the slope unchanged"
+
+          testCase "units under the log link: a slope per unit of x, a pure intercept, the deviances by family"
+          <| fun _ ->
+              let coef = ok (fit (poisson "y" [ "x", Col "x" ]) sales)
+              Expect.equal (column "unit" coef) [ Null; Str "/m" ] "the intercept states none, the slope 1/m"
+
+              let unitOfColumn (name: string) (t: Table) =
+                  (t.Schema |> List.find (fun f -> f.Name = name)).Unit |> Option.map Unit.render
+
+              let summaryOf spec =
+                  ok (fit { spec with Output = FitOutput.Summary } sales)
+
+              let ps = summaryOf (poisson "y" [ "x", Col "x" ])
+              Expect.equal (unitOfColumn "deviance" ps) (Some "s") "a Poisson deviance is in y's unit"
+              Expect.equal (unitOfColumn "dispersion" ps) None "a pure dispersion"
+              Expect.equal (unitOfColumn "sigma" ps) None "a pure sigma"
+              let gs = summaryOf (gamma "y" [ "x", Col "x" ])
+              Expect.equal (unitOfColumn "deviance" gs) None "a Gamma deviance is a pure number"
+
+          testCase "the static walk states every log-link output's schema as the evaluator builds it"
+          <| fun _ ->
+              for spec in [ poisson "y" [ "x", Col "x" ]; gamma "y" [ "x", Col "x" ] ] do
+                  for output in
+                      [ FitOutput.Coefficients
+                        FitOutput.Summary
+                        FitOutput.Fitted
+                        FitOutput.Residuals ] do
+                      let p =
+                          [ Fit
+                                { spec with
+                                    GroupBy = [ "region" ]
+                                    Output = output } ]
+
+                      let out = ok (DataFrame.evalPipeline p sales)
+
+                      match SchemaWalk.ofPipeline sales.Schema p with
+                      | SchemaKnowledge.Closed cols ->
+                          Expect.equal
+                              (cols |> List.map (fun c -> c.Name, c.Type, c.Unit |> Option.map Unit.render))
+                              (out.Schema
+                               |> List.map (fun f -> f.Name, Some f.Type, f.Unit |> Option.map Unit.render))
+                              (sprintf "%A %A: names, types and units" spec.Family output)
+                      | other -> failtestf "%A: the walk is closed, got %A" output other
+
+          testCase "a decimal response: the fitted mean and the residual in decimal, the deviances float"
+          <| fun _ ->
+              let money =
+                  table
+                      [ Field.create "x" FloatType, [ for x in xs -> Float x ]
+                        Field.create "y" DecimalType, [ for y in ys -> dec (sprintf "%.2f" y) ] ]
+
+              let spec = gamma "y" [ "x", Col "x" ]
+              let fitted = ok (fit { spec with Output = FitOutput.Fitted } money)
+              Expect.isTrue (column "fitted" fitted |> List.forall (Cell.typeOf >> (=) (Some DecimalType))) "decimal"
+              let summary = ok (fit { spec with Output = FitOutput.Summary } money)
+              Expect.equal (column "deviance" summary |> List.map Cell.typeOf) [ Some FloatType ] "a float deviance"
+
+          testCase "the log-link refusals, each by name and row"
+          <| fun _ ->
+              let negative =
+                  table
+                      [ Field.create "x" FloatType, [ Float 1.0; Float 2.0; Float 3.0 ]
+                        Field.create "y" FloatType, [ Float 1.0; Float -1.0; Float 2.0 ] ]
+
+              Expect.equal
+                  (fit (poisson "y" [ "x", Col "x" ]) negative)
+                  (Error(FitError "fit: row 1: the response is outside the poisson family's range"))
+                  "a negative count"
+
+              let zero =
+                  table
+                      [ Field.create "x" FloatType, [ Float 1.0; Float 2.0; Float 3.0 ]
+                        Field.create "y" FloatType, [ Float 1.0; Float 2.0; Float 0.0 ] ]
+
+              Expect.equal
+                  (fit (gamma "y" [ "x", Col "x" ]) zero)
+                  (Error(FitError "fit: row 2: the response is outside the gamma family's range"))
+                  "a zero under Gamma"
+
+              // A zero-weight row far along x: its mean overflows (the separation refusal).
+              let far =
+                  table
+                      [ Field.create "x" FloatType, [ Float 1.0; Float 2.0; Float 3.0; Float 1e6 ]
+                        Field.create "w" FloatType, [ Float 1.0; Float 1.0; Float 1.0; Float 0.0 ]
+                        Field.create "y" FloatType, [ Float 1.0; Float 3.0; Float 7.0; Float 1.0 ] ]
+
+              Expect.equal
+                  (fit
+                      { poisson "y" [ "x", Col "x" ] with
+                          Weights = Some "w" }
+                      far)
+                  (Error(OverflowError "fit: row 3: the mean left its range (separation)"))
+                  "separation"
+
+              Expect.equal
+                  (fit
+                      { poisson "y" [ "x", Col "x" ] with
+                          Control =
+                              { MaxIter = Slot.Lit 1
+                                Tol = Slot.Lit 1e-8 } }
+                      sales)
+                  (Error(FitError "fit: not converged after 1 iterations"))
+                  "not converged"
+
+              Expect.equal
+                  (fit
+                      { poisson "y" [ "x", Col "x" ] with
+                          Ridge = Some(Slot.Lit 0.5) }
+                      sales)
+                  (Error(FitError "fit: a ridge penalty is fitted under the gaussian family only"))
+                  "a positive penalty under Poisson"
+
+              Expect.isOk
+                  (fit
+                      { poisson "y" [ "x", Col "x" ] with
+                          Ridge = Some(Slot.Lit 0.0) }
+                      sales)
+                  "a zero penalty is no penalty"
+
+          testCase "incremental: a GLM refits every group from the pinned start, equal to a full evaluation"
+          <| fun _ ->
+              let idw = RowIdentity.byColumn "id"
+
+              let p =
+                  [ Fit
+                        { poisson "y" [ "x", Col "x" ] with
+                            GroupBy = [ "region" ]
+                            Output = FitOutput.Summary } ]
+
+              let before = DataFrame.evalPipeline [ Transform.limit 6 0 ] sales |> ok
+              let state = ok (Incremental.primeOn idw p before)
+              Expect.equal (Incremental.plan' state).Strategy RowLocalThenGroups "maintained"
+              let delta = ok (Delta.diff idw before sales)
+              let decoded = ok (IncrementalCodec.decode (ok (IncrementalCodec.encode state)))
+
+              for s in [ state; decoded ] do
+                  let refreshed = ok (Incremental.refreshOn idw p s delta sales)
+
+                  Expect.equal
+                      (ColumnCodec.encode (Embedded(Incremental.result refreshed)))
+                      (ColumnCodec.encode (Embedded(ok (DataFrame.evalPipeline p sales))))
+                      "byte-equal"
+
+                  match (Incremental.footprint refreshed).Recompute with
+                  | GroupsRecomputed(_, 2) -> ()
+                  | other -> failtestf "both groups refit from the start, got %A" other
+
+              Expect.isFalse
+                  ((ok (IncrementalCodec.encode state)).Contains "\"acc\"")
+                  "a GLM leaves no factorization in the state"
+
+              let olsState =
+                  ok (Incremental.primeOn idw [ Fit { ols with GroupBy = [ "region" ] } ] before)
+
+              Expect.isTrue
+                  ((ok (IncrementalCodec.encode olsState)).Contains "\"acc\"")
+                  "where least squares leaves one" ]

@@ -40,6 +40,15 @@ type LinAlgError =
     | NotConverged of iterations: int
     /// A row's prior weight is negative, a NaN or an infinity (DECISIONS.md D49 item 9); the row.
     | InvalidWeight of row: int
+    /// A response outside its family's range (DECISIONS.md D49 item 15; Phase 595): a NaN or an
+    /// infinity, a negative count under Poisson, a zero or negative value under Gamma; the first row.
+    | InvalidResponse of row: int
+    /// An iteration's mean left the range its link allows — an infinity, a NaN, zero, or a unit
+    /// deviance that overflowed — and no halving of the step recovered it (D49 item 16, the separation
+    /// refusal; Phase 595); the first such row.
+    | Separation of row: int
+    /// A family and link this package does not fit (Phase 595), each by its spelling.
+    | UnsupportedModel of family: string * link: string
 
 /// How exact an operation's bytes are across hosts — the vocabulary `SchemaWalk` reads a column's
 /// lineage in (DECISIONS.md D43): `Pinned`, every conformant host computes the same bits; `HostRounded`,

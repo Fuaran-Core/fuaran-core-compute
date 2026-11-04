@@ -58,7 +58,9 @@ let private publishedOperations () : Set<string> =
               "QR"
               "LeastSquares"
               "LinAlgWire"
-              "Elementary" ]
+              "Elementary"
+              "GlmControl"
+              "Glm" ]
 
     typeof<Matrix>.Assembly.GetExportedTypes()
     |> Array.filter (fun t -> t.IsAbstract && t.IsSealed && t.Namespace = "Fuaran.Compute.LinearAlgebra")

@@ -211,7 +211,10 @@ module TransformVectorSample =
     /// summary, a categorical term, an interaction and a polynomial, an aliased column named with a null
     /// estimate, two nearly collinear terms, weights with a zero and a ridge penalty, an offset without an
     /// intercept, fitted values over a listwise deletion, a decimal response's residuals and summary, and
-    /// the two refusals by name.
+    /// the two refusals by name. Then (Phase 595, `DECISIONS.md` D55) the log-link families: Poisson's
+    /// coefficients, a grouped Poisson summary carrying the iteration count, Poisson means under an offset,
+    /// Gamma's coefficients over a categorical term, a weighted Gamma summary, and the four IRLS refusals by
+    /// name — a response outside each family, separation, and no convergence.
     let private fitShapeNames =
         [ "fit-ols"
           "fit-grouped-summary"
@@ -224,8 +227,17 @@ module TransformVectorSample =
           "fit-fitted-listwise"
           "fit-decimal-residuals"
           "fit-decimal-summary"
-          "fit-poisson-refused"
-          "fit-nonfinite-refused" ]
+          "fit-unsupported-refused"
+          "fit-nonfinite-refused"
+          "fit-poisson"
+          "fit-poisson-summary"
+          "fit-poisson-offset-fitted"
+          "fit-gamma"
+          "fit-gamma-weighted-summary"
+          "fit-poisson-response-refused"
+          "fit-gamma-response-refused"
+          "fit-poisson-separation-refused"
+          "fit-poisson-not-converged-refused" ]
 
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
@@ -797,6 +809,15 @@ module TransformVectorSample =
         let x = Col "x"
         let ols = FitSpec.ols "y" [ "x", x ]
 
+        let poisson =
+            { ols with
+                Family = FitFamily.Poisson
+                Link = FitLink.Log }
+
+        let gamma =
+            { poisson with
+                Family = FitFamily.Gamma }
+
         match shape with
         | "fit-ols" -> [ Fit ols ]
         | "fit-grouped-summary" ->
@@ -841,11 +862,45 @@ module TransformVectorSample =
                   { FitSpec.ols "m" [ "x", x ] with
                       GroupBy = [ "g" ]
                       Output = FitOutput.Summary } ]
-        | "fit-poisson-refused" ->
+        | "fit-unsupported-refused" ->
             [ Fit
                   { ols with
                       Family = FitFamily.Poisson
-                      Link = FitLink.Log } ]
+                      Link = FitLink.Identity } ]
+        | "fit-poisson" -> [ Fit poisson ]
+        | "fit-poisson-summary" ->
+            [ Fit
+                  { poisson with
+                      GroupBy = [ "g" ]
+                      Output = FitOutput.Summary } ]
+        | "fit-poisson-offset-fitted" ->
+            [ Fit
+                  { poisson with
+                      Offset = Some(ApplyFn(Ln, [ Col "z" ]))
+                      Output = FitOutput.Fitted } ]
+        | "fit-gamma" ->
+            [ Fit
+                  { gamma with
+                      Predictors = [ "x", x; "c", Col "c" ] } ]
+        | "fit-gamma-weighted-summary" ->
+            [ Fit
+                  { gamma with
+                      Weights = Some "w"
+                      Output = FitOutput.Summary } ]
+        | "fit-poisson-response-refused" -> [ Fit { poisson with Response = "n" } ]
+        | "fit-gamma-response-refused" -> [ Fit { gamma with Response = "w" } ]
+        | "fit-poisson-separation-refused" ->
+            // The zero-weight row's own term is far out: its mean overflows whatever the slope.
+            [ Fit
+                  { poisson with
+                      Predictors = [ "spike", Case([ Binary(Eq, Col "w", Lit(Float 0.0)), Lit(Float 1e6) ], Col "z") ]
+                      Weights = Some "w" } ]
+        | "fit-poisson-not-converged-refused" ->
+            [ Fit
+                  { poisson with
+                      Control =
+                          { MaxIter = Slot.Lit 2
+                            Tol = Slot.Lit 1e-8 } } ]
         | _ -> [ Fit(FitSpec.ols "y" [ "huge", Binary(Mul, x, Lit(Float 1e308)) ]) ]
 
     /// Every fit shape's answer over `fitTable`, one line each — the shape, then the canonical wire string

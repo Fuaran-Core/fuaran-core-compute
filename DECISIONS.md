@@ -1,5 +1,127 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-04 — D55: a log-link GLM fits by IRLS in `LinearAlgebra.Glm` — Poisson and Gamma under `Log`, every step a pinned operation, so the coefficients, the iteration count and the convergence decision are the same bits on every host; the `Fit` verb's refusal lifts for the two pairings; the first iteration is not compared with the saturated start, and a rise smaller than the tolerance is not a rise; the null model with an intercept and an offset is the intercept-only fit with that offset
+
+**Context.** The plan's S4 (`fuaran-compute-linear-algebra-and-glm.md` §2.5; operator rulings D5, D6 = B, D7 and
+D9 of 2026-11-01). IRLS is a loop of weighted least-squares solves, and weighted least squares is 591's streaming
+Givens QR, so a GLM is the same `Fit` verb (D53 item 1) over the same kernel; 593 pinned `exp` and `ln` (D52) so
+that the loop is built from pinned operations alone. The premise check at take found 592's `Fit` (D53) and 593's
+`Elementary` (D52) on `main`, and the IRLS rules recorded as D49 items 14 to 19 (the shard cites them as D48;
+596 took D48). Two of those rules do not survive contact with the loop, and the null-deviance rule D53 item 8
+attributes to R does not match R when an offset sits beside an intercept; items 4 to 6 below correct each.
+
+**Decided.**
+
+1. **`Glm` in `Fuaran.Compute.LinearAlgebra`.** `Glm.fit : GlmFamily → GlmLink → GlmControl → Matrix → y →
+   weights → offset → Result<GlmFit, LinAlgError>`, every `exp` and `ln` through `Elementary`. `GlmFamily` =
+   `Gaussian | Poisson | Gamma`, `GlmLink` = `Identity | Log`, both appendable (598 adds Tweedie and
+   quasi-Poisson, 600 the logit link). `GlmControl` is opaque: `GlmControl.create maxIter tol` answers `None`
+   unless `maxIter ≥ 1` and `tol` is finite and positive, so a fit never meets a control out of range;
+   `GlmControl.defaults` is R's `glm.control` (25, `1e-8`). `GlmFit` carries the coefficients (`None` at a column
+   the final solve aliased), the standard errors, the mean and the linear predictor at every row, the deviance,
+   the dispersion, the iterations and the final iteration's `LeastSquaresFit`. `Glm.nullDeviance` answers the
+   null model's deviance (item 6). `LeastSquares.standardErrors phi fit` is the classical standard error D53
+   item 8 states, now in one place that the evaluator's least squares and `Glm` both read. `LinAlgError` gains,
+   appended, `InvalidResponse of row`, `Separation of row` and `UnsupportedModel of family * link`.
+2. **The pairings fitted.** `Gaussian` under `Identity` — one weighted least-squares solve of `y − offset` under
+   the prior weights, which is the fixed point (the working response and weight do not depend on `μ`), reported as
+   one iteration and byte-equal to `QRAccumulator.addRows` and `LeastSquares.ofAccumulator` over the same rows;
+   `Poisson` under `Log` (`V = μ`, canonical, working weight `w·μ`, dispersion one); `Gamma` under `Log`
+   (`V = μ²`, working weight exactly the prior weight `w`, the dispersion Pearson's `Σ w·((y − μ)/μ)²` over the
+   rows of positive weight divided by `n − rank`, null where that is zero). Every other pairing is
+   `UnsupportedModel` — `Gaussian` under `Log` included, although D49 records its start: no phase asks for it,
+   and it lands with its own laws when one does. The standard errors are `√(φ · diag((RᵀR)⁻¹))` over the final
+   iteration's `R`, the expected information, as R's `summary.glm` reads them; for Gamma under the log link the
+   working weights are the prior weights, so that `R` is the prior-weighted design's.
+3. **The iteration, in order.** From D49 item 14's start (`μ₀ = y + 0.1` for Poisson, `y` for Gamma;
+   `η₀ = ln μ₀`; the previous deviance the deviance of `μ₀`): the working response `z = (η − offset) + (y − μ)/μ`
+   and weight are formed row by row; one fresh accumulator folds the rows (`addRows`, row order); the solve gives
+   `β`; `η = Σⱼ xᵢⱼβⱼ` over the kept columns `j` ascending from `+0`, then `+ offset` (the order a least-squares
+   fitted value is formed in); `μ = exp η`; the deviance is D49 item 18's fold over the rows of positive weight
+   (a zero-weight row is not counted, and leaving it out is the same bits as adding its `+0` wherever its unit
+   deviance is finite — it is what keeps `0 · ∞` out). A mean is OUT OF RANGE at a row when it is not finite or
+   not positive, or when the row has positive weight and its unit deviance is not finite; a scaled row that
+   overflows the accumulator is out of range too. Then item 4's halving, then D49 item 17's stopping rule.
+4. **Two corrections to D49 items 14 and 16.** (a) *The first iteration has no previous coefficients*, so
+   nothing to halve towards: a mean out of range there is refused at once as `Separation`, and its deviance is
+   not compared with `μ₀`'s. `μ₀` is the saturated start, not a point of the model — its deviance is at or near
+   the minimum any model can reach, so the first iteration's deviance is almost always above it, and D49 item 16
+   read literally would halve every fit's first step towards coefficients that do not exist. `μ₀`'s deviance
+   still serves as the first stopping test's previous value, as in R. (b) *A rise is one the stopping rule would
+   see*: a step is halved when `(dev − dev_prev) / (|dev| + 0.1) ≥ tol` (or when a mean is out of range), the
+   test of R's `glm2`, not when `dev > dev_prev`. Near the optimum the deviance moves by a few units in the last
+   place either way; a rise of that size is rounding, no halving removes it, and D49 item 16 read literally
+   refused converged fits as `NotConverged` — the drawn Poisson law met it at its 116th iteration. A rise below
+   the tolerance is exactly what the stopping rule accepts, so the two tests now share one scale. The halving
+   itself is D49's: `β ← 0.5·β_old + 0.5·β_new` element by element, at most ten times; a column the new solve
+   aliased stays aliased, and one the old solve aliased reads its old value as zero. After the tenth, a mean
+   still out of range is `Separation` naming its row, a rise still standing `NotConverged` naming the iteration.
+5. **The refusals before any iteration**, in this order, each naming the first offending row: a shape mismatch;
+   the pairing; a negative or non-finite weight (`InvalidWeight`); a response outside the family — not finite,
+   negative under Poisson, not positive under Gamma (`InvalidResponse`); a non-finite design cell
+   (`NotFinite (row, column)`); a non-finite offset (`NotFinite (row, cols)`). `y·ln(y/μ)` is `0` at `y = 0`
+   without evaluating the logarithm (D49 item 18).
+6. **The null deviance (R's `glm.fit`), and a correction to D53 item 8.** Without an intercept the null mean is
+   `g⁻¹(offset)`. With one it is the intercept-only model WITH the offset: under the identity link its closed
+   form `μᵢ = m + offsetᵢ`, `m = Σw(y − offset)/Σw`; under the log link with every offset zero the weighted mean
+   `Σwy/Σw` (the intercept-only maximum-likelihood mean for both families); under the log link with an offset,
+   that model fitted by `Glm.fit` itself, whose refusals it shares. D53 item 8 took `Σwy/Σw` with an intercept
+   whatever the offset, which is R's rule only when there is none — R refits the intercept with the offset. The
+   evaluator's least squares now uses the identity-link form; without an offset it is the same bits as before
+   (`y − 0` is `y`), so no vector moves.
+7. **The verb.** `fitResolve` admits `Poisson` and `Gamma` under `Log` beside `Gaussian` under `Identity`; every
+   other pairing keeps `UnsupportedFit`. A positive ridge penalty under any family but `Gaussian` is a `FitError`
+   (a penalised IRLS is not a fit this version states; a zero penalty folds nothing and is admitted). Per group,
+   the bridge's design (D53 items 3 to 6, unchanged) is handed to `Glm.fit` and `Glm.nullDeviance` with the
+   control's slots; `InvalidResponse` and `NotConverged` are `FitError`s naming the step's input row or the
+   iteration, and `Separation` is an `OverflowError` naming the row — the overflow family Phase 306 started, a
+   value that left the float range over finite input. The outputs are D53 item 9's tables: `fitted` is the mean
+   `μ`, `residual` the response residual `y − μ`, `iterations` the loop's count, `converged` true on every row
+   answered, `sigma` `√φ`, `r2` `1 − deviance / null_deviance`.
+8. **Units and types under the log link** (D53 item 10). The linear predictor is the logarithm of a mean, a pure
+   number, so a numeric term's coefficient is stated in `1 / unit(x)` and the intercept's and a level's in none;
+   `sigma` and the dispersion are pure numbers; a Poisson deviance (`y·ln(y/μ) − (y − μ)`) is in `unit(y)` and a
+   Gamma one is a pure number. For a decimal response `fitted` is the mean's exact decimal and `residual` exact
+   decimal arithmetic, as D53 item 11 has it, but the deviances are floats: a logarithm is never an exact
+   decimal. `fitStatUnits` states all of this once, read by the evaluator and the static walk alike.
+9. **Incremental (D7, D49 item 22).** A GLM keeps no state: `Incremental.plan` maintains a `Fit` as before
+   (`MaintainFits`), and every refresh fits every group from the pinned start, reported as every group refit; the
+   state codec emits no `fit` member for it. Byte-equality with a full evaluation is by construction. A warm start
+   is not offered. Re-fitting only the groups a delta touched would need the outputs of every untouched group in
+   the state, and on a decoded state the counts would differ from the in-memory ones; that saving is left for a
+   phase that measures it.
+10. **Laws and vectors.** `LinearAlgebraLaws` gains five laws: `Gaussian` under `Identity` through `Glm.fit` is the
+    least-squares fold byte for byte (coefficients, fitted values, deviance, standard errors, one iteration);
+    a Poisson fit meets its score equations `Xᵀ W (y − μ) = 0` at convergence within `1e-5` of the terms' scale
+    (with an intercept, `Σ w μ̂ = Σ w y`); an offset of `c` on every row is the intercept shifted by `c`; Gamma's
+    working weights are the prior weights, exactly, on every iteration (read through an internal observer seam);
+    and every refusal fires. The node leg runs them under Fable. `transform-laws.json` gains nine vectors over the
+    fit table (iterations 130 to 138): Poisson coefficients, a grouped Poisson summary carrying the iteration
+    count, Poisson means under an `ln` offset, Gamma coefficients over a categorical term, a weighted Gamma
+    summary, and the four refusals by class (`FitError` twice for a response outside each family, `OverflowError`
+    for separation, `FitError` for no convergence); vector 128, which named Poisson under `Log` as
+    `UnsupportedFit`, now names Poisson under `Identity` (`fit-unsupported-refused`). The pooled node leg renders
+    every fit vector under Fable and the suite holds it equal line by line, so the coefficients and the iteration
+    counts are compared byte for byte across the two hosts. `FitTests` holds the evaluator to R's Dobson example
+    (`?glm`: the estimates and standard errors within `1e-6`, the deviances, four iterations).
+
+**Rejected.** *A conditioning-based tolerance between hosts* — D49 item 19 stands: every step is pinned, so the
+law vectors compare bits. *`Gaussian` under `Log` now* — item 2. *Deviance residuals as `residual`* — R's
+default for a GLM, but D53's `residual` is `y − fitted` and a table whose meaning changed with the family would
+be read wrongly; a deviance-residual output is its own `FitOutput` case when asked for. *Halving on any rise*
+(D49 item 16 as written) — item 4(b). *A penalised IRLS* — item 7. *Per-group state for a GLM* — item 9.
+
+**Corrects.** D49 item 16's rise test and its silence on the first iteration (item 4); D53 item 8's null mean
+with an intercept and an offset (item 6); D53 item 1's "the one pairing this version evaluates" (item 7).
+
+**What a consumer does.** A pipeline that named `Poisson` or `Gamma` under `Log` and met `UnsupportedFit` now gets
+the fit. A language twin that certifies the transform laws ports `Glm` (items 2 to 6) over its `Elementary`
+transcription; the nine new vectors are red on it until it does.
+
+**Tidy.** Reviewed every key file. The evaluator's own standard-error loop is gone, replaced by
+`LeastSquares.standardErrors`, which `Glm` reads too; the `t` statistic's loop is one helper read by both the
+least-squares and the GLM group. Nothing else in the files touched is made dead or obsolete.
+
 ## 2026-11-04 — D54: the evaluator's `Exp`, `Ln`, `Log10` and float-exponent `Pow` run on `Elementary`'s pinned routines behind its published special-value tables, so every column they compute is `Pinned` and byte-identical on every host; D43's host-rounded tier is superseded for the four functions; the `HostRounded` mark, the decision report and the vector tolerance stay as the seam a value declared host-rounded enters by, and no scalar function produces one
 
 **Context.** D43 (Phase 557) made a float-exponent `Pow`, `Exp`, `Ln` and `Log10` host-rounded: the special-value

@@ -171,10 +171,14 @@ module LawVectorExport =
             Some "InvalidKnots"
         elif shape = "curve-decimal-refused" then
             Some "TypeError"
-        // Phase 592 (D53): a family this version does not evaluate, and a row the bridge refuses.
-        elif shape = "fit-poisson-refused" then
+        // Phase 592 (D53): a pairing this version does not evaluate; every other fit refusal — a row the
+        // bridge refuses, a response outside its family, no convergence (Phase 595, D55) — is a
+        // `FitError`, but separation, which is the mean's overflow.
+        elif shape = "fit-unsupported-refused" then
             Some "UnsupportedFit"
-        elif shape = "fit-nonfinite-refused" then
+        elif shape = "fit-poisson-separation-refused" then
+            Some "OverflowError"
+        elif shape.StartsWith "fit-" then
             Some "FitError"
         else
             None

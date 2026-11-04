@@ -482,8 +482,9 @@ type FnDef =
 
 /// The error distribution a `Fit` assumes (Phase 592, `DECISIONS.md` D5 of the accepted plan): one
 /// verb, the family and the link as data. `Gaussian` under `FitLink.Identity` is ordinary least
-/// squares, the one pairing this version evaluates; every other pairing is typed here so a pipeline
-/// can carry it, and refused by name when the step runs (`EvalError.UnsupportedFit`).
+/// squares; `Poisson` and `Gamma` under `FitLink.Log` are generalised linear models fitted by IRLS
+/// through `Fuaran.Compute.LinearAlgebra.Glm` (Phase 595). Every other pairing is typed here so a
+/// pipeline can carry it, and refused by name when the step runs (`EvalError.UnsupportedFit`).
 [<RequireQualifiedAccess>]
 type FitFamily =
     | Gaussian
@@ -1130,13 +1131,16 @@ type EvalError =
     /// resolves, before any row is read, so an empty frame is refused exactly as a full one.
     | InvalidKnots of detail: string
     /// A `Fit` whose family and link this version does not evaluate (Phase 592, D53): every pairing but
-    /// `Gaussian` under `Identity` is typed in `FitSpec` and refused here by name, before any row is
-    /// read. Names both by their wire spellings.
+    /// `Gaussian` under `Identity` and, since Phase 595, `Poisson` and `Gamma` under `Log` is typed in
+    /// `FitSpec` and refused here by name, before any row is read. Names both by their wire spellings.
     | UnsupportedFit of family: string * link: string
     /// A `Fit` refused (Phase 592, D53): a spec that cannot be fitted as written (no design column, a
     /// term named twice, an output column that already exists, a predictor of a type the bridge does
-    /// not code, a ridge penalty or a control out of range), or a row the bridge refuses (a non-finite
-    /// response, term or offset, a negative or non-finite weight), naming the step's input row.
+    /// not code, a ridge penalty or a control out of range, a positive ridge penalty under a family but
+    /// `Gaussian`), a row the bridge refuses (a non-finite response, term or offset, a negative or
+    /// non-finite weight, a response outside its family's range), naming the step's input row, or an
+    /// IRLS fit that did not converge (Phase 595). A mean that leaves its range is the separation
+    /// `OverflowError`.
     | FitError of detail: string
 
 /// A curve prepared once per step (Phase 596, `DECISIONS.md` D48): the knots as arrays, and for a
@@ -10150,6 +10154,40 @@ module DataFrame =
     let internal fitUnitSquared (u: UnitOfMeasure option) : UnitOfMeasure option =
         u |> Option.bind (fun u -> unitPower u 2)
 
+    /// The units a fit states its statistics in, read off the family and the link (D53 item 10; Phase
+    /// 595). Under the identity link the linear predictor is in the response's unit: a coefficient is
+    /// `unit(y) / unit(x)`, `sigma` is `unit(y)`, the deviances and the dispersion its square, and a
+    /// decimal response's deviances are decimal. Under the log link the linear predictor is the
+    /// logarithm of a mean, a pure number: a numeric term's coefficient is `1 / unit(x)`, the
+    /// intercept's and a level's state none, `sigma` and the dispersion are pure numbers, a Poisson
+    /// deviance (`y·ln(y/μ) − (y − μ)`) is in the response's unit and a Gamma one is a pure number, and
+    /// the deviances are floats whatever the response — a logarithm is never an exact decimal.
+    type internal FitStatUnits =
+        {
+            /// The unit the linear predictor is in, which a coefficient is stated against.
+            Eta: UnitOfMeasure option
+            Sigma: UnitOfMeasure option
+            Deviance: UnitOfMeasure option
+            Dispersion: UnitOfMeasure option
+            /// The deviances of a decimal response are decimal.
+            DecimalDeviance: bool
+        }
+
+    let internal fitStatUnits (spec: FitSpec) (yUnit: UnitOfMeasure option) : FitStatUnits =
+        match spec.Link with
+        | FitLink.Identity ->
+            { Eta = yUnit
+              Sigma = yUnit
+              Deviance = fitUnitSquared yUnit
+              Dispersion = fitUnitSquared yUnit
+              DecimalDeviance = true }
+        | FitLink.Log ->
+            { Eta = None
+              Sigma = None
+              Deviance = (if spec.Family = FitFamily.Poisson then yUnit else None)
+              Dispersion = None
+              DecimalDeviance = false }
+
     /// The name of the coefficient of the design's constant column (R's spelling).
     let internal interceptTerm = "(Intercept)"
 
@@ -10194,17 +10232,23 @@ module DataFrame =
 
     let internal fitResolve (env: Map<string, Cell>) (spec: FitSpec) : Result<FitResolved, EvalError> =
         match spec.Family, spec.Link with
-        | FitFamily.Gaussian, FitLink.Identity ->
+        | FitFamily.Gaussian, FitLink.Identity
+        | FitFamily.Poisson, FitLink.Log
+        | FitFamily.Gamma, FitLink.Log ->
             let ridge =
                 match spec.Ridge with
                 | None -> Ok 0.0
                 | Some s ->
                     resolveFloatSlot env "fit ridge" s
                     |> Result.bind (fun l ->
-                        if finite l && l >= 0.0 then
-                            Ok l
+                        if not (finite l && l >= 0.0) then
+                            Error(FitError "fit: the ridge penalty must be finite and not negative")
+                        // Phase 595: a penalised IRLS is not a fit this version states; a zero penalty
+                        // folds nothing, so it is no penalty under any family.
+                        elif l > 0.0 && spec.Family <> FitFamily.Gaussian then
+                            Error(FitError "fit: a ridge penalty is fitted under the gaussian family only")
                         else
-                            Error(FitError "fit: the ridge penalty must be finite and not negative"))
+                            Ok l)
 
             ridge
             |> Result.bind (fun ridge ->
@@ -10313,6 +10357,9 @@ module DataFrame =
         | LinearAlgebra.LinAlgError.NotTriangular(r, c) -> "not triangular at (" + string r + ", " + string c + ")"
         | LinearAlgebra.LinAlgError.NotConverged n -> "not converged after " + string n + " iterations"
         | LinearAlgebra.LinAlgError.InvalidWeight r -> "an invalid weight at " + string r
+        | LinearAlgebra.LinAlgError.InvalidResponse r -> "a response outside the family at " + string r
+        | LinearAlgebra.LinAlgError.Separation r -> "the mean left its range at " + string r
+        | LinearAlgebra.LinAlgError.UnsupportedModel(f, l) -> "no fit of the " + f + " family under the " + l + " link"
 
     /// One predictor as the bridge codes it.
     type private FitTerm =
@@ -10497,11 +10544,12 @@ module DataFrame =
                                             | NumericTerm _ -> false)
 
                                     let yUnit = colUnit f.Cols spec.Response
+                                    let etaUnit = (fitStatUnits spec yUnit).Eta
 
                                     // Each design column: its name, its unit, and its value at a row.
                                     let columns: (string * UnitOfMeasure option * (int -> float)) list =
                                         (if spec.Intercept then
-                                             [ interceptTerm, yUnit, (fun _ -> 1.0) ]
+                                             [ interceptTerm, etaUnit, (fun _ -> 1.0) ]
                                          else
                                              [])
                                         @ (terms
@@ -10509,7 +10557,7 @@ module DataFrame =
                                                match t with
                                                | NumericTerm(name, cells, unit) ->
                                                    [ name,
-                                                     unitQuotient yUnit unit,
+                                                     unitQuotient etaUnit unit,
                                                      (fun i -> fitFloat cells[i] |> Option.defaultValue nan) ]
                                                | CategoricalTerm(name, cells) ->
                                                    let levels = levelsOf cells
@@ -10527,7 +10575,7 @@ module DataFrame =
                                                        let token = levelText level
 
                                                        name + "[" + token + "]",
-                                                       yUnit,
+                                                       etaUnit,
                                                        (fun i -> if levelText cells[i] = token then 1.0 else 0.0)))
                                            |> List.concat)
 
@@ -10705,7 +10753,16 @@ module DataFrame =
             /// a float, or for a decimal response a decimal.
             Fitted: Cell[]
             Residuals: Cell[]
+            /// The IRLS iterations run: one for least squares (Phase 595).
+            Iterations: int
         }
+
+    /// `t = estimate / std_error` per design column, null where the error is zero or null (D53 item 8).
+    let private fitTStats (beta: float option[]) (se: float option[]) : float option[] =
+        Array.init beta.Length (fun j ->
+            match beta[j], se[j] with
+            | Some b, Some s when s > 0.0 -> Some(b / s)
+            | _ -> None)
 
     /// The fit of one group from its data accumulator: the ridge rows folded in after the data, the
     /// solve, then the fitted values, the residuals and the statistics, each a pinned left-to-right
@@ -10764,21 +10821,22 @@ module DataFrame =
             let m = members.Length
             let fitted = Array.init m (fun t -> fittedFloat members[t])
 
-            // The null model's mean (R's `glm.fit`): with an intercept the weighted mean of the
-            // response, without one the offset.
+            // The null model's mean (R's `glm.fit`, Phase 595): with an intercept the intercept-only
+            // fit with the offset, `Σw(y − offset) / Σw + offset` (the weighted mean of the response
+            // where there is no offset, `y − 0` being `y`), without one the offset.
             let mutable sw = 0.0
             let mutable swy = 0.0
 
             for t in 0 .. m - 1 do
                 let i = members[t]
                 sw <- sw + d.W[i]
-                swy <- swy + d.W[i] * d.Y[i]
+                swy <- swy + d.W[i] * (d.Y[i] - d.Off[i])
 
             let sw = sw
             let swy = swy
 
             let nullMean (i: int) =
-                if spec.Intercept then swy / sw else d.Off[i]
+                if spec.Intercept then swy / sw + d.Off[i] else d.Off[i]
 
             let fail (what: string) = FitError("fit: " + what)
 
@@ -10888,29 +10946,13 @@ module DataFrame =
             |> Result.map (fun (devCell, nulCell, dev, nul, fittedCells, residCells) ->
                 let dispersion = if df > 0 then Some(dev / float df) else None
                 let sigma = dispersion |> Option.map sqrt
-                let rinv = ls.RInverse
-                let kept = ls.Kept |> List.toArray
 
-                let se = Array.create p None
+                let se =
+                    match dispersion with
+                    | Some phi -> LinearAlgebra.LeastSquares.standardErrors phi ls |> List.toArray
+                    | None -> Array.create p None
 
-                match dispersion with
-                | Some phi ->
-                    for t in 0 .. kept.Length - 1 do
-                        // diag((RᵀR)⁻¹)[t] = Σₖ R⁻¹[t,k]², k ascending (R⁻¹ is upper triangular).
-                        let mutable c = 0.0
-
-                        for kk in t .. kept.Length - 1 do
-                            let v = LinearAlgebra.Matrix.item t kk rinv
-                            c <- c + v * v
-
-                        se[kept[t]] <- Some(sqrt (phi * c))
-                | None -> ()
-
-                let tStat =
-                    Array.init p (fun j ->
-                        match beta[j], se[j] with
-                        | Some b, Some s when s > 0.0 -> Some(b / s)
-                        | _ -> None)
+                let tStat = fitTStats beta se
 
                 { Estimates = beta
                   StdErrors = se
@@ -10928,7 +10970,128 @@ module DataFrame =
                   Deviance = devCell
                   NullDeviance = nulCell
                   Fitted = fittedCells
-                  Residuals = residCells }))
+                  Residuals = residCells
+                  Iterations = 1 }))
+
+    /// One group's generalised linear model (Phase 595): `LinearAlgebra.Glm.fit` over the group's rows
+    /// in member order — the design, the estimation response, the prior weights and the offset as the
+    /// bridge assembled them — and the null deviance by `Glm.nullDeviance`. The fitted value is the mean
+    /// `μ` and the residual the response residual `y − μ`; for a decimal response the fitted value is
+    /// the mean's exact decimal and the residual exact decimal arithmetic, while the deviances, being
+    /// sums of logarithms, stay floats (`fitStatUnits`). Refusals name the step's input row: a response
+    /// outside the family and a non-converging fit as `FitError`, a mean out of range as the separation
+    /// `OverflowError`.
+    let internal fitGlmGroupOf
+        (d: FitDesign)
+        (r: FitResolved)
+        (spec: FitSpec)
+        (members: int[])
+        : Result<FitGroup, EvalError> =
+        let m = members.Length
+        let p = d.P
+        let x = LinearAlgebra.Matrix.init m p (fun t j -> d.X[members[t] * p + j])
+
+        let column (a: float[]) =
+            Vector.adopt (Array.init m (fun t -> a[members[t]]))
+
+        let y = column d.Y
+        let w = column d.W
+        let o = column d.Off
+
+        let family =
+            match spec.Family with
+            | FitFamily.Poisson -> LinearAlgebra.GlmFamily.Poisson
+            | FitFamily.Gamma -> LinearAlgebra.GlmFamily.Gamma
+            | _ -> LinearAlgebra.GlmFamily.Gaussian
+
+        let link =
+            match spec.Link with
+            | FitLink.Log -> LinearAlgebra.GlmLink.Log
+            | FitLink.Identity -> LinearAlgebra.GlmLink.Identity
+
+        let refuse (e: LinearAlgebra.LinAlgError) : EvalError =
+            match e with
+            | LinearAlgebra.LinAlgError.InvalidResponse t ->
+                rowError members[t] ("the response is outside the " + fitFamilyTag spec.Family + " family's range")
+            | LinearAlgebra.LinAlgError.InvalidWeight t -> rowError members[t] "the weight is negative or not finite"
+            | LinearAlgebra.LinAlgError.Separation t ->
+                OverflowError("fit: row " + string members[t] + ": the mean left its range (separation)")
+            | LinearAlgebra.LinAlgError.NotConverged n ->
+                FitError("fit: not converged after " + string n + " iterations")
+            | other -> FitError("fit: " + linAlgText other)
+
+        match LinearAlgebra.GlmControl.create r.MaxIter r.Tol with
+        | None -> Error(FitError "fit: the control is out of range")
+        | Some control ->
+            LinearAlgebra.Glm.fit family link control x y w o
+            |> Result.bind (fun g ->
+                LinearAlgebra.Glm.nullDeviance family link control spec.Intercept y w o
+                |> Result.map (fun nul -> g, nul))
+            |> Result.mapError refuse
+            |> Result.bind (fun (g, nul) ->
+                let mu = Vector.toArray g.Fitted
+                let fail (what: string) = FitError("fit: " + what)
+
+                let cells: Result<Cell[] * Cell[], EvalError> =
+                    if d.Decimal then
+                        let fitted = Array.zeroCreate<Cell> m
+                        let resid = Array.zeroCreate<Cell> m
+                        let mutable failure = None
+                        let mutable t = 0
+
+                        while Option.isNone failure && t < m do
+                            let yd =
+                                match d.YCells[members[t]] with
+                                | Decimal s -> Some s
+                                | Int v -> Some(string v)
+                                | _ -> None
+
+                            match DecimalArith.ofFloat mu[t], yd with
+                            | Some fd, Some yd ->
+                                match DecimalArith.sub yd fd with
+                                | Some rd ->
+                                    fitted[t] <- Decimal fd
+                                    resid[t] <- Decimal rd
+                                | None -> failure <- Some(fail "a residual")
+                            | _ -> failure <- Some(fail "a fitted value is not a decimal")
+
+                            t <- t + 1
+
+                        match failure with
+                        | Some e -> Error e
+                        | None -> Ok(fitted, resid)
+                    else
+                        let ya = Vector.toArray y
+                        Ok(mu |> Array.map Float, Array.init m (fun t -> Float(ya[t] - mu[t])))
+
+                cells
+                |> Result.map (fun (fitted, resid) ->
+                    let mutable sw = 0.0
+
+                    for v in Vector.toArray w do
+                        sw <- sw + v
+
+                    let beta = g.Coefficients |> List.toArray
+                    let se = g.StdErrors |> List.toArray
+
+                    { Estimates = beta
+                      StdErrors = se
+                      T = fitTStats beta se
+                      N = g.Count
+                      Rank = g.Rank
+                      Df = g.ResidualDf
+                      Sigma = g.Dispersion |> Option.map sqrt
+                      Dispersion = g.Dispersion
+                      R2 =
+                        (if sw > 0.0 && nul > 0.0 then
+                             Some(1.0 - g.Deviance / nul)
+                         else
+                             None)
+                      Deviance = Float g.Deviance
+                      NullDeviance = Float nul
+                      Fitted = fitted
+                      Residuals = resid
+                      Iterations = g.Iterations }))
 
     /// What a maintained fit carries from one evaluation to the next (D53 item 12): the design's layout
     /// and, per group token, the group's member row tokens in order and its data accumulator.
@@ -10989,6 +11152,9 @@ module DataFrame =
                         | _ -> fresh
                     | _ -> fresh
 
+                // Phase 595: a generalised linear model keeps no state — every group is fitted from the
+                // pinned start on every evaluation (D49 item 22; a warm start is never certified).
+                let glm = spec.Family <> FitFamily.Gaussian
                 let mutable refit = 0
                 let accs = Array.zeroCreate<LinearAlgebra.QRAccumulator> groups
                 let fits = Array.zeroCreate<FitGroup> groups
@@ -10997,15 +11163,23 @@ module DataFrame =
 
                 while Option.isNone failure && g < groups do
                     let gi = g
-                    let acc0, from = start gi
+
+                    let acc0, from =
+                        if glm then
+                            LinearAlgebra.QRAccumulator.empty d.P, 0
+                        else
+                            start gi
 
                     if from = 0 then
                         refit <- refit + 1
 
                     match
-                        fitFold d d.Members[gi] from acc0
-                        |> Result.bind (fun acc ->
-                            fitGroupOf d resolved spec d.Members[gi] acc |> Result.map (fun fg -> acc, fg))
+                        if glm then
+                            fitGlmGroupOf d resolved spec d.Members[gi] |> Result.map (fun fg -> acc0, fg)
+                        else
+                            fitFold d d.Members[gi] from acc0
+                            |> Result.bind (fun acc ->
+                                fitGroupOf d resolved spec d.Members[gi] acc |> Result.map (fun fg -> acc, fg))
                     with
                     | Ok(acc, fg) ->
                         accs[gi] <- acc
@@ -11019,13 +11193,13 @@ module DataFrame =
                 | None ->
                     let memo =
                         match rows with
-                        | Some rr ->
+                        | Some rr when not glm ->
                             { Layout = layout
                               Groups =
                                 Seq.init groups (fun g ->
                                     keyToken g, ((d.Members[g] |> Array.map (fun i -> rr.Tokens[i])), accs[g]))
                                 |> Map.ofSeq }
-                        | None -> emptyFitMemo
+                        | _ -> emptyFitMemo
 
                     let floatCell (o: float option) =
                         match o with
@@ -11046,7 +11220,7 @@ module DataFrame =
                           Sel = None
                           Count = cells.Length }
 
-                    let yUnit2 = fitUnitSquared d.YUnit
+                    let units = fitStatUnits spec d.YUnit
 
                     let out =
                         match spec.Output with
@@ -11072,18 +11246,18 @@ module DataFrame =
 
                             table cols cells
                         | FitOutput.Summary ->
-                            let devType = fitCellType d
+                            let devType = if units.DecimalDeviance then fitCellType d else FloatType
 
                             let cols =
                                 d.KeyCols
                                 @ [ Field.create "n" IntType
                                     Field.create "df" IntType
-                                    Field.create "sigma" FloatType |> stated d.YUnit
+                                    Field.create "sigma" FloatType |> stated units.Sigma
                                     Field.create "r2" FloatType
                                     Field.create "rank" IntType
-                                    Field.create "deviance" devType |> stated yUnit2
-                                    Field.create "null_deviance" devType |> stated yUnit2
-                                    Field.create "dispersion" FloatType |> stated yUnit2
+                                    Field.create "deviance" devType |> stated units.Deviance
+                                    Field.create "null_deviance" devType |> stated units.Deviance
+                                    Field.create "dispersion" FloatType |> stated units.Dispersion
                                     Field.create "iterations" IntType
                                     Field.create "converged" BoolType ]
 
@@ -11101,7 +11275,7 @@ module DataFrame =
                                            fg.Deviance
                                            fg.NullDeviance
                                            floatCell fg.Dispersion
-                                           Int 1
+                                           Int fg.Iterations
                                            Bool true |])
 
                             table cols cells
@@ -12534,13 +12708,16 @@ module SchemaWalk =
 
             let yType = typeOf spec.Response input
             let yUnit = unitOf spec.Response input
-            let yUnit2 = DataFrame.fitUnitSquared yUnit
+            let units = DataFrame.fitStatUnits spec yUnit
 
             // The type a column stated against the response takes: decimal for a decimal response,
             // float for an int or a float one, unknown where the response's type is.
             let againstY =
                 yType
                 |> Option.map (fun ty -> if ty = DecimalType then DecimalType else FloatType)
+
+            // A deviance is decimal only where the link keeps it a sum of decimal squares (Phase 595).
+            let devianceType = if units.DecimalDeviance then againstY else Some FloatType
 
             let col (name: string) (ty: ColumnType option) (unit: UnitOfMeasure option) =
                 ColumnKnowledge.named name ty
@@ -12564,12 +12741,12 @@ module SchemaWalk =
                     keys
                     @ [ col "n" (Some IntType) None
                         col "df" (Some IntType) None
-                        col "sigma" (Some FloatType) yUnit
+                        col "sigma" (Some FloatType) units.Sigma
                         col "r2" (Some FloatType) None
                         col "rank" (Some IntType) None
-                        col "deviance" againstY yUnit2
-                        col "null_deviance" againstY yUnit2
-                        col "dispersion" (Some FloatType) yUnit2
+                        col "deviance" devianceType units.Deviance
+                        col "null_deviance" devianceType units.Deviance
+                        col "dispersion" (Some FloatType) units.Dispersion
                         col "iterations" (Some IntType) None
                         col "converged" (Some BoolType) None ]
                 )
