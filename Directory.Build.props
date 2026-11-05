@@ -42,7 +42,8 @@
          against are part of what this version publishes,
          released as `v0.42.0`. 0.42.0 is tagged, so Phase 584's additive change (the transform law
          vectors pin an unknown sort, partition or order key as UnknownColumn and an unjoinable union
-         as TypeError; no public surface moves) advanced the slot to 0.43.0, a DRAFT. -->
+         as TypeError; no public surface moves) advanced the slot to 0.43.0,
+         released as `v0.43.0`. -->
     <Version>0.43.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
