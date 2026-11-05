@@ -460,3 +460,297 @@ module Elementary =
                     else powCore ax y
 
                 if x < 0.0 && isOddInteger y then -magnitude else magnitude
+
+    // ---- erfc (fdlibm s_erf.c) and the standard normal distribution (Phase 600) -------------------
+
+    let private erx = 8.45062911510467529297e-01
+    let private pp0 = 1.28379167095512558561e-01
+    let private pp1 = -3.25042107247001499370e-01
+    let private pp2 = -2.84817495755985104766e-02
+    let private pp3 = -5.77027029648944159157e-03
+    let private pp4 = -2.37630166566501626084e-05
+    let private qq1 = 3.97917223959155352819e-01
+    let private qq2 = 6.50222499887672944485e-02
+    let private qq3 = 5.08130628187576562776e-03
+    let private qq4 = 1.32494738004321644526e-04
+    let private qq5 = -3.96022827877536812320e-06
+    let private pa0 = -2.36211856075265944077e-03
+    let private pa1 = 4.14856118683748331666e-01
+    let private pa2 = -3.72207876035701323847e-01
+    let private pa3 = 3.18346619901161753674e-01
+    let private pa4 = -1.10894694282396677476e-01
+    let private pa5 = 3.54783043256182359371e-02
+    let private pa6 = -2.16637559486879084300e-03
+    let private qa1 = 1.06420880400844228286e-01
+    let private qa2 = 5.40397917702171048937e-01
+    let private qa3 = 7.18286544141962662868e-02
+    let private qa4 = 1.26171219808761642112e-01
+    let private qa5 = 1.36370839120290507362e-02
+    let private qa6 = 1.19844998467991074170e-02
+    let private ra0 = -9.86494403484714822705e-03
+    let private ra1 = -6.93858572707181764372e-01
+    let private ra2 = -1.05586262253232909814e+01
+    let private ra3 = -6.23753324503260060396e+01
+    let private ra4 = -1.62396669462573470355e+02
+    let private ra5 = -1.84605092906711035994e+02
+    let private ra6 = -8.12874355063065934246e+01
+    let private ra7 = -9.81432934416914548592e+00
+    let private sa1 = 1.96512716674392571292e+01
+    let private sa2 = 1.37657754143519042600e+02
+    let private sa3 = 4.34565877475229228821e+02
+    let private sa4 = 6.45387271733267880336e+02
+    let private sa5 = 4.29008140027567833386e+02
+    let private sa6 = 1.08635005541779435134e+02
+    let private sa7 = 6.57024977031928170135e+00
+    let private sa8 = -6.04244152148580987438e-02
+    let private rb0 = -9.86494292470009928597e-03
+    let private rb1 = -7.99283237680523006574e-01
+    let private rb2 = -1.77579549177547519889e+01
+    let private rb3 = -1.60636384855821916062e+02
+    let private rb4 = -6.37566443368389627722e+02
+    let private rb5 = -1.02509513161107724954e+03
+    let private rb6 = -4.83519191608651397019e+02
+    let private sb1 = 3.03380607434824582924e+01
+    let private sb2 = 3.25792512996573918826e+02
+    let private sb3 = 1.53672958608443695994e+03
+    let private sb4 = 3.19985821950859553908e+03
+    let private sb5 = 2.55305040643316442583e+03
+    let private sb6 = 4.74528541206955367215e+02
+    let private sb7 = -2.24409524465858183362e+01
+
+    /// fdlibm's split between its two outer erfc branches, `1/0.35` cut to its high word: the double
+    /// whose high word is `0x4006db6d` and whose low word is zero.
+    let private erfcSplit = 2.8571414947509766
+    let private twoToMinus56 = 1.3877787807814457e-17
+
+    /// `⌊v⌋` for `0 ≤ v < 2^52`, with `+` and `−` only: `v + 2^52 − 2^52` rounds to the nearest integer.
+    let private floorSmall (v: float) : float =
+        let r = (v + twoTo52) - twoTo52
+        if r > v then r - 1.0 else r
+
+    /// `x` in `[1.25, 28)` with its significand cut to its leading twenty-one bits (fdlibm's
+    /// `SET_LOW_WORD(z, 0)`), by one exact product, one exact floor and one exact quotient.
+    let private highWord (x: float) : float =
+        let e =
+            if x >= 16.0 then 4
+            elif x >= 8.0 then 3
+            elif x >= 4.0 then 2
+            elif x >= 2.0 then 1
+            else 0
+
+        let scale = twoTo (20 - e)
+        floorSmall (x * scale) / scale
+
+    /// `erfc |x|` for `|x|` in `[0.84375, 28)` (fdlibm's `erfc1` and `erfc2`).
+    let private erfcTail (ax: float) : float =
+        if ax < 1.25 then
+            let s = ax - 1.0
+            let p = pa0 + s * (pa1 + s * (pa2 + s * (pa3 + s * (pa4 + s * (pa5 + s * pa6)))))
+            let q = 1.0 + s * (qa1 + s * (qa2 + s * (qa3 + s * (qa4 + s * (qa5 + s * qa6)))))
+            1.0 - erx - p / q
+        else
+            let s = 1.0 / (ax * ax)
+
+            let r, q =
+                if ax < erfcSplit then
+                    ra0
+                    + s * (ra1 + s * (ra2 + s * (ra3 + s * (ra4 + s * (ra5 + s * (ra6 + s * ra7)))))),
+                    1.0
+                    + s
+                      * (sa1
+                         + s * (sa2 + s * (sa3 + s * (sa4 + s * (sa5 + s * (sa6 + s * (sa7 + s * sa8)))))))
+                else
+                    rb0 + s * (rb1 + s * (rb2 + s * (rb3 + s * (rb4 + s * (rb5 + s * rb6))))),
+                    1.0
+                    + s * (sb1 + s * (sb2 + s * (sb3 + s * (sb4 + s * (sb5 + s * (sb6 + s * sb7))))))
+
+            let z = highWord ax
+            exp (-z * z - 0.5625) * exp ((z - ax) * (z + ax) + r / q) / ax
+
+    /// The pinned complementary error function `erfc x = 1 − erf x` (Phase 600, DECISIONS.md D58):
+    /// fdlibm's `s_erf.c` (Sun Microsystems, 1993) transcribed with its published coefficients, its two
+    /// exponentials through the pinned `exp` and its low-word cut done by exact arithmetic, so it
+    /// answers the same bits on every host. `erfc NaN` is NaN, `erfc +∞` is `0`, `erfc −∞` is `2`.
+    let erfc (x: float) : float =
+        if Double.IsNaN x then
+            Double.NaN
+        elif Double.IsPositiveInfinity x then
+            0.0
+        elif Double.IsNegativeInfinity x then
+            2.0
+        else
+            let ax = if x < 0.0 then -x else x
+
+            if ax < 0.84375 then
+                if ax < twoToMinus56 then
+                    1.0 - x
+                else
+                    let z = x * x
+                    let r = pp0 + z * (pp1 + z * (pp2 + z * (pp3 + z * pp4)))
+                    let s = 1.0 + z * (qq1 + z * (qq2 + z * (qq3 + z * (qq4 + z * qq5))))
+                    let y = r / s
+
+                    if x < 0.25 then
+                        1.0 - (x + x * y)
+                    else
+                        0.5 - (x - 0.5 + x * y)
+            elif ax < 28.0 then
+                let v = erfcTail ax
+                if x < 0.0 then 2.0 - v else v
+            elif x < 0.0 then
+                2.0
+            else
+                0.0
+
+    /// `1/√2` as a double and the double nearest its remainder; `2/√π` and `1/√(2π)`, each the double
+    /// nearest.
+    let private invSqrt2Hi = 0.7071067811865476
+    let private invSqrt2Lo = -4.833646656726457e-17
+    let private twoOverSqrtPi = 1.1283791670955126
+    let private invSqrt2Pi = 0.3989422804014327
+
+    /// The pinned standard normal distribution function `Φ(x) = erfc(−x/√2) / 2` (Phase 600, D58): the
+    /// argument carried as a double `t` and its rounding error `t'`, folded back by the first-order term
+    /// `− t' · (2/√π) · exp(−t²)`, so the tail does not amplify the rounding of `x/√2`. `Φ(NaN)` is NaN;
+    /// below `x = −40` it is `0`, above `40` it is `1`.
+    let normalCdf (x: float) : float =
+        if Double.IsNaN x then
+            Double.NaN
+        elif x < -40.0 then
+            0.0
+        elif x > 40.0 then
+            1.0
+        else
+            let struct (p, e) = twoProd x invSqrt2Hi
+            let th = -p
+            let tl = -(e + x * invSqrt2Lo)
+            0.5 * (erfc th - tl * twoOverSqrtPi * exp (-(th * th)))
+
+    /// The pinned standard normal density `φ(x) = exp(−x²/2)/√(2π)` (Phase 600, D58): `x²` as a double
+    /// and its exact error, the error folded back by a first-order term. `φ(NaN)` is NaN; beyond
+    /// `|x| = 40` it is `0`.
+    let normalDensity (x: float) : float =
+        if Double.IsNaN x then
+            Double.NaN
+        elif x < -40.0 || x > 40.0 then
+            0.0
+        else
+            let struct (h, l) = twoProd x x
+            exp (-0.5 * h) * (1.0 - 0.5 * l) * invSqrt2Pi
+
+    /// The pinned standard normal quantile `Φ⁻¹(p)` (Phase 600, D58): Wichura's AS 241 (`PPND16`,
+    /// Applied Statistics 37, 1988), three rational functions with their published coefficients, the
+    /// tails' `√(−ln p)` through the pinned `ln` and the correctly rounded square root. `Φ⁻¹(0)` is `−∞`
+    /// and `Φ⁻¹(1)` is `+∞`; outside `[0, 1]`, or at NaN, it is NaN. Below `p = e^−729`, a subnormal, the
+    /// third function is used beyond the range it was fitted on.
+    let normalQuantile (p: float) : float =
+        if Double.IsNaN p || p < 0.0 || p > 1.0 then
+            Double.NaN
+        elif p = 0.0 then
+            Double.NegativeInfinity
+        elif p = 1.0 then
+            Double.PositiveInfinity
+        else
+            let q = p - 0.5
+
+            if (if q < 0.0 then -q else q) <= 0.425 then
+                let r = 0.180625 - q * q
+
+                let num =
+                    ((((((r * 2509.0809287301226727 + 33430.575583588128105) * r + 67265.770927008700853)
+                        * r
+                        + 45921.953931549871457)
+                       * r
+                       + 13731.693765509461125)
+                      * r
+                      + 1971.5909503065514427)
+                     * r
+                     + 133.14166789178437745)
+                    * r
+                    + 3.387132872796366608
+
+                let den =
+                    ((((((r * 5226.495278852854561 + 28729.085735721942674) * r + 39307.89580009271061)
+                        * r
+                        + 21213.794301586595867)
+                       * r
+                       + 5394.1960214247511077)
+                      * r
+                      + 687.1870074920579083)
+                     * r
+                     + 42.313330701600911252)
+                    * r
+                    + 1.0
+
+                q * num / den
+            else
+                let tail = if q > 0.0 then 1.0 - p else p
+                let r = sqrt (-(ln tail))
+
+                let v =
+                    if r <= 5.0 then
+                        let r = r - 1.6
+
+                        let num =
+                            ((((((r * 7.7454501427834140764e-4 + 0.0227238449892691845833) * r
+                                 + 0.24178072517745061177)
+                                * r
+                                + 1.27045825245236838258)
+                               * r
+                               + 3.64784832476320460504)
+                              * r
+                              + 5.7694972214606914055)
+                             * r
+                             + 4.6303378461565452959)
+                            * r
+                            + 1.42343711074968357734
+
+                        let den =
+                            ((((((r * 1.05075007164441684324e-9 + 5.475938084995344946e-4) * r
+                                 + 0.0151986665636164571966)
+                                * r
+                                + 0.14810397642748007459)
+                               * r
+                               + 0.68976733498510000455)
+                              * r
+                              + 1.6763848301838038494)
+                             * r
+                             + 2.05319162663775882187)
+                            * r
+                            + 1.0
+
+                        num / den
+                    else
+                        let r = r - 5.0
+
+                        let num =
+                            ((((((r * 2.01033439929228813265e-7 + 2.71155556874348757815e-5) * r
+                                 + 0.0012426609473880784386)
+                                * r
+                                + 0.026532189526576123093)
+                               * r
+                               + 0.29656057182850489123)
+                              * r
+                              + 1.7848265399172913358)
+                             * r
+                             + 5.4637849111641143699)
+                            * r
+                            + 6.6579046435011037772
+
+                        let den =
+                            ((((((r * 2.04426310338993978564e-15 + 1.4215117583164458887e-7) * r
+                                 + 1.8463183175100546818e-5)
+                                * r
+                                + 7.868691311456132591e-4)
+                               * r
+                               + 0.0148753612908506148525)
+                              * r
+                              + 0.13692988092273580531)
+                             * r
+                             + 0.59983220655588793769)
+                            * r
+                            + 1.0
+
+                        num / den
+
+                if q < 0.0 then -v else v

@@ -354,9 +354,9 @@ let tests =
                   (fit
                       { ols with
                           Family = FitFamily.Poisson
-                          Link = FitLink.Identity }
+                          Link = FitLink.Logit }
                       sales)
-                  (Error(UnsupportedFit("poisson", "identity")))
+                  (Error(UnsupportedFit("poisson", "logit")))
                   "a pairing this version does not evaluate"
 
               Expect.equal

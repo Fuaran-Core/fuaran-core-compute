@@ -482,10 +482,12 @@ type FnDef =
 
 /// The error distribution a `Fit` assumes (Phase 592, `DECISIONS.md` D5 of the accepted plan): one
 /// verb, the family and the link as data. `Gaussian` under `FitLink.Identity` is ordinary least
-/// squares; `Poisson` and `Gamma` (Phase 595), `Tweedie` and `QuasiPoisson` (Phase 598) under
-/// `FitLink.Log` are generalised linear models fitted by IRLS through
-/// `Fuaran.Compute.LinearAlgebra.Glm`. Every other pairing is typed here so a pipeline can carry it,
-/// and refused by name when the step runs (`EvalError.UnsupportedFit`).
+/// squares; every other admitted pair is a generalised linear model fitted by IRLS through
+/// `Fuaran.Compute.LinearAlgebra.Glm` — `Poisson` and `Gamma` (Phase 595), `Tweedie` and
+/// `QuasiPoisson` (Phase 598), the binomials, inverse Gaussian and the negative binomial under the
+/// whole link set (Phase 600, `DECISIONS.md` D58), the pairs `Glm.admitted` names. The wire refuses a
+/// pair outside that table when it decodes; one built in memory is refused by name when the step runs
+/// (`EvalError.UnsupportedFit`).
 [<RequireQualifiedAccess>]
 type FitFamily =
     | Gaussian
@@ -496,12 +498,29 @@ type FitFamily =
     | Tweedie of power: float
     /// Poisson's mean model and iterations, the dispersion estimated (Phase 598).
     | QuasiPoisson
+    /// `V(μ) = μ(1 − μ)`, the response a proportion in `[0, 1]`, trials carried as the prior weights
+    /// (Phase 600).
+    | Binomial
+    /// The binomial mean model and iterations, the dispersion estimated (Phase 600).
+    | QuasiBinomial
+    /// `V(μ) = μ³` (Phase 600).
+    | InverseGaussian
+    /// `V(μ) = μ + μ²/θ` (Phase 600): `Some θ` fits at that θ; `None` estimates it by maximum likelihood,
+    /// and the `Summary` table states it.
+    | NegativeBinomial of theta: float option
 
-/// The link function a `Fit` relates the linear predictor to the mean through (Phase 592).
+/// The link function a `Fit` relates the linear predictor to the mean through (Phase 592; the whole
+/// set from Phase 600, `DECISIONS.md` D58).
 [<RequireQualifiedAccess>]
 type FitLink =
     | Identity
     | Log
+    | Logit
+    | Probit
+    | Cloglog
+    | Inverse
+    | InverseSquare
+    | Sqrt
 
 /// The iteration control of a `Fit` (Phase 592): the most iterations and the convergence tolerance,
 /// each a `Slot` so a host can bind them per evaluation. Ordinary least squares solves in one pass and
@@ -655,8 +674,9 @@ module FitSpec =
 type PredictScale =
     /// The linear predictor `η = Σ xⱼ·βⱼ + offset`.
     | Link
-    /// The mean `μ`: `η` under `FitLink.Identity`, `exp η` (the pinned `Elementary.exp`) under
-    /// `FitLink.Log`.
+    /// The mean `μ = g⁻¹(η)` through the link's pinned inverse (`Glm.inverseLink`); its standard error
+    /// by the delta method, `|dμ/dη| · se(η)`, and an interval's ends mapped through `g⁻¹` (Phase 600,
+    /// D58 item 7).
     | Response
 
 /// Which interval a `Predict` states about a row (Phase 597, `DECISIONS.md` D56).
@@ -10642,12 +10662,74 @@ module DataFrame =
         | FitFamily.Gamma -> "gamma"
         | FitFamily.Tweedie _ -> "tweedie"
         | FitFamily.QuasiPoisson -> "quasiPoisson"
+        | FitFamily.Binomial -> "binomial"
+        | FitFamily.QuasiBinomial -> "quasiBinomial"
+        | FitFamily.InverseGaussian -> "inverseGaussian"
+        | FitFamily.NegativeBinomial _ -> "negativeBinomial"
 
     /// The wire spelling of a link.
     let internal fitLinkTag (l: FitLink) : string =
         match l with
         | FitLink.Identity -> "identity"
         | FitLink.Log -> "log"
+        | FitLink.Logit -> "logit"
+        | FitLink.Probit -> "probit"
+        | FitLink.Cloglog -> "cloglog"
+        | FitLink.Inverse -> "inverse"
+        | FitLink.InverseSquare -> "inverseSquare"
+        | FitLink.Sqrt -> "sqrt"
+
+    /// The family as `Fuaran.Compute.LinearAlgebra` names it.
+    let internal glmFamily (f: FitFamily) : LinearAlgebra.GlmFamily =
+        match f with
+        | FitFamily.Gaussian -> LinearAlgebra.GlmFamily.Gaussian
+        | FitFamily.Poisson -> LinearAlgebra.GlmFamily.Poisson
+        | FitFamily.Gamma -> LinearAlgebra.GlmFamily.Gamma
+        | FitFamily.Tweedie p -> LinearAlgebra.GlmFamily.Tweedie p
+        | FitFamily.QuasiPoisson -> LinearAlgebra.GlmFamily.QuasiPoisson
+        | FitFamily.Binomial -> LinearAlgebra.GlmFamily.Binomial
+        | FitFamily.QuasiBinomial -> LinearAlgebra.GlmFamily.QuasiBinomial
+        | FitFamily.InverseGaussian -> LinearAlgebra.GlmFamily.InverseGaussian
+        | FitFamily.NegativeBinomial t -> LinearAlgebra.GlmFamily.NegativeBinomial t
+
+    /// The link as `Fuaran.Compute.LinearAlgebra` names it.
+    let internal glmLink (l: FitLink) : LinearAlgebra.GlmLink =
+        match l with
+        | FitLink.Identity -> LinearAlgebra.GlmLink.Identity
+        | FitLink.Log -> LinearAlgebra.GlmLink.Log
+        | FitLink.Logit -> LinearAlgebra.GlmLink.Logit
+        | FitLink.Probit -> LinearAlgebra.GlmLink.Probit
+        | FitLink.Cloglog -> LinearAlgebra.GlmLink.Cloglog
+        | FitLink.Inverse -> LinearAlgebra.GlmLink.Inverse
+        | FitLink.InverseSquare -> LinearAlgebra.GlmLink.InverseSquare
+        | FitLink.Sqrt -> LinearAlgebra.GlmLink.Sqrt
+
+    /// Whether `Fit` evaluates the pair (Phase 600): `Glm.admitted`'s table, one table for the codec
+    /// and the evaluator.
+    let internal fitAdmitted (family: FitFamily) (link: FitLink) : bool =
+        LinearAlgebra.Glm.admitted (glmFamily family) (glmLink link)
+
+    /// Whether a spec is ordinary least squares — Gaussian under the identity link — which folds into
+    /// the streaming accumulator and is maintained; every other admitted pair is fitted by IRLS.
+    let internal fitIsOls (spec: FitSpec) : bool =
+        spec.Family = FitFamily.Gaussian && spec.Link = FitLink.Identity
+
+    /// Whether a `Summary` table states the negative binomial's θ (Phase 600, D58 item 8): its `theta`
+    /// and `theta_std_error` columns in the response's unit and its `alternations`, after `converged`,
+    /// under the negative binomial family only — a closed schema, decided by the spec before any row is read.
+    let internal fitStatesTheta (spec: FitSpec) : bool =
+        match spec.Family with
+        | FitFamily.NegativeBinomial _ -> true
+        | _ -> false
+
+    /// Whether the family fixes its dispersion at one (Poisson, binomial, negative binomial), so an
+    /// interval reads the normal row rather than the t at the residual degrees of freedom.
+    let internal fitFixedDispersion (f: FitFamily) : bool =
+        match f with
+        | FitFamily.Poisson
+        | FitFamily.Binomial
+        | FitFamily.NegativeBinomial _ -> true
+        | _ -> false
 
     /// The wire spelling of an output.
     let internal fitOutputTag (o: FitOutput) : string =
@@ -10663,17 +10745,24 @@ module DataFrame =
         u |> Option.bind (fun u -> unitPower u 2)
 
     /// The units a fit states its statistics in, read off the family and the link (D53 item 10; Phase
-    /// 595). Under the identity link the linear predictor is in the response's unit: a coefficient is
-    /// `unit(y) / unit(x)`, `sigma` is `unit(y)`, the deviances and the dispersion its square, and a
-    /// decimal response's deviances are decimal. Under the log link the linear predictor is the
-    /// logarithm of a mean, a pure number: a numeric term's coefficient is `1 / unit(x)`, the
-    /// intercept's and a level's state none, `sigma` and the dispersion are pure numbers, a Poisson
-    /// deviance (`y·ln(y/μ) − (y − μ)`) is in the response's unit and a Gamma one is a pure number, and
-    /// the deviances are floats whatever the response — a logarithm is never an exact decimal.
+    /// 595; Phase 600, D58 item 9). The linear predictor is in the response's unit under the identity
+    /// link, so a coefficient is `unit(y) / unit(x)`; a pure number under the log, logit, probit and
+    /// cloglog links, so a numeric term's coefficient is `1 / unit(x)` and the intercept's and a level's
+    /// state none; `unit(y)⁻¹` under the inverse link and `unit(y)⁻²` under the inverse-square link;
+    /// and under the square-root link, `unit(y)^½`, which the algebra cannot carry, so no coefficient
+    /// states a unit when the response does (`EtaStated`). A deviance is in the unit of the family's unit
+    /// deviance — Gaussian's `unit(y)²`, Poisson's, quasi-Poisson's and the negative binomial's
+    /// `unit(y)`, inverse Gaussian's `unit(y)⁻¹`, Tweedie's `unit(y)^(2 − p)` where `2 − p` is an integer,
+    /// none for Gamma and the binomials; `sigma` and the dispersion are Gaussian's `unit(y)` and
+    /// `unit(y)²` and pure numbers otherwise; and only least squares states a decimal response's
+    /// deviances in decimal — a logarithm or a reciprocal is never an exact decimal.
     type internal FitStatUnits =
         {
             /// The unit the linear predictor is in, which a coefficient is stated against.
             Eta: UnitOfMeasure option
+            /// Whether `Eta` is the linear predictor's unit; `false` where the algebra cannot state it,
+            /// and then no coefficient states a unit.
+            EtaStated: bool
             Sigma: UnitOfMeasure option
             Deviance: UnitOfMeasure option
             Dispersion: UnitOfMeasure option
@@ -10682,28 +10771,42 @@ module DataFrame =
         }
 
     let internal fitStatUnits (spec: FitSpec) (yUnit: UnitOfMeasure option) : FitStatUnits =
-        match spec.Link with
-        | FitLink.Identity ->
-            { Eta = yUnit
-              Sigma = yUnit
-              Deviance = fitUnitSquared yUnit
-              Dispersion = fitUnitSquared yUnit
-              DecimalDeviance = true }
-        | FitLink.Log ->
-            { Eta = None
-              Sigma = None
-              // A unit deviance is in `unit(y)^(2 − p)` for a variance power `p` (Poisson's and
-              // quasi-Poisson's `p` is one, Gamma's two): stated where `2 − p` is an integer the
-              // algebra can carry, none otherwise (Phase 598).
-              Deviance =
-                (match spec.Family with
-                 | FitFamily.Poisson
-                 | FitFamily.QuasiPoisson -> yUnit
-                 | FitFamily.Tweedie p when p = System.Math.Floor p && p <> 2.0 && abs p < 1e9 ->
-                     yUnit |> Option.bind (fun u -> unitPower u (2 - int p))
-                 | _ -> None)
-              Dispersion = None
-              DecimalDeviance = false }
+        let power (n: int) =
+            yUnit |> Option.bind (fun u -> unitPower u n)
+
+        let stated (n: int) =
+            match yUnit with
+            | None -> true
+            | Some u -> Option.isSome (unitPower u n)
+
+        let eta, etaStated =
+            match spec.Link with
+            | FitLink.Identity -> yUnit, true
+            | FitLink.Log
+            | FitLink.Logit
+            | FitLink.Probit
+            | FitLink.Cloglog -> None, true
+            | FitLink.Inverse -> power -1, stated -1
+            | FitLink.InverseSquare -> power -2, stated -2
+            | FitLink.Sqrt -> None, Option.isNone yUnit
+
+        let gaussian = spec.Family = FitFamily.Gaussian
+
+        { Eta = eta
+          EtaStated = etaStated
+          Sigma = (if gaussian then yUnit else None)
+          Deviance =
+            (match spec.Family with
+             | FitFamily.Gaussian -> fitUnitSquared yUnit
+             | FitFamily.Poisson
+             | FitFamily.QuasiPoisson
+             | FitFamily.NegativeBinomial _ -> yUnit
+             // Phase 598: a Tweedie unit deviance is in `unit(y)^(2 − p)`.
+             | FitFamily.Tweedie p when p = System.Math.Floor p && p <> 2.0 && abs p < 1e9 -> power (2 - int p)
+             | FitFamily.InverseGaussian -> power -1
+             | _ -> None)
+          Dispersion = (if gaussian then fitUnitSquared yUnit else None)
+          DecimalDeviance = fitIsOls spec }
 
     /// The units a `Predict` states its columns in (Phase 597, D56): the prediction and an interval's
     /// bounds on the scale it answers — the linear predictor's unit (`fitStatUnits`'s `Eta`) on the
@@ -10720,11 +10823,9 @@ module DataFrame =
     let internal predictUnits (spec: PredictSpec) (yUnit: UnitOfMeasure option) : PredictUnits =
         let eta = (fitStatUnits spec.Fit yUnit).Eta
 
-        { Predicted =
-            (match spec.Scale with
-             | PredictScale.Link -> eta
-             | PredictScale.Response -> yUnit)
-          StdError = eta }
+        match spec.Scale with
+        | PredictScale.Link -> { Predicted = eta; StdError = eta }
+        | PredictScale.Response -> { Predicted = yUnit; StdError = yUnit }
 
     /// The columns a `Predict` appends, in order (Phase 597, D56).
     let internal predictColumns (spec: PredictSpec) : string list =
@@ -10781,14 +10882,14 @@ module DataFrame =
 
     let internal fitResolve (env: Map<string, Cell>) (spec: FitSpec) : Result<FitResolved, EvalError> =
         match spec.Family, spec.Link with
-        | FitFamily.Tweedie p, FitLink.Log when not (finite p) || (p > 0.0 && p < 1.0) ->
+        | family, link when not (fitAdmitted family link) -> Error(UnsupportedFit(fitFamilyTag family, fitLinkTag link))
+        | FitFamily.Tweedie p, _ when not (finite p) || (p > 0.0 && p < 1.0) ->
             // Phase 598 (D57): no Tweedie distribution has a power strictly between zero and one.
             Error(FitError "fit: the tweedie power is not finite, or lies strictly between 0 and 1")
-        | FitFamily.Gaussian, FitLink.Identity
-        | FitFamily.Poisson, FitLink.Log
-        | FitFamily.Gamma, FitLink.Log
-        | FitFamily.Tweedie _, FitLink.Log
-        | FitFamily.QuasiPoisson, FitLink.Log ->
+        | FitFamily.NegativeBinomial(Some t), _ when not (finite t && t > 0.0) ->
+            // Phase 600 (D58): a negative binomial's θ is finite and positive.
+            Error(FitError "fit: the negative binomial theta is not finite and positive")
+        | _ ->
             let ridge =
                 match spec.Ridge with
                 | None -> Ok 0.0
@@ -10801,6 +10902,9 @@ module DataFrame =
                         // folds nothing, so it is no penalty under any family.
                         elif l > 0.0 && spec.Family <> FitFamily.Gaussian then
                             Error(FitError "fit: a ridge penalty is fitted under the gaussian family only")
+                        // Phase 600: nor under a link other than the identity.
+                        elif l > 0.0 && not (fitIsOls spec) then
+                            Error(FitError "fit: a ridge penalty is fitted under the identity link only")
                         // Phase 598 (D57): the sandwich of a penalised fit is not a covariance this
                         // version states.
                         elif l > 0.0 && spec.StdErrors <> FitStdErrors.Classical then
@@ -10824,7 +10928,6 @@ module DataFrame =
                                       Tol = tol }
                             else
                                 Error(FitError "fit: tol must be finite and positive"))))
-        | family, link -> Error(UnsupportedFit(fitFamilyTag family, fitLinkTag link))
 
     /// How the bridge coded one term (Phase 597): a numeric term is its value; a categorical term is
     /// one indicator per coded level, against the levels the training rows held — the first of
@@ -10929,6 +11032,11 @@ module DataFrame =
         | LinearAlgebra.LinAlgError.Separation r -> "the mean left its range at " + string r
         | LinearAlgebra.LinAlgError.UnsupportedModel(f, l) -> "no fit of the " + f + " family under the " + l + " link"
         | LinearAlgebra.LinAlgError.InvalidPower _ -> "a tweedie power no tweedie distribution has"
+        | LinearAlgebra.LinAlgError.MeanOutOfRange r ->
+            "the mean left the range its family and link allow at " + string r
+        | LinearAlgebra.LinAlgError.InvalidTheta _ -> "a negative binomial theta that is not finite and positive"
+        | LinearAlgebra.LinAlgError.ThetaNotConverged k ->
+            "the negative binomial theta did not converge (alternation " + string k + ")"
 
     /// One predictor as the bridge codes it.
     type private FitTerm =
@@ -11113,7 +11221,13 @@ module DataFrame =
                                             | NumericTerm _ -> false)
 
                                     let yUnit = colUnit f.Cols spec.Response
-                                    let etaUnit = (fitStatUnits spec yUnit).Eta
+                                    let statUnits = fitStatUnits spec yUnit
+                                    let etaUnit = statUnits.Eta
+
+                                    // Phase 600 (D58 item 9): no coefficient states a unit the
+                                    // algebra cannot carry.
+                                    let coefUnit (u: UnitOfMeasure option) =
+                                        if statUnits.EtaStated then u else None
 
                                     let coding =
                                         terms
@@ -11134,7 +11248,7 @@ module DataFrame =
                                     // Each design column: its name, its unit, and its value at a row.
                                     let columns: (string * UnitOfMeasure option * (int -> float)) list =
                                         (if spec.Intercept then
-                                             [ interceptTerm, etaUnit, (fun _ -> 1.0) ]
+                                             [ interceptTerm, coefUnit etaUnit, (fun _ -> 1.0) ]
                                          else
                                              [])
                                         @ (List.zip terms coding
@@ -11142,14 +11256,14 @@ module DataFrame =
                                                match t, c with
                                                | NumericTerm(name, cells, unit), _ ->
                                                    [ name,
-                                                     unitQuotient etaUnit unit,
+                                                     coefUnit (unitQuotient etaUnit unit),
                                                      (fun i -> fitFloat cells[i] |> Option.defaultValue nan) ]
                                                | CategoricalTerm(name, cells), CategoricalCoding(_, _, coded) ->
                                                    coded
                                                    |> Array.toList
                                                    |> List.map (fun token ->
                                                        name + "[" + token + "]",
-                                                       etaUnit,
+                                                       coefUnit etaUnit,
                                                        (fun i -> if levelText cells[i] = token then 1.0 else 0.0))
                                                | CategoricalTerm _, NumericCoding _ -> [])
                                            |> List.concat)
@@ -11334,6 +11448,11 @@ module DataFrame =
             /// The factorization the standard errors read — for a GLM its last weighted solve — which a
             /// `Predict` reads a row's standard errors from (Phase 597).
             Ls: LinearAlgebra.LeastSquaresFit
+            /// The negative binomial's θ, its standard error where estimated, and the alternations the
+            /// estimate took (Phase 600); `None`, `None` and zero for every other family.
+            Theta: float option
+            ThetaStdError: float option
+            Alternations: int
         }
 
     /// The sandwich variant a spec's standard errors name, if any (Phase 598, D57).
@@ -11576,6 +11695,9 @@ module DataFrame =
                       Fitted = fittedCells
                       Residuals = residCells
                       Iterations = 1
+                      Theta = None
+                      ThetaStdError = None
+                      Alternations = 0
                       Ls = ls })))
 
     /// One group's generalised linear model (Phase 595): `LinearAlgebra.Glm.fit` over the group's rows
@@ -11602,18 +11724,8 @@ module DataFrame =
         let w = column d.W
         let o = column d.Off
 
-        let family =
-            match spec.Family with
-            | FitFamily.Poisson -> LinearAlgebra.GlmFamily.Poisson
-            | FitFamily.Gamma -> LinearAlgebra.GlmFamily.Gamma
-            | FitFamily.Tweedie p -> LinearAlgebra.GlmFamily.Tweedie p
-            | FitFamily.QuasiPoisson -> LinearAlgebra.GlmFamily.QuasiPoisson
-            | FitFamily.Gaussian -> LinearAlgebra.GlmFamily.Gaussian
-
-        let link =
-            match spec.Link with
-            | FitLink.Log -> LinearAlgebra.GlmLink.Log
-            | FitLink.Identity -> LinearAlgebra.GlmLink.Identity
+        let family = glmFamily spec.Family
+        let link = glmLink spec.Link
 
         let refuse (e: LinearAlgebra.LinAlgError) : EvalError =
             match e with
@@ -11624,6 +11736,8 @@ module DataFrame =
                 OverflowError("fit: row " + string members[t] + ": the mean left its range (separation)")
             | LinearAlgebra.LinAlgError.NotConverged n ->
                 FitError("fit: not converged after " + string n + " iterations")
+            | LinearAlgebra.LinAlgError.MeanOutOfRange t ->
+                rowError members[t] "the mean left the range its family and link allow"
             | other -> FitError("fit: " + linAlgText other)
 
         match LinearAlgebra.GlmControl.create r.MaxIter r.Tol with
@@ -11631,7 +11745,13 @@ module DataFrame =
         | Some control ->
             LinearAlgebra.Glm.fit family link control x y w o
             |> Result.bind (fun g ->
-                LinearAlgebra.Glm.nullDeviance family link control spec.Intercept y w o
+                // An estimated negative binomial's null model is stated at the fit's θ (D58 item 8).
+                let nullFamily =
+                    match family with
+                    | LinearAlgebra.GlmFamily.NegativeBinomial None -> LinearAlgebra.GlmFamily.NegativeBinomial g.Theta
+                    | other -> other
+
+                LinearAlgebra.Glm.nullDeviance nullFamily link control spec.Intercept y w o
                 |> Result.bind (fun nul ->
                     // Phase 598 (D57): the sandwich in the fit's working weights and residuals.
                     match fitRobustVariant spec.StdErrors with
@@ -11703,7 +11823,10 @@ module DataFrame =
                       Fitted = fitted
                       Residuals = resid
                       Iterations = g.Iterations
-                      Ls = g.LeastSquares }))
+                      Ls = g.LeastSquares
+                      Theta = g.Theta
+                      ThetaStdError = g.ThetaStdError
+                      Alternations = g.Alternations }))
 
     /// One group's fit (D53; Phase 595): a generalised linear model from the pinned start, a least-squares
     /// fit by its member rows from `from` on folded onto `acc0`. Answers the data accumulator with the
@@ -11716,7 +11839,7 @@ module DataFrame =
         (acc0: LinearAlgebra.QRAccumulator)
         (from: int)
         : Result<LinearAlgebra.QRAccumulator * FitGroup, EvalError> =
-        if spec.Family <> FitFamily.Gaussian then
+        if not (fitIsOls spec) then
             fitGlmGroupOf d r spec members |> Result.map (fun fg -> acc0, fg)
         else
             fitFold d members from acc0
@@ -11783,7 +11906,7 @@ module DataFrame =
 
                 // Phase 595: a generalised linear model keeps no state — every group is fitted from the
                 // pinned start on every evaluation (D49 item 22; a warm start is never certified).
-                let glm = spec.Family <> FitFamily.Gaussian
+                let glm = not (fitIsOls spec)
                 let mutable refit = 0
                 let accs = Array.zeroCreate<LinearAlgebra.QRAccumulator> groups
                 let fits = Array.zeroCreate<FitGroup> groups
@@ -11882,6 +12005,12 @@ module DataFrame =
                                     Field.create "dispersion" FloatType |> stated units.Dispersion
                                     Field.create "iterations" IntType
                                     Field.create "converged" BoolType ]
+                                @ (if fitStatesTheta spec then
+                                       [ Field.create "theta" FloatType |> stated d.YUnit
+                                         Field.create "theta_std_error" FloatType |> stated d.YUnit
+                                         Field.create "alternations" IntType ]
+                                   else
+                                       [])
 
                             let cells =
                                 Array.init groups (fun g ->
@@ -11889,16 +12018,23 @@ module DataFrame =
 
                                     Array.append
                                         d.KeyCells[g]
-                                        [| Int fg.N
-                                           Int fg.Df
-                                           floatCell fg.Sigma
-                                           floatCell fg.R2
-                                           Int fg.Rank
-                                           fg.Deviance
-                                           fg.NullDeviance
-                                           floatCell fg.Dispersion
-                                           Int fg.Iterations
-                                           Bool true |])
+                                        (Array.append
+                                            [| Int fg.N
+                                               Int fg.Df
+                                               floatCell fg.Sigma
+                                               floatCell fg.R2
+                                               Int fg.Rank
+                                               fg.Deviance
+                                               fg.NullDeviance
+                                               floatCell fg.Dispersion
+                                               Int fg.Iterations
+                                               Bool true |]
+                                            (if fitStatesTheta spec then
+                                                 [| floatCell fg.Theta
+                                                    floatCell fg.ThetaStdError
+                                                    Int fg.Alternations |]
+                                             else
+                                                 [||])))
 
                             table cols cells
                         | FitOutput.Fitted
@@ -11972,6 +12108,10 @@ module DataFrame =
                         )
                     elif i.Kind = IntervalKind.Prediction && spec.Fit.Family <> FitFamily.Gaussian then
                         Error(predictError "a prediction interval is stated for the gaussian family only")
+                    // Phase 600: and under the identity link, where a new observation's error is on
+                    // the linear predictor's scale.
+                    elif i.Kind = IntervalKind.Prediction && spec.Fit.Link <> FitLink.Identity then
+                        Error(predictError "a prediction interval is stated under the identity link only")
                     else
                         Ok(Some(i.Kind, level)))
 
@@ -12206,11 +12346,10 @@ module DataFrame =
                 Frame.appendColumn acc name FloatType v |> unitised name unit)
             f
 
-    /// The response-scale value of a linear predictor under the fit's link.
-    let private inverseLink (link: FitLink) (eta: float) : float =
-        match link with
-        | FitLink.Identity -> eta
-        | FitLink.Log -> LinearAlgebra.Elementary.exp eta
+    /// A response-scale prediction's refusal (Phase 600, D58 item 7): a linear predictor the link has no
+    /// mean for under the family, a negative one under a positive family's identity link, say.
+    let private predictOutOfRange (row: int) : EvalError =
+        predictRowError row "the linear predictor has no mean under the family and link"
 
     /// `Predict` against the training rows (D56): the fit of every group, exactly as `Fit` makes it, then
     /// every input row coded, matched to its group and scored, with its standard errors and interval.
@@ -12249,7 +12388,10 @@ module DataFrame =
                         let sePred = Array.create n Null
                         let lower = Array.create n Null
                         let upper = Array.create n Null
-                        let gaussian = fit.Family = FitFamily.Gaussian
+                        let gaussian = fitIsOls fit
+                        let family = glmFamily fit.Family
+                        let link = glmLink fit.Link
+                        let response = spec.Scale = PredictScale.Response
                         let mutable failure = None
                         let mutable i = 0
 
@@ -12260,43 +12402,73 @@ module DataFrame =
                                 let fg = fits[groupOf[i]]
                                 let eta = linearPredictor fg.Estimates x off
 
-                                let scaled (v: float) =
-                                    match spec.Scale with
-                                    | PredictScale.Link -> v
-                                    | PredictScale.Response -> inverseLink fit.Link v
+                                if response && not (LinearAlgebra.Glm.validPredictor family link eta) then
+                                    failure <- Some(predictOutOfRange i)
+                                else
+                                    // On the response scale the mean is `g⁻¹(η)` and a standard error
+                                    // `|dμ/dη|` times the link scale's (D58 item 7): `1` under the
+                                    // identity link, so least squares is unchanged bit for bit.
+                                    let slope =
+                                        if response then
+                                            abs (LinearAlgebra.Glm.meanDerivative link eta)
+                                        else
+                                            1.0
 
-                                predicted[i] <- Float(scaled eta)
+                                    predicted[i] <-
+                                        Float(
+                                            if response then
+                                                LinearAlgebra.Glm.inverseLink link eta
+                                            else
+                                                eta
+                                        )
 
-                                match fg.Dispersion with
-                                | None -> ()
-                                | Some phi ->
-                                    match quadraticForm fg.Ls x with
-                                    | Error e -> failure <- Some e
-                                    | Ok q ->
-                                        let sf = sqrt (phi * q)
-                                        let sp = sqrt (phi * (1.0 + q))
-                                        seFit[i] <- Float sf
+                                    match fg.Dispersion with
+                                    | None -> ()
+                                    | Some phi ->
+                                        match quadraticForm fg.Ls x with
+                                        | Error e -> failure <- Some e
+                                        | Ok q ->
+                                            let sf = sqrt (phi * q)
+                                            let sp = sqrt (phi * (1.0 + q))
+                                            seFit[i] <- Float(sf * slope)
 
-                                        if gaussian then
-                                            sePred[i] <- Float sp
+                                            if gaussian then
+                                                sePred[i] <- Float(sp * slope)
 
-                                        match interval with
-                                        | None -> ()
-                                        | Some(kind, level) ->
-                                            // A dispersion the family fixes (Poisson's) reads the
-                                            // normal row; an estimated one the t at the residual df.
-                                            let df = if fit.Family = FitFamily.Poisson then None else Some fg.Df
-
-                                            match StudentT.quantile level df with
+                                            match interval with
                                             | None -> ()
-                                            | Some t ->
-                                                let se =
-                                                    match kind with
-                                                    | IntervalKind.Confidence -> sf
-                                                    | IntervalKind.Prediction -> sp
+                                            | Some(kind, level) ->
+                                                // A dispersion the family fixes reads the normal row; an
+                                                // estimated one the t at the residual df.
+                                                let df = if fitFixedDispersion fit.Family then None else Some fg.Df
 
-                                                lower[i] <- Float(scaled (eta - t * se))
-                                                upper[i] <- Float(scaled (eta + t * se))
+                                                match StudentT.quantile level df with
+                                                | None -> ()
+                                                | Some t ->
+                                                    let se =
+                                                        match kind with
+                                                        | IntervalKind.Confidence -> sf
+                                                        | IntervalKind.Prediction -> sp
+
+                                                    let a = eta - t * se
+                                                    let b = eta + t * se
+
+                                                    // An interval's ends are mapped through `g⁻¹`, held
+                                                    // inside the mean's range; an end with no finite
+                                                    // mean is null.
+                                                    let lo, hi =
+                                                        if response then
+                                                            LinearAlgebra.Glm.responseInterval family link eta a b
+                                                        else
+                                                            Some a, Some b
+
+                                                    let cell (v: float option) =
+                                                        match v with
+                                                        | Some v -> Float v
+                                                        | None -> Null
+
+                                                    lower[i] <- cell lo
+                                                    upper[i] <- cell hi
 
                             i <- i + 1
 
@@ -12478,20 +12650,32 @@ module DataFrame =
                     predictDesign k env f fit coding p
                     |> Result.bind (fun rows ->
                         predictGroups f fit.GroupBy keyCells rows
-                        |> Result.map (fun groupOf ->
-                            let predicted =
-                                rows
-                                |> Array.mapi (fun i row ->
-                                    match row with
-                                    | None -> Null
-                                    | Some(x, off) ->
-                                        let eta = linearPredictor betas[groupOf[i]] x off
+                        |> Result.bind (fun groupOf ->
+                            let family = glmFamily fit.Family
+                            let link = glmLink fit.Link
+                            let predicted = Array.create rows.Length Null
+                            let mutable failure = None
+                            let mutable i = 0
 
-                                        match spec.Scale with
-                                        | PredictScale.Link -> Float eta
-                                        | PredictScale.Response -> Float(inverseLink fit.Link eta))
+                            while Option.isNone failure && i < rows.Length do
+                                match rows[i] with
+                                | None -> ()
+                                | Some(x, off) ->
+                                    let eta = linearPredictor betas[groupOf[i]] x off
 
-                            appendPredicted f [ "predicted", predicted, None ]))))
+                                    match spec.Scale with
+                                    | PredictScale.Link -> predicted[i] <- Float eta
+                                    | PredictScale.Response ->
+                                        if LinearAlgebra.Glm.validPredictor family link eta then
+                                            predicted[i] <- Float(LinearAlgebra.Glm.inverseLink link eta)
+                                        else
+                                            failure <- Some(predictOutOfRange i)
+
+                                i <- i + 1
+
+                            match failure with
+                            | Some e -> Error e
+                            | None -> Ok(appendPredicted f [ "predicted", predicted, None ])))))
 
     /// `Predict` over the frame (Phase 597, D56): the appended names checked free, the interval
     /// resolved, the model source read, then the rows scored.
@@ -13969,6 +14153,13 @@ module SchemaWalk =
                         col "dispersion" (Some FloatType) units.Dispersion
                         col "iterations" (Some IntType) None
                         col "converged" (Some BoolType) None ]
+                    // Phase 600 (D58 item 8): θ in the response's unit, under the negative binomial.
+                    @ (if DataFrame.fitStatesTheta spec then
+                           [ col "theta" (Some FloatType) yUnit
+                             col "theta_std_error" (Some FloatType) yUnit
+                             col "alternations" (Some IntType) None ]
+                       else
+                           [])
                 )
             | FitOutput.Fitted
             | FitOutput.Residuals ->
@@ -15174,6 +15365,8 @@ module DataFrameCodec =
            "output", JStr(DataFrame.fitOutputTag spec.Output) ]
          @ (match spec.Family with
             | FitFamily.Tweedie power -> [ "power", JFloat power ]
+            // Phase 600 (D58 item 10): a fixed θ; an estimated one carries no member.
+            | FitFamily.NegativeBinomial(Some theta) -> [ "theta", JFloat theta ]
             | _ -> [])
          @ (spec.Weights |> Option.map (fun w -> "weights", JStr w) |> Option.toList)
          @ (spec.Offset |> Option.map (fun e -> "offset", encodeExpr e) |> Option.toList)
@@ -15317,8 +15510,10 @@ module DataFrameCodec =
         | JBool b -> Ok b
         | _ -> Error(MalformedShape "expected boolean")
 
-    /// A fit step's spec (Phase 592, D53). Every member but `weights`, `offset`, `ridge`, `power` and
-    /// `stdErrors` is required; `power` is required for, and only read with, a Tweedie family.
+    /// A fit step's spec (Phase 592, D53). Every member but `weights`, `offset`, `ridge`, `power`, `theta`
+    /// and `stdErrors` is required; `power` is required for, and only read with, a Tweedie family;
+    /// `theta` is read only with a negative binomial family, which estimates θ without it (Phase 600). A
+    /// family and link the estimator does not fit (`Glm.admitted`) is refused by name.
     /// `stdErrors` (Phase 598, D57) is `classical`, `hc0` to `hc3`, or `robust` — the default variant,
     /// `hc3` — and classical where absent.
     let private fitSpecOf (el: JVal) : Result<FitSpec, ColumnError> =
@@ -15355,22 +15550,60 @@ module DataFrameCodec =
                         |> Result.bind (fun familyTag ->
                             match familyTag with
                             | "tweedie" -> field "power" el |> Result.bind floatOf |> Result.map FitFamily.Tweedie
+                            | "negativeBinomial" ->
+                                optional "theta" floatOf |> Result.map FitFamily.NegativeBinomial
                             | other ->
                                 tag
                                     [ "gaussian", FitFamily.Gaussian
                                       "poisson", FitFamily.Poisson
                                       "gamma", FitFamily.Gamma
-                                      "quasiPoisson", FitFamily.QuasiPoisson ]
+                                      "quasiPoisson", FitFamily.QuasiPoisson
+                                      "binomial", FitFamily.Binomial
+                                      "quasiBinomial", FitFamily.QuasiBinomial
+                                      "inverseGaussian", FitFamily.InverseGaussian ]
                                     other
                                 |> Result.mapError (fun _ ->
                                     WireRefusal.unknownTag (
                                         other,
-                                        [ "gaussian"; "poisson"; "gamma"; "tweedie"; "quasiPoisson" ]
+                                        [ "gaussian"
+                                          "poisson"
+                                          "gamma"
+                                          "tweedie"
+                                          "quasiPoisson"
+                                          "binomial"
+                                          "quasiBinomial"
+                                          "inverseGaussian"
+                                          "negativeBinomial" ]
                                     )))
                         |> Result.bind (fun family ->
                             field "link" el
                             |> Result.bind strOf
-                            |> Result.bind (tag [ "identity", FitLink.Identity; "log", FitLink.Log ])
+                            |> Result.bind (
+                                tag
+                                    [ "identity", FitLink.Identity
+                                      "log", FitLink.Log
+                                      "logit", FitLink.Logit
+                                      "probit", FitLink.Probit
+                                      "cloglog", FitLink.Cloglog
+                                      "inverse", FitLink.Inverse
+                                      "inverseSquare", FitLink.InverseSquare
+                                      "sqrt", FitLink.Sqrt ]
+                            )
+                            // Phase 600 (D58 item 10): a pair the estimator does not fit is refused
+                            // here, by name, never carried to the step.
+                            |> Result.bind (fun link ->
+                                if DataFrame.fitAdmitted family link then
+                                    Ok link
+                                else
+                                    Error(
+                                        MalformedShape(
+                                            "fit: the "
+                                            + DataFrame.fitFamilyTag family
+                                            + " family is not fitted under the "
+                                            + DataFrame.fitLinkTag link
+                                            + " link"
+                                        )
+                                    ))
                             |> Result.bind (fun link ->
                                 field "control" el
                                 |> Result.bind (fun c ->

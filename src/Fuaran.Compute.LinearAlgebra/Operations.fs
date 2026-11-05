@@ -69,7 +69,18 @@ module Operations =
           "Elementary.ln", Exactness.Pinned
           "Elementary.log10", Exactness.Pinned
           "Elementary.pow", Exactness.Pinned
+          "Elementary.erfc", Exactness.Pinned
+          "Elementary.normalCdf", Exactness.Pinned
+          "Elementary.normalDensity", Exactness.Pinned
+          "Elementary.normalQuantile", Exactness.Pinned
           "GlmControl.create", Exactness.Pinned
+          "Glm.admitted", Exactness.Pinned
+          "Glm.defaultLink", Exactness.Pinned
+          "Glm.linkFunction", Exactness.Pinned
+          "Glm.inverseLink", Exactness.Pinned
+          "Glm.meanDerivative", Exactness.Pinned
+          "Glm.validPredictor", Exactness.Pinned
+          "Glm.responseInterval", Exactness.Pinned
           "Glm.fit", Exactness.Pinned
           "Glm.nullDeviance", Exactness.Pinned
           "Glm.robustStandardErrors", Exactness.Pinned ]

@@ -51,6 +51,7 @@
     <Compile Include="FunctionsAndCurvesTests.fs" />
     <Compile Include="FitTests.fs" />
     <Compile Include="FitFamiliesTests.fs" />
+    <Compile Include="FitGeneralTests.fs" />
     <Compile Include="PredictTests.fs" />
     <Compile Include="IncrementalGroupByTests.fs" />
     <Compile Include="IncrementalRefreshCostTests.fs" />

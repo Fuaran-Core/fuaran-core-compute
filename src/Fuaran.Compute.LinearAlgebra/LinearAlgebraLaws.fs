@@ -1275,10 +1275,9 @@ module LinearAlgebraLaws =
         let expected: (string * bool) list =
             [ "shape", poisson x short w o = Error(LinAlgError.ShapeMismatch("Glm.fit", x.Dims, vd (n - 1)))
               "pairing",
-              fit GlmFamily.Poisson GlmLink.Identity x y w o =
-                  Error(LinAlgError.UnsupportedModel("poisson", "identity"))
-              "gaussian log",
-              fit GlmFamily.Gaussian GlmLink.Log x y w o = Error(LinAlgError.UnsupportedModel("gaussian", "log"))
+              fit GlmFamily.Poisson GlmLink.Logit x y w o = Error(LinAlgError.UnsupportedModel("poisson", "logit"))
+              "gaussian probit",
+              fit GlmFamily.Gaussian GlmLink.Probit x y w o = Error(LinAlgError.UnsupportedModel("gaussian", "probit"))
               "weight", poisson x y (withAt w -1.0) o = Error(LinAlgError.InvalidWeight at)
               "weight nan", poisson x y (withAt w nan) o = Error(LinAlgError.InvalidWeight at)
               "poisson negative", poisson x (withAt y -1.0) w o = Error(LinAlgError.InvalidResponse at)
@@ -1497,9 +1496,9 @@ module LinearAlgebraLaws =
               "tweedie zero at p = 3", tweedie 3.0 (withAt yPos 0.0) = Error(LinAlgError.InvalidResponse at)
               "quasi-Poisson negative",
               Glm.fit GlmFamily.QuasiPoisson GlmLink.Log c x (withAt y -1.0) w o = Error(LinAlgError.InvalidResponse at)
-              "quasi-Poisson identity",
-              Glm.fit GlmFamily.QuasiPoisson GlmLink.Identity c x y w o =
-                  Error(LinAlgError.UnsupportedModel("quasiPoisson", "identity"))
+              "quasi-Poisson inverse",
+              Glm.fit GlmFamily.QuasiPoisson GlmLink.Inverse c x y w o =
+                  Error(LinAlgError.UnsupportedModel("quasiPoisson", "inverse"))
               "robust weights shape",
               robust RobustVariant.HC3 short y =
                   Error(
@@ -1522,6 +1521,285 @@ module LinearAlgebraLaws =
                     "Tweedie and sandwich refusals not answered as stated: %s"
                     (failed |> List.map fst |> String.concat ", ")
             )
+
+    // ---- the general GLM (Phase 600, DECISIONS.md D58) -------------------------------------------
+
+    /// A 0/1 outcome over a drawn design of thirty to forty rows: a third of the rows one and a third
+    /// zero whatever their covariates, so a separating plane is out of reach of the draw, and the last
+    /// third one where `2·Σⱼ xᵢⱼ` plus a drawn disturbance is positive, so the slopes carry signal.
+    let private binaryDesign (d: Draw) : Matrix * Vector<float> * Vector<float> =
+        let k = d.Int 1 3
+        let n = d.Int 30 40
+        let x = Matrix.init n (k + 1) (fun _ j -> if j = 0 then 1.0 else d.Unit())
+
+        let y =
+            Vector.adopt (
+                Array.init n (fun i ->
+                    if i % 3 = 0 then
+                        1.0
+                    elif i % 3 = 1 then
+                        0.0
+                    else
+                        let mutable s = 0.0
+
+                        for j in 1..k do
+                            s <- s + x[i, j]
+
+                        if 2.0 * s + d.Unit() > 0.0 then 1.0 else 0.0)
+            )
+
+        let w = Vector.adopt (Array.init n (fun _ -> 0.5 + abs (d.Unit())))
+        x, y, w
+
+    let private zeros (n: int) : Vector<float> = Vector.adopt (Array.zeroCreate n)
+
+    /// `d²μ/dη²` and `V′(μ)` of the five canonical pairs, at `η` and the fitted `μ`.
+    let private canonicalCurvature (family: GlmFamily) (eta: float) (mu: float) : float * float =
+        match family with
+        | GlmFamily.Gaussian -> 0.0, 0.0
+        | GlmFamily.Binomial -> mu * (1.0 - mu) * (1.0 - 2.0 * mu), 1.0 - 2.0 * mu
+        | GlmFamily.Poisson -> mu, 1.0
+        | GlmFamily.Gamma -> 2.0 / (eta * eta * eta), 2.0 * mu
+        | _ -> 0.75 / (eta * eta * sqrt eta), 3.0 * mu * mu
+
+    /// Under a canonical link Fisher scoring is Newton's method (D58 item 11): at convergence the observed
+    /// information `Xᵀ diag(w·(μ′²/V − (y − μ)·(μ″/V − μ′²V′/V²))) X` equals the expected `Xᵀ diag(w·μ′²/V) X`
+    /// row weight by row weight, within rounding — and under the probit link, which is not canonical, the
+    /// correction is observable, so the law measures something.
+    let private canonicalFisherIsNewton (d: Draw) =
+        let x, w, o, k = glmDesign d
+        let n = x.Rows
+        let wa = Vector.toArray w
+
+        let pairs =
+            [ GlmFamily.Gaussian, GlmLink.Identity, vector d n
+              GlmFamily.Binomial, GlmLink.Logit, Vector.adopt (Array.init n (fun i -> if i % 2 = 0 then 0.75 else 0.25))
+              GlmFamily.Poisson, GlmLink.Log, counts d n k
+              GlmFamily.Gamma, GlmLink.Inverse, positives d n
+              GlmFamily.InverseGaussian, GlmLink.InverseSquare, positives d n ]
+
+        let gap (family: GlmFamily) (link: GlmLink) (y: Vector<float>) (g: GlmFit) =
+            let ya = Vector.toArray y
+            let mu = vecBits g.Fitted
+            let eta = vecBits g.LinearPredictor
+
+            [ 0 .. n - 1 ]
+            |> List.map (fun i ->
+                let m1 = Glm.meanDerivative link eta[i]
+                let v = Glm.variance family mu[i]
+                let expected = wa[i] * (m1 * m1 / v)
+
+                let m2, dv =
+                    match link with
+                    | GlmLink.Probit -> -eta[i] * m1, 1.0 - 2.0 * mu[i]
+                    | _ -> canonicalCurvature family eta[i] mu[i]
+
+                let correction = wa[i] * (ya[i] - mu[i]) * (m2 / v - m1 * m1 * dv / (v * v))
+                abs correction, abs expected)
+
+        let canonical =
+            pairs
+            |> List.tryPick (fun (family, link, y) ->
+                match Glm.fit family link GlmControl.defaults x y w o with
+                | Error(LinAlgError.MeanOutOfRange _) -> None
+                | Error e -> Some(sprintf "%A %A refused: %A" family link e)
+                | Ok g ->
+                    gap family link y g
+                    |> List.tryPick (fun (c, e) ->
+                        check (c <= 1e-9 * (e + 1e-300) + 1e-12) (fun () ->
+                            sprintf "%A %A: a correction of %.17g beside an information of %.17g" family link c e)))
+
+        canonical
+        |> Option.orElse (
+            let bx, by, bw = binaryDesign d
+
+            match Glm.fit GlmFamily.Binomial GlmLink.Probit GlmControl.defaults bx by bw (zeros bx.Rows) with
+            | Error e -> Some(sprintf "probit refused: %A" e)
+            | Ok g ->
+                let ya = Vector.toArray by
+                let mu = vecBits g.Fitted
+                let eta = vecBits g.LinearPredictor
+                let bwa = Vector.toArray bw
+
+                let largest =
+                    [ 0 .. bx.Rows - 1 ]
+                    |> List.map (fun i ->
+                        let m1 = Glm.meanDerivative GlmLink.Probit eta[i]
+                        let v = mu[i] * (1.0 - mu[i])
+                        let m2 = -eta[i] * m1
+                        abs (bwa[i] * (ya[i] - mu[i]) * (m2 / v - m1 * m1 * (1.0 - 2.0 * mu[i]) / (v * v))))
+                    |> List.max
+
+                check (largest > 1e-6) (fun () -> sprintf "the probit correction is only %.17g" largest)
+        )
+
+    /// Binomial under the logit link with an intercept meets its score equations at convergence: with the
+    /// intercept, `Σ w·μ̂ = Σ w·y`, within the stopping rule's order of the total weight.
+    let private logitMeansMatch (d: Draw) =
+        let x, y, w = binaryDesign d
+
+        match Glm.fit GlmFamily.Binomial GlmLink.Logit GlmControl.defaults x y w (zeros x.Rows) with
+        | Error e -> Some(sprintf "refused: %A" e)
+        | Ok g ->
+            let mu = vecBits g.Fitted
+            let ya, wa = Vector.toArray y, Vector.toArray w
+            let mutable sm = 0.0
+            let mutable sy = 0.0
+            let mutable sw = 0.0
+
+            for i in 0 .. x.Rows - 1 do
+                sm <- sm + wa[i] * mu[i]
+                sy <- sy + wa[i] * ya[i]
+                sw <- sw + wa[i]
+
+            check (abs (sm - sy) <= 1e-6 * sw) (fun () -> sprintf "Σwμ = %.17g against Σwy = %.17g" sm sy)
+
+    /// The negative binomial tends to Poisson as θ grows: at `θ = 10¹⁰` its coefficients are Poisson's
+    /// within `10⁻⁶` of their scale.
+    let private negativeBinomialTendsToPoisson (d: Draw) =
+        let x, w, o, k = glmDesign d
+        let y = counts d x.Rows k
+
+        match
+            Glm.fit GlmFamily.Poisson GlmLink.Log GlmControl.defaults x y w o,
+            Glm.fit (GlmFamily.NegativeBinomial(Some 1e10)) GlmLink.Log GlmControl.defaults x y w o
+        with
+        | Ok p, Ok nb ->
+            List.zip p.Coefficients nb.Coefficients
+            |> List.tryPick (fun (a, b) ->
+                let a, b = Option.defaultValue 0.0 a, Option.defaultValue 0.0 b
+                check (abs (a - b) <= 1e-6 * (1.0 + abs a)) (fun () -> sprintf "Poisson %.17g against %.17g" a b))
+        | a, b -> Some(sprintf "refused: %A, %A" a b)
+
+    /// Logit and probit coefficients on one 0/1 outcome keep the textbook ratio: where the probit
+    /// estimate is at least twice its standard error, the logit one is between `1.45` and `1.95` times it
+    /// (about `1.6` near `μ = ½`, `π/√3 ≈ 1.81` matching the variances).
+    let private logitProbitRatio (d: Draw) =
+        let x, y, w = binaryDesign d
+        let o = zeros x.Rows
+
+        match
+            Glm.fit GlmFamily.Binomial GlmLink.Logit GlmControl.defaults x y w o,
+            Glm.fit GlmFamily.Binomial GlmLink.Probit GlmControl.defaults x y w o
+        with
+        | Ok l, Ok p ->
+            List.zip3 l.Coefficients p.Coefficients p.StdErrors
+            |> List.tryPick (fun (a, b, se) ->
+                match a, b, se with
+                | Some a, Some b, Some se when abs b >= 2.0 * se ->
+                    let r = a / b
+                    check (r >= 1.45 && r <= 1.95) (fun () -> sprintf "logit %.17g over probit %.17g is %.17g" a b r)
+                | _ -> None)
+        | a, b -> Some(sprintf "refused: %A, %A" a b)
+
+    /// Every Phase 600 refusal is answered as stated: a response outside the binomials, inverse
+    /// Gaussian or an estimated negative binomial; a θ that is not finite and positive; a pair not
+    /// admitted; a Poisson identity mean below zero; a separated binomial; a θ with no estimate; and
+    /// the null deviance of an estimated negative binomial.
+    let private generalRefusals (d: Draw) =
+        let x, y, w = binaryDesign d
+        let n = x.Rows
+        let o = zeros n
+        let at = d.Int 0 (n - 1)
+        let c = GlmControl.defaults
+
+        let withAt (v: Vector<float>) (value: float) =
+            Vector.adopt (Vector.toArray v |> Array.mapi (fun i e -> if i = at then value else e))
+
+        let fit family link y = Glm.fit family link c x y w o
+        let pos = positives d n
+        let cnt = Vector.adopt (Array.init n (fun i -> float (i % 5)))
+
+        // The outcome is one exactly where the first covariate is positive: a separating plane.
+        let separable =
+            Vector.adopt (Array.init n (fun i -> if x[i, 1] > 0.0 then 1.0 else 0.0))
+
+        // Counts rising steeply along one covariate: least squares from y + 0.1 crosses zero.
+        let xl = Matrix.init 8 2 (fun i j -> if j = 0 then 1.0 else float (i + 1))
+        let steep = Vector.adopt [| 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 40.0; 90.0 |]
+        let ones8 = Vector.adopt (Array.create 8 1.0)
+
+        // Equal counts: no overdispersion at all, so the moment start for θ is infinite.
+        let flat = Vector.adopt (Array.create n 3.0)
+
+        let expected: (string * bool) list =
+            [ "binomial above one",
+              fit GlmFamily.Binomial GlmLink.Logit (withAt y 1.5) = Error(LinAlgError.InvalidResponse at)
+              "binomial negative",
+              fit GlmFamily.QuasiBinomial GlmLink.Probit (withAt y -0.25) = Error(LinAlgError.InvalidResponse at)
+              "inverse Gaussian zero",
+              fit GlmFamily.InverseGaussian GlmLink.InverseSquare (withAt pos 0.0) =
+                  Error(LinAlgError.InvalidResponse at)
+              "negative binomial fraction",
+              fit (GlmFamily.NegativeBinomial None) GlmLink.Log (withAt cnt 1.5) = Error(LinAlgError.InvalidResponse at)
+              "negative binomial fixed fraction admitted",
+              (match fit (GlmFamily.NegativeBinomial(Some 2.0)) GlmLink.Log (withAt cnt 1.5) with
+               | Error(LinAlgError.InvalidResponse _) -> false
+               | _ -> true)
+              "theta zero",
+              fit (GlmFamily.NegativeBinomial(Some 0.0)) GlmLink.Log cnt = Error(LinAlgError.InvalidTheta 0.0)
+              "theta nan",
+              (match fit (GlmFamily.NegativeBinomial(Some nan)) GlmLink.Log cnt with
+               | Error(LinAlgError.InvalidTheta t) -> Double.IsNaN t
+               | _ -> false)
+              "binomial log",
+              fit GlmFamily.Binomial GlmLink.Log y = Error(LinAlgError.UnsupportedModel("binomial", "log"))
+              "tweedie inverse",
+              fit (GlmFamily.Tweedie 1.5) GlmLink.Inverse pos =
+                  Error(LinAlgError.UnsupportedModel("tweedie", "inverse"))
+              "gaussian log non-positive",
+              fit GlmFamily.Gaussian GlmLink.Log (withAt pos 0.0) = Error(LinAlgError.InvalidResponse at)
+              "poisson identity below zero",
+              (match Glm.fit GlmFamily.Poisson GlmLink.Identity c xl steep ones8 (zeros 8) with
+               | Error(LinAlgError.MeanOutOfRange _) -> true
+               | _ -> false)
+              "separation",
+              (match fit GlmFamily.Binomial GlmLink.Logit separable with
+               | Error(LinAlgError.Separation _) -> true
+               | _ -> false)
+              "theta flat",
+              fit (GlmFamily.NegativeBinomial None) GlmLink.Log flat = Error(LinAlgError.ThetaNotConverged 0)
+              "null estimated theta",
+              (match Glm.nullDeviance (GlmFamily.NegativeBinomial None) GlmLink.Log c true cnt w o with
+               | Error(LinAlgError.InvalidTheta t) -> Double.IsNaN t
+               | _ -> false) ]
+
+        match expected |> List.filter (snd >> not) with
+        | [] -> None
+        | failed ->
+            Some(
+                sprintf "general GLM refusals not answered as stated: %s" (failed |> List.map fst |> String.concat ", ")
+            )
+
+    /// Each link's `g`, `g⁻¹` and `dμ/dη` agree: `g⁻¹(g(μ))` returns `μ` within `10⁻¹²` of its scale over
+    /// each link's domain, and `dμ/dη` is the central difference of `g⁻¹` within `10⁻⁵` of its scale.
+    let private linksInvert (d: Draw) =
+        let unit = 0.02 + 0.96 * (0.5 + 0.5 * d.Unit())
+        let posv = 0.1 + 4.0 * (0.5 + 0.5 * d.Unit())
+
+        [ GlmLink.Identity, posv
+          GlmLink.Log, posv
+          GlmLink.Logit, unit
+          GlmLink.Probit, unit
+          GlmLink.Cloglog, unit
+          GlmLink.Inverse, posv
+          GlmLink.InverseSquare, posv
+          GlmLink.Sqrt, posv ]
+        |> List.tryPick (fun (link, mu) ->
+            let eta = Glm.linkFunction link mu
+            let back = Glm.inverseLink link eta
+            let h = 1e-6 * (1.0 + abs eta)
+
+            let central =
+                (Glm.inverseLink link (eta + h) - Glm.inverseLink link (eta - h)) / (2.0 * h)
+
+            let deriv = Glm.meanDerivative link eta
+
+            check
+                (abs (back - mu) <= 1e-12 * (1.0 + abs mu)
+                 && abs (central - deriv) <= 1e-5 * (1.0 + abs deriv))
+                (fun () -> sprintf "%A at μ = %.17g: back %.17g, dμ/dη %.17g against %.17g" link mu back deriv central))
+
 
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
@@ -1566,5 +1844,11 @@ module LinearAlgebraLaws =
           "quasi-Poisson iterates as Poisson, byte for byte, its dispersion Pearson's", quasiPoissonIsPoisson
           "Tweedie at p = 1 agrees with quasi-Poisson, and at p = 2 is Gamma byte for byte", tweedieEndpoints
           "HC0 on homoskedastic rows approaches the classical errors, and HC0 <= HC2 <= HC3", sandwichHomoskedastic
-          "every Tweedie and sandwich refusal is answered as stated", robustAndTweedieRefusals ]
+          "every Tweedie and sandwich refusal is answered as stated", robustAndTweedieRefusals
+          "under a canonical link Fisher scoring is Newton's method at convergence", canonicalFisherIsNewton
+          "binomial under the logit link with an intercept fits Σwμ = Σwy", logitMeansMatch
+          "the negative binomial tends to Poisson as θ grows", negativeBinomialTendsToPoisson
+          "logit and probit coefficients keep their textbook ratio", logitProbitRatio
+          "every general-GLM refusal is answered as stated", generalRefusals
+          "every link's g, inverse and derivative agree", linksInvert ]
         |> List.map (fun (name, body) -> name, law seed count body)

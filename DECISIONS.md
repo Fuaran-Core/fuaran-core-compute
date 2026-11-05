@@ -1,5 +1,160 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-05 — D58: `Fit` estimates the general GLM — the binomial, quasi-binomial, inverse Gaussian and negative binomial families beside Phase 595's and 598's, under the whole link set (identity, log, logit, probit, cloglog, inverse, inverse square, square root), every `g`, `g⁻¹` and `dμ/dη` built from pinned operations; a pinned `erfc` and normal distribution, density and quantile enter `Elementary`; the binomial links hold their means to `[2⁻⁵², 1 − 2⁻⁵²]`; separation is refused by a pinned rule; the negative binomial estimates θ by MASS's alternation; the wire refuses a pair outside the admitted table when it decodes; `Predict` maps the response scale through each link, its standard error by the delta method
+
+**Context.** The operator's request of 2026-11-03 ("I want it capable of estimating Generalized Linear Models"),
+answering the accepted plan's open question 4 with "in v1, and the full link set", and the operator's ruling of
+the same day that the negative binomial *estimates* θ rather than only fixing it. **The premise check at take**,
+against `main` at `3226b00`: 595's `Glm.fit` with its pinned IRLS rules (D49 items 14 to 19, D55), 598's Tweedie
+and quasi-Poisson (D57) and 597's `Predict` (D56) are on main; `Elementary` carries `exp`, `ln` and `pow` (D52);
+`FitFamily` / `FitLink` (D53) carried Gaussian, Poisson, Gamma, Tweedie and quasi-Poisson under Identity and Log,
+with every other pairing refused as `UnsupportedFit` *when the step ran* — the wire decoded any pairing. Two load-bearing
+premises of the shard were checked and found to need correction. (a) 597's response scale did not "handle `Scale =
+Response`" by mapping standard errors: it stated `se_fit` on the link scale whatever the prediction's scale (D56),
+which item 7 changes. (b) The IRLS arithmetic was *not* already link-generic in the code: 595 and 598 spelled the
+log link's working response and weight directly (`(y − μ)/μ`, `w·μ`, `w`, `w·μ^(2−p)`), so the general form is new
+here, and the old spellings are kept for the old pairs so their bits do not move.
+
+**Decided.**
+
+1. **The admitted table** (`Glm.admitted`, one table read by the estimator, the evaluator and the codec): R's
+   `family` objects restricted to this link set. Gaussian under identity, log and inverse; binomial and
+   quasi-binomial under logit, probit and cloglog; Poisson and quasi-Poisson under log, identity and square root;
+   Gamma under inverse, identity and log; inverse Gaussian under inverse square, inverse, identity and log; the
+   negative binomial under log, square root and identity (MASS's `negative.binomial`); Tweedie under log only
+   (D57). Twenty-nine pairs counting the negative binomial's two forms. R's `cauchit` and the binomial's `log` link
+   are left out: neither was asked for, and the binomial log link needs a constrained step (`μ ≤ 1`) this loop
+   does not have. `Glm.defaultLink` names each family's canonical link where the set has it (Gaussian identity,
+   binomial logit, Poisson log, Gamma inverse, inverse Gaussian inverse square) and log for the negative binomial
+   and Tweedie.
+2. **The links, pinned** (`Glm.linkFunction`, `Glm.inverseLink`, `Glm.meanDerivative`): `g`, `g⁻¹` and `dμ/dη` as
+   the `GlmLink` documentation spells them, through `Elementary` only. The binomial links' means are held to
+   `[ε, 1 − ε]` and their derivatives at or above `ε`, **`ε = 2⁻⁵²`** (R's `.Machine$double.eps`, the clamp R's
+   `make.link` uses); the cloglog link caps `η` at `700` before `exp η` (where `1 − exp(−exp η)` is already one), and
+   forms `1 − exp(−t)` by its alternating series below `t = ½` (eighteen terms, Horner from the highest) so a
+   small mean keeps its relative precision without an `expm1`. Alternatives considered: R's own logit clamp (`η`
+   to `±30`, which bounds the mean at about `9·10⁻¹⁴` rather than `ε`) — rejected for one rule across the three
+   links; a pinned `expm1` transcribed from fdlibm — rejected as a second long routine where a series covers the
+   only range that needs it.
+3. **A mean out of range is refused by name.** `LinAlgError` gains, appended, `MeanOutOfRange of row`: after the
+   step-halving of D49 item 16, a mean not positive where the family's must be, or a linear predictor not positive
+   under the inverse-square or square-root link. Under the log link the same event keeps D55's name, `Separation`
+   (the overflow of Phase 306), and under the binomials it is `Separation` too. The verb reports `MeanOutOfRange` as
+   a `FitError` naming the input row, `Separation` as D55's `OverflowError`.
+4. **The responses each pair admits**, refused before any iteration as `InvalidResponse` naming the first row: the
+   binomials `[0, 1]` (a 0/1 outcome, or a proportion with the trials as prior weights); inverse Gaussian positive;
+   the negative binomial not negative, and **a whole count where θ is estimated**, because the θ score is the count
+   likelihood's (item 8); Gaussian positive under the log link and not zero under the inverse link, so the start
+   `g(y)` exists. Integrality is required nowhere else: a non-integer Poisson or binomial response is a
+   quasi-likelihood fit, which R admits with a warning, and a fixed-θ negative binomial's deviance needs no count.
+   Alternative considered: refusing non-integer successes `w·y` under the binomial — rejected, because it would
+   refuse every fractionally weighted (survey-weighted) logistic regression.
+5. **Separation is refused by a pinned rule.** Wherever the iteration ends — at convergence or at the iteration
+   bound — a binomial or quasi-binomial fit whose fitted probability at a row of positive weight lies within
+   **`τ = 2⁻²⁰`** of zero or one is refused as `Separation` naming that row. Complete separation drives every
+   separated row's probability to about the deviance's size, far below `τ`, before the deviance stopping rule
+   stops; quasi-complete separation does so for the separated rows while the deviance of the overlap is below
+   about `100`. Alternatives considered: the linear-programming test of Konis (2007, R's `detectseparation`),
+   which is exact but needs a simplex solver with its own pinned pivoting in every twin — left for a later
+   phase if a consumer needs it; R's `10ε` warning threshold, which complete separation reaches only by the clamp
+   and quasi-complete separation rarely; a coefficient-divergence test, which needs iterations beyond the stopping
+   rule. **The stated limit:** a quasi-complete separation over a large overlap can converge with its separated
+   rows' probabilities above `τ` and is fitted, with large finite coefficients, as R fits it.
+6. **The starts** (`μ₀`, then `η₀ = g(μ₀)`): Poisson and quasi-Poisson `y + 0.1` and Tweedie `y` with `0.1` for a
+   zero (unchanged); the binomials R's `(w·y + 0.5)/(w + 1)`; the negative binomial MASS's `y` with `1/6` for a
+   zero; every other family `y`. The working response is `z = (η − offset) + (y − μ)/(dμ/dη)` and the working weight
+   `w·(dμ/dη)²/V(μ)` — except that under the log link `z` divides by `μ` itself and the old pairs keep their D55 and
+   D57 weight spellings (`w·μ`, `w`, `w·μ^(2−p)`), so every Phase 595 and 598 vector is byte-identical. Gaussian
+   under a link other than the identity iterates; under the identity it is still the one least-squares solve.
+   Dispersions: one for binomial, Poisson and negative binomial; Pearson's `Σ w·(y − μ)²/V(μ)` over `n − rank`
+   for quasi-binomial (`V = μ(1 − μ)`), inverse Gaussian (`μ³`) and Gamma under a non-log link (`μ²`; under the log
+   link D55's spelling stays); the deviance over `n − rank` for Gaussian under any link. The unit deviances: the
+   binomials `2 (y·ln(y/μ) + (1 − y)·ln((1 − y)/(1 − μ)))`, inverse Gaussian `(y − μ)²/(y·μ²)`, the negative binomial
+   `2 (y·ln(y/μ) − (y + θ)·ln(1 + (y − μ)/(μ + θ)))` with `ln(1 + u)` by Goldberg's correction (`ln w · u/(w − 1)`,
+   `w = 1 + u`), so the deviance keeps its precision as θ grows and the stopping rule does not see rounding as a
+   rise — the plain `ln((y + θ)/(μ + θ))` made a negative binomial at `θ = 10¹⁰` fail to converge.
+7. **`Predict` on every link** (supersedes D56 item 5's "the standard errors are on the link scale whatever the
+   prediction's"). On the response scale the prediction is `g⁻¹(η)`; `se_fit` (and Gaussian's `se_pred`) is the delta
+   method's `|dμ/dη| · se(η)`, in the response's unit — which is `1 · se` under the identity link, so least squares
+   moves no bit; an interval's ends are the link scale's `η ± q·se` each mapped through `g⁻¹` (`Glm.responseInterval`),
+   not a symmetric interval about the mean, ordered (the inverse and inverse-square links decrease), and held
+   inside the mean's range: where the link meets the range's boundary at `η = 0` (identity under a positive
+   family, square root, inverse square, and inverse on the side of zero the prediction lies), an end beyond zero is
+   held at zero, and an end the link maps to no finite mean is null — unbounded on that side. A response-scale
+   prediction whose own `η` has no mean under the pair (`Glm.validPredictor`: a negative `η` under Poisson's identity
+   link, say) is refused as a `FitError` naming the row, on both model sources. A prediction interval stays
+   Gaussian's alone and is now the identity link's alone too. An interval reads the normal row wherever the family
+   fixes its dispersion (Poisson, binomial, negative binomial), the t at the residual df otherwise. The one vector
+   this moves is `transform-142-predict-poisson-response`, whose `se_fit` is now the delta method's.
+8. **The negative binomial's θ** (the operator's ruling of 2026-11-03), after MASS's `glm.nb` and `theta.ml`
+   (Venables and Ripley, 2002): Poisson under the same link from its own start; θ by Newton's method at its means —
+   from `θ₀ = Σw / Σ w·(y/μ − 1)²`, `θ ← |θ| + score/information`, the digamma and trigamma differences
+   `ψ(θ + y) − ψ(θ)` and `ψ′(θ) − ψ′(θ + y)` written as the finite sums they are at a whole count (`Σ_{k<y} 1/(θ + k)`,
+   `Σ_{k<y} 1/(θ + k)²`, `k` ascending), until a step is at most **`2⁻¹³`** (MASS's `eps^¼`), at most `MaxIter − 1`
+   steps; then alternations, each an IRLS at the current θ from the previous fit's linear predictor and a fresh θ
+   at the new means, while `|ℓ₀ − ℓ|/d₁ + |Δθ|/d₂ > tol` with `d₁ = √(2·max(1, df))`, `d₂ = 1` and `ℓ` the
+   log-likelihood less its `Σ w·ln Γ(y + 1)`, which no comparison reads, at most `MaxIter` alternations. The
+   coefficients, deviance and iterations are the last alternation's IRLS, fitted at the θ before its re-estimate;
+   `Theta` is the re-estimate (MASS's convention), `ThetaStdError` is `1/√I` at it and `Alternations` the count. A
+   caller may still fix θ (`NegativeBinomial (Some θ)`, finite and positive or `InvalidTheta`). **Refused by name**
+   (`ThetaNotConverged alternation`): a start or step that is not finite, a θ not positive, a θ above **`2⁵⁰`** (data
+   no more dispersed than Poisson's, whose likelihood rises towards the Poisson limit — MASS returns a huge θ with a
+   warning), a last Newton step above the tolerance, or the alternation bound reached. Differences from MASS,
+   chosen: θ is re-estimated at the *new* means (MASS reads the previous ones, an artefact of its loop order, at the
+   same fixed point); refusals where MASS warns; the likelihood without its constant. The null deviance of an
+   estimated negative binomial is stated at the fit's θ (`nullDeviance` refuses `NegativeBinomial None` as
+   `InvalidTheta NaN`). The `Summary` table of a negative binomial fit gains `theta` and `theta_std_error` (in the
+   response's unit) and `alternations`, after `converged` — a closed schema the spec decides.
+   Alternatives considered: θ fixed only (the operator ruled it out); θ by golden-section search on the profile
+   likelihood — rejected, Newton is MASS's and converges in a handful of steps.
+9. **Units.** The linear predictor is in the response's unit under the identity link, a pure number under the
+   log, logit, probit and cloglog links, `unit(y)⁻¹` under the inverse link and `unit(y)⁻²` under the inverse
+   square; under the square-root link it is `unit(y)^½`, which the unit algebra cannot carry, so a fit of a
+   response with a unit states no coefficient unit under that link. A deviance is in its unit deviance's unit
+   (Gaussian `unit(y)²`; Poisson, quasi-Poisson and negative binomial `unit(y)`; inverse Gaussian `unit(y)⁻¹`;
+   Tweedie as D57; none for Gamma and the binomials); `sigma` and the dispersion state units for Gaussian only, and
+   only least squares states a decimal response's deviances in decimal.
+10. **The wire.** The family tags `binomial`, `quasiBinomial`, `inverseGaussian` and `negativeBinomial` (with an
+    optional float member `theta`: present for a fixed θ, absent for an estimated one), the link tags `logit`,
+    `probit`, `cloglog`, `inverse`, `inverseSquare` and `sqrt`. **A family and link outside the admitted table is
+    refused when the pipeline decodes**, by name (`fit: the binomial family is not fitted under the log link`), so a
+    pipeline that reaches a step names a pair it can evaluate; one built in memory is still refused at the step as
+    `UnsupportedFit`. So no transform vector can carry an unsupported pair: the slot Phase 592 gave
+    `fit-unsupported-refused` (iteration 128, a Poisson identity fit, now admitted) is re-used for
+    `fit-binomial-response-refused`. The wire baselines gain one document per new case; the reflective witness
+    pairs a case with the other union's first case, so some witnesses name pairs the decoder refuses — the baseline
+    pins what the encoder emits, which is a superset of what decodes (as with a decode alias).
+11. **The special functions** (`Elementary`, under D52's measurement rule): `erfc` is fdlibm's `s_erf.c` transcribed
+    with its published coefficients (each checked against its published bit pattern), its exponentials through the
+    pinned `exp` and fdlibm's `SET_LOW_WORD` done as an exact scale, floor and quotient; `normalCdf` is
+    `erfc(−x/√2)/2` with the argument carried as a double and its rounding error and the error folded back by a
+    first-order term; `normalDensity` folds `x²`'s exact error back the same way; `normalQuantile` is Wichura's AS 241
+    (`PPND16`) with its published coefficients, the tails through the pinned `ln`. **Measured** against an 80-digit
+    reference (`tests/Fuaran.Core.Compute.Tests/fixtures/glm-reference/general.py`): `erfc` within 1 ulp over 164
+    points on `[−6, 28)` and its branch points; `normalCdf` within 1 ulp over 140 points on `[−37.5, 8.7]`;
+    `normalDensity` within 2 ulps over 162 points on `[−38, 38]`; `normalQuantile` within 2 ulps over 18 points from
+    `10⁻³⁰⁰` to `1 − 10⁻⁶`. The suite holds the bounds at 1, 2, 2 and 4.
+12. **The reference and the laws.** Every admitted family and link pair is held, within a relative `10⁻⁶`, to an
+    independent 80-digit computation (`general.py` / `general.json`: Gauss–Jordan normal equations, IRLS to a step
+    below `10⁻⁵⁰`, the negative binomial's θ by Newton on its exact score alternated to `10⁻⁴⁵`), on Bliss's beetle
+    mortality (logit, probit, cloglog, quasi-binomial), a synthetic 0/1 outcome, Dobson's counts (Poisson and
+    quasi-Poisson identity, Poisson square root), McCullagh and Nelder's clotting times (Gamma, inverse Gaussian and
+    Gaussian under their non-canonical links) and synthetic overdispersed counts (negative binomial, θ fixed and
+    estimated); R's `glm` and `MASS::glm.nb` are a cross-check only. Six laws join `LinearAlgebraLaws.laws`: under
+    each canonical pair the observed information equals the expected at convergence, and under probit it does
+    not; binomial logit with an intercept fits `Σwμ̂ = Σwy`; the negative binomial at `θ = 10¹⁰` is Poisson's within
+    `10⁻⁶`; logit coefficients are `1.45` to `1.95` times probit's where the probit estimate is twice its error;
+    every refusal of this entry answers as stated; and each link's `g`, `g⁻¹` and `dμ/dη` agree. Gaussian under
+    identity stays byte-equal to the least-squares fold (D55's law, unchanged).
+
+**Rejected.** Shipping the families under their canonical links only, which the operator's "the full link set"
+rules out; a host-rounded `erfc` (D43's tier), which D54 retired.
+
+**Consequences.** The public estimator is a general GLM: classification, proportion and binary-outcome models are
+data on the wire and reproduce byte for byte on every host. A language twin certifying the transform laws ports
+items 1 to 8 and 10 to 11; the eighteen new vectors, the renamed vector 128 and the moved vector 142 are red on it
+until it does.
+
 ## 2026-11-04 — D57: `Fit` fits Tweedie(p) and quasi-Poisson under the log link and states heteroskedasticity-consistent standard errors HC0 to HC3 — Tweedie from R's `statmod` start with `w·μ^(2−p)` working weights through the pinned `pow`, quasi-Poisson as Poisson's iterations with Pearson's dispersion; the sandwich is one pass over the rows in a pinned order in the working weights and residuals; a caller asking for robust errors without naming a variant gets HC3, resolved when the spec is made
 
 **Context.** The families half of the plan's S5 (`fuaran-compute-linear-algebra-and-glm.md`), operator rulings D9

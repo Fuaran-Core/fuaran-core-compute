@@ -171,12 +171,11 @@ module LawVectorExport =
             Some "InvalidKnots"
         elif shape = "curve-decimal-refused" then
             Some "TypeError"
-        // Phase 592 (D53): a pairing this version does not evaluate; every other fit refusal — a row the
-        // bridge refuses, a response outside its family, no convergence (Phase 595, D55) — is a
-        // `FitError`, but separation, which is the mean's overflow.
-        elif shape = "fit-unsupported-refused" then
-            Some "UnsupportedFit"
-        elif shape = "fit-poisson-separation-refused" then
+        // Every fit refusal — a row the bridge refuses, a response outside its family, no convergence
+        // (Phase 595, D55), a mean out of range or a θ with no estimate (Phase 600, D58) — is a `FitError`,
+        // but separation, which is the mean's overflow. A pairing the version does not evaluate never
+        // reaches a vector: the wire refuses it at decode (Phase 600).
+        elif shape = "fit-poisson-separation-refused" || shape = "fit-separation-refused" then
             Some "OverflowError"
         elif shape.StartsWith "fit-" then
             Some "FitError"
@@ -435,8 +434,8 @@ module LawVectorExport =
         + "id (Phase 592) over a fixed ten-row table carried whole in `input.source`: ordinary least squares "
         + "by the streaming Givens QR of the linear-algebra package, so every estimate, standard error and "
         + "statistic is pinned bytes; an aliased column is named with null estimates, a decimal response's "
-        + "fitted values, residuals and deviances are decimal, and a family the version does not evaluate "
-        + "(`UnsupportedFit`) or a non-finite term (`FitError`) is refused by the class `expected.error` names. "
+        + "fitted values, residuals and deviances are decimal, and a response outside its family or a non-finite "
+        + "term is refused as `FitError`. "
         + "After the fit shapes, each iteration takes the next PREDICT shape named in its vector id (Phase 597) "
         + "over the same table, which is also each model's training rows: the appended `predicted`, `se_fit`, "
         + "`se_pred`, `lower` and `upper` are pinned bytes — a row's prediction is its fitted value, the "
@@ -449,7 +448,16 @@ module LawVectorExport =
         + "p = 1.5 (working weights w·μ^(2−p) through the pinned pow) under the log link, and the sandwich "
         + "standard errors HC0 to HC3 in a fit's `std_error` and `t` — one pass over the rows in a pinned "
         + "order — all pinned bytes; a Tweedie power between zero and one, a response outside Tweedie's range, "
-        + "robust errors beside a ridge penalty and a prediction from a robust model are refused as `FitError`."
+        + "robust errors beside a ridge penalty and a prediction from a robust model are refused as `FitError`. "
+        + "After the family shapes, each iteration takes the next GENERAL GLM shape named in its vector id "
+        + "(Phase 600) over the same table: the binomial under the logit, probit and cloglog links, "
+        + "quasi-binomial, a weighted proportion, Poisson under the identity and square-root links, Gamma under "
+        + "the inverse link, inverse Gaussian under the inverse-square link, Gaussian under the log link and the "
+        + "negative binomial with θ fixed and estimated (its `theta`, `theta_std_error` and `alternations`), "
+        + "all pinned bytes through the pinned erfc, normal and elementary functions; predictions on the "
+        + "response scale map an interval's ends through the inverse link; a separated outcome is refused as "
+        + "`OverflowError`, and a mean below its range, a θ with no estimate and a prediction with no mean as "
+        + "`FitError`."
 
     let renderTransformVectors () : string =
         CorpusFile.render

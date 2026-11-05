@@ -105,6 +105,12 @@ module LinearAlgebraVectors =
                   "link", CorpusFile.str link ]
         | LinAlgError.InvalidPower p ->
             CorpusCell.Row [ "case", CorpusFile.str "invalidPower"; "power", CorpusFile.str (hex p) ]
+        | LinAlgError.MeanOutOfRange r ->
+            CorpusCell.Row [ "case", CorpusFile.str "meanOutOfRange"; "row", CorpusFile.num r ]
+        | LinAlgError.InvalidTheta t ->
+            CorpusCell.Row [ "case", CorpusFile.str "invalidTheta"; "theta", CorpusFile.str (hex t) ]
+        | LinAlgError.ThetaNotConverged k ->
+            CorpusCell.Row [ "case", CorpusFile.str "thetaNotConverged"; "alternation", CorpusFile.num k ]
 
     let private okCell (value: CorpusCell) : CorpusCell =
         CorpusCell.Row [ "verdict", CorpusFile.str "ok"; "value", value ]

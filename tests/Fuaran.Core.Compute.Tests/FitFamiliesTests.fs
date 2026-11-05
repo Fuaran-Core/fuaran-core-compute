@@ -332,10 +332,11 @@ let tests =
               Expect.equal
                   (fit
                       { FitSpec.ols "y" [ "x", Col "x" ] with
-                          Family = FitFamily.QuasiPoisson }
+                          Family = FitFamily.QuasiPoisson
+                          Link = FitLink.Inverse }
                       zeros)
-                  (Error(UnsupportedFit("quasiPoisson", "identity")))
-                  "quasi-Poisson under identity"
+                  (Error(UnsupportedFit("quasiPoisson", "inverse")))
+                  "quasi-Poisson under inverse"
 
               match
                   fit

@@ -227,7 +227,7 @@ module TransformVectorSample =
           "fit-fitted-listwise"
           "fit-decimal-residuals"
           "fit-decimal-summary"
-          "fit-unsupported-refused"
+          "fit-binomial-response-refused"
           "fit-nonfinite-refused"
           "fit-poisson"
           "fit-poisson-summary"
@@ -281,6 +281,34 @@ module TransformVectorSample =
           "fit-robust-ridge-refused"
           "predict-robust-refused" ]
 
+    /// The general GLM shapes (Phase 600, `DECISIONS.md` D58), over the fit table: a 0/1 outcome derived
+    /// from `n` and `z` (one where `n > 0` or `z > 8.5`) under the logit, probit and cloglog
+    /// links and quasi-binomial; a proportion `(n + 2)/4` with the weights as trials; Poisson under the
+    /// identity and square-root links; Gamma under its canonical inverse link; inverse Gaussian under
+    /// its canonical inverse-square link; Gaussian under the log link; the negative binomial with θ fixed
+    /// and estimated; predictions on the response scale under the logit and inverse links; and the
+    /// refusals by name: a separated outcome, a Poisson identity mean below zero, a θ with no estimate,
+    /// and a prediction whose linear predictor has no mean.
+    let private glmShapeNames =
+        [ "fit-logit"
+          "fit-probit-summary"
+          "fit-cloglog-fitted"
+          "fit-quasibinomial-summary"
+          "fit-binomial-proportion"
+          "fit-poisson-identity"
+          "fit-poisson-sqrt-summary"
+          "fit-gamma-inverse"
+          "fit-inverse-gaussian-summary"
+          "fit-gaussian-log"
+          "fit-negbin-fixed"
+          "fit-negbin-summary"
+          "predict-logit-response"
+          "predict-gamma-inverse-response"
+          "fit-separation-refused"
+          "fit-poisson-identity-range-refused"
+          "fit-negbin-theta-refused"
+          "predict-identity-range-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
         decimalShapeNames
@@ -295,6 +323,7 @@ module TransformVectorSample =
         @ fitShapeNames
         @ predictShapeNames
         @ fitFamilyShapeNames
+        @ glmShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -853,6 +882,38 @@ module TransformVectorSample =
         let x = Col "x"
         let ols = FitSpec.ols "y" [ "x", x ]
 
+        // Phase 600: a 0/1 outcome, one where `n > 0` or `z > 8.5` (the classes overlapping along `x`),
+        // and whole counts `(n + 2)`, four times over at the `hi` level of `c`, overdispersed against `z`.
+        let binary =
+            Derive(
+                "b",
+                Case(
+                    [ Binary(Gt, Col "n", Lit(Int 0)), Lit(Float 1.0)
+                      Binary(Gt, Col "z", Lit(Float 8.5)), Lit(Float 1.0) ],
+                    Lit(Float 0.0)
+                )
+            )
+
+        let binomial (link: FitLink) =
+            { FitSpec.ols "b" [ "x", x ] with
+                Family = FitFamily.Binomial
+                Link = link }
+
+        let counted =
+            Derive(
+                "k",
+                Binary(
+                    Mul,
+                    Binary(Add, Col "n", Lit(Int 2)),
+                    Case([ Binary(Eq, Col "c", Lit(Str "hi")), Lit(Int 4) ], Lit(Int 1))
+                )
+            )
+
+        let negbin =
+            { FitSpec.ols "k" [ "z", Col "z" ] with
+                Family = FitFamily.NegativeBinomial None
+                Link = FitLink.Log }
+
         let poisson =
             { ols with
                 Family = FitFamily.Poisson
@@ -910,11 +971,13 @@ module TransformVectorSample =
                   { FitSpec.ols "m" [ "x", x ] with
                       GroupBy = [ "g" ]
                       Output = FitOutput.Summary } ]
-        | "fit-unsupported-refused" ->
+        | "fit-binomial-response-refused" ->
+            // Phase 600 (D58): the slot Phase 592 gave an unsupported pair, which the wire now refuses
+            // at decode; a response above one is outside the binomial family.
             [ Fit
                   { ols with
-                      Family = FitFamily.Poisson
-                      Link = FitLink.Identity } ]
+                      Family = FitFamily.Binomial
+                      Link = FitLink.Logit } ]
         | "fit-poisson" -> [ Fit poisson ]
         | "fit-poisson-summary" ->
             [ Fit
@@ -1000,6 +1063,72 @@ module TransformVectorSample =
                   { ols with
                       Ridge = Some(Slot.Lit 0.5)
                       StdErrors = FitStdErrors.HC3 } ]
+        // Phase 600 (D58): the general GLM.
+        | "fit-logit" -> [ binary; Fit(binomial FitLink.Logit) ]
+        | "fit-probit-summary" ->
+            [ binary
+              Fit
+                  { binomial FitLink.Probit with
+                      Output = FitOutput.Summary } ]
+        | "fit-cloglog-fitted" ->
+            [ binary
+              Fit
+                  { binomial FitLink.Cloglog with
+                      Output = FitOutput.Fitted } ]
+        | "fit-quasibinomial-summary" ->
+            [ binary
+              Fit
+                  { binomial FitLink.Logit with
+                      Family = FitFamily.QuasiBinomial
+                      Output = FitOutput.Summary } ]
+        | "fit-binomial-proportion" ->
+            [ Derive("p", Binary(Div, Cast(FloatType, Binary(Add, Col "n", Lit(Int 2))), Lit(Float 4.0)))
+              Fit
+                  { binomial FitLink.Logit with
+                      Response = "p"
+                      Weights = Some "w" } ]
+        | "fit-poisson-identity" -> [ Fit { poisson with Link = FitLink.Identity } ]
+        | "fit-poisson-sqrt-summary" ->
+            [ Fit
+                  { poisson with
+                      Link = FitLink.Sqrt
+                      Output = FitOutput.Summary } ]
+        | "fit-gamma-inverse" -> [ Fit { gamma with Link = FitLink.Inverse } ]
+        | "fit-inverse-gaussian-summary" ->
+            [ Fit
+                  { ols with
+                      Family = FitFamily.InverseGaussian
+                      Link = FitLink.InverseSquare
+                      Output = FitOutput.Summary } ]
+        | "fit-gaussian-log" -> [ Fit { ols with Link = FitLink.Log } ]
+        | "fit-negbin-fixed" ->
+            [ counted
+              Fit
+                  { negbin with
+                      Family = FitFamily.NegativeBinomial(Some 2.0) } ]
+        | "fit-negbin-summary" ->
+            [ counted
+              Fit
+                  { negbin with
+                      Output = FitOutput.Summary } ]
+        | "fit-separation-refused" ->
+            [ Derive("b", Case([ Binary(Gt, Col "z", Lit(Float 5.5)), Lit(Float 1.0) ], Lit(Float 0.0)))
+              Fit(binomial FitLink.Logit) ]
+        | "fit-poisson-identity-range-refused" ->
+            // Counts zero up to the seventh row and steep after it: least squares from y + 0.1 crosses
+            // zero, and no halving brings the mean back.
+            [ Derive(
+                  "k",
+                  Case([ Binary(Gt, Col "z", Lit(Float 7.5)), Binary(Mul, Col "z", Lit(Float 30.0)) ], Lit(Float 0.0))
+              )
+              Fit
+                  { poisson with
+                      Response = "k"
+                      Predictors = [ "z", Col "z" ]
+                      Link = FitLink.Identity } ]
+        | "fit-negbin-theta-refused" ->
+            // Equal counts carry no overdispersion: the moment start for θ is infinite.
+            [ Derive("k", Lit(Int 3)); Fit negbin ]
         | _ -> predictPipelineOf shape
 
     /// The prediction shapes (Phase 597, D56) over `fitTable`, each model trained on `fitTable` itself.
@@ -1023,7 +1152,43 @@ module TransformVectorSample =
             | Ok t -> Embedded t
             | Error e -> failwithf "the coefficient table: %s" (DataFrame.errorString e)
 
+        // Phase 600: models over a 0/1 outcome are trained on the fit table with that outcome derived.
+        let binaryTraining =
+            match
+                DataFrame.evalPipeline
+                    [ Derive(
+                          "b",
+                          Case(
+                              [ Binary(Gt, Col "n", Lit(Int 0)), Lit(Float 1.0)
+                                Binary(Gt, Col "z", Lit(Float 8.5)), Lit(Float 1.0) ],
+                              Lit(Float 0.0)
+                          )
+                      ) ]
+                    fitTable
+            with
+            | Ok t -> Embedded t
+            | Error e -> failwithf "the binary training table: %s" (DataFrame.errorString e)
+
         match shape with
+        | "predict-logit-response" ->
+            [ Predict
+                  { PredictSpec.ofTraining
+                        { FitSpec.ols "b" [ "x", x ] with
+                            Family = FitFamily.Binomial
+                            Link = FitLink.Logit }
+                        binaryTraining with
+                      Interval = interval IntervalKind.Confidence 0.95 } ]
+        | "predict-gamma-inverse-response" ->
+            [ Predict
+                  { predict
+                        { poisson with
+                            Family = FitFamily.Gamma
+                            Link = FitLink.Inverse } with
+                      Interval = interval IntervalKind.Confidence 0.9 } ]
+        | "predict-identity-range-refused" ->
+            // The model's mean is positive over its training rows; at x = −10·x it is not.
+            [ Derive("x", Binary(Mul, x, Lit(Float -10.0)))
+              Predict(predict { poisson with Link = FitLink.Identity }) ]
         | "predict-training" -> [ Predict(predict ols) ]
         | "predict-grouped-prediction-interval" ->
             [ Predict
@@ -1087,7 +1252,7 @@ module TransformVectorSample =
     /// Fable and the suite holds it equal to this host's, line for line (Phase 592): the estimates, the
     /// statistics, the decimal outputs and the refusals' texts, byte for byte.
     let fitRender () : string =
-        fitShapeNames @ predictShapeNames
+        fitShapeNames @ predictShapeNames @ glmShapeNames
         |> List.map (fun shape ->
             shape
             + " "

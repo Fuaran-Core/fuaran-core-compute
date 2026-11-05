@@ -52,6 +52,17 @@ type LinAlgError =
     /// A Tweedie variance power no Tweedie distribution has — strictly between zero and one — or a NaN
     /// or an infinity (Phase 598); the power.
     | InvalidPower of power: float
+    /// An iteration's mean left the range its family and link allow — not positive where the family's
+    /// mean is, or a linear predictor at or below zero under the inverse-square or square-root link —
+    /// and no halving of the step recovered it (Phase 600, DECISIONS.md D58 item 3); the first such row.
+    /// Under the log link and the binomial families the same event is `Separation`.
+    | MeanOutOfRange of row: int
+    /// A negative binomial θ that is not finite and positive (Phase 600); the θ.
+    | InvalidTheta of theta: float
+    /// The negative binomial's estimate of θ did not converge — its Newton step on θ stalled, left the
+    /// positive reals, or the alternation with the coefficients reached its bound (Phase 600, D58 item
+    /// 8); the alternation it failed at.
+    | ThetaNotConverged of alternation: int
 
 /// How exact an operation's bytes are across hosts — the vocabulary `SchemaWalk` reads a column's
 /// lineage in (DECISIONS.md D43): `Pinned`, every conformant host computes the same bits; `HostRounded`,
