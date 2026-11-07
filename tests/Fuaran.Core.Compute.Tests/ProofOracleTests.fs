@@ -4301,7 +4301,8 @@ let private fHostWith (compareFloat: float -> float -> int) : ModelFrame.host =
             match ScaledDecimal.tryScaled (int s) t with
             | ValueSome k -> FStar_Pervasives_Native.Some(bigint k)
             | ValueNone -> FStar_Pervasives_Native.None
-      ModelFrame.host.compare_float = fun a b -> bigint (compareFloat (fParse a) (fParse b)) }
+      ModelFrame.host.compare_float = fun a b -> bigint (compareFloat (fParse a) (fParse b))
+      ModelFrame.host.day_fits = fun d -> DataFrame.fourDigitDay (int d) }
 
 let private fHost = fHostWith Kernels.compareFloat
 
@@ -4521,7 +4522,22 @@ let private fGenColumn (d: FDraw) (name: string) (ty: ColumnType) (n: int) : Col
             validity
     | BoolType -> Column.ofBools name (Vector.ofArray (Array.init n (fun _ -> d.Below 2 = 0))) validity
     | StringType -> Column.ofStrs name (Vector.ofArray (Array.init n (fun _ -> d.Pick [ "a"; "b"; ""; "zz" ]))) validity
-    | DateType -> Column.ofDates name (Vector.ofArray (Array.init n (fun _ -> d.Below 40000 - 5000))) validity
+    // A day past the four-digit range now and then: the date kernel declines such a column, and its
+    // text sorts elsewhere than its count.
+    | DateType ->
+        let last = (TemporalText.tryDays "9999-12-31").Value
+        let outOfRange = d.Below 8 = 0
+
+        Column.ofDates
+            name
+            (Vector.ofArray (
+                Array.init n (fun _ ->
+                    if outOfRange && d.Below 4 = 0 then
+                        last + 1 + d.Below 400
+                    else
+                        d.Below 40000 - 5000)
+            ))
+            validity
     | TimestampType u ->
         let seconds = Array.init n (fun _ -> float (d.Below 2000000000))
         let scale = TimeUnit.scale u
@@ -4834,10 +4850,14 @@ let private fCmpOps = [ Lt; Le; Gt; Ge; Eq; Ne ]
 let rec private fGenPred (d: FDraw) (depth: int) (t: Table) : ColExpr =
     let cols = t.Schema |> List.map (fun fl -> fl.Name)
 
-    // The numeric columns, where the kernels live, drawn three times in four when there are any.
+    // The numeric and date columns, where the kernels live, drawn three times in four when there are any.
     let numeric =
         t.Schema
-        |> List.filter (fun fl -> fl.Type = IntType || fl.Type = FloatType || fl.Type = DecimalType)
+        |> List.filter (fun fl ->
+            fl.Type = IntType
+            || fl.Type = FloatType
+            || fl.Type = DecimalType
+            || fl.Type = DateType)
         |> List.map (fun fl -> fl.Name)
 
     let leafCols =
@@ -4856,7 +4876,19 @@ let rec private fGenPred (d: FDraw) (depth: int) (t: Table) : ColExpr =
               Binary(Gt, Col "nope", Lit(Int 0)) ]
     | _ ->
         let constant =
-            match d.Below 7 with
+            match d.Below 8 with
+            | 7 ->
+                Lit(
+                    Date(
+                        d.Pick
+                            [ TemporalText.dateText (d.Below 40000 - 5000)
+                              TemporalText.dateText (d.Below 40000 - 5000)
+                              "0000-01-01"
+                              "9999-12-31"
+                              "2026-4-1"
+                              "not a date" ]
+                    )
+                )
             | 0 -> Lit(Int(d.Below 200 - 100))
             | 1 -> Lit(Float(float (d.Below 400 - 200) / 4.0))
             | 2 -> Lit(Cell.Decimal(fDecimalText d))
@@ -6467,7 +6499,7 @@ let proofOracleTests =
               Expect.isGreaterThan t.FRowsRefused 0 (sprintf "row widths refused (%d)" t.FRowsRefused)
               Expect.isGreaterThan t.FKernelSome 150 (sprintf "filters the kernels answered (%d)" t.FKernelSome)
 
-              for kind in [ "ints"; "floats"; "decs" ] do
+              for kind in [ "ints"; "floats"; "decs"; "dates" ] do
                   Expect.isTrue
                       (Set.contains kind t.FKernelKinds)
                       (sprintf "a kernel answered over a %s vector (answered over: %A)" kind t.FKernelKinds)

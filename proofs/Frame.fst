@@ -58,7 +58,7 @@
        branch of the filter is `Pipeline.eval_step`'s `Filter` over the read-back — the same rows,
        in the same order, under the same schema, and never an error — from `bits_eval` (per row,
        the bitmap's bit is the evaluator's answer) and `leaf_eval` (per comparison leaf, the int,
-       float, float-against-int, decimal and decimal-against-int kernels, either operand order).
+       float, float-against-int, decimal, decimal-against-int and date kernels, either operand order).
 
    WHAT IS A PARAMETER, AND WHAT EACH THEOREM ASSUMES OF IT.
 
@@ -313,6 +313,7 @@ noeq type host = {
   scale_of      : list string -> list bool -> option nat; (* ScaledDecimal.scaleOf *)
   try_scaled    : nat -> string -> option int;         (* ScaledDecimal.tryScaled *)
   compare_float : string -> string -> int;             (* Kernels.compareFloat *)
+  day_fits      : int -> bool;                         (* DataFrame.fourDigitDay *)
 }
 
 (* F#: `ColumnStorage.fractionAt` / the frame's `Vec.fractionAt` — `0` where no fraction vector is
@@ -886,6 +887,10 @@ let leaf (h:host) (f:dframe) (op:cmp_op) (i:nat) (c:cell) : Tot (option (list bo
   | Some (VDecs vals s _ mask), Int x ->
     let kx = x * pow10 s in
     if abs_int kx <= max_exact then Some (cmp_ints op vals mask kx f.count) else None
+  | Some (VDates vals mask), Date x ->
+    (match h.try_days x with
+     | Some k -> if lfor_all h.day_fits vals then Some (cmp_ints op vals mask k f.count) else None
+     | None -> None)
   | _ -> None
 
 (* F#: `filterBits k f e` — `And` / `Or` over comparisons of a typed numeric column with a
@@ -1545,7 +1550,9 @@ let kleene_or (a b:cell) : Tot cell =
    `Null` (`comparison`'s first arm); a comparison of two ints, of two float carriers, of a float
    and an int, of two decimals or of a decimal and an int is `Bool` of `holds` over the ordering
    the kernel computes (`compareCells` over ints; `compareFloat` over carriers, the int read as
-   its float; the two decimals' unscaled integers at any scale both read at, the int scaled to it);
+   its float; the two decimals' unscaled integers at any scale both read at, the int scaled to it;
+   the day counts of two dates whose days `day_fits`, the range where text order is day order);
+   a date text with a day count is that day's canonical text, and the day fits;
    `compareFloat` is antisymmetric; and `And` / `Or` over `Bool` / `Null` are Kleene's
    (`logical`). Nothing is assumed of any other cell. *)
 [@@ noextract_to "FSharp"]
@@ -1580,6 +1587,12 @@ let kernel_prims (h:host) (pr:prims) : prop =
         pr.binary op (Decimal a) (Int x) == Ok (Bool (holds o (int_cmp ka (x * pow10 s)))) /\
         pr.binary op (Int x) (Decimal a) == Ok (Bool (holds o (int_cmp (x * pow10 s) ka)))
       | None -> True)) /\
+  (forall (op:bin_op) (a b:int).
+     (h.day_fits a /\ h.day_fits b) ==>
+     (match cmp_op_of op with
+      | Some o -> pr.binary op (Date (h.date_text a)) (Date (h.date_text b)) == Ok (Bool (holds o (int_cmp a b)))
+      | None -> True)) /\
+  (forall (s:string) (k:int). h.try_days s == Some k ==> (s == h.date_text k /\ h.day_fits k)) /\
   (forall (a b:string). h.compare_float a b == 0 - h.compare_float b a) /\
   (forall (a b:cell).
      (bool_or_null a /\ bool_or_null b) ==>
@@ -1610,6 +1623,13 @@ let prem_dec_int (h:host) (pr:prims) (op:bin_op) (o:cmp_op) (s:nat) (a:string) (
   : Lemma (requires kernel_prims h pr /\ cmp_op_of op == Some o /\ h.try_scaled s a == Some ka)
           (ensures pr.binary op (Decimal a) (Int x) == Ok (Bool (holds o (int_cmp ka (x * pow10 s)))) /\
                    pr.binary op (Int x) (Decimal a) == Ok (Bool (holds o (int_cmp (x * pow10 s) ka)))) = ()
+
+let prem_date (h:host) (pr:prims) (op:bin_op) (o:cmp_op) (a b:int)
+  : Lemma (requires kernel_prims h pr /\ cmp_op_of op == Some o /\ h.day_fits a /\ h.day_fits b)
+          (ensures pr.binary op (Date (h.date_text a)) (Date (h.date_text b)) == Ok (Bool (holds o (int_cmp a b)))) = ()
+
+let prem_days (h:host) (pr:prims) (s:string) (k:int)
+  : Lemma (requires kernel_prims h pr /\ h.try_days s == Some k) (ensures s == h.date_text k /\ h.day_fits k) = ()
 
 let prem_antisym (h:host) (pr:prims) (a b:string)
   : Lemma (requires kernel_prims h pr) (ensures h.compare_float a b == 0 - h.compare_float b a) = ()
@@ -1693,6 +1713,19 @@ let leaf_eval (h:host) (pr:prims) (f:dframe{dwf f}) (op:bin_op) (o:cmp_op) (i:na
          prem_dec_int h pr op o s ta ka x;
          int_cmp_swap kx ka; holds_neg o (int_cmp ka kx)
        end else ()
+     | VDates vals mask, Date x ->
+       (match h.try_days x with
+        | Some k ->
+          if lfor_all h.day_fits vals then begin
+            vnth_lmap_upto (cmp_int_at o' vals mask k) f.count p;
+            vnth_some_lt vals p;
+            lfor_all_nth h.day_fits vals p;
+            let a = at_or 0 vals p in
+            prem_days h pr x k;
+            prem_date h pr op o a k; prem_date h pr op o k a;
+            int_cmp_swap k a; holds_neg o (int_cmp a k)
+          end else ()
+        | None -> ())
      | _ -> ())
   | None -> ()
 #pop-options

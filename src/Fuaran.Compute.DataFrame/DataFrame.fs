@@ -5777,6 +5777,16 @@ module DataFrame =
         | StartsWith
         | EndsWith -> if strLike a && strLike b then StrPredicate else Boxed
 
+    /// The day counts of `0000-01-01` and `9999-12-31`: the range where canonical date text has a four-digit
+    /// year, so its ordinal order is the order of the days.
+    let private firstFourDigitDay = TemporalText.daysOfCivil 0 1 1
+
+    let private lastFourDigitDay = TemporalText.daysOfCivil 9999 12 31
+
+    /// True where a day's canonical text has a four-digit year.
+    let internal fourDigitDay (d: int) : bool =
+        d >= firstFourDigitDay && d <= lastFourDigitDay
+
     /// The comparison a comparison operator tests on the ordering's answer; `None` for an operator
     /// that is not a comparison, which `kernelOf` never pairs with a comparison kernel.
     let private comparisonTest (op: BinOp) : (int -> bool) option =
@@ -6110,6 +6120,48 @@ module DataFrame =
                     | _ -> None
                 | _ -> None
             | Boxed -> None
+
+        /// A date comparison read on day counts. The reference orders dates by their text, so the
+        /// days decide only where both spell a four-digit year, the range in which the two orders
+        /// are one; any other row compares the rendered text, as the reference does. A date
+        /// constant takes part only where it is canonical: other text has no day count.
+        let dayCompare
+            (op: BinOp)
+            (kernel: Kernel)
+            (a: ResolvedExpr)
+            (na: Node)
+            (b: ResolvedExpr)
+            (nb: Node)
+            : Node option =
+            let days (e: ResolvedExpr) (n: Node) : (int -> int) option =
+                match n, e with
+                | NDays r, _ -> Some r
+                | _, RConst(Date s) ->
+                    TemporalText.tryDays s
+                    |> Option.map (fun d ->
+                        fun _ ->
+                            slot.Null <- false
+                            d)
+                | _ -> None
+
+            match kernel, na, nb with
+            | OrdinalCompare, (NDays _), _
+            | OrdinalCompare, _, (NDays _) ->
+                match comparisonTest op, days a na, days b nb with
+                | Some test, Some ra, Some rb ->
+                    Some(
+                        NBool(
+                            lift2 ra rb false (fun x y ->
+                                if fourDigitDay x && fourDigitDay y then
+                                    test (compare x y)
+                                else
+                                    test (
+                                        System.String.CompareOrdinal(TemporalText.dateText x, TemporalText.dateText y)
+                                    ))
+                        )
+                    )
+                | _ -> None
+            | _ -> None
 
         // ---- the cell path (Phase 266): the reference arm over boxed readers ----
 
@@ -6449,9 +6501,12 @@ module DataFrame =
                 kernels.Add kernel
 
                 let node =
-                    match typedBinary op kernel na nb with
+                    match dayCompare op kernel a na b nb with
                     | Some n -> n
-                    | None -> NCell(binaryNode op kernel (cellOf na) (cellOf nb))
+                    | None ->
+                        match typedBinary op kernel na nb with
+                        | Some n -> n
+                        | None -> NCell(binaryNode op kernel (cellOf na) (cellOf nb))
 
                 Typing.binary op ta tb, node
             | RNot inner ->
@@ -6896,11 +6951,12 @@ module DataFrame =
         | _ -> None
 
     /// The physical rows on which a filter predicate is `true`, as a selection bitmap (Phase 270)
-    /// — where the predicate is built from `And` and `Or` over comparisons of a typed numeric
-    /// column with a constant (either side), and `None` for any other predicate, which the
+    /// — where the predicate is built from `And` and `Or` over comparisons of a typed numeric or
+    /// date column with a constant (either side), and `None` for any other predicate, which the
     /// compiled path answers. Such a predicate raises no error on any row: a comparison of a
-    /// present int, float or carried decimal (Phase 280) with a present number it can read is
-    /// always decided, and an absent row compares null, which a filter drops. `And` keeps the rows
+    /// present int, float or carried decimal (Phase 280) with a present number it can read, or of
+    /// a present date with a date, is always decided, and an absent row compares null, which a
+    /// filter drops. `And` keeps the rows
     /// both sides keep and `Or` the rows either side keeps, which is Kleene logic read at `true`.
     let rec internal filterBits (k: KernelSet) (f: Frame) (e: ResolvedExpr) : uint32[] option =
         let leaf (op: CmpOp) (i: int) (c: Cell) : uint32[] option =
@@ -6923,6 +6979,13 @@ module DataFrame =
                     Some(k.CmpFloats op vals mask kx f.Count)
                 else
                     None
+            // Dates order by their text, which is the order of their day counts only between two
+            // four-digit years, so the int kernel answers only for a canonical constant over a
+            // vector wholly in that range. Anything else is the compiled path's.
+            | Dates(days, mask), Date x ->
+                match TemporalText.tryDays x with
+                | Some d when Array.forall fourDigitDay days -> Some(k.CmpInts op days mask d f.Count)
+                | _ -> None
             | _ -> None
 
         match e with

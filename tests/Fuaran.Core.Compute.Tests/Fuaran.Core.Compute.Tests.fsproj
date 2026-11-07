@@ -42,6 +42,7 @@
     <Compile Include="DecimalTests.fs" />
     <Compile Include="DecimalVectorLaw.fs" />
     <Compile Include="DecimalVectorTests.fs" />
+    <Compile Include="DateCompareTests.fs" />
     <Compile Include="DecimalStrandTests.fs" />
     <!-- Phase 281: the registered pipeline query. -->
     <Compile Include="PipelineQueryTests.fs" />

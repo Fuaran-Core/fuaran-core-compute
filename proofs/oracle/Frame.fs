@@ -493,60 +493,66 @@ let clength : ccolumn  ->  Prims.nat = (fun ( c  :  ccolumn ) -> (match (c.cdata
      (Pipeline.len xs)
      end))
 
-type host = {date_text : Prims.int  ->  Prims.string; instant_text : time_unit  ->  Prims.int  ->  Prims.int  ->  Prims.string; try_days : Prims.string  ->  FStar_Pervasives_Native.option<Prims.int>; try_instant : time_unit  ->  Prims.string  ->  FStar_Pervasives_Native.option<(Prims.int * Prims.int)>; float_of_int : Prims.int  ->  Prims.string; int_text : Prims.int  ->  Prims.string; scale_of : Prims.list<Prims.string>  ->  Prims.list<Prims.bool>  ->  FStar_Pervasives_Native.option<Prims.nat>; try_scaled : Prims.nat  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.int>; compare_float : Prims.string  ->  Prims.string  ->  Prims.int}
+type host = {date_text : Prims.int  ->  Prims.string; instant_text : time_unit  ->  Prims.int  ->  Prims.int  ->  Prims.string; try_days : Prims.string  ->  FStar_Pervasives_Native.option<Prims.int>; try_instant : time_unit  ->  Prims.string  ->  FStar_Pervasives_Native.option<(Prims.int * Prims.int)>; float_of_int : Prims.int  ->  Prims.string; int_text : Prims.int  ->  Prims.string; scale_of : Prims.list<Prims.string>  ->  Prims.list<Prims.bool>  ->  FStar_Pervasives_Native.option<Prims.nat>; try_scaled : Prims.nat  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.int>; compare_float : Prims.string  ->  Prims.string  ->  Prims.int; day_fits : Prims.int  ->  Prims.bool}
 
 
 let __proj__Mkhost__item__date_text : host  ->  Prims.int  ->  Prims.string = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      date_text
      end))
 
 
 let __proj__Mkhost__item__instant_text : host  ->  time_unit  ->  Prims.int  ->  Prims.int  ->  Prims.string = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      instant_text
      end))
 
 
 let __proj__Mkhost__item__try_days : host  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.int> = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      try_days
      end))
 
 
 let __proj__Mkhost__item__try_instant : host  ->  time_unit  ->  Prims.string  ->  FStar_Pervasives_Native.option<(Prims.int * Prims.int)> = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      try_instant
      end))
 
 
 let __proj__Mkhost__item__float_of_int : host  ->  Prims.int  ->  Prims.string = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      float_of_int
      end))
 
 
 let __proj__Mkhost__item__int_text : host  ->  Prims.int  ->  Prims.string = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      int_text
      end))
 
 
 let __proj__Mkhost__item__scale_of : host  ->  Prims.list<Prims.string>  ->  Prims.list<Prims.bool>  ->  FStar_Pervasives_Native.option<Prims.nat> = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      scale_of
      end))
 
 
 let __proj__Mkhost__item__try_scaled : host  ->  Prims.nat  ->  Prims.string  ->  FStar_Pervasives_Native.option<Prims.int> = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      try_scaled
      end))
 
 
 let __proj__Mkhost__item__compare_float : host  ->  Prims.string  ->  Prims.string  ->  Prims.int = (fun ( projectee  :  host ) -> (match (projectee) with
-| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float} -> begin
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
      compare_float
+     end))
+
+
+let __proj__Mkhost__item__day_fits : host  ->  Prims.int  ->  Prims.bool = (fun ( projectee  :  host ) -> (match (projectee) with
+| {date_text = date_text; instant_text = instant_text; try_days = try_days; try_instant = try_instant; float_of_int = float_of_int; int_text = int_text; scale_of = scale_of; try_scaled = try_scaled; compare_float = compare_float; day_fits = day_fits} -> begin
+     day_fits
      end))
 
 
@@ -1974,6 +1980,20 @@ in
 if ((abs_int kx) <= max_exact) then begin
      FStar_Pervasives_Native.Some ((cmp_ints op vals mask kx f.count))
      end else begin
+     FStar_Pervasives_Native.None
+     end)
+     end
+| (FStar_Pervasives_Native.Some (VDates (vals, mask)), Pipeline.Date (x)) -> begin
+     (match ((h.try_days x)) with
+| FStar_Pervasives_Native.Some (k) -> begin
+      
+if (lfor_all h.day_fits vals) then begin
+     FStar_Pervasives_Native.Some ((cmp_ints op vals mask k f.count))
+     end else begin
+     FStar_Pervasives_Native.None
+     end
+     end
+| FStar_Pervasives_Native.None -> begin
      FStar_Pervasives_Native.None
      end)
      end

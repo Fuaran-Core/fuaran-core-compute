@@ -1,5 +1,35 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-07 — D59: a date comparison reads day counts where that is the text's order
+
+**Context.** A date column has been day counts since Phase 423, but comparing one with a date still rendered every
+row's day to text: `filterBits` had no date leaf, and the compiled path's ordinal comparison read `asStr`. A range
+filter was 93% of the dated pipeline's allocation (`benchmarks/results/2026-11-07-x64-date-comparison.md`).
+
+**Decided.**
+
+1. **The reference's order stays the text's.** `compareCells` orders dates ordinally, and that is not the order of the
+   day counts once a year leaves four digits: `10000-01-01` sorts before `2026-01-01`. `Column.ofDates` does not check
+   its range, so such a day can reach a comparison. Day counts decide only where both days spell a four-digit year
+   (`fourDigitDay`), and nothing here changes an answer.
+2. **The filter kernel takes a date leaf under two conditions**: the constant is canonical (`tryDays` reads it), and
+   every value in the vector is in the range. Otherwise it declines, and the compiled path answers. The scan reads
+   values under absent rows too, which can only decline more often. It costs one pass per leaf, small beside the
+   comparison: the range filter is about 1.3 to 1.6 times the int filter's time.
+3. **The compiled path compares day counts per row** where both operands are date columns or a canonical constant, for
+   what the kernel never sees: a derive, two date columns, and a date leaf beside a predicate the kernel declines. A
+   row outside the range compares the rendered text, as it did.
+4. **The model moved with the code.** `Frame.fst`'s `leaf` gains the date case and `filter_kernel_is_step` covers it.
+   `kernel_prims` gains two premises, both instantiated at production's functions by the differential: two dates whose
+   days fit compare as their day counts, and a date text with a day count is that day's canonical text and fits. The
+   differential now draws date constants and days past the range.
+
+**Evidence.** F* refutes `leaf_eval` when the range guard is removed from `leaf`. With `fourDigitDay` forced true, five
+of `DateCompareTests`' seven cases and the frame differential go red.
+
+**Not decided.** A date constant that is not canonical still goes through text. `Timestamp` columns are unchanged: they
+have no single integer to compare at a fractional unit, and no measurement yet asks for it.
+
 ## 2026-11-05 — D58: `Fit` estimates the general GLM — the binomial, quasi-binomial, inverse Gaussian and negative binomial families beside Phase 595's and 598's, under the whole link set (identity, log, logit, probit, cloglog, inverse, inverse square, square root), every `g`, `g⁻¹` and `dμ/dη` built from pinned operations; a pinned `erfc` and normal distribution, density and quantile enter `Elementary`; the binomial links hold their means to `[2⁻⁵², 1 − 2⁻⁵²]`; separation is refused by a pinned rule; the negative binomial estimates θ by MASS's alternation; the wire refuses a pair outside the admitted table when it decodes; `Predict` maps the response scale through each link, its standard error by the delta method
 
 **Context.** The operator's request of 2026-11-03 ("I want it capable of estimating Generalized Linear Models"),
