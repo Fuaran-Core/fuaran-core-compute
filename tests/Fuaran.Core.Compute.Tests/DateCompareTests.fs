@@ -182,6 +182,46 @@ let tests =
               Expect.isFalse (takes days "2026-04-01") "a day past the range"
               Expect.isFalse (takes inRange "2026-4-1") "a constant with no day count"
 
+          testCase "datePart answers as the reference does, for a constant part and a part read from a column"
+          <| fun () ->
+              let parts = [ "year"; "month"; "day"; "week" ]
+
+              let t =
+                  { Schema =
+                      [ Field.create "d" DateType
+                        Field.create "part" StringType
+                        Field.create "n" IntType ]
+                    Columns =
+                      [ Column.ofDates
+                            "d"
+                            (Vector.ofArray [| day "2024-02-29"; day "1999-12-31"; 0; day "2026-10-10" |])
+                            (Validity.ofArray [| true; true; false; true |])
+                        Column.ofStrs "part" (Vector.ofArray [| "month"; "year"; "week"; "day" |]) AllValid
+                        Column.ofInts "n" (Vector.ofArray [| 1; 2; 3; 4 |]) AllValid ] }
+
+              let f = Frame.ofTable t
+
+              let agrees (e: ColExpr) =
+                  let compiled = DataFrame.compileExpr f (DataFrame.resolveExpr Map.empty t.Schema e)
+
+                  for row in 0..3 do
+                      Expect.equal
+                          (DataFrame.runCompiled compiled row)
+                          (DataFrame.evalExprInRow
+                              Map.empty
+                              t.Schema
+                              (t.Columns |> List.map (fun c -> (Column.toCells c)[row]))
+                              e)
+                          (sprintf "%A at row %d" e row)
+
+              for part in parts do
+                  agrees (ApplyFn(DatePart, [ Lit(Str part); Col "d" ]))
+
+              agrees (ApplyFn(DatePart, [ Lit(Int 1); Col "d" ]))
+              agrees (ApplyFn(DatePart, [ Lit Null; Col "d" ]))
+              agrees (ApplyFn(DatePart, [ Col "part"; Col "d" ]))
+              agrees (ApplyFn(DatePart, [ Col "n"; Col "d" ]))
+
           testCase "the compiled comparison renders no text for a row inside the range"
           <| fun () ->
               let n = 10_000

@@ -6629,32 +6629,43 @@ module DataFrame =
                             let db = b p
                             if slot.Null || erred () then 0 else db - da)
                 | DatePart, [ part; NDays d ] ->
-                    let partOf = cellOf part
+                    let readPart (which: Cell) : int -> int =
+                        match which with
+                        | Str "year" -> fun days -> (TemporalText.civilOfDays days).Year
+                        | Str "month" -> fun days -> (TemporalText.civilOfDays days).Month
+                        | Str "day" -> fun days -> (TemporalText.civilOfDays days).Day
+                        | Str other ->
+                            fun _ ->
+                                fail (TypeError("datePart: unknown part '" + other + "'")) |> ignore
+                                0
+                        | _ ->
+                            fun _ ->
+                                fail (TypeError "datePart expects (string part, date/timestamp/string)")
+                                |> ignore
 
-                    typed,
-                    NInt(fun p ->
-                        let which = partOf p
+                                0
 
-                        if erred () then
-                            0
-                        else
+                    match args with
+                    // A constant part is read once, and raises nothing until a present date needs it.
+                    | RConst which :: _ ->
+                        let read = readPart which
+
+                        typed,
+                        NInt(fun p ->
                             let days = d p
+                            if erred () || slot.Null then 0 else read days)
+                    | _ ->
+                        let partOf = cellOf part
 
-                            if erred () || slot.Null then
+                        typed,
+                        NInt(fun p ->
+                            let which = partOf p
+
+                            if erred () then
                                 0
                             else
-                                match which with
-                                | Str "year" -> (TemporalText.civilOfDays days).Year
-                                | Str "month" -> (TemporalText.civilOfDays days).Month
-                                | Str "day" -> (TemporalText.civilOfDays days).Day
-                                | Str other ->
-                                    fail (TypeError("datePart: unknown part '" + other + "'")) |> ignore
-                                    0
-                                | _ ->
-                                    fail (TypeError "datePart expects (string part, date/timestamp/string)")
-                                    |> ignore
-
-                                    0)
+                                let days = d p
+                                if erred () || slot.Null then 0 else readPart which days)
                 | _ ->
 
                     let rs = ns |> List.map cellOf |> List.toArray
