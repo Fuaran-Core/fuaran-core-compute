@@ -9507,31 +9507,17 @@ module DataFrame =
                 Array.init lkeys.Length (fun j ->
                     strikeNulls j lkeys[j] lphys (RowHash.codesOf coders[j] lkeys[j] lphys false))
 
-            let index = RowHash.Index(coders |> Array.map (fun c -> c.Count), rphys.Length)
-            let rslots = Array.init rphys.Length (fun i -> index.Open(rcodes, i))
-            let lslots = Array.init lphys.Length (fun i -> index.Find(lcodes, i))
-            let slotCount = index.Count
-
-            // Each slot's right rows, in right order: a count per slot, its start, then a fill.
-            let starts: int[] = Array.zeroCreate (slotCount + 1)
-
-            for s in rslots do
-                if s >= 0 then
-                    starts[s + 1] <- starts[s + 1] + 1
-
-            for s in 0 .. slotCount - 1 do
-                starts[s + 1] <- starts[s + 1] + starts[s]
-
-            let members: int[] = Array.zeroCreate starts[slotCount]
-            let cursor = Array.copy starts
-
-            for j in 0 .. rslots.Length - 1 do
-                let s = rslots[j]
-
-                if s >= 0 then
-                    let at = cursor[s]
-                    members[at] <- j
-                    cursor[s] <- at + 1
+            // One key column's codes already are its slots: a left row has a code only where a right
+            // row opened it (a struck null is `-1` on both sides), so no second table is needed. Only a
+            // tuple of columns needs numbering.
+            let struct (rslots, lslots, slotCount) =
+                if lkeys.Length = 1 then
+                    struct (rcodes[0], lcodes[0], coders[0].Count)
+                else
+                    let index = RowHash.Index(coders |> Array.map (fun c -> c.Count), rphys.Length)
+                    let rs = Array.init rphys.Length (fun i -> index.Open(rcodes, i))
+                    let ls = Array.init lphys.Length (fun i -> index.Find(lcodes, i))
+                    struct (rs, ls, index.Count)
 
             match how with
             // Phase 101 — the filtering joins: the LEFT schema only, each qualifying left row once,
@@ -9560,47 +9546,97 @@ module DataFrame =
 
                 let padsLeft = (how = Left || how = Outer)
                 let padsRight = (how = Right || how = Outer)
-                let lout = ResizeArray<int>()
-                let rout = ResizeArray<int>()
 
-                // A right row is matched when some left row's probe emitted it — the key relation is
-                // symmetric, so that is exactly the reverse scan's "some left row matches it".
-                let matched = Array.create rphys.Length false
+                // Each slot's right rows, in right order: a count per slot, its start, then a fill.
+                let starts: int[] = Array.zeroCreate (slotCount + 1)
+
+                for s in rslots do
+                    if s >= 0 then
+                        starts[s + 1] <- starts[s + 1] + 1
+
+                for s in 0 .. slotCount - 1 do
+                    starts[s + 1] <- starts[s + 1] + starts[s]
+
+                let members: int[] = Array.zeroCreate starts[slotCount]
+                let cursor = Array.copy starts
+
+                for j in 0 .. rslots.Length - 1 do
+                    let s = rslots[j]
+
+                    if s >= 0 then
+                        let at = cursor[s]
+                        members[at] <- j
+                        cursor[s] <- at + 1
+
+                // A right row is matched when some left row's probe found its slot — the key relation
+                // is symmetric, so that is exactly the reverse scan's "some left row matches it".
+                let probed = Array.create slotCount false
+                let mutable matches = 0
+                let mutable leftOnly = 0
+
+                for s in lslots do
+                    if s >= 0 then
+                        probed[s] <- true
+                        matches <- matches + starts[s + 1] - starts[s]
+                    elif padsLeft then
+                        leftOnly <- leftOnly + 1
+
+                let unmatched (j: int) =
+                    let s = rslots[j]
+                    s < 0 || not probed[s]
+
+                let mutable rightOnly = 0
+
+                if padsRight then
+                    for j in 0 .. rphys.Length - 1 do
+                        if unmatched j then
+                            rightOnly <- rightOnly + 1
+
+                // The output's size is known now, so the index vectors are written once.
+                let count = matches + leftOnly + rightOnly
+                let lidx: int[] = Array.zeroCreate count
+                let ridx: int[] = Array.zeroCreate count
+                let mutable at = 0
 
                 for i in 0 .. lphys.Length - 1 do
                     let s = lslots[i]
 
                     if s >= 0 then
-                        for at in starts[s] .. starts[s + 1] - 1 do
-                            let j = members[at]
-                            matched[j] <- true
-                            lout.Add lphys[i]
-                            rout.Add rphys[j]
+                        for m in starts[s] .. starts[s + 1] - 1 do
+                            lidx[at] <- lphys[i]
+                            ridx[at] <- rphys[members[m]]
+                            at <- at + 1
                     elif padsLeft then
-                        lout.Add lphys[i]
-                        rout.Add -1
+                        lidx[at] <- lphys[i]
+                        ridx[at] <- -1
+                        at <- at + 1
 
                 // right-only unmatched rows (for Right / Outer), after every left-side row, in right
-                // order — read from the matched flags rather than a second pass the other way.
+                // order.
                 if padsRight then
                     for j in 0 .. rphys.Length - 1 do
-                        if not matched[j] then
-                            lout.Add -1
-                            rout.Add rphys[j]
+                        if unmatched j then
+                            lidx[at] <- -1
+                            ridx[at] <- rphys[j]
+                            at <- at + 1
 
-                let lidx = lout.ToArray()
-                let ridx = rout.ToArray()
+                // A side with no padded row needs no null handling.
+                let gatherSide (padded: int) (v: Vec) (idx: int[]) =
+                    if padded = 0 then
+                        Vec.gather v idx
+                    else
+                        Vec.gatherOrNull v idx
 
                 let vecs =
                     Array.append
-                        (f.Vecs |> Array.map (fun v -> Vec.gatherOrNull v lidx))
-                        (right.Vecs |> Array.map (fun v -> Vec.gatherOrNull v ridx))
+                        (f.Vecs |> Array.map (fun v -> gatherSide rightOnly v lidx))
+                        (right.Vecs |> Array.map (fun v -> gatherSide leftOnly v ridx))
 
                 Ok
                     { Cols = f.Cols @ outRight
                       Vecs = vecs
                       Sel = None
-                      Count = lidx.Length }
+                      Count = count }
 
     /// Two columns met as one (a union's pair, a set op's pair; Phase 429, D29): the left field under
     /// the one unit the pair states, or the mismatch naming `what` and the column.

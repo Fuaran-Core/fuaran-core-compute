@@ -1,5 +1,29 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-07 — D60: a join pays for a second table and growing lists only where it needs them
+
+**Context.** An int join of 100,000 by 100,000 took 3.7 ms and 11.0 MB under BenchmarkDotNet, about 2.4 times a
+hand-written hash join (`benchmarks/results/2026-11-07-x64-join.md`, which also corrects an earlier figure of 9 times).
+
+**Decided.** `evalJoin` changes in four ways, and no answer changes.
+
+1. **One key column's codes are its slots.** A left row has a code only where a right row opened it, and a struck null
+   is `-1` on both sides, so `RowHash.Index` is built only for a tuple of columns.
+2. **The filtering joins build no slot lists.** `Semi` and `Anti` read only whether a slot was found, so the lists move
+   into the combining branch.
+3. **The output is counted, then written once.** A count per slot replaces the per-right-row `matched` flags, and it
+   sizes the two index vectors, so no list grows and none is copied.
+4. **A side with no padded row uses `gather`.** `gatherOrNull`'s null handling is paid only where a `-1` was written.
+
+**Evidence.** The join's nested-loop laws hold. Three mutants go red in them: a right row counted as matched whatever
+was probed, the padded counts crossed, and a left null key left unstruck. A fourth, a right null key left unstruck,
+survives because it changes nothing: no left row can find that code, and `Right` and `Outer` still emit the row as
+unmatched.
+
+**Not decided.** That right-side strike stays: it is redundant only by the argument above, and it keeps null rows out of
+the slot lists. The coder's dictionary still grows from empty, because `codesOf` is shared with verbs whose rows say
+little about their cardinality.
+
 ## 2026-11-07 — D59: a date comparison reads day counts where that is the text's order
 
 **Context.** A date column has been day counts since Phase 423, but comparing one with a date still rendered every
