@@ -50,8 +50,8 @@ without the extra column. That file is a dated record and stays as written; this
   harness times the same pipeline at about 2.3 ms on all processors and 2.4 ms with
   `DOTNET_PROCESSOR_COUNT=1`, and the ratio at 10,000 rows is 2.5. The gap appears where the steps turn
   to the thread pool, and the two harnesses differ in how they warm up. Its cause is not established.
-  Later the same day: the 4.8 ms is a mean over a tail, and warmed longer the median is 850-900 µs. See
-  "Still open" in `2026-11-07-x64-join.md`.
+  Later the same day: the 4.8 ms is a mean over a tail from background collection on a small heap. See "The
+  dated pipeline's tail, traced" in `2026-11-07-x64-join.md`.
 - **The join.** Corrected: this bullet first read about 8.8 ms and 22.7 MB, about 9 times a hand-written
   hash join. That harness rebuilt the right table inside the timed run. See
   `2026-11-07-x64-join.md`: about 2.4 times at 100,000 rows.
