@@ -12,7 +12,7 @@ more fraction digits multiplies the rows before it by the difference, at most `W
 integer no larger than its final magnitude, so where the column fits the width every step is exact, and where it does not
 the values are discarded and the column takes the text path, as before. No per-row scale is kept, so nothing is allocated
 beside the carrier: an array of a byte or an int per row is past the large-object threshold at 100,000 rows, the
-allocation D-figures on 2026-11-07 traced the dated pipeline's tail to. `ofDecimalTexts` and `packAt`'s decimal arm read
+allocation `2026-11-07-x64-join.md` traced the dated pipeline's tail to. `ofDecimalTexts` and `packAt`'s decimal arm read
 through it.
 
 `scaleOf` and `fill` stay: they are the host functions `proofs/Frame.fst` models the boundary by, and the proof oracle
