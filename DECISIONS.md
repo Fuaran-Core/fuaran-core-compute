@@ -1,5 +1,35 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-08 — D62: a timestamp and a decimal key take one 64-bit key, a decimal key a direct table, and a decimal group key is gathered
+
+**Context.** After D61 a timestamp key cost 4.0 to 4.2 times the int key at 100,000 distinct keys and a decimal key 5.1 to
+7.1 times. The timestamp coded through a dictionary over a (second, nanosecond) pair and the decimal through one of sixteen
+per-scale dictionaries over floats, with a floating remainder per trailing-zero test.
+
+**Decided.**
+
+1. **An instant that is a whole microsecond is one `int64` key**, its epoch microsecond (`Micros`): the canonical range is
+   under 3.2e17 microseconds either side of the epoch. One with a sub-microsecond digit keeps its pair key (`Instants`).
+2. **A decimal off the table is one `int64` key**, its unscaled value with trailing zeros removed by integer division, times
+   16, plus the scale left (`DecVals`, one dictionary in place of sixteen). The magnitude is below 10^15 and the scale below
+   16, so the key is one value's alone.
+3. **A decimal key has a direct table** (`ScaledDirect`), built at the scale of the first decimal vector a coder meets before
+   it has coded a decimal, when its range is under four times the rows. A value from any column goes through it exactly
+   when it is exact at that scale (a coarser value scaled up; a finer one only where the division leaves a whole number)
+   and in range, so the route is a function of the value and one value has one code.
+4. **`keyColumn` gathers a decimal key column** (`Vec.gather`), as every other verb carries one. It fell to the boxed arm,
+   which made a cell per group and parsed every text again to pack it: most of the decimal group-by's cost.
+
+**Evidence.** The row-hash value kinds gain nanosecond instants, decimals at scale 3 (some exact at scale 2, some not), a
+far-apart decimal column, and a close scale-2 column that builds a table coarser values are scaled into. Five mutants go
+red: the scale-down exactness test dropped, the scale-up ignored, the sub-microsecond test removed, the scale left out of
+the 64-bit key, and the decimal key column gathered in reverse (four suites). verify.ps1 green.
+
+**Not decided.** A decimal column is parsed to its scaled carrier at the boundary on every evaluation: 1.6 ms per 100,000
+rows, now most of what a decimal join costs over an int join. The other `keyColumn` arms copy by their own loop, which
+writes a zero carrier at an absent row where `Vec.gather` copies the row's; they were left as they are, since what an
+absent slot holds reaches the adopted column. The timestamp and string dictionaries still grow from empty.
+
 ## 2026-11-08 — D61: a date, a timestamp and a decimal key are coded by value
 
 **Context.** `RowHash.codesOf` rendered every date and timestamp row to its canonical text and every decimal row to

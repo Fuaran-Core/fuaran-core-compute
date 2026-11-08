@@ -7778,7 +7778,11 @@ let private rowHashKinds: (string * ColumnType * Cell[]) list =
 /// canonical dates, typed and boxed beside a text that is not one; one set of instants in two units,
 /// so a millisecond column meets a microsecond one; decimals at two scales, so `1.50` at scale 2 meets
 /// `1.5` and `1` at scale 0 meets `1.00`, with both zeroes; and decimals past the scaled width, which
-/// keep their text codes beside the same values written short.
+/// keep their text codes beside the same values written short. Since D62 an instant with a sub-microsecond
+/// digit keeps a key of its own beside the microsecond ones (the nanosecond kind), and a decimal column that
+/// builds the direct table at one scale meets columns at a finer scale, some exact there and some not (the
+/// scale-3 kind), values far outside its range (the far-apart kind), and a table at scale 2 that coarser
+/// values are scaled up into (the close kind: a direct table needs a range under 1,024 at its scale here).
 let private rowHashValueKinds: (string * ColumnType * Cell[]) list =
     let ts = "2020-01-01T00:00:00"
 
@@ -7794,6 +7798,13 @@ let private rowHashValueKinds: (string * ColumnType * Cell[]) list =
          Timestamp(ts + ".5Z")
          Timestamp(ts + ".000001Z")
          Null |]
+      "timestamp, ns",
+      TimestampType TimeUnit.Nanoseconds,
+      [| Timestamp(ts + "Z")
+         Timestamp(ts + ".5Z")
+         Timestamp(ts + ".000000001Z")
+         Timestamp(ts + ".000001Z")
+         Null |]
       "string+timestamp", StringType, [| Str(ts + "Z"); Timestamp(ts + "Z"); Timestamp(ts + ".5Z"); Null |]
       "decimal, scale 2",
       DecimalType,
@@ -7804,6 +7815,23 @@ let private rowHashValueKinds: (string * ColumnType * Cell[]) list =
          Decimal "100"
          Null |]
       "decimal, scale 0", DecimalType, [| Decimal "1"; Decimal "100"; Decimal "0"; Decimal "-0"; Decimal "-2"; Null |]
+      "decimal, scale 2, close",
+      DecimalType,
+      [| Decimal "1.50"
+         Decimal "1.25"
+         Decimal "0.05"
+         Decimal "-1.00"
+         Decimal "-0.00"
+         Null |]
+      "decimal, scale 3",
+      DecimalType,
+      [| Decimal "1.005"
+         Decimal "1.500"
+         Decimal "0.010"
+         Decimal "-1.5"
+         Decimal "100"
+         Null |]
+      "decimal, far apart", DecimalType, [| Decimal "0.01"; Decimal "123456789.5"; Decimal "-5"; Decimal "1.5"; Null |]
       "decimal, past the width",
       DecimalType,
       [| Decimal "1.5"

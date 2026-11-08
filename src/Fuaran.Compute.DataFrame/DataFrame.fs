@@ -8039,16 +8039,27 @@ module DataFrame =
             member val Hi = -1 with get, set
             member val Table: int[] = [||] with get, set
 
+        /// A direct table over a decimal column's unscaled values at one scale (D62), empty until
+        /// built: `Lo` is the smallest unscaled value at `Scale`, and a value is coded through it
+        /// exactly when it is exact at `Scale` and its unscaled value there is in range.
+        type ScaledDirect() =
+            member val Scale = -1 with get, set
+            member val Lo = 0.0 with get, set
+            member val Table: int[] = [||] with get, set
+
         /// One key column's codes: a dictionary per carrier, one counter over all of them, so two
         /// values share a code exactly when the relation equates them.
         ///
         /// A date, a timestamp and a decimal are coded by VALUE where their canonical text is the
-        /// value's (D61): a date by its day count (`Days`, with a direct table of its own), an instant
-        /// by its epoch second and nanosecond (`Instants`), a decimal by its unscaled integer at its
-        /// own scale with trailing fraction zeros removed (`DecVals`, one table per scale, made on
-        /// first use). Canonical texts are equal exactly when those values are, so the codes are the
-        /// codes the texts had. Any other text keeps its text code (`Dates`, `Stamps`, `Decs`), and no
-        /// such text is any value's canonical text, so it still equals only itself.
+        /// value's (D61): a date by its day count (`Days`, with a direct table of its own); an instant
+        /// by its epoch microsecond as one 64-bit key (`Micros`, D62), or by its second and nanosecond
+        /// where it has a sub-microsecond digit (`Instants`); a decimal through a direct table at one
+        /// scale where it fits (`DecDirect`, D62), and otherwise by its unscaled integer with trailing
+        /// fraction zeros removed, beside that scale, as one 64-bit key (`DecVals`). Which way a value
+        /// goes depends on the value alone, so one value has one code. Canonical texts are equal
+        /// exactly when those values are, so the codes are the codes the texts had. Any other text
+        /// keeps its text code (`Dates`, `Stamps`, `Decs`), and no such text is any value's canonical
+        /// text, so it still equals only itself.
         type Coder =
             {
                 CellEq: bool
@@ -8059,8 +8070,9 @@ module DataFrame =
                 Stamps: CodeMap<string>
                 Decs: CodeMap<string>
                 Days: CodeMap<int>
+                Micros: CodeMap<int64>
                 Instants: CodeMap<struct (float * int)>
-                DecVals: CodeMap<float>[]
+                DecVals: CodeMap<int64>
                 Specials: int[]
                 /// The int direct table (token relation only): built from the first int vector a
                 /// fresh coder meets when its range is small.
@@ -8068,6 +8080,9 @@ module DataFrame =
                 /// The day direct table (either relation: a date equals only a date): built from the
                 /// first date vector the coder meets before it has coded any day, when its range is small.
                 DayDirect: Direct
+                /// The decimal direct table: built from the first decimal vector the coder meets before
+                /// it has coded any decimal, at that vector's scale, when its range is small.
+                DecDirect: ScaledDirect
                 mutable Count: int
             }
 
@@ -8089,7 +8104,8 @@ module DataFrame =
                 (fun (struct (s1, n1)) (struct (s2, n2)) -> s1 = s2 && n1 = n2)
             )
 
-        let private decVals () : CodeMap<float> = nums ()
+        let private longs () : CodeMap<int64> =
+            OpenSlots<int64>((fun i -> hash i), (fun a b -> a = b))
 
         let coder (cellEq: bool) : Coder =
             { CellEq = cellEq
@@ -8100,16 +8116,15 @@ module DataFrame =
               Stamps = strs ()
               Decs = strs ()
               Days = ints ()
+              Micros = longs ()
               Instants = instants ()
-              DecVals = Array.zeroCreate (ScaledDecimal.Width + 1)
+              DecVals = longs ()
               Specials = Array.create 4 -1
               IntDirect = Direct()
               DayDirect = Direct()
+              DecDirect = ScaledDirect()
               Count = 0 }
 #else
-        let private decVals () : CodeMap<float> =
-            System.Collections.Generic.Dictionary<float, int>()
-
         let coder (cellEq: bool) : Coder =
             { CellEq = cellEq
               Ints = System.Collections.Generic.Dictionary<int, int>()
@@ -8119,11 +8134,13 @@ module DataFrame =
               Stamps = System.Collections.Generic.Dictionary<string, int>()
               Decs = System.Collections.Generic.Dictionary<string, int>()
               Days = System.Collections.Generic.Dictionary<int, int>()
+              Micros = System.Collections.Generic.Dictionary<int64, int>()
               Instants = System.Collections.Generic.Dictionary<struct (float * int), int>()
-              DecVals = Array.zeroCreate (ScaledDecimal.Width + 1)
+              DecVals = System.Collections.Generic.Dictionary<int64, int>()
               Specials = Array.create 4 -1
               IntDirect = Direct()
               DayDirect = Direct()
+              DecDirect = ScaledDirect()
               Count = 0 }
 #endif
 
@@ -8239,9 +8256,14 @@ module DataFrame =
             | Some days -> dayCode c days openNew
             | None -> codeIn c c.Dates s openNew
 
-        /// An instant's code by its epoch second and nanosecond; the instant is in range.
+        /// An instant's code; the instant is in range. By its epoch microsecond, one 64-bit key, where
+        /// it is a whole microsecond (the canonical range is under 3.2e17 microseconds either side of
+        /// the epoch); by its second and nanosecond otherwise.
         let private instantCode (c: Coder) (second: float) (nanos: int) (openNew: bool) : int =
-            codeIn c c.Instants (struct (second + 0.0, nanos)) openNew
+            if nanos % 1000 = 0 then
+                codeIn c c.Micros (int64 second * 1000000L + int64 (nanos / 1000)) openNew
+            else
+                codeIn c c.Instants (struct (second + 0.0, nanos)) openNew
 
         /// A timestamp text's code: by its instant where the text is that instant's canonical text,
         /// by the text otherwise.
@@ -8251,24 +8273,75 @@ module DataFrame =
                 instantCode c second nanos openNew
             | _ -> codeIn c c.Stamps s openNew
 
-        /// A decimal's code by value: `unscaled` at `scale` (at most the width), its trailing
-        /// fraction zeros removed first so that one value has one key.
+        /// Give a coder that has coded no decimal yet a direct table over a decimal vector's unscaled
+        /// values at its scale, when their range is at most a small multiple of the rows.
+        let private decTableFor (c: Coder) (scaled: float[]) (scale: int) (m: Mask) (phys: int[]) : unit =
+            let t = c.DecDirect
+
+            if t.Scale < 0 && c.DecVals.Count = 0 then
+                let mutable lo = System.Double.MaxValue
+                let mutable hi = System.Double.MinValue
+
+                for p in phys do
+                    if Mask.at p m then
+                        let x = Raw.at p scaled
+
+                        if x < lo then
+                            lo <- x
+
+                        if x > hi then
+                            hi <- x
+
+                if lo <= hi && hi - lo < float (max 1024 (4 * phys.Length)) then
+                    t.Scale <- scale
+                    t.Lo <- lo
+                    t.Table <- Array.create (int (hi - lo) + 1) -1
+
+        /// A decimal's code by value: `unscaled` at `scale` (at most the width; an exact integer of
+        /// magnitude below 10^15). Through the direct table where the value is exact at the table's
+        /// scale and in its range; otherwise by one 64-bit key, the unscaled value with its trailing
+        /// fraction zeros removed beside the scale left, so that one value has one key.
         let private decCode (c: Coder) (unscaled: float) (scale: int) (openNew: bool) : int =
-            let mutable u = unscaled
-            let mutable k = scale
+            let t = c.DecDirect
 
-            while k > 0 && u % 10.0 = 0.0 do
-                u <- u / 10.0
-                k <- k - 1
+            // The value's unscaled integer at the table's scale, where it is exact there: scaling up
+            // multiplies an integer by a power of ten (a product past 2^53 is far past the range);
+            // scaling down divides, and is exact only where the quotient is a whole number.
+            let atTable =
+                if t.Scale < 0 then
+                    nan
+                elif scale = t.Scale then
+                    unscaled
+                elif scale < t.Scale then
+                    unscaled * ScaledDecimal.pow10[t.Scale - scale]
+                else
+                    let q = unscaled / ScaledDecimal.pow10[scale - t.Scale]
+                    if q = floor q then q else nan
 
-            let mutable d = c.DecVals[k]
+            let at = atTable - t.Lo
 
-            if isNull (box d) then
-                d <- decVals ()
-                c.DecVals[k] <- d
+            if at >= 0.0 && at < float t.Table.Length then
+                let i = int at
+                let x = Raw.get i t.Table
 
-            // `+ 0.0` makes a negative zero zero, as the canonical text does.
-            codeIn c d (u + 0.0) openNew
+                if x >= 0 || not openNew then
+                    x
+                else
+                    let y = c.Count
+                    Raw.set t.Table i y
+                    c.Count <- y + 1
+                    y
+            else
+                let mutable u = int64 unscaled
+                let mutable k = scale
+
+                while k > 0 && u % 10L = 0L do
+                    u <- u / 10L
+                    k <- k - 1
+
+                // A magnitude below 10^15 times 16 is far inside 64 bits, and the scale is in 0 .. 15,
+                // so the key is one value's alone; `int64` of a negative zero is zero, as its text is.
+                codeIn c c.DecVals (u * 16L + int64 k) openNew
 
         /// A decimal text's code: by value where it fits the width at its own scale, by its
         /// canonical text (`Cell.token`) otherwise.
@@ -8371,6 +8444,9 @@ module DataFrame =
             // A decimal key is coded by value off the scaled carrier (D61), which is every present
             // row's value at the column's one scale; the texts are not read.
             | Decs(scaled, scale, _, m) ->
+                if openNew then
+                    decTableFor c scaled scale m phys
+
                 for i in 0 .. n - 1 do
                     let p = Raw.get i phys
 
@@ -8702,6 +8778,9 @@ module DataFrame =
             let secs, mask = across s m
             let fraction = if isNull f then null else fst (across f m)
             Stamps(u, secs, fraction, mask)
+        // A decimal key column at its scale, as every other verb gathers one (D62): boxing each key and
+        // packing the cells again parsed every group's text a second time.
+        | Decs _, DecimalType -> Vec.gather v rows
         | _ -> Vec.pack ty (rows |> Array.map (Vec.cellAt v))
 
     /// One column of a group's members — physical rows, in member order — as the cell list an
