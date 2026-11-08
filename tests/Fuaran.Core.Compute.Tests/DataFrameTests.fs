@@ -5520,7 +5520,11 @@ let frameTests =
               let reference = System.Collections.Generic.Dictionary<int, int>()
               let met = ResizeArray<int>()
 
-              for _ in 1..5000 do
+              for step in 1..5000 do
+                  // D64: a reservation mid-run rehashes what the table holds and changes no slot.
+                  if step = 700 then
+                      table.Reserve 3000
+
                   let k = rng.Next(-2000, 2000)
                   let found = table.Find k
 

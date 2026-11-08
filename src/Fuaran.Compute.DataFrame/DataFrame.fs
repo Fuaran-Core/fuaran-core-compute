@@ -2714,11 +2714,11 @@ module DataFrame =
             Raw.set keys i k
             Raw.set values i v
 
-        let grow () : unit =
+        let grow (next: int) : unit =
             let oldHashes = hashes
             let oldKeys = keys
             let oldValues = values
-            cap <- cap * 2
+            cap <- next
             hashes <- Array.zeroCreate cap
             keys <- Array.zeroCreate cap
             values <- Array.create cap -1
@@ -2755,10 +2755,21 @@ module DataFrame =
         /// `k`, so a caller reusing a probe buffer passes a copy.
         member _.Add(k: 'K, v: int) : unit =
             if (count + 1) * 2 > cap then
-                grow ()
+                grow (cap * 2)
 
             place (hashOf k) k v
             count <- count + 1
+
+        /// Room for `n` keys without growing again (D64): one rehash to the power of two that keeps
+        /// `n` keys at most half full, where the table is smaller.
+        member _.Reserve(n: int) : unit =
+            let mutable next = cap
+
+            while n * 2 > next do
+                next <- next * 2
+
+            if next > cap then
+                grow next
 
     // ---- the two cell equalities the evaluator partitions by (Phase 265) ----
     //
@@ -8171,6 +8182,29 @@ module DataFrame =
                     -1
 #endif
 
+        /// The rows a key column codes before its dictionary is sized (D64).
+        let private sample = 1024
+
+        /// After a key column's first `sample` rows: where more than half of them opened a key in `d`
+        /// (since `before`), room in `d` for the column's `n` rows at that rate (D64). A dictionary
+        /// grown one doubling at a time copies every entry it holds at each doubling, and at 100,000
+        /// keys its arrays are past the large-object threshold. A column whose sample repeats its keys
+        /// is left to grow, so a group-by over a few groups reserves nothing.
+        let private sizeFor (d: CodeMap<'k>) (before: int) (n: int) : unit =
+            let opened = d.Count - before
+
+            if opened * 2 > sample then
+                let want = before + int (int64 opened * int64 n / int64 sample)
+#if FABLE_COMPILER
+                d.Reserve want
+#else
+                d.EnsureCapacity want |> ignore
+#endif
+
+        /// Whether row `i` of `n` is where a column that opens codes sizes its dictionary.
+        let inline private sizesAt (i: int) (n: int) (openNew: bool) : bool =
+            openNew && i = sample && n >= 4 * sample
+
         let private special (c: Coder) (s: int) (openNew: bool) : int =
             let x = c.Specials[s]
 
@@ -8431,7 +8465,27 @@ module DataFrame =
             | Strs(ty, a, m) ->
                 let code = strCodeOf c ty
 
+                // The dictionary a text of this type opens its keys in, where it is canonical.
+                let size: unit -> unit =
+                    match ty with
+                    | DateType ->
+                        let b = c.Days.Count
+                        fun () -> sizeFor c.Days b n
+                    | TimestampType _ ->
+                        let b = c.Micros.Count
+                        fun () -> sizeFor c.Micros b n
+                    | StringType
+                    | IntType
+                    | FloatType
+                    | BoolType
+                    | DecimalType ->
+                        let b = c.Strs.Count
+                        fun () -> sizeFor c.Strs b n
+
                 for i in 0 .. n - 1 do
+                    if sizesAt i n openNew then
+                        size ()
+
                     let p = Raw.get i phys
 
                     let code =
@@ -8447,7 +8501,12 @@ module DataFrame =
                 if openNew then
                     decTableFor c scaled scale m phys
 
+                let before = c.DecVals.Count
+
                 for i in 0 .. n - 1 do
+                    if sizesAt i n openNew then
+                        sizeFor c.DecVals before n
+
                     let p = Raw.get i phys
 
                     let code =
@@ -8480,8 +8539,12 @@ module DataFrame =
                     Raw.set out i code
             | Stamps(u, s, f, m) ->
                 let nanosPer = TimeUnit.scale TimeUnit.Nanoseconds / TimeUnit.scale u
+                let before = c.Micros.Count
 
                 for i in 0 .. n - 1 do
+                    if sizesAt i n openNew then
+                        sizeFor c.Micros before n
+
                     let p = Raw.get i phys
 
                     let code =

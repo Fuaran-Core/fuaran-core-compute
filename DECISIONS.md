@@ -1,5 +1,31 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-08 — D64: a key column's dictionary is sized from its first 1,024 rows
+
+**Context.** After D63 a string key cost 3.7 times the int key at 100,000 distinct keys and a timestamp key 3.2 to 3.5
+times (`benchmarks/results/2026-11-08-x64-keyed.md`). Their codes open in a dictionary that starts empty and doubles about
+seventeen times on the way to 100,000 keys, copying every entry at each doubling; at that size its arrays are past the
+large-object threshold, so the doublings are gen2 garbage too.
+
+**Decided.** `RowHash.codesOf`, on a side that opens codes and over at least 4,096 rows, looks at the dictionary its
+carrier opens keys in once the first 1,024 rows are coded (`sizeFor`): where more than half of those rows opened a key, it
+reserves room for the column's rows at that rate. A column whose sample repeats its keys reserves nothing, so a group-by
+over a few groups allocates what it did. The carriers sized are the ones whose keys can be many: a timestamp's
+microsecond keys, a decimal's value keys beside its direct table, and a text column's string, day or microsecond keys.
+An int and a date in range code through their direct tables and need no dictionary. Under JavaScript the slot table gains
+`Reserve`, one rehash to the power of two that holds the reservation at most half full.
+
+Sizing changes no code: a dictionary's numbering is the order keys are added in, whatever its capacity.
+
+**Evidence.** The slot-table law against `Dictionary` reserves partway through its run; a `Reserve` that moved the
+capacity without rehashing errors it. verify.ps1 green. At 100,000 rows a string group-by fell from 4.4 to 3.2 ms and its
+bytes from 12.98 to 7.92 MB, a timestamp group-by from 4.0 to 2.8 ms, a string join from 7.5 to 6.4 ms and a timestamp
+join from 5.9 to 5.1 ms. At 10,000 rows, where the decimal key has no direct table, a decimal group-by fell from 427 to
+283 µs.
+
+**Not decided.** A string key is still 2.8 to 3.5 times the int key. .NET keeps each entry's hash, so a doubling never
+rehashed a string; what is left is hashing and comparing the strings themselves, once per row on each side.
+
 ## 2026-11-08 — D63: a decimal column is read at the boundary in one scan of each text
 
 **Context.** A decimal column crossing into the frame cost 1.5 ms per 100,000 rows against 0.13 ms for an int column
