@@ -8031,8 +8031,24 @@ module DataFrame =
         type CodeMap<'k> = System.Collections.Generic.Dictionary<'k, int>
 #endif
 
+        /// A direct table over the int values `[Lo, Hi]`, empty until built: a value in the range is
+        /// coded by an array read instead of a dictionary probe, and through the table only, so the
+        /// table and the dictionary beside it never hold one value twice.
+        type Direct() =
+            member val Lo = 0 with get, set
+            member val Hi = -1 with get, set
+            member val Table: int[] = [||] with get, set
+
         /// One key column's codes: a dictionary per carrier, one counter over all of them, so two
         /// values share a code exactly when the relation equates them.
+        ///
+        /// A date, a timestamp and a decimal are coded by VALUE where their canonical text is the
+        /// value's (D61): a date by its day count (`Days`, with a direct table of its own), an instant
+        /// by its epoch second and nanosecond (`Instants`), a decimal by its unscaled integer at its
+        /// own scale with trailing fraction zeros removed (`DecVals`, one table per scale, made on
+        /// first use). Canonical texts are equal exactly when those values are, so the codes are the
+        /// codes the texts had. Any other text keeps its text code (`Dates`, `Stamps`, `Decs`), and no
+        /// such text is any value's canonical text, so it still equals only itself.
         type Coder =
             {
                 CellEq: bool
@@ -8042,15 +8058,16 @@ module DataFrame =
                 Dates: CodeMap<string>
                 Stamps: CodeMap<string>
                 Decs: CodeMap<string>
+                Days: CodeMap<int>
+                Instants: CodeMap<struct (float * int)>
+                DecVals: CodeMap<float>[]
                 Specials: int[]
-                /// A direct table over the int values `[IntLo, IntHi]` (token relation
-                /// only): built from the first int vector a fresh coder meets when its range is small, so
-                /// an int key column is coded by an array read instead of a dictionary probe. A value in
-                /// the range is coded through the table and never the dictionary, so the two never hold
-                /// one value twice.
-                mutable IntLo: int
-                mutable IntHi: int
-                mutable IntTable: int[]
+                /// The int direct table (token relation only): built from the first int vector a
+                /// fresh coder meets when its range is small.
+                IntDirect: Direct
+                /// The day direct table (either relation: a date equals only a date): built from the
+                /// first date vector the coder meets before it has coded any day, when its range is small.
+                DayDirect: Direct
                 mutable Count: int
             }
 
@@ -8065,6 +8082,15 @@ module DataFrame =
         let private strs () : CodeMap<string> =
             OpenSlots<string>((fun s -> hash s), (fun a b -> System.String.Equals(a, b)))
 
+        // An instant's second is a whole number and never `-0.0` (`instantCode` adds `0.0`).
+        let private instants () : CodeMap<struct (float * int)> =
+            OpenSlots<struct (float * int)>(
+                (fun (struct (s, n)) -> hash s * 31 + n),
+                (fun (struct (s1, n1)) (struct (s2, n2)) -> s1 = s2 && n1 = n2)
+            )
+
+        let private decVals () : CodeMap<float> = nums ()
+
         let coder (cellEq: bool) : Coder =
             { CellEq = cellEq
               Ints = ints ()
@@ -8073,12 +8099,17 @@ module DataFrame =
               Dates = strs ()
               Stamps = strs ()
               Decs = strs ()
+              Days = ints ()
+              Instants = instants ()
+              DecVals = Array.zeroCreate (ScaledDecimal.Width + 1)
               Specials = Array.create 4 -1
-              IntLo = 0
-              IntHi = -1
-              IntTable = [||]
+              IntDirect = Direct()
+              DayDirect = Direct()
               Count = 0 }
 #else
+        let private decVals () : CodeMap<float> =
+            System.Collections.Generic.Dictionary<float, int>()
+
         let coder (cellEq: bool) : Coder =
             { CellEq = cellEq
               Ints = System.Collections.Generic.Dictionary<int, int>()
@@ -8087,10 +8118,12 @@ module DataFrame =
               Dates = System.Collections.Generic.Dictionary<string, int>()
               Stamps = System.Collections.Generic.Dictionary<string, int>()
               Decs = System.Collections.Generic.Dictionary<string, int>()
+              Days = System.Collections.Generic.Dictionary<int, int>()
+              Instants = System.Collections.Generic.Dictionary<struct (float * int), int>()
+              DecVals = Array.zeroCreate (ScaledDecimal.Width + 1)
               Specials = Array.create 4 -1
-              IntLo = 0
-              IntHi = -1
-              IntTable = [||]
+              IntDirect = Direct()
+              DayDirect = Direct()
               Count = 0 }
 #endif
 
@@ -8140,46 +8173,115 @@ module DataFrame =
             else
                 codeIn c c.Nums (f + 0.0) openNew
 
-        let private intCode (c: Coder) (i: int) (openNew: bool) : int =
-            if c.CellEq then
-                floatCode c (float i) openNew
-            // Compared against both ends, never as `i - IntLo`, which overflows for a far value.
-            elif i >= c.IntLo && i <= c.IntHi then
-                let at = i - c.IntLo
-                let x = Raw.get at c.IntTable
+        /// `i`'s code through the direct table `t` where it is in range, through `d` otherwise.
+        let private directCode (c: Coder) (t: Direct) (d: CodeMap<int>) (i: int) (openNew: bool) : int =
+            // Compared against both ends, never as `i - Lo`, which overflows for a far value.
+            if i >= t.Lo && i <= t.Hi then
+                let at = i - t.Lo
+                let x = Raw.get at t.Table
 
                 if x >= 0 || not openNew then
                     x
                 else
                     let y = c.Count
-                    Raw.set c.IntTable at y
+                    Raw.set t.Table at y
                     c.Count <- y + 1
                     y
             else
-                codeIn c c.Ints i openNew
+                codeIn c d i openNew
 
-        /// Give a FRESH token coder a direct table over an int vector's present values (at `phys`)
-        /// when their range is at most a small multiple of the rows; otherwise leave it without one.
-        let private intTableFor (c: Coder) (a: int[]) (m: Mask) (phys: int[]) : unit =
-            if not c.CellEq && c.Count = 0 && c.IntTable.Length = 0 then
-                let mutable lo = System.Int32.MaxValue
-                let mutable hi = System.Int32.MinValue
+        /// Build `t` over the values of `a` that are present (`m`) at `phys` and that `keep` admits,
+        /// when their range is at most a small multiple of the rows; otherwise leave it empty.
+        let private buildDirect (t: Direct) (a: int[]) (m: Mask) (phys: int[]) (keep: int -> bool) : unit =
+            let mutable lo = System.Int32.MaxValue
+            let mutable hi = System.Int32.MinValue
 
-                for p in phys do
-                    if Mask.at p m then
-                        let x = Raw.at p a
+            for p in phys do
+                if Mask.at p m then
+                    let x = Raw.at p a
 
+                    if keep x then
                         if x < lo then
                             lo <- x
 
                         if x > hi then
                             hi <- x
 
-                // The range as a float, so a span across the whole int range cannot overflow.
-                if lo <= hi && float hi - float lo < float (max 1024 (4 * phys.Length)) then
-                    c.IntLo <- lo
-                    c.IntHi <- hi
-                    c.IntTable <- Array.create (hi - lo + 1) -1
+            // The range as a float, so a span across the whole int range cannot overflow.
+            if lo <= hi && float hi - float lo < float (max 1024 (4 * phys.Length)) then
+                t.Lo <- lo
+                t.Hi <- hi
+                t.Table <- Array.create (hi - lo + 1) -1
+
+        let private intCode (c: Coder) (i: int) (openNew: bool) : int =
+            if c.CellEq then
+                floatCode c (float i) openNew
+            else
+                directCode c c.IntDirect c.Ints i openNew
+
+        /// Give a FRESH token coder a direct table over an int vector's present values.
+        let private intTableFor (c: Coder) (a: int[]) (m: Mask) (phys: int[]) : unit =
+            if not c.CellEq && c.Count = 0 && c.IntDirect.Table.Length = 0 then
+                buildDirect c.IntDirect a m phys (fun _ -> true)
+
+        /// Give a coder that has coded no day yet a direct table over a date vector's days in range.
+        let private dayTableFor (c: Coder) (a: int[]) (m: Mask) (phys: int[]) : unit =
+            if c.Days.Count = 0 && c.DayDirect.Table.Length = 0 then
+                buildDirect c.DayDirect a m phys TemporalText.isDayInRange
+
+        /// A day's code; `days` is in range, so its text is canonical.
+        let private dayCode (c: Coder) (days: int) (openNew: bool) : int =
+            directCode c c.DayDirect c.Days days openNew
+
+        /// A date text's code: by its day where it is canonical, by the text otherwise.
+        let private dateTextCode (c: Coder) (s: string) (openNew: bool) : int =
+            match TemporalText.tryDays s with
+            | Some days -> dayCode c days openNew
+            | None -> codeIn c c.Dates s openNew
+
+        /// An instant's code by its epoch second and nanosecond; the instant is in range.
+        let private instantCode (c: Coder) (second: float) (nanos: int) (openNew: bool) : int =
+            codeIn c c.Instants (struct (second + 0.0, nanos)) openNew
+
+        /// A timestamp text's code: by its instant where the text is that instant's canonical text,
+        /// by the text otherwise.
+        let private stampTextCode (c: Coder) (s: string) (openNew: bool) : int =
+            match TemporalText.tryInstant TimeUnit.Nanoseconds s with
+            | Some(second, nanos) when TemporalText.instantText TimeUnit.Nanoseconds second nanos = s ->
+                instantCode c second nanos openNew
+            | _ -> codeIn c c.Stamps s openNew
+
+        /// A decimal's code by value: `unscaled` at `scale` (at most the width), its trailing
+        /// fraction zeros removed first so that one value has one key.
+        let private decCode (c: Coder) (unscaled: float) (scale: int) (openNew: bool) : int =
+            let mutable u = unscaled
+            let mutable k = scale
+
+            while k > 0 && u % 10.0 = 0.0 do
+                u <- u / 10.0
+                k <- k - 1
+
+            let mutable d = c.DecVals[k]
+
+            if isNull (box d) then
+                d <- decVals ()
+                c.DecVals[k] <- d
+
+            // `+ 0.0` makes a negative zero zero, as the canonical text does.
+            codeIn c d (u + 0.0) openNew
+
+        /// A decimal text's code: by value where it fits the width at its own scale, by its
+        /// canonical text (`Cell.token`) otherwise.
+        let private decTextCode (c: Coder) (s: string) (openNew: bool) : int =
+            let byText () =
+                codeIn c c.Decs (Cell.token (Decimal s)) openNew
+
+            match ScaledDecimal.shape s with
+            | ValueSome(struct (intDigits, fracDigits)) when intDigits + fracDigits <= ScaledDecimal.Width ->
+                match ScaledDecimal.tryScaled fracDigits s with
+                | ValueSome u -> decCode c u fracDigits openNew
+                | ValueNone -> byText ()
+            | _ -> byText ()
 
         let private nullCode (c: Coder) (openNew: bool) : int =
             if c.CellEq then -1 else special c SNull openNew
@@ -8187,16 +8289,16 @@ module DataFrame =
         let private boolCode (c: Coder) (b: bool) (openNew: bool) : int =
             special c (if b then STrue else SFalse) openNew
 
-        /// The dictionary a string carrier is coded in: the tag the cell would carry (`Vec.strCell`'s mapping).
-        let private strsOf (c: Coder) (ty: ColumnType) : CodeMap<string> =
+        /// How a string carrier's text is coded: as the cell it would read back as (`Vec.strCell`'s mapping).
+        let private strCodeOf (c: Coder) (ty: ColumnType) : string -> bool -> int =
             match ty with
-            | DateType -> c.Dates
-            | TimestampType _ -> c.Stamps
+            | DateType -> dateTextCode c
+            | TimestampType _ -> stampTextCode c
             | StringType
             | IntType
             | FloatType
             | BoolType
-            | DecimalType -> c.Strs
+            | DecimalType -> fun s openNew -> codeIn c c.Strs s openNew
 
         /// One cell's code — the boxed path, agreeing with every typed one above case for case.
         let cellCode (c: Coder) (cell: Cell) (openNew: bool) : int =
@@ -8206,10 +8308,10 @@ module DataFrame =
             | Float f -> floatCode c f openNew
             | Bool b -> boolCode c b openNew
             | Str s -> codeIn c c.Strs s openNew
-            | Date s -> codeIn c c.Dates s openNew
-            | Timestamp s -> codeIn c c.Stamps s openNew
-            // The canonical text (Phase 277): `1.50` and `1.5` are one value, in both relations.
-            | Decimal _ -> codeIn c c.Decs (Cell.token cell) openNew
+            | Date s -> dateTextCode c s openNew
+            | Timestamp s -> stampTextCode c s openNew
+            // By value (Phase 277, D61): `1.50` and `1.5` are one value, in both relations.
+            | Decimal s -> decTextCode c s openNew
 
         /// The code of the value at each physical row `phys[i]` of `v`, read from the carrier.
         let codesOf (c: Coder) (v: Vec) (phys: int[]) (openNew: bool) : int[] =
@@ -8254,51 +8356,67 @@ module DataFrame =
 
                     Raw.set out i code
             | Strs(ty, a, m) ->
-                let d = strsOf c ty
+                let code = strCodeOf c ty
 
                 for i in 0 .. n - 1 do
                     let p = Raw.get i phys
 
                     let code =
                         if Mask.at p m then
-                            codeIn c d (Raw.at p a) openNew
+                            code (Raw.at p a) openNew
                         else
                             nullCode c openNew
 
                     Raw.set out i code
-            // A decimal key is coded by its cell's token, the canonical text (Phase 277), read off
-            // the row's text (Phase 440).
-            | Decs(_, _, texts, m) ->
+            // A decimal key is coded by value off the scaled carrier (D61), which is every present
+            // row's value at the column's one scale; the texts are not read.
+            | Decs(scaled, scale, _, m) ->
                 for i in 0 .. n - 1 do
                     let p = Raw.get i phys
 
                     let code =
                         if Mask.at p m then
-                            codeIn c c.Decs (Cell.token (Decimal(Raw.at p texts))) openNew
+                            decCode c (Raw.at p scaled) scale openNew
                         else
                             nullCode c openNew
 
                     Raw.set out i code
-            // A temporal key is coded by its canonical text, as the boxed `Date` / `Timestamp` cell
-            // is: one rendering per row read, which is what the text carrier paid at the boundary.
+            // A temporal key is coded by value off its carrier (D61): a day in range by its day, an
+            // instant in range by its second and nanosecond, and anything else by the text it renders.
             | Dates(a, m) ->
+                if openNew then
+                    dayTableFor c a m phys
+
                 for i in 0 .. n - 1 do
                     let p = Raw.get i phys
 
                     let code =
                         if Mask.at p m then
-                            codeIn c c.Dates (TemporalText.dateText (Raw.at p a)) openNew
+                            let days = Raw.at p a
+
+                            if TemporalText.isDayInRange days then
+                                dayCode c days openNew
+                            else
+                                codeIn c c.Dates (TemporalText.dateText days) openNew
                         else
                             nullCode c openNew
 
                     Raw.set out i code
             | Stamps(u, s, f, m) ->
+                let nanosPer = TimeUnit.scale TimeUnit.Nanoseconds / TimeUnit.scale u
+
                 for i in 0 .. n - 1 do
                     let p = Raw.get i phys
 
                     let code =
                         if Mask.at p m then
-                            codeIn c c.Stamps (Vec.stampText u s f p) openNew
+                            let second = Raw.at p s
+                            let fraction = Vec.fractionAt f p
+
+                            if TemporalText.isInstantInRange u second fraction then
+                                instantCode c second (fraction * nanosPer) openNew
+                            else
+                                codeIn c c.Stamps (Vec.stampText u s f p) openNew
                         else
                             nullCode c openNew
 

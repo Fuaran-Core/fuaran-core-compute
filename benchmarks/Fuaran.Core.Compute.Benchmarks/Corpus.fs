@@ -677,3 +677,72 @@ let checkTyped (verb: string) (ty: ColumnType) (n: int) (input: Table) (pipeline
 
             if s <> Decimal expected then
                 failwithf "benchmark corpus: group %s summed to %A, expected %s" key s expected)
+
+// ---- the keyed family (D61) --------------------------------------------------------------------
+
+/// The keyed family's sizes.
+let keyedSizes = [ 10_000; 100_000 ]
+
+/// The key types the family compares: one set of distinct values carried as an int, a string, a
+/// date, a millisecond timestamp and a decimal, so a keyed verb's cost is read per key type.
+let keyedTypes =
+    [ IntType
+      StringType
+      DateType
+      TimestampType TimeUnit.Milliseconds
+      DecimalType ]
+
+/// The family's verbs: a join matching each row once, and a group-by with one group per row.
+let keyedVerbs = [ "join"; "group-by" ]
+
+/// The key type's name as a result row prints it.
+let keyedName (ty: ColumnType) : string =
+    match ty with
+    | StringType -> "string"
+    | DateType -> "date"
+    | TimestampType _ -> "timestamp"
+    | DecimalType -> "decimal"
+    | _ -> "int"
+
+/// The key cell for value `h` (`typedHundredths`, distinct below 100,000) under `ty`: an id-shaped
+/// string (`cust-` and `h` to six digits), the day `h`,
+/// the instant `h` minutes and `h % 1,000` milliseconds after the epoch, or `h` hundredths.
+let keyedCell (ty: ColumnType) (h: int) : Cell =
+    match ty with
+    | StringType -> Str("cust-" + (string h).PadLeft(6, '0'))
+    | DateType -> Date(TemporalText.dateText h)
+    | TimestampType unit -> Timestamp(TemporalText.instantText unit (float h * 60.0) (h % 1000))
+    | DecimalType -> Decimal(typedDecimalText h)
+    | _ -> Int h
+
+/// The family's input: `id:int, k:<ty>`, `n` rows.
+let keyedTable (ty: ColumnType) (n: int) : Table =
+    { Schema = [ Field.create "id" IntType; Field.create "k" ty ]
+      Columns =
+        [ col "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+          col "k" ty [ for i in 0 .. n - 1 -> keyedCell ty (typedHundredths i) ] ] }
+
+/// The join's right side: every left key once, in `typedRight`'s other order.
+let keyedRight (ty: ColumnType) (n: int) : Table =
+    { Schema = [ Field.create "rk" ty; Field.create "b" IntType ]
+      Columns =
+        [ col "rk" ty [ for j in 0 .. n - 1 -> keyedCell ty (typedHundredths ((j * (104729 % n)) % n)) ]
+          col "b" IntType [ for j in 0 .. n - 1 -> Int j ] ] }
+
+/// One verb's pipeline over `ty` at `n` rows.
+let keyedPipeline (verb: string) (ty: ColumnType) (n: int) : Transform list =
+    match verb with
+    | "join" -> [ Join(Embedded(keyedRight ty n), [ "k", "rk" ], Inner) ]
+    | "group-by" -> [ GroupBy([ "k" ], [ { Name = "s"; Fn = Sum; Of = "id" } ]) ]
+    | other -> failwithf "benchmark corpus: no keyed verb named '%s'" other
+
+/// Evaluate one case and check it: every key is distinct and matched once, so both verbs answer
+/// one row per input row.
+let checkKeyed (verb: string) (ty: ColumnType) (n: int) (input: Table) (pipeline: Transform list) : unit =
+    let out =
+        DataFrame.evalPipeline pipeline input |> orFail (verb + " " + keyedName ty)
+
+    let got = Table.rowCount out
+
+    if got <> n then
+        failwithf "benchmark corpus: %s over %s keys produced %d rows, expected %d" verb (keyedName ty) got n

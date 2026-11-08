@@ -7774,6 +7774,43 @@ let private rowHashKinds: (string * ColumnType * Cell[]) list =
       "string+date", StringType, [| Str "a"; Date "a"; Str "b"; Null |]
       "number+decimal", DecimalType, [| Int 1; Float 1.0; Decimal "1"; Decimal "1.0"; Null |] ]
 
+/// The kinds a date, a timestamp and a decimal are coded by VALUE in (D61), drawn against each other:
+/// canonical dates, typed and boxed beside a text that is not one; one set of instants in two units,
+/// so a millisecond column meets a microsecond one; decimals at two scales, so `1.50` at scale 2 meets
+/// `1.5` and `1` at scale 0 meets `1.00`, with both zeroes; and decimals past the scaled width, which
+/// keep their text codes beside the same values written short.
+let private rowHashValueKinds: (string * ColumnType * Cell[]) list =
+    let ts = "2020-01-01T00:00:00"
+
+    [ "date, canonical", DateType, [| Date "2020-01-01"; Date "2020-01-02"; Date "1970-01-01"; Null |]
+      "date, canonical and not", DateType, [| Date "2020-01-01"; Date "a"; Date "1970-01-01"; Null |]
+      "string+date, canonical", StringType, [| Str "2020-01-01"; Date "2020-01-01"; Null |]
+      "timestamp, ms",
+      TimestampType TimeUnit.Milliseconds,
+      [| Timestamp(ts + "Z"); Timestamp(ts + ".5Z"); Timestamp(ts + ".123Z"); Null |]
+      "timestamp, us",
+      TimestampType TimeUnit.Microseconds,
+      [| Timestamp(ts + "Z")
+         Timestamp(ts + ".5Z")
+         Timestamp(ts + ".000001Z")
+         Null |]
+      "string+timestamp", StringType, [| Str(ts + "Z"); Timestamp(ts + "Z"); Timestamp(ts + ".5Z"); Null |]
+      "decimal, scale 2",
+      DecimalType,
+      [| Decimal "1.50"
+         Decimal "1.25"
+         Decimal "0.00"
+         Decimal "-1.5"
+         Decimal "100"
+         Null |]
+      "decimal, scale 0", DecimalType, [| Decimal "1"; Decimal "100"; Decimal "0"; Decimal "-0"; Decimal "-2"; Null |]
+      "decimal, past the width",
+      DecimalType,
+      [| Decimal "1.5"
+         Decimal "1234567890123456.5"
+         Decimal "100.0000000000000"
+         Null |] ]
+
 /// A seeded draw: `next bound` in `[0, bound)`.
 let private rowHashRng (seed: int) : int -> int =
     let mutable state = uint32 seed
@@ -8016,15 +8053,21 @@ let private oraclePivot (t: Table) (index: string list) (on: string) : Table =
 
 /// The draws every law below runs: seeded kinds for one or two key columns on each side, sizes
 /// from 0 to 24 rows, so empty sides, all-null keys and heavy duplication all occur.
-let private rowHashCases (seed: int) (count: int) =
+let private rowHashCasesOver (kinds: (string * ColumnType * Cell[]) list) (seed: int) (count: int) =
     let next = rowHashRng seed
-    let kinds = List.toArray rowHashKinds
+    let kinds = List.toArray kinds
 
     [ for c in 1..count ->
           let width = 1 + next 2
           let lk = List.init width (fun _ -> kinds[next kinds.Length])
           let rk = List.init width (fun _ -> kinds[next kinds.Length])
           c, lk, rk, rowHashTable next lk (next 25) 0, rowHashTable next rk (next 25) 1000 ]
+
+/// The draws over every kind, then as many over the value-coded kinds alone, numbered after them.
+let private rowHashCases (seed: int) (count: int) =
+    rowHashCasesOver rowHashKinds seed count
+    @ (rowHashCasesOver rowHashValueKinds (seed + 1000) count
+       |> List.map (fun (c, lk, rk, l, r) -> count + c, lk, rk, l, r))
 
 let private kindNames (ks: (string * ColumnType * Cell[]) list) =
     ks |> List.map (fun (n, _, _) -> n) |> String.concat ","

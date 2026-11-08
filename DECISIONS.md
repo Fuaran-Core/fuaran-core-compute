@@ -1,5 +1,35 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-08 — D61: a date, a timestamp and a decimal key are coded by value
+
+**Context.** `RowHash.codesOf` rendered every date and timestamp row to its canonical text and every decimal row to
+`Cell.token` before a dictionary probe, so a join or group-by keyed by any of them paid one string per row on each side.
+At 100,000 distinct keys a date join took 35.4 ms and 47.7 MB against 1.8 ms and 6.2 MB for the same values as ints, and
+a timestamp join 56.7 ms and 104.6 MB (`benchmarks/results/2026-11-08-x64-keyed.md`).
+
+**Decided.** Each is coded by the value its canonical text spells, and only where the text is that value's canonical text:
+
+1. **A date by its day count**, through a direct table of its own (`Direct`, now shared with the int table) built from
+   the first date vector a coder meets before it has coded a day. A day outside the canonical range keeps its text code.
+2. **An instant by its epoch second and nanosecond**, so one instant in two units is one key, as its trimmed canonical
+   text already was. An instant outside `isInstantInRange` keeps its text code.
+3. **A decimal by its unscaled integer at its own scale**, trailing fraction zeros removed (`1.50` at scale 2 and `1.5`
+   at scale 1 are one key, `-0` and `0` one key), in one table per scale. The scaled carrier is read; the texts are not.
+
+A boxed or string-carried text is read back to the same key (`tryDays`; `tryInstant` in nanoseconds with the text
+required to equal its re-rendering; `ScaledDecimal.tryScaled` at the text's own scale within the width) and otherwise
+keeps its text code. No text that is not canonical is any value's canonical text, so it still equals only itself, and
+the relation each verb partitions by is unchanged.
+
+**Evidence.** The row-hash laws (join kinds against the nested loop over `cellEq`; the set verbs, group-by and pivot
+against the token oracle) gain a second draw over value-coded kinds: canonical dates beside a text that is not one,
+timestamps in milliseconds and microseconds, decimals at scales 0 and 2 with both zeroes, and decimals past the width.
+Three mutants go red: the decimal normalisation removed (three suites), the unit's nanosecond factor dropped (three
+suites), and a boxed canonical date coded by text while a typed one is coded by day (the join law).
+
+**Not decided.** A timestamp or decimal key still codes through a dictionary that grows from empty, which leaves it at 4
+to 7 times the int key at 100,000 rows; presizing it meets D60's open point. A float key is unchanged.
+
 ## 2026-11-07 — D60: a join pays for a second table and growing lists only where it needs them
 
 **Context.** An int join of 100,000 by 100,000 took 3.7 ms and 11.0 MB under BenchmarkDotNet, about 2.4 times a

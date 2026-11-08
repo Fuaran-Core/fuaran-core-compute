@@ -46,6 +46,12 @@ let private checkAll () =
                 Corpus.checkTyped verb ty n (Corpus.typedTable ty n) (Corpus.typedPipeline verb ty n)
                 printfn "%s over %s, %d rows: as expected" verb (Corpus.typedName ty) n
 
+    for verb in Corpus.keyedVerbs do
+        for n in Corpus.keyedSizes do
+            for ty in Corpus.keyedTypes do
+                Corpus.checkKeyed verb ty n (Corpus.keyedTable ty n) (Corpus.keyedPipeline verb ty n)
+                printfn "%s keyed by %s, %d rows: as expected" verb (Corpus.keyedName ty) n
+
     for arm in Concurrent.Batch.Arms do
         for n in Concurrent.Batch.Counts do
             for rows in Concurrent.Batch.Sizes do

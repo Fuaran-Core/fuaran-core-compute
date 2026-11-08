@@ -146,6 +146,36 @@ type Typed() =
     [<Benchmark>]
     member _.Evaluate() = DataFrame.evalPipeline pipeline input
 
+/// The keyed family (D61): a join and a group-by keyed by one set of distinct values carried as an
+/// int, a date, a timestamp and a decimal, at two sizes.
+[<MemoryDiagnoser>]
+type Keyed() =
+    let mutable input = Unchecked.defaultof<Table>
+    let mutable pipeline: Transform list = []
+
+    static member Verbs = Corpus.keyedVerbs
+    static member Types = Corpus.keyedTypes |> List.map Corpus.keyedName
+    static member Sizes = Corpus.keyedSizes
+
+    [<ParamsSource("Verbs")>]
+    member val Verb = "" with get, set
+
+    [<ParamsSource("Types")>]
+    member val Key = "" with get, set
+
+    [<ParamsSource("Sizes")>]
+    member val Rows = 0 with get, set
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        let ty = Corpus.keyedTypes |> List.find (fun t -> Corpus.keyedName t = this.Key)
+        input <- Corpus.keyedTable ty this.Rows
+        pipeline <- Corpus.keyedPipeline this.Verb ty this.Rows
+        Corpus.checkKeyed this.Verb ty this.Rows input pipeline
+
+    [<Benchmark>]
+    member _.Evaluate() = DataFrame.evalPipeline pipeline input
+
 /// The dated pipeline (Phase 423, carrying Phase 422's task): `byMonth` over the dated `orders` —
 /// a filter by date range, the amount, the month read off the date column through `DatePart`, and
 /// a group by month — the evaluator arm beside the hand arm, which is the baseline.
