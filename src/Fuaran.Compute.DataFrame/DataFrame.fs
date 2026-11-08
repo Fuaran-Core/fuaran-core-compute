@@ -8420,17 +8420,37 @@ module DataFrame =
             // By value (Phase 277, D61): `1.50` and `1.5` are one value, in both relations.
             | Decimal s -> decTextCode c s openNew
 
-        /// The code of the value at each physical row `phys[i]` of `v`, read from the carrier.
-        let codesOf (c: Coder) (v: Vec) (phys: int[]) (openNew: bool) : int[] =
-            let n = phys.Length
-            let out: int[] = Array.zeroCreate n
+        /// Give a coder the direct table `v`'s carrier codes through, where it has none yet, over the
+        /// values at `phys`.
+        let private tablesFor (c: Coder) (v: Vec) (phys: int[]) : unit =
+            match v with
+            | Ints(a, m) -> intTableFor c a m phys
+            | Decs(scaled, scale, _, m) -> decTableFor c scaled scale m phys
+            | Dates(a, m) -> dayTableFor c a m phys
+            | _ -> ()
+
+        /// The code of the value at each physical row `phys[i]` of `v`, for `i` from `lo` below `hi`,
+        /// into `out[i]`, read from the carrier. No direct table is built here (`codesOf` builds one):
+        /// a coder that has none codes through its dictionaries, with the same codes. A row's code
+        /// lands at the row's own index, so every loop indexes both arrays by its counter, the shape
+        /// the .NET JIT checks once per loop rather than once per row; an offset between the two kept
+        /// both checks, at 11 to 13 per cent of an int grouping (D65). A dictionary is sized (D64) for
+        /// `rows`, the rows the coder is about to code from `lo`, which a range coded first passes as
+        /// the column's.
+        let private codesInto
+            (c: Coder)
+            (v: Vec)
+            (phys: int[])
+            (lo: int)
+            (hi: int)
+            (rows: int)
+            (openNew: bool)
+            (out: int[])
+            : unit =
 
             match v with
             | Ints(a, m) ->
-                if openNew then
-                    intTableFor c a m phys
-
-                for i in 0 .. n - 1 do
+                for i in lo .. hi - 1 do
                     let p = Raw.get i phys
 
                     let code =
@@ -8441,7 +8461,7 @@ module DataFrame =
 
                     Raw.set out i code
             | Floats(a, m) ->
-                for i in 0 .. n - 1 do
+                for i in lo .. hi - 1 do
                     let p = Raw.get i phys
 
                     let code =
@@ -8452,7 +8472,7 @@ module DataFrame =
 
                     Raw.set out i code
             | Bools(a, m) ->
-                for i in 0 .. n - 1 do
+                for i in lo .. hi - 1 do
                     let p = Raw.get i phys
 
                     let code =
@@ -8470,20 +8490,20 @@ module DataFrame =
                     match ty with
                     | DateType ->
                         let b = c.Days.Count
-                        fun () -> sizeFor c.Days b n
+                        fun () -> sizeFor c.Days b rows
                     | TimestampType _ ->
                         let b = c.Micros.Count
-                        fun () -> sizeFor c.Micros b n
+                        fun () -> sizeFor c.Micros b rows
                     | StringType
                     | IntType
                     | FloatType
                     | BoolType
                     | DecimalType ->
                         let b = c.Strs.Count
-                        fun () -> sizeFor c.Strs b n
+                        fun () -> sizeFor c.Strs b rows
 
-                for i in 0 .. n - 1 do
-                    if sizesAt i n openNew then
+                for i in lo .. hi - 1 do
+                    if sizesAt (i - lo) rows openNew then
                         size ()
 
                     let p = Raw.get i phys
@@ -8498,14 +8518,11 @@ module DataFrame =
             // A decimal key is coded by value off the scaled carrier (D61), which is every present
             // row's value at the column's one scale; the texts are not read.
             | Decs(scaled, scale, _, m) ->
-                if openNew then
-                    decTableFor c scaled scale m phys
-
                 let before = c.DecVals.Count
 
-                for i in 0 .. n - 1 do
-                    if sizesAt i n openNew then
-                        sizeFor c.DecVals before n
+                for i in lo .. hi - 1 do
+                    if sizesAt (i - lo) rows openNew then
+                        sizeFor c.DecVals before rows
 
                     let p = Raw.get i phys
 
@@ -8519,10 +8536,7 @@ module DataFrame =
             // A temporal key is coded by value off its carrier (D61): a day in range by its day, an
             // instant in range by its second and nanosecond, and anything else by the text it renders.
             | Dates(a, m) ->
-                if openNew then
-                    dayTableFor c a m phys
-
-                for i in 0 .. n - 1 do
+                for i in lo .. hi - 1 do
                     let p = Raw.get i phys
 
                     let code =
@@ -8541,9 +8555,9 @@ module DataFrame =
                 let nanosPer = TimeUnit.scale TimeUnit.Nanoseconds / TimeUnit.scale u
                 let before = c.Micros.Count
 
-                for i in 0 .. n - 1 do
-                    if sizesAt i n openNew then
-                        sizeFor c.Micros before n
+                for i in lo .. hi - 1 do
+                    if sizesAt (i - lo) rows openNew then
+                        sizeFor c.Micros before rows
 
                     let p = Raw.get i phys
 
@@ -8561,10 +8575,19 @@ module DataFrame =
 
                     Raw.set out i code
             | Cells cells ->
-                for i in 0 .. n - 1 do
+                for i in lo .. hi - 1 do
                     let code = cellCode c (Raw.at (Raw.get i phys) cells) openNew
                     Raw.set out i code
 
+
+        /// The code of the value at each physical row `phys[i]` of `v`, read from the carrier.
+        let codesOf (c: Coder) (v: Vec) (phys: int[]) (openNew: bool) : int[] =
+            let out: int[] = Array.zeroCreate phys.Length
+
+            if openNew then
+                tablesFor c v phys
+
+            codesInto c v phys 0 phys.Length phys.Length openNew out
             out
 
         /// Code tuples as a hash-table key: equal exactly when every code is.
@@ -8726,41 +8749,138 @@ module DataFrame =
                     | _ -> -1
 #endif
 
+        /// Each code's first index in `codes`, whose codes are numbered from 0 in first-appearance
+        /// order below `count`: the scan stops once the last code is met, so a key of five values
+        /// reads a handful of rows, not every one.
+        let private firstRows (codes: int[]) (count: int) : ResizeArray<int> =
+            let first = ResizeArray<int>()
+            let mutable seen = 0
+            let mutable i = 0
+
+            while seen < count && i < codes.Length do
+                if Raw.get i codes = seen then
+                    first.Add i
+                    seen <- seen + 1
+
+                i <- i + 1
+
+            first
+
+        /// `firstRows` over `codes[lo .. hi - 1]`, a range coded by a coder of its own: each of its
+        /// `count` codes' first index in `codes`.
+        let private firstRowsIn (codes: int[]) (lo: int) (hi: int) (count: int) : int[] =
+            let first: int[] = Array.zeroCreate count
+            let mutable seen = 0
+            let mutable i = lo
+
+            while seen < count && i < hi do
+                if codes[i] = seen then
+                    first[seen] <- i
+                    seen <- seen + 1
+
+                i <- i + 1
+
+            first
+
+        /// `codesOf (coder cellEq) v phys true` and that coder: the same codes, across threads where
+        /// `k` partitions `phys.Length` rows and the column repeats its values (D65).
+        ///
+        /// The coder's direct table is chosen over the whole column, as the sequential coder chooses
+        /// it, and the coder codes the first of `parts` ranges on the caller's thread. Where that
+        /// range opened more than a quarter of `n / parts` codes, merging the ranges would cost what
+        /// coding them does, and the coder codes the rest itself. Otherwise each other range is coded
+        /// on the pool by a coder of its own. Then, range by range in row order, the coder codes each
+        /// range's values at their first rows, opening those it has not met in the order the range
+        /// met them, which is the order the sequential coder opens them in; each range's codes are
+        /// rewritten through that map on the pool. Every value is coded by `codesOf`, so the codes
+        /// are the relation's.
+        let codesAcross (k: KernelSet) (cellEq: bool) (v: Vec) (phys: int[]) : int[] * Coder =
+            let n = phys.Length
+            let c = coder cellEq
+            let parts = k.Partitions n
+
+            if parts <= 1 then
+                codesOf c v phys true, c
+            else
+                let bound (j: int) = int (int64 n * int64 j / int64 parts)
+                let codes: int[] = Array.zeroCreate n
+                tablesFor c v phys
+                codesInto c v phys 0 (bound 1) n true codes
+
+                if c.Count * parts * 4 > n then
+                    codesInto c v phys (bound 1) n (n - bound 1) true codes
+                else
+                    // Each other range by a coder of its own, with no direct table: its keys are few,
+                    // so its dictionaries are small, and a table per range would cost the column's
+                    // range in every one of them.
+                    let counts: int[] = Array.zeroCreate parts
+
+                    k.RunMorsels (parts - 1) (fun j ->
+                        let lo = bound (j + 1)
+                        let lc = coder cellEq
+                        codesInto lc v phys lo (bound (j + 2)) (bound (j + 2) - lo) true codes
+                        counts[j + 1] <- lc.Count
+                        true)
+
+                    let maps: int[][] = Array.zeroCreate parts
+
+                    for j in 1 .. parts - 1 do
+                        let lo = bound j
+                        let first = firstRowsIn codes lo (bound (j + 1)) counts[j]
+                        maps[j] <- codesOf c v (Array.init first.Length (fun q -> phys[first[q]])) true
+
+                    k.RunMorsels (parts - 1) (fun j ->
+                        let map = maps[j + 1]
+
+                        // A `cellEq` coder gives a null no code: `-1` in a range is `-1` in the column.
+                        for i in bound (j + 1) .. bound (j + 2) - 1 do
+                            let x = codes[i]
+
+                            if x >= 0 then
+                                codes[i] <- map[x]
+
+                        true)
+
+                codes, c
+
+        /// `codesOf c v phys false`, across threads where `k` partitions the rows (D65): a lookup opens
+        /// no code, builds no table and sizes no dictionary, so the ranges only read the coder.
+        let probeAcross (k: KernelSet) (c: Coder) (v: Vec) (phys: int[]) : int[] =
+            let n = phys.Length
+            let parts = k.Partitions n
+
+            if parts <= 1 then
+                codesOf c v phys false
+            else
+                let codes: int[] = Array.zeroCreate n
+
+                k.RunMorsels parts (fun j ->
+                    let lo = int (int64 n * int64 j / int64 parts)
+                    let hi = int (int64 n * int64 (j + 1) / int64 parts)
+                    let part = codesOf c v (Array.sub phys lo (hi - lo)) false
+                    Array.blit part 0 codes lo part.Length
+                    true)
+
+                codes
+
         /// The TOKEN slot of every logical row under `keyVecs` (read at `phys`), numbered from 0 in
         /// first-appearance order, and each slot's first logical row. No key is one slot holding
-        /// every row (none over no rows).
-        let slots (keyVecs: Vec[]) (phys: int[]) : int[] * ResizeArray<int> =
+        /// every row (none over no rows). Each key column is coded through `k` (`codesAcross`).
+        let slotsWith (k: KernelSet) (keyVecs: Vec[]) (phys: int[]) : int[] * ResizeArray<int> =
             let n = phys.Length
-            let first = ResizeArray<int>()
 
             match keyVecs with
             // One key: a fresh coder numbers its values in first-appearance order already, so the
             // codes ARE the slots.
             | [| v |] ->
-                let c = coder false
-                let codes = codesOf c v phys true
-
-                // Each slot's first row, scanning only until the last slot has been met: a key of
-                // five values reads a handful of rows, not every one.
-                let mutable seen = 0
-                let mutable i = 0
-
-                while seen < c.Count && i < n do
-                    if Raw.get i codes = seen then
-                        first.Add i
-                        seen <- seen + 1
-
-                    i <- i + 1
-
-                codes, first
+                let codes, c = codesAcross k false v phys
+                codes, firstRows codes c.Count
             | _ ->
-                let coders = keyVecs |> Array.map (fun _ -> coder false)
-
-                let codes =
-                    Array.init keyVecs.Length (fun j -> codesOf coders[j] keyVecs[j] phys true)
-
-                let index = Index(coders |> Array.map (fun c -> c.Count), n)
+                let coded = keyVecs |> Array.map (fun v -> codesAcross k false v phys)
+                let codes = coded |> Array.map fst
+                let index = Index(coded |> Array.map (fun (_, c) -> c.Count), n)
                 let slotOf: int[] = Array.zeroCreate n
+                let first = ResizeArray<int>()
 
                 for i in 0 .. n - 1 do
                     let s = index.Open(codes, i)
@@ -8803,8 +8923,8 @@ module DataFrame =
     /// (Phase 324): one definition, so a window's partitions are the groups a `GroupBy` over the
     /// same keys forms. A slot's key cells are its first row's: the second answer is each slot's
     /// first PHYSICAL row (Phase 344), from which `keyColumn` reads the keys without boxing them.
-    let private keySlots (keyVecs: Vec[]) (phys: int[]) : int[] * int[] =
-        let slotOf, first = RowHash.slots keyVecs phys
+    let private keySlots (k: KernelSet) (keyVecs: Vec[]) (phys: int[]) : int[] * int[] =
+        let slotOf, first = RowHash.slotsWith k keyVecs phys
         slotOf, Array.init first.Count (fun s -> phys[first[s]])
 
     /// The key column of declared type `ty` read from the vector `v` at the physical rows `rows` —
@@ -8861,7 +8981,7 @@ module DataFrame =
 
         acc
 
-    let private evalGroupBy (f: Frame) (keys: string list) (aggs: Agg list) : Result<Frame, EvalError> =
+    let private evalGroupBy (k: KernelSet) (f: Frame) (keys: string list) (aggs: Agg list) : Result<Frame, EvalError> =
         let keyIdx = keys |> List.map (fun k -> colIndex f.Cols k, k)
 
         match keyIdx |> List.tryPick (fun (i, k) -> if Option.isNone i then Some k else None) with
@@ -8895,7 +9015,7 @@ module DataFrame =
             // across threads was built and measured here, and removed: see `Kernels.fs`.
             let keyVecs = idxs |> Array.map (fun ci -> f.Vecs[ci])
             let phys = Frame.physical f
-            let slotOf, firstPhys = keySlots keyVecs phys
+            let slotOf, firstPhys = keySlots k keyVecs phys
 
             // resolve each agg's source column + type
             let resolveAgg (a: Agg) =
@@ -9521,7 +9641,7 @@ module DataFrame =
         // the token relation), so no row is gathered and no cell boxed; a row is kept when it opens
         // its slot.
         let phys = Frame.physical f
-        let _, first = RowHash.slots f.Vecs phys
+        let _, first = RowHash.slotsWith Kernels.oneThread f.Vecs phys
         Frame.select f (Array.init first.Count (fun s -> phys[first[s]]))
 
     let private evalLimit (f: Frame) (n: int) (offset: int) : Frame =
@@ -9732,6 +9852,7 @@ module DataFrame =
     /// join pads with nulls), and every output column is GATHERED through them from its typed
     /// vector: no row is assembled and no cell boxed on a typed column.
     let private evalJoin
+        (k: KernelSet)
         (f: Frame)
         (right: Frame)
         (on: (string * string) list)
@@ -9768,15 +9889,17 @@ module DataFrame =
 
             // The right side BUILDS (its rows opened in right order), the left side PROBES: a right
             // row whose key holds a `Null` is never indexed, a left row with one finds nothing.
-            let coders = Array.init lkeys.Length (fun j -> RowHash.coder (not (intPair j)))
+            let built =
+                Array.init rkeys.Length (fun j -> RowHash.codesAcross k (not (intPair j)) rkeys[j] rphys)
+
+            let coders = built |> Array.map snd
 
             let rcodes =
-                Array.init rkeys.Length (fun j ->
-                    strikeNulls j rkeys[j] rphys (RowHash.codesOf coders[j] rkeys[j] rphys true))
+                Array.init rkeys.Length (fun j -> strikeNulls j rkeys[j] rphys (fst built[j]))
 
             let lcodes =
                 Array.init lkeys.Length (fun j ->
-                    strikeNulls j lkeys[j] lphys (RowHash.codesOf coders[j] lkeys[j] lphys false))
+                    strikeNulls j lkeys[j] lphys (RowHash.probeAcross k coders[j] lkeys[j] lphys))
 
             // One key column's codes already are its slots: a left row has a code only where a right
             // row opened it (a struck null is `-1` on both sides), so no second table is needed. Only a
@@ -10054,7 +10177,7 @@ module DataFrame =
         (orderKeys: (int * SortDir) list)
         : WindowOrder =
         let n = phys.Length
-        let slotOf, slotKeys = keySlots (partIdx |> Array.map vecOf) phys
+        let slotOf, slotKeys = keySlots k (partIdx |> Array.map vecOf) phys
         let partitions = slotKeys.Length
         let keyVecs = orderKeys |> List.map (fun (ci, dir) -> vecOf ci, dir) |> List.toArray
 
@@ -10783,7 +10906,7 @@ module DataFrame =
                         // above), through the typed row hasher (Phase 325). Each group's key is read from
                         // its first physical row straight into the key column (`keyColumn`, Phase 344).
                         let idxVecs = idxIdx |> List.map (fun i -> f.Vecs[i]) |> List.toArray
-                        let slotOf, firstPhys = keySlots idxVecs phys
+                        let slotOf, firstPhys = keySlots Kernels.oneThread idxVecs phys
                         let groups = firstPhys.Length
 
                         // Phase 353 — every (group, on-value) pair aggregated by Phase 323's streams: one
@@ -11716,7 +11839,10 @@ module DataFrame =
                                             let keyVecs = keyIdx |> Array.map (fun ci -> f.Vecs[ci])
 
                                             let slotOf, _ =
-                                                keySlots keyVecs (usedRows |> Array.map (fun i -> phys[i]))
+                                                keySlots
+                                                    Kernels.oneThread
+                                                    keyVecs
+                                                    (usedRows |> Array.map (fun i -> phys[i]))
 
                                             let groups = if usedRows.Length = 0 then 0 else (Array.max slotOf + 1)
                                             let members = Array.init groups (fun _ -> ResizeArray<int>())
@@ -13089,7 +13215,7 @@ module DataFrame =
         | Filter pred -> evalFilter k env f pred
         | Project pairs -> evalProject f pairs
         | Derive(name, expr) -> evalDerive k env f name expr
-        | GroupBy(keys, aggs) -> evalGroupBy f keys aggs
+        | GroupBy(keys, aggs) -> evalGroupBy k f keys aggs
         // `0.23.0` — resolve the scalar slots against the SAME env `ColExpr.Param` reads, then call
         // the unchanged reference primitives. `evalSort` / `evalLimit` still take resolved values,
         // so the pinned ordering and the pinned window semantics have exactly one definition and
@@ -13111,7 +13237,7 @@ module DataFrame =
         | Unpivot(idVars, valueVars) -> evalUnpivot f idVars valueVars
         | Join(right, on, how) ->
             evalSource resolve right
-            |> Result.bind (fun t -> evalJoin f (Frame.ofTable t) on how)
+            |> Result.bind (fun t -> evalJoin k f (Frame.ofTable t) on how)
         | Union other ->
             evalSource resolve other
             |> Result.map Frame.ofTable

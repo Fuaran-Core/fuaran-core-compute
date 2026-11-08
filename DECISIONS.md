@@ -1,5 +1,55 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-08 — D65: a key column is coded across threads where it repeats its values, and a join's probe side is looked up across threads
+
+**Context.** D8 (item 2) measured a grouping partitioned by key and did not keep it: each partition read its rows scattered
+across the vector, and at 100,000 rows it was 1.5 to 2.1 times slower. Since D61 to D64 a grouping first codes its key
+column into dense codes, and a profile of the step put most of it there: at a million rows, 2 to 4 ms of an int grouping
+and 9 to 41 ms of a string grouping, against 1 to 2 ms for the aggregates. The coding ran on one thread for every verb.
+
+**Decided.**
+
+1. **`RowHash.codesAcross`** codes a column through the kernel set's partitions. The first coder chooses its direct table
+   over the whole column, as before, and codes the first of `parts` ranges on the caller's thread. Where that range opened
+   more than a quarter of `n / parts` codes, merging would cost what coding does, so that coder codes the rest itself.
+   Otherwise each other range is coded on the pool by a coder of its own, with no direct table. Then, range by range in row
+   order, the first coder codes each range's values at their first rows, opening the ones it has not met in the order the
+   range met them, which is the order the sequential coder opens them in; each range's codes are rewritten through that
+   map on the pool. Every value is coded by `codesOf`, so the relation and the numbering are the sequential coder's.
+2. **`RowHash.probeAcross`** looks a join's probe side up across ranges. A lookup opens no code, builds no table and
+   sizes no dictionary, so the ranges only read the coder.
+3. **Where it runs.** `GroupBy` and `Window` pass the kernel set to `keySlots`; the join builds through `codesAcross` and
+   probes through `probeAcross`. `Distinct`, `Pivot` and the design matrix take `Kernels.oneThread`, unchanged. The
+   portable member answers one partition, so Fable and `oneThread` run the sequential path.
+4. **No range copies anything.** `codesInto` codes rows `lo .. hi - 1` into the same indexes of one output array, so the
+   parallel path allocates no array per range: a first version copied each range's rows and codes, eight arrays of 125,000
+   ints at a million rows, past the large-object threshold, and gained little on int keys. Its loops index both arrays by
+   the loop counter: an offset between them kept the .NET bounds checks, which cost 11 to 13 per cent of an int grouping on
+   the sequential path. The first range sizes its dictionary (D64) for the whole column; sized for its own rows, the
+   fallback grew it a second time and a timestamp grouping over distinct keys read 12 per cent slower.
+
+The harness gains `Partitioned.GroupBy`, the grouping through both members, beside D8's `GroupByKey` prototype.
+
+**Evidence.** A law holds `slotsWith`, `codesAcross` and `probeAcross` on every parallel member to the sequential coder,
+codes and first rows, in both relations, one key column and two, under a selection, over every row-hash kind and over pools
+of thousands. Four mutants go red: the ranges merged last first, a range's codes not rewritten, a range's first rows read
+from row 0, a probe range written at row 0. The frame-level law ("over frames thousands of rows long ...") already ran
+`GroupBy`, `Window` and every join kind on every member. verify.ps1 green. BenchmarkDotNet, before and after in one
+sitting (`benchmarks/results/2026-11-08-x64-keyed.md`, D65's section): a grouping by ten int keys on the native member
+fell from 400 to 348 µs at 100,000 rows and from 4.01 to 3.53 ms at a million; a string join at 100,000 rows from 6.17 to
+4.51 ms and a timestamp join from 5.01 to 4.01 ms. The profile put a grouping by ten string keys at a million rows at 9.7
+ms before and 2.9 ms after.
+
+**Costs measured.** The fallback (distinct keys) is within 1 per cent for int, date, decimal and timestamp groupings. A
+string grouping over 100,000 distinct keys read flat, 4 and 7 per cent slower in three sittings, with the same bytes. The
+portable member's grouping by ten keys at a million rows read 4 and 6 per cent slower in two sittings, where a scratch
+profile in one sitting read it level; its code is `codesOf` over `codesInto`, the same loops.
+
+**Not decided.** A column of many distinct keys still codes on one thread: a merge in row order costs what coding does
+there. Partitioning by the key's hash, each thread owning its keys and the first rows renumbered after, is the way to it,
+and needs a hash every carrier's coder agrees on under both relations. The aggregates (`FeedAll`) and the output are still
+sequential; an int `Sum` or a `Count` could be summed by ranges exactly, a float sum could not without moving its bytes.
+
 ## 2026-11-08 — D64: a key column's dictionary is sized from its first 1,024 rows
 
 **Context.** After D63 a string key cost 3.7 times the int key at 100,000 distinct keys and a timestamp key 3.2 to 3.5

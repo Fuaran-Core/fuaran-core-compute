@@ -142,6 +142,10 @@ type TopN() =
 type Window() =
     inherit Verb("window")
 
+/// The grouping through both members (D65): its key coded across threads on the native one.
+type GroupBy() =
+    inherit Verb("group-by")
+
 // ---- the grouping BY KEY, measured and not kept ---------------------------------------------
 
 /// The grouping partitioned by key across threads, as Phase 344 built it in the evaluator and then
@@ -215,7 +219,7 @@ let internal byKeyGroupBy (f: Frame) : Frame =
     Kernels.native.RunMorsels parts (fun t ->
         let lo = bounds[t]
         let physT = Array.sub rowsPhys lo (bounds[t + 1] - lo)
-        let slotT, firstT = DataFrame.RowHash.slots [| keyVec |] physT
+        let slotT, firstT = DataFrame.RowHash.slotsWith Kernels.oneThread [| keyVec |] physT
         let groups = firstT.Count
 
         firsts[t] <-

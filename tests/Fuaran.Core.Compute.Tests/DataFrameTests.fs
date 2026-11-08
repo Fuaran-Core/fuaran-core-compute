@@ -8108,7 +8108,71 @@ let private kindNames (ks: (string * ColumnType * Cell[]) list) =
 let typedRowHashTests =
     testList
         "DataFrame.TypedRowHash"
-        [ testCase "every join kind equals the nested loop over cellEq, across key kinds, NaN, -0.0 and Null"
+        [ // D65: a key column coded across threads, each range by a coder of its own and the ranges
+          // merged in row order, answers the codes the sequential coder does: in both relations, on
+          // the side that opens codes and on the side that only looks them up, one key column and
+          // two, under a selection. Pools of a few values take the merge; pools of thousands make the
+          // first coder go on alone.
+          testCase "a key column coded across threads answers the sequential codes and slots, in both relations"
+          <| fun _ ->
+              let next = rowHashRng 65
+
+              let many =
+                  [ "int, thousands", IntType, Array.init 5000 (fun i -> Int(i * 7 - 9000))
+                    "string, thousands", StringType, Array.init 5000 (fun i -> Str("s" + string i)) ]
+
+              for name, ty, pool in rowHashKinds @ rowHashValueKinds @ many do
+                  for rows in [ 0; 1; 5; 300; 3000 ] do
+                      let column () =
+                          (Frame.ofTable (rowHashTable next [ name, ty, pool ] rows 0)).Vecs[0]
+
+                      let v = column ()
+                      let other = column ()
+                      // About four rows in five, ascending.
+                      let phys =
+                          [| for i in 0 .. rows - 1 do
+                                 if next 5 > 0 then
+                                     i |]
+
+                      let what = sprintf "%s, %d rows" name rows
+
+                      let oneSlots, oneFirst = DataFrame.RowHash.slotsWith Kernels.portable [| v |] phys
+
+                      let twoSlots, twoFirst =
+                          DataFrame.RowHash.slotsWith Kernels.portable [| v; other |] phys
+
+                      for kname, k in parallelMembers do
+                          let slots, first = DataFrame.RowHash.slotsWith k [| v |] phys
+                          Expect.equal slots oneSlots (sprintf "%s, %s: one key's slots" kname what)
+
+                          Expect.equal
+                              (List.ofSeq first)
+                              (List.ofSeq oneFirst)
+                              (sprintf "%s, %s: its first rows" kname what)
+
+                          let slots, first = DataFrame.RowHash.slotsWith k [| v; other |] phys
+                          Expect.equal slots twoSlots (sprintf "%s, %s: two keys' slots" kname what)
+
+                          Expect.equal
+                              (List.ofSeq first)
+                              (List.ofSeq twoFirst)
+                              (sprintf "%s, %s: their first rows" kname what)
+
+                          for cellEq in [ false; true ] do
+                              let c0 = DataFrame.RowHash.coder cellEq
+                              let built0 = DataFrame.RowHash.codesOf c0 v phys true
+                              let probed0 = DataFrame.RowHash.codesOf c0 other phys false
+                              let built, c = DataFrame.RowHash.codesAcross k cellEq v phys
+                              let how = sprintf "%s, %s, cellEq %b" kname what cellEq
+                              Expect.equal built built0 (how + ": the opened codes")
+                              Expect.equal c.Count c0.Count (how + ": as many codes")
+
+                              Expect.equal
+                                  (DataFrame.RowHash.probeAcross k c other phys)
+                                  probed0
+                                  (how + ": the looked-up codes")
+
+          testCase "every join kind equals the nested loop over cellEq, across key kinds, NaN, -0.0 and Null"
           <| fun _ ->
               for c, lk, rk, left, right in rowHashCases 3251 400 do
                   let on = lk |> List.mapi (fun j _ -> "k" + string j, "k" + string j)
