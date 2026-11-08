@@ -6631,9 +6631,9 @@ module DataFrame =
                 | DatePart, [ part; NDays d ] ->
                     let readPart (which: Cell) : int -> int =
                         match which with
-                        | Str "year" -> fun days -> (TemporalText.civilOfDays days).Year
-                        | Str "month" -> fun days -> (TemporalText.civilOfDays days).Month
-                        | Str "day" -> fun days -> (TemporalText.civilOfDays days).Day
+                        | Str "year" -> TemporalText.yearOfDays
+                        | Str "month" -> TemporalText.monthOfDays
+                        | Str "day" -> TemporalText.dayOfDays
                         | Str other ->
                             fun _ ->
                                 fail (TypeError("datePart: unknown part '" + other + "'")) |> ignore
