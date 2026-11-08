@@ -1,5 +1,33 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-08 — D63: a decimal column is read at the boundary in one scan of each text
+
+**Context.** A decimal column crossing into the frame cost 1.5 ms per 100,000 rows against 0.13 ms for an int column
+(`benchmarks/results/2026-11-08-x64-keyed.md`, D62's section), on every evaluation. `ofDecimalTexts` called
+`ScaledDecimal.scaleOf`, which ran `shape` over every text, then `fill`, whose `tryScaled` ran `shape` again before reading
+the digits: about four scans of each text.
+
+**Decided.** `ScaledDecimal.read` scans each present text once and writes its value at the scale read so far; a row with
+more fraction digits multiplies the rows before it by the difference, at most `Width` times over a column. Each value is an
+integer no larger than its final magnitude, so where the column fits the width every step is exact, and where it does not
+the values are discarded and the column takes the text path, as before. No per-row scale is kept, so nothing is allocated
+beside the carrier: an array of a byte or an int per row is past the large-object threshold at 100,000 rows, the
+allocation D-figures on 2026-11-07 traced the dated pipeline's tail to. `ofDecimalTexts` and `packAt`'s decimal arm read
+through it.
+
+`scaleOf` and `fill` stay: they are the host functions `proofs/Frame.fst` models the boundary by, and the proof oracle
+plugs them into the model. The oracle compares the model's frame against production's, now built by `read`, and a law
+holds `read` to `scaleOf` and `fill` bit for bit over 2,000 drawn columns (raised scales, both zeroes, leading and trailing
+zeros, negatives, texts outside the grammar, columns past the width, absent rows holding garbage).
+
+**Evidence.** Three mutants go red: the earlier rows not rescaled and the sign dropped (31 tests each), and trailing
+fraction zeros kept in the value (13). verify.ps1 green. At 100,000 rows the boundary fell from 1,535 to 686 µs, a decimal
+join from 5.4 to 3.8 ms and a decimal group-by from 3.0 to 2.2 ms.
+
+**Not decided.** The column is still parsed on every evaluation. Holding the carrier beside the Core column (a cache keyed
+by the text array, or Core carrying the scaled integers) would remove the rest, 0.56 ms per 100,000 rows; the first needs a
+weak table Fable does not offer, and the second is a Core change and a release.
+
 ## 2026-11-08 — D62: a timestamp and a decimal key take one 64-bit key, a decimal key a direct table, and a decimal group key is gathered
 
 **Context.** After D61 a timestamp key cost 4.0 to 4.2 times the int key at 100,000 distinct keys and a decimal key 5.1 to

@@ -50,7 +50,78 @@ let private referenceSum (cells: Cell list) : Cell =
 let tests =
     testList
         "Phase 280 — the decimal vector"
-        [ testCase "the scaled reading: shape, scale, value and canonical rendering"
+        [ testCase "D63: the one-scan reader answers scaleOf's scale and fill's values, bit for bit"
+          <| fun _ ->
+              // Texts drawn so that a later row raises the scale over earlier ones (the carried
+              // rows are multiplied up), with leading and trailing zeros, both zeroes, negatives,
+              // texts outside the grammar, a column past the width, and absent rows holding
+              // garbage the reader must not read.
+              let pool =
+                  [| "0"
+                     "-0"
+                     "0.00"
+                     "-0.0"
+                     "1"
+                     "12"
+                     "-7"
+                     "007.50"
+                     "1.5"
+                     "1.25"
+                     "-3.125"
+                     "0.0001"
+                     "123456789"
+                     "99999.99999"
+                     "1234567890.12345"
+                     "1."
+                     ".5"
+                     "-"
+                     ""
+                     "1e3"
+                     "1.2.3"
+                     "x"
+                     "100000000000000"
+                     "0.000000000000001"
+                     "1234567890123456" |]
+
+              let next =
+                  let mutable state = 7u
+
+                  fun bound ->
+                      state <- state * 1664525u + 1013904223u
+                      int ((state >>> 8) % uint32 bound)
+
+              let bits (a: float[]) =
+                  a |> Array.map System.BitConverter.DoubleToInt64Bits
+
+              let mutable carried = 0
+              let mutable refused = 0
+
+              for case in 1..2000 do
+                  let n = 1 + next 12
+                  let texts = Array.init n (fun _ -> pool[next pool.Length])
+                  let mask = Array.init n (fun _ -> next 5 > 0)
+                  let viaRead = Array.zeroCreate n
+                  let viaFill = Array.zeroCreate n
+                  let read = ScaledDecimal.read texts mask viaRead
+                  let scale = ScaledDecimal.scaleOf texts mask
+
+                  match read, scale with
+                  | ValueSome r, Some s ->
+                      carried <- carried + 1
+                      Expect.equal r s (sprintf "case %d: the scale, over %A %A" case texts mask)
+                      ScaledDecimal.fill s texts mask viaFill
+
+                      Expect.equal
+                          (bits viaRead)
+                          (bits viaFill)
+                          (sprintf "case %d: the values, over %A %A" case texts mask)
+                  | ValueNone, None -> refused <- refused + 1
+                  | _ -> failtestf "case %d: read %A, scaleOf %A, over %A %A" case read scale texts mask
+
+              Expect.isGreaterThan carried 300 "the draw carries columns"
+              Expect.isGreaterThan refused 300 "the draw refuses columns"
+
+          testCase "the scaled reading: shape, scale, value and canonical rendering"
           <| fun _ ->
               let shape s =
                   match ScaledDecimal.shape s with

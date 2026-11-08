@@ -469,7 +469,7 @@ module internal Shared =
 /// read of a cell is the cell the text path reads, byte for byte: the `Decimal` of the row's text,
 /// boxed on read as a string vector's cell is; only the kernels read the integers. Over a Core
 /// column the texts are a VIEW of its decimal vector (Phase 440), so the frame holds no cell per
-/// row. A column that does not fit (`ScaledDecimal.scaleOf`) stays `Cells`.
+/// row. A column that does not fit (`ScaledDecimal.read`) stays `Cells`.
 ///
 /// A temporal column (Phase 423, over Core's Phase 422) is carried as Core carries it: `Dates` is
 /// the calendar day of each row (days since 1970-01-01), and `Stamps` is each row's instant as whole
@@ -582,7 +582,9 @@ module internal ScaledDecimal =
 
     /// The one scale a column of decimal `texts` is carried at — its largest fraction-digit count —
     /// or `None` where it cannot be: a present text (`mask`) that is not in the grammar, or a column
-    /// past the width. An absent row's text is a placeholder and is not read.
+    /// past the width. An absent row's text is a placeholder and is not read. With `fill`, the
+    /// proof model's host functions (`proofs/Frame.fst`); the boundary reads through `read`, which
+    /// answers this scale and the values `fill` writes (D63).
     let scaleOf (texts: string[]) (mask: Mask) : int option =
         let mutable ok = true
         let mutable maxInt = 0
@@ -613,6 +615,82 @@ module internal ScaledDecimal =
         for i in 0 .. texts.Length - 1 do
             if Mask.at i mask then
                 Raw.put into i (tryScaled scale (Raw.get i texts) |> ValueOption.defaultValue 0.0)
+
+    /// Read a column of decimal `texts` (present where `mask` says) into `into` at ONE scale for
+    /// the column, its largest fraction-digit count, and answer that scale; or `None` where it
+    /// cannot be: a present text that is not in the grammar, or a column past the width. An absent
+    /// row's text is a placeholder and is not read, and its value is left as it is.
+    ///
+    /// One scan of each text (D63). The scale is the column's maximum, which is known only at the
+    /// end, so the rows read so far are carried at the scale read so far: a row with more fraction
+    /// digits multiplies them by the difference, at most `Width` times over the column. Every value
+    /// is an integer at most its final magnitude, so where the column fits the width every step is
+    /// exact; where it does not, the values are discarded.
+    let read (texts: string[]) (mask: Mask) (into: float[]) : int voption =
+        let mutable ok = true
+        let mutable scale = 0
+        let mutable maxInt = 0
+        let mutable i = 0
+
+        while ok && i < texts.Length do
+            if Mask.at i mask then
+                let s = Raw.get i texts
+                let n = s.Length
+                let negative = n > 0 && s[0] = '-'
+                let start = if negative then 1 else 0
+                let mutable j = start
+                let mutable point = -1
+                // Every digit read, as one integer; the value at the last significant digit; the
+                // fraction digits up to it; and the integer digits from the first non-zero one.
+                let mutable u = 0.0
+                let mutable kept = 0.0
+                let mutable frac = 0
+                let mutable intDigits = 0
+
+                if n = start then
+                    ok <- false
+
+                while ok && j < n do
+                    let c = s[j]
+
+                    if c = '.' && point < 0 && j > start && j < n - 1 then
+                        point <- j
+                        kept <- u
+                    elif c >= '0' && c <= '9' then
+                        u <- u * 10.0 + float (int c - int '0')
+
+                        if point < 0 then
+                            if intDigits > 0 || c <> '0' then
+                                intDigits <- intDigits + 1
+                        elif c <> '0' then
+                            kept <- u
+                            frac <- j - point
+                    else
+                        ok <- false
+
+                    j <- j + 1
+
+                if ok then
+                    if intDigits > maxInt then
+                        maxInt <- intDigits
+
+                    if frac > Width || maxInt + max scale frac > Width then
+                        ok <- false
+                    else
+                        if frac > scale then
+                            let k = pow10[frac - scale]
+
+                            for r in 0 .. i - 1 do
+                                Raw.put into r (Raw.get r into * k)
+
+                            scale <- frac
+
+                        let v = (if point < 0 then u else kept) * pow10[scale - frac]
+                        Raw.put into i (if negative && v <> 0.0 then -v else v)
+
+            i <- i + 1
+
+        if ok then ValueSome scale else ValueNone
 
     /// The canonical decimal text (`DecimalText`) of the unscaled value `u` at `scale`. `u` is an
     /// integer of magnitude at most `maxExact`.
@@ -841,11 +919,9 @@ module internal Vec =
 
                 i <- i + 1
 
-            match (if ok then ScaledDecimal.scaleOf texts mask else None) with
-            | Some scale ->
-                ScaledDecimal.fill scale texts mask vals
-                Decs(vals, scale, texts, mask)
-            | None -> boxed ()
+            match (if ok then ScaledDecimal.read texts mask vals else ValueNone) with
+            | ValueSome scale -> Decs(vals, scale, texts, mask)
+            | ValueNone -> boxed ()
         | DateType ->
             // A `Date` cell's canonical text as its calendar day; a text that is not canonical is a
             // cell the column does not hold, so the vector is boxed as for any disagreeing cell.
@@ -930,12 +1006,12 @@ module internal Vec =
     /// view of its storage — beside the unscaled integers read from them. A column that does not fit
     /// takes the text path, its cells boxed from the texts.
     let ofDecimalTexts (texts: string[]) (mask: Mask) : Vec =
-        match ScaledDecimal.scaleOf texts mask with
-        | Some scale ->
-            let vals = Shared.floats texts.Length
-            ScaledDecimal.fill scale texts mask vals
-            Decs(vals, scale, texts, mask)
-        | None -> Cells(Array.init texts.Length (fun i -> if Mask.at i mask then Decimal(Raw.at i texts) else Null))
+        let vals = Shared.floats texts.Length
+
+        match ScaledDecimal.read texts mask vals with
+        | ValueSome scale -> Decs(vals, scale, texts, mask)
+        | ValueNone ->
+            Cells(Array.init texts.Length (fun i -> if Mask.at i mask then Decimal(Raw.at i texts) else Null))
 
     /// The temporal texts a string kernel computed (a `Date` or `Timestamp` answer per present row)
     /// as the integer temporal vector of their type (Phase 423): each present text parsed once,
