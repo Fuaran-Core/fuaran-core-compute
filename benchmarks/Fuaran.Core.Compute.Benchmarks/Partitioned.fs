@@ -49,7 +49,7 @@ let step (verb: string) (_card: int) : Transform list =
     match verb with
     | "group-by" ->
         [ GroupBy([ "k" ], [ { Name = "total"; Fn = Sum; Of = "v" }; { Name = "n"; Fn = Count; Of = "v" } ]) ]
-    // D67: aggregates whose ranges merge exactly; the sum over the key, which fits int32 at every size.
+    // D68: aggregates whose ranges merge exactly; the sum over the key, which fits int32 at every size.
     | "group-by-int" ->
         [ GroupBy(
               [ "k" ],
@@ -155,9 +155,75 @@ type Window() =
 type GroupBy() =
     inherit Verb("group-by")
 
-/// The grouping with aggregates fed by ranges and merged on the native member (D67).
+/// The grouping with aggregates fed by ranges and merged on the native member (D68).
 type GroupByInt() =
     inherit Verb("group-by-int")
+
+/// A string key joined through both members (D69): a left side of `Rows` rows over `card` keys and
+/// a right side holding each key once, so the build side has `card` rows and the probe side `Rows`.
+/// Every key distinct, the build side is coded by partitions of its values on the native member,
+/// from 131,072 rows; one key per ten rows, by its row ranges.
+[<MemoryDiagnoser>]
+type StringJoin() =
+    let mutable frame = Unchecked.defaultof<Frame>
+    let mutable join = Unchecked.defaultof<Transform>
+    let mutable set = Kernels.portable
+
+    static member Members = [ "portable"; "native" ]
+    static member Sizes = [ 100_000; 1_000_000 ]
+    static member Cardinalities = [ "tenth"; "all" ]
+
+    [<ParamsSource("Cardinalities")>]
+    member val Keys = "" with get, set
+
+    [<ParamsSource("Members")>]
+    member val Member = "" with get, set
+
+    [<ParamsSource("Sizes")>]
+    member val Rows = 0 with get, set
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        let n = this.Rows
+        let card = if this.Keys = "all" then n else n / 10
+
+        let key (h: int) =
+            Str("cust-" + (string h).PadLeft(7, '0'))
+
+        let left =
+            { Schema = [ Field.create "k" StringType; Field.create "v" IntType ]
+              Columns =
+                [ col "k" StringType [ for i in 0 .. n - 1 -> key (int ((int64 i * 7919L) % int64 card)) ]
+                  col "v" IntType [ for i in 0 .. n - 1 -> Int i ] ] }
+
+        let right =
+            { Schema = [ Field.create "rk" StringType; Field.create "w" IntType ]
+              Columns =
+                [ col "rk" StringType [ for j in 0 .. card - 1 -> key (int ((int64 j * 104729L) % int64 card)) ]
+                  col "w" IntType [ for j in 0 .. card - 1 -> Int j ] ] }
+
+        frame <- Frame.ofTable left
+        join <- Join(Embedded right, [ "k", "rk" ], Inner)
+        set <- kernelSet this.Member
+
+        let answer k =
+            DataFrame.evalStepWith k DataFrame.noResolve Map.empty frame join
+            |> Corpus.orFail "join"
+            |> Frame.toTable
+
+        let expected = answer Kernels.portable
+
+        if Table.rowCount expected <> n then
+            failwithf "benchmark corpus: the string join at %d rows answered %d rows" n (Table.rowCount expected)
+
+        if answer set <> expected then
+            failwithf "benchmark corpus: the string join at %d rows disagrees with the portable member" n
+
+    [<Benchmark>]
+    member _.Evaluate() =
+        (DataFrame.evalStepWith set DataFrame.noResolve Map.empty frame join
+         |> Corpus.orFail "join")
+            .Count
 
 /// The grouping by a STRING key through both members (D66): a key the coder holds in a dictionary,
 /// so a column of many distinct keys is coded by partitions of its values on the native member.

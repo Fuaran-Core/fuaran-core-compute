@@ -1,5 +1,88 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-10 — D69: a join's build side of many distinct keys is coded by partitions of its values, and its probe side looked up by the same partitions
+
+**Context.** D66 codes a grouping's key column by partitions of its values and left the join out: the probe side looks
+its codes up in the build side's coder, and partitions hold no one coder.
+
+**Decided.**
+
+1. **The split is shared** (`partitionByHash`): a hasher in the join's relation (`cellEq`, where `Int 1` keys as
+   `Float 1.0` and a null has no code; or the token relation for an int key against an int key) partitions the rows of
+   either side, so equal values on the two sides fall in one partition.
+2. **The build side** (`RowHash.buildAcross`) takes D66's path in either relation, from the same probe and threshold,
+   and keeps each partition's coder and the map from its codes to the column's (`Coded.ByPartitions`); a null keeps `-1`.
+3. **The probe side** (`RowHash.lookUp`) is split by the same hash and each partition looked up in its partition's
+   coder, opening nothing, its codes mapped to the column's. Held by one coder (`Coded.ByCoder`), ranges of rows are
+   looked up as D65 had it, now each coded straight into the output rather than into a copy.
+4. `codesAcross` and `probeAcross`, which existed for the join, are gone; the D65 law reads `buildAcross` and `lookUp`.
+
+**Evidence.** The D65 law, now over `buildAcross` and `lookUp`, holds the build side's codes, their count and the probe
+side's codes to the sequential coder on every member, in both relations, over every row-hash kind and pools of
+thousands, which `nativeFrom 2` partitions. Four mutants go red: the probe side partitioned in the other relation, its
+codes left as the partition's, a build-side null given a code, and the probe opening codes. verify.ps1 green. A join of a
+million rows on a million distinct string keys fell from about 79 to 68.5 ms in one sitting, and from 73.3 to 59.2 ms in
+BenchmarkDotNet (`benchmarks/results/2026-11-10-x64-hash-join.md`). The harness gains `Partitioned.StringJoin`.
+
+**Costs measured.** A join whose build side is below the threshold read 19.1 ms before and 21 to 23 ms after in one
+sitting; alternating its two probe forms (with copies and without) in a later one read no difference, inside a spread in
+which the unchanged portable join moved from 97 to 61 ms. Recorded as unresolved, not as a cost.
+
+**Not decided.** The gain is smaller than the grouping's (14 to 19 per cent against D66's half): the probe side is hashed,
+scattered and looked up again, and gathering a million matched rows' columns, which this does not reach, is much of the
+join.
+
+**Numbering.** The parallel aggregates landed as D67 beside the authoring helpers' D67 from a concurrent session, which
+landed first; they are D68, and their commit's subject still says D67.
+
+## 2026-11-10 — D68: a grouping's aggregates are fed by row ranges where they merge exactly, and emitted by group ranges
+
+**Context.** After D65 and D66 a grouping's key is coded across threads and its aggregates are not. A profile of the step
+over a million rows put the feed (two aggregates) at 1.5 to 1.9 ms beside 1.3 to 3.8 ms of coding, and the emit at 5.1 ms
+where there is a group a row. D8's rule stands: no fold is split where a split moves a byte.
+
+**Decided.**
+
+1. **What merges.** A stream's state is per slot. Slots fed by ranges of rows, each range into a stream of its own and
+   merged in range order (`Stream.MergeFrom`), answer what one feed in row order does for `Count` and an int `Sum` (they
+   add exactly), `First` (the earlier range's row), `Last` (the later range's), `Min` and `Max` over an int or float
+   carrier (the earlier range's best against the later one's under the stream's own comparison and tie rule, which is
+   the comparison the later rows would have made), and an int `Mean` below 2^22 rows (integers added in floats are
+   exact below 2^53). A deferral in any range defers the slot. `Stream.Mergeable` says which. A float or decimal `Sum`,
+   a float `Mean` and a boxed `Min` or `Max` stay on one thread: added by ranges, a float total rounds at other places.
+2. **`GroupAgg.feedAcross`** feeds a mergeable stream by at most 16 ranges on the pool, the first into the stream itself,
+   then merges the rest into it in range order, split by group ranges across the pool. Where a slot per range for every
+   range would outnumber the rows, the merge costs what the feed does, and the stream is fed alone. `FeedAll` is
+   `FeedRange` over every row.
+3. **The emit.** A stream whose `Emit` writes only a number or a null of the output's carrier (`Stream.EmitsTyped`: a
+   count, a sum, a mean, and a row-keeping aggregate over an int or float carrier) writes only its own row of the output,
+   so where the kernel set partitions the groups those streams emit every slot across the pool first. The loop in group
+   order then reads which of their slots deferred and emits every other stream and every deferral as before, so the
+   first error is the one it always reported. Any other stream may write a cell that unpacks the output, so it emits in
+   the loop.
+
+**Evidence.** Two laws. Over frames thousands of rows long, every streamed aggregate over int, float, string, date,
+timestamp and decimal columns, grouped by few keys and by many, one aggregate a pipeline, on every member, equals the
+portable member's answer byte for byte; a column of small ints keeps sums from overflowing and one of doubles makes a sum
+added by ranges round differently, and most comparisons must be of answers, not of refusals. A first version carried
+every aggregate in one pipeline, and an int overflow made every comparison an error against the same error: three merge
+mutants passed it. At the stream, over a boxed vector holding a cell of another type at random rows, `feedAcross` equals
+`FeedAll` slot by slot: a typed column holds no such cell, so through the evaluator a deferral reaches every row or none.
+Six mutants go red: `First` taking the later range, `Min`/`Max` comparing the later best with the earlier, counts not
+merged, deferrals not merged, typed emits all read as written, and a float `Mean` merged. verify.ps1 green. Figures in
+`benchmarks/results/2026-11-10-x64-parallel-aggregates.md`: an int grouping by ten keys with `Sum`, `Count` and `Max`
+fell from 6.46 to 2.59 ms at a million rows on the native member and from 646 to 352 µs at 100,000; a float `Sum` and a
+`Count` from 3.70 to 3.37 ms; a grouping by a million distinct strings from 31.0 to 26.3 ms (the emit). The harness gains
+`Partitioned.GroupByInt`.
+
+**Costs measured.** At one key per ten rows (100,000 groups, the feed alone and the emit split) the native member read
+6 per cent slower at a million rows in BenchmarkDotNet and level in a same-sitting profile. The portable member moved
+within 5 per cent both ways across the suites on unchanged machine code.
+
+**Not decided.** A float sum by ranges would need a summation that does not depend on the order, which `Column.aggregate`
+does not do and the answers would then move; a float `Mean` and `Sum` stay sequential. With many groups the feed stays on
+one thread: partitioning rows by group range, D8's attempt, read every row from every thread.
+
 ## 2026-11-10 — D67: hand-written `ColExpr` gets opt-in authoring helpers, `Fuaran.Compute.Syntax`, that build exactly the constructors' nodes; `And` and `Or` are functions, not operators; a builder over pipeline steps is rejected
 
 **Context.** Hand-written `ColExpr` is the verbose part of a pipeline written in F#: `Filter(Binary(Gt, Col "salary",
@@ -55,54 +138,6 @@ the helpers with its suite unchanged; its local column builder `col` was renamed
 **Not decided.** No other file migrates in this phase; each adopts as it is touched. The remaining `ColExpr` cases
 (`Case`, `ApplyFn`, `Quotient`, `Rounded`, `Convert`, `Call`, `Interpolate`, `Arg`) have no helper: their constructors
 already name what they build, and a helper earns its place by a measured saving.
-
-## 2026-11-10 — D67: a grouping's aggregates are fed by row ranges where they merge exactly, and emitted by group ranges
-
-**Context.** After D65 and D66 a grouping's key is coded across threads and its aggregates are not. A profile of the step
-over a million rows put the feed (two aggregates) at 1.5 to 1.9 ms beside 1.3 to 3.8 ms of coding, and the emit at 5.1 ms
-where there is a group a row. D8's rule stands: no fold is split where a split moves a byte.
-
-**Decided.**
-
-1. **What merges.** A stream's state is per slot. Slots fed by ranges of rows, each range into a stream of its own and
-   merged in range order (`Stream.MergeFrom`), answer what one feed in row order does for `Count` and an int `Sum` (they
-   add exactly), `First` (the earlier range's row), `Last` (the later range's), `Min` and `Max` over an int or float
-   carrier (the earlier range's best against the later one's under the stream's own comparison and tie rule, which is
-   the comparison the later rows would have made), and an int `Mean` below 2^22 rows (integers added in floats are
-   exact below 2^53). A deferral in any range defers the slot. `Stream.Mergeable` says which. A float or decimal `Sum`,
-   a float `Mean` and a boxed `Min` or `Max` stay on one thread: added by ranges, a float total rounds at other places.
-2. **`GroupAgg.feedAcross`** feeds a mergeable stream by at most 16 ranges on the pool, the first into the stream itself,
-   then merges the rest into it in range order, split by group ranges across the pool. Where a slot per range for every
-   range would outnumber the rows, the merge costs what the feed does, and the stream is fed alone. `FeedAll` is
-   `FeedRange` over every row.
-3. **The emit.** A stream whose `Emit` writes only a number or a null of the output's carrier (`Stream.EmitsTyped`: a
-   count, a sum, a mean, and a row-keeping aggregate over an int or float carrier) writes only its own row of the output,
-   so where the kernel set partitions the groups those streams emit every slot across the pool first. The loop in group
-   order then reads which of their slots deferred and emits every other stream and every deferral as before, so the
-   first error is the one it always reported. Any other stream may write a cell that unpacks the output, so it emits in
-   the loop.
-
-**Evidence.** Two laws. Over frames thousands of rows long, every streamed aggregate over int, float, string, date,
-timestamp and decimal columns, grouped by few keys and by many, one aggregate a pipeline, on every member, equals the
-portable member's answer byte for byte; a column of small ints keeps sums from overflowing and one of doubles makes a sum
-added by ranges round differently, and most comparisons must be of answers, not of refusals. A first version carried
-every aggregate in one pipeline, and an int overflow made every comparison an error against the same error: three merge
-mutants passed it. At the stream, over a boxed vector holding a cell of another type at random rows, `feedAcross` equals
-`FeedAll` slot by slot: a typed column holds no such cell, so through the evaluator a deferral reaches every row or none.
-Six mutants go red: `First` taking the later range, `Min`/`Max` comparing the later best with the earlier, counts not
-merged, deferrals not merged, typed emits all read as written, and a float `Mean` merged. verify.ps1 green. Figures in
-`benchmarks/results/2026-11-10-x64-parallel-aggregates.md`: an int grouping by ten keys with `Sum`, `Count` and `Max`
-fell from 6.46 to 2.59 ms at a million rows on the native member and from 646 to 352 µs at 100,000; a float `Sum` and a
-`Count` from 3.70 to 3.37 ms; a grouping by a million distinct strings from 31.0 to 26.3 ms (the emit). The harness gains
-`Partitioned.GroupByInt`.
-
-**Costs measured.** At one key per ten rows (100,000 groups, the feed alone and the emit split) the native member read
-6 per cent slower at a million rows in BenchmarkDotNet and level in a same-sitting profile. The portable member moved
-within 5 per cent both ways across the suites on unchanged machine code.
-
-**Not decided.** A float sum by ranges would need a summation that does not depend on the order, which `Column.aggregate`
-does not do and the answers would then move; a float `Mean` and `Sum` stay sequential. With many groups the feed stays on
-one thread: partitioning rows by group range, D8's attempt, read every row from every thread.
 
 ## 2026-11-10 — D66: a group-by key column of many distinct keys is coded by partitions of its values
 

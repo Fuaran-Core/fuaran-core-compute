@@ -1,12 +1,12 @@
-# A grouping's aggregates fed by row ranges and emitted by group ranges (D67)
+# A grouping's aggregates fed by row ranges and emitted by group ranges (D68)
 
-Native x64, 32 logical processors, .NET 10, Release. BenchmarkDotNet, D66 and D67 in two legs of one run, the gate after.
+Native x64, 32 logical processors, .NET 10, Release. BenchmarkDotNet, D66 and D68 in two legs of one run, the gate after.
 
 ## The suites the change reaches
 
 `Partitioned.GroupByInt` (new): an int key, an int `Sum`, a `Count` and a `Max`, all of which merge exactly.
 
-| Keys | Member | Rows | D66 | D67 | Change |
+| Keys | Member | Rows | D66 | D68 | Change |
 |---|---|---:|---:|---:|---:|
 | ten | native | 100,000 | 646 µs | 352 µs | −46% |
 | ten | native | 1,000,000 | 6,458 µs | 2,592 µs | −60% |
@@ -20,14 +20,14 @@ only the emit is split. A same-sitting profile of that case read it level (9.1 a
 
 `Partitioned.GroupBy`: a float `Sum`, which does not merge, and a `Count`, which does.
 
-| Keys | Member | Rows | D66 | D67 |
+| Keys | Member | Rows | D66 | D68 |
 |---|---|---:|---:|---:|
 | ten | native | 1,000,000 | 3,702 µs | 3,373 µs |
 | one per ten rows | native | 1,000,000 | 6,335 µs | 5,940 µs |
 
 `Partitioned.StringGroupBy`, every key distinct: the emit across group ranges.
 
-| Rows | Member | D66 | D67 |
+| Rows | Member | D66 | D68 |
 |---:|---|---:|---:|
 | 1,000,000 | native | 31.0 ms | 26.3 ms |
 | 100,000 | native | 4.28 ms | 4.47 ms |
@@ -43,9 +43,9 @@ the same machine code as before (`FeedRange` at the sizes `FeedAll` had, every m
 
 ## A same-sitting profile
 
-The whole step, `Sum`, `Count` and `Max` over an int column grouped by an int key, D66 and D67 alternated twice:
+The whole step, `Sum`, `Count` and `Max` over an int column grouped by an int key, D66 and D68 alternated twice:
 
-| Rows | Groups | D66 native | D67 native |
+| Rows | Groups | D66 native | D68 native |
 |---:|---:|---:|---:|
 | 100,000 | 10 | 0.64, 0.65 ms | 0.39, 0.35 ms |
 | 1,000,000 | 10 | 6.12, 6.10 ms | 2.94, 2.59 ms |

@@ -6869,7 +6869,7 @@ let parallelKernelTests =
 
               Expect.equal compared (3 * 20) "every case compared"
 
-          // D67: a grouping's aggregates fed by row ranges and merged in range order, and its typed
+          // D68: a grouping's aggregates fed by row ranges and merged in range order, and its typed
           // streams emitted across group ranges, answer byte for byte what one feed and one emit in
           // order do: every streamed aggregate over int, float, string, date, timestamp and decimal
           // columns, few groups (the merge) and many (the emit), on every member. One aggregate a
@@ -6958,7 +6958,7 @@ let parallelKernelTests =
               Expect.equal compared (2 * 4 * aggs.Length * 2) "every case compared"
               Expect.isGreaterThan answered (compared * 3 / 4) "most comparisons are of answers, not of refusals"
 
-          // D67, at the stream: a typed column holds no cell of another type, so through the
+          // D68, at the stream: a typed column holds no cell of another type, so through the
           // evaluator a deferral reaches every row or none. A boxed vector holds one anywhere, and
           // a slot deferred by a later range only must defer after the merge.
           testCase "a stream fed by ranges and merged answers the stream fed in order, its deferrals included"
@@ -8272,13 +8272,13 @@ let typedRowHashTests =
                               let c0 = DataFrame.RowHash.coder cellEq
                               let built0 = DataFrame.RowHash.codesOf c0 v phys true
                               let probed0 = DataFrame.RowHash.codesOf c0 other phys false
-                              let built, c = DataFrame.RowHash.codesAcross k cellEq v phys
+                              let built, count, coded = DataFrame.RowHash.buildAcross k cellEq v phys
                               let how = sprintf "%s, %s, cellEq %b" kname what cellEq
                               Expect.equal built built0 (how + ": the opened codes")
-                              Expect.equal c.Count c0.Count (how + ": as many codes")
+                              Expect.equal count c0.Count (how + ": as many codes")
 
                               Expect.equal
-                                  (DataFrame.RowHash.probeAcross k c other phys)
+                                  (DataFrame.RowHash.lookUp k coded other phys)
                                   probed0
                                   (how + ": the looked-up codes")
 
