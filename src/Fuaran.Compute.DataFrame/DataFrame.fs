@@ -10381,16 +10381,45 @@ module DataFrame =
 
                 // A right row is matched when some left row's probe found its slot — the key relation
                 // is symmetric, so that is exactly the reverse scan's "some left row matches it".
+                //
+                // D70: the left rows are taken in ranges, each counting the rows it emits (and the
+                // padded ones among them) and marking its slots probed, on the pool where `k`
+                // partitions them; the counts' running sum is where each range writes, so the rows
+                // land in the order one pass writes them. Two ranges marking one slot write the same
+                // `true`.
                 let probed = Array.create slotCount false
-                let mutable matches = 0
-                let mutable leftOnly = 0
+                let ln = lphys.Length
+                // At most 16 ranges, from four times the rows the kernel set partitions from, as D66
+                // found for the coding: at 100,000 rows 32 ranges of a cheap join's pairs and columns
+                // cost an int join 15 per cent in thread-pool overhead (D70).
+                let parts = min 16 (k.Partitions(ln / 4))
+                let lbound (j: int) = int (int64 ln * int64 j / int64 parts)
+                let emits: int[] = Array.zeroCreate (parts + 1)
+                let pads: int[] = Array.zeroCreate parts
 
-                for s in lslots do
-                    if s >= 0 then
-                        probed[s] <- true
-                        matches <- matches + starts[s + 1] - starts[s]
-                    elif padsLeft then
-                        leftOnly <- leftOnly + 1
+                k.RunMorsels parts (fun j ->
+                    let mutable e = 0
+                    let mutable padded = 0
+
+                    for i in lbound j .. lbound (j + 1) - 1 do
+                        let s = lslots[i]
+
+                        if s >= 0 then
+                            probed[s] <- true
+                            e <- e + starts[s + 1] - starts[s]
+                        elif padsLeft then
+                            e <- e + 1
+                            padded <- padded + 1
+
+                    emits[j + 1] <- e
+                    pads[j] <- padded
+                    true)
+
+                for j in 1..parts do
+                    emits[j] <- emits[j] + emits[j - 1]
+
+                let leftRows = emits[parts]
+                let leftOnly = Array.sum pads
 
                 let unmatched (j: int) =
                     let s = rslots[j]
@@ -10404,23 +10433,29 @@ module DataFrame =
                             rightOnly <- rightOnly + 1
 
                 // The output's size is known now, so the index vectors are written once.
-                let count = matches + leftOnly + rightOnly
+                let count = leftRows + rightOnly
                 let lidx: int[] = Array.zeroCreate count
                 let ridx: int[] = Array.zeroCreate count
-                let mutable at = 0
 
-                for i in 0 .. lphys.Length - 1 do
-                    let s = lslots[i]
+                k.RunMorsels parts (fun j ->
+                    let mutable at = emits[j]
 
-                    if s >= 0 then
-                        for m in starts[s] .. starts[s + 1] - 1 do
+                    for i in lbound j .. lbound (j + 1) - 1 do
+                        let s = lslots[i]
+
+                        if s >= 0 then
+                            for m in starts[s] .. starts[s + 1] - 1 do
+                                lidx[at] <- lphys[i]
+                                ridx[at] <- rphys[members[m]]
+                                at <- at + 1
+                        elif padsLeft then
                             lidx[at] <- lphys[i]
-                            ridx[at] <- rphys[members[m]]
+                            ridx[at] <- -1
                             at <- at + 1
-                    elif padsLeft then
-                        lidx[at] <- lphys[i]
-                        ridx[at] <- -1
-                        at <- at + 1
+
+                    true)
+
+                let mutable at = leftRows
 
                 // right-only unmatched rows (for Right / Outer), after every left-side row, in right
                 // order.
@@ -10431,9 +10466,14 @@ module DataFrame =
                             ridx[at] <- rphys[j]
                             at <- at + 1
 
-                // A side with no padded row needs no null handling.
+                // A side with no padded row needs no null handling. Where `k` partitions the output,
+                // each column is written by ranges of its rows (D70).
+                let outParts = min 16 (k.Partitions(count / 4))
+
                 let gatherSide (padded: int) (v: Vec) (idx: int[]) =
-                    if padded = 0 then
+                    if outParts > 1 then
+                        Vec.gatherRanges k.RunMorsels outParts v idx
+                    elif padded = 0 then
                         Vec.gather v idx
                     else
                         Vec.gatherOrNull v idx

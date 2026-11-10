@@ -1206,6 +1206,39 @@ module internal Vec =
         | Cells a -> Cells(Array.init n (fun i -> if present[i] then a[idx[i]] else Null))
 #endif
 
+    /// `gatherOrNull` (a negative index reads `Null`; with none, `gather`), with the output written
+    /// by `parts` ranges of its rows, each run by `run` (D70: the kernel set's morsel runner,
+    /// so a range may run on another thread). Every carrier is allocated whole and each range fills
+    /// only its own rows, from the same rows `gather` reads, with the pads `gatherOrNull` writes:
+    /// the vector is the one they build.
+    let gatherRanges (run: int -> (int -> bool) -> unit) (parts: int) (v: Vec) (idx: int[]) : Vec =
+        let n = idx.Length
+        let bound (j: int) = int (int64 n * int64 j / int64 parts)
+
+        let fill (a: 'T[]) (pad: 'T) : 'T[] =
+            let out: 'T[] = Array.zeroCreate n
+
+            run parts (fun j ->
+                for i in bound j .. bound (j + 1) - 1 do
+                    let p = idx[i]
+                    out[i] <- if p >= 0 then a[p] else pad
+
+                true)
+
+            out
+
+        let mask (m: Mask) : Mask = fill m Unchecked.defaultof<_>
+
+        match v with
+        | Ints(a, m) -> Ints(fill a 0, mask m)
+        | Floats(a, m) -> Floats(fill a 0.0, mask m)
+        | Bools(a, m) -> Bools(fill a Unchecked.defaultof<_>, mask m)
+        | Strs(ty, a, m) -> Strs(ty, fill a "", mask m)
+        | Decs(a, s, t, m) -> Decs(fill a 0.0, s, fill t null, mask m)
+        | Dates(a, m) -> Dates(fill a 0, mask m)
+        | Stamps(u, s, f, m) -> Stamps(u, fill s 0.0, (if isNull f then null else fill f 0), mask m)
+        | Cells a -> Cells(fill a Null)
+
     /// Two DENSE vectors end to end: the same kind when both are typed alike, boxed otherwise. Two
     /// decimal vectors at different scales are read again from their texts, so the result is the
     /// vector `pack DecimalType` makes of the joined column.

@@ -1,5 +1,35 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-10 — D70: a join's pairs are written by ranges of its left rows, and its output columns by ranges of their rows
+
+**Context.** After D69 a million-row join on distinct string keys spent 28 of its 52 ms coding keys, 8.3 gathering its
+four output columns, and about 16 listing each slot's right rows, matching the left side and writing the pairs, all of
+it after the coding on one thread.
+
+**Decided.**
+
+1. **The pairs.** The left rows are taken in ranges. Each counts the rows it emits (a matched row emits its slot's right
+   rows, a padded one one row) and the padded ones among them, and marks its slots probed; a running sum of the counts is
+   where each range writes; then each writes its pairs there. The rows land in the order one pass writes them. Two
+   ranges marking one slot write the same `true`. One path serves every member: the portable member runs its one range
+   on the caller's thread.
+2. **The columns.** `Vec.gatherRanges` allocates every carrier whole and fills it by ranges of output rows, each reading
+   the rows `gather` reads and writing the pads `gatherOrNull` writes, so the vector is theirs.
+3. **The cap.** Both split into at most 16 ranges, from four times the rows the kernel set partitions from (131,072
+   natively), D66's rule for the coding: 32 ranges of a 100,000-row join cost an int join 15 per cent in overhead.
+
+**Evidence.** A law holds `gatherRanges` to `gather` and `gatherOrNull`, carriers and masks included, over every
+carrier, at one, three and sixteen ranges, padded and not. The frame-level law runs every join kind on every member,
+and the row-hash law holds every join kind to the nested-loop oracle. Four mutants go red: every range writing from the
+start (the cross-member law), row 0 read as a pad (the gather law), padded rows not counted (the portable member
+errs), and slots not marked probed. That last breaks both members alike, so the cross-member law cannot see it; the
+oracle law does. verify.ps1 green. A million-row join on distinct string keys fell from 55.4 to 44.2 ms and on one key
+per ten rows from 19.0 to 14.7 ms in BenchmarkDotNet; the keyed joins at 100,000 rows read level
+(`benchmarks/results/2026-11-10-x64-join-gather.md`).
+
+**Not decided.** Listing each slot's right rows (a count, a running sum and a fill over the right side), the right-only
+rows of a `Right` or `Outer` join, and the right table's boundary stay on one thread.
+
 ## 2026-11-10 — D69: a join's build side of many distinct keys is coded by partitions of its values, and its probe side looked up by the same partitions
 
 **Context.** D66 codes a grouping's key column by partitions of its values and left the join out: the probe side looks

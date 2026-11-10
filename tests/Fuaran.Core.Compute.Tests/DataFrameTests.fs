@@ -6997,7 +6997,54 @@ let parallelKernelTests =
                               Expect.equal
                                   (merged.TryCell g)
                                   (one.TryCell g)
-                                  (sprintf "trial %d, %A over %A, slot %d" trial fn ty g) ]
+                                  (sprintf "trial %d, %A over %A, slot %d" trial fn ty g)
+
+          // D70: a join's output columns written by ranges of their rows are the vectors one pass
+          // writes, carriers and masks included, over every carrier, with pads and without.
+          testCase "a gather written by ranges of its rows is the gather, every carrier, padded and not"
+          <| fun _ ->
+              let rng = System.Random 70
+
+              for trial in 1..20 do
+                  let n = 1 + rng.Next 400
+                  let present () = Array.init n (fun _ -> rng.Next 7 > 0)
+
+                  let vectors =
+                      [ Ints(Array.init n (fun _ -> rng.Next()), present ())
+                        Floats(Array.init n (fun _ -> float (rng.Next 1000) / 8.0), present ())
+                        Bools(Array.init n (fun _ -> rng.Next 2 = 0), present ())
+                        Strs(StringType, Array.init n (fun i -> "s" + string i), present ())
+                        Dates(Array.init n (fun _ -> rng.Next 40000), present ())
+                        Stamps(
+                            TimeUnit.Milliseconds,
+                            Array.init n (fun _ -> float (rng.Next 100000)),
+                            Array.init n (fun _ -> rng.Next 1000),
+                            present ()
+                        )
+                        Stamps(TimeUnit.Seconds, Array.init n (fun _ -> float (rng.Next 100000)), null, present ())
+                        Decs(
+                            Array.init n (fun _ -> float (rng.Next 10000)),
+                            2,
+                            Array.init n (fun i -> string i),
+                            present ()
+                        )
+                        Cells(Array.init n (fun i -> if i % 5 = 0 then Null else Int i)) ]
+
+                  let m = rng.Next 900
+                  let rows = Array.init m (fun _ -> rng.Next n)
+                  let padded = rows |> Array.map (fun r -> if rng.Next 4 = 0 then -1 else r)
+
+                  for v in vectors do
+                      for parts in [ 1; 3; 16 ] do
+                          Expect.equal
+                              (Vec.gatherRanges Kernels.native.RunMorsels parts v rows)
+                              (Vec.gather v rows)
+                              (sprintf "trial %d, %d parts: the gather" trial parts)
+
+                          Expect.equal
+                              (Vec.gatherRanges Kernels.native.RunMorsels parts v padded)
+                              (Vec.gatherOrNull v padded)
+                              (sprintf "trial %d, %d parts: the padded gather" trial parts) ]
 
 // ---------------------------------------------------------------------------
 //  Phase 327 — the in-place refresh over a sort or a limit. A one-cell edit
