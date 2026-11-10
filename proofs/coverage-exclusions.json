@@ -657,6 +657,45 @@
       "class": "measured-elsewhere",
       "reason": "Starts the pool's workers ahead of the first job; the pooled law warms it before it measures.",
       "standIn": "tests/Fuaran.Core.Compute.Tests/PooledLaw.fs"
+    },
+    {
+      "members": [
+        "Syntax.and'",
+        "Syntax.cast",
+        "Syntax.coalesce",
+        "Syntax.col",
+        "Syntax.contains",
+        "Syntax.endsWith",
+        "Syntax.inList",
+        "Syntax.inParam",
+        "Syntax.isNull'",
+        "Syntax.lit",
+        "Syntax.litBool",
+        "Syntax.litDate",
+        "Syntax.litDecimal",
+        "Syntax.litFloat",
+        "Syntax.litInt",
+        "Syntax.litStr",
+        "Syntax.litTimestamp",
+        "Syntax.not'",
+        "Syntax.now",
+        "Syntax.op_DotDivide",
+        "Syntax.op_DotEquals",
+        "Syntax.op_DotGreater",
+        "Syntax.op_DotGreaterEquals",
+        "Syntax.op_DotLess",
+        "Syntax.op_DotLessEquals",
+        "Syntax.op_DotLessGreater",
+        "Syntax.op_DotMinus",
+        "Syntax.op_DotMultiply",
+        "Syntax.op_DotPercent",
+        "Syntax.op_DotPlus",
+        "Syntax.or'",
+        "Syntax.param",
+        "Syntax.startsWith"
+      ],
+      "class": "trivial",
+      "reason": "The opt-in ColExpr authoring helpers (Phase 626, D66): each returns the one constructor node it names and computes nothing. SyntaxTests.fs holds every one structurally and wire-byte equal to its constructor."
     }
   ]
 }

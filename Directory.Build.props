@@ -43,8 +43,10 @@
          released as `v0.42.0`. 0.42.0 is tagged, so Phase 584's additive change (the transform law
          vectors pin an unknown sort, partition or order key as UnknownColumn and an unjoinable union
          as TypeError; no public surface moves) advanced the slot to 0.43.0,
-         released as `v0.43.0`. -->
-    <Version>0.43.0</Version>
+         released as `v0.43.0`. 0.43.0 is tagged, so Phase 626's additive change (the opt-in
+         `Fuaran.Compute.Syntax` authoring helpers in Fuaran.Compute.DataFrame) advanced the slot to
+         0.44.0, a DRAFT. -->
+    <Version>0.44.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

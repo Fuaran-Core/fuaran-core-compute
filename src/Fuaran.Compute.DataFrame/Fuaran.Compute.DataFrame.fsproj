@@ -25,6 +25,9 @@
          `RowIdentity`) and after DataFrame.fs (it calls the reference evaluator's exposed
          primitives, and degrades to the reference evaluator itself). -->
     <Compile Include="Incremental.fs" />
+    <!-- Phase 626 - the opt-in ColExpr authoring helpers (`open Fuaran.Compute.Syntax`). Last: it
+         builds only the nodes DataFrame.fs declares, and nothing here reads it. -->
+    <Compile Include="Syntax.fs" />
   </ItemGroup>
   <ItemGroup>
     <!-- Phase 266 — the suite holds the compiled expression form to the reference evaluator over

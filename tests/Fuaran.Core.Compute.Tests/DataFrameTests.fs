@@ -3,11 +3,13 @@ module Fuaran.Compute.Tests.DataFrameTests
 open Expecto
 open Fuaran.Core
 open Fuaran.Compute
+// Phase 626: the ColExpr authoring helpers; this file is their proof of value.
+open Fuaran.Compute.Syntax
 open Fuaran.Compute.Tests
 
 // ---- helpers ----
 
-let private col name ty cells : Column = KitColumn.create name ty cells
+let private column name ty cells : Column = KitColumn.create name ty cells
 let private tbl schema columns : Table = { Schema = schema; Columns = columns }
 
 /// A small employees table for the verb tests.
@@ -17,10 +19,10 @@ let private people: Table =
           Field.create "name" StringType
           Field.create "salary" IntType
           Field.create "bonus" FloatType ]
-        [ col "dept" StringType [ Str "eng"; Str "eng"; Str "sales"; Str "sales"; Str "eng" ]
-          col "name" StringType [ Str "ana"; Str "bob"; Str "cy"; Str "dee"; Str "el" ]
-          col "salary" IntType [ Int 100; Int 120; Int 90; Int 90; Null ]
-          col "bonus" FloatType [ Float 1.5; Null; Float 2.0; Float 2.5; Float 0.5 ] ]
+        [ column "dept" StringType [ Str "eng"; Str "eng"; Str "sales"; Str "sales"; Str "eng" ]
+          column "name" StringType [ Str "ana"; Str "bob"; Str "cy"; Str "dee"; Str "el" ]
+          column "salary" IntType [ Int 100; Int 120; Int 90; Int 90; Null ]
+          column "bonus" FloatType [ Float 1.5; Null; Float 2.0; Float 2.5; Float 0.5 ] ]
 
 let private run pipeline = DataFrame.evalPipeline pipeline people
 
@@ -40,7 +42,7 @@ let tests =
         "DataFrame"
         [ testCase "Filter keeps rows whose predicate is Bool true; null/false drop"
           <| fun _ ->
-              let t = run [ Filter(Binary(Gt, Col "salary", Lit(Int 95))) ] |> okTable
+              let t = run [ Filter(col "salary" .> litInt 95) ] |> okTable
               // salary > 95: 100,120 keep; 90,90 drop; null drops (null > 95 = null)
               Expect.equal (cellsOf "name" t) [ Str "ana"; Str "bob" ] "only the two >95 rows survive"
 
@@ -52,7 +54,7 @@ let tests =
 
           testCase "Derive adds a computed column; int+int stays int"
           <| fun _ ->
-              let t = run [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ] |> okTable
+              let t = run [ Derive("raise", col "salary" .+ litInt 10) ] |> okTable
 
               Expect.equal
                   (cellsOf "raise" t)
@@ -61,7 +63,7 @@ let tests =
 
           testCase "coercion: int + float promotes to float"
           <| fun _ ->
-              let t = run [ Derive("tot", Binary(Add, Col "salary", Col "bonus")) ] |> okTable
+              let t = run [ Derive("tot", col "salary" .+ col "bonus") ] |> okTable
 
               Expect.equal
                   (cellsOf "tot" t)
@@ -70,13 +72,12 @@ let tests =
 
           testCase "Coalesce picks the first non-null"
           <| fun _ ->
-              let t = run [ Derive("b2", Coalesce [ Col "bonus"; Lit(Float 0.0) ]) ] |> okTable
+              let t = run [ Derive("b2", coalesce [ col "bonus"; litFloat 0.0 ]) ] |> okTable
               Expect.equal (cellsOf "b2" t) [ Float 1.5; Float 0.0; Float 2.0; Float 2.5; Float 0.5 ] "null filled"
 
           testCase "Case evaluates the first true branch"
           <| fun _ ->
-              let band =
-                  Case([ Binary(Ge, Col "salary", Lit(Int 100)), Lit(Str "hi") ], Lit(Str "lo"))
+              let band = Case([ col "salary" .>= litInt 100, litStr "hi" ], litStr "lo")
 
               let t = run [ Derive("band", band) ] |> okTable
 
@@ -201,7 +202,7 @@ let tests =
               // Before any row is read: a source with no rows refuses as one with rows does.
               let empty =
                   { people with
-                      Columns = people.Columns |> List.map (fun c -> col c.Name c.Type []) }
+                      Columns = people.Columns |> List.map (fun c -> column c.Name c.Type []) }
 
               refused "over no rows" (DataFrame.evalPipeline [ Window spec ] empty |> Result.map ignore)
 
@@ -280,7 +281,7 @@ let tests =
               // Before any row is read: a source with no rows refuses as one with rows does.
               let empty =
                   { people with
-                      Columns = people.Columns |> List.map (fun c -> col c.Name c.Type []) }
+                      Columns = people.Columns |> List.map (fun c -> column c.Name c.Type []) }
 
               refused "over no rows" (DataFrame.evalPipeline [ Window spec ] empty |> Result.map ignore)
 
@@ -327,7 +328,7 @@ let tests =
               refusedAs
                   "d"
                   "a derived column"
-                  (run [ Derive("d", Col "salary"); Window { spec with As = "d" } ]
+                  (run [ Derive("d", col "salary"); Window { spec with As = "d" } ]
                    |> Result.map ignore)
 
               // The planner agrees: a window is never total, and the planned pipeline refuses as the
@@ -346,7 +347,7 @@ let tests =
                   { Schema = people.Schema @ [ Field.create "rn" IntType ]
                     Columns =
                       people.Columns
-                      @ [ col "rn" IntType (List.init (Table.rowCount people) (fun i -> Int i)) ] }
+                      @ [ column "rn" IntType (List.init (Table.rowCount people) (fun i -> Int i)) ] }
 
               let fresh = [ Window { spec with As = "rn" } ]
               let idw = RowIdentity.byColumn "name"
@@ -424,7 +425,7 @@ let tests =
                   (run [ GroupBy([ "dept"; "dept" ], []) ])
 
               // Unpivot: an id column named as one of the unpivot's own two.
-              let unpivot = [ Derive("value", Col "salary"); Unpivot([ "value" ], [ "salary" ]) ]
+              let unpivot = [ Derive("value", col "salary"); Unpivot([ "value" ], [ "salary" ]) ]
 
               refusedAs
                   "unpivot output 'value' is named twice, by the id column 'value' and by the unpivot's value column"
@@ -438,7 +439,7 @@ let tests =
 
               // Pivot: an index column named as an `on` value's text — a collision the DATA makes.
               let pivot =
-                  [ Derive("eng", Col "name")
+                  [ Derive("eng", col "name")
                     Pivot
                         { Index = [ "eng" ]
                           On = "dept"
@@ -453,7 +454,7 @@ let tests =
               // ...so the same pipeline answers over rows that hold no such value, and an empty frame
               // names only its index.
               Expect.equal
-                  (names (run (Filter(Binary(Eq, Col "dept", Lit(Str "sales"))) :: pivot)))
+                  (names (run (Filter(col "dept" .= litStr "sales") :: pivot)))
                   [ "eng"; "sales" ]
                   "no `eng` row, no collision"
 
@@ -468,7 +469,7 @@ let tests =
               // Before any row is read: a source with no rows refuses as one with rows does.
               let empty =
                   { people with
-                      Columns = people.Columns |> List.map (fun c -> col c.Name c.Type []) }
+                      Columns = people.Columns |> List.map (fun c -> column c.Name c.Type []) }
 
               for what, p in [ "project", [ project ]; "groupBy", [ groupBy ]; "unpivot", unpivot ] do
                   match DataFrame.evalPipeline p empty with
@@ -565,8 +566,8 @@ let tests =
               let deptInfo =
                   tbl
                       [ Field.create "dept" StringType; Field.create "region" StringType ]
-                      [ col "dept" StringType [ Str "eng"; Str "sales" ]
-                        col "region" StringType [ Str "north"; Str "south" ] ]
+                      [ column "dept" StringType [ Str "eng"; Str "sales" ]
+                        column "region" StringType [ Str "north"; Str "south" ] ]
 
               let t = run [ Join(Embedded deptInfo, [ "dept", "dept" ], Inner) ] |> okTable
 
@@ -590,14 +591,14 @@ let tests =
                       [ Field.create "k" IntType
                         Field.create "x" IntType
                         Field.create "x_right" IntType ]
-                      [ col "k" IntType [ Int 1; Int 2 ]
-                        col "x" IntType [ Int 10; Int 20 ]
-                        col "x_right" IntType [ Int 100; Int 200 ] ]
+                      [ column "k" IntType [ Int 1; Int 2 ]
+                        column "x" IntType [ Int 10; Int 20 ]
+                        column "x_right" IntType [ Int 100; Int 200 ] ]
 
               let right =
                   tbl
                       [ Field.create "kk" IntType; Field.create "x" IntType ]
-                      [ col "kk" IntType [ Int 1; Int 2 ]; col "x" IntType [ Int 7; Int 8 ] ]
+                      [ column "kk" IntType [ Int 1; Int 2 ]; column "x" IntType [ Int 7; Int 8 ] ]
 
               let joined =
                   DataFrame.evalPipeline [ Join(Embedded right, [ "k", "kk" ], Inner) ] left
@@ -630,16 +631,16 @@ let tests =
               let left =
                   tbl
                       [ Field.create "k" IntType; Field.create "x" IntType ]
-                      [ col "k" IntType [ Int 1 ]; col "x" IntType [ Int 10 ] ]
+                      [ column "k" IntType [ Int 1 ]; column "x" IntType [ Int 10 ] ]
 
               let right =
                   tbl
                       [ Field.create "k" IntType
                         Field.create "x" IntType
                         Field.create "x_right" IntType ]
-                      [ col "k" IntType [ Int 1 ]
-                        col "x" IntType [ Int 7 ]
-                        col "x_right" IntType [ Int 70 ] ]
+                      [ column "k" IntType [ Int 1 ]
+                        column "x" IntType [ Int 7 ]
+                        column "x_right" IntType [ Int 70 ] ]
 
               let joined =
                   DataFrame.evalPipeline [ Join(Embedded right, [ "k", "k" ], Left) ] left
@@ -682,9 +683,9 @@ let tests =
                       [ Field.create "id" IntType
                         Field.create "x" IntType
                         Field.create "y" IntType ]
-                      [ col "id" IntType [ Int 1 ]
-                        col "x" IntType [ Int 7 ]
-                        col "y" IntType [ Int 8 ] ]
+                      [ column "id" IntType [ Int 1 ]
+                        column "x" IntType [ Int 7 ]
+                        column "y" IntType [ Int 8 ] ]
 
               let t = DataFrame.evalPipeline [ Unpivot([ "id" ], [ "x"; "y" ]) ] small |> okTable
               Expect.equal (Table.columnNames t) [ "id"; "variable"; "value" ] "melt shape"
@@ -698,16 +699,16 @@ let tests =
                       [ Field.create "f" FloatType
                         Field.create "name" StringType
                         Field.create "d" DateType ]
-                      [ col "f" FloatType [ Float 2.5; Float -2.5 ]
-                        col "name" StringType [ Str "ab"; Str "cde" ]
-                        col "d" DateType [ Date "2026-06-22"; Date "1999-12-31" ] ]
+                      [ column "f" FloatType [ Float 2.5; Float -2.5 ]
+                        column "name" StringType [ Str "ab"; Str "cde" ]
+                        column "d" DateType [ Date "2026-06-22"; Date "1999-12-31" ] ]
 
               let t =
                   DataFrame.evalPipeline
-                      [ Derive("r", ApplyFn(Round, [ Col "f" ]))
-                        Derive("u", ApplyFn(Upper, [ Col "name" ]))
-                        Derive("len", ApplyFn(Length, [ Col "name" ]))
-                        Derive("yr", ApplyFn(DatePart, [ Lit(Str "year"); Col "d" ])) ]
+                      [ Derive("r", ApplyFn(Round, [ col "f" ]))
+                        Derive("u", ApplyFn(Upper, [ col "name" ]))
+                        Derive("len", ApplyFn(Length, [ col "name" ]))
+                        Derive("yr", ApplyFn(DatePart, [ litStr "year"; col "d" ])) ]
                       s
                   |> okTable
 
@@ -718,13 +719,13 @@ let tests =
 
           testCase "float canonicalisation: derived floats encode via the Wire layout"
           <| fun _ ->
-              let t = run [ Derive("d", Binary(Div, Col "salary", Lit(Int 3))) ] |> okTable
+              let t = run [ Derive("d", col "salary" ./ litInt 3) ] |> okTable
               let json = ColumnCodec.encode (Embedded t)
               Expect.stringContains json (Json.render (JFloat(100.0 / 3.0))) "100/3 renders canonically"
 
           testCase "unknown column is a named EvalError, not a throw"
           <| fun _ ->
-              match DataFrame.evalPipeline [ Filter(Col "nope") ] people with
+              match DataFrame.evalPipeline [ Filter(col "nope") ] people with
               | Error(UnknownColumn("nope", _)) -> ()
               | other -> failtestf "expected UnknownColumn, got %A" other
 
@@ -733,11 +734,9 @@ let tests =
           testCase "every verb round-trips through the canonical pipeline codec"
           <| fun _ ->
               let pipeline =
-                  [ Filter(
-                        Binary(And, Binary(Gt, Col "salary", Lit(Int 50)), Not(Binary(Eq, Col "dept", Lit(Str "x"))))
-                    )
+                  [ Filter(and' (col "salary" .> litInt 50) (not' (col "dept" .= litStr "x")))
                     Project [ "dept", "dept"; "salary", "salary" ]
-                    Derive("c", Coalesce [ Col "salary"; Lit Null ])
+                    Derive("c", coalesce [ col "salary"; litNull ])
                     GroupBy([ "dept" ], [ { Name = "s"; Fn = Sum; Of = "salary" } ])
                     Join(Embedded people, [ "dept", "dept" ], Left)
                     Window
@@ -756,7 +755,7 @@ let tests =
                     Distinct
                     Transform.limit 10 0
                     Union(Embedded people)
-                    Derive("cast", Cast(FloatType, ApplyFn(Substr, [ Lit(Str "hello"); Lit(Int 1); Lit(Int 3) ]))) ]
+                    Derive("cast", cast FloatType (ApplyFn(Substr, [ litStr "hello"; litInt 1; litInt 3 ]))) ]
 
               let once = DataFrameCodec.encodePipeline pipeline
 
@@ -773,15 +772,12 @@ let tests =
               let flat = """[{"$type":"filter","column":"variety","op":"eq","param":"variety"}]"""
 
               let canonical =
-                  DataFrameCodec.encodePipeline [ Filter(Binary(Eq, Col "variety", Param "variety")) ]
+                  DataFrameCodec.encodePipeline [ Filter(col "variety" .= param "variety") ]
 
               match DataFrameCodec.decodePipeline flat with
               | Error e -> failtestf "decode failed: %s" (ColumnCodec.errorString e)
               | Ok p ->
-                  Expect.equal
-                      p
-                      [ Filter(Binary(Eq, Col "variety", Param "variety")) ]
-                      "coerces to the nested predicate"
+                  Expect.equal p [ Filter(col "variety" .= param "variety") ] "coerces to the nested predicate"
 
                   Expect.equal (DataFrameCodec.encodePipeline p) canonical "re-encodes to the canonical bytes"
 
@@ -822,7 +818,7 @@ let tests =
 
           testCase "Phase 90 — Contains filters ordinally; the flat form coerces it"
           <| fun _ ->
-              let t = run [ Filter(Binary(Contains, Col "name", Lit(Str "e"))) ] |> okTable
+              let t = run [ Filter(contains (col "name") (litStr "e")) ] |> okTable
               Expect.equal (cellsOf "name" t) [ Str "dee"; Str "el" ] "substring match"
 
               match
@@ -834,23 +830,23 @@ let tests =
           testCase "Phase 90 — the case-insensitive search idiom (Lower both sides)"
           <| fun _ ->
               let pred =
-                  Binary(Contains, ApplyFn(Lower, [ Col "name" ]), ApplyFn(Lower, [ Lit(Str "AN") ]))
+                  contains (ApplyFn(Lower, [ col "name" ])) (ApplyFn(Lower, [ litStr "AN" ]))
 
               let t = run [ Filter pred ] |> okTable
               Expect.equal (cellsOf "name" t) [ Str "ana" ] "ANA matches an"
 
           testCase "Phase 90 — StartsWith / EndsWith + null propagation through string predicates"
           <| fun _ ->
-              let t = run [ Filter(Binary(StartsWith, Col "name", Lit(Str "d"))) ] |> okTable
+              let t = run [ Filter(startsWith (col "name") (litStr "d")) ] |> okTable
               Expect.equal (cellsOf "name" t) [ Str "dee" ] "startsWith"
-              let t2 = run [ Filter(Binary(EndsWith, Col "name", Lit(Str "b"))) ] |> okTable
+              let t2 = run [ Filter(endsWith (col "name") (litStr "b")) ] |> okTable
               Expect.equal (cellsOf "name" t2) [ Str "bob" ] "endsWith"
-              let t3 = run [ Derive("x", Binary(Contains, Lit Null, Lit(Str "a"))) ] |> okTable
+              let t3 = run [ Derive("x", contains litNull (litStr "a")) ] |> okTable
               Expect.equal (cellsOf "x" t3) [ Null; Null; Null; Null; Null ] "null operand propagates"
 
           testCase "Phase 90 — Concat stringifies non-null args; any null propagates"
           <| fun _ ->
-              let e = ApplyFn(Concat, [ Col "name"; Lit(Str " #"); Col "salary" ])
+              let e = ApplyFn(Concat, [ col "name"; litStr " #"; col "salary" ])
 
               let t = run [ Derive("label", e) ] |> okTable
 
@@ -861,17 +857,17 @@ let tests =
 
           testCase "Phase 90 — Trim strips exactly the pinned ASCII set"
           <| fun _ ->
-              let e = ApplyFn(Trim, [ Lit(Str "\t  padded\r\n ") ])
+              let e = ApplyFn(Trim, [ litStr "\t  padded\r\n " ])
               let t = run [ Derive("x", e) ] |> okTable
               Expect.equal (List.head (cellsOf "x" t)) (Str "padded") "space/tab/CR/LF stripped"
               // U+00A0 (NBSP) is NOT in the pinned set — .NET IsWhiteSpace would strip it; we must not.
-              let nb = run [ Derive("x", ApplyFn(Trim, [ Lit(Str "\u00A0x") ])) ] |> okTable
+              let nb = run [ Derive("x", ApplyFn(Trim, [ litStr "\u00A0x" ])) ] |> okTable
               Expect.equal (List.head (cellsOf "x" nb)) (Str "\u00A0x") "NBSP survives (parity pin)"
 
           testCase "Phase 90 — Replace is literal replace-all; empty find is the identity"
           <| fun _ ->
               let go find repl subj =
-                  let e = ApplyFn(Replace, [ Lit(Str subj); Lit(Str find); Lit(Str repl) ])
+                  let e = ApplyFn(Replace, [ litStr subj; litStr find; litStr repl ])
                   run [ Derive("x", e) ] |> okTable |> cellsOf "x" |> List.head
 
               Expect.equal (go "a" "o" "banana") (Str "bonono") "replace-all"
@@ -880,7 +876,7 @@ let tests =
           testCase "Phase 90 — DateDiffDays is civil-day arithmetic (leap year pinned)"
           <| fun _ ->
               let go a b =
-                  let e = ApplyFn(DateDiffDays, [ Lit(Str a); Lit(Str b) ])
+                  let e = ApplyFn(DateDiffDays, [ litStr a; litStr b ])
                   run [ Derive("x", e) ] |> okTable |> cellsOf "x" |> List.head
 
               Expect.equal (go "2024-02-28" "2024-03-01") (Int 2) "2024 is a leap year"
@@ -888,13 +884,13 @@ let tests =
               Expect.equal (go "2026-07-18" "2026-07-01") (Int(-17)) "negative when `to` is earlier"
               Expect.equal (go "2026-07-18" "2026-07-18T14:30:00") (Int 0) "timestamp slices to its date"
 
-              match run [ Derive("x", ApplyFn(DateDiffDays, [ Lit(Str "yesterday"); Lit(Str "2026-07-18") ])) ] with
+              match run [ Derive("x", ApplyFn(DateDiffDays, [ litStr "yesterday"; litStr "2026-07-18" ])) ] with
               | Error(TypeError d) -> Expect.stringContains d "YYYY-MM-DD" "didactic parse reject"
               | other -> failtestf "expected TypeError, got %A" other
 
           testCase "Phase 90 — InList is SQL three-valued membership"
           <| fun _ ->
-              let e = InList(Col "salary", [ Lit(Int 90); Lit Null ])
+              let e = inList (col "salary") [ litInt 90; litNull ]
               let t = run [ Derive("m", e) ] |> okTable
 
               Expect.equal
@@ -902,30 +898,30 @@ let tests =
                   [ Null; Null; Bool true; Bool true; Null ]
                   "match => true; no match past a null item => null; null subject => null"
 
-              let plain = InList(Col "salary", [ Lit(Int 100); Lit(Int 120) ])
+              let plain = inList (col "salary") [ litInt 100; litInt 120 ]
               let t2 = run [ Filter plain ] |> okTable
               Expect.equal (cellsOf "name" t2) [ Str "ana"; Str "bob" ] "filter keeps only true"
 
           testCase "Phase 90 — IsNull is total (never null) and filters the honest way"
           <| fun _ ->
-              let t = run [ Derive("miss", IsNull(Col "bonus")) ] |> okTable
+              let t = run [ Derive("miss", isNull' (col "bonus")) ] |> okTable
 
               Expect.equal
                   (cellsOf "miss" t)
                   [ Bool false; Bool true; Bool false; Bool false; Bool false ]
                   "always Bool"
 
-              let t2 = run [ Filter(IsNull(Col "salary")) ] |> okTable
+              let t2 = run [ Filter(isNull' (col "salary")) ] |> okTable
               Expect.equal (cellsOf "name" t2) [ Str "el" ] "the null-salary row"
 
           testCase "Phase 90 — the new wire forms round-trip byte-stably"
           <| fun _ ->
               let p =
-                  [ Filter(Binary(Contains, ApplyFn(Lower, [ Col "name" ]), ApplyFn(Lower, [ Param "q" ])))
-                    Filter(InList(Col "dept", [ Lit(Str "eng"); Lit(Str "ops") ]))
-                    Filter(Not(IsNull(Col "bonus")))
-                    Derive("label", ApplyFn(Concat, [ Col "name"; Lit(Str " ("); Col "dept"; Lit(Str ")") ]))
-                    Derive("days", ApplyFn(DateDiffDays, [ Col "name"; Lit(Str "2026-07-18") ])) ]
+                  [ Filter(contains (ApplyFn(Lower, [ col "name" ])) (ApplyFn(Lower, [ param "q" ])))
+                    Filter(inList (col "dept") [ litStr "eng"; litStr "ops" ])
+                    Filter(not' (isNull' (col "bonus")))
+                    Derive("label", ApplyFn(Concat, [ col "name"; litStr " ("; col "dept"; litStr ")" ]))
+                    Derive("days", ApplyFn(DateDiffDays, [ col "name"; litStr "2026-07-18" ])) ]
 
               let bytes = DataFrameCodec.encodePipeline p
 
@@ -1138,7 +1134,7 @@ let tests =
 
           testCase "Phase 91 — substituteListParams binds the selection; unbound InParam is strict"
           <| fun _ ->
-              let pipeline = [ Filter(InParam(Col "dept", "depts")) ]
+              let pipeline = [ Filter(inParam (col "dept") "depts") ]
               Expect.equal (Transform.paramsOf pipeline) [ "depts" ] "list params surface in paramsOf"
 
               let bound =
@@ -1281,19 +1277,19 @@ let tests =
                   let table =
                       tbl
                           [ Field.create "g" StringType; Field.create "v" IntType ]
-                          [ col "g" StringType [ for i in 0 .. rows - 1 -> Str(if i % 2 = 0 then "a" else "b") ]
-                            col "v" IntType [ for i in 0 .. rows - 1 -> mkInt i ] ]
+                          [ column "g" StringType [ for i in 0 .. rows - 1 -> Str(if i % 2 = 0 then "a" else "b") ]
+                            column "v" IntType [ for i in 0 .. rows - 1 -> mkInt i ] ]
 
                   let stepKind, r2 = pick strata r1
 
                   let pipeline =
                       match stepKind with
-                      | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
+                      | 0 -> [ Filter(col "v" .> litInt 0) ]
                       | 1 -> [ Transform.sortBy [ "v", Asc ]; Distinct ]
-                      | 2 -> [ Derive("w", Binary(Add, Col "v", Lit(Int 1))) ]
+                      | 2 -> [ Derive("w", col "v" .+ litInt 1) ]
                       | 3 -> [ GroupBy([ "g" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ]
                       | 4 -> [ Transform.limit 2 0 ]
-                      | _ -> [ Filter(Binary(Gt, Col "nope", Lit(Int 0))) ]
+                      | _ -> [ Filter(col "nope" .> litInt 0) ]
 
                   (table, pipeline), r2
 
@@ -1330,7 +1326,7 @@ let tests =
 
           testCase "transform + ColExpr + Cell wire carries $type, keys Ordinal-sorted"
           <| fun _ ->
-              let json = DataFrameCodec.encodePipeline [ Filter(Binary(Gt, Col "x", Lit(Int 5))) ]
+              let json = DataFrameCodec.encodePipeline [ Filter(col "x" .> litInt 5) ]
 
               Expect.stringStarts json "[{\"$type\":\"filter\"" "$type is the canonical first key of a step"
               Expect.stringContains json "\"$type\":\"binary\"" "nested ColExpr carries $type"
@@ -1344,23 +1340,23 @@ let tests =
           testCase "int Mul that overflows int32 is a named OverflowError, not a wrap"
           <| fun _ ->
               let big =
-                  tbl [ Field.create "a" IntType ] [ col "a" IntType [ Int 100000; Int 2000000000 ] ]
+                  tbl [ Field.create "a" IntType ] [ column "a" IntType [ Int 100000; Int 2000000000 ] ]
 
-              match DataFrame.evalPipeline [ Derive("p", Binary(Mul, Col "a", Lit(Int 100000))) ] big with
+              match DataFrame.evalPipeline [ Derive("p", col "a" .* litInt 100000) ] big with
               | Error(OverflowError _) -> ()
               | other -> failtestf "expected OverflowError, got %A" other
 
           testCase "int Add at the int32 boundary overflows with a name"
           <| fun _ ->
-              let m = tbl [ Field.create "a" IntType ] [ col "a" IntType [ Int 2147483647 ] ]
+              let m = tbl [ Field.create "a" IntType ] [ column "a" IntType [ Int 2147483647 ] ]
 
-              match DataFrame.evalPipeline [ Derive("p", Binary(Add, Col "a", Lit(Int 1))) ] m with
+              match DataFrame.evalPipeline [ Derive("p", col "a" .+ litInt 1) ] m with
               | Error(OverflowError _) -> ()
               | other -> failtestf "expected OverflowError, got %A" other
 
           testCase "in-range int arithmetic is unchanged"
           <| fun _ ->
-              let t = run [ Derive("r", Binary(Mul, Col "salary", Lit(Int 2))) ] |> okTable
+              let t = run [ Derive("r", col "salary" .* litInt 2) ] |> okTable
               Expect.equal (cellsOf "r" t) [ Int 200; Int 240; Int 180; Int 180; Null ] "no overflow for small ints"
 
           testCase "Sum that overflows int32 is a named OverflowError"
@@ -1368,8 +1364,8 @@ let tests =
               let big =
                   tbl
                       [ Field.create "g" StringType; Field.create "v" IntType ]
-                      [ col "g" StringType [ Str "x"; Str "x"; Str "x" ]
-                        col "v" IntType [ Int 2000000000; Int 2000000000; Int 2000000000 ] ]
+                      [ column "g" StringType [ Str "x"; Str "x"; Str "x" ]
+                        column "v" IntType [ Int 2000000000; Int 2000000000; Int 2000000000 ] ]
 
               match DataFrame.evalPipeline [ GroupBy([ "g" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ] big with
               | Error(OverflowError _) -> ()
@@ -1378,9 +1374,9 @@ let tests =
           testCase "Float→Int cast of NaN / Infinity / out-of-range is named, not undefined"
           <| fun _ ->
               let mk f =
-                  tbl [ Field.create "f" FloatType ] [ col "f" FloatType [ Float f ] ]
+                  tbl [ Field.create "f" FloatType ] [ column "f" FloatType [ Float f ] ]
 
-              let castInt = [ Derive("i", Cast(IntType, Col "f")) ]
+              let castInt = [ Derive("i", cast IntType (col "f")) ]
 
               match DataFrame.evalPipeline castInt (mk (0.0 / 0.0)) with
               | Error(TypeError _) -> ()
@@ -1398,8 +1394,8 @@ let tests =
           <| fun _ ->
               let t =
                   DataFrame.evalPipeline
-                      [ Derive("i", Cast(IntType, Col "f")) ]
-                      (tbl [ Field.create "f" FloatType ] [ col "f" FloatType [ Float 3.9; Float -2.7 ] ])
+                      [ Derive("i", cast IntType (col "f")) ]
+                      (tbl [ Field.create "f" FloatType ] [ column "f" FloatType [ Float 3.9; Float -2.7 ] ])
                   |> okTable
 
               Expect.equal (cellsOf "i" t) [ Int 3; Int -2 ] "truncation toward zero, unchanged for in-range"
@@ -1413,8 +1409,8 @@ let tests =
               let t =
                   tbl
                       [ Field.create "k" FloatType; Field.create "v" IntType ]
-                      [ col "k" FloatType [ Float nan; Float nan; Float -0.0; Float 0.0 ]
-                        col "v" IntType [ Int 1; Int 1; Int 1; Int 1 ] ]
+                      [ column "k" FloatType [ Float nan; Float nan; Float -0.0; Float 0.0 ]
+                        column "v" IntType [ Int 1; Int 1; Int 1; Int 1 ] ]
 
               let g =
                   DataFrame.evalPipeline [ GroupBy([ "k" ], [ { Name = "n"; Fn = Count; Of = "v" } ]) ] t
@@ -1430,7 +1426,7 @@ let tests =
               let t =
                   tbl
                       [ Field.create "k" FloatType ]
-                      [ col "k" FloatType [ Float nan; Float nan; Float 0.0; Float -0.0; Float 1.5 ] ]
+                      [ column "k" FloatType [ Float nan; Float nan; Float 0.0; Float -0.0; Float 1.5 ] ]
 
               let d = DataFrame.evalPipeline [ Distinct ] t |> okTable
               // distinct rows: one NaN, one zero, one 1.5
@@ -1443,7 +1439,7 @@ let tests =
               let oldSrc =
                   tbl
                       [ Field.create "a" IntType; Field.create "c" IntType ]
-                      [ col "a" IntType [ Int 1; Int 2 ]; col "c" IntType [ Int 9; Int 9 ] ]
+                      [ column "a" IntType [ Int 1; Int 2 ]; column "c" IntType [ Int 9; Int 9 ] ]
 
               // pipeline drops c and never reads it
               let pipeline = [ Project [ "a", "a" ] ]
@@ -1453,7 +1449,7 @@ let tests =
               let newSrc =
                   tbl
                       [ Field.create "a" IntType; Field.create "c" IntType ]
-                      [ col "a" IntType [ Int 1; Int 2 ]; col "c" IntType [ Int 100; Int 200 ] ]
+                      [ column "a" IntType [ Int 1; Int 2 ]; column "c" IntType [ Int 100; Int 200 ] ]
 
               let incr = DataFrame.evalFrom prior (ColumnValuesChanged "c") pipeline newSrc
               Expect.equal incr (Ok prior) "irrelevant change reuses the prior result"
@@ -1464,15 +1460,15 @@ let tests =
               let oldSrc =
                   tbl
                       [ Field.create "a" IntType; Field.create "c" IntType ]
-                      [ col "a" IntType [ Int 1; Int 2 ]; col "c" IntType [ Int 9; Int 9 ] ]
+                      [ column "a" IntType [ Int 1; Int 2 ]; column "c" IntType [ Int 9; Int 9 ] ]
 
-              let pipeline = [ Filter(Binary(Gt, Col "a", Lit(Int 0))) ] // keeps + reads a, passes c through
+              let pipeline = [ Filter(col "a" .> litInt 0) ] // keeps + reads a, passes c through
               let prior = DataFrame.evalPipeline pipeline oldSrc |> okTable
 
               let newSrc =
                   tbl
                       [ Field.create "a" IntType; Field.create "c" IntType ]
-                      [ col "a" IntType [ Int 1; Int 2 ]; col "c" IntType [ Int 100; Int 200 ] ]
+                      [ column "a" IntType [ Int 1; Int 2 ]; column "c" IntType [ Int 100; Int 200 ] ]
 
               // c is in the output (Filter preserves columns) → must recompute, not reuse
               let incr = DataFrame.evalFrom prior (ColumnValuesChanged "c") pipeline newSrc
@@ -1501,7 +1497,7 @@ let tests =
               let env = Map.ofList [ "threshold", Int 95 ]
 
               let t =
-                  DataFrame.evalPipelineInEnv env [ Filter(Binary(Gt, Col "salary", Param "threshold")) ] people
+                  DataFrame.evalPipelineInEnv env [ Filter(col "salary" .> param "threshold") ] people
 
               match t with
               | Ok t ->
@@ -1512,13 +1508,13 @@ let tests =
           <| fun _ ->
               let env = Map.ofList [ "other", Int 1 ]
 
-              match DataFrame.evalPipelineInEnv env [ Filter(Binary(Gt, Col "salary", Param "threshold")) ] people with
+              match DataFrame.evalPipelineInEnv env [ Filter(col "salary" .> param "threshold") ] people with
               | Error(UnboundParam("threshold", bound)) -> Expect.equal bound [ "other" ] "bound set enumerated"
               | other -> failtestf "expected UnboundParam, got %A" other
 
           testCase "param-free pipelines evaluate byte-identically through the env-less entry points"
           <| fun _ ->
-              let pipeline = [ Filter(Binary(Gt, Col "salary", Lit(Int 95))) ]
+              let pipeline = [ Filter(col "salary" .> litInt 95) ]
               let viaPlain = DataFrame.evalPipeline pipeline people
               let viaEmptyEnv = DataFrame.evalPipelineInEnv Map.empty pipeline people
               Expect.equal viaEmptyEnv viaPlain "empty-env eval == plain eval"
@@ -1526,7 +1522,7 @@ let tests =
           testCase "substituting a bound Param with its Lit evaluates identically (env ≡ substitute)"
           <| fun _ ->
               let env = Map.ofList [ "t", Int 100 ]
-              let pipeline = [ Filter(Binary(Ge, Col "salary", Param "t")) ]
+              let pipeline = [ Filter(col "salary" .>= param "t") ]
               let viaEnv = DataFrame.evalPipelineInEnv env pipeline people
               let viaSubst = DataFrame.evalPipeline (Transform.substitute env pipeline) people
               Expect.equal viaEnv viaSubst "env resolution ≡ literal substitution"
@@ -1534,14 +1530,14 @@ let tests =
           testCase "Transform.paramsOf derives every referenced param, deduped, stable order"
           <| fun _ ->
               let pipeline =
-                  [ Filter(Binary(And, Binary(Gt, Col "salary", Param "lo"), Binary(Lt, Col "salary", Param "hi")))
-                    Derive("d", Binary(Add, Col "bonus", Param "lo")) ] // "lo" reused → deduped
+                  [ Filter(and' (col "salary" .> param "lo") (col "salary" .< param "hi"))
+                    Derive("d", col "bonus" .+ param "lo") ] // "lo" reused → deduped
 
               Expect.equal (Transform.paramsOf pipeline) [ "lo"; "hi" ] "first-occurrence order, deduplicated"
 
           testCase "Param round-trips the pipeline codec with the canonical $type discipline"
           <| fun _ ->
-              let pipeline = [ Filter(Binary(Gt, Col "salary", Param "threshold")) ]
+              let pipeline = [ Filter(col "salary" .> param "threshold") ]
               let once = DataFrameCodec.encodePipeline pipeline
               Expect.stringContains once "\"$type\":\"param\"" "Param carries $type=param"
               Expect.stringContains once "\"name\":\"threshold\"" "param name encoded"
@@ -1555,9 +1551,9 @@ let tests =
           testCase "corpus fixture: a filter comparing a col against a param round-trips; param-free is byte-stable"
           <| fun _ ->
               // the additive fixture — a `filter` step whose predicate compares a `col` against a `param`
-              let paramPipeline = [ Filter(Binary(Gt, Col "salary", Param "threshold")) ]
+              let paramPipeline = [ Filter(col "salary" .> param "threshold") ]
               // the param-free companion — proves the codec is byte-unchanged for pre-Phase-77 pipelines
-              let plainPipeline = [ Filter(Binary(Gt, Col "salary", Lit(Int 95))) ]
+              let plainPipeline = [ Filter(col "salary" .> litInt 95) ]
 
               let cases: Corpus.Case list =
                   [ { Name = "filter-col-vs-param"
@@ -1618,7 +1614,7 @@ let tests =
           testCase "Phase 112 — the row-set verbs and the set ops leave the schema alone"
           <| fun _ ->
               let unchanged =
-                  [ Filter(Binary(Gt, Col "salary", Lit(Int 95)))
+                  [ Filter(col "salary" .> litInt 95)
                     Transform.sortBy [ "salary", Asc ]
                     Distinct
                     Transform.limit 2 1
@@ -1640,7 +1636,7 @@ let tests =
               let operand (vType: ColumnType) (key: string) (cell: Cell) =
                   tbl
                       [ Field.create "k" StringType; Field.create "v" vType ]
-                      [ col "k" StringType [ Str key ]; col "v" vType [ cell ] ]
+                      [ column "k" StringType [ Str key ]; column "v" vType [ cell ] ]
 
               let left = operand IntType "a" (Int 1)
               let floats = operand FloatType "b" (Float 2.5)
@@ -1729,7 +1725,7 @@ let tests =
           testCase "Phase 112 — Derive names the column, and (Phase 338) states the type its expression decides"
           <| fun _ ->
               let added =
-                  SchemaWalk.ofPipeline people.Schema [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ]
+                  SchemaWalk.ofPipeline people.Schema [ Derive("raise", col "salary" .+ litInt 10) ]
 
               Expect.equal
                   (SchemaWalk.names added)
@@ -1742,14 +1738,14 @@ let tests =
                   "the typer decides an int add, so the walk states it"
 
               Expect.equal
-                  (SchemaWalk.typeOf "p" (SchemaWalk.ofPipeline people.Schema [ Derive("p", Param "k") ]))
+                  (SchemaWalk.typeOf "p" (SchemaWalk.ofPipeline people.Schema [ Derive("p", param "k") ]))
                   None
                   "a param's cell is the arguments', so the walk cannot state it"
 
               Expect.isTrue (SchemaWalk.has "raise" added) "the column is KNOWN to exist, and so is its type"
 
               // Onto an existing name the evaluator retypes IN PLACE, position kept.
-              let inPlace = SchemaWalk.ofPipeline people.Schema [ Derive("salary", Lit(Int 1)) ]
+              let inPlace = SchemaWalk.ofPipeline people.Schema [ Derive("salary", litInt 1) ]
 
               Expect.equal
                   (SchemaWalk.names inPlace)
@@ -1758,8 +1754,7 @@ let tests =
 
               Expect.equal (SchemaWalk.typeOf "salary" inPlace) (Some IntType) "and retyped to the literal's type"
 
-              let evaluated =
-                  run [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ] |> okTable
+              let evaluated = run [ Derive("raise", col "salary" .+ litInt 10) ] |> okTable
 
               Expect.equal
                   (evaluated.Schema |> List.map (fun (f: Field) -> f.Name))
@@ -1948,7 +1943,7 @@ let tests =
               let right =
                   tbl
                       [ Field.create "k" StringType; Field.create "v" IntType ]
-                      [ col "k" StringType [ Str "eng" ]; col "v" IntType [ Int 1 ] ]
+                      [ column "k" StringType [ Str "eng" ]; column "v" IntType [ Int 1 ] ]
 
               let k =
                   SchemaWalk.ofPipeline
@@ -1997,14 +1992,14 @@ let tests =
               let left =
                   tbl
                       [ Field.create "k" IntType; Field.create "v" StringType ]
-                      [ col "k" IntType [ Int 1; Int 2; Int 2; Int 3; Null ]
-                        col "v" StringType [ Str "a"; Str "b"; Str "b"; Str "c"; Str "z" ] ]
+                      [ column "k" IntType [ Int 1; Int 2; Int 2; Int 3; Null ]
+                        column "v" StringType [ Str "a"; Str "b"; Str "b"; Str "c"; Str "z" ] ]
 
               let right =
                   tbl
                       [ Field.create "k" IntType; Field.create "v" StringType ]
-                      [ col "k" IntType [ Int 2; Int 3; Null ]
-                        col "v" StringType [ Str "b"; Str "x"; Str "z" ] ]
+                      [ column "k" IntType [ Int 2; Int 3; Null ]
+                        column "v" StringType [ Str "b"; Str "x"; Str "z" ] ]
 
               let inter = DataFrame.evalPipeline [ Intersect(Embedded right) ] left |> okTable
 
@@ -2021,8 +2016,10 @@ let tests =
               Expect.equal (cellsOf "k" interSet) [ Int 2; Null ] "Intersect · Distinct = SQL INTERSECT"
 
               // An `Int 1` is not a `Float 1.0` — the same type-tagged token Distinct dedups on.
-              let ints = tbl [ Field.create "k" IntType ] [ col "k" IntType [ Int 1 ] ]
-              let floats = tbl [ Field.create "k" FloatType ] [ col "k" FloatType [ Float 1.0 ] ]
+              let ints = tbl [ Field.create "k" IntType ] [ column "k" IntType [ Int 1 ] ]
+
+              let floats =
+                  tbl [ Field.create "k" FloatType ] [ column "k" FloatType [ Float 1.0 ] ]
 
               Expect.equal
                   (DataFrame.evalPipeline [ Intersect(Embedded floats) ] ints
@@ -2039,7 +2036,7 @@ let tests =
           <| fun _ ->
               // `eng` appears twice on the right, so a `Left` join fans the eng rows out.
               let depts =
-                  tbl [ Field.create "dept" StringType ] [ col "dept" StringType [ Str "eng"; Str "eng"; Str "hr" ] ]
+                  tbl [ Field.create "dept" StringType ] [ column "dept" StringType [ Str "eng"; Str "eng"; Str "hr" ] ]
 
               let semi = run [ Join(Embedded depts, [ "dept", "dept" ], Semi) ] |> okTable
 
@@ -2057,7 +2054,7 @@ let tests =
               let antiIdiom =
                   run
                       [ Join(Embedded depts, [ "dept", "dept" ], Left)
-                        Filter(IsNull(Col "dept_right")) ]
+                        Filter(isNull' (col "dept_right")) ]
                   |> okTable
 
               Expect.equal (cellsOf "name" antiIdiom) (cellsOf "name" anti) "Anti agrees with the Left+IsNull idiom"
@@ -2066,7 +2063,7 @@ let tests =
               let semiIdiom =
                   run
                       [ Join(Embedded depts, [ "dept", "dept" ], Left)
-                        Filter(Not(IsNull(Col "dept_right"))) ]
+                        Filter(not' (isNull' (col "dept_right"))) ]
                   |> okTable
 
               Expect.equal (List.length (cellsOf "name" semiIdiom)) 6 "Left+filter duplicates per right match"
@@ -2103,7 +2100,7 @@ let tests =
                   |> cellsOf "d"
 
               // nulls are skipped, exactly as Count skips them
-              let allNull = tbl [ Field.create "x" IntType ] [ col "x" IntType [ Null; Null ] ]
+              let allNull = tbl [ Field.create "x" IntType ] [ column "x" IntType [ Null; Null ] ]
               Expect.equal (distinctOver allNull "x") [ Int 0 ] "all-null counts 0"
 
               // NaN collapses to one value and -0.0/0.0 coincide — the canonical token, not host equality
@@ -2112,14 +2109,14 @@ let tests =
               let odd =
                   tbl
                       [ Field.create "f" FloatType ]
-                      [ col "f" FloatType [ Float nan; Float nan; Float -0.0; Float 0.0 ] ]
+                      [ column "f" FloatType [ Float nan; Float nan; Float -0.0; Float 0.0 ] ]
 
               Expect.equal (distinctOver odd "f") [ Int 2 ] "NaN is one value; -0.0 and 0.0 are one value"
 
           testCase "Phase 101 — DenseRank equals Rank; CompetitionRank is the gapped SQL RANK()"
           <| fun _ ->
               let scores =
-                  tbl [ Field.create "s" IntType ] [ col "s" IntType [ Int 10; Int 10; Int 20; Int 30 ] ]
+                  tbl [ Field.create "s" IntType ] [ column "s" IntType [ Int 10; Int 10; Int 20; Int 30 ] ]
 
               let rankWith fn =
                   DataFrame.evalPipeline
@@ -2144,7 +2141,7 @@ let tests =
           testCase "Phase 101 — NTile distributes evenly, big buckets first; n < 1 is a named error"
           <| fun _ ->
               let five =
-                  tbl [ Field.create "s" IntType ] [ col "s" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ]
+                  tbl [ Field.create "s" IntType ] [ column "s" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ]
 
               let ntileSpec n =
                   Window
@@ -2168,7 +2165,7 @@ let tests =
           testCase "Phase 101 — CumulMax/CumulMin carry nulls forward; RollingSum shares the window"
           <| fun _ ->
               let v =
-                  tbl [ Field.create "v" IntType ] [ col "v" IntType [ Null; Int 3; Int 1; Int 5; Null; Int 2 ] ]
+                  tbl [ Field.create "v" IntType ] [ column "v" IntType [ Null; Int 3; Int 1; Int 5; Null; Int 2 ] ]
 
               let windowed fn =
                   DataFrame.evalPipeline
@@ -2205,7 +2202,7 @@ let tests =
           testCase
               "Phase 557 — Pow under an integer exponent is the pinned routine, bit for bit the repeated-multiplication spelling up to the cube; the tables answer before the host"
           <| fun _ ->
-              let one = tbl [ Field.create "x" IntType ] [ col "x" IntType [ Int 0 ] ]
+              let one = tbl [ Field.create "x" IntType ] [ column "x" IntType [ Int 0 ] ]
 
               let scalar e =
                   DataFrame.evalPipeline [ Derive("r", e) ] one
@@ -2254,21 +2251,18 @@ let tests =
                     -2.5
                     System.Math.PI
                     1.0000000000000002 ] do
-                  let x2 = Lit(Float x)
+                  let x2 = litFloat x
 
-                  Expect.equal
-                      (scalar (pow (Float x) (Int 2)))
-                      (scalar (Binary(Mul, x2, x2)))
-                      (sprintf "x^2 is x*x at %g" x)
+                  Expect.equal (scalar (pow (Float x) (Int 2))) (scalar (x2 .* x2)) (sprintf "x^2 is x*x at %g" x)
 
                   Expect.equal
                       (scalar (pow (Float x) (Int 3)))
-                      (scalar (Binary(Mul, Binary(Mul, x2, x2), x2)))
+                      (scalar (x2 .* x2 .* x2))
                       (sprintf "x^3 is (x*x)*x at %g" x)
 
                   Expect.equal
                       (scalar (pow (Float x) (Int -2)))
-                      (scalar (Binary(Div, Lit(Float 1.0), Binary(Mul, x2, x2))))
+                      (scalar (litFloat 1.0 ./ (x2 .* x2)))
                       (sprintf "x^-2 is 1/(x*x) at %g" x)
 
                   Expect.equal (scalar (pow (Float x) (Int 1))) (Float x) (sprintf "x^1 is x at %g" x)
@@ -2415,17 +2409,17 @@ let tests =
               let rounded = Some Exactness.HostRounded
 
               let derives =
-                  [ Derive("sq", ApplyFn(Pow, [ Col "x"; Lit(Int 2) ]))
-                    Derive("pn", ApplyFn(Pow, [ Col "x"; Col "n" ]))
-                    Derive("pf", ApplyFn(Pow, [ Col "x"; Cast(FloatType, Col "n") ]))
-                    Derive("e", ApplyFn(Exp, [ Col "x" ]))
-                    Derive("l", ApplyFn(Ln, [ Binary(Add, Col "x", Lit(Float 1.0)) ]))
-                    Derive("l10", ApplyFn(Log10, [ Col "n" ]))
-                    Derive("eh", ApplyFn(Exp, [ Col "h" ]))
-                    Derive("viaH", Binary(Mul, Col "h", Lit(Float 2.0)))
-                    Derive("cased", Case([ Binary(Gt, Col "n", Lit(Int 0)), Col "x" ], Col "h"))
-                    Derive("isn", IsNull(Col "h"))
-                    Derive("plain", Binary(Add, Col "x", Lit(Float 1.0))) ]
+                  [ Derive("sq", ApplyFn(Pow, [ col "x"; litInt 2 ]))
+                    Derive("pn", ApplyFn(Pow, [ col "x"; col "n" ]))
+                    Derive("pf", ApplyFn(Pow, [ col "x"; cast FloatType (col "n") ]))
+                    Derive("e", ApplyFn(Exp, [ col "x" ]))
+                    Derive("l", ApplyFn(Ln, [ col "x" .+ litFloat 1.0 ]))
+                    Derive("l10", ApplyFn(Log10, [ col "n" ]))
+                    Derive("eh", ApplyFn(Exp, [ col "h" ]))
+                    Derive("viaH", col "h" .* litFloat 2.0)
+                    Derive("cased", Case([ col "n" .> litInt 0, col "x" ], col "h"))
+                    Derive("isn", isNull' (col "h"))
+                    Derive("plain", col "x" .+ litFloat 1.0) ]
 
               let k = walk derives
               Expect.equal (markOf "x" k) pinned "an input column is pinned"
@@ -2455,9 +2449,9 @@ let tests =
 
               let ints =
                   walk
-                      [ Derive("a", ApplyFn(Pow, [ Col "n"; Lit(Int 2) ]))
-                        Derive("b", ApplyFn(Pow, [ Col "n"; Lit(Int -1) ]))
-                        Derive("c", ApplyFn(Pow, [ Col "n"; Col "n" ])) ]
+                      [ Derive("a", ApplyFn(Pow, [ col "n"; litInt 2 ]))
+                        Derive("b", ApplyFn(Pow, [ col "n"; litInt -1 ]))
+                        Derive("c", ApplyFn(Pow, [ col "n"; col "n" ])) ]
 
               Expect.equal
                   (SchemaWalk.typeOf "a" ints)
@@ -2526,7 +2520,7 @@ let tests =
               let unioned =
                   SchemaWalk.ofPipeline
                       [ Field.create "x" FloatType ]
-                      [ Union(Embedded(tbl [ Field.create "x" FloatType ] [ col "x" FloatType [ Float 1.0 ] ])) ]
+                      [ Union(Embedded(tbl [ Field.create "x" FloatType ] [ column "x" FloatType [ Float 1.0 ] ])) ]
 
               Expect.equal (markOf "x" unioned) pinned "a union of two pinned columns"
 
@@ -2535,11 +2529,11 @@ let tests =
                   SchemaWalk.hostRoundedDecisionsFrom
                       SchemaWalk.noSources
                       marked
-                      [ Derive("e", ApplyFn(Exp, [ Col "h" ]))
-                        Filter(Binary(Gt, Col "e", Lit(Float 1.0)))
-                        Derive("r", ApplyFn(Round, [ Col "e" ]))
-                        Derive("i", Cast(IntType, ApplyFn(Ln, [ Col "h" ])))
-                        Derive("f", Cast(FloatType, Col "e"))
+                      [ Derive("e", ApplyFn(Exp, [ col "h" ]))
+                        Filter(col "e" .> litFloat 1.0)
+                        Derive("r", ApplyFn(Round, [ col "e" ]))
+                        Derive("i", cast IntType (ApplyFn(Ln, [ col "h" ])))
+                        Derive("f", cast FloatType (col "e"))
                         Transform.sortBy [ "e", Desc ]
                         GroupBy(
                             [ "g" ],
@@ -2570,18 +2564,18 @@ let tests =
               Expect.isEmpty
                   (SchemaWalk.hostRoundedDecisions
                       schema
-                      [ Derive("sq", ApplyFn(Pow, [ Col "x"; Lit(Int 2) ]))
-                        Filter(Binary(Gt, Col "sq", Lit(Float 1.0)))
+                      [ Derive("sq", ApplyFn(Pow, [ col "x"; litInt 2 ]))
+                        Filter(col "sq" .> litFloat 1.0)
                         Transform.sortBy [ "sq", Desc ] ])
                   "a pinned pipeline reports no decision"
 
               Expect.isEmpty
                   (SchemaWalk.hostRoundedDecisions
                       schema
-                      [ Derive("e", ApplyFn(Exp, [ Col "x" ]))
-                        Filter(Binary(Gt, Col "e", Lit(Float 1.0)))
-                        Derive("i", Cast(IntType, ApplyFn(Ln, [ Col "x" ])))
-                        Derive("p", ApplyFn(Pow, [ Col "x"; Lit(Float 0.5) ]))
+                      [ Derive("e", ApplyFn(Exp, [ col "x" ]))
+                        Filter(col "e" .> litFloat 1.0)
+                        Derive("i", cast IntType (ApplyFn(Ln, [ col "x" ])))
+                        Derive("p", ApplyFn(Pow, [ col "x"; litFloat 0.5 ]))
                         Transform.sortBy [ "p", Desc ] ])
                   "the transcendentals and a float power reach no host-rounded decision (D54)"
 
@@ -2589,15 +2583,15 @@ let tests =
               let table =
                   tbl
                       schema
-                      [ col "x" FloatType [ Float 1.5; Float 0.5 ]
-                        col "n" IntType [ Int 2; Int 3 ]
-                        col "g" StringType [ Str "a"; Str "b" ] ]
+                      [ column "x" FloatType [ Float 1.5; Float 0.5 ]
+                        column "n" IntType [ Int 2; Int 3 ]
+                        column "g" StringType [ Str "a"; Str "b" ] ]
 
               match
                   DataFrame.evalPipeline
-                      [ Derive("e", ApplyFn(Exp, [ Col "x" ]))
-                        Filter(Binary(Gt, Col "e", Lit(Float 1.0)))
-                        Derive("r", ApplyFn(Round, [ Col "e" ]))
+                      [ Derive("e", ApplyFn(Exp, [ col "x" ]))
+                        Filter(col "e" .> litFloat 1.0)
+                        Derive("r", ApplyFn(Round, [ col "e" ]))
                         Transform.sortBy [ "e", Desc ]
                         Distinct ]
                       table
@@ -2607,47 +2601,47 @@ let tests =
 
           testCase "Phase 101 — Sqrt is Null below zero; Least/Greatest propagate null; IndexOf is 0-based"
           <| fun _ ->
-              let one = tbl [ Field.create "x" IntType ] [ col "x" IntType [ Int 0 ] ]
+              let one = tbl [ Field.create "x" IntType ] [ column "x" IntType [ Int 0 ] ]
 
               let scalar e =
                   DataFrame.evalPipeline [ Derive("r", e) ] one |> okTable |> cellsOf "r"
 
-              Expect.equal (scalar (ApplyFn(Sqrt, [ Lit(Float 9.0) ]))) [ Float 3.0 ] "sqrt 9 = 3"
-              Expect.equal (scalar (ApplyFn(Sqrt, [ Lit(Int 2) ]))) [ Float(sqrt 2.0) ] "int promotes to float"
-              Expect.equal (scalar (ApplyFn(Sqrt, [ Lit(Int -4) ]))) [ Null ] "a negative root is Null, never NaN"
-              Expect.equal (scalar (ApplyFn(Sqrt, [ Lit Null ]))) [ Null ] "null propagates"
+              Expect.equal (scalar (ApplyFn(Sqrt, [ litFloat 9.0 ]))) [ Float 3.0 ] "sqrt 9 = 3"
+              Expect.equal (scalar (ApplyFn(Sqrt, [ litInt 2 ]))) [ Float(sqrt 2.0) ] "int promotes to float"
+              Expect.equal (scalar (ApplyFn(Sqrt, [ litInt -4 ]))) [ Null ] "a negative root is Null, never NaN"
+              Expect.equal (scalar (ApplyFn(Sqrt, [ litNull ]))) [ Null ] "null propagates"
 
-              match DataFrame.evalPipeline [ Derive("r", ApplyFn(Sqrt, [ Lit(Str "x") ])) ] one with
+              match DataFrame.evalPipeline [ Derive("r", ApplyFn(Sqrt, [ litStr "x" ])) ] one with
               | Error(TypeError _) -> ()
               | other -> failtestf "expected a TypeError for sqrt of a string, got %A" other
 
               let clamped fn =
-                  run [ Derive("r", ApplyFn(fn, [ Col "salary"; Lit(Int 95) ])) ]
+                  run [ Derive("r", ApplyFn(fn, [ col "salary"; litInt 95 ])) ]
                   |> okTable
                   |> cellsOf "r"
 
               Expect.equal (clamped Greatest) [ Int 100; Int 120; Int 95; Int 95; Null ] "greatest is a floor"
               Expect.equal (clamped Least) [ Int 95; Int 95; Int 90; Int 90; Null ] "least is a ceiling"
 
-              Expect.equal (scalar (ApplyFn(Greatest, [ Lit(Int 1); Lit(Int 9); Lit(Int 4) ]))) [ Int 9 ] "variadic"
+              Expect.equal (scalar (ApplyFn(Greatest, [ litInt 1; litInt 9; litInt 4 ]))) [ Int 9 ] "variadic"
 
               Expect.equal
-                  (run [ Derive("r", ApplyFn(IndexOf, [ Col "name"; Lit(Str "e") ])) ]
+                  (run [ Derive("r", ApplyFn(IndexOf, [ col "name"; litStr "e" ])) ]
                    |> okTable
                    |> cellsOf "r")
                   [ Int -1; Int -1; Int -1; Int 1; Int 0 ]
                   "0-based, -1 when absent"
 
-              Expect.equal (scalar (ApplyFn(IndexOf, [ Lit(Str "abc"); Lit(Str "") ]))) [ Int 0 ] "an empty needle is 0"
+              Expect.equal (scalar (ApplyFn(IndexOf, [ litStr "abc"; litStr "" ]))) [ Int 0 ] "an empty needle is 0"
 
               // The composition the 0-based pin exists for.
               Expect.equal
                   (scalar (
                       ApplyFn(
                           Substr,
-                          [ Lit(Str "key=value")
-                            ApplyFn(IndexOf, [ Lit(Str "key=value"); Lit(Str "=") ])
-                            Lit(Int 1) ]
+                          [ litStr "key=value"
+                            ApplyFn(IndexOf, [ litStr "key=value"; litStr "=" ])
+                            litInt 1 ]
                       )
                   ))
                   [ Str "=" ]
@@ -2702,10 +2696,10 @@ let tests =
                           Fn = RollingSum
                           Of = "salary"
                           As = "f" }
-                    Derive("g", ApplyFn(Sqrt, [ Col "bonus" ]))
-                    Derive("h", ApplyFn(Least, [ Col "salary"; Lit(Int 1) ]))
-                    Derive("i", ApplyFn(Greatest, [ Col "salary"; Lit(Int 1) ]))
-                    Derive("j", ApplyFn(IndexOf, [ Col "name"; Lit(Str "e") ])) ]
+                    Derive("g", ApplyFn(Sqrt, [ col "bonus" ]))
+                    Derive("h", ApplyFn(Least, [ col "salary"; litInt 1 ]))
+                    Derive("i", ApplyFn(Greatest, [ col "salary"; litInt 1 ]))
+                    Derive("j", ApplyFn(IndexOf, [ col "name"; litStr "e" ])) ]
 
               let bytes = DataFrameCodec.encodePipeline p
 
@@ -2790,16 +2784,16 @@ let tests =
               let mk (c: Cell list) =
                   tbl
                       [ Field.create "a" IntType; Field.create "b" IntType; Field.create "c" IntType ]
-                      [ col "a" IntType [ Int 1; Int 2 ]
-                        col "b" IntType [ Int 0; Int 0 ]
-                        col "c" IntType c ]
+                      [ column "a" IntType [ Int 1; Int 2 ]
+                        column "b" IntType [ Int 0; Int 0 ]
+                        column "c" IntType c ]
 
               let blocked =
                   tbl
                       [ Field.create "a" IntType; Field.create "b" IntType; Field.create "c" IntType ]
-                      [ col "a" IntType [ Int 1 ]
-                        col "b" IntType [ Int 0 ]
-                        col "c" IntType [ Int 9 ] ]
+                      [ column "a" IntType [ Int 1 ]
+                        column "b" IntType [ Int 0 ]
+                        column "c" IntType [ Int 9 ] ]
 
               let pipeline = [ Except(Embedded blocked); Project [ "a", "a" ] ]
               let oldSrc = mk [ Int 9; Int 9 ]
@@ -3138,8 +3132,8 @@ let streamedAggregateLaws =
                       [ GroupBy([ "k" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ]
                       (tbl
                           [ Field.create "k" StringType; Field.create "v" FloatType ]
-                          [ col "k" StringType [ Str "a"; Str "a" ]
-                            col "v" FloatType [ Float 1.7e308; Float 1.7e308 ] ])
+                          [ column "k" StringType [ Str "a"; Str "a" ]
+                            column "v" FloatType [ Float 1.7e308; Float 1.7e308 ] ])
               with
               | Error(OverflowError _) -> ()
               | other -> failtestf "the GroupBy refuses the overflowed sum by name, got %A" other
@@ -3180,10 +3174,10 @@ let streamedAggregateLaws =
                             Field.create "ik" IntType
                             Field.create "fk" FloatType
                             Field.create "v" (c.Ty) ]
-                          [ col "sk" StringType sk
-                            col "ik" IntType ik
-                            col "fk" FloatType fk
-                            col "v" c.Ty (List.ofArray c.Cells) ]
+                          [ column "sk" StringType sk
+                            column "ik" IntType ik
+                            column "fk" FloatType fk
+                            column "v" c.Ty (List.ofArray c.Cells) ]
 
                   let aggs =
                       allAggFns
@@ -3378,10 +3372,10 @@ let pivotStreamLaws =
                             Field.create "h" IntType
                             Field.create "o" (oTy)
                             Field.create "v" (c.Ty) ]
-                          [ col "g" StringType g
-                            col "h" IntType h
-                            col "o" oTy o
-                            col "v" c.Ty (List.ofArray c.Cells) ]
+                          [ column "g" StringType g
+                            column "h" IntType h
+                            column "o" oTy o
+                            column "v" c.Ty (List.ofArray c.Cells) ]
 
                   let fn = allAggFns[rng.Next(List.length allAggFns)]
 
@@ -3448,9 +3442,9 @@ let pivotStreamLaws =
                       [ Field.create "g" StringType
                         Field.create "o" FloatType
                         Field.create "v" IntType ]
-                      [ col "g" StringType [ Str "a"; Str "a" ]
-                        col "o" FloatType [ Float nan; Float nan ]
-                        col "v" IntType [ Int 10; Int 20 ] ]
+                      [ column "g" StringType [ Str "a"; Str "a" ]
+                        column "o" FloatType [ Float nan; Float nan ]
+                        column "v" IntType [ Int 10; Int 20 ] ]
 
               match pivotOracle t [ "g" ] "o" "v" Sum with
               | Ok cols ->
@@ -3503,11 +3497,11 @@ let nowTests =
           testCase "usesNow reads clock dependence off the pipeline, and a param-only one is not clock-dependent"
           <| fun _ ->
               Expect.isTrue
-                  (Transform.usesNow [ Filter(Binary(Gt, Col "d", Now NowGrain.Date)) ])
+                  (Transform.usesNow [ Filter(col "d" .> (Now NowGrain.Date)) ])
                   "a Now nested inside an expression is found"
 
               Expect.isFalse
-                  (Transform.usesNow [ Filter(Binary(Gt, Col "d", Param "asOf")) ])
+                  (Transform.usesNow [ Filter(col "d" .> param "asOf") ])
                   "the hand-threaded param idiom is NOT clock-dependent — that is the point of the ask"
 
           testCase "substituteNow leaves no Now behind, so what evaluates is literals"
@@ -3525,8 +3519,8 @@ let nowTests =
 
               Expect.equal
                   pinned
-                  [ Derive("a", Lit(Date "2026-09-13"))
-                    Derive("b", Lit(Timestamp "2026-09-13T00:00:00Z")) ]
+                  [ Derive("a", litDate "2026-09-13")
+                    Derive("b", litTimestamp "2026-09-13T00:00:00Z") ]
                   "each Now became the witness's own literal, at its own grain" ]
 
 [<Tests>]
@@ -3643,32 +3637,32 @@ let private strs xs = xs |> List.map Str
 let private joinLeft =
     tbl
         [ Field.create "k" IntType; Field.create "lv" StringType ]
-        [ col "k" IntType [ Int 1; Int 2; Null; Int 1; Int 4; Int 0 ]
-          col "lv" StringType (strs [ "a"; "b"; "c"; "d"; "e"; "f" ]) ]
+        [ column "k" IntType [ Int 1; Int 2; Null; Int 1; Int 4; Int 0 ]
+          column "lv" StringType (strs [ "a"; "b"; "c"; "d"; "e"; "f" ]) ]
 
 let private joinRight =
     tbl
         [ Field.create "k" FloatType; Field.create "rv" StringType ]
-        [ col "k" FloatType [ Float 1.0; Float 3.0; Null; Float 1.0; Float 2.0; Float -0.0 ]
-          col "rv" StringType (strs [ "x"; "y"; "z"; "w"; "v"; "u" ]) ]
+        [ column "k" FloatType [ Float 1.0; Float 3.0; Null; Float 1.0; Float 2.0; Float -0.0 ]
+          column "rv" StringType (strs [ "x"; "y"; "z"; "w"; "v"; "u" ]) ]
 
 let private join2Left =
     tbl
         [ Field.create "s" StringType
           Field.create "f" FloatType
           Field.create "lv" StringType ]
-        [ col "s" StringType [ Str "p"; Str "p"; Str "q"; Null; Str "p" ]
-          col "f" FloatType [ Float nan; Float 1.5; Float nan; Float 1.5; Float infinity ]
-          col "lv" StringType (strs [ "a"; "b"; "c"; "d"; "e" ]) ]
+        [ column "s" StringType [ Str "p"; Str "p"; Str "q"; Null; Str "p" ]
+          column "f" FloatType [ Float nan; Float 1.5; Float nan; Float 1.5; Float infinity ]
+          column "lv" StringType (strs [ "a"; "b"; "c"; "d"; "e" ]) ]
 
 let private join2Right =
     tbl
         [ Field.create "s" StringType
           Field.create "f" FloatType
           Field.create "rv" StringType ]
-        [ col "s" StringType [ Str "p"; Str "q"; Str "p"; Str "p"; Str "p" ]
-          col "f" FloatType [ Float nan; Float nan; Float 1.5; Float 2.0; Float infinity ]
-          col "rv" StringType (strs [ "x"; "y"; "z"; "w"; "v" ]) ]
+        [ column "s" StringType [ Str "p"; Str "q"; Str "p"; Str "p"; Str "p" ]
+          column "f" FloatType [ Float nan; Float nan; Float 1.5; Float 2.0; Float infinity ]
+          column "rv" StringType (strs [ "x"; "y"; "z"; "w"; "v" ]) ]
 
 let private pivotSrc =
     tbl
@@ -3676,10 +3670,10 @@ let private pivotSrc =
           Field.create "h" IntType
           Field.create "o" StringType
           Field.create "v" FloatType ]
-        [ col "g" StringType [ Str "a"; Str "b"; Str "a"; Str "a"; Str "b"; Null; Str "a"; Str "b" ]
-          col "h" IntType [ Int 1; Int 1; Int 1; Int 2; Int 1; Int 1; Int 1; Int 1 ]
-          col "o" StringType [ Str "x"; Str "y"; Str "x"; Null; Str "x"; Str "y"; Str "z"; Str "y" ]
-          col
+        [ column "g" StringType [ Str "a"; Str "b"; Str "a"; Str "a"; Str "b"; Null; Str "a"; Str "b" ]
+          column "h" IntType [ Int 1; Int 1; Int 1; Int 2; Int 1; Int 1; Int 1; Int 1 ]
+          column "o" StringType [ Str "x"; Str "y"; Str "x"; Null; Str "x"; Str "y"; Str "z"; Str "y" ]
+          column
               "v"
               FloatType
               [ Float 0.1
@@ -3696,18 +3690,18 @@ let private pivotNumericOn =
         [ Field.create "g" StringType
           Field.create "o" FloatType
           Field.create "v" IntType ]
-        [ col "g" StringType [ Str "a"; Str "a"; Str "b"; Str "a"; Str "b"; Str "a" ]
-          col "o" FloatType [ Int 1; Float 1.0; Int 2; Float nan; Float nan; Null ]
-          col "v" IntType [ Int 10; Int 20; Int 30; Int 40; Int 50; Int 60 ] ]
+        [ column "g" StringType [ Str "a"; Str "a"; Str "b"; Str "a"; Str "b"; Str "a" ]
+          column "o" FloatType [ Int 1; Float 1.0; Int 2; Float nan; Float nan; Null ]
+          column "v" IntType [ Int 10; Int 20; Int 30; Int 40; Int 50; Int 60 ] ]
 
 let private windowSrc =
     tbl
         [ Field.create "p" StringType
           Field.create "ord" IntType
           Field.create "v" FloatType ]
-        [ col "p" StringType (strs [ "A"; "B"; "A"; "A"; "B"; "A"; "B"; "A"; "A"; "A" ])
-          col "ord" IntType ([ 5; 1; 3; 1; 2; 2; 3; 4; 6; 7 ] |> List.map Int)
-          col
+        [ column "p" StringType (strs [ "A"; "B"; "A"; "A"; "B"; "A"; "B"; "A"; "A"; "A" ])
+          column "ord" IntType ([ 5; 1; 3; 1; 2; 2; 3; 4; 6; 7 ] |> List.map Int)
+          column
               "v"
               FloatType
               [ Float 1e16
@@ -4235,7 +4229,7 @@ let private holdingType (a: Cell) (b: Cell) : ColumnType =
 /// the two cells as the key column holds them, which is what the law's tokens are read from.
 let private partitionsBy (a: Cell) (b: Cell) : (Cell * Cell) * (string * int) list =
     let ty = holdingType a b
-    let key = col "k" ty [ a; b ]
+    let key = column "k" ty [ a; b ]
 
     let held =
         match Column.toCells key with
@@ -4248,16 +4242,16 @@ let private partitionsBy (a: Cell) (b: Cell) : (Cell * Cell) * (string * int) li
               Field.create "k" ty
               Field.create "o" StringType
               Field.create "v" IntType ]
-            [ col "id" StringType [ Str "r0"; Str "r1" ]
+            [ column "id" StringType [ Str "r0"; Str "r1" ]
               key
-              col "o" StringType [ Str "x"; Str "x" ]
-              col "v" IntType [ Int 1; Int 2 ] ]
+              column "o" StringType [ Str "x"; Str "x" ]
+              column "v" IntType [ Int 1; Int 2 ] ]
 
     // The one-row tables for the set verbs hold the cells AS THE PAIR HOLDS THEM: a cell the pair
     // drew absent (no one type holds it beside the other) is absent here too, where alone it would
     // have been held under its own type.
     let one (c: Cell) : Table =
-        tbl [ Field.create "k" ty ] [ col "k" ty [ c ] ]
+        tbl [ Field.create "k" ty ] [ column "k" ty [ c ] ]
 
     let a, b = held
 
@@ -4386,8 +4380,8 @@ let tokenEqualityTests =
 
                   // Each key column under the type that holds its two cells (Phase 423), and the
                   // row tokens read from the cells as held.
-                  let k1 = col "k1" (holdingType a1 b1) [ a1; b1 ]
-                  let k2 = col "k2" (holdingType a2 b2) [ a2; b2 ]
+                  let k1 = column "k1" (holdingType a1 b1) [ a1; b1 ]
+                  let k2 = column "k2" (holdingType a2 b2) [ a2; b2 ]
 
                   let expected =
                       match Column.toCells k1, Column.toCells k2 with
@@ -4403,7 +4397,7 @@ let tokenEqualityTests =
                           [ Field.create "k1" k1.Type
                             Field.create "k2" k2.Type
                             Field.create "v" IntType ]
-                          [ k1; k2; col "v" IntType [ Int 1; Int 2 ] ]
+                          [ k1; k2; column "v" IntType [ Int 1; Int 2 ] ]
 
                   let grouped =
                       DataFrame.evalPipeline [ GroupBy([ "k1"; "k2" ], [ { Name = "n"; Fn = Count; Of = "v" } ]) ] t
@@ -4493,8 +4487,8 @@ let tokenEqualityTests =
               let t =
                   tbl
                       [ Field.create "k" FloatType; Field.create "v" IntType ]
-                      [ col "k" FloatType [ Float -0.0; Float nan; Float 0.0; Float 2.0; Float nan ]
-                        col "v" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ]
+                      [ column "k" FloatType [ Float -0.0; Float nan; Float 0.0; Float 2.0; Float nan ]
+                        column "v" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ]
 
               let out =
                   DataFrame.evalPipeline [ GroupBy([ "k" ], [ { Name = "s"; Fn = Sum; Of = "v" } ]) ] t
@@ -4713,15 +4707,15 @@ let rec private genExpr (rng: System.Random) (depth: int) : ColExpr =
                     | _ -> familyCol family
 
                 Binary(op, operand (), operand ())
-        | 5 -> Not(sub ())
+        | 5 -> not' (sub ())
         | 6 -> Coalesce(List.init (rng.Next 4) (fun _ -> sub ()))
         | 7 -> Case(List.init (1 + rng.Next 2) (fun _ -> sub (), sub ()), sub ())
-        | 8 -> Cast(pick rng allTypes, sub ())
+        | 8 -> cast (pick rng allTypes) (sub ())
         | 9
         | 10 -> ApplyFn(pick rng allFns, List.init (rng.Next 4) (fun _ -> sub ()))
-        | 11 -> InList(sub (), List.init (rng.Next 4) (fun _ -> sub ()))
-        | 12 -> IsNull(sub ())
-        | 13 -> InParam(sub (), pick rng [ "p"; "unbound" ])
+        | 11 -> inList (sub ()) (List.init (rng.Next 4) (fun _ -> sub ()))
+        | 12 -> isNull' (sub ())
+        | 13 -> inParam (sub ()) (pick rng [ "p"; "unbound" ])
         // Phase 277 — the two rounding nodes, at a literal scale, an out-of-range one, and a
         // param scale bound to an int and to a string.
         | _ ->
@@ -4773,13 +4767,13 @@ let private oneRowTable (row: Cell[]) : Table =
         typedSchema
         |> List.mapi (fun i f ->
             let c = row[i]
-            let held = col f.Name f.Type [ c ]
+            let held = column f.Name f.Type [ c ]
 
             // A cell the declared type holds (as itself, or widened: an int in a float column is
             // the float) stays held; one it does not — drawn absent by the builder — is the
             // one-row column of its own type.
             match Column.toCells held with
-            | [ Null ] when c <> Null -> col f.Name (Cell.typeOf c |> Option.get) [ c ]
+            | [ Null ] when c <> Null -> column f.Name (Cell.typeOf c |> Option.get) [ c ]
             | _ -> held) }
 
 /// The compiled evaluation of one (expression, row), through the internal entry the steps use:
@@ -4922,7 +4916,7 @@ let compiledExprLaws =
                   let a, b = List.head cols, List.item 1 cols
                   let ai = typedSchema |> List.findIndex (fun f -> f.Name = a)
                   let bi = typedSchema |> List.findIndex (fun f -> f.Name = b)
-                  let e = Binary(op, Col a, Col b)
+                  let e = Binary(op, col a, col b)
 
                   let check (label: string) (row: Cell[]) (classify: Result<Cell, EvalError> -> bool) =
                       let expected = referenceOutcome e row
@@ -4964,23 +4958,23 @@ let compiledExprLaws =
               let t =
                   tbl
                       [ Field.create "x" IntType; Field.create "s" StringType ]
-                      [ col "x" IntType [ Int 1; Int System.Int32.MaxValue; Null; Int 3 ]
-                        col "s" StringType [ Str "a"; Str "b"; Str "c"; Str "d" ] ]
+                      [ column "x" IntType [ Int 1; Int System.Int32.MaxValue; Null; Int 3 ]
+                        column "s" StringType [ Str "a"; Str "b"; Str "c"; Str "d" ] ]
 
               // row 2 overflows; row 4 would too, and row 3 is null: row 2's error is the answer.
-              match DataFrame.evalPipeline [ Derive("y", Binary(Add, Col "x", Lit(Int 1))) ] t with
+              match DataFrame.evalPipeline [ Derive("y", col "x" .+ litInt 1) ] t with
               | Error(OverflowError d) -> Expect.stringContains d "add overflowed" "row 2's overflow"
               | other -> failtestf "expected the overflow, got %A" other
 
               // Left operand first: the arithmetic type error, not the cast's, though both fail.
-              let e = Binary(Add, Binary(Add, Col "s", Lit(Int 1)), Cast(IntType, Lit(Str "zz")))
+              let e = col "s" .+ litInt 1 .+ cast IntType (litStr "zz")
 
               match DataFrame.evalPipeline [ Derive("y", e) ] t with
               | Error(TypeError d) -> Expect.equal d "arithmetic on a non-numeric operand" "the left error"
               | other -> failtestf "expected the left operand's error, got %A" other
 
               // A filter stops at the erroring row as well, whatever rows follow.
-              match DataFrame.evalPipeline [ Filter(Binary(Gt, Col "x", Lit(Str "1"))) ] t with
+              match DataFrame.evalPipeline [ Filter(col "x" .> litStr "1") ] t with
               | Error(TypeError _) -> ()
               | other -> failtestf "expected a comparison error, got %A" other
 
@@ -4988,7 +4982,7 @@ let compiledExprLaws =
           <| fun _ ->
               // The error is a cast the string refuses (Phase 423): Core `1.0.0`'s table cannot hold
               // a string in the int column `i`, which is where the mistyped cell sat before.
-              let e = Binary(Add, Cast(IntType, Col "s"), Lit(Int 1))
+              let e = cast IntType (col "s") .+ litInt 1
               let bad = typedRow (System.Random 1)
               bad[4] <- Str "x"
               let good = typedRow (System.Random 2)
@@ -4999,7 +4993,7 @@ let compiledExprLaws =
               let frame =
                   Frame.ofTable
                       { Schema = typedSchema
-                        Columns = typedSchema |> List.mapi (fun i f -> col f.Name f.Type [ bad[i]; good[i] ]) }
+                        Columns = typedSchema |> List.mapi (fun i f -> column f.Name f.Type [ bad[i]; good[i] ]) }
 
               let compiled =
                   DataFrame.compileExpr frame (DataFrame.resolveExpr typedEnv typedSchema e)
@@ -5016,15 +5010,9 @@ let compiledExprLaws =
                   if n = 0 then
                       e
                   else
-                      nest
-                          (n - 1)
-                          (Binary(
-                              Sub,
-                              Binary(Add, e, Binary(Add, Col "j", Lit(Int 2))),
-                              Binary(Add, Col "j", Lit(Int 1))
-                          ))
+                      nest (n - 1) (e .+ (col "j" .+ litInt 2) .- (col "j" .+ litInt 1))
 
-              let e = nest 16 (Col "i")
+              let e = nest 16 (col "i")
               let rng = System.Random 129
 
               for _ in 1..200 do
@@ -5042,13 +5030,10 @@ let compiledExprLaws =
               let n = 50_000
 
               let t =
-                  tbl [ Field.create "x" IntType ] [ col "x" IntType [ for k in 1..n -> Int k ] ]
+                  tbl [ Field.create "x" IntType ] [ column "x" IntType [ for k in 1..n -> Int k ] ]
 
               let out =
-                  DataFrame.evalPipeline
-                      [ Derive("y", Binary(Mul, Col "x", Lit(Int 2)))
-                        Filter(Binary(Gt, Col "y", Lit(Int n))) ]
-                      t
+                  DataFrame.evalPipeline [ Derive("y", col "x" .* litInt 2); Filter(col "y" .> litInt n) ] t
                   |> okTable
 
               Expect.equal (Table.rowCount out) (n / 2) "half the rows pass" ]
@@ -5062,46 +5047,46 @@ let exprTypingTests =
         [ testCase "the typer decides each family from the schema and declines what the schema does not decide"
           <| fun _ ->
               let cases: (string * ColExpr * ColumnType option) list =
-                  [ "int + int", Binary(Add, Col "i", Col "j"), Some IntType
-                    "int + float", Binary(Add, Col "i", Col "f"), Some FloatType
-                    "int / int", Binary(Div, Col "i", Col "j"), Some FloatType
-                    "float mod", Binary(Mod, Col "f", Col "j"), None
-                    "str + int", Binary(Add, Col "s", Col "i"), None
-                    "int < float", Binary(Lt, Col "i", Col "f"), Some BoolType
-                    "str = str", Binary(Eq, Col "s", Col "t"), Some BoolType
-                    "str = date", Binary(Eq, Col "s", Col "d"), None
-                    "contains", Binary(Contains, Col "s", Lit(Str "a")), Some BoolType
-                    "and", Binary(And, Col "b", Col "c"), Some BoolType
-                    "and null literal", Binary(And, Col "b", Lit Null), Some BoolType
-                    "not bool", Not(Col "b"), Some BoolType
-                    "not int", Not(Col "i"), None
-                    "null literal", Lit Null, None
-                    "null + int", Binary(Add, Lit Null, Col "i"), None
-                    "param", Param "p", None
+                  [ "int + int", col "i" .+ col "j", Some IntType
+                    "int + float", col "i" .+ col "f", Some FloatType
+                    "int / int", col "i" ./ col "j", Some FloatType
+                    "float mod", col "f" .% col "j", None
+                    "str + int", col "s" .+ col "i", None
+                    "int < float", col "i" .< col "f", Some BoolType
+                    "str = str", col "s" .= col "t", Some BoolType
+                    "str = date", col "s" .= col "d", None
+                    "contains", contains (col "s") (litStr "a"), Some BoolType
+                    "and", and' (col "b") (col "c"), Some BoolType
+                    "and null literal", and' (col "b") litNull, Some BoolType
+                    "not bool", not' (col "b"), Some BoolType
+                    "not int", not' (col "i"), None
+                    "null literal", litNull, None
+                    "null + int", litNull .+ col "i", None
+                    "param", param "p", None
                     "now", Now NowGrain.Date, None
-                    "unknown column", Col "nope", None
-                    "coalesce same", Coalesce [ Col "i"; Lit(Int 0) ], Some IntType
-                    "coalesce mixed", Coalesce [ Col "i"; Col "f" ], None
-                    "case null else", Case([ Col "b", Col "s" ], Lit Null), Some StringType
-                    "case mixed arms", Case([ Col "b", Col "s" ], Col "i"), None
-                    "cast from string", Cast(IntType, Col "s"), Some IntType
-                    "in list", InList(Col "i", [ Lit(Int 1) ]), Some BoolType
-                    "is null", IsNull(Col "nope"), Some BoolType
-                    "concat", ApplyFn(Concat, [ Col "s"; Col "i" ]), Some StringType
-                    "length", ApplyFn(Length, [ Col "s" ]), Some IntType
-                    "abs int", ApplyFn(Abs, [ Col "i" ]), Some IntType
-                    "abs float", ApplyFn(Abs, [ Col "f" ]), Some FloatType
-                    "abs str", ApplyFn(Abs, [ Col "s" ]), None
-                    "round", ApplyFn(Round, [ Col "i" ]), Some FloatType
+                    "unknown column", col "nope", None
+                    "coalesce same", coalesce [ col "i"; litInt 0 ], Some IntType
+                    "coalesce mixed", coalesce [ col "i"; col "f" ], None
+                    "case null else", Case([ col "b", col "s" ], litNull), Some StringType
+                    "case mixed arms", Case([ col "b", col "s" ], col "i"), None
+                    "cast from string", cast IntType (col "s"), Some IntType
+                    "in list", inList (col "i") [ litInt 1 ], Some BoolType
+                    "is null", isNull' (col "nope"), Some BoolType
+                    "concat", ApplyFn(Concat, [ col "s"; col "i" ]), Some StringType
+                    "length", ApplyFn(Length, [ col "s" ]), Some IntType
+                    "abs int", ApplyFn(Abs, [ col "i" ]), Some IntType
+                    "abs float", ApplyFn(Abs, [ col "f" ]), Some FloatType
+                    "abs str", ApplyFn(Abs, [ col "s" ]), None
+                    "round", ApplyFn(Round, [ col "i" ]), Some FloatType
                     // Phase 413: an undecided operand may be a decimal, which `Round` answers as one.
-                    "round of a param", ApplyFn(Round, [ Param "p" ]), None
-                    "floor of an undecided join", ApplyFn(Floor, [ Coalesce [ Col "i"; Col "f" ] ]), None
-                    "ceil of a name the schema lacks", ApplyFn(Ceil, [ Col "nope" ]), None
-                    "round of a null literal", ApplyFn(Round, [ Lit Null ]), None
-                    "least mixed", ApplyFn(Least, [ Col "i"; Col "f" ]), None
-                    "greatest ints", ApplyFn(Greatest, [ Col "i"; Col "j" ]), Some IntType
-                    "wrong arity", ApplyFn(Length, [ Col "s"; Col "t" ]), None
-                    "date diff", ApplyFn(DateDiffDays, [ Col "d"; Col "e" ]), Some IntType ]
+                    "round of a param", ApplyFn(Round, [ param "p" ]), None
+                    "floor of an undecided join", ApplyFn(Floor, [ coalesce [ col "i"; col "f" ] ]), None
+                    "ceil of a name the schema lacks", ApplyFn(Ceil, [ col "nope" ]), None
+                    "round of a null literal", ApplyFn(Round, [ litNull ]), None
+                    "least mixed", ApplyFn(Least, [ col "i"; col "f" ]), None
+                    "greatest ints", ApplyFn(Greatest, [ col "i"; col "j" ]), Some IntType
+                    "wrong arity", ApplyFn(Length, [ col "s"; col "t" ]), None
+                    "date diff", ApplyFn(DateDiffDays, [ col "d"; col "e" ]), Some IntType ]
 
               for label, e, expected in cases do
                   Expect.equal (DataFrame.typeOf typedSchema e) expected label
@@ -5109,17 +5094,17 @@ let exprTypingTests =
           testCase "a Derive's column type is the typer's wherever it decides (Phase 338)"
           <| fun _ ->
               let cases: (string * ColExpr * ColumnType option) list =
-                  [ "strings", ApplyFn(Concat, [ Col "s"; Lit(Str "!") ]), Some StringType
-                    "null literal", Lit Null, Some StringType
-                    "a name the schema lacks", Col "nope", None
-                    "ints", Binary(Add, Col "i", Lit(Int 1)), Some IntType
-                    "bools", Binary(Gt, Col "i", Lit(Int 1)), Some BoolType
-                    "cast to string", Cast(StringType, Col "i"), Some StringType
-                    "cast to int", Cast(IntType, Col "s"), Some IntType
+                  [ "strings", ApplyFn(Concat, [ col "s"; litStr "!" ]), Some StringType
+                    "null literal", litNull, Some StringType
+                    "a name the schema lacks", col "nope", None
+                    "ints", col "i" .+ litInt 1, Some IntType
+                    "bools", col "i" .> litInt 1, Some BoolType
+                    "cast to string", cast StringType (col "i"), Some StringType
+                    "cast to int", cast IntType (col "s"), Some IntType
                     "an int beside a float, which the exact typer keeps apart",
-                    Case([ Binary(Gt, Col "i", Lit(Int 1)), Lit(Int 1) ], Lit(Float 2.5)),
+                    Case([ col "i" .> litInt 1, litInt 1 ], litFloat 2.5),
                     None
-                    "param", Param "p", None ]
+                    "param", param "p", None ]
 
               for label, e, expected in cases do
                   Expect.equal (DataFrame.derivedColumnType typedSchema e) expected label
@@ -5131,22 +5116,22 @@ let exprTypingTests =
                   SchemaWalk.ofPipeline people.Schema pipeline
 
               Expect.equal
-                  (SchemaWalk.typeOf "tag" (walk [ Derive("tag", ApplyFn(Upper, [ Col "dept" ])) ]))
+                  (SchemaWalk.typeOf "tag" (walk [ Derive("tag", ApplyFn(Upper, [ col "dept" ])) ]))
                   (Some StringType)
                   "an upper-cased string column is typed"
 
               Expect.equal
-                  (SchemaWalk.typeOf "raise" (walk [ Derive("raise", Binary(Add, Col "salary", Lit(Int 10))) ]))
+                  (SchemaWalk.typeOf "raise" (walk [ Derive("raise", col "salary" .+ litInt 10) ]))
                   (Some IntType)
                   "an integer derive is an int on every frame, an empty one included (Phase 338)"
 
               Expect.equal
-                  (SchemaWalk.typeOf "salary" (walk [ Derive("salary", Cast(StringType, Col "salary")) ]))
+                  (SchemaWalk.typeOf "salary" (walk [ Derive("salary", cast StringType (col "salary")) ]))
                   (Some StringType)
                   "a retype in place through a string cast is typed"
 
               Expect.equal
-                  (SchemaWalk.typeOf "n" (walk [ Derive("n", Lit Null) ]))
+                  (SchemaWalk.typeOf "n" (walk [ Derive("n", litNull) ]))
                   (Some StringType)
                   "an all-null derive is String, as the evaluator's fall-back makes it"
 
@@ -5160,16 +5145,16 @@ let exprTypingTests =
                   SchemaWalk.ofTransform SchemaWalk.noSources openKnowledge (Derive("u", expr))
                   |> SchemaWalk.typeOf "u"
 
-              Expect.equal (overOpen (Col "dept")) None "a column the walk cannot see leaves the derive undecided"
+              Expect.equal (overOpen (col "dept")) None "a column the walk cannot see leaves the derive undecided"
 
               Expect.equal
-                  (overOpen (ApplyFn(Upper, [ Col "dept" ])))
+                  (overOpen (ApplyFn(Upper, [ col "dept" ])))
                   (Some StringType)
                   "a string function of it is a string whenever it is a value"
 
               // The claim holds where it is made: an emptied frame and a full one give the walk's type.
-              for e in [ ApplyFn(Upper, [ Col "dept" ]); Binary(Add, Col "salary", Lit(Int 10)) ] do
-                  for pipeline in [ [ Filter(Lit(Bool false)); Derive("tag", e) ]; [ Derive("tag", e) ] ] do
+              for e in [ ApplyFn(Upper, [ col "dept" ]); col "salary" .+ litInt 10 ] do
+                  for pipeline in [ [ Filter(litBool false); Derive("tag", e) ]; [ Derive("tag", e) ] ] do
                       let evaluated = run pipeline |> okTable
                       let actual = evaluated.Schema |> List.find (fun f -> f.Name = "tag") |> _.Type
 
@@ -5238,7 +5223,7 @@ let exprTypingTests =
 
                           for label, pipeline, table in
                               [ "full", [ Derive("out", e) ], full
-                                "empty", [ Filter(Lit(Bool false)); Derive("out", e) ], full
+                                "empty", [ Filter(litBool false); Derive("out", e) ], full
                                 "all-null", [ Derive("out", e) ], allNull ] do
                               match DataFrame.evalPipelineInEnv env pipeline table with
                               | Error _ -> ()
@@ -5311,13 +5296,13 @@ let private frameTable (rng: System.Random) (n: int) (mistype: bool) : Table =
             let cells = [ for r in rows -> r[ci] ]
 
             if ci = 0 && mistype && n > 0 then
-                col
+                column
                     field.Name
                     StringType
                     (cells
                      |> List.map (fun c -> if c = Null then Null else Str(DataFrame.cellToken c)))
             else
-                col field.Name field.Type cells) }
+                column field.Name field.Type cells) }
 
 /// A right-hand table for the two-table verbs: the same schema, its own rows.
 let private frameOther (rng: System.Random) : Table = frameTable rng (rng.Next 5) false
@@ -5382,7 +5367,7 @@ let private genStep (rng: System.Random) : Transform =
     | 11 -> Union(Embedded(frameOther rng))
     | 12 -> Intersect(Embedded(frameOther rng))
     | 13 -> Except(Embedded(frameOther rng))
-    | _ -> Filter(Binary(Gt, Col(intCol ()), Lit(Int(rng.Next 10 - 5))))
+    | _ -> Filter(Col(intCol ()) .> litInt (rng.Next 10 - 5))
 
 let private genPipeline (rng: System.Random) : Transform list =
     [ for _ in 0 .. rng.Next 4 -> genStep rng ]
@@ -5433,9 +5418,9 @@ let frameTests =
                       [ Field.create "k" StringType
                         Field.create "v" IntType
                         Field.create "f" FloatType ]
-                      [ col "k" StringType [ Str "a"; Str "b"; Str "a" ]
-                        col "v" IntType [ Int 1; Int 2; Int 3 ]
-                        col "f" FloatType [ Float 0.5; Float 1.5; Float 2.5 ] ]
+                      [ column "k" StringType [ Str "a"; Str "b"; Str "a" ]
+                        column "v" IntType [ Int 1; Int 2; Int 3 ]
+                        column "f" FloatType [ Float 0.5; Float 1.5; Float 2.5 ] ]
 
               let good = Frame.ofTable t
               // A selection naming a row past the vectors; every vector a row short of the frame.
@@ -5454,7 +5439,7 @@ let frameTests =
                   | Error e -> failwith (DataFrame.errorString e)
 
               let reading =
-                  [ "derive", Derive("w", Binary(Add, Col "v", Lit(Int 1)))
+                  [ "derive", Derive("w", col "v" .+ litInt 1)
                     "sort", Transform.sortBy [ "v", Desc ]
                     "groupBy", GroupBy([ "k" ], [ { Name = "s"; Fn = Sum; Of = "v" } ])
                     "distinct", Distinct
@@ -5487,7 +5472,7 @@ let frameTests =
               // The filter kernel takes a span over the mask before its loop, so a short mask is
               // refused as a span is.
               Expect.equal
-                  (message (step shortVecs (Filter(Binary(Gt, Col "v", Lit(Int 1))))))
+                  (message (step shortVecs (Filter(col "v" .> litInt 1))))
                   spanMessage
                   "filter over the short vectors"
 
@@ -5496,9 +5481,7 @@ let frameTests =
               // compiled one alike. The kernels read the entry as an unset bit and DROPPED it: the
               // filter answered the two rows it could see. The message is plain concatenation, so
               // node prints the same line (the Phase 333 results file).
-              for path, predicate in
-                  [ "kernel", Binary(Gt, Col "v", Lit(Int 0))
-                    "compiled", Binary(Ge, Col "k", Lit(Str "a")) ] do
+              for path, predicate in [ "kernel", col "v" .> litInt 0; "compiled", col "k" .>= litStr "a" ] do
                   match DataFrame.evalStep DataFrame.noResolve Map.empty badSel (Filter predicate) with
                   | Error e ->
                       Expect.equal
@@ -5644,16 +5627,16 @@ let frameTests =
                         Field.create "b" IntType
                         Field.create "c" StringType ]
                     Columns =
-                      [ col "a" IntType [ Int 1; Int 2; Int 3 ]
-                        col "b" IntType [ Int 9 ]
-                        col "zzz" IntType [ Int 4; Int 5; Int 6; Int 7 ] ] }
+                      [ column "a" IntType [ Int 1; Int 2; Int 3 ]
+                        column "b" IntType [ Int 9 ]
+                        column "zzz" IntType [ Int 4; Int 5; Int 6; Int 7 ] ] }
 
               let expected: Table =
                   { Schema = t.Schema
                     Columns =
-                      [ col "a" IntType [ Int 1; Int 2; Int 3 ]
-                        col "b" IntType [ Int 9; Null; Null ]
-                        col "c" StringType [ Null; Null; Null ] ] }
+                      [ column "a" IntType [ Int 1; Int 2; Int 3 ]
+                        column "b" IntType [ Int 9; Null; Null ]
+                        column "c" StringType [ Null; Null; Null ] ] }
 
               Expect.equal (Frame.toTable (Frame.ofTable t)) expected "padded, cut and absent-as-null"
               Expect.equal (DataFrame.evalPipeline [] t) (Ok expected) "and the empty pipeline says the same"
@@ -5888,7 +5871,7 @@ let frameTests =
           <| fun _ ->
               let t: Table =
                   { Schema = [ Field.create "i" IntType; Field.create "j" IntType ]
-                    Columns = [ col "i" IntType [ Int 1; Int 2 ]; col "j" IntType [ Null; Null ] ] }
+                    Columns = [ column "i" IntType [ Int 1; Int 2 ]; column "j" IntType [ Null; Null ] ] }
 
               let schemaOf (pipeline: Transform list) =
                   match DataFrame.evalPipeline pipeline t with
@@ -5896,17 +5879,17 @@ let frameTests =
                   | Error e -> failtestf "unexpected error %A" e
 
               Expect.equal
-                  (schemaOf [ Derive("d", Binary(Add, Col "i", Col "j")) ])
+                  (schemaOf [ Derive("d", col "i" .+ col "j") ])
                   [ Field.create "i" IntType; Field.create "j" IntType; Field.create "d" IntType ]
                   "an integer kernel that answers null on every row is still an int column (Phase 338)"
 
               Expect.equal
-                  (schemaOf [ Derive("d", Binary(Add, Col "i", Lit(Int 1))) ])
+                  (schemaOf [ Derive("d", col "i" .+ litInt 1) ])
                   [ Field.create "i" IntType; Field.create "j" IntType; Field.create "d" IntType ]
                   "one present cell and it is Int"
 
               Expect.equal
-                  (schemaOf [ Derive("i", Cast(FloatType, Col "i")) ])
+                  (schemaOf [ Derive("i", cast FloatType (col "i")) ])
                   [ Field.create "i" FloatType; Field.create "j" IntType ]
                   "a Derive over an existing name replaces it in place"
 
@@ -5984,17 +5967,17 @@ let rec private kernelPred (rng: System.Random) (depth: int) : ColExpr =
         let column, constant =
             match rng.Next 5 with
             | 0 -> pick rng (colsOfType IntType), Lit(conformingCell rng IntType)
-            | 1 -> pick rng (colsOfType IntType), Param "p"
+            | 1 -> pick rng (colsOfType IntType), param "p"
             | 2 -> pick rng (colsOfType FloatType), Lit(conformingCell rng FloatType)
-            | 3 -> pick rng (colsOfType FloatType), Param "pf"
-            | _ -> pick rng (colsOfType FloatType), Lit(Int(rng.Next(-5, 6)))
+            | 3 -> pick rng (colsOfType FloatType), param "pf"
+            | _ -> pick rng (colsOfType FloatType), litInt (rng.Next(-5, 6))
 
         let op = pick rng [ Lt; Le; Gt; Ge; Eq; Ne ]
 
         if rng.Next 2 = 0 then
-            Binary(op, Col column, constant)
+            Binary(op, col column, constant)
         else
-            Binary(op, constant, Col column)
+            Binary(op, constant, col column)
     else
         Binary(pick rng [ And; Or ], kernelPred rng (depth - 1), kernelPred rng (depth - 1))
 
@@ -6005,7 +5988,7 @@ let private conformingTable (rng: System.Random) (n: int) : Table =
       Columns =
         typedSchema
         |> List.map (fun f ->
-            col f.Name f.Type [ for _ in 1..n -> if rng.Next 8 = 0 then Null else conformingCell rng f.Type ]) }
+            column f.Name f.Type [ for _ in 1..n -> if rng.Next 8 = 0 then Null else conformingCell rng f.Type ]) }
 
 /// The float aggregates a reassociated reduction would change the last bit of.
 let private floatAggs (over: string) : Agg list =
@@ -6176,10 +6159,10 @@ let preparedResultTests =
           <| fun _ ->
               let t: Table =
                   { Schema = [ Field.create "a" IntType ]
-                    Columns = [ col "a" IntType [ Int 1; Int 2; Int 3 ] ] }
+                    Columns = [ column "a" IntType [ Int 1; Int 2; Int 3 ] ] }
 
               let none = [ Project [] ]
-              let follow = [ Derive("x", Lit(Int 1)) ]
+              let follow = [ Derive("x", litInt 1) ]
 
               match DataFrame.evalToPrepared DataFrame.noResolve Map.empty none (DataFrame.prepare t) with
               | Ok kept ->
@@ -6292,19 +6275,19 @@ let sourceSeamTests =
                       [ Field.create "k" IntType
                         Field.create "x" IntType
                         Field.create "x_right" IntType ]
-                      [ col "k" IntType [ Int 1; Int 2; Int 3 ]
-                        col "x" IntType [ Int 10; Int 20; Int 30 ]
-                        col "x_right" IntType [ Int 100; Int 200; Int 300 ] ]
+                      [ column "k" IntType [ Int 1; Int 2; Int 3 ]
+                        column "x" IntType [ Int 10; Int 20; Int 30 ]
+                        column "x_right" IntType [ Int 100; Int 200; Int 300 ] ]
 
               let right =
                   tbl
                       [ Field.create "kk" IntType; Field.create "x" IntType ]
-                      [ col "kk" IntType [ Int 1; Int 3 ]; col "x" IntType [ Int 7; Int 9 ] ]
+                      [ column "kk" IntType [ Int 1; Int 3 ]; column "x" IntType [ Int 7; Int 9 ] ]
 
               let pipeline =
                   [ Join(Embedded right, [ "k", "kk" ], Left)
                     Project [ "k", "k"; "x_right", "lx"; "x_right_2", "rx" ]
-                    Filter(Not(IsNull(Col "rx"))) ]
+                    Filter(not' (isNull' (col "rx"))) ]
 
               let source = DataFrame.prepare left
 
@@ -6328,21 +6311,21 @@ let sourceSeamTests =
               let t =
                   tbl
                       [ Field.create "g" StringType; Field.create "v" IntType ]
-                      [ col "g" StringType [ Str "a"; Str "a"; Str "b" ]
-                        col "v" IntType [ Int 5; Int 6; Int 7 ] ]
+                      [ column "g" StringType [ Str "a"; Str "a"; Str "b" ]
+                        column "v" IntType [ Int 5; Int 6; Int 7 ] ]
 
               let source = DataFrame.prepare t
 
               for fn in [ RowNumber; CumulMax ] do
                   let pipeline =
-                      [ Derive("w", Col "v")
+                      [ Derive("w", col "v")
                         Window
                             { PartitionBy = [ "g" ]
                               OrderBy = [ "v", Asc ]
                               Fn = fn
                               Of = "v"
                               As = "v" }
-                        Derive("x", Col "v") ]
+                        Derive("x", col "v") ]
 
                   let whole = DataFrame.evalPrepared DataFrame.noResolve Map.empty pipeline source
 
@@ -6377,8 +6360,7 @@ let sourceSeamTests =
               let viaRows = DataFrame.prepareRows people.Schema (rowsByPosition people)
 
               let pipeline =
-                  [ Filter(Binary(Gt, Col "salary", Lit(Int 95)))
-                    Derive("pay", Binary(Add, Col "salary", Lit(Int 1))) ]
+                  [ Filter(col "salary" .> litInt 95); Derive("pay", col "salary" .+ litInt 1) ]
 
               Expect.equal
                   (tokenised (
@@ -6406,7 +6388,7 @@ let sourceSeamTests =
 
           testCase "a source read through the seam primes the incremental seam as its table does"
           <| fun _ ->
-              let pipeline = [ Derive("pay", Binary(Add, Col "salary", Lit(Int 1))) ]
+              let pipeline = [ Derive("pay", col "salary" .+ litInt 1) ]
 
               let viaRows =
                   DataFrame.prepareRows people.Schema (rowsByPosition people)
@@ -6638,9 +6620,7 @@ let kernelTests =
                         [ Derive("x", genExpr rng 2)
                           Filter(kernelPred rng 2)
                           GroupBy([ key ], floatAggs "f") ]
-                        [ Transform.sortBy [ "g", Desc ]
-                          Filter pred
-                          Derive("y", Binary(Mul, Col "f", Col "g")) ] ]
+                        [ Transform.sortBy [ "g", Desc ]; Filter pred; Derive("y", col "f" .* col "g") ] ]
 
                   for pipeline in pipelines do
                       let portable = evalWith Kernels.portable typedEnv pipeline table
@@ -6664,11 +6644,11 @@ let kernelTests =
               let table =
                   tbl
                       [ Field.create "i" IntType; Field.create "j" IntType ]
-                      [ col
+                      [ column
                             "i"
                             IntType
                             [ for p in 0 .. n - 1 -> Int(if p = early || p = late then System.Int32.MaxValue else 0) ]
-                        col
+                        column
                             "j"
                             IntType
                             [ for p in 0 .. n - 1 ->
@@ -6678,9 +6658,9 @@ let kernelTests =
                                       else p % 7
                                   ) ] ]
 
-              let sum = Binary(Add, Col "i", Col "j")
+              let sum = col "i" .+ col "j"
 
-              for pipeline in [ [ Derive("s", sum) ]; [ Filter(Binary(Gt, sum, Lit(Int 0))) ] ] do
+              for pipeline in [ [ Derive("s", sum) ]; [ Filter(sum .> litInt 0) ] ] do
                   let portable = evalWith Kernels.portable Map.empty pipeline table
                   let native = evalWith Kernels.native Map.empty pipeline table
                   Expect.equal (wireOf native) (wireOf portable) "the members agree"
@@ -6704,12 +6684,12 @@ let kernelTests =
               let table =
                   tbl
                       [ Field.create "i" IntType; Field.create "f" FloatType ]
-                      [ col "i" IntType [ for v in iv -> Int v ]
-                        col "f" FloatType [ for v in fv -> Float v ] ]
+                      [ column "i" IntType [ for v in iv -> Int v ]
+                        column "f" FloatType [ for v in fv -> Float v ] ]
 
               let pipeline =
-                  [ Filter(Binary(Ge, Col "i", Lit(Int 0)))
-                    Derive("one", Lit(Int 1))
+                  [ Filter(col "i" .>= litInt 0)
+                    Derive("one", litInt 1)
                     GroupBy([ "one" ], [ { Name = "sum"; Fn = Sum; Of = "f" } ]) ]
 
               let mutable fold = 0.0
@@ -6826,8 +6806,8 @@ let parallelKernelTests =
 
                       tbl
                           [ Field.create "rs" StringType; Field.create "rv" IntType ]
-                          [ col "rs" StringType (keys @ keys)
-                            col "rv" IntType [ for i in 1 .. 2 * keys.Length -> Int i ] ]
+                          [ column "rs" StringType (keys @ keys)
+                            column "rv" IntType [ for i in 1 .. 2 * keys.Length -> Int i ] ]
 
                   // Wide keys whose ranges cannot pack with the position (four of about `n` values
                   // each), led by a key of three values: the positions sorted under the total order.
@@ -6837,10 +6817,10 @@ let parallelKernelTests =
                             Field.create "u" IntType
                             Field.create "w" FloatType
                             Field.create "x" IntType ]
-                          [ col "v" IntType [ for _ in 1..n -> if rng.Next 9 = 0 then Null else Int(rng.Next 3) ]
-                            col "u" IntType [ for _ in 1..n -> Int(rng.Next(0, n / 2)) ]
-                            col "w" FloatType [ for _ in 1..n -> Float(float (rng.Next(0, n)) / 8.0) ]
-                            col "x" IntType [ for _ in 1..n -> Int(rng.Next()) ] ]
+                          [ column "v" IntType [ for _ in 1..n -> if rng.Next 9 = 0 then Null else Int(rng.Next 3) ]
+                            column "u" IntType [ for _ in 1..n -> Int(rng.Next(0, n / 2)) ]
+                            column "w" FloatType [ for _ in 1..n -> Float(float (rng.Next(0, n)) / 8.0) ]
+                            column "x" IntType [ for _ in 1..n -> Int(rng.Next()) ] ]
 
                   let wideOrder = [ "v", Asc; "u", Desc; "w", Asc; "x", Asc ]
 
@@ -6914,23 +6894,23 @@ let inPlaceOrderingTests =
                   | Error e -> failtestf "unexpected error %A" e
 
               let pipelines: Transform list list =
-                  [ [ Filter(Binary(Ge, Col "a", Lit(Int 0)))
+                  [ [ Filter(col "a" .>= litInt 0)
                       Transform.sortBy [ "a", Desc ]
                       Transform.limit 3 0 ]
-                    [ Filter(Binary(Ge, Col "a", Lit(Int 0)))
+                    [ Filter(col "a" .>= litInt 0)
                       Transform.sortBy [ "a", Desc ]
                       Transform.limit 3 0
-                      Derive("x", Binary(Mul, Col "b", Lit(Int 2))) ]
-                    [ Filter(Binary(Ge, Col "a", Lit(Int 0)))
+                      Derive("x", col "b" .* litInt 2) ]
+                    [ Filter(col "a" .>= litInt 0)
                       Transform.limit 4 1
-                      Derive("x", Binary(Add, Col "a", Col "b"))
-                      Filter(Binary(Gt, Col "x", Lit(Int 3))) ]
-                    [ Derive("x", Binary(Mul, Col "a", Lit(Int 3)))
+                      Derive("x", col "a" .+ col "b")
+                      Filter(col "x" .> litInt 3) ]
+                    [ Derive("x", col "a" .* litInt 3)
                       Transform.sortBy [ "b", Asc; "x", Desc ]
-                      Filter(Binary(Ne, Col "b", Lit(Int 2)))
+                      Filter(col "b" .<> litInt 2)
                       Transform.limit 5 0 ]
                     [ Transform.sortBy [ "a", Asc ]
-                      Derive("x", Binary(Sub, Col "a", Col "b"))
+                      Derive("x", col "a" .- col "b")
                       Transform.limit 2 2 ] ]
 
               let rng = System.Random 3272
@@ -6946,9 +6926,9 @@ let inPlaceOrderingTests =
                                 Field.create "a" IntType
                                 Field.create "b" IntType ]
                             Columns =
-                              [ col "id" IntType [ for i in 0 .. n - 1 -> Int i ]
-                                col "a" IntType [ for v in a -> if v = 99 then Null else Int v ]
-                                col "b" IntType [ for v in b -> Int v ] ] }
+                              [ column "id" IntType [ for i in 0 .. n - 1 -> Int i ]
+                                column "a" IntType [ for v in a -> if v = 99 then Null else Int v ]
+                                column "b" IntType [ for v in b -> Int v ] ] }
 
                       let a = Array.init n (fun _ -> if rng.Next 8 = 0 then 99 else rng.Next(-3, 6))
                       let b = Array.init n (fun _ -> rng.Next 4)
@@ -7395,10 +7375,10 @@ let private windowLaw (perturbation: DataFrame.Ordering.Perturbation) (seeds: in
                 match DataFrame.windowStep f.Cols (rows |> Array.map List.ofArray |> List.ofArray) spec with
                 | Error e -> failures.Add(sprintf "seed %d %A: the row form refused %A" seed spec e)
                 | Ok(_, outRows) ->
-                    let col = outRows |> List.map List.last |> Array.ofList
+                    let column = outRows |> List.map List.last |> Array.ofList
 
-                    if not (Array.forall2 sameCell col expected) then
-                        failures.Add(sprintf "seed %d %A: row form %A, reference %A" seed spec col expected)
+                    if not (Array.forall2 sameCell column expected) then
+                        failures.Add(sprintf "seed %d %A: row form %A, reference %A" seed spec column expected)
 
     List.ofSeq failures, cases
 
@@ -7407,7 +7387,7 @@ let private sortedColumn (ty: ColumnType) (cells: Cell list) (dir: SortDir) : Ce
     DataFrame.evalPipeline
         [ Transform.sortBy [ "x", dir ] ]
         { Schema = [ Field.create "x" ty ]
-          Columns = [ col "x" ty cells ] }
+          Columns = [ column "x" ty cells ] }
     |> okTable
     |> cellsOf "x"
 
@@ -7460,8 +7440,8 @@ let orderCodeTests =
               let t =
                   tbl
                       [ Field.create "k" IntType; Field.create "x" FloatType ]
-                      [ col "k" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ]
-                        col "x" FloatType [ Float -infinity; Float infinity; Float 1.5; Float nan; Float clearNaN ] ]
+                      [ column "k" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ]
+                        column "x" FloatType [ Float -infinity; Float infinity; Float 1.5; Float nan; Float clearNaN ] ]
 
               let spec fn =
                   { PartitionBy = []
@@ -7510,8 +7490,8 @@ let orderCodeTests =
               let t =
                   tbl
                       [ Field.create "g" IntType; Field.create "x" FloatType ]
-                      [ col "g" IntType [ Int 1; Int 1; Int 2; Int 3 ]
-                        col "x" FloatType [ Float -infinity; Float infinity; Float clearNaN; Float clearNaN ] ]
+                      [ column "g" IntType [ Int 1; Int 1; Int 2; Int 3 ]
+                        column "x" FloatType [ Float -infinity; Float infinity; Float clearNaN; Float clearNaN ] ]
 
               let aggs =
                   [ for fn in [ Sum; Mean; Min; Max; First; Last; Median ] ->
@@ -7563,7 +7543,7 @@ let orderCodeTests =
                   tbl
                       schema
                       (schema
-                       |> List.mapi (fun j f -> col f.Name f.Type (rows |> List.map (List.item j))))
+                       |> List.mapi (fun j f -> column f.Name f.Type (rows |> List.map (List.item j))))
 
               let row i =
                   [ Int i; Float -infinity; Float infinity; Float clearNaN; Float setNaN ]
@@ -7581,12 +7561,12 @@ let orderCodeTests =
                   )
 
               let derived =
-                  [ "s", Binary(Add, Col "a", Col "b")
-                    "m", Binary(Mul, Lit(Float 0.0), Col "b")
-                    "c1", Binary(Add, Col "c", Lit(Float 1.0))
-                    "cc", Col "c"
-                    "dc", Binary(Add, Col "d", Col "c")
-                    "cd", Binary(Add, Col "c", Col "d") ]
+                  [ "s", col "a" .+ col "b"
+                    "m", litFloat 0.0 .* col "b"
+                    "c1", col "c" .+ litFloat 1.0
+                    "cc", col "c"
+                    "dc", col "d" .+ col "c"
+                    "cd", col "c" .+ col "d" ]
 
               let pipeline = derived |> List.map Derive
 
@@ -7730,9 +7710,9 @@ let orderCodeTests =
                       [ Field.create "p" StringType
                         Field.create "a" IntType
                         Field.create "b" StringType ]
-                      [ col "p" StringType [ Str "x"; Str "y"; Str "x"; Str "x"; Null; Str "x"; Null ]
-                        col "a" IntType [ Int 1; Int 1; Int 2; Int 1; Int 3; Null; Int 3 ]
-                        col "b" StringType [ Str "q"; Str "q"; Str "q"; Str "q"; Null; Str "r"; Null ] ]
+                      [ column "p" StringType [ Str "x"; Str "y"; Str "x"; Str "x"; Null; Str "x"; Null ]
+                        column "a" IntType [ Int 1; Int 1; Int 2; Int 1; Int 3; Null; Int 3 ]
+                        column "b" StringType [ Str "q"; Str "q"; Str "q"; Str "q"; Null; Str "r"; Null ] ]
 
               let rows =
                   DataFrame.evalPipeline
@@ -7869,8 +7849,8 @@ let private rowHashTable
         (keys |> List.map (fun (n, ty, _) -> Field.create n ty))
         @ [ Field.create "v" IntType ]
       Columns =
-        (keys |> List.map (fun (n, ty, cells) -> col n ty cells))
-        @ [ col "v" IntType [ for i in 0 .. rows - 1 -> Int(i + offset) ] ] }
+        (keys |> List.map (fun (n, ty, cells) -> column n ty cells))
+        @ [ column "v" IntType [ for i in 0 .. rows - 1 -> Int(i + offset) ] ] }
 
 /// A table's rows, cell by cell, in schema order.
 let private rowHashRows (t: Table) : Cell list list =
@@ -7883,7 +7863,7 @@ let private rowHashOf (schema: Schema) (rows: Cell list list) : Table =
     tbl
         schema
         (schema
-         |> List.mapi (fun j f -> col f.Name f.Type (rows |> List.map (List.item j))))
+         |> List.mapi (fun j f -> column f.Name f.Type (rows |> List.map (List.item j))))
 
 /// A table rendered exactly, column by column (`exactCell`).
 let private rowHashRender (t: Table) =
@@ -8199,14 +8179,14 @@ let typedRowHashTests =
               let left =
                   tbl
                       [ Field.create "k" IntType; Field.create "v" IntType ]
-                      [ col "k" IntType [ Int 1; Int 0; Null; Int 2 ]
-                        col "v" IntType [ Int 1; Int 2; Int 3; Int 4 ] ]
+                      [ column "k" IntType [ Int 1; Int 0; Null; Int 2 ]
+                        column "v" IntType [ Int 1; Int 2; Int 3; Int 4 ] ]
 
               let right =
                   tbl
                       [ Field.create "k" FloatType; Field.create "w" IntType ]
-                      [ col "k" FloatType [ Float 1.0; Float -0.0; Null; Float nan ]
-                        col "w" IntType [ Int 10; Int 20; Int 30; Int 40 ] ]
+                      [ column "k" FloatType [ Float 1.0; Float -0.0; Null; Float nan ]
+                        column "w" IntType [ Int 10; Int 20; Int 30; Int 40 ] ]
 
               let inner =
                   DataFrame.evalPipeline [ Join(Embedded right, [ "k", "k" ], Inner) ] left
@@ -8222,7 +8202,8 @@ let typedRowHashTests =
               let nanSide =
                   tbl
                       [ Field.create "k" FloatType; Field.create "v" IntType ]
-                      [ col "k" FloatType [ Float nan; Null ]; col "v" IntType [ Int 1; Int 2 ] ]
+                      [ column "k" FloatType [ Float nan; Null ]
+                        column "v" IntType [ Int 1; Int 2 ] ]
 
               let nanJoin =
                   DataFrame.evalPipeline [ Join(Embedded right, [ "k", "k" ], Inner) ] nanSide
@@ -8307,7 +8288,7 @@ let typedRowHashTests =
                   let pivotSrc =
                       { left with
                           Schema = left.Schema @ [ Field.create "o" (onTy) ]
-                          Columns = left.Columns @ [ col "o" onTy onCells ] }
+                          Columns = left.Columns @ [ column "o" onTy onCells ] }
 
                   Expect.equal
                       (rowHashRender (
@@ -8418,7 +8399,7 @@ let temporalVectorTests =
               let t: Table =
                   { Schema = [ Field.create "d" DateType; Field.create "v" IntType ]
                     Columns =
-                      [ col
+                      [ column
                             "d"
                             DateType
                             [ Date "2026-03-01"
@@ -8426,7 +8407,7 @@ let temporalVectorTests =
                               Date "2025-12-31"
                               Date "2026-03-01"
                               Date "0001-01-01" ]
-                        col "v" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ] }
+                        column "v" IntType [ Int 1; Int 2; Int 3; Int 4; Int 5 ] ] }
 
               Expect.equal
                   (cellsOf "v" (okTable (DataFrame.evalPipeline [ Transform.sortBy [ "d", Asc ] ] t)))
@@ -8455,14 +8436,14 @@ let temporalVectorTests =
               let t: Table =
                   { Schema = [ Field.create "a" DateType; Field.create "b" DateType ]
                     Columns =
-                      [ col "a" DateType [ Date "2024-02-29"; Date "1999-12-31"; Null; Date "2026-10-10" ]
-                        col "b" DateType [ Date "2024-03-01"; Date "2000-01-01"; Date "2026-01-01"; Null ] ] }
+                      [ column "a" DateType [ Date "2024-02-29"; Date "1999-12-31"; Null; Date "2026-10-10" ]
+                        column "b" DateType [ Date "2024-03-01"; Date "2000-01-01"; Date "2026-01-01"; Null ] ] }
 
               let pipeline =
-                  [ Derive("y", ApplyFn(DatePart, [ Lit(Str "year"); Col "a" ]))
-                    Derive("m", ApplyFn(DatePart, [ Lit(Str "month"); Col "a" ]))
-                    Derive("dd", ApplyFn(DatePart, [ Lit(Str "day"); Col "a" ]))
-                    Derive("diff", ApplyFn(DateDiffDays, [ Col "a"; Col "b" ])) ]
+                  [ Derive("y", ApplyFn(DatePart, [ litStr "year"; col "a" ]))
+                    Derive("m", ApplyFn(DatePart, [ litStr "month"; col "a" ]))
+                    Derive("dd", ApplyFn(DatePart, [ litStr "day"; col "a" ]))
+                    Derive("diff", ApplyFn(DateDiffDays, [ col "a"; col "b" ])) ]
 
               let out = okTable (DataFrame.evalPipeline pipeline t)
               Expect.equal (cellsOf "y" out) [ Int 2024; Int 1999; Null; Int 2026 ] "year"
@@ -8473,14 +8454,14 @@ let temporalVectorTests =
               // The compiled tree took the day path: the date column reads as its day count.
               let frame = Frame.ofTable t
 
-              match (DataFrame.compileExpr frame (DataFrame.resolveExpr Map.empty t.Schema (Col "a"))).Node with
+              match (DataFrame.compileExpr frame (DataFrame.resolveExpr Map.empty t.Schema (col "a"))).Node with
               | DataFrame.NDays _ -> ()
               | other -> failtestf "a day node expected over the date column, got %A" other
 
               // The errors are the row evaluator's, word for word.
               for e in
-                  [ ApplyFn(DatePart, [ Lit(Str "week"); Col "a" ])
-                    ApplyFn(DatePart, [ Lit(Int 1); Col "a" ]) ] do
+                  [ ApplyFn(DatePart, [ litStr "week"; col "a" ])
+                    ApplyFn(DatePart, [ litInt 1; col "a" ]) ] do
                   let compiled =
                       DataFrame.runCompiled (DataFrame.compileExpr frame (DataFrame.resolveExpr Map.empty t.Schema e)) 0
 
@@ -8493,23 +8474,23 @@ let temporalVectorTests =
           <| fun _ ->
               let t: Table =
                   { Schema = [ Field.create "s" StringType ]
-                    Columns = [ col "s" StringType [ Str "2026-02-30" ] ] }
+                    Columns = [ column "s" StringType [ Str "2026-02-30" ] ] }
 
               Expect.equal
-                  (DataFrame.evalPipeline [ Derive("d", Cast(DateType, Col "s")) ] t)
+                  (DataFrame.evalPipeline [ Derive("d", cast DateType (col "s")) ] t)
                   (Error(TypeError "cannot cast '2026-02-30' to date: not a canonical YYYY-MM-DD"))
                   "a day that does not exist"
 
               Expect.equal
-                  (DataFrame.evalPipeline [ Derive("d", Cast(TimestampType TimeUnit.Seconds, Col "s")) ] t)
+                  (DataFrame.evalPipeline [ Derive("d", cast (TimestampType TimeUnit.Seconds) (col "s")) ] t)
                   (Error(TypeError "cannot cast '2026-02-30' to timestamp: not a canonical instant of its unit"))
                   "a date text is not an instant"
 
               let ok: Table =
                   { Schema = [ Field.create "s" StringType ]
-                    Columns = [ col "s" StringType [ Str "2026-02-28" ] ] }
+                    Columns = [ column "s" StringType [ Str "2026-02-28" ] ] }
 
-              match DataFrame.evalPipeline [ Derive("d", Cast(DateType, Col "s")) ] ok with
+              match DataFrame.evalPipeline [ Derive("d", cast DateType (col "s")) ] ok with
               | Ok out ->
                   Expect.equal (cellsOf "d" out) [ Date "2026-02-28" ] "a canonical text casts"
 

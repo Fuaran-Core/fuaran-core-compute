@@ -22,6 +22,8 @@
     <Compile Include="TransformVectorSample.fs" />
     <Compile Include="PreparedResultLaw.fs" />
     <Compile Include="DataFrameTests.fs" />
+    <!-- Phase 626: the ColExpr authoring helpers build exactly the constructors' nodes. -->
+    <Compile Include="SyntaxTests.fs" />
     <Compile Include="ConcurrentPipelinesTests.fs" />
     <!-- Phase 375: the step as data, held byte-identical to the sequential member. The law is
          Fable-clean; the node harness under benchmarks/results/ compiles it too. -->

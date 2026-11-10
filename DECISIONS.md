@@ -1,5 +1,61 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-10 — D66: hand-written `ColExpr` gets opt-in authoring helpers, `Fuaran.Compute.Syntax`, that build exactly the constructors' nodes; `And` and `Or` are functions, not operators; a builder over pipeline steps is rejected
+
+**Context.** Hand-written `ColExpr` is the verbose part of a pipeline written in F#: `Filter(Binary(Gt, Col "salary",
+Lit(Int 95)))`. A survey of this repository's suite and two downstream suites (2026-11-10, regex counts, an order of
+magnitude) found about 860 hand-written pipelines averaging about 1.6 steps, against about 580 `Binary(…)` and 530
+`Lit(…)` constructions. The steps are already short union constructors; the expressions carry the noise, and suites had
+started to mint local shorthands one file at a time.
+
+**Decided.**
+
+1. **The module.** `Fuaran.Compute.Syntax`, in namespace `Fuaran.Compute`, in the `Fuaran.Compute.DataFrame` package
+   (`src/Fuaran.Compute.DataFrame/Syntax.fs`). It is an ordinary module, opt-in by `open Fuaran.Compute.Syntax`; nothing
+   opens it automatically. FSharp.Core only, Fable-clean. Every helper returns exactly the node its constructor builds:
+   no new node, no new semantics, no evaluation, so a consumer that does not open it observes nothing.
+2. **The helpers.** Leaves: `col`, `param`, `lit` (any `Cell`), one per `Cell` case (`litInt`, `litFloat`, `litBool`,
+   `litStr`, `litDate`, `litTimestamp`, `litDecimal`, `litNull`), and `now`. One spelling per `BinOp` case: the
+   arithmetic and comparison cases are the F# operator of the same meaning behind a leading `.` (`.+ .- .* ./ .% .= .<>
+   .< .<= .> .>=`); `And` and `Or` are `and'` and `or'` (item 4); the ordinal predicates are `contains`, `startsWith` and
+   `endsWith`, taking the subject first, as `Binary` does. Then `not'`, `isNull'`, `coalesce`, `inList`, `inParam` and
+   `cast`. `litDecimal` takes the text as given, as the constructor does; `Cell.decimal` canonicalises where a caller
+   needs that.
+3. **The naming rule.** A helper takes the plain name of what it builds, lower-cased. Where that name is an FSharp.Core
+   function or an F# keyword (`not`, `isNull`, `and`, `or`), it takes a trailing prime, so an `open` never captures a
+   name FSharp.Core binds. A literal names the `Cell` case it wraps, because `int`, `float` and `string` are FSharp.Core
+   conversions. The suite holds the rule: with the module open, `not`, `isNull`, `int`, `float` and `string` still answer
+   as FSharp.Core's.
+4. **`And` and `Or` are functions, because the operator form binds wrongly.** The phase's shard assumed F# ignores a
+   leading `.` when it decides precedence, so `.&&` would bind as `&&`. It does for the arithmetic and comparison
+   operators, and does not for these two: F# reads `.&&` as an `&` operator and `.||` as a `|` operator, and places both
+   at the COMPARISON level, left-associative. Measured with `dotnet fsi` before any code was written:
+   `a .> b .&& c .< d` builds `((a > b) && c) < d`. Every operand is a `ColExpr`, so the wrong tree type-checks. No
+   operator class sits between comparison and the built-in `&&`, so no `.`-prefixed spelling is safe, and redefining
+   `&&` itself would break item 3. A two-argument function has no precedence to get wrong.
+5. **Totality.** The suite maps every `BinOp` case to its helper by a closed match. FS0025 is an error in this
+   repository (D2), so a case the algebra gains stops the build until its spelling is decided.
+6. **The identity law.** For every helper, the node it builds equals the hand-written constructor structurally and
+   renders to the same wire bytes through `DataFrameCodec.encodeExpr`. A deliberately wrong mapping (a swapped `Lt`/`Gt`
+   pair, a wrong literal) is reported by name. A roster check reads the module's public members by reflection and
+   requires the law to hold every one, so a helper added without a law is red.
+7. **Rejected: a builder over pipeline steps.** A computation expression or LINQ-style builder over `Transform` steps
+   saves nothing at about 1.6 steps per pipeline. The law, proof-oracle and conformance suites exist to pin raw nodes, and
+   a builder would put a layer in front of them. An `IQueryable` or expression-tree surface is refused outright, for the
+   reasons the downstream dataset model records against a second query language: an open expression form cannot be
+   checked default-deny, fails at translation rather than by a named refusal, and is not wire data.
+8. **The version.** `0.43.0` is tagged, so this additive surface advances the slot to `0.44.0`, a draft.
+
+**Evidence.** The `Phase 626` family in `SyntaxTests.fs`: the identity law over every `BinOp` case (read off the union by
+reflection) and every other helper, the go-red, the roster check, precedence pins (`.*` over `.+`, `.-` left-associative,
+arithmetic over comparison) and the no-capture check. `DataFrameTests.fs`, this repository's densest file, reads through
+the helpers with its suite unchanged; its local column builder `col` was renamed `column` so the helper's name is free.
+`api/Fuaran.Compute.DataFrame.txt` moves by additions only.
+
+**Not decided.** No other file migrates in this phase; each adopts as it is touched. The remaining `ColExpr` cases
+(`Case`, `ApplyFn`, `Quotient`, `Rounded`, `Convert`, `Call`, `Interpolate`, `Arg`) have no helper: their constructors
+already name what they build, and a helper earns its place by a measured saving.
+
 ## 2026-11-08 — D65: a key column is coded across threads where it repeats its values, and a join's probe side is looked up across threads
 
 **Context.** D8 (item 2) measured a grouping partitioned by key and did not keep it: each partition read its rows scattered

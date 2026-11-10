@@ -182,6 +182,28 @@ let table = first |> Result.map DataFrame.toTable // built on demand; = the eval
 `evalPrepared`'s table. Three pipelines over 100,000 rows, chained this way, take 0.38 of the
 Table-chained time on .NET and 0.58 under node.
 
+## Writing expressions by hand: `Fuaran.Compute.Syntax`
+
+`open Fuaran.Compute.Syntax` (`0.44.0`, Phase 626, `DECISIONS.md` D66) brings short helpers for hand-written
+`ColExpr`. Each builds exactly the node its constructor builds, so nothing a consumer that does not open the module
+can observe changes: the wire bytes, the evaluator and the planner see the same tree.
+
+```fsharp
+open Fuaran.Compute.Syntax
+
+// Filter(Binary(Gt, Col "salary", Lit(Int 95)))
+let rich = Filter(col "salary" .> litInt 95)
+
+// Filter(Binary(And, Binary(Eq, Col "dept", Param "dept"), Not(IsNull(Col "bonus"))))
+let chosen = Filter(and' (col "dept" .= param "dept") (not' (isNull' (col "bonus"))))
+```
+
+The arithmetic and comparison operators are the F# operators behind a leading `.` (`.+ .- .* ./ .% .= .<> .< .<= .>
+.>=`) and bind as those operators do. `And` and `Or` are the functions `and'` and `or'`, not operators: F# reads
+`.&&` and `.||` at the comparison level, so `a .> b .&& c .< d` would build a different, well-typed tree. A helper
+whose plain name FSharp.Core already binds takes a trailing prime (`not'`, `isNull'`), and a literal names its cell
+case (`litInt`, `litStr`, `litNull`), so opening the module shadows nothing.
+
 ## What incremental evaluation costs — measured, and where full evaluation wins
 
 The incremental evaluator is **certified**: its agreement with the reference evaluator is a

@@ -408,6 +408,39 @@ method Fuaran.Compute.SchemaWalk.unitOf(System.String, Fuaran.Compute.SchemaKnow
 method Fuaran.Compute.SlotModule.isParam`1(Fuaran.Compute.Slot`1<!!0>) : System.Boolean
 method Fuaran.Compute.SlotModule.paramName`1(Fuaran.Compute.Slot`1<!!0>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.SlotModule.tryLit`1(Fuaran.Compute.Slot`1<!!0>) : Microsoft.FSharp.Core.FSharpOption`1<!!0>
+method Fuaran.Compute.Syntax.and'(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.cast(Fuaran.Core.ColumnType, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.coalesce(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColExpr>) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.col(System.String) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.contains(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.endsWith(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.inList(Fuaran.Compute.ColExpr, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColExpr>) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.inParam(Fuaran.Compute.ColExpr, System.String) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.isNull'(Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.lit(Fuaran.Core.Cell) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.litBool(System.Boolean) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.litDate(System.String) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.litDecimal(System.String) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.litFloat(System.Double) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.litInt(System.Int32) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.litStr(System.String) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.litTimestamp(System.String) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.not'(Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.now(Fuaran.Compute.NowGrain) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotDivide(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotEquals(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotGreater(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotGreaterEquals(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotLess(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotLessEquals(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotLessGreater(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotMinus(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotMultiply(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotPercent(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.op_DotPlus(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.or'(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.param(System.String) : Fuaran.Compute.ColExpr
+method Fuaran.Compute.Syntax.startsWith(Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
 method Fuaran.Compute.TransformModule.limit(System.Int32, System.Int32) : Fuaran.Compute.Transform
 method Fuaran.Compute.TransformModule.paramsOf(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.TransformModule.slotParamsOf(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
@@ -426,6 +459,7 @@ property Fuaran.Compute.FitSpecModule.defaultControl : Fuaran.Compute.FitControl
 property Fuaran.Compute.FitStdErrors.Robust : Fuaran.Compute.FitStdErrors { get }
 property Fuaran.Compute.NowGrainModule.allTags : Microsoft.FSharp.Collections.FSharpList`1<System.String> { get }
 property Fuaran.Compute.RowIdentity.ordinalScheme : System.String { get }
+property Fuaran.Compute.Syntax.litNull : Fuaran.Compute.ColExpr { get }
 record-field Fuaran.Compute.Agg.Fn #1 : Fuaran.Core.AggFn
 record-field Fuaran.Compute.Agg.Name #0 : System.String
 record-field Fuaran.Compute.Agg.Of #2 : System.String
@@ -674,6 +708,7 @@ type Fuaran.Compute.StepIncrementality+MergeOrder (type)
 type Fuaran.Compute.StepIncrementality+RecomputeFrame (type)
 type Fuaran.Compute.StepIncrementality+Tags (type)
 type Fuaran.Compute.StepIncrementality+TruncateOrder (type)
+type Fuaran.Compute.Syntax (module)
 type Fuaran.Compute.TableDelta (union)
 type Fuaran.Compute.TableDelta+RowSet (type)
 type Fuaran.Compute.TableDelta+Tags (type)
