@@ -180,6 +180,16 @@ type internal Mask = bool[]
 /// The accessors of a `Mask`, in `Raw`'s two families: `get` / `set` unchecked under JavaScript
 /// (only where the loop proves the index), `at` / `put` checked, refusing as `Raw` does. On .NET
 /// each is the plain index, inlined, so the code there is the code it was.
+/// Ranges of rows a verb splits its work into (D73).
+module internal Ranges =
+
+    /// The first row of range `j` of `parts` over `n` rows; `bound n parts parts` is `n`. In floats, not
+    /// `int64`: Fable compiles `int64` to an emulated integer, and a bound in a loop's condition was
+    /// computed so per row in the browser. `n * j` is exact in a double for any row count a frame holds,
+    /// and the correctly rounded quotient of two exact integers with a divisor of at most 64 truncates to
+    /// the integer quotient, so the bounds are the `int64` ones.
+    let bound (n: int) (parts: int) (j: int) : int = int (float n * float j / float parts)
+
 module internal Mask =
 
 #if FABLE_COMPILER
@@ -1213,13 +1223,15 @@ module internal Vec =
     /// the vector is the one they build.
     let gatherRanges (run: int -> (int -> bool) -> unit) (parts: int) (v: Vec) (idx: int[]) : Vec =
         let n = idx.Length
-        let bound (j: int) = int (int64 n * int64 j / int64 parts)
+        let bound = Ranges.bound n parts
 
         let fill (a: 'T[]) (pad: 'T) : 'T[] =
             let out: 'T[] = Array.zeroCreate n
 
             run parts (fun j ->
-                for i in bound j .. bound (j + 1) - 1 do
+                let upTo = bound (j + 1)
+
+                for i in bound j .. upTo - 1 do
                     let p = idx[i]
                     out[i] <- if p >= 0 then a[p] else pad
 

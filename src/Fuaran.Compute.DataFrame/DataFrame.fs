@@ -8094,7 +8094,7 @@ module DataFrame =
             if parts <= 1 || not (s.Mergeable n) || int64 groups * int64 parts > int64 n then
                 s.FeedAll(slotOf, phys)
             else
-                let bound (j: int) = int (int64 n * int64 j / int64 parts)
+                let bound = Ranges.bound n parts
                 let fed = Array.init parts (fun j -> if j = 0 then s else s.Fresh())
 
                 k.RunMorsels parts (fun j ->
@@ -8103,8 +8103,7 @@ module DataFrame =
 
                 let slices = k.Partitions groups
 
-                let at (r: int) =
-                    int (int64 groups * int64 r / int64 slices)
+                let at = Ranges.bound groups slices
 
                 k.RunMorsels slices (fun r ->
                     for j in 1 .. parts - 1 do
@@ -8909,13 +8908,16 @@ module DataFrame =
             if parts <= 1 then
                 firstRows codes count
             else
-                let bound (j: int) = int (int64 n * int64 j / int64 parts)
+                let bound = Ranges.bound n parts
                 let tops: int[] = Array.zeroCreate parts
 
                 k.RunMorsels parts (fun j ->
                     let mutable m = -1
 
-                    for i in bound j .. bound (j + 1) - 1 do
+                    let upTo = bound (j + 1)
+
+
+                    for i in bound j .. upTo - 1 do
                         if codes[i] > m then
                             m <- codes[i]
 
@@ -8931,7 +8933,10 @@ module DataFrame =
                         if tops[r] > m then
                             m <- tops[r]
 
-                    for i in bound j .. bound (j + 1) - 1 do
+                    let upTo = bound (j + 1)
+
+
+                    for i in bound j .. upTo - 1 do
                         let c = codes[i]
 
                         if c > m then
@@ -8992,7 +8997,7 @@ module DataFrame =
             (phys: int[])
             : int[] * int[] * int[] * int[] =
             let n = phys.Length
-            let bound (j: int) = int (int64 n * int64 j / int64 parts)
+            let bound = Ranges.bound n parts
             let hasher = { coder cellEq with Hashing = true }
             let part: int[] = Array.zeroCreate n
             let counts: int[][] = Array.init parts (fun _ -> Array.zeroCreate parts)
@@ -9030,7 +9035,10 @@ module DataFrame =
             k.RunMorsels parts (fun j ->
                 let a = at[j]
 
-                for i in bound j .. bound (j + 1) - 1 do
+                let upTo = bound (j + 1)
+
+
+                for i in bound j .. upTo - 1 do
                     let q = part[i]
                     let t = a[q]
                     order[t] <- i
@@ -9060,7 +9068,7 @@ module DataFrame =
             (phys: int[])
             : int[] * int * Partitions =
             let n = phys.Length
-            let bound (j: int) = int (int64 n * int64 j / int64 parts)
+            let bound = Ranges.bound n parts
             let part, start, order, byPart = partitionByHash k parts cellEq v phys
 
             // In place: `codesInto` reads a row's physical row before it writes the row's code there.
@@ -9101,7 +9109,10 @@ module DataFrame =
             k.RunMorsels parts (fun j ->
                 let mutable m = 0
 
-                for i in bound j .. bound (j + 1) - 1 do
+                let upTo = bound (j + 1)
+
+
+                for i in bound j .. upTo - 1 do
                     m <- m + rank[i]
 
                 before[j + 1] <- m
@@ -9114,7 +9125,10 @@ module DataFrame =
             k.RunMorsels parts (fun j ->
                 let mutable r = before[j]
 
-                for i in bound j .. bound (j + 1) - 1 do
+                let upTo = bound (j + 1)
+
+
+                for i in bound j .. upTo - 1 do
                     if rank[i] = 1 then
                         rank[i] <- r
                         r <- r + 1
@@ -9172,7 +9186,7 @@ module DataFrame =
                 let codes = codesOf c v phys true
                 codes, c.Count, ByCoder c
             else
-                let bound (j: int) = int (int64 n * int64 j / int64 parts)
+                let bound = Ranges.bound n parts
                 let codes: int[] = Array.zeroCreate n
                 tablesFor c v phys
 
@@ -9220,7 +9234,9 @@ module DataFrame =
                             let map = maps[j + 1]
 
                             // A `cellEq` coder gives a null no code: `-1` in a range is `-1` in the column.
-                            for i in bound (j + 1) .. bound (j + 2) - 1 do
+                            let upTo = bound (j + 2)
+
+                            for i in bound (j + 1) .. upTo - 1 do
                                 let x = codes[i]
 
                                 if x >= 0 then
@@ -9257,8 +9273,8 @@ module DataFrame =
                     let codes: int[] = Array.zeroCreate n
 
                     k.RunMorsels parts (fun j ->
-                        let lo = int (int64 n * int64 j / int64 parts)
-                        let hi = int (int64 n * int64 (j + 1) / int64 parts)
+                        let lo = Ranges.bound n parts j
+                        let hi = Ranges.bound n parts (j + 1)
                         codesInto c v phys lo hi 0 false codes
                         true)
 
@@ -9358,8 +9374,9 @@ module DataFrame =
             let firstPhys: int[] = Array.zeroCreate groups
 
             k.RunMorsels parts (fun j ->
-                for s in
-                    int (int64 groups * int64 j / int64 parts) .. int (int64 groups * int64 (j + 1) / int64 parts) - 1 do
+                let upTo = Ranges.bound groups parts (j + 1)
+
+                for s in Ranges.bound groups parts j .. upTo - 1 do
                     firstPhys[s] <- phys[first[s]]
 
                 true)
@@ -9376,14 +9393,16 @@ module DataFrame =
         let n = rows.Length
         // Many groups: by ranges of their rows (D71), each writing only its own.
         let parts = min 16 (k.Partitions(n / 4))
-        let bound (j: int) = int (int64 n * int64 j / int64 parts)
+        let bound = Ranges.bound n parts
 
         let inline across (a: 'T[]) (m: Mask) : 'T[] * Mask =
             let vals: 'T[] = Array.zeroCreate n
             let mask: Mask = Array.zeroCreate n
 
             k.RunMorsels (max 1 parts) (fun j ->
-                for i in bound j .. bound (j + 1) - 1 do
+                let upTo = bound (j + 1)
+
+                for i in bound j .. upTo - 1 do
                     let p = Raw.get i rows
 
                     if Mask.at p m then
@@ -9538,8 +9557,7 @@ module DataFrame =
                     if Array.exists id typedAt then
                         let e = typedAt |> Array.map (fun t -> if t then Array.zeroCreate groups else null)
 
-                        let at (r: int) =
-                            int (int64 groups * int64 r / int64 slices)
+                        let at = Ranges.bound groups slices
 
                         k.RunMorsels slices (fun r ->
                             for j in 0 .. streams.Length - 1 do
@@ -9548,7 +9566,10 @@ module DataFrame =
                                     let sj = streams[j]
                                     let oj = outs[j]
 
-                                    for g in at r .. at (r + 1) - 1 do
+                                    let upTo = at (r + 1)
+
+
+                                    for g in at r .. upTo - 1 do
                                         ej[g] <- sj.Emit(g, oj)
 
                             true)
@@ -10467,7 +10488,7 @@ module DataFrame =
                 // found for the coding: at 100,000 rows 32 ranges of a cheap join's pairs and columns
                 // cost an int join 15 per cent in thread-pool overhead (D70).
                 let parts = min 16 (k.Partitions(ln / 4))
-                let lbound (j: int) = int (int64 ln * int64 j / int64 parts)
+                let lbound = Ranges.bound ln parts
                 let emits: int[] = Array.zeroCreate (parts + 1)
                 let pads: int[] = Array.zeroCreate parts
 
@@ -10475,7 +10496,10 @@ module DataFrame =
                     let mutable e = 0
                     let mutable padded = 0
 
-                    for i in lbound j .. lbound (j + 1) - 1 do
+                    let upTo = lbound (j + 1)
+
+
+                    for i in lbound j .. upTo - 1 do
                         let s = lslots[i]
 
                         if s >= 0 then
@@ -10514,7 +10538,10 @@ module DataFrame =
                 k.RunMorsels parts (fun j ->
                     let mutable at = emits[j]
 
-                    for i in lbound j .. lbound (j + 1) - 1 do
+                    let upTo = lbound (j + 1)
+
+
+                    for i in lbound j .. upTo - 1 do
                         let s = lslots[i]
 
                         if s >= 0 then

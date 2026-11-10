@@ -1,5 +1,39 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-10 — D73: a range's bound is computed in floats, and every range loop reads its bound from a local
+
+**Context.** D70 wrote a join's pair emission as loops over ranges of left rows, `for i in lbound j .. lbound (j + 1)
+- 1`, with `lbound` computed in `int64` against overflow. Fable compiles `int64` to an emulated integer and compiles
+that loop to a JavaScript loop whose condition evaluates `lbound (j + 1)` on every iteration, so under JavaScript
+every joined row paid several emulated multiplications and divisions. The portable member runs the same code over
+one range, so every join in a browser paid it. .NET evaluates a `for` loop's upper bound once, and every measurement
+of D65 to D72 was on .NET, which is how it shipped.
+
+**Found** by profiling a report workload compiled by Fable and run under node: three joins over 22,596 rows took
+most of a pipeline that ran four times its .NET time, and node's CPU profile put the emulated integer's conversions
+among the top self-times of a join.
+
+**Decided.**
+
+1. `Ranges.bound n parts j`, in `Frame.fs`, is every range's bound: `int (float n * float j / float parts)`. `n * j`
+   is exact in a double for any row count a frame holds, and the correctly rounded quotient of two exact integers
+   with a divisor of at most 64 truncates to the integer quotient, so the bounds are the `int64` ones. Every bound
+   D65 to D72 computed (the coding, the hash partitions, the aggregates' ranges and slices, the join's ranges, the
+   gather, the first rows, the key column) is it.
+2. Every loop over a range reads its upper bound from a local, so the condition JavaScript evaluates per iteration
+   is a variable.
+
+**Evidence.** A law holds `Ranges.bound` equal to the `int64` bound over row counts to a billion and every partition
+count from 1 to 64; a bound that rounds instead of truncating goes red on its first case. verify.ps1 green, the
+Fable leg included. Under node, one join of 22,596 rows repeated 400 times took 1,836 to 1,853 ms at D69, 2,557 to
+2,634 ms after D70 and 1,848 to 1,886 ms with this; the three-join pipeline 16.3 to 16.8, 21.8 to 22.3 and 16.8 to
+17.5 ms. The bounds are the same integers, so .NET's answers and paths are unchanged.
+
+**Not decided.** A browser join still runs about 230 ns a row against about 30 on .NET. Its largest remaining cost
+is Fable's checked array access in the join's emission loops (a fifth of its profile), where `Raw.get` with a range
+proof compiles to a bare index. Two `int64` bounds remain outside any per-row loop (the sort's range array and a
+window's partition test). Nothing times a join under node in the regular benchmarks; the node leg times its corpus.
+
 ## 2026-11-10 — D72: a join's slot listing and its right-only rows across threads, measured and not kept
 
 **Context.** After D70, what a combining join does on one thread besides its right table's boundary is listing each

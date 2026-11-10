@@ -6781,6 +6781,39 @@ let parallelKernelTests =
                       k.SortPositions mine cmp
                       Expect.equal mine expectedPositions (sprintf "%s sorts %d positions" name n)
 
+          // D73: a range's bound in floats is the bound in `int64` — the claim that lets the browser
+          // compute it without an emulated integer — over row counts to a billion and every partition
+          // count a kernel set answers.
+          testCase "a range's bound in floats is its bound in int64, every row count and partition count"
+          <| fun _ ->
+              let rng = System.Random 73
+
+              let counts =
+                  [ 0
+                    1
+                    2
+                    7
+                    63
+                    64
+                    65
+                    1000
+                    32767
+                    32768
+                    131072
+                    1_000_000
+                    999_999_937
+                    1_000_000_000 ]
+                  @ [ for _ in 1..200 -> rng.Next(0, 1_000_000_001) ]
+
+              for n in counts do
+                  for parts in 1..64 do
+                      for j in 0..parts do
+                          let expected = int (int64 n * int64 j / int64 parts)
+                          let actual = Ranges.bound n parts j
+
+                          if actual <> expected then
+                              failtestf "n %d, %d parts, range %d: %d, not %d" n parts j actual expected
+
           testCase "partitions: the portable member answers one, the native one below its threshold"
           <| fun _ ->
               for n in [ 0; 1; 100; Kernels.PartitionRows - 1; Kernels.PartitionRows; 10_000_000 ] do
