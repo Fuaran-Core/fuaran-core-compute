@@ -8094,6 +8094,10 @@ module DataFrame =
                 /// The decimal direct table: built from the first decimal vector the coder meets before
                 /// it has coded any decimal, at that vector's scale, when its range is small.
                 DecDirect: ScaledDirect
+                /// A hasher (D66): a coder that opens nothing and answers, for a value it has not met,
+                /// the hash of the key it would open, so that equal values hash alike. Its dictionaries
+                /// stay empty, so threads may share one.
+                Hashing: bool
                 mutable Count: int
             }
 
@@ -8134,6 +8138,7 @@ module DataFrame =
               IntDirect = Direct()
               DayDirect = Direct()
               DecDirect = ScaledDirect()
+              Hashing = false
               Count = 0 }
 #else
         let coder (cellEq: bool) : Coder =
@@ -8152,10 +8157,15 @@ module DataFrame =
               IntDirect = Direct()
               DayDirect = Direct()
               DecDirect = ScaledDirect()
+              Hashing = false
               Count = 0 }
 #endif
 
         /// `k`'s code in `d`, opening the next one when `openNew` and it has none; `-1` otherwise.
+        /// A hasher's answer for a key it has not met (D66): a hash that agrees with the dictionaries' equality.
+        let private keyHash (k: 'k) : int =
+            System.Collections.Generic.EqualityComparer<'k>.Default.GetHashCode k
+
         let inline private codeIn (c: Coder) (d: CodeMap<'k>) (k: 'k) (openNew: bool) : int =
 #if FABLE_COMPILER
             let x = d.Find k
@@ -8178,6 +8188,12 @@ module DataFrame =
                     d[k] <- x
                     c.Count <- x + 1
                     x
+                elif c.Hashing then
+                    // A hasher's count is 0. The addition keeps the call out of tail position: F# marks a
+                    // call there `.tail`, and the JIT then compiles every method this is inlined into,
+                    // `intCode` and `directCode` among them, without tiering or inlining them, which
+                    // cost an int key column five times its coding time.
+                    keyHash k + c.Count
                 else
                     -1
 #endif
@@ -8208,13 +8224,17 @@ module DataFrame =
         let private special (c: Coder) (s: int) (openNew: bool) : int =
             let x = c.Specials[s]
 
-            if x >= 0 || not openNew then
+            if x >= 0 then
                 x
-            else
+            elif openNew then
                 let y = c.Count
                 c.Specials[s] <- y
                 c.Count <- y + 1
                 y
+            elif c.Hashing then
+                s
+            else
+                -1
 
         /// A float's code: every `NaN` one value, `-0.0` with `0.0` (adding `0.0` turns `-0.0` into
         /// `0.0` and leaves every other float as it is), anything else by IEEE equality.
@@ -8782,66 +8802,246 @@ module DataFrame =
 
             first
 
-        /// `codesOf (coder cellEq) v phys true` and that coder: the same codes, across threads where
-        /// `k` partitions `phys.Length` rows and the column repeats its values (D65).
+        /// Whether `c`, its direct table chosen for `v`, codes `v`'s values through its dictionaries.
+        let private throughDictionaries (c: Coder) (v: Vec) : bool =
+            match v with
+            | Ints _ -> c.IntDirect.Table.Length = 0
+            | Dates _ -> c.DayDirect.Table.Length = 0
+            | Decs _ -> c.DecDirect.Scale < 0
+            | _ -> true
+
+        /// The TOKEN codes of `v` at `phys` and how many there are, as `codesOf (coder false) v phys
+        /// true` answers them, coded by partitions of the VALUES (D66): a column of many distinct keys,
+        /// where a merge of row ranges in row order costs what coding them does (D65).
+        ///
+        /// 1. Each row's partition is the hash of the key a hasher answers for its value. One value
+        ///    is one key, so all of a value's rows fall in one partition.
+        /// 2. Each partition's rows are listed in row order, ranges counted and scattered on the pool.
+        /// 3. Each partition is coded on the pool by a coder of its own, which numbers its values in
+        ///    the order their rows come, and no value is looked up in more than one coder.
+        /// 4. A value's code is how many values first appear before its first row: the first rows
+        ///    are marked, then counted range by range, so the codes are first-appearance codes.
+        let private codesByHash (k: KernelSet) (parts: int) (v: Vec) (phys: int[]) : int[] * int =
+            let n = phys.Length
+            let bound (j: int) = int (int64 n * int64 j / int64 parts)
+            let hasher = { coder false with Hashing = true }
+            let part: int[] = Array.zeroCreate n
+            let counts: int[][] = Array.init parts (fun _ -> Array.zeroCreate parts)
+
+            k.RunMorsels parts (fun j ->
+                let lo = bound j
+                let hi = bound (j + 1)
+                codesInto hasher v phys lo hi 0 false part
+                let cs = counts[j]
+
+                for i in lo .. hi - 1 do
+                    // Fibonacci hashing: the high bits of the product, so close ints spread.
+                    let q = int (((uint32 part[i] * 2654435769u) >>> 16) % uint32 parts)
+                    part[i] <- q
+                    cs[q] <- cs[q] + 1
+
+                true)
+
+            // Partition `q` holds `order[start[q] .. start[q + 1] - 1]`, range by range in row order.
+            let start: int[] = Array.zeroCreate (parts + 1)
+            let at: int[][] = Array.init parts (fun _ -> Array.zeroCreate parts)
+
+            for q in 0 .. parts - 1 do
+                let mutable o = start[q]
+
+                for j in 0 .. parts - 1 do
+                    at[j][q] <- o
+                    o <- o + counts[j][q]
+
+                start[q + 1] <- o
+
+            let order: int[] = Array.zeroCreate n
+            let byPart: int[] = Array.zeroCreate n
+
+            k.RunMorsels parts (fun j ->
+                let a = at[j]
+
+                for i in bound j .. bound (j + 1) - 1 do
+                    let q = part[i]
+                    let t = a[q]
+                    order[t] <- i
+                    byPart[t] <- phys[i]
+                    a[q] <- t + 1
+
+                true)
+
+            // In place: `codesInto` reads a row's physical row before it writes the row's code there.
+            let local = byPart
+            let opened: int[] = Array.zeroCreate parts
+
+            k.RunMorsels parts (fun q ->
+                let lo = start[q]
+                let hi = start[q + 1]
+                let pc = coder false
+                codesInto pc v byPart lo hi (hi - lo) true local
+                opened[q] <- pc.Count
+                true)
+
+            // Each partition's first rows, marked; `part` is free again, and every entry is rewritten.
+            let firsts: int[][] = Array.zeroCreate parts
+            let rank = part
+
+            k.RunMorsels parts (fun j ->
+                Array.fill rank (bound j) (bound (j + 1) - bound j) 0
+                true)
+
+            k.RunMorsels parts (fun q ->
+                let f = firstRowsIn local start[q] start[q + 1] opened[q]
+
+                for x in 0 .. f.Length - 1 do
+                    let r = order[f[x]]
+                    f[x] <- r
+                    rank[r] <- 1
+
+                firsts[q] <- f
+                true)
+
+            let before: int[] = Array.zeroCreate (parts + 1)
+
+            k.RunMorsels parts (fun j ->
+                let mutable m = 0
+
+                for i in bound j .. bound (j + 1) - 1 do
+                    m <- m + rank[i]
+
+                before[j + 1] <- m
+                true)
+
+            for j in 1..parts do
+                before[j] <- before[j] + before[j - 1]
+
+            // A marked row's mark is read before its rank replaces it, and each range rewrites only its own.
+            k.RunMorsels parts (fun j ->
+                let mutable r = before[j]
+
+                for i in bound j .. bound (j + 1) - 1 do
+                    if rank[i] = 1 then
+                        rank[i] <- r
+                        r <- r + 1
+
+                true)
+
+            let maps: int[][] = Array.zeroCreate parts
+
+            k.RunMorsels parts (fun q ->
+                let f = firsts[q]
+                maps[q] <- Array.init f.Length (fun x -> rank[f[x]])
+                true)
+
+            // The ranks are read; the array takes the codes, each partition writing its own rows.
+            let codes = rank
+
+            k.RunMorsels parts (fun q ->
+                let map = maps[q]
+
+                for t in start[q] .. start[q + 1] - 1 do
+                    codes[order[t]] <- map[local[t]]
+
+                true)
+
+            codes, before[parts]
+
+        /// `codesOf (coder cellEq) v phys true`: its codes, how many there are, and the coder that
+        /// holds them where one does, across threads where `k` partitions `phys.Length` rows.
         ///
         /// The coder's direct table is chosen over the whole column, as the sequential coder chooses
-        /// it, and the coder codes the first of `parts` ranges on the caller's thread. Where that
-        /// range opened more than a quarter of `n / parts` codes, merging the ranges would cost what
-        /// coding them does, and the coder codes the rest itself. Otherwise each other range is coded
-        /// on the pool by a coder of its own. Then, range by range in row order, the coder codes each
-        /// range's values at their first rows, opening those it has not met in the order the range
-        /// met them, which is the order the sequential coder opens them in; each range's codes are
-        /// rewritten through that map on the pool. Every value is coded by `codesOf`, so the codes
-        /// are the relation's.
-        let codesAcross (k: KernelSet) (cellEq: bool) (v: Vec) (phys: int[]) : int[] * Coder =
+        /// it, and the coder codes the first rows of the first of `parts` ranges on the caller's
+        /// thread. Where `byHash` and more than half of those opened a code, and the column codes
+        /// through dictionaries, the column is coded by partitions of its values (`codesByHash`, D66)
+        /// and no coder holds the codes. Otherwise the coder codes the rest of the first range. Where
+        /// that range opened more than a quarter of `n / parts` codes, merging the ranges would cost
+        /// what coding them does, and the coder codes the rest itself. Otherwise each other range is
+        /// coded on the pool by a coder of its own (D65). Then, range by range in row order, the coder
+        /// codes each range's values at their first rows, opening those it has not met in the order
+        /// the range met them, which is the order the sequential coder opens them in; each range's
+        /// codes are rewritten through that map on the pool. Every value is coded by `codesInto`, so
+        /// the codes are the relation's.
+        let private across
+            (k: KernelSet)
+            (cellEq: bool)
+            (byHash: bool)
+            (v: Vec)
+            (phys: int[])
+            : int[] * int * Coder voption =
             let n = phys.Length
             let c = coder cellEq
             let parts = k.Partitions n
 
             if parts <= 1 then
-                codesOf c v phys true, c
+                let codes = codesOf c v phys true
+                codes, c.Count, ValueSome c
             else
                 let bound (j: int) = int (int64 n * int64 j / int64 parts)
                 let codes: int[] = Array.zeroCreate n
                 tablesFor c v phys
-                codesInto c v phys 0 (bound 1) n true codes
 
-                if c.Count * parts * 4 > n then
-                    codesInto c v phys (bound 1) n (n - bound 1) true codes
+                // At most 16 partitions, from four times the rows the kernel set partitions from: on a
+                // 32-thread machine 32 partitions ran no faster at a million rows and seven times
+                // slower at 100,000 rows, where a partition held 3,000 (D66).
+                let hashParts = min 16 (k.Partitions(n / 4))
+                let mayHash = byHash && hashParts > 1
+
+                // The probe sizes its dictionary for the column, as the first range did (D65), unless
+                // the column may yet be coded by partitions; then for itself, and the rest of the
+                // range for the column.
+                let probe = min (bound 1) (4 * sample)
+                codesInto c v phys 0 probe (if mayHash then probe else n) true codes
+
+                if mayHash && c.Count * 2 > probe && throughDictionaries c v then
+                    let codes, count = codesByHash k hashParts v phys
+                    codes, count, ValueNone
                 else
-                    // Each other range by a coder of its own, with no direct table: its keys are few,
-                    // so its dictionaries are small, and a table per range would cost the column's
-                    // range in every one of them.
-                    let counts: int[] = Array.zeroCreate parts
+                    codesInto c v phys probe (bound 1) (n - probe) true codes
 
-                    k.RunMorsels (parts - 1) (fun j ->
-                        let lo = bound (j + 1)
-                        let lc = coder cellEq
-                        codesInto lc v phys lo (bound (j + 2)) (bound (j + 2) - lo) true codes
-                        counts[j + 1] <- lc.Count
-                        true)
+                    if c.Count * parts * 4 > n then
+                        codesInto c v phys (bound 1) n (n - bound 1) true codes
+                    else
+                        // Each other range by a coder of its own, with no direct table: its keys are few,
+                        // so its dictionaries are small, and a table per range would cost the column's
+                        // range in every one of them.
+                        let counts: int[] = Array.zeroCreate parts
 
-                    let maps: int[][] = Array.zeroCreate parts
+                        k.RunMorsels (parts - 1) (fun j ->
+                            let lo = bound (j + 1)
+                            let lc = coder cellEq
+                            codesInto lc v phys lo (bound (j + 2)) (bound (j + 2) - lo) true codes
+                            counts[j + 1] <- lc.Count
+                            true)
 
-                    for j in 1 .. parts - 1 do
-                        let lo = bound j
-                        let first = firstRowsIn codes lo (bound (j + 1)) counts[j]
-                        maps[j] <- codesOf c v (Array.init first.Length (fun q -> phys[first[q]])) true
+                        let maps: int[][] = Array.zeroCreate parts
 
-                    k.RunMorsels (parts - 1) (fun j ->
-                        let map = maps[j + 1]
+                        for j in 1 .. parts - 1 do
+                            let lo = bound j
+                            let first = firstRowsIn codes lo (bound (j + 1)) counts[j]
+                            maps[j] <- codesOf c v (Array.init first.Length (fun q -> phys[first[q]])) true
 
-                        // A `cellEq` coder gives a null no code: `-1` in a range is `-1` in the column.
-                        for i in bound (j + 1) .. bound (j + 2) - 1 do
-                            let x = codes[i]
+                        k.RunMorsels (parts - 1) (fun j ->
+                            let map = maps[j + 1]
 
-                            if x >= 0 then
-                                codes[i] <- map[x]
+                            // A `cellEq` coder gives a null no code: `-1` in a range is `-1` in the column.
+                            for i in bound (j + 1) .. bound (j + 2) - 1 do
+                                let x = codes[i]
 
-                        true)
+                                if x >= 0 then
+                                    codes[i] <- map[x]
 
-                codes, c
+                            true)
+
+
+                    codes, c.Count, ValueSome c
+
+        /// `codesOf (coder cellEq) v phys true` and that coder: the same codes, across threads where
+        /// `k` partitions `phys.Length` rows and the column repeats its values (D65). Never by
+        /// partitions of the values, since the coder must hold every code for a probe side to look up.
+        let codesAcross (k: KernelSet) (cellEq: bool) (v: Vec) (phys: int[]) : int[] * Coder =
+            match across k cellEq false v phys with
+            | codes, _, ValueSome c -> codes, c
+            | _ -> failwith "unreachable: a coding not by partitions keeps its coder"
 
         /// `codesOf c v phys false`, across threads where `k` partitions the rows (D65): a lookup opens
         /// no code, builds no table and sizes no dictionary, so the ranges only read the coder.
@@ -8865,7 +9065,8 @@ module DataFrame =
 
         /// The TOKEN slot of every logical row under `keyVecs` (read at `phys`), numbered from 0 in
         /// first-appearance order, and each slot's first logical row. No key is one slot holding
-        /// every row (none over no rows). Each key column is coded through `k` (`codesAcross`).
+        /// every row (none over no rows). Each key column is coded through `k` (`across`), by
+        /// partitions of its values where it has many (D66).
         let slotsWith (k: KernelSet) (keyVecs: Vec[]) (phys: int[]) : int[] * ResizeArray<int> =
             let n = phys.Length
 
@@ -8873,12 +9074,12 @@ module DataFrame =
             // One key: a fresh coder numbers its values in first-appearance order already, so the
             // codes ARE the slots.
             | [| v |] ->
-                let codes, c = codesAcross k false v phys
-                codes, firstRows codes c.Count
+                let codes, count, _ = across k false true v phys
+                codes, firstRows codes count
             | _ ->
-                let coded = keyVecs |> Array.map (fun v -> codesAcross k false v phys)
-                let codes = coded |> Array.map fst
-                let index = Index(coded |> Array.map (fun (_, c) -> c.Count), n)
+                let coded = keyVecs |> Array.map (fun v -> across k false true v phys)
+                let codes = coded |> Array.map (fun (codes, _, _) -> codes)
+                let index = Index(coded |> Array.map (fun (_, count, _) -> count), n)
                 let slotOf: int[] = Array.zeroCreate n
                 let first = ResizeArray<int>()
 

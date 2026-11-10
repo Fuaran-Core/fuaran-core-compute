@@ -1,5 +1,55 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-10 — D66: a group-by key column of many distinct keys is coded by partitions of its values
+
+**Context.** D65 codes a key column across threads by row ranges merged in row order, which pays only where the column
+repeats its values; a column of many distinct keys fell back to one thread, where a million distinct strings cost 43 ms
+to code and the grouping step about 70.
+
+**Decided.**
+
+1. **A hasher.** A coder gains `Hashing`: it opens nothing, and for a value it has not met answers the hash of the key
+   it would open (`keyHash`, `EqualityComparer<'k>.Default`'s hash, which agrees with the dictionaries' equality), and a fixed number for a special. A value is
+   one key in one dictionary, so equal values hash alike. Its dictionaries stay empty, so threads share one.
+2. **`RowHash.codesByHash`**, token relation. Each row's partition is its hash, Fibonacci-mixed, modulo the partitions;
+   each partition's rows are listed in row order (counted and scattered by range on the pool); each partition is coded on
+   the pool by a coder of its own, in place over its list; a value's code is the number of values whose first row comes
+   before its own, from the partitions' first rows marked and counted by range. Those are first-appearance codes.
+3. **When.** `across` (the shared driver behind `codesAcross` and `slotsWith`) codes a probe of the first range's first
+   4,096 rows. A column whose probe opened more than half its rows, coded through dictionaries (no direct table for its
+   carrier), from four times the kernel set's partition threshold (131,072 rows natively), is coded by at most 16
+   partitions; any other goes on as D65 had it. Only `GroupBy` and `Window` (`slotsWith`) take it: a join's build side
+   needs one coder holding every code for its probe side, so `codesAcross` never does.
+4. **The probe sizes its dictionary for the column** (D64) unless the column may be partitioned; then for itself, and the
+   rest of the first range for the column.
+
+**Two findings on the way, both in the code's comments.**
+
+- **A call in tail position cost int keys five times their coding.** The hasher's branch first ended `codeIn`, which is
+  inlined into `intCode`, `directCode` and every carrier's coding; F# marks a call there `.tail`, and the JIT compiled
+  those methods without tiering or inlining them: `codesOf` over a million int keys went from 1.8 to 9 ms on a path that
+  never hashes. `DOTNET_JitDisasmSummary` showed it ("Tier-0 switched to FullOpts", four bytes more IL). The branch now
+  adds the hasher's count, which is 0, so the call is not last.
+- **Thirty-two partitions on a 32-thread machine** ran no faster than 16 at a million rows and seven times slower than
+  sequential at 100,000 rows, a partition holding 3,000 rows; six arrays of a row each were large-object allocations on
+  every call. The cap is 16, the threshold four times the partition threshold, and the arrays three (the partition array
+  is reused for the ranks and then the codes, the row list for the partition codes).
+
+**Evidence.** The law of D65 runs the partitioned path through `nativeFrom 2` (its probe on small frames opens most of
+its rows): `slotsWith` on every member equals the portable member's slots and first rows, one key and two, every row-hash
+kind, under a selection. Three mutants go red: rows partitioned by position, ranks not offset by earlier ranges, ranges
+scattered last first. A hasher answering one hash for every value stays green, as it should: one partition is correct,
+only not parallel. verify.ps1 green, the Fable leg included (`Array.Clear` is not in Fable; `Array.fill` is). Figures in
+`benchmarks/results/2026-11-10-x64-hash-coding.md`: a grouping step over a million distinct string keys fell from about
+71 to 34.5 ms on the native member, one sitting, and from 57.1 to 31.3 ms in BenchmarkDotNet; at 100,000 rows, at one
+key per ten rows, and on the portable member it is level. The harness gains `Partitioned.StringGroupBy`.
+
+**Not decided.** A join's build side over many distinct keys still codes on one thread, and needs its probe side looked up
+in the partition's coder by the same hash. At one key per ten rows the coding gains and the step barely moves: the
+aggregates and output over 100,000 groups are the rest of it. BenchmarkDotNet's two legs an hour apart read the portable
+member's string cases 30 to 42 per cent apart on unchanged code; cases that collect over a million strings need one
+sitting, alternated, to compare.
+
 ## 2026-11-08 — D65: a key column is coded across threads where it repeats its values, and a join's probe side is looked up across threads
 
 **Context.** D8 (item 2) measured a grouping partitioned by key and did not keep it: each partition read its rows scattered
