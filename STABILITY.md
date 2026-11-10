@@ -46,9 +46,33 @@ CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
 It rewrites EVERY drifted baseline, not only the one you were looking at: stage the baselines you
 meant to move by name.
 
-## 0.44.0 — DRAFT
+## 0.44.0 — released 2026-11-10 as `v0.44.0`
+
+**Release record.** The cut-time Fable gate ran green against the candidate on 2026-11-10 in the receiving host,
+Fuaran.UI's .NET repository (`fuaran-dotnet` at `50ef0bf5`, its `main`, which pins `Fuaran.Core.*` `0.41.0`). The command
+was `pwsh -NoProfile -File tests/core-fable/core-fable.ps1 -ComputeVersion 0.44.0 -ComputeFeed <candidate folder>`. The
+five packages were packed at `0.44.0` from `f951cd6`, this commit's parent: `Fuaran.Compute.DataFrame`,
+`Fuaran.Compute.ColumnOps`, `Fuaran.Compute.PipelineQuery`, `Fuaran.Compute.Conformance` and
+`Fuaran.Compute.LinearAlgebra`. Only the compute producer was passed, because this version pins Core `0.41.0`, which the
+host's `main` already pins. Both legs were green. The compile leg transpiled 24 packages under Fable 5, with the compute
+packages at `0.44.0`. The parity leg read 451 of 451 vectors byte-identical on .NET and under node. The law vectors
+re-emitted from `f951cd6` (`dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-laws`) are byte-identical to
+the committed `conformance/laws/` files.
 
 `0.43.0` is tagged, so the first change below (Phase 626) ADVANCED the slot to `0.44.0`.
+
+### The Core floor rises to `0.41.0`, and the evaluator is faster (`DECISIONS.md` D59 to D73) — no contract change
+
+**What changed.** Every package now pins `Fuaran.Core.*` `0.41.0` (from `0.40.2`), so a consumer restoring `0.44.0`
+restores Core `0.41.0` with it. The evaluator's internals moved: a date compared on its day count and a cheaper join
+(D59, D60); a date, timestamp and decimal key coded by value (D61 to D63); key dictionaries sized from a sample (D64); a
+grouping's and a join's key coding, aggregates, emit, pairs and gather spread across threads on the native kernel set
+where the rows are many (D65 to D71); and range bounds computed without an emulated integer under JavaScript (D73). D72
+records the parts measured and not kept.
+
+**What a consumer must do.** Nothing beyond adopting Core `0.41.0`. No baseline under `api/` moved for this work, no wire
+shape moved, and every answer is the answer it was: each parallel path is held byte for byte to the sequential one by the
+suite's laws, on every member.
 
 ### Opt-in `ColExpr` authoring helpers ship as `Fuaran.Compute.Syntax` (Phase 626, `DECISIONS.md` D67) — additive
 
