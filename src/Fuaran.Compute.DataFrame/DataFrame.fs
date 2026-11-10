@@ -8883,19 +8883,64 @@ module DataFrame =
         /// Each code's first index in `codes`, whose codes are numbered from 0 in first-appearance
         /// order below `count`: the scan stops once the last code is met, so a key of five values
         /// reads a handful of rows, not every one.
-        let private firstRows (codes: int[]) (count: int) : ResizeArray<int> =
-            let first = ResizeArray<int>()
+        let private firstRows (codes: int[]) (count: int) : int[] =
+            let first: int[] = Array.zeroCreate count
             let mutable seen = 0
             let mutable i = 0
 
             while seen < count && i < codes.Length do
                 if Raw.get i codes = seen then
-                    first.Add i
+                    first[seen] <- i
                     seen <- seen + 1
 
                 i <- i + 1
 
             first
+
+        /// `firstRows`, across threads where the codes are many (D71): with codes numbered in
+        /// first-appearance order, a row is its code's first exactly when its code is above every
+        /// code before it. Each range takes its largest code; then each range, from the largest
+        /// code of the ranges before it, writes the rows whose code rises above the largest so far.
+        /// A few codes are met in the first rows, and the scan in order stops there.
+        let private firstRowsAcross (k: KernelSet) (codes: int[]) (count: int) : int[] =
+            let n = codes.Length
+            let parts = min 16 (k.Partitions(min (n / 4) count))
+
+            if parts <= 1 then
+                firstRows codes count
+            else
+                let bound (j: int) = int (int64 n * int64 j / int64 parts)
+                let tops: int[] = Array.zeroCreate parts
+
+                k.RunMorsels parts (fun j ->
+                    let mutable m = -1
+
+                    for i in bound j .. bound (j + 1) - 1 do
+                        if codes[i] > m then
+                            m <- codes[i]
+
+                    tops[j] <- m
+                    true)
+
+                let first: int[] = Array.zeroCreate count
+
+                k.RunMorsels parts (fun j ->
+                    let mutable m = -1
+
+                    for r in 0 .. j - 1 do
+                        if tops[r] > m then
+                            m <- tops[r]
+
+                    for i in bound j .. bound (j + 1) - 1 do
+                        let c = codes[i]
+
+                        if c > m then
+                            first[c] <- i
+                            m <- c
+
+                    true)
+
+                first
 
         /// `firstRows` over `codes[lo .. hi - 1]`, a range coded by a coder of its own: each of its
         /// `count` codes' first index in `codes`.
@@ -9244,7 +9289,7 @@ module DataFrame =
         /// first-appearance order, and each slot's first logical row. No key is one slot holding
         /// every row (none over no rows). Each key column is coded through `k` (`across`), by
         /// partitions of its values where it has many (D66).
-        let slotsWith (k: KernelSet) (keyVecs: Vec[]) (phys: int[]) : int[] * ResizeArray<int> =
+        let slotsWith (k: KernelSet) (keyVecs: Vec[]) (phys: int[]) : int[] * int[] =
             let n = phys.Length
 
             match keyVecs with
@@ -9252,7 +9297,7 @@ module DataFrame =
             // codes ARE the slots.
             | [| v |] ->
                 let codes, count, _ = across k false true v phys
-                codes, firstRows codes count
+                codes, firstRowsAcross k codes count
             | _ ->
                 let coded = keyVecs |> Array.map (fun v -> across k false true v phys)
                 let codes = coded |> Array.map (fun (codes, _, _) -> codes)
@@ -9267,7 +9312,7 @@ module DataFrame =
                     if s = first.Count then
                         first.Add i
 
-                slotOf, first
+                slotOf, first.ToArray()
 
         /// Two sides keyed alike: one coder per key column, the BUILD side's rows opened (in its
         /// order) and the PROBE side's looked up, so a probe row's slot is the build slot its tuple
@@ -9303,7 +9348,23 @@ module DataFrame =
     /// first PHYSICAL row (Phase 344), from which `keyColumn` reads the keys without boxing them.
     let private keySlots (k: KernelSet) (keyVecs: Vec[]) (phys: int[]) : int[] * int[] =
         let slotOf, first = RowHash.slotsWith k keyVecs phys
-        slotOf, Array.init first.Count (fun s -> phys[first[s]])
+        let groups = first.Length
+        let parts = min 16 (k.Partitions(groups / 4))
+
+        if parts <= 1 then
+            slotOf, Array.init groups (fun s -> phys[first[s]])
+        else
+            // Many groups: by ranges of slots (D71).
+            let firstPhys: int[] = Array.zeroCreate groups
+
+            k.RunMorsels parts (fun j ->
+                for s in
+                    int (int64 groups * int64 j / int64 parts) .. int (int64 groups * int64 (j + 1) / int64 parts) - 1 do
+                    firstPhys[s] <- phys[first[s]]
+
+                true)
+
+            slotOf, firstPhys
 
     /// The key column of declared type `ty` read from the vector `v` at the physical rows `rows` —
     /// exactly the vector `Vec.pack ty` packs from the cells there (Phase 344). Phase 344 measured
@@ -9311,19 +9372,25 @@ module DataFrame =
     /// a `Cell[]` per group and a boxed cell per key. Where the carrier is the type's own, the
     /// values are read straight across, a missing one left at the carrier's default as `pack`
     /// leaves it; any other pairing is packed from its cells as before.
-    let private keyColumn (ty: ColumnType) (v: Vec) (rows: int[]) : Vec =
+    let private keyColumn (k: KernelSet) (ty: ColumnType) (v: Vec) (rows: int[]) : Vec =
         let n = rows.Length
+        // Many groups: by ranges of their rows (D71), each writing only its own.
+        let parts = min 16 (k.Partitions(n / 4))
+        let bound (j: int) = int (int64 n * int64 j / int64 parts)
 
         let inline across (a: 'T[]) (m: Mask) : 'T[] * Mask =
             let vals: 'T[] = Array.zeroCreate n
             let mask: Mask = Array.zeroCreate n
 
-            for i in 0 .. n - 1 do
-                let p = Raw.get i rows
+            k.RunMorsels (max 1 parts) (fun j ->
+                for i in bound j .. bound (j + 1) - 1 do
+                    let p = Raw.get i rows
 
-                if Mask.at p m then
-                    Raw.set vals i (Raw.at p a)
-                    Mask.set mask i true
+                    if Mask.at p m then
+                        Raw.set vals i (Raw.at p a)
+                        Mask.set mask i true
+
+                true)
 
             vals, mask
 
@@ -9341,7 +9408,11 @@ module DataFrame =
             Stamps(u, secs, fraction, mask)
         // A decimal key column at its scale, as every other verb gathers one (D62): boxing each key and
         // packing the cells again parsed every group's text a second time.
-        | Decs _, DecimalType -> Vec.gather v rows
+        | Decs _, DecimalType ->
+            if parts > 1 then
+                Vec.gatherRanges k.RunMorsels parts v rows
+            else
+                Vec.gather v rows
         | _ -> Vec.pack ty (rows |> Array.map (Vec.cellAt v))
 
     /// One column of a group's members — physical rows, in member order — as the cell list an
@@ -9513,7 +9584,8 @@ module DataFrame =
                 match failed with
                 | Some e -> Error e
                 | None ->
-                    let keyOut = keyCols |> List.mapi (fun j f -> keyColumn f.Type keyVecs[j] firstPhys)
+                    let keyOut =
+                        keyCols |> List.mapi (fun j f -> keyColumn k f.Type keyVecs[j] firstPhys)
 
                     let cols = keyCols @ aggCols
 
@@ -10056,7 +10128,7 @@ module DataFrame =
         // its slot.
         let phys = Frame.physical f
         let _, first = RowHash.slotsWith Kernels.oneThread f.Vecs phys
-        Frame.select f (Array.init first.Count (fun s -> phys[first[s]]))
+        Frame.select f (Array.init first.Length (fun s -> phys[first[s]]))
 
     let private evalLimit (f: Frame) (n: int) (offset: int) : Frame =
         let phys = Frame.physical f
@@ -11468,7 +11540,9 @@ module DataFrame =
 
                             let cols = idxCols @ pivotCols
 
-                            let keyOut = idxCols |> List.mapi (fun j f -> keyColumn f.Type idxVecs[j] firstPhys)
+                            let keyOut =
+                                idxCols
+                                |> List.mapi (fun j f -> keyColumn Kernels.oneThread f.Type idxVecs[j] firstPhys)
 
                             Ok
                                 { Cols = cols

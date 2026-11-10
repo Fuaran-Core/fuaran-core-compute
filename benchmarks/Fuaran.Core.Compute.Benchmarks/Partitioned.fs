@@ -352,7 +352,7 @@ let internal byKeyGroupBy (f: Frame) : Frame =
         let lo = bounds[t]
         let physT = Array.sub rowsPhys lo (bounds[t + 1] - lo)
         let slotT, firstT = DataFrame.RowHash.slotsWith Kernels.oneThread [| keyVec |] physT
-        let groups = firstT.Count
+        let groups = firstT.Length
 
         firsts[t] <-
             Array.init groups (fun s ->

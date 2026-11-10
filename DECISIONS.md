@@ -1,5 +1,32 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-10 — D71: a grouping's first rows are found by a running maximum, and its key column written by ranges, where its groups are many
+
+**Context.** With a group a row, what follows the coding and the aggregates in a grouping is three passes on one thread:
+the scan for each slot's first row, which with every key distinct reads every row; the map from those rows to physical
+rows; and the key column read from them (`keyColumn`). A profile put the key column at 0.6 ms for a million int keys and
+1.9 ms for a million strings, of a 13 and a 22 ms step.
+
+**Decided.**
+
+1. **The first rows** (`firstRowsAcross`). With codes numbered in first-appearance order, a row is its code's first
+   exactly when its code is above every code before it. Each range takes its largest code; then each range, from the
+   largest of the ranges before it, writes the rows whose code rises above the largest so far. Only where the codes are
+   many: with few, the scan in order stops within the first rows.
+2. **The physical rows and the key column** (`keySlots`, `keyColumn`) are written by ranges of slots, each range writing
+   only its own; `keyColumn` keeps its rule, a missing key left at the carrier's default, and a decimal key column is
+   `Vec.gatherRanges`.
+3. All three take at most 16 ranges from four times the kernel set's threshold, D66's rule. `slotsWith` answers its
+   first rows as an array.
+
+**Evidence.** The row-hash law holds `slotsWith`'s first rows on every member to the portable member's, and the
+cross-member grouping law groups by many keys under a selection. Three mutants go red: the running maximum ignoring the
+ranges before (the row-hash law), a missing key written (the row-hash law), first rows not mapped to physical rows (the
+cross-member law, whose filtered frames make logical and physical rows differ). verify.ps1 green. BenchmarkDotNet: a
+grouping by a million distinct string keys fell from 26.2 to 23.0 ms on the native member; the cases the paths do not
+reach read within their spread. A same-sitting profile could not separate the two forms, its int case swinging 10 to
+15 ms between alternations; the instrument that could was BenchmarkDotNet, on the one suite that reaches all three paths.
+
 ## 2026-11-10 — D70: a join's pairs are written by ranges of its left rows, and its output columns by ranges of their rows
 
 **Context.** After D69 a million-row join on distinct string keys spent 28 of its 52 ms coding keys, 8.3 gathering its
