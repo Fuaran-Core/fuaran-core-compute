@@ -1,7 +1,7 @@
 {
   "kind": "copies",
   "producer": "fuaran-core-compute",
-  "$adoptionNote": "One kind of record is declared here. (1) The transform law vectors: this repository EMITS conformance/laws/transform-laws.json, and the shared wire-format corpus carries the declared copy the other hosts certify against; `check` is `fingerprint` because the two repositories may differ in end-of-line policy and nothing else. The record declares `against: release` and `stamp: kitVersion` (DECISIONS.md D6 (4)): the copy is graded against this repository's file at its latest release tag, not the committed draft, so a draft ahead of that release in the `kitVersion` stamp alone is reported as information rather than drift. The record carries no `lag`: it was removed once the copy became byte-identical to the source (DECISIONS.md D6, Amendment). (2) Nothing from the Fuaran.Core repository is declared here since its proof kit's 0.40.0 (that repository's Phase 536): the kit — the engine, the templates, the prover pin, the runtime floor, and the `Limits` and `Twin` models `Pipeline` reaches — arrives as ONE release asset pinned by sha256 in `proofs/proofs-kit.json` and verified before the leg runs; the models are opened read-only from it and the floor the oracle commits is held to it by the leg, so no copy exists to drift. Moving to a newer kit is moving the pin.",
+  "$adoptionNote": "One kind of record is declared here. (1) The transform law vectors: this repository EMITS conformance/laws/transform-laws.json, and the shared wire-format corpus carries the declared copy the other hosts certify against; `check` is `fingerprint` because the two repositories may differ in end-of-line policy and nothing else. The record declares `against: release` and `stamp: kitVersion` (DECISIONS.md D6 (4)): the copy is graded against this repository's file at its latest release tag, not the committed draft, so a draft ahead of that release in the `kitVersion` stamp alone is reported as information rather than drift. The record carries a `lag` again (DECISIONS.md D6, second amendment): the copy stands at the v0.41.0 release while the hosts that read the family cannot yet evaluate the vectors 0.42.0 to 0.44.0 added. (2) Nothing from the Fuaran.Core repository is declared here since its proof kit's 0.40.0 (that repository's Phase 536): the kit — the engine, the templates, the prover pin, the runtime floor, and the `Limits` and `Twin` models `Pipeline` reaches — arrives as ONE release asset pinned by sha256 in `proofs/proofs-kit.json` and verified before the leg runs; the models are opened read-only from it and the floor the oracle commits is held to it by the leg, so no copy exists to drift. Moving to a newer kit is moving the pin.",
   "records": [
     {
       "source": "conformance/laws/transform-laws.json",
@@ -11,7 +11,13 @@
       "check": "fingerprint",
       "regen": "cd Fuaran/Fuaran-Core-Compute; dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-laws ../Fuaran-UI/wire-format-fixtures",
       "against": "release",
-      "stamp": "kitVersion"
+      "stamp": "kitVersion",
+      "lag": {
+        "owner": "fuaran#2588",
+        "reason": "Held at its v0.41.0 release stamp (DECISIONS.md D6, second amendment): re-emitted at v0.44.0 it carries 194 vectors, and the Rust host fails 63 of the 190 it runs: int32 overflow refusal (fuaran#2444), the transcendentals on the pinned elementary routines (fuaran#2586), named functions and interpolated curves (fuaran#2587), and Fit and Predict (fuaran#2588). The copy lands in the same change-set as the first host that passes it, not ahead of it.",
+        "decidedBy": "fuaran#2001's landing rule (the corpus lands with the first host that reads the new vectors), applied at the v0.44.0 release",
+        "declared": "2026-11-10"
+      }
     },
     {
       "source": "conformance/laws/dataframe-parity.json",
