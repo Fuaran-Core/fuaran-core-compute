@@ -50,7 +50,7 @@ meant to move by name.
 
 `0.43.0` is tagged, so the first change below (Phase 626) ADVANCED the slot to `0.44.0`.
 
-### Opt-in `ColExpr` authoring helpers ship as `Fuaran.Compute.Syntax` (Phase 626, `DECISIONS.md` D66) — additive
+### Opt-in `ColExpr` authoring helpers ship as `Fuaran.Compute.Syntax` (Phase 626, `DECISIONS.md` D67) — additive
 
 **What changed.** `Fuaran.Compute.DataFrame` gains one module, `Fuaran.Compute.Syntax` (35 additions to
 `api/Fuaran.Compute.DataFrame.txt`, nothing removed or changed): `col`, `param`, `lit`, a literal per `Cell` case

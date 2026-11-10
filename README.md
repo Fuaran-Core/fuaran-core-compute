@@ -184,7 +184,7 @@ Table-chained time on .NET and 0.58 under node.
 
 ## Writing expressions by hand: `Fuaran.Compute.Syntax`
 
-`open Fuaran.Compute.Syntax` (`0.44.0`, Phase 626, `DECISIONS.md` D66) brings short helpers for hand-written
+`open Fuaran.Compute.Syntax` (`0.44.0`, Phase 626, `DECISIONS.md` D67) brings short helpers for hand-written
 `ColExpr`. Each builds exactly the node its constructor builds, so nothing a consumer that does not open the module
 can observe changes: the wire bytes, the evaluator and the planner see the same tree.
 

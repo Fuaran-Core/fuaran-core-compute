@@ -2,7 +2,7 @@ module Fuaran.Compute.Tests.SyntaxTests
 
 // ============================================================================
 //  Phase 626 — the `ColExpr` authoring helpers (`Fuaran.Compute.Syntax`,
-//  `DECISIONS.md` D66) build exactly the nodes the constructors build.
+//  `DECISIONS.md` D67) build exactly the nodes the constructors build.
 //
 //  Totality: a closed match from every `BinOp` case to its helper, so a case
 //  the algebra gains stops the build (FS0025 is an error here) until its

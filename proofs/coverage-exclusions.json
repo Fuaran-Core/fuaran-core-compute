@@ -695,7 +695,7 @@
         "Syntax.startsWith"
       ],
       "class": "trivial",
-      "reason": "The opt-in ColExpr authoring helpers (Phase 626, D66): each returns the one constructor node it names and computes nothing. SyntaxTests.fs holds every one structurally and wire-byte equal to its constructor."
+      "reason": "The opt-in ColExpr authoring helpers (Phase 626, D67): each returns the one constructor node it names and computes nothing. SyntaxTests.fs holds every one structurally and wire-byte equal to its constructor."
     }
   ]
 }

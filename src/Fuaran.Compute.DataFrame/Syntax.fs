@@ -3,14 +3,14 @@ namespace Fuaran.Compute
 open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Compute.Syntax (Phase 626, `DECISIONS.md` D66) — authoring helpers
+//  Fuaran.Compute.Syntax (Phase 626, `DECISIONS.md` D67) — authoring helpers
 //  for hand-written `ColExpr`, opt-in by `open Fuaran.Compute.Syntax`.
 //
 //  Every helper returns exactly the node its constructor builds and nothing
 //  else: no new node, no new semantics, no evaluation. A consumer that does not
 //  open the module cannot observe it. FSharp.Core only, Fable-clean.
 //
-//  The naming rule (D66): a helper takes the plain name of what it builds,
+//  The naming rule (D67): a helper takes the plain name of what it builds,
 //  lower-cased (`col`, `param`, `cast`, `coalesce`); where that name is already
 //  an FSharp.Core function or an F# keyword (`not`, `isNull`, `and`, `or`), it
 //  takes a trailing prime (`not'`, `isNull'`, `and'`, `or'`), so an `open`
@@ -24,7 +24,7 @@ open Fuaran.Core
 //  `And` and `Or` are NOT operators: `.&&` and `.||` are read as `&op` and
 //  `|op`, which F# places at the COMPARISON level, so `a .> b .&& c .< d`
 //  would build `((a > b) && c) < d` — a well-typed, wrong tree. They are the
-//  functions `and'` and `or'` instead (D66).
+//  functions `and'` and `or'` instead (D67).
 // ============================================================================
 
 /// Authoring helpers for `ColExpr` (Phase 626). Opt-in: `open Fuaran.Compute.Syntax`.
