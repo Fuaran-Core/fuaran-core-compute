@@ -6867,7 +6867,137 @@ let parallelKernelTests =
 
                       compared <- compared + 1
 
-              Expect.equal compared (3 * 20) "every case compared" ]
+              Expect.equal compared (3 * 20) "every case compared"
+
+          // D67: a grouping's aggregates fed by row ranges and merged in range order, and its typed
+          // streams emitted across group ranges, answer byte for byte what one feed and one emit in
+          // order do: every streamed aggregate over int, float, string, date, timestamp and decimal
+          // columns, few groups (the merge) and many (the emit), on every member. One aggregate a
+          // pipeline, so that one refusal does not make the others' comparison an error against the
+          // same error. `j` is replaced by small ints, whose sums fit, while `i`'s overflow stays; `g`
+          // by doubles whose sums round, so a sum added by ranges moves its last bits; and `x`, an
+          // int column held as text with three cells that are not ints, defers the groups those
+          // cells fall in, wherever in the rows they are.
+          testCase
+              "a grouping's aggregates fed and emitted across threads answer the sequential grouping, byte for byte"
+          <| fun _ ->
+              let rng = System.Random 67
+
+              let aggs =
+                  [ for c in [ "i"; "j"; "f"; "g" ] do
+                        for fn in [ Count; Sum; Mean; Min; Max; First; Last ] -> { Name = "out"; Fn = fn; Of = c } ]
+                  @ [ for c in [ "s"; "d"; "ts"; "m" ] do
+                          for fn in [ Count; Min; Max; First; Last ] -> { Name = "out"; Fn = fn; Of = c } ]
+                  @ [ for fn in [ Count; Sum; First; Last ] -> { Name = "out"; Fn = fn; Of = "x" } ]
+
+              let mutable compared = 0
+              let mutable answered = 0
+
+              for trial in 1..2 do
+                  let n = 2000 + rng.Next 3000
+                  let wide = conformingTable rng n
+                  let misfits = set [ for _ in 1..3 -> rng.Next n ]
+
+                  let replaced (f: Field) (c: Column) : Column =
+                      match f.Name with
+                      | "j" ->
+                          column
+                              "j"
+                              IntType
+                              [ for _ in 1..n -> if rng.Next 8 = 0 then Null else Int(rng.Next(-1000, 1000)) ]
+                      | "g" ->
+                          column
+                              "g"
+                              FloatType
+                              [ for _ in 1..n ->
+                                    if rng.Next 8 = 0 then
+                                        Null
+                                    else
+                                        Float(rng.NextDouble() * 1000.0 - 500.0) ]
+                      | _ -> c
+
+                  let table =
+                      { Schema = wide.Schema @ [ Field.create "x" IntType ]
+                        Columns =
+                          List.map2 replaced wide.Schema wide.Columns
+                          @ [ column
+                                  "x"
+                                  StringType
+                                  [ for r in 0 .. n - 1 ->
+                                        if misfits.Contains r then
+                                            Str "mistyped"
+                                        else
+                                            Str(string (r % 50)) ] ] }
+
+                  for keys in [ [ "b" ]; [ "s" ]; [ "b"; "c" ]; [ "i" ] ] do
+                      for agg in aggs do
+                          for pipeline in
+                              [ [ GroupBy(keys, [ agg ]) ]
+                                [ Filter(kernelPred rng 2); GroupBy(keys, [ agg ]) ] ] do
+                              let reference = evalWith Kernels.portable typedEnv pipeline table
+                              let portable = wireOf reference
+
+                              if Result.isOk reference then
+                                  answered <- answered + 1
+
+                              for name, k in parallelMembers do
+                                  Expect.equal
+                                      (wireOf (evalWith k typedEnv pipeline table))
+                                      portable
+                                      (sprintf
+                                          "trial %d, %d rows, keys %A, %A of %s: %s agrees"
+                                          trial
+                                          n
+                                          keys
+                                          agg.Fn
+                                          agg.Of
+                                          name)
+
+                              compared <- compared + 1
+
+              Expect.equal compared (2 * 4 * aggs.Length * 2) "every case compared"
+              Expect.isGreaterThan answered (compared * 3 / 4) "most comparisons are of answers, not of refusals"
+
+          // D67, at the stream: a typed column holds no cell of another type, so through the
+          // evaluator a deferral reaches every row or none. A boxed vector holds one anywhere, and
+          // a slot deferred by a later range only must defer after the merge.
+          testCase "a stream fed by ranges and merged answers the stream fed in order, its deferrals included"
+          <| fun _ ->
+              let rng = System.Random 671
+
+              for trial in 1..30 do
+                  let n = 200 + rng.Next 3000
+                  let groups = 1 + rng.Next 12
+                  let slotOf = Array.init n (fun _ -> rng.Next groups)
+                  let phys = Array.init n id
+                  let present () = Array.init n (fun _ -> rng.Next 9 > 0)
+
+                  let boxed =
+                      Cells(
+                          Array.init n (fun _ ->
+                              match rng.Next 40 with
+                              | 0 -> Null
+                              | 1 -> Str "x"
+                              | _ -> Int(rng.Next(-50, 50)))
+                      )
+
+                  let vectors =
+                      [ IntType, boxed
+                        IntType, Ints(Array.init n (fun _ -> rng.Next(-50, 50)), present ())
+                        FloatType, Floats(Array.init n (fun _ -> float (rng.Next 100) / 4.0), present ()) ]
+
+                  for ty, v in vectors do
+                      for fn in [ Count; Sum; Mean; Min; Max; First; Last ] do
+                          let one = DataFrame.GroupAgg.Stream(fn, ty, v, groups, DataFrame.GroupAgg.Exact)
+                          one.FeedAll(slotOf, phys)
+                          let merged = DataFrame.GroupAgg.Stream(fn, ty, v, groups, DataFrame.GroupAgg.Exact)
+                          DataFrame.GroupAgg.feedAcross (Kernels.nativeFrom 2) merged groups slotOf phys
+
+                          for g in 0 .. groups - 1 do
+                              Expect.equal
+                                  (merged.TryCell g)
+                                  (one.TryCell g)
+                                  (sprintf "trial %d, %A over %A, slot %d" trial fn ty g) ]
 
 // ---------------------------------------------------------------------------
 //  Phase 327 — the in-place refresh over a sort or a limit. A one-cell edit

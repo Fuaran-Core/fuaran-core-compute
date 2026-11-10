@@ -49,6 +49,14 @@ let step (verb: string) (_card: int) : Transform list =
     match verb with
     | "group-by" ->
         [ GroupBy([ "k" ], [ { Name = "total"; Fn = Sum; Of = "v" }; { Name = "n"; Fn = Count; Of = "v" } ]) ]
+    // D67: aggregates whose ranges merge exactly; the sum over the key, which fits int32 at every size.
+    | "group-by-int" ->
+        [ GroupBy(
+              [ "k" ],
+              [ { Name = "total"; Fn = Sum; Of = "k" }
+                { Name = "n"; Fn = Count; Of = "s" }
+                { Name = "top"; Fn = Max; Of = "s" } ]
+          ) ]
     | "sort" -> [ Transform.sortBy [ "k", Asc; "s", Asc ] ]
     | "top-n" -> [ Transform.sortBy [ "k", Asc; "s", Asc ]; Transform.limit 10 0 ]
     | "window" ->
@@ -63,7 +71,8 @@ let step (verb: string) (_card: int) : Transform list =
 /// The rows the step answers.
 let expectedRows (verb: string) (n: int) (card: int) : int =
     match verb with
-    | "group-by" -> card
+    | "group-by"
+    | "group-by-int" -> card
     | "top-n" -> 10
     | _ -> n
 
@@ -145,6 +154,10 @@ type Window() =
 /// The grouping through both members (D65): its key coded across threads on the native one.
 type GroupBy() =
     inherit Verb("group-by")
+
+/// The grouping with aggregates fed by ranges and merged on the native member (D67).
+type GroupByInt() =
+    inherit Verb("group-by-int")
 
 /// The grouping by a STRING key through both members (D66): a key the coder holds in a dictionary,
 /// so a column of many distinct keys is coded by partitions of its values on the native member.

@@ -7791,24 +7791,24 @@ module DataFrame =
                                     row[g] <- p
                         | _ -> feedCell g p
 
-            /// Fold every logical row `i` of a frame — physical row `phys[i]` — into its slot
-            /// `slotOf[i]`, in logical order. The loops a GroupBy spends its time in are written out
-            /// for the typed carriers; every other case is `Feed` row by row.
-            member this.FeedAll(slotOf: int[], phys: int[]) : unit =
-                let n = phys.Length
-                // The loops prove `i` for `phys` and, checked once here, for `slotOf` (Phase 326); the
+            /// Fold the logical rows `i` from `lo` below `hi` of a frame — physical row `phys[i]` —
+            /// into their slots `slotOf[i]`, in logical order. The loops a GroupBy spends its time in
+            /// are written out for the typed carriers; every other case is `Feed` row by row.
+            member this.FeedRange(slotOf: int[], phys: int[], lo: int, hi: int) : unit =
+                // The loops prove `i` for `phys` and `slotOf`, checked once here (Phase 326); the
                 // physical row and the slot each reads are indexes they do not prove.
-                Raw.within n slotOf
+                Raw.within hi slotOf
+                Raw.within hi phys
 
                 if mode = MDefer then
                     ()
                 elif mode = MCount && kind <> 0 && not countsNulls then
-                    for i in 0 .. n - 1 do
+                    for i in lo .. hi - 1 do
                         if Mask.at (Raw.get i phys) mask then
                             let g = Raw.get i slotOf
                             Raw.put count g (Raw.at g count + 1)
                 elif mode = MSumInt && kind = 1 then
-                    for i in 0 .. n - 1 do
+                    for i in lo .. hi - 1 do
                         let p = Raw.get i phys
 
                         if Mask.at p mask then
@@ -7816,7 +7816,7 @@ module DataFrame =
                             Raw.put longs g (Raw.at g longs + int64 (Raw.at p ints))
                             Raw.put count g (Raw.at g count + 1)
                 elif (mode = MSumFloat || mode = MMean) && kind = 2 then
-                    for i in 0 .. n - 1 do
+                    for i in lo .. hi - 1 do
                         let p = Raw.get i phys
 
                         if Mask.at p mask then
@@ -7828,14 +7828,94 @@ module DataFrame =
                             if not (isFinite f) then
                                 Raw.put nonFinite g true
                 elif mode = MSumDecimal && kind = 4 then
-                    for i in 0 .. n - 1 do
+                    for i in lo .. hi - 1 do
                         let p = Raw.get i phys
 
                         if Mask.at p mask then
                             addScaled (Raw.get i slotOf) (Raw.at p floats)
                 else
-                    for i in 0 .. n - 1 do
+                    for i in lo .. hi - 1 do
                         this.Feed(Raw.get i slotOf, Raw.get i phys)
+
+            /// `FeedRange` over every logical row.
+            member this.FeedAll(slotOf: int[], phys: int[]) : unit =
+                this.FeedRange(slotOf, phys, 0, phys.Length)
+
+            /// Whether slots fed by ranges of `rows` rows, each range into a stream of its own, and
+            /// merged in range order (`MergeFrom`) answer what one feed in row order does (D67):
+            /// counts and int sums add exactly; `First`, `Last`, `Min` and `Max` keep a row, and the
+            /// earlier range's row against the later one's is the comparison the later rows would
+            /// have made; an int `Mean` adds integers in floats, exactly while the total is below
+            /// 2^53, which `rows` of int32 values below 2^22 keep it. A float or decimal sum does not:
+            /// added by ranges, its total rounds at other places.
+            member _.Mergeable(rows: int) : bool =
+                match mode with
+                | MCount
+                | MSumInt
+                | MFirst
+                | MLast -> true
+                | MMin
+                | MMax -> kind = 1 || kind = 2
+                | MMean -> kind = 1 && rows <= 4194304
+                | _ -> false
+
+            /// A stream of the same aggregate over the same vector, fed nothing.
+            member _.Fresh() : Stream = Stream(fn, ty, v, groups, perturbation)
+
+            member internal _.Parts = struct (deferred, count, row, longs, totals)
+
+            /// Merge `o`, which was fed rows after every row this one was fed, into slots `lo` below
+            /// `hi` (D67; only where `Mergeable`).
+            member _.MergeFrom(o: Stream, lo: int, hi: int) : unit =
+                let struct (od, oc, orow, ol, ot) = o.Parts
+
+                for g in lo .. hi - 1 do
+                    if od[g] then
+                        deferred[g] <- true
+
+                    if mode = MCount then
+                        count[g] <- count[g] + oc[g]
+                    elif mode = MSumInt then
+                        longs[g] <- longs[g] + ol[g]
+                        count[g] <- count[g] + oc[g]
+                    elif mode = MMean then
+                        totals[g] <- totals[g] + ot[g]
+                        count[g] <- count[g] + oc[g]
+                    elif mode = MFirst then
+                        if row[g] < 0 then
+                            row[g] <- orow[g]
+                    elif mode = MLast then
+                        if orow[g] >= 0 then
+                            row[g] <- orow[g]
+                    elif mode = MMin || mode = MMax then
+                        count[g] <- count[g] + oc[g]
+                        let l = orow[g]
+
+                        if l >= 0 then
+                            let b = row[g]
+
+                            if
+                                b < 0
+                                || replaces (
+                                    if kind = 1 then
+                                        compare ints[b] ints[l]
+                                    else
+                                        orderFloat nanLast floats[b] floats[l]
+                                )
+                            then
+                                row[g] <- l
+
+            /// Whether `Emit` writes only an int, a float or a null of the output's carrier, so slots
+            /// may be emitted on several threads into one output (D67): a count, a sum or a mean
+            /// (its fallback answers a number or a null), and a row-keeping aggregate over an int or
+            /// float carrier. Any other may write a cell that unpacks the output.
+            member _.EmitsTyped: bool =
+                mode = MCount
+                || mode = MSumInt
+                || mode = MSumFloat
+                || mode = MMean
+                || ((mode = MFirst || mode = MLast || mode = MMin || mode = MMax)
+                    && (kind = 1 || kind = 2))
 
             /// Slot `g`'s answer, or `ValueNone` where it defers to `Column.aggregate`. A NaN answer
             /// leaves canonical (Phase 404), exactly as the deferred path's does.
@@ -8000,6 +8080,37 @@ module DataFrame =
                 if typed && typedInt then Ints(ints, mask)
                 elif typed then Floats(floats, mask)
                 else Vec.pack ty cells
+
+        /// Feed `s` every logical row, as `FeedAll` does, across threads where `k` partitions the rows,
+        /// the stream merges exactly (`Mergeable`) and the slots are few beside the rows (D67): the
+        /// first of at most 16 ranges into `s`, each other into a fresh stream, on the pool; then each
+        /// fresh stream merged into `s` in range order, slots split across the pool where they are many.
+        /// Where a slot per range for every range would outnumber the rows, the merge is the feed's
+        /// cost again, and `s` is fed alone.
+        let feedAcross (k: KernelSet) (s: Stream) (groups: int) (slotOf: int[]) (phys: int[]) : unit =
+            let n = phys.Length
+            let parts = min 16 (k.Partitions n)
+
+            if parts <= 1 || not (s.Mergeable n) || int64 groups * int64 parts > int64 n then
+                s.FeedAll(slotOf, phys)
+            else
+                let bound (j: int) = int (int64 n * int64 j / int64 parts)
+                let fed = Array.init parts (fun j -> if j = 0 then s else s.Fresh())
+
+                k.RunMorsels parts (fun j ->
+                    fed[j].FeedRange(slotOf, phys, bound j, bound (j + 1))
+                    true)
+
+                let slices = k.Partitions groups
+
+                let at (r: int) =
+                    int (int64 groups * int64 r / int64 slices)
+
+                k.RunMorsels slices (fun r ->
+                    for j in 1 .. parts - 1 do
+                        s.MergeFrom(fed[j], at r, at (r + 1))
+
+                    true)
 
     /// The typed row hasher (Phase 325): every keyed verb — `GroupBy`'s key probe, `Window`'s
     /// partitions, `Distinct`, `Intersect` / `Except`, `Pivot`'s index groups and its on-value
@@ -9259,7 +9370,7 @@ module DataFrame =
                     aggArr
                     |> Array.map (fun (a, ty, ci) ->
                         let s = GroupAgg.Stream(a.Fn, ty, f.Vecs[ci], groups, GroupAgg.Exact)
-                        s.FeedAll(slotOf, phys)
+                        GroupAgg.feedAcross k s groups slotOf phys
                         s)
 
                 let outs =
@@ -9279,6 +9390,36 @@ module DataFrame =
 
                     members[g]
 
+                // D67: where the groups are many, the streams that write only numbers emit every slot
+                // across the pool first; the loop below then reads which of their slots deferred, and
+                // emits every other stream and every deferral in group order, so the first error is
+                // the one the loop always reported.
+                let slices = k.Partitions groups
+                let typedAt = streams |> Array.map (fun s -> slices > 1 && s.EmitsTyped)
+
+                let emitted: bool[][] =
+                    if Array.exists id typedAt then
+                        let e = typedAt |> Array.map (fun t -> if t then Array.zeroCreate groups else null)
+
+                        let at (r: int) =
+                            int (int64 groups * int64 r / int64 slices)
+
+                        k.RunMorsels slices (fun r ->
+                            for j in 0 .. streams.Length - 1 do
+                                if typedAt[j] then
+                                    let ej = e[j]
+                                    let sj = streams[j]
+                                    let oj = outs[j]
+
+                                    for g in at r .. at (r + 1) - 1 do
+                                        ej[g] <- sj.Emit(g, oj)
+
+                            true)
+
+                        e
+                    else
+                        [||]
+
                 let mutable failed = None
                 let mutable g = 0
 
@@ -9286,7 +9427,13 @@ module DataFrame =
                     let mutable j = 0
 
                     while Option.isNone failed && j < aggArr.Length do
-                        if not (streams[j].Emit(g, outs[j])) then
+                        let written =
+                            if typedAt[j] then
+                                emitted[j][g]
+                            else
+                                streams[j].Emit(g, outs[j])
+
+                        if not written then
                             let a, ty, ci = aggArr[j]
 
                             match aggCells a.Fn ty (columnOf f.Vecs[ci] (membersOf g)) with
