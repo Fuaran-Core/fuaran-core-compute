@@ -10431,6 +10431,8 @@ module DataFrame =
                 let padsRight = (how = Right || how = Outer)
 
                 // Each slot's right rows, in right order: a count per slot, its start, then a fill.
+                // D72 measured this listing, and the right-only rows below, across ranges of right rows
+                // and did not keep either: a million-row join read level.
                 let starts: int[] = Array.zeroCreate (slotCount + 1)
 
                 for s in rslots do

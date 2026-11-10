@@ -7044,7 +7044,57 @@ let parallelKernelTests =
                           Expect.equal
                               (Vec.gatherRanges Kernels.native.RunMorsels parts v padded)
                               (Vec.gatherOrNull v padded)
-                              (sprintf "trial %d, %d parts: the padded gather" trial parts) ]
+                              (sprintf "trial %d, %d parts: the padded gather" trial parts)
+
+          // D72: a join over right sides of three shapes — each key once, a few keys many times, many
+          // keys several times — answers on every member what the portable member answers, for every
+          // join kind, with unmatched rows and nulls on both sides. Written for a parallel slot listing
+          // and right-only pass that D72 measured and did not keep; it holds D69's and D70's paths.
+          testCase "a join over right sides of every shape answers on every member what the sequential join answers"
+          <| fun _ ->
+              let rng = System.Random 72
+              let mutable compared = 0
+
+              for trial in 1..3 do
+                  let n = 2000 + rng.Next 2000
+
+                  let keyOf (h: int) =
+                      if h < 0 then Null else Str("k" + string h)
+
+                  let leftKeys =
+                      [ for _ in 1..n -> if rng.Next 20 = 0 then -1 else rng.Next(n + n / 4) ]
+
+                  let rights =
+                      [ "each key once", [ for h in 0 .. n - 1 -> (h * 7919) % n ]
+                        "a few keys", [ for _ in 1..n -> if rng.Next 30 = 0 then -1 else rng.Next 9 ]
+                        "many keys, repeated", [ for _ in 1..n -> if rng.Next 30 = 0 then -1 else rng.Next(n / 3) ] ]
+
+                  let left =
+                      tbl
+                          [ Field.create "k" StringType; Field.create "v" IntType ]
+                          [ column "k" StringType (leftKeys |> List.map keyOf)
+                            column "v" IntType [ for i in 1..n -> Int i ] ]
+
+                  for shape, keys in rights do
+                      let right =
+                          tbl
+                              [ Field.create "rk" StringType; Field.create "w" IntType ]
+                              [ column "rk" StringType (keys |> List.map keyOf)
+                                column "w" IntType [ for j in 1 .. keys.Length -> Int j ] ]
+
+                      for how in [ Inner; Left; Right; Outer; Semi; Anti ] do
+                          let pipeline = [ Join(Embedded right, [ "k", "rk" ], how) ]
+                          let portable = wireOf (evalWith Kernels.portable typedEnv pipeline left)
+
+                          for name, k in parallelMembers do
+                              Expect.equal
+                                  (wireOf (evalWith k typedEnv pipeline left))
+                                  portable
+                                  (sprintf "trial %d, %s, %A: %s agrees" trial shape how name)
+
+                          compared <- compared + 1
+
+              Expect.equal compared (3 * 3 * 6) "every case compared" ]
 
 // ---------------------------------------------------------------------------
 //  Phase 327 — the in-place refresh over a sort or a limit. A one-cell edit

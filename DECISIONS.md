@@ -1,5 +1,28 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-10 — D72: a join's slot listing and its right-only rows across threads, measured and not kept
+
+**Context.** After D70, what a combining join does on one thread besides its right table's boundary is listing each
+slot's right rows (a count per slot, a running sum, a fill over the right side) and, for `Right` and `Outer`, two passes
+over the right rows for the ones no left row matched.
+
+**Tried.** The listing across ranges of right rows, in three paths: where every slot holds one right row (a right side
+holding each key once, recognised by counting the rows that hold a slot), slot `s`'s row scattered to `members[s]`;
+where the slots were few beside the rows, a count per range per slot and each range filling its places in range order;
+otherwise the one pass. The right-only rows counted by ranges and written from each range's place. All exact: a law
+over right sides of the three shapes held every join kind on every member to the portable member, and three mutants
+went red (repeated keys taken as one row a slot, ranges placed last first in a slot, every range's right-only rows
+written from the first place).
+
+**Measured.** One sitting, a million-row join on distinct string keys: inner 48.5 ms before and 48.0 after with all
+three paths; outer 52.4 and 48.3 in that sitting, then, with the listing taken back and only the right-only pass kept,
+52.1 and 52.1, while the inner join, whose path the second form left as it was, moved from 49.5 to 52.4. Neither part
+reads above the spread.
+
+**Decided.** Neither ships; the join code carries a note at the listing. The law stays, renamed for what it holds: a
+join over the three right-side shapes answers on every member what the sequential join answers, which reaches D69's
+partitioned build and D70's parallel pairs and gather over shapes the frame-level law does not draw.
+
 ## 2026-11-10 — D71: a grouping's first rows are found by a running maximum, and its key column written by ranges, where its groups are many
 
 **Context.** With a group a row, what follows the coding and the aggregates in a grouping is three passes on one thread:
