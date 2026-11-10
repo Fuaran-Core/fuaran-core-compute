@@ -146,6 +146,59 @@ type Window() =
 type GroupBy() =
     inherit Verb("group-by")
 
+/// The grouping by a STRING key through both members (D66): a key the coder holds in a dictionary,
+/// so a column of many distinct keys is coded by partitions of its values on the native member.
+/// One key per ten rows, and every key distinct.
+[<MemoryDiagnoser>]
+type StringGroupBy() =
+    let mutable frame = Unchecked.defaultof<Frame>
+    let mutable set = Kernels.portable
+
+    static member Members = [ "portable"; "native" ]
+    static member Sizes = [ 100_000; 1_000_000 ]
+    static member Cardinalities = [ "tenth"; "all" ]
+
+    [<ParamsSource("Cardinalities")>]
+    member val Keys = "" with get, set
+
+    [<ParamsSource("Members")>]
+    member val Member = "" with get, set
+
+    [<ParamsSource("Sizes")>]
+    member val Rows = 0 with get, set
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        let n = this.Rows
+        let card = if this.Keys = "all" then n else n / 10
+
+        let t =
+            { Schema = [ Field.create "k" StringType; Field.create "v" FloatType ]
+              Columns =
+                [ col
+                      "k"
+                      StringType
+                      [ for i in 0 .. n - 1 -> Str("cust-" + (string (((i % card) * 7919) % card)).PadLeft(7, '0')) ]
+                  col "v" FloatType [ for i in 0 .. n - 1 -> Float(float ((i * 13) % 397) * 0.25) ] ] }
+
+        frame <- Frame.ofTable t
+        set <- kernelSet this.Member
+        let step = (step "group-by" card).Head
+
+        let answer k =
+            DataFrame.evalStepWith k DataFrame.noResolve Map.empty frame step
+            |> Corpus.orFail "group-by"
+            |> Frame.toTable
+
+        if answer set <> answer Kernels.portable then
+            failwithf "benchmark corpus: the string grouping at %d rows disagrees with the portable member" n
+
+    [<Benchmark>]
+    member _.Evaluate() =
+        (DataFrame.evalStepWith set DataFrame.noResolve Map.empty frame (step "group-by" 0).Head
+         |> Corpus.orFail "group-by")
+            .Count
+
 // ---- the grouping BY KEY, measured and not kept ---------------------------------------------
 
 /// The grouping partitioned by key across threads, as Phase 344 built it in the evaluator and then
