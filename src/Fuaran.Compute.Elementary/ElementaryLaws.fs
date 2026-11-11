@@ -236,10 +236,115 @@ module ElementaryLaws =
         else
             None
 
+    // ---- Phase 621 (DECISIONS.md D76): the pinned generator, `Rng` ----
+
+    /// A drawn 64-bit value: four drawn 16-bit limbs.
+    let private drawn64 (d: Draw) : uint64 =
+        (uint64 (d.Int 0 65535) <<< 48)
+        ||| (uint64 (d.Int 0 65535) <<< 32)
+        ||| (uint64 (d.Int 0 65535) <<< 16)
+        ||| uint64 (d.Int 0 65535)
+
+    /// SplitMix64 as its authors state it, in the host's own 64-bit integers: the twin the limb
+    /// arithmetic is held to. Answers the draw and the state it leaves.
+    let private reference (state: uint64) : struct (uint64 * uint64) =
+        let s = state + 0x9E3779B97F4A7C15UL
+        let z = (s ^^^ (s >>> 30)) * 0xBF58476D1CE4E5B9UL
+        let z = (z ^^^ (z >>> 27)) * 0x94D049BB133111EBUL
+        struct (z ^^^ (z >>> 31), s)
+
+    /// The draws the reference implementation publishes for the states 1234567 and 0, the limb product
+    /// against the host's own 64-bit product over drawn operands (D76's probe: a host whose product
+    /// collapsed would fail here), and a drawn state's first draws against the recurrence in the host's
+    /// 64-bit integers.
+    let private rngIsSplitMix64 (d: Draw) =
+        let published =
+            [ 6457827717110365317UL
+              3203168211198807973UL
+              9817491932198370423UL
+              4593380528125082431UL
+              16408922859458223821UL ]
+
+        let g = Rng.ofState 1234567UL
+        let drawnPublished = published |> List.map (fun _ -> Rng.next g)
+        let a = drawn64 d
+        let b = drawn64 d
+        let state = drawn64 d
+        let h = Rng.ofState state
+        let mutable s = state
+        let mutable diverged = None
+
+        for i in 0..7 do
+            let struct (want, s') = reference s
+            s <- s'
+            let got = Rng.next h
+
+            if got <> want && Option.isNone diverged then
+                diverged <- Some(i, got, want)
+
+        if drawnPublished <> published then
+            Some(sprintf "the draws from state 1234567 are %A" drawnPublished)
+        elif Rng.next (Rng.ofState 0UL) <> 0xE220A8397B1DCDAFUL then
+            Some "the first draw from state 0 is not 0xE220A8397B1DCDAF"
+        elif Rng.limbProduct a b <> a * b then
+            Some(sprintf "the limb product of %d and %d is %d, the host's %d" a b (Rng.limbProduct a b) (a * b))
+        else
+            diverged
+            |> Option.map (fun (i, got, want) ->
+                sprintf "draw %d from state %d is %d, the recurrence's %d" i state got want)
+
+    /// A seed's stream `k` starts at the seed's `(k + 1)`-th draw, two streams of the same arguments
+    /// draw alike and a different stream differently; `uniform53` is the draw's top fifty-three bits
+    /// times `2⁻⁵³`; `below n` is the first draw whose top thirty-two bits clear `2³² mod n`, modulo `n`.
+    let private rngStreamsAndRanges (d: Draw) =
+        let seed = int64 (drawn64 d)
+        // One draw in four names a stream past the index's first limb.
+        let stream = if d.Int 0 3 = 0 then 65536 + d.Int 0 50 else d.Int 0 300
+        let n = d.Int 1 2000000000
+        let root = Rng.ofState (uint64 seed)
+        let mutable start = 0UL
+
+        for _ in 0..stream do
+            start <- Rng.next root
+
+        let twin = Rng.ofState start
+        let g = Rng.ofSeed seed stream
+        let first = Rng.next g
+        let other = Rng.next (Rng.ofSeed seed (stream + 1))
+        let u = Rng.uniform53 g
+
+        let uTwin =
+            (ignore (Rng.next twin)
+             float (Rng.next twin >>> 11) * (1.0 / 9007199254740992.0))
+
+        let v = Rng.below g n
+        let threshold = (4294967296UL - uint64 n) % uint64 n
+        let mutable x = Rng.next twin >>> 32
+
+        while x < threshold do
+            x <- Rng.next twin >>> 32
+
+        let after = Rng.next g
+
+        if first <> Rng.next (Rng.ofState start) then
+            Some(sprintf "stream %d of seed %d does not start at the seed's draw %d" stream seed (stream + 1))
+        elif other = first then
+            Some(sprintf "streams %d and %d of seed %d draw alike" stream (stream + 1) seed)
+        elif bits u <> bits uTwin || u < 0.0 || u >= 1.0 then
+            Some(sprintf "uniform53 = %.17g, the draw's top 53 bits give %.17g" u uTwin)
+        elif v < 0 || v >= n || uint64 v <> x % uint64 n then
+            Some(sprintf "below %d = %d, the rule gives %d" n v (x % uint64 n))
+        elif after <> Rng.next twin then
+            Some(sprintf "below %d consumed a different number of draws than the rule" n)
+        else
+            None
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "every special-value row and IEEE edge of the elementary functions is answered as stated", elementaryTables
           "pow's exact cases and the sign of a negative base are the named operations, byte for byte", powExactCases
           "exp and ln invert within their one-ulp bounds", elementaryInverses
-          "the elementary functional equations hold within their bounds", elementaryIdentities ]
+          "the elementary functional equations hold within their bounds", elementaryIdentities
+          "the generator is SplitMix64: the published draws, the limb product, the recurrence", rngIsSplitMix64
+          "a seed's streams, uniform53 and below are the stated functions of the draws", rngStreamsAndRanges ]
         |> List.map (fun (name, body) -> name, law seed count body)

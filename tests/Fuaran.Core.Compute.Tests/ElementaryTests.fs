@@ -42,7 +42,7 @@ let private publishedOperations () : Set<string> =
             else
                 t.Name
 
-        if name = "Elementary" then
+        if name = "Elementary" || name = "Rng" then
             t.GetMethods(BindingFlags.Public ||| BindingFlags.Static)
             |> Array.filter (fun m -> not m.IsSpecialName)
             |> Array.map (fun m -> name + "." + m.Name)
@@ -146,12 +146,16 @@ let tests =
 
               Expect.isNonEmpty differing "the host's libm and the pinned routine differ somewhere on the vectors"
 
-          testCase "Elementary's source reaches no host mathematics call"
+          testCase "Elementary's and Rng's sources reach no host mathematics call"
           <| fun () ->
+              // Phase 621: the generator's file is held to the same rule as the functions'.
               let source =
-                  File.ReadAllText(
-                      Snapshots.repoFile (Path.Combine("src", "Fuaran.Compute.Elementary", "Elementary.fs"))
-                  )
+                  [ "Elementary.fs"; "Rng.fs" ]
+                  |> List.map (fun file ->
+                      File.ReadAllText(Snapshots.repoFile (Path.Combine("src", "Fuaran.Compute.Elementary", file))))
+                  |> String.concat
+                      "
+"
 
               let hostCall =
                   Text.RegularExpressions.Regex(
@@ -166,7 +170,7 @@ let tests =
 
               Expect.isEmpty
                   hits
-                  "no host mathematics call in Elementary.fs (the square root is the F# operator over the premise's correctly rounded root)"
+                  "no host mathematics call in Elementary.fs or Rng.fs (the square root is the F# operator over the premise's correctly rounded root)"
 
           testCase "ElementaryOperations.exactness classifies exactly the published operations, every one Pinned"
           <| fun () ->

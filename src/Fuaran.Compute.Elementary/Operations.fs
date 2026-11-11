@@ -3,7 +3,8 @@ namespace Fuaran.Compute.Elementary
 /// Every public operation of this package with its exactness class (DECISIONS.md D43, D52), as data a
 /// schema walk reads through: a column computed by an operation listed here carries that operation's
 /// class. Every operation is `Pinned` — built from `+ − × ÷ √` alone, in one order, with no fused
-/// multiply-add and no host mathematics call anywhere — so each answers the same bits on every
+/// multiply-add and no host mathematics call anywhere (the generator's, `Rng`, from exact integer
+/// arithmetic on 16-bit limbs; DECISIONS.md D76) — so each answers the same bits on every
 /// conformant host. The suite holds the table to the package's public surface both ways: an
 /// operation published without a row, or a row naming nothing published, is red. The module is named
 /// for its package, as `ElementaryLaws` is, because a module named `Operations` here would SHADOW
@@ -35,7 +36,11 @@ module ElementaryOperations =
           "Elementary.erfc", Exactness.Pinned
           "Elementary.normalCdf", Exactness.Pinned
           "Elementary.normalDensity", Exactness.Pinned
-          "Elementary.normalQuantile", Exactness.Pinned ]
+          "Elementary.normalQuantile", Exactness.Pinned
+          "Rng.ofSeed", Exactness.Pinned
+          "Rng.next", Exactness.Pinned
+          "Rng.uniform53", Exactness.Pinned
+          "Rng.below", Exactness.Pinned ]
 
     /// The class of one operation, or `None` for a name this package does not publish.
     let exactnessOf (operation: string) : Exactness option =

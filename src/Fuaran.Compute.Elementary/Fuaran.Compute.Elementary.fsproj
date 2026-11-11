@@ -11,6 +11,8 @@
          pinned erfc and normal functions (Phase 600). Moved here from Fuaran.Compute.LinearAlgebra by
          Phase 630 (DECISIONS.md D74). -->
     <Compile Include="Elementary.fs" />
+    <!-- The pinned SplitMix64 generator every seeded step draws from (Phase 621, DECISIONS.md D76). -->
+    <Compile Include="Rng.fs" />
     <!-- Every public operation's exactness class, as data. -->
     <Compile Include="Operations.fs" />
     <!-- The law family over the operations above. LAST: it reads all of them. -->

@@ -338,6 +338,69 @@ module ElementaryVectors =
             @ referenceCells c
         )
 
+    // ---- Phase 621 (DECISIONS.md D76): the generator's vectors ----
+
+    /// One generator case: a seed and a stream index.
+    type RngCase =
+        { Id: string; Seed: int64; Stream: int }
+
+    /// The generator's cases, in file order: the zero seed's first stream, a published seed's second
+    /// stream, and the most negative seed at a stream index past the index's first 16-bit limb.
+    let rngCases: RngCase list =
+        [ { Id = "rng-seed-zero"
+            Seed = 0L
+            Stream = 0 }
+          { Id = "rng-seed-1234567-stream-1"
+            Seed = 1234567L
+            Stream = 1 }
+          { Id = "rng-seed-min-stream-65537"
+            Seed = Int64.MinValue
+            Stream = 65537 } ]
+
+    /// A 64-bit draw as sixteen lowercase hex digits.
+    let hex64 (v: uint64) : string =
+        let digits = "0123456789abcdef"
+
+        Array.init 16 (fun k -> string digits[int ((v >>> (4 * (15 - k))) &&& 0xFUL)])
+        |> String.concat ""
+
+    /// How many of a stream's first `count` draws are distinct: the shape of the probe that measured a
+    /// collapsed product (Fuaran.Core's Phase 495: 1579 distinct draws on one host against 6 on another).
+    let rngDistinct (seed: int64) (stream: int) (count: int) : int =
+        let g = Rng.ofSeed seed stream
+        List.init count (fun _ -> hex64 (Rng.next g)) |> List.distinct |> List.length
+
+    /// What the stream answers: its first twenty draws, the next four as `uniform53`, the next four as
+    /// `below 1000`, and how many of a fresh stream's first two thousand draws are distinct.
+    let rngExpected (c: RngCase) : CorpusCell =
+        let g = Rng.ofSeed c.Seed c.Stream
+        let draws = List.init 20 (fun _ -> hex64 (Rng.next g))
+        let uniforms = List.init 4 (fun _ -> hex (Rng.uniform53 g))
+        let belows = List.init 4 (fun _ -> Rng.below g 1000)
+
+        CorpusCell.Row
+            [ "verdict", CorpusFile.str "ok"
+              "draws", CorpusCell.List(draws |> List.map CorpusFile.str)
+              "uniform53", CorpusCell.List(uniforms |> List.map CorpusFile.str)
+              "below1000", CorpusCell.List(belows |> List.map CorpusFile.num)
+              "distinct", CorpusFile.num (rngDistinct c.Seed c.Stream 2000) ]
+
+    let private rngCell (c: RngCase) : CorpusCell =
+        CorpusCell.Row
+            [ "id", CorpusFile.str c.Id
+              "op", CorpusFile.str "rng"
+              "input", CorpusCell.Row [ "seed", CorpusFile.str (string c.Seed); "stream", CorpusFile.num c.Stream ]
+              "expected", rngExpected c ]
+
+    let private generator =
+        "Phase 621 (DECISIONS.md D76): the vectors whose `op` is `rng` hold the pinned SplitMix64 generator "
+        + "`Rng`. `seed` is a signed 64-bit integer in decimal and `stream` a stream index; each answers "
+        + "`{ verdict: ok, draws, uniform53, below1000, distinct }` over ONE stream `Rng.ofSeed seed stream` "
+        + "read in this order: `draws`, its first twenty 64-bit draws, each sixteen lowercase hex digits; "
+        + "`uniform53`, the next four draws as floats in [0, 1), each its binary64 bit pattern; `below1000`, "
+        + "the next four answers of `Rng.below 1000`; and `distinct`, how many of a FRESH stream's first two "
+        + "thousand draws are distinct, which is two thousand on a host whose 64-bit product is exact."
+
     let private description =
         "The reference answers for Fuaran.Compute.Elementary over AUTHORED hard inputs (Phase 593; their own "
         + "file since Phase 630, every vector unchanged): the pinned elementary functions `exp`, `ln`, `log10` "
@@ -358,6 +421,7 @@ module ElementaryVectors =
         CorpusFile.render
             { Head =
                 [ "family", CorpusFile.str "elementary"
-                  "description", CorpusFile.str description ]
+                  "description", CorpusFile.str description
+                  "generator", CorpusFile.str generator ]
               Items = "vectors"
-              Rows = cases |> List.map caseCell }
+              Rows = (cases |> List.map caseCell) @ (rngCases |> List.map rngCell) }
