@@ -1,5 +1,181 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-11 — D78: the special functions are pinned in `Special`, a module of `Fuaran.Compute.Elementary` of its own — `gammaLn`, `gamma`, `betaLn`, `beta`, `regularizedGammaP`, `regularizedGammaQ`, `regularizedBeta`, `inverseRegularizedBeta`, `polygamma`, `digamma` and `trigamma`; each algorithm, kernel, threshold and stopping rule chosen by measurement against a fifty-digit reference; every series stops on the solvers' `StoppingRule` and the inverse is `Root.bracketedNewton`; the accuracy is a measurement, stated by range
+
+**Context.** Phase 631. The distributions, likelihoods, tests and intervals above this package reduce to a small set of
+special functions, and none was pinned. The phase asks for them as a public module beside `Elementary`'s `exp`, `ln`
+and `pow`, measured first as D52 measured those. The shard was written before Phases 630, 621 and 633 landed and was
+read against the tree as they left it: the package exists (D74), its table module is `ElementaryOperations`, and the
+solvers are below it (D77). Nothing in the repository declared any of these functions. What the measurement changed
+of the shard's plan is item 11.
+
+**Decision.**
+
+1. **Where they live and how they are called.** `Special` is a module of `Fuaran.Compute.Elementary`, in its own file
+   after `Elementary.fs`. A caller opens the namespace and writes `Special.gammaLn`. No other package declares a
+   module or type of that name (a test reads every source file for one), so the name cannot be shadowed the way D74
+   item 2 found `Operations` could. Each function has a `Pinned` row in `ElementaryOperations.exactness`. The next
+   special function (the error function's inverse, the inverse incomplete gamma) lands in this module.
+
+2. **What every function is built from.** `+ − × ÷`, comparisons, the correctly rounded square root, and this
+   package's own `exp`, `ln`, `pow` and `normalQuantile`; no fused multiply-add and no host mathematics call. Four
+   helpers are fixed-length and private: `ln (1 + m)` and `m − ln (1 + m)` within `[−½, ½]` as eighteen terms of
+   `atanh`'s series in `m / (2 + m)`; `exp y − 1` within `[−½, ½]` as thirteen Taylor terms; and `sin πx` and
+   `cos πx` by splitting `x` exactly into its nearest integer and a remainder, then a Taylor polynomial to `y¹⁹` at
+   `πr` or at `π(½ − |r|)`, so a value near a zero keeps its relative accuracy. Two of `Elementary`'s private
+   helpers (`twoSum`, `twoProd`) and its integer tests are `internal` now, so `Special` reads them and no copy exists.
+
+3. **`gammaLn` and `gamma`: one kernel, Stirling's series from `10`.**
+   - The kernel is a degree-17 Chebyshev fit of `ln Γ(2 + u) / (u (1 + u))` over `u` in `[−½, ½]`, evaluated by
+     Horner's rule and multiplied by `u (1 + u)`. The two zeros of `ln Γ`, at one and two, are those factors, and the
+     reduced argument `u` is formed exactly (`x − 2`, `x − 1` or `x` itself), so the answer keeps its relative
+     accuracy at both zeros.
+   - `gammaLn`, `x > 0`: from `2⁵⁴`, `x (ln x − 1)`; from `10`, `(x − ½)(ln x − 1) + (½ ln 2π − ½ + tail)` with the
+     tail eight terms of Stirling's series in `1 / x`; in `(2.5, 10)`, the kernel at `x − k` plus `ln` of the product
+     `(x − 1) … (x − k)`, `k = ⌊x − 1.5⌋`; in `[1.5, 2.5]`, the kernel; in `[0.5, 1.5)`, the kernel at `x − 1` minus
+     `ln x`; below `0.5`, the kernel at `x` minus `ln (x (1 + x))`. Below zero: the last form down to `−½`
+     (`ln (−x (1 + x))`), and the reflection `ln (π / |x sin πx|) − ln Γ(−x)` beyond. The shard's "reflection below
+     ½" is not used on the positive axis: the recurrence is more accurate there and needs no sine.
+   - `gamma`: an integer from `1` to `23` is the exact product; from `10`, `√(2π) · (v e⁻ˣ) · v · exp (tail)` with
+     `v = pow x (x/2 − ¼)`, the power in two halves so it does not overflow before the function does; below `10`,
+     `exp` of the kernel times the same product, or divided by `x` or `x (1 + x)`; below `−½`, the reflection
+     `−π / (x sin πx) / Γ(−x)`.
+
+4. **`digamma` and `polygamma`.**
+   - `digamma`, `x > 0`: from `10`, `ln x − 1/(2x)` minus seven Bernoulli terms. In `[1, 2)`, a kernel: a degree-23
+     Chebyshev fit of `ψ(x) / (x − x₀)` over `x − 1.5`, times `x − x₀` with the root `x₀ ≈ 1.4616` held as a double
+     and its remainder, so the answer keeps its relative accuracy at the root. In `[2, 10)`, the kernel at
+     `x − k` plus `Σ 1 / (x − j)`; below one, the kernel at `x + 1` (its argument formed exactly) minus `1 / x`. Below
+     zero, the reflection `ψ(1 − x) − π cos πx / sin πx`.
+   - `polygamma n x`, `n ≥ 1`, `x > 0`: the recurrence shifts `x` up by ones until it is at least `10 + n`, adding
+     `1 / (x + i)ⁿ⁺¹` (each power `n` products, left to right); there the asymptotic series
+     `(n − 1)! / xⁿ · (1 + n / (2x) + Σ_{k=1..10} B₂ₖ C(2k + n − 1, 2k) / x²ᵏ)`, the binomial a running product; the
+     sign is `(−1)ⁿ⁺¹`. `n = 0` is `digamma`, and `trigamma` is `polygamma 1`. The order is a float, because a
+     negative or non-integer order is a row of the table.
+
+5. **`betaLn` and `beta`.** The arguments are ordered first, so both are symmetric bit for bit. `betaLn`: both at
+   least `10`, `−½ ln b + ½ ln 2π + (tail a + (tail b − tail (a + b))) + (a − ½) ln r + b ln1p (−r)` with
+   `r = a / (a + b)`; one at least `10`, `ln Γ(a) + ((tail b − tail (a + b)) + (a − a ln (a + b)) + (b − ½) ln1p (−r))`;
+   both below, `ln Γ(a) + ln Γ(b) − ln Γ(a + b)`. `beta`: `Γ(a) / Γ(a + b) · Γ(b)` where `a + b ≤ 170`, `exp (betaLn)`
+   beyond. In both small arms the sum `a + b` is taken with its rounding error `e` (`twoSum`) and the gamma function
+   of the sum corrected to first order through `digamma` (`ln Γ` gains `e ψ(s)`, `Γ` the factor `1 + e ψ(s)`): without
+   it the rounding of the sum alone costs up to a hundred units.
+
+6. **`regularizedGammaP` and `regularizedGammaQ`.** The prefix `xᵃ e⁻ˣ / Γ(a)` is `pow x a · exp (−x) / Γ(a)` below
+   `a = 10` and `√(a / 2π) exp (−a (μ − ln (1 + μ)) − tail a)` with `μ = (x − a) / a` from it. The boundary is
+   `x = a + 1`, or `x = 1` where `a < 1`. Below it `P` is the series `Σ xⁿ / (a (a + 1) … (a + n))` times the prefix;
+   from it `Q` is Legendre's continued fraction by the modified Lentz method (denominators held to `10⁻³⁰⁰`) times the
+   prefix. The other of the pair is the complement, except `Q` for `a < 1` below the boundary, which is its own
+   series, `−expm1 L − exp L · a · Σ_{n ≥ 1} (−x)ⁿ / ((a + n) n!)` with `L = a ln x − ln Γ(1 + a)`: `1 − P` there loses
+   everything as `a` falls to zero.
+
+7. **`regularizedBeta`.** The prefix `xᵃ (1 − x)ᵇ / B(a, b)` is, for both parameters at least `10`,
+   `√(ab / (2π (a + b))) exp (−a φ(n / a) − b φ(−n / b) − tails)` with `φ(m) = m − ln (1 + m)` and
+   `n = x (a + b) − a` formed in double-double arithmetic; otherwise `exp (a ln x + b ln (1 − x) − betaLn a b)`, each
+   logarithm of the smaller of `x` and `1 − x` taken directly and of the larger through `ln1p`. The function is the
+   continued fraction (Abramowitz and Stegun 26.5.8, modified Lentz, two partial quotients an iteration) at `x` where
+   `x ≤ (a + 1) / (a + b + 2)`, and `1 − I_{1−x}(b, a)` beyond. Two corrections the measurement asked for:
+   - `1 − x` is exact only from `x = ½`. What the subtraction rounded away is restored to first order through the
+     density, `(1 − (1 − x) − x) · prefix / (x (1 − x))`; without it a `b` of ten thousand multiplied that rounding
+     into thousands of units.
+   - where `b < 1` the function is small until `x` is very near one, and the complement of a value near one has no
+     relative accuracy. There (the complement below `1 − x`, and `x ≤ 0.99`) it is Gauss's series
+     `Σ (a + b)ₙ / (a + 1)ₙ xⁿ` times `prefix / a`, every term positive. The series loses about `3 / (1 − x)` units
+     to its own length, which is why it is not used wherever the complement is larger than `1 − x`, and why beyond
+     `0.99` the function stays the complement, accurate to a unit in the last place of one.
+
+8. **`inverseRegularizedBeta`.** The residual `I_x(a, b) − p` (read as `(1 − p) − (1 − I_x)` where `p > ½`) is taken at
+   `x = ½`. Not negative, the root is in the lower half; negative, the mirrored problem `I_y(b, a) = 1 − p` is solved
+   for `y = 1 − x`. Either way the solver works on the small one of `x` and `1 − x`. The start: for both parameters at
+   least one, Abramowitz and Stegun 26.5.22 over the pinned `normalQuantile`; otherwise, and where that lands outside
+   `(0, 1)`, the leading term of the function at the nearer end solved for `x` by `pow`; a start at or above `½` is
+   replaced by `¼`. Then `Root.bracketedNewton` over `[0, 1]` with the density for a derivative and a shrink fraction
+   of one. The bracket is the whole interval: over `[0, ½]` a root within rounding of `½` sent a Newton step past the
+   end, and the bisection that replaced it stopped the rule sixty units short.
+
+9. **The stopping rules, in bits, and the special-value table.**
+   - Every series and continued fraction (five loops) stops on `StoppingTest.RelativeChange (2⁻⁵², 2⁻¹⁰²²)` read
+     through `StoppingRule.stops`: `|current − previous| / (|current| + 2⁻¹⁰²²) < 2⁻⁵²`, `current` the running sum or
+     fraction after the term. The cap is `65536`; a loop that reaches it answers NaN. Inside the measured range the
+     longest is the lower gamma series at `x ≈ a`, about `8.6 √a` terms (7,600 at `a = 10⁶`), so the cap is reached
+     from about `a = 5 × 10⁷`.
+   - The inverse's rule is `RelativeChange (2⁻⁴⁰, 2⁻¹⁰²²)` with a cap of one hundred; a refusal of the solver (the
+     cap, or a fraction that answered NaN) is NaN.
+   - The fixed-length helpers of item 2, the polynomial kernels, Stirling's and the asymptotic series, and the
+     polygamma shift (`⌈10 + n − x⌉` steps) take no rule: their length is a constant or a function of the arguments
+     alone, so no host can stop them elsewhere.
+   - The table: a NaN argument answers NaN everywhere. `gammaLn`: `+∞` at `±∞`, at zero and at the negative integers.
+     `gamma`: `+∞` at `+∞` and above `171.62437695630272`; NaN at `−∞`, zero and the negative integers. `betaLn`,
+     `beta`: NaN unless both arguments are above zero and finite. `P`, `Q`: NaN unless `a` is above zero and finite
+     and `x ≥ 0`; `P(a, 0) = 0`, `P(a, +∞) = 1`, `Q` their complements. `regularizedBeta`: NaN unless the parameters
+     are above zero and finite and `x` is in `[0, 1]`; `I_0 = 0`, `I_1 = 1`. The inverse: the same refusals over `p`;
+     `0` at `p = 0`, `1` at `p = 1`, and `0` or `1` where the start itself underflows to that end. `digamma`: `+∞` at
+     `+∞`; NaN at `−∞`, zero and the negative integers. `polygamma`: NaN for an order that is negative, not an
+     integer or above `170` (where `n!` is not a finite double), and for `n ≥ 1` at any `x ≤ 0`; `0` for `n ≥ 1` at
+     `+∞`. The tables are code and are stated here and on each function; they are not published as data the way
+     `expTable` is, because nothing reads them yet (the phase that makes these column functions publishes them).
+
+10. **What was measured** (`benchmarks/results/2026-11-11-ryzen9-9950x-phase-631.md`; the reference is mpmath 1.4.1
+    at fifty digits, by `tests/Fuaran.Core.Compute.Tests/SpecialReference/special_reference.py`, which also generates
+    the two kernels' coefficients). Over a seeded sample of 29,563 inputs, the same on every host, .NET and node
+    answered the same bits on every one. Largest error in units in the last place, and nanoseconds a value on .NET
+    and under node:
+
+    | function | largest error | where `1e-10 ≤ |value| ≤ 1e10` | .NET ns | node ns |
+    |---|---:|---:|---:|---:|
+    | `gammaLn`, `x > 0` | 4.2 | 4.2 | 26 | 80 |
+    | `gamma` | 5.0 | 3.4 | 84 | 185 |
+    | `betaLn` | 5.2 at the 99th percentile | (see below) | 77 | 244 |
+    | `beta` | 666 | 34 | 123 | 331 |
+    | `regularizedGammaP` | 1135 | 93 | 238 | 373 |
+    | `regularizedGammaQ` | 1544 | 53 | 185 | 377 |
+    | `regularizedBeta` | 402 | 182 | 229 | 353 |
+    | `inverseRegularizedBeta` | 477 | 117 | 1633 | 2760 |
+    | `digamma`, `x > 0` | 2.2 | 2.2 | 26 | 70 |
+    | `trigamma` | 2.7 | 2.7 | 16 | 42 |
+    | `polygamma`, orders 2 to 20 | 16 | 8.9 | 31 | 61 |
+
+    The bound is not uniform, and four things set it. A function that crosses zero by cancellation has no bound in
+    units of its own last place there: `gammaLn` and `digamma` below zero (195 and 2,492 in the sample) and `betaLn`
+    where `B` is one (2,024); their absolute error is a few units in the last place of the cancelling terms. An
+    answer that is `exp` of an exponent of magnitude `E` carries about `2E` units: `beta` beyond `a + b = 170` and the
+    incomplete functions' deep tails. A long series carries the rounding of its recurrence: `P` at `x ≈ a` is 40 units
+    out at `a = 10⁵` and 182 at `a = 10⁶`. And the inverse inherits the function's error divided by its conditioning,
+    about `1 / a` for a small root. The polygamma orders above `20` follow the same rule and were not measured.
+
+11. **What the measurement changed of the shard's plan.**
+    - `digamma` is not "one algorithm for every order": shifting up to the asymptotic series, as the higher orders
+      do, measured 111 units away from the root and has no bound at it. The kernel measures 2.
+    - `gamma` is not `exp (gammaLn x)`: that measured 1,160 units. Stirling's formula over the pinned `pow` and the
+      kernel's product measure 5.
+    - `gammaLn` takes no reflection below `½`, only below zero (item 3).
+    - `regularizedBeta` gained the two corrections of item 7 and the inverse its two halves (item 8); the incomplete
+      gamma prefix is not `exp (a ln x − x − gammaLn a)`, which measured a million units at `a` near `10⁵`.
+    - Lanczos' approximation was a candidate for `gammaLn` and loses both zeros (`10¹⁶` units beside them).
+
+**Falsifiers.** Each is a way this decision would be wrong, and what would show it.
+
+- A host answers other bits: the vectors of `conformance/laws/elementary-laws.json` (251 of them for these functions,
+  appended after the vectors that were there, which are unchanged) are rendered on .NET and under node and compared
+  byte for byte, and each carries the function's distance from its reference, which a host must reproduce too.
+- A stated bound is exceeded: the suite holds every referenced vector to its function's bound
+  (`SpecialVectors.referenceUlps`), and `ElementaryLaws.laws` holds the identities on both hosts, each within a bound
+  written in units of `2⁻⁵³`: `Γ(x + 1) = x Γ(x)`; `P + Q = 1`; `I_x(a, b) + I_{1−x}(b, a) = 1`; `I` of its inverse is
+  `p` within `2⁻⁴⁰`; `P` and `I_x` do not fall as `x` rises; `ψ(x + 1) = ψ(x) + 1 / x`; `ψ(1) = −γ` and
+  `ψ′(1) = π² / 6` within one unit; a central difference of `gammaLn` against `digamma` within `2⁻²⁶`. `B`, `ln B`, and
+  `digamma` and `trigamma` against `polygamma`, are held bit for bit.
+- The accuracy is worse somewhere the sample did not reach: it is a measurement over the stated ranges, never a
+  theorem. An input outside them (an order above `20`, an `a` above `3 × 10⁵`, parameters of the incomplete beta
+  above `2 × 10⁴`) is computed by the same rules and is not covered by the figures.
+- A cap is reached inside a range a consumer needs: the function answers NaN there, never an unconverged value, so
+  the failure is visible. Temme's uniform expansion is what would remove the long series at large `a`; it is not
+  shipped, and the cost recorded for `a = 10⁶` (17 µs a value) is why it has not been needed.
+
+**Alternatives considered.** Publishing each function's special-value table as data, as `expTable` is: deferred to the
+phase that reads them (item 9). A double-double exponent for the deep tails: not built, because it is a cost on every
+call for the sake of values below `10⁻²⁰⁰`; the four-figure maxima are what it would remove. Kahan summation for the
+long gamma series: measured, and it does not help, because the error is in the term recurrence and not in the sum.
+
 ## 2026-11-11 — D77: pinned solvers are a package of their own, `Fuaran.Compute.Solvers`, at the bottom of Compute's graph, generic over the caller's functions; one `StoppingRule` every method takes, each test one written comparison; the bracketed Newton's fallback, the damped iteration's rise test and each method's order and refusals; Brent's method is not shipped; the solvers reproduce `Glm`'s loops bit for bit, and θ's Newton is not a bracketed Newton
 
 **Context.** Phase 633. Each iterative method in Compute carries its own loop and its own stopping decision, and in a

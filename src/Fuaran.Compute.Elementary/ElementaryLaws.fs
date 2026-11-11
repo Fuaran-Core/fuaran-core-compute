@@ -339,6 +339,189 @@ module ElementaryLaws =
         else
             None
 
+    // ---- Phase 631 (DECISIONS.md D78): the special functions, `Special` ----
+
+    /// The first of the named checks that failed, with the inputs it failed at.
+    let private firstFailure (inputs: string) (checks: (string * bool) list) : string option =
+        match checks |> List.filter (snd >> not) with
+        | [] -> None
+        | failed -> Some(sprintf "%s at %s" (failed |> List.map fst |> String.concat ", ") inputs)
+
+    /// Every row of the special functions' special-value tables, answered as stated (D78 item 9): a
+    /// NaN, an argument outside the domain and the poles of `gamma` and the polygamma functions answer
+    /// NaN; `gammaLn` answers `+∞` at its poles; the bounds answer exactly.
+    let private specialTables (_: Draw) =
+        let nan = Double.NaN
+        let inf = Double.PositiveInfinity
+        let isNaN (x: float) = Double.IsNaN x
+        let is (want: float) (x: float) = bits x = bits want
+
+        firstFailure
+            "the tables"
+            [ "gammaLn NaN", isNaN (Special.gammaLn nan)
+              "gammaLn +inf", is inf (Special.gammaLn inf)
+              "gammaLn -inf", is inf (Special.gammaLn -inf)
+              "gammaLn 0", is inf (Special.gammaLn 0.0)
+              "gammaLn -3", is inf (Special.gammaLn -3.0)
+              "gammaLn 1", is 0.0 (Special.gammaLn 1.0)
+              "gammaLn 2", is 0.0 (Special.gammaLn 2.0)
+              "gamma NaN", isNaN (Special.gamma nan)
+              "gamma +inf", is inf (Special.gamma inf)
+              "gamma -inf", isNaN (Special.gamma -inf)
+              "gamma 0", isNaN (Special.gamma 0.0)
+              "gamma -0", isNaN (Special.gamma -0.0)
+              "gamma -2", isNaN (Special.gamma -2.0)
+              "gamma 172", is inf (Special.gamma 172.0)
+              "gamma 1", is 1.0 (Special.gamma 1.0)
+              "gamma 5", is 24.0 (Special.gamma 5.0)
+              "gamma 23", is 1124000727777607680000.0 (Special.gamma 23.0)
+              "beta 0", isNaN (Special.beta 0.0 1.0)
+              "beta negative", isNaN (Special.beta 2.0 -1.0)
+              "beta inf", isNaN (Special.beta inf 1.0)
+              "beta NaN", isNaN (Special.beta 1.0 nan)
+              "betaLn 0", isNaN (Special.betaLn 1.0 0.0)
+              "betaLn inf", isNaN (Special.betaLn 1.0 inf)
+              "betaLn NaN", isNaN (Special.betaLn nan 1.0)
+              "P x = 0", is 0.0 (Special.regularizedGammaP 2.5 0.0)
+              "P x = inf", is 1.0 (Special.regularizedGammaP 2.5 inf)
+              "P a = 0", isNaN (Special.regularizedGammaP 0.0 1.0)
+              "P a = inf", isNaN (Special.regularizedGammaP inf 1.0)
+              "P x < 0", isNaN (Special.regularizedGammaP 2.0 -1.0)
+              "P NaN", isNaN (Special.regularizedGammaP nan 1.0)
+              "Q x = 0", is 1.0 (Special.regularizedGammaQ 2.5 0.0)
+              "Q x = inf", is 0.0 (Special.regularizedGammaQ 2.5 inf)
+              "Q a < 0", isNaN (Special.regularizedGammaQ -1.5 1.0)
+              "Q NaN", isNaN (Special.regularizedGammaQ 1.0 nan)
+              "I x = 0", is 0.0 (Special.regularizedBeta 2.0 3.0 0.0)
+              "I x = 1", is 1.0 (Special.regularizedBeta 2.0 3.0 1.0)
+              "I x < 0", isNaN (Special.regularizedBeta 2.0 3.0 -0.1)
+              "I x > 1", isNaN (Special.regularizedBeta 2.0 3.0 1.5)
+              "I a = 0", isNaN (Special.regularizedBeta 0.0 3.0 0.5)
+              "I b = inf", isNaN (Special.regularizedBeta 2.0 inf 0.5)
+              "I NaN", isNaN (Special.regularizedBeta 2.0 3.0 nan)
+              "inverse p = 0", is 0.0 (Special.inverseRegularizedBeta 2.0 3.0 0.0)
+              "inverse p = 1", is 1.0 (Special.inverseRegularizedBeta 2.0 3.0 1.0)
+              "inverse p < 0", isNaN (Special.inverseRegularizedBeta 2.0 3.0 -0.5)
+              "inverse p > 1", isNaN (Special.inverseRegularizedBeta 2.0 3.0 1.5)
+              "inverse b < 0", isNaN (Special.inverseRegularizedBeta 2.0 -3.0 0.5)
+              "inverse NaN", isNaN (Special.inverseRegularizedBeta nan 3.0 0.5)
+              "digamma NaN", isNaN (Special.digamma nan)
+              "digamma +inf", is inf (Special.digamma inf)
+              "digamma -inf", isNaN (Special.digamma -inf)
+              "digamma 0", isNaN (Special.digamma 0.0)
+              "digamma -1", isNaN (Special.digamma -1.0)
+              "trigamma 0", isNaN (Special.trigamma 0.0)
+              "trigamma negative", isNaN (Special.trigamma -1.5)
+              "trigamma +inf", is 0.0 (Special.trigamma inf)
+              "polygamma order -1", isNaN (Special.polygamma -1.0 2.0)
+              "polygamma order 1.5", isNaN (Special.polygamma 1.5 2.0)
+              "polygamma order 171", isNaN (Special.polygamma 171.0 5.0)
+              "polygamma 2 at 0", isNaN (Special.polygamma 2.0 0.0)
+              "polygamma 2 negative", isNaN (Special.polygamma 2.0 -0.5)
+              "polygamma 2 at +inf", is 0.0 (Special.polygamma 2.0 inf)
+              "polygamma NaN order", isNaN (Special.polygamma nan 2.0)
+              "polygamma NaN", isNaN (Special.polygamma 2.0 nan) ]
+
+    /// `Γ(x + 1)` is `x Γ(x)` within `8u (1 + (x + 1)(|ln (x + 1)| + 1)) Γ(x + 1)` (the second term is
+    /// what rounding `x + 1` moves the function by), and `B` and `ln B` are symmetric bit for bit.
+    let private gammaRecurrenceAndBetaSymmetry (d: Draw) =
+        let x = positive d -10 6
+        let up = Special.gamma (x + 1.0)
+        let here = Special.gamma x
+        let a = positive d -20 20
+        let b = positive d -20 20
+
+        firstFailure
+            (sprintf "x = %.17g, a = %.17g, b = %.17g" x a b)
+            [ "gamma (x + 1) = x gamma x",
+              abs (up - x * here)
+              <= 8.0 * u * (1.0 + (x + 1.0) * (abs (Elementary.ln (x + 1.0)) + 1.0)) * up
+              "beta a b = beta b a", bits (Special.beta a b) = bits (Special.beta b a)
+              "betaLn a b = betaLn b a", bits (Special.betaLn a b) = bits (Special.betaLn b a) ]
+
+    /// `P + Q` is one within `64u`; `I_x(a, b) + I_{1 − x}(b, a)` is one within `64u` for an `x` of at
+    /// least a half (where `1 − x` is exact); and over a rise in `x` neither `P` nor `I_x` falls by more
+    /// than `64u` of itself.
+    let private complementsAndMonotonicity (d: Draw) =
+        let a = positive d -20 13
+        let x = a * pow2 (d.Int -7 3) * (1.0 + (d.Unit() + 1.0) * 0.5)
+        let rise = 1.0 + (d.Unit() + 1.0) * 0.005
+        let p = Special.regularizedGammaP a x
+        let q = Special.regularizedGammaQ a x
+        let pUp = Special.regularizedGammaP a (x * rise)
+        let ba = positive d -4 8
+        let bb = positive d -4 8
+        let high = 0.75 + d.Unit() * 0.25
+        let t = (d.Unit() + 1.0) * 0.5
+        let tUp = t + (1.0 - t) * (d.Unit() + 1.0) * 0.005
+        let lower = Special.regularizedBeta ba bb t
+        let lowerUp = Special.regularizedBeta ba bb tUp
+
+        firstFailure
+            (sprintf "a = %.17g, x = %.17g; a = %.17g, b = %.17g, x = %.17g and %.17g" a x ba bb high t)
+            [ "P + Q = 1", abs (p + q - 1.0) <= 64.0 * u
+              "P does not fall", pUp >= p * (1.0 - 64.0 * u)
+              "I_x(a, b) + I_(1 - x)(b, a) = 1",
+              abs (
+                  Special.regularizedBeta ba bb high + Special.regularizedBeta bb ba (1.0 - high)
+                  - 1.0
+              )
+              <= 64.0 * u
+              "I_x does not fall", lowerUp >= lower * (1.0 - 64.0 * u) ]
+
+    /// The incomplete beta function of its inverse is `p` within `2⁻⁴⁰`, for parameters in `[½, 256)`
+    /// and `p` in `[0.001, 0.999]`, and the inverse of `1 − p` under the parameters exchanged is its
+    /// mirror within `64u`.
+    let private inverseRoundTrip (d: Draw) =
+        let a = positive d -1 7
+        let b = positive d -1 7
+        let p = 0.5 + d.Unit() * 0.499
+        let x = Special.inverseRegularizedBeta a b p
+        let back = Special.regularizedBeta a b x
+        let mirror = Special.inverseRegularizedBeta b a (1.0 - p)
+
+        firstFailure
+            (sprintf "a = %.17g, b = %.17g, p = %.17g (x = %.17g, I = %.17g, mirror = %.17g)" a b p x back mirror)
+            [ "I (inverse p) = p", abs (back - p) <= pow2 -40
+              "inverse a b p = 1 - inverse b a (1 - p)", abs (x + mirror - 1.0) <= 64.0 * u ]
+
+    /// `ψ(x + 1)` is `ψ(x) + 1 / x` within `8u (|ψ(x)| + 1 / x + |ψ(x + 1)| + 2)`; `ψ(1)` is `−γ` and
+    /// `ψ′(1)` is `π² / 6`, each within one unit in the last place of the constant; and `digamma` and
+    /// `trigamma` are `polygamma 0` and `polygamma 1` bit for bit.
+    let private polygammaIdentities (d: Draw) =
+        let x = positive d -7 6
+        let here = Special.digamma x
+        let up = Special.digamma (x + 1.0)
+        let y = if d.Unit() < 0.0 then -x - 0.25 else x
+
+        firstFailure
+            (sprintf "x = %.17g, y = %.17g" x y)
+            [ "digamma (x + 1) = digamma x + 1 / x",
+              abs (up - here - 1.0 / x) <= 8.0 * u * (abs here + 1.0 / x + abs up + 2.0)
+              "digamma 1 = -gamma", ulpsApart (Special.digamma 1.0) -0.5772156649015329 <= 1L
+              "trigamma 1 = pi^2 / 6", ulpsApart (Special.trigamma 1.0) 1.6449340668482264 <= 1L
+              "digamma = polygamma 0",
+              (let named = Special.digamma y
+               let ordered = Special.polygamma 0.0 y
+               (Double.IsNaN named && Double.IsNaN ordered) || bits named = bits ordered)
+              "trigamma = polygamma 1", bits (Special.trigamma x) = bits (Special.polygamma 1.0 x) ]
+
+    /// A central difference of `gammaLn` at a step of `2⁻¹⁴` agrees with `digamma` within `2⁻²⁶`, over
+    /// `x` in `[3, 50)`: the difference's own truncation is below `10⁻¹⁰` there and its rounding below
+    /// `2 · 10⁻⁹`.
+    let private gammaLnDerivative (d: Draw) =
+        let x = 3.0 + (d.Unit() + 1.0) * 23.5
+        let h = pow2 -14
+
+        let difference = (Special.gammaLn (x + h) - Special.gammaLn (x - h)) / (2.0 * h)
+
+        let derivative = Special.digamma x
+
+        if abs (difference - derivative) <= pow2 -26 then
+            None
+        else
+            Some(sprintf "at x = %.17g the central difference is %.17g and digamma %.17g" x difference derivative)
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "every special-value row and IEEE edge of the elementary functions is answered as stated", elementaryTables
@@ -346,5 +529,13 @@ module ElementaryLaws =
           "exp and ln invert within their one-ulp bounds", elementaryInverses
           "the elementary functional equations hold within their bounds", elementaryIdentities
           "the generator is SplitMix64: the published draws, the limb product, the recurrence", rngIsSplitMix64
-          "a seed's streams, uniform53 and below are the stated functions of the draws", rngStreamsAndRanges ]
+          "a seed's streams, uniform53 and below are the stated functions of the draws", rngStreamsAndRanges
+          "every special-value row of the special functions is answered as stated", specialTables
+          "gamma (x + 1) is x gamma x, and beta and betaLn are symmetric bit for bit", gammaRecurrenceAndBetaSymmetry
+          "P + Q is one, the incomplete beta function and its mirror sum to one, and neither falls as x rises",
+          complementsAndMonotonicity
+          "the incomplete beta function of its inverse is p, and the inverse mirrors", inverseRoundTrip
+          "digamma's recurrence and constants hold, and digamma and trigamma are polygamma 0 and 1 bit for bit",
+          polygammaIdentities
+          "a central difference of gammaLn agrees with digamma", gammaLnDerivative ]
         |> List.map (fun (name, body) -> name, law seed count body)

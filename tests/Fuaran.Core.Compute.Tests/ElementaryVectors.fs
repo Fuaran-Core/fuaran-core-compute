@@ -85,7 +85,7 @@ module ElementaryVectors =
               "table", CorpusFile.str (tableName table) ]
 
     /// The float whose bit pattern is these sixteen hex digits.
-    let private ofHex (h: string) : float =
+    let ofHex (h: string) : float =
         let mutable b = 0L
 
         for ch in h do
@@ -416,12 +416,15 @@ module ElementaryVectors =
         + "the last place, which is at most one on every such vector (DECISIONS.md D52) and is itself part "
         + "of the document a host must reproduce."
 
-    /// The family's document as the one corpus writer renders it.
-    let render () : string =
+    /// The family's document as the one corpus writer renders it: this module's head and vectors, then
+    /// the head members and vectors the special functions add (Phase 631, `SpecialVectors.render`, the
+    /// one caller, so that nothing renders the document without them).
+    let renderWith (head: (string * CorpusCell) list) (rows: CorpusCell list) : string =
         CorpusFile.render
             { Head =
                 [ "family", CorpusFile.str "elementary"
                   "description", CorpusFile.str description
                   "generator", CorpusFile.str generator ]
+                @ head
               Items = "vectors"
-              Rows = (cases |> List.map caseCell) @ (rngCases |> List.map rngCell) }
+              Rows = (cases |> List.map caseCell) @ (rngCases |> List.map rngCell) @ rows }

@@ -19,6 +19,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\ElementaryVectors.fs" Link="ElementaryVectors.fs" />
+    <!-- Phase 631: the special functions' vectors, the rest of the elementary document. -->
+    <Compile Include="..\SpecialVectors.fs" Link="SpecialVectors.fs" />
     <Compile Include="..\LinearAlgebraVectors.fs" Link="LinearAlgebraVectors.fs" />
     <Compile Include="..\RegressionVectors.fs" Link="RegressionVectors.fs" />
     <Compile Include="..\SolversVectors.fs" Link="SolversVectors.fs" />

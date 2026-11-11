@@ -600,8 +600,9 @@ module LawVectorExport =
           parityPath corpusDir, renderParityVectors ()
           // Phase 590: the linear-algebra hard-input vectors.
           Path.Combine(familyDir corpusDir, LinearAlgebraVectors.fileName), LinearAlgebraVectors.render ()
-          // Phase 630: the elementary hard-input vectors, moved out of the linear-algebra file.
-          Path.Combine(familyDir corpusDir, ElementaryVectors.fileName), ElementaryVectors.render ()
+          // Phase 630: the elementary hard-input vectors, moved out of the linear-algebra file; since
+          // Phase 631 the special functions' vectors follow them in the same document.
+          Path.Combine(familyDir corpusDir, ElementaryVectors.fileName), SpecialVectors.render ()
           // Phase 632: the regression hard-input vectors, moved out of the linear-algebra file.
           Path.Combine(familyDir corpusDir, RegressionVectors.fileName), RegressionVectors.render ()
           // Phase 633: the solver vectors, over authored functions.

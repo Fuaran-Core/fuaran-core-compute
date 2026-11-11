@@ -23,7 +23,7 @@ let private nowMs () : float = float DateTime.UtcNow.Ticks / 10_000.0
 
 let private bits (x: float) : int64 = BitConverter.DoubleToInt64Bits x
 
-let private hex (x: float) : string =
+let hex (x: float) : string =
     if Double.IsNaN x then
         "nan"
     else
@@ -37,7 +37,7 @@ let private hex (x: float) : string =
 
 /// Park and Miller's minimal standard in float arithmetic, as `LinearAlgebraLaws` draws: exact on
 /// every host.
-type private Draw(seed: int) =
+type Draw(seed: int) =
     let mutable state =
         ((float seed % 2147483646.0) + 2147483646.0) % 2147483646.0 + 1.0
 
@@ -52,7 +52,7 @@ type private Draw(seed: int) =
     member this.Range (lo: float) (hi: float) : float = lo + (hi - lo) * this.Unit()
 
 /// `2^k` by exact doubling or halving.
-let private twoTo (k: int) : float =
+let twoTo (k: int) : float =
     let mutable p = 1.0
 
     if k >= 0 then
@@ -507,7 +507,7 @@ module private CorrectlyRounded =
 /// millisecond, and the .NET runtime promotes a method to its optimised tier only after a delay, so a
 /// shorter warm-up measures unoptimised code (the first run of this harness did). The checksum keeps
 /// the work alive.
-let private perValue (runs: int) (n: int) (f: unit -> float) : float * float =
+let perValue (runs: int) (n: int) (f: unit -> float) : float * float =
     let mutable check = 0.0
     let start = nowMs ()
 

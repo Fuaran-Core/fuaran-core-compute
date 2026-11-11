@@ -41,7 +41,7 @@ printfn "%s" (LinearAlgebraVectors.render ())
 printfn "END %s" LinearAlgebraVectors.fileName
 
 printfn "BEGIN %s" ElementaryVectors.fileName
-printfn "%s" (ElementaryVectors.render ())
+printfn "%s" (SpecialVectors.render ())
 printfn "END %s" ElementaryVectors.fileName
 
 printfn "BEGIN %s" RegressionVectors.fileName

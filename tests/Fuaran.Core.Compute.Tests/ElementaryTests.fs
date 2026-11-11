@@ -27,7 +27,7 @@ let private committedPath () =
 
 /// The vector with this id, as the document's line for it.
 let private lineOf (id: string) : string =
-    ElementaryVectors.render().Split('\n')
+    SpecialVectors.render().Split('\n')
     |> Array.find (fun l -> l.Contains(sprintf "\"id\": \"%s\"" id))
 
 /// The public functions of the package's operation module, spelled `<Module>.<function>` — the census
@@ -42,7 +42,7 @@ let private publishedOperations () : Set<string> =
             else
                 t.Name
 
-        if name = "Elementary" || name = "Rng" then
+        if name = "Elementary" || name = "Rng" || name = "Special" then
             t.GetMethods(BindingFlags.Public ||| BindingFlags.Static)
             |> Array.filter (fun m -> not m.IsSpecialName)
             |> Array.map (fun m -> name + "." + m.Name)
@@ -65,7 +65,7 @@ let tests =
           <| fun () ->
               let committed = File.ReadAllText(committedPath ())
 
-              match CorpusFile.firstDifference committed (ElementaryVectors.render ()) with
+              match CorpusFile.firstDifference committed (SpecialVectors.render ()) with
               | None -> ()
               | Some d ->
                   failtestf

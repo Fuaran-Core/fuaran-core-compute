@@ -72,7 +72,12 @@
     <!-- Phase 630: the elementary vectors and the suite over Fuaran.Compute.Elementary, moved out of the
          linear-algebra files with the module (Fable-clean; the same node leg compiles the vectors). -->
     <Compile Include="ElementaryVectors.fs" />
+    <!-- Phase 631: the special functions' vectors, appended to the elementary document (Fable-clean; the
+         same node leg compiles them), and the suite over Special. After ElementaryVectors.fs, whose
+         cells and head they render through. -->
+    <Compile Include="SpecialVectors.fs" />
     <Compile Include="ElementaryTests.fs" />
+    <Compile Include="SpecialTests.fs" />
     <Compile Include="LinearAlgebraVectors.fs" />
     <!-- Phase 633: the solver vectors (Fable-clean; the same node leg compiles them). After
          ElementaryVectors.fs, whose float cell they render through; before LinearAlgebraTests.fs, whose

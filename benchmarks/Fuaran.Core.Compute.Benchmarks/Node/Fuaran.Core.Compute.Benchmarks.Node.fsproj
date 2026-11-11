@@ -34,6 +34,9 @@
     <!-- Phase 593: the elementary functions, faithful-pinned against correctly rounded
          (`node Program.js 10 elementary`). -->
     <Compile Include="..\ElementaryBench.fs" Link="ElementaryBench.fs" />
+    <!-- Phase 631: the special functions over their pinned sample (`node Program.js 5 special`). After
+         ElementaryBench.fs, whose generator and timer they read. -->
+    <Compile Include="..\SpecialBench.fs" Link="SpecialBench.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

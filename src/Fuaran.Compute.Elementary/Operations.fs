@@ -4,7 +4,8 @@ namespace Fuaran.Compute.Elementary
 /// schema walk reads through: a column computed by an operation listed here carries that operation's
 /// class. Every operation is `Pinned` — built from `+ − × ÷ √` alone, in one order, with no fused
 /// multiply-add and no host mathematics call anywhere (the generator's, `Rng`, from exact integer
-/// arithmetic on 16-bit limbs; DECISIONS.md D76) — so each answers the same bits on every
+/// arithmetic on 16-bit limbs, DECISIONS.md D76; the special functions', `Special`, over the pinned
+/// `exp`, `ln` and `pow` and the solvers' stopping rules, DECISIONS.md D78) — so each answers the same bits on every
 /// conformant host. The suite holds the table to the package's public surface both ways: an
 /// operation published without a row, or a row naming nothing published, is red. The module is named
 /// for its package, as `ElementaryLaws` is, because a module named `Operations` here would SHADOW
@@ -37,6 +38,17 @@ module ElementaryOperations =
           "Elementary.normalCdf", Exactness.Pinned
           "Elementary.normalDensity", Exactness.Pinned
           "Elementary.normalQuantile", Exactness.Pinned
+          "Special.gammaLn", Exactness.Pinned
+          "Special.gamma", Exactness.Pinned
+          "Special.digamma", Exactness.Pinned
+          "Special.polygamma", Exactness.Pinned
+          "Special.trigamma", Exactness.Pinned
+          "Special.betaLn", Exactness.Pinned
+          "Special.beta", Exactness.Pinned
+          "Special.regularizedGammaP", Exactness.Pinned
+          "Special.regularizedGammaQ", Exactness.Pinned
+          "Special.regularizedBeta", Exactness.Pinned
+          "Special.inverseRegularizedBeta", Exactness.Pinned
           "Rng.ofSeed", Exactness.Pinned
           "Rng.next", Exactness.Pinned
           "Rng.uniform53", Exactness.Pinned

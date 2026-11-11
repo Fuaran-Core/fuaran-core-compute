@@ -472,6 +472,13 @@ let main argv =
     if onlyElementary then
         ElementaryBench.run runs
 
+    // `special` measures the pinned special functions over their sample and prints the sample with
+    // the package's answers, for the reference check and the two-host comparison (Phase 631).
+    let onlySpecial = argv.Length > 1 && argv.[1] = "special"
+
+    if onlySpecial then
+        SpecialBench.run runs
+
     // `typed` as the second argument times the typed family alone (Phase 280).
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
@@ -485,7 +492,13 @@ let main argv =
 
     if onlyChain then
         chainTable ()
-    elif not onlyTyped && not onlyState && not onlyQr && not onlyElementary then
+    elif
+        not onlyTyped
+        && not onlyState
+        && not onlyQr
+        && not onlyElementary
+        && not onlySpecial
+    then
         table
             "Sheet"
             [ for n in Corpus.sheetSizes do
@@ -535,8 +548,11 @@ let main argv =
                             (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                           n ]
 
-    if onlyChain || onlyQr || onlyElementary then ()
-    elif onlyState then stateTable ()
-    else typedTable ()
+    if onlyChain || onlyQr || onlyElementary || onlySpecial then
+        ()
+    elif onlyState then
+        stateTable ()
+    else
+        typedTable ()
 
     0

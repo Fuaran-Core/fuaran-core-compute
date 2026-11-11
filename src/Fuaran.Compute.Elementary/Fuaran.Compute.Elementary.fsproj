@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>true</IsPackable>
     <PackageId>Fuaran.Compute.Elementary</PackageId>
-    <Description>Fuaran.Compute.Elementary — the scalar pinned mathematics at the bottom of Fuaran.Compute's package graph: exp, ln, log10 and float-exponent pow behind one special-value table, erfc and the normal distribution, density and quantile, each one argument reduction and one polynomial written with + − × ÷ and comparisons alone, in one order, so their answers are byte-identical on .NET, under Fable and in every host that transcribes them; and Rng, a pinned SplitMix64 generator computed in 16-bit limbs, whose every draw is the same sixty-four bits on every host. No fused multiply-add and no host mathematics call on any host. FSharp.Core only; Fable-clean.</Description>
+    <Description>Fuaran.Compute.Elementary — the scalar pinned mathematics at the bottom of Fuaran.Compute's package graph: exp, ln, log10 and float-exponent pow behind one special-value table, erfc and the normal distribution, density and quantile, each one argument reduction and one polynomial written with + − × ÷ and comparisons alone, in one order, so their answers are byte-identical on .NET, under Fable and in every host that transcribes them; and Rng, a pinned SplitMix64 generator computed in 16-bit limbs, whose every draw is the same sixty-four bits on every host; and Special, the pinned gamma and beta functions, their logarithms, the regularized incomplete gamma and beta functions, the inverse incomplete beta and the polygamma functions, each measured against a fifty-digit reference. No fused multiply-add and no host mathematics call on any host. FSharp.Core only; Fable-clean.</Description>
   </PropertyGroup>
   <ItemGroup>
     <!-- The pinned exp, ln, log10 and float-exponent pow, D43's special-value table (Phase 593), and the
@@ -13,6 +13,9 @@
     <Compile Include="Elementary.fs" />
     <!-- The pinned SplitMix64 generator every seeded step draws from (Phase 621, DECISIONS.md D76). -->
     <Compile Include="Rng.fs" />
+    <!-- The pinned special functions: gamma, beta, their incomplete and inverse forms, polygamma
+         (Phase 631, DECISIONS.md D78). After Elementary.fs, whose exp, ln and pow they read. -->
+    <Compile Include="Special.fs" />
     <!-- Every public operation's exactness class, as data. -->
     <Compile Include="Operations.fs" />
     <!-- The law family over the operations above. LAST: it reads all of them. -->
@@ -20,7 +23,8 @@
   </ItemGroup>
   <ItemGroup>
     <!-- The pinned solvers, the one package below this one (Phase 633, DECISIONS.md D77): the special
-         functions' inverses call them. Nothing here reads them yet. -->
+         functions' series stop on its StoppingRule and the inverse incomplete beta is its
+         Root.bracketedNewton (Phase 631, DECISIONS.md D78). -->
     <ProjectReference Include="..\Fuaran.Compute.Solvers\Fuaran.Compute.Solvers.fsproj" />
   </ItemGroup>
   <ItemGroup>

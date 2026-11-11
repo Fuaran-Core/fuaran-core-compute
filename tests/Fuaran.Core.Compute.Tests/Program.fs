@@ -150,6 +150,16 @@ let main argv =
     //   dotnet run --project tests/Fuaran.Core.Compute.Tests --no-build -- --clock-leg
     // Further arguments go to Expecto. The leg fails on fewer cases run than the inventory holds, so
     // a filter that matches nothing — or matches some — cannot pass it vacuously.
+    // The lines the special functions' reference script reads (Phase 631), one per vector that carries
+    // a reference:
+    //   dotnet run --project tests/Fuaran.Core.Compute.Tests -- --special-reference-cases > cases.txt
+    //   python tests/Fuaran.Core.Compute.Tests/SpecialReference/special_reference.py references < cases.txt
+    // whose output is what `SpecialVectors.references` holds.
+    | "--special-reference-cases" :: _ ->
+        for line in SpecialVectors.referenceCases () do
+            printfn "%s" line
+
+        0
     | "--clock-leg" :: rest -> ClockLeg.run rest
     // The calibration probe (Phase 285): the saturation guard's workload, `n` readings, quiet or
     // under load — the measurement k in ScalingTests.Calibration is justified from:

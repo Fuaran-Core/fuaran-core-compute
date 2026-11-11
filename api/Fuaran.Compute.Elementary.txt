@@ -27,6 +27,17 @@ method Fuaran.Compute.Elementary.Rng.below(Fuaran.Compute.Elementary.Rng+Stream,
 method Fuaran.Compute.Elementary.Rng.next(Fuaran.Compute.Elementary.Rng+Stream) : System.UInt64
 method Fuaran.Compute.Elementary.Rng.ofSeed(System.Int64, System.Int32) : Fuaran.Compute.Elementary.Rng+Stream
 method Fuaran.Compute.Elementary.Rng.uniform53(Fuaran.Compute.Elementary.Rng+Stream) : System.Double
+method Fuaran.Compute.Elementary.Special.beta(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.betaLn(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.digamma(System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.gamma(System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.gammaLn(System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.inverseRegularizedBeta(System.Double, System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.polygamma(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.regularizedBeta(System.Double, System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.regularizedGammaP(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.regularizedGammaQ(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.trigamma(System.Double) : System.Double
 property Fuaran.Compute.Elementary.ElementaryOperations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.Elementary.ElementaryOperations+Exactness>> { get }
 type Fuaran.Compute.Elementary.Elementary (module)
 type Fuaran.Compute.Elementary.ElementaryLaws (module)
@@ -35,6 +46,7 @@ type Fuaran.Compute.Elementary.ElementaryOperations+Exactness (union)
 type Fuaran.Compute.Elementary.ElementaryOperations+Exactness+Tags (type)
 type Fuaran.Compute.Elementary.Rng (module)
 type Fuaran.Compute.Elementary.Rng+Stream (type)
+type Fuaran.Compute.Elementary.Special (module)
 type Fuaran.Compute.Elementary.SpecialValue (union)
 type Fuaran.Compute.Elementary.SpecialValue+Tags (type)
 type Fuaran.Compute.Elementary.SpecialValue+Value (type)

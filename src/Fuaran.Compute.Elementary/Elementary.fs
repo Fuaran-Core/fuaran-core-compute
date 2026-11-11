@@ -99,18 +99,18 @@ module Elementary =
 
     // ---- integer-valued floats, with + and − only -------------------------------------------------
 
-    let private twoTo52 = 4503599627370496.0
+    let internal twoTo52 = 4503599627370496.0
     let private twoTo53 = 9007199254740992.0
 
     /// Whether a finite `y` is an integer: at or above `2^52` every float is; below, adding and
     /// subtracting `2^52` rounds `|y|` to the nearest integer, and `y` is one exactly when that is `|y|`.
-    let private isInteger (y: float) : bool =
+    let internal isInteger (y: float) : bool =
         let ay = if y < 0.0 then -y else y
         ay >= twoTo52 || (ay + twoTo52) - twoTo52 = ay
 
     /// Whether a finite integer-valued `y` is odd: at or above `2^53` every integer is even; below,
     /// `|y| / 2` is exact and odd means it is not an integer.
-    let private isOddInteger (y: float) : bool =
+    let internal isOddInteger (y: float) : bool =
         let ay = if y < 0.0 then -y else y
         ay < twoTo53 && not (isInteger (ay * 0.5))
 
@@ -306,7 +306,7 @@ module Elementary =
     let private splitter = 134217729.0
 
     /// `a + b` as the rounded sum and its exact error.
-    let private twoSum (a: float) (b: float) : struct (float * float) =
+    let internal twoSum (a: float) (b: float) : struct (float * float) =
         let s = a + b
         let bb = s - a
         struct (s, (a - (s - bb)) + (b - bb))
@@ -318,7 +318,7 @@ module Elementary =
 
     /// `a · b` as the rounded product and its exact error, each factor split into two halves of
     /// twenty-six bits (no overflow for `|a|, |b|` below `2^996`, which every caller keeps).
-    let private twoProd (a: float) (b: float) : struct (float * float) =
+    let internal twoProd (a: float) (b: float) : struct (float * float) =
         let p = a * b
         let ca = splitter * a
         let ah = ca - (ca - a)
