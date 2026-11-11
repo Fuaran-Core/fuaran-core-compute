@@ -554,10 +554,11 @@ module LawVectorExport =
 
     /// Every law set this repository emits, as (path under `corpusDir`, rendered bytes) — the one
     /// list `write` walks, so a family added here cannot be rendered and then forgotten by the
-    /// writer. Four sets: the transform-parity family's drawn reference answers, the
+    /// writer. Five sets: the transform-parity family's drawn reference answers, the
     /// dataframeParity family's answers over its authored cases, the linear-algebra package's
-    /// answers over its authored hard inputs (Phase 590), and the elementary package's over its own
-    /// (Phase 593; their own file since Phase 630). (The substrate's own
+    /// answers over its authored hard inputs (Phase 590), the elementary package's over its own
+    /// (Phase 593; their own file since Phase 630), and the regression package's (Phase 591; their own
+    /// file since Phase 632). (The substrate's own
     /// `capabilityLaws` vectors are emitted by the substrate, beside the law they certify.)
     let emitted (corpusDir: string) : (string * string) list =
         [ transformPath corpusDir, renderTransformVectors ()
@@ -565,7 +566,9 @@ module LawVectorExport =
           // Phase 590: the linear-algebra hard-input vectors.
           Path.Combine(familyDir corpusDir, LinearAlgebraVectors.fileName), LinearAlgebraVectors.render ()
           // Phase 630: the elementary hard-input vectors, moved out of the linear-algebra file.
-          Path.Combine(familyDir corpusDir, ElementaryVectors.fileName), ElementaryVectors.render () ]
+          Path.Combine(familyDir corpusDir, ElementaryVectors.fileName), ElementaryVectors.render ()
+          // Phase 632: the regression hard-input vectors, moved out of the linear-algebra file.
+          Path.Combine(familyDir corpusDir, RegressionVectors.fileName), RegressionVectors.render () ]
 
     /// Write the vectors with LF endings, whatever the host platform — the corpus is byte-compared
     /// by several hosts on three operating systems.

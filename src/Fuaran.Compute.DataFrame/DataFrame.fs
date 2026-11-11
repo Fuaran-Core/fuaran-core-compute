@@ -2,6 +2,7 @@ namespace Fuaran.Compute
 
 open Fuaran.Core
 open Fuaran.Compute.Elementary
+open Fuaran.Compute.Regression
 // The frame's vector cases, over Core's `ColumnData` cases of the same names (Phase 423).
 open type Vec
 
@@ -484,7 +485,7 @@ type FnDef =
 /// The error distribution a `Fit` assumes (Phase 592, `DECISIONS.md` D5 of the accepted plan): one
 /// verb, the family and the link as data. `Gaussian` under `FitLink.Identity` is ordinary least
 /// squares; every other admitted pair is a generalised linear model fitted by IRLS through
-/// `Fuaran.Compute.LinearAlgebra.Glm` — `Poisson` and `Gamma` (Phase 595), `Tweedie` and
+/// `Fuaran.Compute.Regression.Glm` — `Poisson` and `Gamma` (Phase 595), `Tweedie` and
 /// `QuasiPoisson` (Phase 598), the binomials, inverse Gaussian and the negative binomial under the
 /// whole link set (Phase 600, `DECISIONS.md` D58), the pairs `Glm.admitted` names. The wire refuses a
 /// pair outside that table when it decodes; one built in memory is refused by name when the step runs
@@ -802,7 +803,7 @@ type Transform =
     /// `{"$type":"define","name":…,"params":[{"name":…,"default":<slot>?},…],"body":…}`.
     | Define of FnDef
     /// Phase 592 — fit a regression (plan §2.4, `DECISIONS.md` D53): one factorization per group by the
-    /// streaming Givens QR of `Fuaran.Compute.LinearAlgebra`, answering the table `FitOutput` names.
+    /// streaming Givens QR of `Fuaran.Compute.Regression`, answering the table `FitOutput` names.
     /// Wire: `{"$type":"fit","response":…,"predictors":[{"name":…,"expr":…},…],"intercept":…,
     /// "groupBy":[…],"weights":…?,"offset":…?,"ridge":<slot>?,"family":…,"link":…,
     /// "control":{"maxIter":<slot>,"tol":<slot>},"output":…}`.
@@ -11701,7 +11702,7 @@ module DataFrame =
     // -----------------------------------------------------------------------------------------
     //  Phase 592 — `Fit` (plan §2.4, `DECISIONS.md` D53). The frame-to-matrix bridge, the units,
     //  and the tables a fit answers live here; the algebra — the streaming Givens QR, the rank
-    //  rule and the solve — is `Fuaran.Compute.LinearAlgebra`'s, called and never restated.
+    //  rule and the solve — is `Fuaran.Compute.Regression`'s, called and never restated.
     // -----------------------------------------------------------------------------------------
 
     /// The wire spelling of a family — what the codec writes and `UnsupportedFit` names.
@@ -11729,35 +11730,35 @@ module DataFrame =
         | FitLink.InverseSquare -> "inverseSquare"
         | FitLink.Sqrt -> "sqrt"
 
-    /// The family as `Fuaran.Compute.LinearAlgebra` names it.
-    let internal glmFamily (f: FitFamily) : LinearAlgebra.GlmFamily =
+    /// The family as `Fuaran.Compute.Regression` names it.
+    let internal glmFamily (f: FitFamily) : GlmFamily =
         match f with
-        | FitFamily.Gaussian -> LinearAlgebra.GlmFamily.Gaussian
-        | FitFamily.Poisson -> LinearAlgebra.GlmFamily.Poisson
-        | FitFamily.Gamma -> LinearAlgebra.GlmFamily.Gamma
-        | FitFamily.Tweedie p -> LinearAlgebra.GlmFamily.Tweedie p
-        | FitFamily.QuasiPoisson -> LinearAlgebra.GlmFamily.QuasiPoisson
-        | FitFamily.Binomial -> LinearAlgebra.GlmFamily.Binomial
-        | FitFamily.QuasiBinomial -> LinearAlgebra.GlmFamily.QuasiBinomial
-        | FitFamily.InverseGaussian -> LinearAlgebra.GlmFamily.InverseGaussian
-        | FitFamily.NegativeBinomial t -> LinearAlgebra.GlmFamily.NegativeBinomial t
+        | FitFamily.Gaussian -> GlmFamily.Gaussian
+        | FitFamily.Poisson -> GlmFamily.Poisson
+        | FitFamily.Gamma -> GlmFamily.Gamma
+        | FitFamily.Tweedie p -> GlmFamily.Tweedie p
+        | FitFamily.QuasiPoisson -> GlmFamily.QuasiPoisson
+        | FitFamily.Binomial -> GlmFamily.Binomial
+        | FitFamily.QuasiBinomial -> GlmFamily.QuasiBinomial
+        | FitFamily.InverseGaussian -> GlmFamily.InverseGaussian
+        | FitFamily.NegativeBinomial t -> GlmFamily.NegativeBinomial t
 
-    /// The link as `Fuaran.Compute.LinearAlgebra` names it.
-    let internal glmLink (l: FitLink) : LinearAlgebra.GlmLink =
+    /// The link as `Fuaran.Compute.Regression` names it.
+    let internal glmLink (l: FitLink) : GlmLink =
         match l with
-        | FitLink.Identity -> LinearAlgebra.GlmLink.Identity
-        | FitLink.Log -> LinearAlgebra.GlmLink.Log
-        | FitLink.Logit -> LinearAlgebra.GlmLink.Logit
-        | FitLink.Probit -> LinearAlgebra.GlmLink.Probit
-        | FitLink.Cloglog -> LinearAlgebra.GlmLink.Cloglog
-        | FitLink.Inverse -> LinearAlgebra.GlmLink.Inverse
-        | FitLink.InverseSquare -> LinearAlgebra.GlmLink.InverseSquare
-        | FitLink.Sqrt -> LinearAlgebra.GlmLink.Sqrt
+        | FitLink.Identity -> GlmLink.Identity
+        | FitLink.Log -> GlmLink.Log
+        | FitLink.Logit -> GlmLink.Logit
+        | FitLink.Probit -> GlmLink.Probit
+        | FitLink.Cloglog -> GlmLink.Cloglog
+        | FitLink.Inverse -> GlmLink.Inverse
+        | FitLink.InverseSquare -> GlmLink.InverseSquare
+        | FitLink.Sqrt -> GlmLink.Sqrt
 
     /// Whether `Fit` evaluates the pair (Phase 600): `Glm.admitted`'s table, one table for the codec
     /// and the evaluator.
     let internal fitAdmitted (family: FitFamily) (link: FitLink) : bool =
-        LinearAlgebra.Glm.admitted (glmFamily family) (glmLink link)
+        Glm.admitted (glmFamily family) (glmLink link)
 
     /// Whether a spec is ordinary least squares — Gaussian under the identity link — which folds into
     /// the streaming accumulator and is maintained; every other admitted pair is fitted by IRLS.
@@ -12437,14 +12438,14 @@ module DataFrame =
                                                   Coding = coding })))))
 
     /// The data accumulator of one group: its member rows from `from` on folded onto `acc`, in member
-    /// order (D49 items 8 and 9). `addRows` over the batch, which `LinearAlgebraLaws` holds byte-equal
+    /// order (D49 items 8 and 9). `addRows` over the batch, which `RegressionLaws` holds byte-equal
     /// to `addRow` row by row — so a group extended by its appended rows is the group folded whole.
     let private fitFold
         (d: FitDesign)
         (members: int[])
         (from: int)
-        (acc: LinearAlgebra.QRAccumulator)
-        : Result<LinearAlgebra.QRAccumulator, EvalError> =
+        (acc: QRAccumulator)
+        : Result<QRAccumulator, EvalError> =
         let rows = members.Length - from
 
         if rows <= 0 then
@@ -12462,7 +12463,7 @@ module DataFrame =
 
             let w = Vector.adopt (Array.init rows (fun r -> d.W[members[from + r]]))
 
-            LinearAlgebra.QRAccumulator.addRows x y w acc
+            QRAccumulator.addRows x y w acc
             |> Result.mapError (fun e ->
                 match e with
                 | LinearAlgebra.LinAlgError.InvalidWeight r ->
@@ -12500,7 +12501,7 @@ module DataFrame =
             Iterations: int
             /// The factorization the standard errors read — for a GLM its last weighted solve — which a
             /// `Predict` reads a row's standard errors from (Phase 597).
-            Ls: LinearAlgebra.LeastSquaresFit
+            Ls: LeastSquaresFit
             /// The negative binomial's θ, its standard error where estimated, and the alternations the
             /// estimate took (Phase 600); `None`, `None` and zero for every other family.
             Theta: float option
@@ -12509,13 +12510,13 @@ module DataFrame =
         }
 
     /// The sandwich variant a spec's standard errors name, if any (Phase 598, D57).
-    let private fitRobustVariant (e: FitStdErrors) : LinearAlgebra.RobustVariant option =
+    let private fitRobustVariant (e: FitStdErrors) : RobustVariant option =
         match e with
         | FitStdErrors.Classical -> None
-        | FitStdErrors.HC0 -> Some LinearAlgebra.RobustVariant.HC0
-        | FitStdErrors.HC1 -> Some LinearAlgebra.RobustVariant.HC1
-        | FitStdErrors.HC2 -> Some LinearAlgebra.RobustVariant.HC2
-        | FitStdErrors.HC3 -> Some LinearAlgebra.RobustVariant.HC3
+        | FitStdErrors.HC0 -> Some RobustVariant.HC0
+        | FitStdErrors.HC1 -> Some RobustVariant.HC1
+        | FitStdErrors.HC2 -> Some RobustVariant.HC2
+        | FitStdErrors.HC3 -> Some RobustVariant.HC3
 
     /// A group's design over its members, row `t` the member `members[t]`'s design row.
     let private fitGroupMatrix (d: FitDesign) (members: int[]) : LinearAlgebra.Matrix =
@@ -12536,7 +12537,7 @@ module DataFrame =
         (r: FitResolved)
         (spec: FitSpec)
         (members: int[])
-        (data: LinearAlgebra.QRAccumulator)
+        (data: QRAccumulator)
         : Result<FitGroup, EvalError> =
         let p = d.P
 
@@ -12553,7 +12554,7 @@ module DataFrame =
                     let x =
                         LinearAlgebra.Matrix.init rows p (fun i j -> if j = first + i then s else 0.0)
 
-                    LinearAlgebra.QRAccumulator.addRows
+                    QRAccumulator.addRows
                         x
                         (Vector.adopt (Array.zeroCreate rows))
                         (Vector.adopt (Array.create rows 1.0))
@@ -12564,7 +12565,7 @@ module DataFrame =
 
         penalised
         |> Result.bind (fun acc ->
-            LinearAlgebra.LeastSquares.ofAccumulator acc
+            LeastSquares.ofAccumulator acc
             |> Result.mapError (fun e -> FitError("fit: " + linAlgText e)))
         |> Result.bind (fun ls ->
             let beta = ls.Coefficients |> List.toArray
@@ -12715,7 +12716,7 @@ module DataFrame =
                 let stdErrors =
                     match fitRobustVariant spec.StdErrors with
                     | Some variant ->
-                        LinearAlgebra.LeastSquares.robustStandardErrors
+                        LeastSquares.robustStandardErrors
                             variant
                             (fitGroupMatrix d members)
                             (Vector.adopt (Array.init m (fun t -> d.W[members[t]])))
@@ -12725,7 +12726,7 @@ module DataFrame =
                         |> Result.mapError (fun e -> FitError("fit: " + linAlgText e))
                     | None ->
                         match dispersion with
-                        | Some phi -> Ok(LinearAlgebra.LeastSquares.standardErrors phi ls |> List.toArray)
+                        | Some phi -> Ok(LeastSquares.standardErrors phi ls |> List.toArray)
                         | None -> Ok(Array.create p None)
 
                 stdErrors
@@ -12753,7 +12754,7 @@ module DataFrame =
                       Alternations = 0
                       Ls = ls })))
 
-    /// One group's generalised linear model (Phase 595): `LinearAlgebra.Glm.fit` over the group's rows
+    /// One group's generalised linear model (Phase 595): `Glm.fit` over the group's rows
     /// in member order — the design, the estimation response, the prior weights and the offset as the
     /// bridge assembled them — and the null deviance by `Glm.nullDeviance`. The fitted value is the mean
     /// `μ` and the residual the response residual `y − μ`; for a decimal response the fitted value is
@@ -12793,23 +12794,23 @@ module DataFrame =
                 rowError members[t] "the mean left the range its family and link allow"
             | other -> FitError("fit: " + linAlgText other)
 
-        match LinearAlgebra.GlmControl.create r.MaxIter r.Tol with
+        match GlmControl.create r.MaxIter r.Tol with
         | None -> Error(FitError "fit: the control is out of range")
         | Some control ->
-            LinearAlgebra.Glm.fit family link control x y w o
+            Glm.fit family link control x y w o
             |> Result.bind (fun g ->
                 // An estimated negative binomial's null model is stated at the fit's θ (D58 item 8).
                 let nullFamily =
                     match family with
-                    | LinearAlgebra.GlmFamily.NegativeBinomial None -> LinearAlgebra.GlmFamily.NegativeBinomial g.Theta
+                    | GlmFamily.NegativeBinomial None -> GlmFamily.NegativeBinomial g.Theta
                     | other -> other
 
-                LinearAlgebra.Glm.nullDeviance nullFamily link control spec.Intercept y w o
+                Glm.nullDeviance nullFamily link control spec.Intercept y w o
                 |> Result.bind (fun nul ->
                     // Phase 598 (D57): the sandwich in the fit's working weights and residuals.
                     match fitRobustVariant spec.StdErrors with
                     | Some variant ->
-                        LinearAlgebra.Glm.robustStandardErrors variant x g
+                        Glm.robustStandardErrors variant x g
                         |> Result.map (fun se -> g, nul, List.toArray se)
                     | None -> Ok(g, nul, List.toArray g.StdErrors)))
             |> Result.mapError refuse
@@ -12889,9 +12890,9 @@ module DataFrame =
         (r: FitResolved)
         (spec: FitSpec)
         (members: int[])
-        (acc0: LinearAlgebra.QRAccumulator)
+        (acc0: QRAccumulator)
         (from: int)
-        : Result<LinearAlgebra.QRAccumulator * FitGroup, EvalError> =
+        : Result<QRAccumulator * FitGroup, EvalError> =
         if not (fitIsOls spec) then
             fitGlmGroupOf d r spec members |> Result.map (fun fg -> acc0, fg)
         else
@@ -12902,7 +12903,7 @@ module DataFrame =
     /// and, per group token, the group's member row tokens in order and its data accumulator.
     type internal FitMemo =
         { Layout: string
-          Groups: Map<string, string[] * LinearAlgebra.QRAccumulator> }
+          Groups: Map<string, string[] * QRAccumulator> }
 
     /// The memo of a fit nothing maintains.
     let internal emptyFitMemo: FitMemo = { Layout = ""; Groups = Map.empty }
@@ -12938,8 +12939,8 @@ module DataFrame =
                 let groups = d.Members.Length
                 let keyToken (g: int) = rowTokenStringOfArray d.KeyCells[g]
 
-                let start (g: int) : LinearAlgebra.QRAccumulator * int =
-                    let fresh = LinearAlgebra.QRAccumulator.empty d.P, 0
+                let start (g: int) : QRAccumulator * int =
+                    let fresh = QRAccumulator.empty d.P, 0
 
                     match rows with
                     | Some rr when prior.Layout = layout ->
@@ -12961,7 +12962,7 @@ module DataFrame =
                 // pinned start on every evaluation (D49 item 22; a warm start is never certified).
                 let glm = not (fitIsOls spec)
                 let mutable refit = 0
-                let accs = Array.zeroCreate<LinearAlgebra.QRAccumulator> groups
+                let accs = Array.zeroCreate<QRAccumulator> groups
                 let fits = Array.zeroCreate<FitGroup> groups
                 let mutable failure = None
                 let mutable g = 0
@@ -12969,11 +12970,7 @@ module DataFrame =
                 while Option.isNone failure && g < groups do
                     let gi = g
 
-                    let acc0, from =
-                        if glm then
-                            LinearAlgebra.QRAccumulator.empty d.P, 0
-                        else
-                            start gi
+                    let acc0, from = if glm then QRAccumulator.empty d.P, 0 else start gi
 
                     if from = 0 then
                         refit <- refit + 1
@@ -13374,7 +13371,7 @@ module DataFrame =
 
     /// The quadratic form `x₀ᵀ(RᵀR)⁻¹x₀` over the kept columns (D56 item 4): `z` with `Rᵀz = x₀` by
     /// `UpperTriangular.solveUpperT`, then `Σ zᵢ²` left to right.
-    let private quadraticForm (ls: LinearAlgebra.LeastSquaresFit) (x: float[]) : Result<float, EvalError> =
+    let private quadraticForm (ls: LeastSquaresFit) (x: float[]) : Result<float, EvalError> =
         let kept = ls.Kept |> List.toArray
         let b = Vector.adopt (kept |> Array.map (fun j -> x[j]))
 
@@ -13426,8 +13423,7 @@ module DataFrame =
                 d.Members
                 |> Array.toList
                 |> List.map (fun members ->
-                    fitOneGroup d resolved fit members (LinearAlgebra.QRAccumulator.empty d.P) 0
-                    |> Result.map snd)
+                    fitOneGroup d resolved fit members (QRAccumulator.empty d.P) 0 |> Result.map snd)
                 |> sequenceR
                 |> Result.bind (fun fits ->
                     predictDesign k env f fit d.Coding d.P
@@ -13455,25 +13451,15 @@ module DataFrame =
                                 let fg = fits[groupOf[i]]
                                 let eta = linearPredictor fg.Estimates x off
 
-                                if response && not (LinearAlgebra.Glm.validPredictor family link eta) then
+                                if response && not (Glm.validPredictor family link eta) then
                                     failure <- Some(predictOutOfRange i)
                                 else
                                     // On the response scale the mean is `g⁻¹(η)` and a standard error
                                     // `|dμ/dη|` times the link scale's (D58 item 7): `1` under the
                                     // identity link, so least squares is unchanged bit for bit.
-                                    let slope =
-                                        if response then
-                                            abs (LinearAlgebra.Glm.meanDerivative link eta)
-                                        else
-                                            1.0
+                                    let slope = if response then abs (Glm.meanDerivative link eta) else 1.0
 
-                                    predicted[i] <-
-                                        Float(
-                                            if response then
-                                                LinearAlgebra.Glm.inverseLink link eta
-                                            else
-                                                eta
-                                        )
+                                    predicted[i] <- Float(if response then Glm.inverseLink link eta else eta)
 
                                     match fg.Dispersion with
                                     | None -> ()
@@ -13511,7 +13497,7 @@ module DataFrame =
                                                     // mean is null.
                                                     let lo, hi =
                                                         if response then
-                                                            LinearAlgebra.Glm.responseInterval family link eta a b
+                                                            Glm.responseInterval family link eta a b
                                                         else
                                                             Some a, Some b
 
@@ -13719,8 +13705,8 @@ module DataFrame =
                                     match spec.Scale with
                                     | PredictScale.Link -> predicted[i] <- Float eta
                                     | PredictScale.Response ->
-                                        if LinearAlgebra.Glm.validPredictor family link eta then
-                                            predicted[i] <- Float(LinearAlgebra.Glm.inverseLink link eta)
+                                        if Glm.validPredictor family link eta then
+                                            predicted[i] <- Float(Glm.inverseLink link eta)
                                         else
                                             failure <- Some(predictOutOfRange i)
 

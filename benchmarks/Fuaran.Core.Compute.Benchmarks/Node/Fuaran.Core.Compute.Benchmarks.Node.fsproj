@@ -40,6 +40,8 @@
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
     <!-- Phase 591: the dense-matrix library, whose streaming QR the qr family times. -->
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
+    <!-- Phase 632: the streaming accumulator the qr family times is Fuaran.Compute.Regression's. -->
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />
     <!-- Phase 355: the state-codec laws, run on this host before the state's wire form is measured. -->
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />
   </ItemGroup>

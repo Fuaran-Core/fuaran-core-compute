@@ -1,0 +1,136 @@
+# Fuaran.Compute.Regression — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+field Fuaran.Compute.Regression.GlmFamily+Tags.Binomial : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmFamily+Tags.Gamma : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmFamily+Tags.Gaussian : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmFamily+Tags.InverseGaussian : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmFamily+Tags.NegativeBinomial : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmFamily+Tags.Poisson : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmFamily+Tags.QuasiBinomial : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmFamily+Tags.QuasiPoisson : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmFamily+Tags.Tweedie : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmLink+Tags.Cloglog : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmLink+Tags.Identity : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmLink+Tags.Inverse : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmLink+Tags.InverseSquare : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmLink+Tags.Log : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmLink+Tags.Logit : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmLink+Tags.Probit : System.Int32 (literal)
+field Fuaran.Compute.Regression.GlmLink+Tags.Sqrt : System.Int32 (literal)
+field Fuaran.Compute.Regression.RegressionOperations+Exactness+Tags.HostRounded : System.Int32 (literal)
+field Fuaran.Compute.Regression.RegressionOperations+Exactness+Tags.Pinned : System.Int32 (literal)
+field Fuaran.Compute.Regression.RobustVariant+Tags.HC0 : System.Int32 (literal)
+field Fuaran.Compute.Regression.RobustVariant+Tags.HC1 : System.Int32 (literal)
+field Fuaran.Compute.Regression.RobustVariant+Tags.HC2 : System.Int32 (literal)
+field Fuaran.Compute.Regression.RobustVariant+Tags.HC3 : System.Int32 (literal)
+method Fuaran.Compute.Regression.Glm.admitted(Fuaran.Compute.Regression.GlmFamily, Fuaran.Compute.Regression.GlmLink) : System.Boolean
+method Fuaran.Compute.Regression.Glm.defaultLink(Fuaran.Compute.Regression.GlmFamily) : Fuaran.Compute.Regression.GlmLink
+method Fuaran.Compute.Regression.Glm.fit(Fuaran.Compute.Regression.GlmFamily, Fuaran.Compute.Regression.GlmLink, Fuaran.Compute.Regression.GlmControl, Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Regression.GlmFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.Glm.inverseLink(Fuaran.Compute.Regression.GlmLink, System.Double) : System.Double
+method Fuaran.Compute.Regression.Glm.linkFunction(Fuaran.Compute.Regression.GlmLink, System.Double) : System.Double
+method Fuaran.Compute.Regression.Glm.meanDerivative(Fuaran.Compute.Regression.GlmLink, System.Double) : System.Double
+method Fuaran.Compute.Regression.Glm.nullDeviance(Fuaran.Compute.Regression.GlmFamily, Fuaran.Compute.Regression.GlmLink, Fuaran.Compute.Regression.GlmControl, System.Boolean, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.Glm.responseInterval(Fuaran.Compute.Regression.GlmFamily, Fuaran.Compute.Regression.GlmLink, System.Double, System.Double, System.Double) : System.Tuple`2<Microsoft.FSharp.Core.FSharpOption`1<System.Double>, Microsoft.FSharp.Core.FSharpOption`1<System.Double>>
+method Fuaran.Compute.Regression.Glm.robustStandardErrors(Fuaran.Compute.Regression.RobustVariant, Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Compute.Regression.GlmFit) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>>, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.Glm.validPredictor(Fuaran.Compute.Regression.GlmFamily, Fuaran.Compute.Regression.GlmLink, System.Double) : System.Boolean
+method Fuaran.Compute.Regression.GlmControlModule.create(System.Int32, System.Double) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Regression.GlmControl>
+method Fuaran.Compute.Regression.LeastSquares.ofAccumulator(Fuaran.Compute.Regression.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Regression.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.LeastSquares.requireFullRank(Fuaran.Compute.Regression.LeastSquaresFit) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Regression.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.LeastSquares.robustStandardErrors(Fuaran.Compute.Regression.RobustVariant, Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.Regression.LeastSquaresFit) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>>, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.LeastSquares.solve(Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Regression.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.LeastSquares.standardErrors(System.Double, Fuaran.Compute.Regression.LeastSquaresFit) : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>>
+method Fuaran.Compute.Regression.QRAccumulatorModule.addRow(Fuaran.Core.Vector`1<System.Double>, System.Double, System.Double, Fuaran.Compute.Regression.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Regression.QRAccumulator, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.QRAccumulatorModule.addRows(Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.Regression.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Regression.QRAccumulator, Fuaran.Compute.LinearAlgebra.LinAlgError>
+method Fuaran.Compute.Regression.QRAccumulatorModule.cols(Fuaran.Compute.Regression.QRAccumulator) : System.Int32
+method Fuaran.Compute.Regression.QRAccumulatorModule.count(Fuaran.Compute.Regression.QRAccumulator) : System.Int32
+method Fuaran.Compute.Regression.QRAccumulatorModule.empty(System.Int32) : Fuaran.Compute.Regression.QRAccumulator
+method Fuaran.Compute.Regression.QRAccumulatorModule.qty(Fuaran.Compute.Regression.QRAccumulator) : Fuaran.Core.Vector`1<System.Double>
+method Fuaran.Compute.Regression.QRAccumulatorModule.r(Fuaran.Compute.Regression.QRAccumulator) : Fuaran.Compute.LinearAlgebra.Matrix
+method Fuaran.Compute.Regression.QRAccumulatorModule.rss(Fuaran.Compute.Regression.QRAccumulator) : System.Double
+method Fuaran.Compute.Regression.RegressionLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
+method Fuaran.Compute.Regression.RegressionOperations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Regression.RegressionOperations+Exactness>
+method Fuaran.Compute.Regression.RegressionWire.accumulatorOfJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Regression.QRAccumulator, Fuaran.Core.DecodeError>
+method Fuaran.Compute.Regression.RegressionWire.accumulatorToJson(Fuaran.Compute.Regression.QRAccumulator) : Fuaran.Core.JVal
+method Fuaran.Compute.Regression.RegressionWire.decodeAccumulator(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Regression.QRAccumulator, Fuaran.Core.DecodeError>
+method Fuaran.Compute.Regression.RegressionWire.encodeAccumulator(Fuaran.Compute.Regression.QRAccumulator) : System.String
+property Fuaran.Compute.Regression.GlmControl.MaxIter : System.Int32 { get }
+property Fuaran.Compute.Regression.GlmControl.Tol : System.Double { get }
+property Fuaran.Compute.Regression.GlmControlModule.defaults : Fuaran.Compute.Regression.GlmControl { get }
+property Fuaran.Compute.Regression.GlmFit.Alternations : System.Int32 { get }
+property Fuaran.Compute.Regression.GlmFit.Coefficients : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>> { get }
+property Fuaran.Compute.Regression.GlmFit.Count : System.Int32 { get }
+property Fuaran.Compute.Regression.GlmFit.Deviance : System.Double { get }
+property Fuaran.Compute.Regression.GlmFit.Dispersion : Microsoft.FSharp.Core.FSharpOption`1<System.Double> { get }
+property Fuaran.Compute.Regression.GlmFit.Fitted : Fuaran.Core.Vector`1<System.Double> { get }
+property Fuaran.Compute.Regression.GlmFit.Iterations : System.Int32 { get }
+property Fuaran.Compute.Regression.GlmFit.LeastSquares : Fuaran.Compute.Regression.LeastSquaresFit { get }
+property Fuaran.Compute.Regression.GlmFit.LinearPredictor : Fuaran.Core.Vector`1<System.Double> { get }
+property Fuaran.Compute.Regression.GlmFit.Rank : System.Int32 { get }
+property Fuaran.Compute.Regression.GlmFit.ResidualDf : System.Int32 { get }
+property Fuaran.Compute.Regression.GlmFit.StdErrors : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>> { get }
+property Fuaran.Compute.Regression.GlmFit.Theta : Microsoft.FSharp.Core.FSharpOption`1<System.Double> { get }
+property Fuaran.Compute.Regression.GlmFit.ThetaStdError : Microsoft.FSharp.Core.FSharpOption`1<System.Double> { get }
+property Fuaran.Compute.Regression.GlmFit.WorkingResiduals : Fuaran.Core.Vector`1<System.Double> { get }
+property Fuaran.Compute.Regression.GlmFit.WorkingWeights : Fuaran.Core.Vector`1<System.Double> { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.Aliased : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.Coefficients : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>> { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.Count : System.Int32 { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.Kept : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.Qty : Fuaran.Core.Vector`1<System.Double> { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.R : Fuaran.Compute.LinearAlgebra.UpperTriangular { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.RInverse : Fuaran.Compute.LinearAlgebra.Matrix { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.Rank : System.Int32 { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.ResidualDf : System.Int32 { get }
+property Fuaran.Compute.Regression.LeastSquaresFit.Rss : System.Double { get }
+property Fuaran.Compute.Regression.QRAccumulator.Cols : System.Int32 { get }
+property Fuaran.Compute.Regression.QRAccumulator.Count : System.Int32 { get }
+property Fuaran.Compute.Regression.QRAccumulator.Rss : System.Double { get }
+property Fuaran.Compute.Regression.RegressionOperations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.Regression.RegressionOperations+Exactness>> { get }
+type Fuaran.Compute.Regression.Glm (module)
+type Fuaran.Compute.Regression.GlmControl (type)
+type Fuaran.Compute.Regression.GlmControlModule (module)
+type Fuaran.Compute.Regression.GlmFamily (union)
+type Fuaran.Compute.Regression.GlmFamily+NegativeBinomial (type)
+type Fuaran.Compute.Regression.GlmFamily+Tags (type)
+type Fuaran.Compute.Regression.GlmFamily+Tweedie (type)
+type Fuaran.Compute.Regression.GlmFit (type)
+type Fuaran.Compute.Regression.GlmLink (union)
+type Fuaran.Compute.Regression.GlmLink+Tags (type)
+type Fuaran.Compute.Regression.LeastSquares (module)
+type Fuaran.Compute.Regression.LeastSquaresFit (type)
+type Fuaran.Compute.Regression.QRAccumulator (type)
+type Fuaran.Compute.Regression.QRAccumulatorModule (module)
+type Fuaran.Compute.Regression.RegressionLaws (module)
+type Fuaran.Compute.Regression.RegressionOperations (module)
+type Fuaran.Compute.Regression.RegressionOperations+Exactness (union)
+type Fuaran.Compute.Regression.RegressionOperations+Exactness+Tags (type)
+type Fuaran.Compute.Regression.RegressionWire (module)
+type Fuaran.Compute.Regression.RobustVariant (union)
+type Fuaran.Compute.Regression.RobustVariant+Tags (type)
+union-case Fuaran.Compute.Regression.GlmFamily.Binomial #5()
+union-case Fuaran.Compute.Regression.GlmFamily.Gamma #2()
+union-case Fuaran.Compute.Regression.GlmFamily.Gaussian #0()
+union-case Fuaran.Compute.Regression.GlmFamily.InverseGaussian #7()
+union-case Fuaran.Compute.Regression.GlmFamily.NewNegativeBinomial #8(theta: Microsoft.FSharp.Core.FSharpOption`1<System.Double>)
+union-case Fuaran.Compute.Regression.GlmFamily.NewTweedie #3(power: System.Double)
+union-case Fuaran.Compute.Regression.GlmFamily.Poisson #1()
+union-case Fuaran.Compute.Regression.GlmFamily.QuasiBinomial #6()
+union-case Fuaran.Compute.Regression.GlmFamily.QuasiPoisson #4()
+union-case Fuaran.Compute.Regression.GlmLink.Cloglog #4()
+union-case Fuaran.Compute.Regression.GlmLink.Identity #0()
+union-case Fuaran.Compute.Regression.GlmLink.Inverse #5()
+union-case Fuaran.Compute.Regression.GlmLink.InverseSquare #6()
+union-case Fuaran.Compute.Regression.GlmLink.Log #1()
+union-case Fuaran.Compute.Regression.GlmLink.Logit #2()
+union-case Fuaran.Compute.Regression.GlmLink.Probit #3()
+union-case Fuaran.Compute.Regression.GlmLink.Sqrt #7()
+union-case Fuaran.Compute.Regression.RegressionOperations+Exactness.HostRounded #1()
+union-case Fuaran.Compute.Regression.RegressionOperations+Exactness.Pinned #0()
+union-case Fuaran.Compute.Regression.RobustVariant.HC0 #0()
+union-case Fuaran.Compute.Regression.RobustVariant.HC1 #1()
+union-case Fuaran.Compute.Regression.RobustVariant.HC2 #2()
+union-case Fuaran.Compute.Regression.RobustVariant.HC3 #3()

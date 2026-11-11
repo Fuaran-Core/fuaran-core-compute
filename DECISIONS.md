@@ -1,5 +1,85 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-11 — D75: regression modelling is a package of its own, `Fuaran.Compute.Regression`, above LinearAlgebra and Elementary; LinearAlgebra holds matrix operations only and depends on nothing in Compute; Regression reads LinearAlgebra's internals by `InternalsVisibleTo`; the move changes no bit
+
+**Context.** Phase 632, on the operator's rulings of 2026-11-10 and 2026-11-11: functions specific to regression
+modelling leave the module of a specific operation, such as the QR decomposition, for a package of their own. After
+Phase 630 (D74) `Fuaran.Compute.LinearAlgebra`'s `QR.fs` still held two things, the decomposition (`QR.householder`,
+`QR.pivoted`, `PivotedQR`, the `Rank` rule) and least squares (`QRAccumulator`, `LeastSquaresFit`, `LeastSquares`,
+`RobustVariant`); `Glm.fs` was all regression; and `Wire.fs` carried the accumulator's codec beside the matrix's.
+
+**Decision.**
+
+1. **The package graph.** After this phase and its neighbours:
+
+   ```
+   Fuaran.Compute.Elementary    (scalar pinned maths; Phases 630, 631, 621)
+   Fuaran.Compute.Distributions → Elementary                (Phases 618, 629)
+   Fuaran.Compute.LinearAlgebra                              (matrix operations only: Matrix, Blas, Triangular, QR, Rank; SVD and SymEig with Phase 622)
+   Fuaran.Compute.Regression    → LinearAlgebra, Elementary  (and Distributions once a reader needs it: Phases 619, 629)
+   Fuaran.Compute.DataFrame     → Regression                 (Fit, Predict)
+   ```
+
+   LinearAlgebra references nothing in Compute. The streaming accumulator goes with regression, not with the
+   factorisations: its state is a design's `R` beside `Qᵀy` and a residual sum of squares, and its fold takes a response
+   and a weight per row, so it is least squares. The Givens rotation it folds with (`Givens`) and the batch `QR` stay.
+   The rank rule moves to its own `Rank.fs` in LinearAlgebra, because the pivoted QR, the least-squares solve and Phase
+   622's SVD all read it.
+
+2. **The internals decision: `InternalsVisibleTo`, not a public kernel surface.** The moved bodies read LinearAlgebra's
+   internals: the kernels `Kernels.adopt`, `canonical`, `lend`, `norm2Pair` and `rotateNative`, the `Rank` module, the
+   internal constructors and members (`Matrix(…)`, `.Storage`, `UpperTriangular(…)`), and, for the accumulator's codec,
+   the bit-pattern spelling and shape checks of `LinAlgWire` (`bitsText`, `floatsOf`, `bitsField`, `nonNegativeInt`,
+   `typeIs`, `bounded`, private until now and `internal` since). LinearAlgebra grants `InternalsVisibleTo` to
+   `Fuaran.Compute.Regression`, the precedent this repository already holds (DataFrame grants ColumnOps and
+   Conformance). A public kernel surface was considered and declined: it would publish, and freeze behind a baseline, a
+   loan of a vector's backing array (`lend`) and a raw rotation over arrays (`rotateNative`) that no consumer outside
+   Compute should call, to serve one sibling package that ships at the same version from the same repository. The cost of
+   the grant is the one the precedent already carries: the two packages are versioned together (one `<Version>`), and a
+   consumer mixing versions of them is outside the contract.
+
+   **One mechanical consequence, recorded because it touches a file the move does not otherwise touch.** F# refuses to
+   inline an `internal` value marked `inline` into another assembly, even one granted `InternalsVisibleTo` (FS1113,
+   FS1118). `Kernels.canonical` and `Kernels.lend` were `inline`, so they lose the keyword in `Matrix.fs`; their bodies do
+   not change. Within LinearAlgebra the optimizer still inlines both (each is one comparison or one field pair), and no
+   bit can move, because the operations performed are the same operations in the same order.
+
+3. **No bit moves.** This is a move: the bodies are unchanged beyond the qualified names it forces (the namespace line,
+   an `open Fuaran.Compute.LinearAlgebra`, the codec helpers spelled `LinAlgWire.bitsText` and so on from
+   `RegressionWire`). Checked: the 20 least-squares vectors move from `linear-algebra-laws.json` to the new
+   `regression-laws.json` row for row and the 54 that stay are byte-identical (the multiset of rows across the two files
+   is exactly the old file's, none lost, added or duplicated, each file in the old order); the accumulator's two wire
+   specimens hash as before; `transform-laws.json`, `elementary-laws.json` and `dataframe-parity.json` are byte-identical.
+   The 27 laws that moved to `RegressionLaws.laws` keep their bodies and their names, and each draws from its own
+   generator over the seed, so a law answers over exactly the numbers it answered over before. `RegressionLaws` carries a
+   copy of the Park-Miller generator, as `ElementaryLaws` does (D74 item 3), because sharing it would need a
+   cross-package public type. One law, `every QR refusal is answered as stated`, moved whole although two of its cases
+   are the batch factorizations', because the rest of it is the accumulator's and LinearAlgebra may not read
+   Regression; the batch factorizations' refusals stay pinned in `linear-algebra-laws.json`.
+
+4. **Naming (the operator's ruling on Phase 630, applied first time).** A caller adds `open Fuaran.Compute.Regression`
+   and keeps writing `Glm.fit`, `LeastSquares.solve`, `QRAccumulator.empty`, `RobustVariant.HC3`. Nothing the package
+   declares at namespace level collides with a name another Compute package declares there: its exactness table is
+   `RegressionOperations`, not `Operations` (which would shadow LinearAlgebra's member by member, D74 item 2), with its
+   `Exactness` union nested inside it; the codec is `RegressionWire`, not a second `LinAlgWire`. Checked with a
+   `dotnet fsi` probe that opens `Fuaran.Compute.Elementary`, `Fuaran.Compute.LinearAlgebra` and
+   `Fuaran.Compute.Regression` in both orders: in each, `Operations.exactnessOf "Blas.gemv"`,
+   `ElementaryOperations.exactnessOf "Elementary.exp"` and `RegressionOperations.exactnessOf "Glm.fit"` all answer
+   `Some Pinned`, `Operations.exactnessOf "Glm.fit"` answers `None`, `Exactness.Pinned` is LinearAlgebra's type, and
+   `Glm.fit`, `LeastSquares.solve`, `QRAccumulator.empty`, `RobustVariant.HC3` and `RegressionWire.encodeAccumulator`
+   resolve. No doubled qualifier (`Regression.Regression.`) occurs anywhere in the repository.
+
+5. **Two of the shard's premises did not hold, and neither changed the work.** `linear-algebra-laws.json` carried no
+   GLM vectors (the GLM's committed answers are the transform vectors' `Fit` shapes, which do not move); and
+   `proofs.json` carries no rows for Phases 591, 595, 598 or 600. The record that named the moved code is
+   `proofs/coverage-exclusions.json`: LinearAlgebra's `pinned-order-law-tested` entry loses its accumulator clauses, a
+   Regression entry holds them, and the `Fit` row names the regression package's least squares.
+
+6. **Version.** Breaking, the class of Phase 630's move, so it rides the untagged `0.45.0` draft.
+
+**Consequences.** Phases 619 and 629 land in Regression and Phase 622 beside the QR in LinearAlgebra. A statistical
+method reads distributions and matrix operations without either carrying the other.
+
 ## 2026-11-11 — D74: the pinned elementary functions are a package of their own, `Fuaran.Compute.Elementary`, at the bottom of Compute's graph; LinearAlgebra references it until regression leaves; the move changes no bit
 
 **Context.** `Fuaran.Compute.LinearAlgebra` held three layers in one package: the scalar pinned mathematics

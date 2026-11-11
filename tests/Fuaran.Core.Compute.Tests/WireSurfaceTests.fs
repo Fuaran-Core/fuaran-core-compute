@@ -293,9 +293,9 @@ let internal roots: WireRoot list =
       derived<Transform list> "Fuaran.Compute.DataFrame" "pipeline" DataFrameCodec.encodePipeline
       derived<TableDelta> "Fuaran.Compute.DataFrame" "tableDelta" DeltaCodec.encode
       derived<ColumnOp> "Fuaran.Compute.ColumnOps" "columnOp" ColumnOps.encode
-      // Phase 591 — the dense-matrix library's codec. `Matrix` and `QRAccumulator` are opaque, so
-      // their documents are written by hand: every member, and the float spellings a bit-pattern
-      // codec must keep (a negative zero, a subnormal, the infinities, a NaN).
+      // Phase 591 — the dense-matrix library's codec. `Matrix` is opaque, so its documents are written by
+      // hand: every member, and the float spellings a bit-pattern codec must keep (a negative zero, a
+      // subnormal, the infinities, a NaN).
       Specimens(
           "Fuaran.Compute.LinearAlgebra",
           "linearAlgebra",
@@ -310,27 +310,35 @@ let internal roots: WireRoot list =
                       | 0, 2 -> Double.NegativeInfinity
                       | _ -> nan)
 
+              [ "linearAlgebra / matrix", Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeMatrix matrix
+                "linearAlgebra / matrix (empty)",
+                Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeMatrix (
+                    Fuaran.Compute.LinearAlgebra.Matrix.init 0 0 (fun _ _ -> 0.0)
+                ) ]
+      )
+      // Phase 591 — the least-squares accumulator's codec, Fuaran.Compute.Regression's since Phase 632
+      // (the same specimens, the same bytes). `QRAccumulator` is opaque, so its documents are written by
+      // hand.
+      Specimens(
+          "Fuaran.Compute.Regression",
+          "regression",
+          fun () ->
               let rows =
                   Fuaran.Compute.LinearAlgebra.Matrix.init 3 2 (fun i j ->
                       float (i + 1) * (if j = 0 then 1.0 else -0.5))
 
               let acc =
-                  Fuaran.Compute.LinearAlgebra.QRAccumulator.empty 2
-                  |> Fuaran.Compute.LinearAlgebra.QRAccumulator.addRows
+                  Fuaran.Compute.Regression.QRAccumulator.empty 2
+                  |> Fuaran.Compute.Regression.QRAccumulator.addRows
                       rows
                       (Vector.ofList [ 1.0; 0.0; 2.0 ])
                       (Vector.ofList [ 1.0; 0.0; 4.0 ])
                   |> Result.defaultWith (failwithf "the accumulator specimen was refused: %A")
 
-              [ "linearAlgebra / matrix", Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeMatrix matrix
-                "linearAlgebra / matrix (empty)",
-                Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeMatrix (
-                    Fuaran.Compute.LinearAlgebra.Matrix.init 0 0 (fun _ _ -> 0.0)
-                )
-                "linearAlgebra / qrAccumulator", Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeAccumulator acc
-                "linearAlgebra / qrAccumulator (empty)",
-                Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeAccumulator (
-                    Fuaran.Compute.LinearAlgebra.QRAccumulator.empty 0
+              [ "regression / qrAccumulator", Fuaran.Compute.Regression.RegressionWire.encodeAccumulator acc
+                "regression / qrAccumulator (empty)",
+                Fuaran.Compute.Regression.RegressionWire.encodeAccumulator (
+                    Fuaran.Compute.Regression.QRAccumulator.empty 0
                 ) ]
       ) ]
 

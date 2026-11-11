@@ -137,7 +137,7 @@ module internal Kernels =
 #endif
 
     /// THE NaN a float leaves this package with (D49 item 5, D16): `Double.NaN`'s bit pattern.
-    let inline canonical (x: float) : float =
+    let canonical (x: float) : float =
         if System.Double.IsNaN x then System.Double.NaN else x
 
     /// Canonicalise a fresh array in place, then hand it to a vector without a copy.
@@ -148,7 +148,7 @@ module internal Kernels =
         Vector.adopt xs
 
     /// The backing array of a vector and where the vector starts in it — a read-only loan.
-    let inline lend (v: Vector<float>) : float[] * int =
+    let lend (v: Vector<float>) : float[] * int =
         let b = Vector.Unsafe.borrow v
         b.Array, b.Offset
 

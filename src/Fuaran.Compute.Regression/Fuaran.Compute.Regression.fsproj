@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Compute.Regression</PackageId>
+    <Description>Fuaran.Compute.Regression — regression modelling over the pinned matrix operations of Fuaran.Compute.LinearAlgebra, every answer byte-identical on .NET, under Fable and in every host that ports it: least squares by a streaming Givens QR whose O(p²) state survives a restart through its wire codec, the solve with D49's rank rule and aliased columns, classical and heteroskedasticity-consistent (HC0 to HC3) standard errors, and generalised linear models by IRLS over the pinned elementary functions of Fuaran.Compute.Elementary with the same bits and iteration count on every host — the Gaussian, Poisson, Gamma, quasi-Poisson, Tweedie, binomial, quasi-binomial, inverse Gaussian and negative binomial families under the whole link set. Typed errors and canonical NaN out. No fused multiply-add and no host mathematics call on any host. Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The streaming least-squares accumulator, the solve and the robust variants (Phase 591, 598),
+         moved out of Fuaran.Compute.LinearAlgebra's QR.fs by Phase 632 (DECISIONS.md D75). -->
+    <Compile Include="LeastSquares.fs" />
+    <!-- The wire form of an accumulator (Phase 591), over LinAlgWire's bit-pattern spelling. -->
+    <Compile Include="RegressionWire.fs" />
+    <!-- Generalised linear models by IRLS over the streaming QR (Phases 595, 598, 600). -->
+    <Compile Include="Glm.fs" />
+    <!-- Every public operation's exactness class, as data. -->
+    <Compile Include="Operations.fs" />
+    <!-- The law family over the operations above. LAST: it reads all of them. -->
+    <Compile Include="RegressionLaws.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Vectors are the substrate's `Vector<float>`, and an accumulator travels through its canonical
+         JSON (DECISIONS.md D49 item 20); nothing else of the substrate is read. -->
+    <PackageReference Include="Fuaran.Core.Column" />
+    <PackageReference Include="Fuaran.Core.Wire" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The matrix operations the models fold with, and (by InternalsVisibleTo there) the kernels and
+         the rank rule they read (DECISIONS.md D75). -->
+    <ProjectReference Include="..\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
+    <!-- The scalar pinned mathematics Glm's links and variances read (Phase 630, D74). -->
+    <ProjectReference Include="..\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The suite holds the accumulator's native fold byte-equal to the portable one. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Tests" />
+    <!-- The benchmark harness times the accumulator over the portable rotation against the native one. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Benchmarks.Node" />
+  </ItemGroup>
+</Project>

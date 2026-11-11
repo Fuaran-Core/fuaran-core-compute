@@ -1,0 +1,8 @@
+# Wire-surface baseline for Fuaran.Compute.Regression (Phase 214) — GENERATED, do not edit.
+# The canonical bytes of a document set reaching every member and discriminator this package emits:
+# one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
+# Regenerate with:
+#   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# class since v0.44.0: first snapshot
+doc	regression / qrAccumulator	sha256:0e13bd45e4c51412e82188e44cf3c676be92533360f592f6c5642656c0202c71	{"$type":"qrAccumulator","cols":2,"count":2,"qty":"4010709d340533f10000000000000000","r":"401854bfb363dc38c00854bfb363dc3c0000000000000000","rss":"3fbbacf914c1bad5"}
+doc	regression / qrAccumulator (empty)	sha256:0c27c1d315269fa32ab97873fd1b247094f2cabe1d70c9f6027332756f2bfb7e	{"$type":"qrAccumulator","cols":0,"count":0,"qty":"","r":"","rss":"0000000000000000"}

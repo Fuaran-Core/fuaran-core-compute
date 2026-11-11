@@ -47,7 +47,8 @@
          `Fuaran.Compute.Syntax` authoring helpers in Fuaran.Compute.DataFrame) advanced the slot to
          0.44.0, released as `v0.44.0`. 0.44.0 is tagged, so Phase 630's breaking change (the pinned
          elementary functions leave Fuaran.Compute.LinearAlgebra for a package of their own,
-         Fuaran.Compute.Elementary) advanced the slot to 0.45.0, a DRAFT. -->
+         Fuaran.Compute.Elementary) advanced the slot to 0.45.0, a DRAFT; Phase 632's change of the same
+         class (regression leaves Fuaran.Compute.LinearAlgebra for Fuaran.Compute.Regression) rides it. -->
     <Version>0.45.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>

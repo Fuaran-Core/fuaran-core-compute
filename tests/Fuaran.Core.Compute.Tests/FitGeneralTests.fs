@@ -21,6 +21,7 @@ open Expecto
 open Fuaran.Core
 open Fuaran.Compute
 open Fuaran.Compute.LinearAlgebra
+open Fuaran.Compute.Regression
 open Fuaran.Compute.Elementary
 
 let private ok =

@@ -10,6 +10,7 @@ module Fuaran.Core.Compute.Benchmarks.QrBench
 
 open System
 open Fuaran.Compute.LinearAlgebra
+open Fuaran.Compute.Regression
 
 /// The wall clock in milliseconds (`DateTime`, for the reason the harness gives).
 let private nowMs () : float = float DateTime.UtcNow.Ticks / 10_000.0

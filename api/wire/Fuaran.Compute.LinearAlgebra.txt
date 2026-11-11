@@ -3,8 +3,6 @@
 # one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
 # Regenerate with:
 #   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
-# class since v0.42.0: first snapshot
+# class since v0.44.0: breaking
 doc	linearAlgebra / matrix	sha256:d4f3c6c0c805311bb9f8e972f24b30ba36af9c7041f4ea0c7d2a6811c17eaa9e	{"$type":"matrix","bits":"3ff8000000000000800000000000000000000000000000017ff0000000000000fff00000000000007ff8000000000000","cols":3,"rows":2}
 doc	linearAlgebra / matrix (empty)	sha256:ebebe34cb41a4a4e95f5a38d386a8080288bcfad6a129c81f4dca0f66c7ffca3	{"$type":"matrix","bits":"","cols":0,"rows":0}
-doc	linearAlgebra / qrAccumulator	sha256:0e13bd45e4c51412e82188e44cf3c676be92533360f592f6c5642656c0202c71	{"$type":"qrAccumulator","cols":2,"count":2,"qty":"4010709d340533f10000000000000000","r":"401854bfb363dc38c00854bfb363dc3c0000000000000000","rss":"3fbbacf914c1bad5"}
-doc	linearAlgebra / qrAccumulator (empty)	sha256:0c27c1d315269fa32ab97873fd1b247094f2cabe1d70c9f6027332756f2bfb7e	{"$type":"qrAccumulator","cols":0,"count":0,"qty":"","r":"","rss":"0000000000000000"}

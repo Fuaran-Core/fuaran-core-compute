@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>true</IsPackable>
     <PackageId>Fuaran.Compute.DataFrame</PackageId>
-    <Description>Fuaran.Compute.DataFrame — the declarative-compute layer over Fuaran.Core.Column: a serializable dataframe-transform algebra (Transform + ColExpr, full v1 verb set — filter/project/derive/groupBy/join/window/pivot/unpivot/sort/distinct/limit/union), a pure reference evaluator with pinned null/coercion/order/float semantics (the cross-host parity contract), and a canonical wire codec. transformLaws (in Fuaran.Compute.Conformance) certifies any host evaluator byte-identical to the reference. Also carries the typed delta representation for the column layer (TableDelta: rows added/changed/removed addressed by a caller-supplied identity witness, column invalidation, and full-refresh as the top element) with an associative composition and a canonical wire codec, and the incremental evaluation seam over it: a pipeline evaluated against a delta rather than from scratch, with per-step incrementality declared as data (propagate / maintain-state / typed fall-back), a measured recompute footprint, and certified equality with the reference evaluator for every (base, delta) pair. Since 0.43.0 a pipeline also fits a regression per group (`Fit`) over Fuaran.Compute.LinearAlgebra. Fable-clean.</Description>
+    <Description>Fuaran.Compute.DataFrame — the declarative-compute layer over Fuaran.Core.Column: a serializable dataframe-transform algebra (Transform + ColExpr, full v1 verb set — filter/project/derive/groupBy/join/window/pivot/unpivot/sort/distinct/limit/union), a pure reference evaluator with pinned null/coercion/order/float semantics (the cross-host parity contract), and a canonical wire codec. transformLaws (in Fuaran.Compute.Conformance) certifies any host evaluator byte-identical to the reference. Also carries the typed delta representation for the column layer (TableDelta: rows added/changed/removed addressed by a caller-supplied identity witness, column invalidation, and full-refresh as the top element) with an associative composition and a canonical wire codec, and the incremental evaluation seam over it: a pipeline evaluated against a delta rather than from scratch, with per-step incrementality declared as data (propagate / maintain-state / typed fall-back), a measured recompute footprint, and certified equality with the reference evaluator for every (base, delta) pair. Since 0.43.0 a pipeline also fits a regression per group (`Fit`) over Fuaran.Compute.Regression. Fable-clean.</Description>
   </PropertyGroup>
   <ItemGroup>
     <!-- Phase 267 — the dense columnar frame: the typed vectors, masks and selection the evaluator
@@ -59,8 +59,10 @@
   <ItemGroup>
     <!-- Phase 592: the `Fit` step's kernel — the streaming Givens QR, the least-squares solve and the
          accumulator's wire form the incremental state carries. The algebra stays in its own package;
-         this one keeps the frame-to-matrix bridge, units, the schema walk and the wire tag. -->
-    <ProjectReference Include="..\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
+         this one keeps the frame-to-matrix bridge, units, the schema walk and the wire tag. Since
+         Phase 632 the regression half is Fuaran.Compute.Regression, which brings the matrix
+         operations of Fuaran.Compute.LinearAlgebra with it (DECISIONS.md D75). -->
+    <ProjectReference Include="..\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

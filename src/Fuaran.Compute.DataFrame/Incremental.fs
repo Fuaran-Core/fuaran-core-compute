@@ -1,6 +1,7 @@
 namespace Fuaran.Compute
 
 open Fuaran.Core
+open Fuaran.Compute.Regression
 // The frame's vector cases, over Core's `ColumnData` cases of the same names (Phase 423).
 open type Vec
 
@@ -6644,7 +6645,7 @@ module IncrementalCodec =
     /// and the row-shaped caches as matrices.
     /// Phase 592 — a maintained fit's state (`DECISIONS.md` D53): the design's layout and, per group (in
     /// token order), its token, its members as indices into the state's row tokens, and its data
-    /// accumulator in `LinAlgWire`'s form — IEEE-754 bit patterns, so a decoded fit continues to the
+    /// accumulator in `RegressionWire`'s form — IEEE-754 bit patterns, so a decoded fit continues to the
     /// same bits.
     let private fitJson (tokens: string[]) (m: DataFrame.FitMemo) : JVal =
         let index = System.Collections.Generic.Dictionary<string, int>(tokens.Length)
@@ -6662,7 +6663,7 @@ module IncrementalCodec =
                       JObj
                           [ "token", JStr token
                             "members", ints (members |> Array.map (fun t -> index[t]))
-                            "acc", LinearAlgebra.LinAlgWire.accumulatorToJson acc ])
+                            "acc", RegressionWire.accumulatorToJson acc ])
               ) ]
 
     let private stateMembers (s: IncrementalEval) : (string * JVal) list =
@@ -7237,7 +7238,7 @@ module IncrementalCodec =
         }
 
     /// Phase 592 — `fitJson`'s inverse: every member index a row token's, every accumulator one
-    /// `LinAlgWire` reads.
+    /// `RegressionWire` reads.
     let private fitOf (tokens: string[]) (el: JVal) : Result<DataFrame.FitMemo, ColumnError> =
         res {
             let! layout = el |> at "layout" strOf
@@ -7254,7 +7255,7 @@ module IncrementalCodec =
                             let! acc =
                                 g
                                 |> at "acc" (fun a ->
-                                    LinearAlgebra.LinAlgWire.accumulatorOfJson a
+                                    RegressionWire.accumulatorOfJson a
                                     |> Result.mapError (fun e ->
                                         MalformedShape("incremental state: fit: " + e.Message)))
 

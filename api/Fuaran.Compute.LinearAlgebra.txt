@@ -7,23 +7,6 @@
 ctor Fuaran.Compute.LinearAlgebra.Dims..ctor(System.Int32, System.Int32)
 field Fuaran.Compute.LinearAlgebra.Exactness+Tags.HostRounded : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.Exactness+Tags.Pinned : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.Binomial : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.Gamma : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.Gaussian : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.InverseGaussian : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.NegativeBinomial : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.Poisson : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.QuasiBinomial : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.QuasiPoisson : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmFamily+Tags.Tweedie : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmLink+Tags.Cloglog : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmLink+Tags.Identity : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmLink+Tags.Inverse : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmLink+Tags.InverseSquare : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmLink+Tags.Log : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmLink+Tags.Logit : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmLink+Tags.Probit : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.GlmLink+Tags.Sqrt : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.InvalidPower : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.InvalidResponse : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.InvalidTheta : System.Int32 (literal)
@@ -38,10 +21,6 @@ field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.ShapeMismatch : System.Int32
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.Singular : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.ThetaNotConverged : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.LinAlgError+Tags.UnsupportedModel : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.RobustVariant+Tags.HC0 : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.RobustVariant+Tags.HC1 : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.RobustVariant+Tags.HC2 : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.RobustVariant+Tags.HC3 : System.Int32 (literal)
 method Fuaran.Compute.LinearAlgebra.Blas.add(Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
 method Fuaran.Compute.LinearAlgebra.Blas.axpy(System.Double, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
 method Fuaran.Compute.LinearAlgebra.Blas.dot(Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.LinearAlgebra.LinAlgError>
@@ -55,27 +34,7 @@ method Fuaran.Compute.LinearAlgebra.Givens.Equals(System.Object) : System.Boolea
 method Fuaran.Compute.LinearAlgebra.Givens.GetHashCode() : System.Int32
 method Fuaran.Compute.LinearAlgebra.GivensModule.apply(Fuaran.Compute.LinearAlgebra.Givens, System.Double, System.Double) : System.Tuple`2<System.Double, System.Double>
 method Fuaran.Compute.LinearAlgebra.GivensModule.make(System.Double, System.Double) : Fuaran.Compute.LinearAlgebra.Givens
-method Fuaran.Compute.LinearAlgebra.Glm.admitted(Fuaran.Compute.LinearAlgebra.GlmFamily, Fuaran.Compute.LinearAlgebra.GlmLink) : System.Boolean
-method Fuaran.Compute.LinearAlgebra.Glm.defaultLink(Fuaran.Compute.LinearAlgebra.GlmFamily) : Fuaran.Compute.LinearAlgebra.GlmLink
-method Fuaran.Compute.LinearAlgebra.Glm.fit(Fuaran.Compute.LinearAlgebra.GlmFamily, Fuaran.Compute.LinearAlgebra.GlmLink, Fuaran.Compute.LinearAlgebra.GlmControl, Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.GlmFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.Glm.inverseLink(Fuaran.Compute.LinearAlgebra.GlmLink, System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Glm.linkFunction(Fuaran.Compute.LinearAlgebra.GlmLink, System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Glm.meanDerivative(Fuaran.Compute.LinearAlgebra.GlmLink, System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Glm.nullDeviance(Fuaran.Compute.LinearAlgebra.GlmFamily, Fuaran.Compute.LinearAlgebra.GlmLink, Fuaran.Compute.LinearAlgebra.GlmControl, System.Boolean, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.Glm.responseInterval(Fuaran.Compute.LinearAlgebra.GlmFamily, Fuaran.Compute.LinearAlgebra.GlmLink, System.Double, System.Double, System.Double) : System.Tuple`2<Microsoft.FSharp.Core.FSharpOption`1<System.Double>, Microsoft.FSharp.Core.FSharpOption`1<System.Double>>
-method Fuaran.Compute.LinearAlgebra.Glm.robustStandardErrors(Fuaran.Compute.LinearAlgebra.RobustVariant, Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Compute.LinearAlgebra.GlmFit) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>>, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.Glm.validPredictor(Fuaran.Compute.LinearAlgebra.GlmFamily, Fuaran.Compute.LinearAlgebra.GlmLink, System.Double) : System.Boolean
-method Fuaran.Compute.LinearAlgebra.GlmControlModule.create(System.Int32, System.Double) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.LinearAlgebra.GlmControl>
-method Fuaran.Compute.LinearAlgebra.LeastSquares.ofAccumulator(Fuaran.Compute.LinearAlgebra.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.LeastSquares.requireFullRank(Fuaran.Compute.LinearAlgebra.LeastSquaresFit) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.LeastSquares.robustStandardErrors(Fuaran.Compute.LinearAlgebra.RobustVariant, Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LeastSquaresFit) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>>, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.LeastSquares.solve(Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.LeastSquaresFit, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.LeastSquares.standardErrors(System.Double, Fuaran.Compute.LinearAlgebra.LeastSquaresFit) : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>>
-method Fuaran.Compute.LinearAlgebra.LinAlgWire.accumulatorOfJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.QRAccumulator, Fuaran.Core.DecodeError>
-method Fuaran.Compute.LinearAlgebra.LinAlgWire.accumulatorToJson(Fuaran.Compute.LinearAlgebra.QRAccumulator) : Fuaran.Core.JVal
-method Fuaran.Compute.LinearAlgebra.LinAlgWire.decodeAccumulator(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.QRAccumulator, Fuaran.Core.DecodeError>
 method Fuaran.Compute.LinearAlgebra.LinAlgWire.decodeMatrix(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.DecodeError>
-method Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeAccumulator(Fuaran.Compute.LinearAlgebra.QRAccumulator) : System.String
 method Fuaran.Compute.LinearAlgebra.LinAlgWire.encodeMatrix(Fuaran.Compute.LinearAlgebra.Matrix) : System.String
 method Fuaran.Compute.LinearAlgebra.LinAlgWire.matrixOfJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.DecodeError>
 method Fuaran.Compute.LinearAlgebra.LinAlgWire.matrixToJson(Fuaran.Compute.LinearAlgebra.Matrix) : Fuaran.Core.JVal
@@ -96,14 +55,6 @@ method Fuaran.Compute.LinearAlgebra.MatrixModule.transpose(Fuaran.Compute.Linear
 method Fuaran.Compute.LinearAlgebra.Operations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.LinearAlgebra.Exactness>
 method Fuaran.Compute.LinearAlgebra.QR.householder(Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.UpperTriangular, Fuaran.Compute.LinearAlgebra.LinAlgError>
 method Fuaran.Compute.LinearAlgebra.QR.pivoted(Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.PivotedQR, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.addRow(Fuaran.Core.Vector`1<System.Double>, System.Double, System.Double, Fuaran.Compute.LinearAlgebra.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.QRAccumulator, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.addRows(Fuaran.Compute.LinearAlgebra.Matrix, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.QRAccumulator) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.QRAccumulator, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.cols(Fuaran.Compute.LinearAlgebra.QRAccumulator) : System.Int32
-method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.count(Fuaran.Compute.LinearAlgebra.QRAccumulator) : System.Int32
-method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.empty(System.Int32) : Fuaran.Compute.LinearAlgebra.QRAccumulator
-method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.qty(Fuaran.Compute.LinearAlgebra.QRAccumulator) : Fuaran.Core.Vector`1<System.Double>
-method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.r(Fuaran.Compute.LinearAlgebra.QRAccumulator) : Fuaran.Compute.LinearAlgebra.Matrix
-method Fuaran.Compute.LinearAlgebra.QRAccumulatorModule.rss(Fuaran.Compute.LinearAlgebra.QRAccumulator) : System.Double
 method Fuaran.Compute.LinearAlgebra.UpperTriangular.Equals(System.Object) : System.Boolean
 method Fuaran.Compute.LinearAlgebra.UpperTriangular.GetHashCode() : System.Int32
 method Fuaran.Compute.LinearAlgebra.UpperTriangularModule.ofMatrix(Fuaran.Compute.LinearAlgebra.Matrix) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.LinearAlgebra.UpperTriangular, Fuaran.Compute.LinearAlgebra.LinAlgError>
@@ -115,35 +66,6 @@ property Fuaran.Compute.LinearAlgebra.Givens.Cos : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.Givens.IsIdentity : System.Boolean { get }
 property Fuaran.Compute.LinearAlgebra.Givens.Radius : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.Givens.Sin : System.Double { get }
-property Fuaran.Compute.LinearAlgebra.GlmControl.MaxIter : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.GlmControl.Tol : System.Double { get }
-property Fuaran.Compute.LinearAlgebra.GlmControlModule.defaults : Fuaran.Compute.LinearAlgebra.GlmControl { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Alternations : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Coefficients : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>> { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Count : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Deviance : System.Double { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Dispersion : Microsoft.FSharp.Core.FSharpOption`1<System.Double> { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Fitted : Fuaran.Core.Vector`1<System.Double> { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Iterations : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.LeastSquares : Fuaran.Compute.LinearAlgebra.LeastSquaresFit { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.LinearPredictor : Fuaran.Core.Vector`1<System.Double> { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Rank : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.ResidualDf : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.StdErrors : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>> { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.Theta : Microsoft.FSharp.Core.FSharpOption`1<System.Double> { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.ThetaStdError : Microsoft.FSharp.Core.FSharpOption`1<System.Double> { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.WorkingResiduals : Fuaran.Core.Vector`1<System.Double> { get }
-property Fuaran.Compute.LinearAlgebra.GlmFit.WorkingWeights : Fuaran.Core.Vector`1<System.Double> { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Aliased : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Coefficients : Microsoft.FSharp.Collections.FSharpList`1<Microsoft.FSharp.Core.FSharpOption`1<System.Double>> { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Count : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Kept : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Qty : Fuaran.Core.Vector`1<System.Double> { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.R : Fuaran.Compute.LinearAlgebra.UpperTriangular { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.RInverse : Fuaran.Compute.LinearAlgebra.Matrix { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Rank : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.ResidualDf : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.LeastSquaresFit.Rss : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.Matrix.Cols : System.Int32 { get }
 property Fuaran.Compute.LinearAlgebra.Matrix.Dims : Fuaran.Compute.LinearAlgebra.Dims { get }
 property Fuaran.Compute.LinearAlgebra.Matrix.Item : System.Double { get }
@@ -153,9 +75,6 @@ property Fuaran.Compute.LinearAlgebra.PivotedQR.Aliased : Microsoft.FSharp.Colle
 property Fuaran.Compute.LinearAlgebra.PivotedQR.Permutation : Microsoft.FSharp.Collections.FSharpList`1<System.Int32> { get }
 property Fuaran.Compute.LinearAlgebra.PivotedQR.R : Fuaran.Compute.LinearAlgebra.UpperTriangular { get }
 property Fuaran.Compute.LinearAlgebra.PivotedQR.Rank : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.QRAccumulator.Cols : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.QRAccumulator.Count : System.Int32 { get }
-property Fuaran.Compute.LinearAlgebra.QRAccumulator.Rss : System.Double { get }
 property Fuaran.Compute.LinearAlgebra.UpperTriangular.Matrix : Fuaran.Compute.LinearAlgebra.Matrix { get }
 property Fuaran.Compute.LinearAlgebra.UpperTriangular.Order : System.Int32 { get }
 record-field Fuaran.Compute.LinearAlgebra.Dims.Cols #1 : System.Int32
@@ -166,18 +85,6 @@ type Fuaran.Compute.LinearAlgebra.Exactness (union)
 type Fuaran.Compute.LinearAlgebra.Exactness+Tags (type)
 type Fuaran.Compute.LinearAlgebra.Givens (type)
 type Fuaran.Compute.LinearAlgebra.GivensModule (module)
-type Fuaran.Compute.LinearAlgebra.Glm (module)
-type Fuaran.Compute.LinearAlgebra.GlmControl (type)
-type Fuaran.Compute.LinearAlgebra.GlmControlModule (module)
-type Fuaran.Compute.LinearAlgebra.GlmFamily (union)
-type Fuaran.Compute.LinearAlgebra.GlmFamily+NegativeBinomial (type)
-type Fuaran.Compute.LinearAlgebra.GlmFamily+Tags (type)
-type Fuaran.Compute.LinearAlgebra.GlmFamily+Tweedie (type)
-type Fuaran.Compute.LinearAlgebra.GlmFit (type)
-type Fuaran.Compute.LinearAlgebra.GlmLink (union)
-type Fuaran.Compute.LinearAlgebra.GlmLink+Tags (type)
-type Fuaran.Compute.LinearAlgebra.LeastSquares (module)
-type Fuaran.Compute.LinearAlgebra.LeastSquaresFit (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError (union)
 type Fuaran.Compute.LinearAlgebra.LinAlgError+InvalidPower (type)
 type Fuaran.Compute.LinearAlgebra.LinAlgError+InvalidResponse (type)
@@ -201,31 +108,10 @@ type Fuaran.Compute.LinearAlgebra.MatrixModule (module)
 type Fuaran.Compute.LinearAlgebra.Operations (module)
 type Fuaran.Compute.LinearAlgebra.PivotedQR (type)
 type Fuaran.Compute.LinearAlgebra.QR (module)
-type Fuaran.Compute.LinearAlgebra.QRAccumulator (type)
-type Fuaran.Compute.LinearAlgebra.QRAccumulatorModule (module)
-type Fuaran.Compute.LinearAlgebra.RobustVariant (union)
-type Fuaran.Compute.LinearAlgebra.RobustVariant+Tags (type)
 type Fuaran.Compute.LinearAlgebra.UpperTriangular (type)
 type Fuaran.Compute.LinearAlgebra.UpperTriangularModule (module)
 union-case Fuaran.Compute.LinearAlgebra.Exactness.HostRounded #1()
 union-case Fuaran.Compute.LinearAlgebra.Exactness.Pinned #0()
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.Binomial #5()
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.Gamma #2()
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.Gaussian #0()
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.InverseGaussian #7()
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.NewNegativeBinomial #8(theta: Microsoft.FSharp.Core.FSharpOption`1<System.Double>)
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.NewTweedie #3(power: System.Double)
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.Poisson #1()
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.QuasiBinomial #6()
-union-case Fuaran.Compute.LinearAlgebra.GlmFamily.QuasiPoisson #4()
-union-case Fuaran.Compute.LinearAlgebra.GlmLink.Cloglog #4()
-union-case Fuaran.Compute.LinearAlgebra.GlmLink.Identity #0()
-union-case Fuaran.Compute.LinearAlgebra.GlmLink.Inverse #5()
-union-case Fuaran.Compute.LinearAlgebra.GlmLink.InverseSquare #6()
-union-case Fuaran.Compute.LinearAlgebra.GlmLink.Log #1()
-union-case Fuaran.Compute.LinearAlgebra.GlmLink.Logit #2()
-union-case Fuaran.Compute.LinearAlgebra.GlmLink.Probit #3()
-union-case Fuaran.Compute.LinearAlgebra.GlmLink.Sqrt #7()
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewInvalidPower #10(power: System.Double)
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewInvalidResponse #7(row: System.Int32)
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewInvalidTheta #12(theta: System.Double)
@@ -240,7 +126,3 @@ union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewShapeMismatch #0(operatio
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewSingular #1(index: System.Int32)
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewThetaNotConverged #13(alternation: System.Int32)
 union-case Fuaran.Compute.LinearAlgebra.LinAlgError.NewUnsupportedModel #9(family: System.String, link: System.String)
-union-case Fuaran.Compute.LinearAlgebra.RobustVariant.HC0 #0()
-union-case Fuaran.Compute.LinearAlgebra.RobustVariant.HC1 #1()
-union-case Fuaran.Compute.LinearAlgebra.RobustVariant.HC2 #2()
-union-case Fuaran.Compute.LinearAlgebra.RobustVariant.HC3 #3()
