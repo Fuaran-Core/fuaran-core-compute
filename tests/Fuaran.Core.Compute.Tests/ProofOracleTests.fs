@@ -47,6 +47,7 @@ module ModelSort = MaintainedSort
 
 open Fuaran.Core
 open Fuaran.Compute
+open Fuaran.Compute.Elementary
 open Fuaran.Compute.Tests
 
 let private inv = System.Globalization.CultureInfo.InvariantCulture
@@ -6704,7 +6705,7 @@ let proofOracleTests =
               // The routine parameter, instantiated at the pinned functions over the carrier — the
               // instantiation the premise `elementary-functions-pinned-by-transcription` names.
               let pinnedPow (a: string) (b: string) =
-                  fFloat (Elementary.Elementary.pow (parse a) (parse b))
+                  fFloat (Elementary.pow (parse a) (parse b))
 
               let pinned (f: float -> float) (a: string) = fFloat (f (parse a))
               let nan = fFloat System.Double.NaN
@@ -6715,11 +6716,11 @@ let proofOracleTests =
                       let model = ModelPipe.pow_table (classify x) (classify y)
 
                       let expected =
-                          match Elementary.Elementary.powTable x y with
-                          | Elementary.SpecialValue.NaN -> ModelPipe.PNaN
-                          | Elementary.SpecialValue.Value _ -> ModelPipe.POne
-                          | Elementary.SpecialValue.Undefined -> ModelPipe.PNull
-                          | Elementary.SpecialValue.Compute -> ModelPipe.PHost
+                          match Elementary.powTable x y with
+                          | SpecialValue.NaN -> ModelPipe.PNaN
+                          | SpecialValue.Value _ -> ModelPipe.POne
+                          | SpecialValue.Undefined -> ModelPipe.PNull
+                          | SpecialValue.Compute -> ModelPipe.PHost
 
                       if model <> expected then
                           failtestf
@@ -6744,12 +6745,12 @@ let proofOracleTests =
                         ModelPipe.eclass.e_under = (v < -745.1332191019412) }
 
                   let expectedExp =
-                      match Elementary.Elementary.expTable x with
-                      | Elementary.SpecialValue.NaN -> ModelPipe.EInput
-                      | Elementary.SpecialValue.Value v when v = 0.0 -> ModelPipe.EZero
-                      | Elementary.SpecialValue.Value _ -> ModelPipe.EInf
-                      | Elementary.SpecialValue.Undefined -> failtestf "exp %g: the table has no undefined row" x
-                      | Elementary.SpecialValue.Compute -> ModelPipe.EHost
+                      match Elementary.expTable x with
+                      | SpecialValue.NaN -> ModelPipe.EInput
+                      | SpecialValue.Value v when v = 0.0 -> ModelPipe.EZero
+                      | SpecialValue.Value _ -> ModelPipe.EInf
+                      | SpecialValue.Undefined -> failtestf "exp %g: the table has no undefined row" x
+                      | SpecialValue.Compute -> ModelPipe.EHost
 
                   Expect.equal (ModelPipe.exp_table (ec x)) expectedExp (sprintf "exp_table and expTable at %g" x)
 
@@ -6757,7 +6758,7 @@ let proofOracleTests =
                       (sprintf "exp %g" x)
                       (FStar_Pervasives_Native.Some(
                           ModelPipe.exp_float
-                              (pinned Elementary.Elementary.exp)
+                              (pinned Elementary.exp)
                               (parse >> ec)
                               (fFloat System.Double.PositiveInfinity)
                               (fFloat 0.0)
@@ -6773,18 +6774,16 @@ let proofOracleTests =
                         ModelPipe.lclass.l_pinf = System.Double.IsPositiveInfinity v }
 
                   let expectedLog =
-                      match Elementary.Elementary.lnTable x with
-                      | Elementary.SpecialValue.NaN -> ModelPipe.LInput
-                      | Elementary.SpecialValue.Undefined -> ModelPipe.LNull
-                      | Elementary.SpecialValue.Value v when v = 0.0 -> ModelPipe.LZero
-                      | Elementary.SpecialValue.Value _ -> ModelPipe.LInf
-                      | Elementary.SpecialValue.Compute -> ModelPipe.LHost
+                      match Elementary.lnTable x with
+                      | SpecialValue.NaN -> ModelPipe.LInput
+                      | SpecialValue.Undefined -> ModelPipe.LNull
+                      | SpecialValue.Value v when v = 0.0 -> ModelPipe.LZero
+                      | SpecialValue.Value _ -> ModelPipe.LInf
+                      | SpecialValue.Compute -> ModelPipe.LHost
 
                   Expect.equal (ModelPipe.log_table (lc x)) expectedLog (sprintf "log_table and lnTable at %g" x)
 
-                  for name, base10, f in
-                      [ "ln", false, Elementary.Elementary.ln
-                        "log10", true, Elementary.Elementary.log10 ] do
+                  for name, base10, f in [ "ln", false, Elementary.ln; "log10", true, Elementary.log10 ] do
                       sameCell
                           (sprintf "%s %g" name x)
                           (ModelPipe.log_float (pinned f) (parse >> lc) (fFloat 0.0) (fFloat x))

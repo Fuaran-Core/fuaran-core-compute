@@ -1,6 +1,7 @@
 namespace Fuaran.Compute
 
 open Fuaran.Core
+open Fuaran.Compute.Elementary
 // The frame's vector cases, over Core's `ColumnData` cases of the same names (Phase 423).
 open type Vec
 
@@ -3502,30 +3503,26 @@ module DataFrame =
     /// is D16's one NaN, the table's own value is that value, an input outside the reals is `Null`
     /// (as `Div` by zero is), and every other input is the pinned routine's — `compute`, called only
     /// there.
-    let private ofTable (table: Elementary.SpecialValue) (compute: unit -> float) : Cell =
+    let private ofTable (table: SpecialValue) (compute: unit -> float) : Cell =
         match table with
-        | Elementary.SpecialValue.NaN -> Float System.Double.NaN
-        | Elementary.SpecialValue.Value v -> Float v
-        | Elementary.SpecialValue.Undefined -> Null
-        | Elementary.SpecialValue.Compute -> Float(compute ())
+        | SpecialValue.NaN -> Float System.Double.NaN
+        | SpecialValue.Value v -> Float v
+        | SpecialValue.Undefined -> Null
+        | SpecialValue.Compute -> Float(compute ())
 
     /// A float `Pow` (Phase 594, D54): the table, then the pinned `Elementary.pow`.
     let internal powFloat (x: float) (y: float) : Cell =
-        ofTable (Elementary.Elementary.powTable x y) (fun () -> Elementary.Elementary.pow x y)
+        ofTable (Elementary.powTable x y) (fun () -> Elementary.pow x y)
 
     /// `Exp` (Phase 594, D54): the table — a NaN, the overflow limit, the underflow to zero — then
     /// the pinned `Elementary.exp`.
     let internal expCell (x: float) : Cell =
-        ofTable (Elementary.Elementary.expTable x) (fun () -> Elementary.Elementary.exp x)
+        ofTable (Elementary.expTable x) (fun () -> Elementary.exp x)
 
     /// `Ln` and `Log10` (Phase 594, D54): the one table — a NaN, `Null` at zero and below, `0` at
     /// one, `Inf` at `Inf` — then the pinned `Elementary.ln` or `Elementary.log10`.
     let internal logCell (base10: bool) (x: float) : Cell =
-        ofTable (Elementary.Elementary.lnTable x) (fun () ->
-            if base10 then
-                Elementary.Elementary.log10 x
-            else
-                Elementary.Elementary.ln x)
+        ofTable (Elementary.lnTable x) (fun () -> if base10 then Elementary.log10 x else Elementary.ln x)
 
     let private applyScalar (fn: ScalarFn) (args: Cell list) : Result<Cell, EvalError> =
         let arity n =

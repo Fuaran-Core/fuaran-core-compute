@@ -4,8 +4,8 @@
 # and stage the baselines you meant to move BY NAME — the switch rewrites them all.
 # One ordinal-sorted line per externally-visible type, member, record field and union case.
 # See STABILITY.md "Public-surface baselines" for what each move class means.
-field Fuaran.Compute.Elementary.Exactness+Tags.HostRounded : System.Int32 (literal)
-field Fuaran.Compute.Elementary.Exactness+Tags.Pinned : System.Int32 (literal)
+field Fuaran.Compute.Elementary.ElementaryOperations+Exactness+Tags.HostRounded : System.Int32 (literal)
+field Fuaran.Compute.Elementary.ElementaryOperations+Exactness+Tags.Pinned : System.Int32 (literal)
 field Fuaran.Compute.Elementary.SpecialValue+Tags.Compute : System.Int32 (literal)
 field Fuaran.Compute.Elementary.SpecialValue+Tags.NaN : System.Int32 (literal)
 field Fuaran.Compute.Elementary.SpecialValue+Tags.Undefined : System.Int32 (literal)
@@ -22,18 +22,18 @@ method Fuaran.Compute.Elementary.Elementary.normalQuantile(System.Double) : Syst
 method Fuaran.Compute.Elementary.Elementary.pow(System.Double, System.Double) : System.Double
 method Fuaran.Compute.Elementary.Elementary.powTable(System.Double, System.Double) : Fuaran.Compute.Elementary.SpecialValue
 method Fuaran.Compute.Elementary.ElementaryLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
-method Fuaran.Compute.Elementary.Operations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Elementary.Exactness>
-property Fuaran.Compute.Elementary.Operations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.Elementary.Exactness>> { get }
+method Fuaran.Compute.Elementary.ElementaryOperations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Elementary.ElementaryOperations+Exactness>
+property Fuaran.Compute.Elementary.ElementaryOperations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.Elementary.ElementaryOperations+Exactness>> { get }
 type Fuaran.Compute.Elementary.Elementary (module)
 type Fuaran.Compute.Elementary.ElementaryLaws (module)
-type Fuaran.Compute.Elementary.Exactness (union)
-type Fuaran.Compute.Elementary.Exactness+Tags (type)
-type Fuaran.Compute.Elementary.Operations (module)
+type Fuaran.Compute.Elementary.ElementaryOperations (module)
+type Fuaran.Compute.Elementary.ElementaryOperations+Exactness (union)
+type Fuaran.Compute.Elementary.ElementaryOperations+Exactness+Tags (type)
 type Fuaran.Compute.Elementary.SpecialValue (union)
 type Fuaran.Compute.Elementary.SpecialValue+Tags (type)
 type Fuaran.Compute.Elementary.SpecialValue+Value (type)
-union-case Fuaran.Compute.Elementary.Exactness.HostRounded #1()
-union-case Fuaran.Compute.Elementary.Exactness.Pinned #0()
+union-case Fuaran.Compute.Elementary.ElementaryOperations+Exactness.HostRounded #1()
+union-case Fuaran.Compute.Elementary.ElementaryOperations+Exactness.Pinned #0()
 union-case Fuaran.Compute.Elementary.SpecialValue.Compute #3()
 union-case Fuaran.Compute.Elementary.SpecialValue.NaN #0()
 union-case Fuaran.Compute.Elementary.SpecialValue.NewValue #1(Item: System.Double)

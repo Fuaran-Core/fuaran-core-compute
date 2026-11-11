@@ -1,24 +1,27 @@
 namespace Fuaran.Compute.Elementary
 
-/// How exact an operation's bytes are across hosts — D43's vocabulary, the one `SchemaWalk` reads a
-/// column's lineage in: `Pinned`, every conformant host computes the same bits; `HostRounded`, hosts
-/// agree within a stated ulp bound only. Every operation this package ships is `Pinned`;
-/// `Operations.exactness` classifies each one. Declared here rather than read from a package above,
-/// because this package depends on nothing in Compute (DECISIONS.md D74; the per-package type is
-/// D49 item 2's precedent).
-[<RequireQualifiedAccess>]
-type Exactness =
-    | Pinned
-    | HostRounded
-
 /// Every public operation of this package with its exactness class (DECISIONS.md D43, D52), as data a
 /// schema walk reads through: a column computed by an operation listed here carries that operation's
 /// class. Every operation is `Pinned` — built from `+ − × ÷ √` alone, in one order, with no fused
 /// multiply-add and no host mathematics call anywhere — so each answers the same bits on every
 /// conformant host. The suite holds the table to the package's public surface both ways: an
-/// operation published without a row, or a row naming nothing published, is red.
+/// operation published without a row, or a row naming nothing published, is red. The module is named
+/// for its package, as `ElementaryLaws` is, because a module named `Operations` here would SHADOW
+/// LinearAlgebra's `Operations` member by member in any file that opens both namespaces, the last open
+/// winning silently (DECISIONS.md D74 item 2).
 [<RequireQualifiedAccess>]
-module Operations =
+module ElementaryOperations =
+
+    /// How exact an operation's bytes are across hosts — D43's vocabulary, the one `SchemaWalk` reads a
+    /// column's lineage in: `Pinned`, every conformant host computes the same bits; `HostRounded`, hosts
+    /// agree within a stated ulp bound only. Every operation this package ships is `Pinned`; `exactness`
+    /// classifies each one. The type is this package's own, as D49 item 2 makes it every package's, and
+    /// it is declared INSIDE this module rather than at namespace level, so `open Fuaran.Compute.Elementary`
+    /// brings no type named `Exactness` into a caller's scope to shadow its own (DECISIONS.md D74).
+    [<RequireQualifiedAccess>]
+    type Exactness =
+        | Pinned
+        | HostRounded
 
     /// `(operation, class)`, the operation spelled `<Module>.<function>`, in surface order.
     let exactness: (string * Exactness) list =

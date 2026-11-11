@@ -10,7 +10,7 @@ module Fuaran.Compute.Tests.ElementaryTests
 //     are the package's answers, rendered through the one corpus writer, each
 //     computed vector within one ulp of its correctly rounded reference.
 //   * The source reaches no host mathematics call.
-//   * `Operations.exactness` is the published operation set, both ways.
+//   * `ElementaryOperations.exactness` is the published operation set, both ways.
 // ---------------------------------------------------------------------------
 
 open System
@@ -31,7 +31,7 @@ let private lineOf (id: string) : string =
     |> Array.find (fun l -> l.Contains(sprintf "\"id\": \"%s\"" id))
 
 /// The public functions of the package's operation module, spelled `<Module>.<function>` — the census
-/// `Operations.exactness` is held to.
+/// `ElementaryOperations.exactness` is held to.
 let private publishedOperations () : Set<string> =
     typeof<SpecialValue>.Assembly.GetExportedTypes()
     |> Array.filter (fun t -> t.IsAbstract && t.IsSealed && t.Namespace = "Fuaran.Compute.Elementary")
@@ -168,17 +168,22 @@ let tests =
                   hits
                   "no host mathematics call in Elementary.fs (the square root is the F# operator over the premise's correctly rounded root)"
 
-          testCase "Operations.exactness classifies exactly the published operations, every one Pinned"
+          testCase "ElementaryOperations.exactness classifies exactly the published operations, every one Pinned"
           <| fun () ->
-              let declared = Operations.exactness |> List.map fst
+              let declared = ElementaryOperations.exactness |> List.map fst
               Expect.equal (List.distinct declared) declared "no operation is classified twice"
               let published = publishedOperations ()
               Expect.isNonEmpty (Set.toList published) "the census found the operation module"
               Expect.equal (Set.ofList declared) published "the table is the published operation set"
 
               Expect.isTrue
-                  (Operations.exactness |> List.forall (fun (_, e) -> e = Exactness.Pinned))
+                  (ElementaryOperations.exactness
+                   |> List.forall (fun (_, e) -> e = ElementaryOperations.Exactness.Pinned))
                   "every operation here is Pinned (DECISIONS.md D52)"
 
-              Expect.equal (Operations.exactnessOf "Elementary.exp") (Some Exactness.Pinned) "a lookup"
-              Expect.equal (Operations.exactnessOf "Elementary.sin") None "no such operation" ]
+              Expect.equal
+                  (ElementaryOperations.exactnessOf "Elementary.exp")
+                  (Some ElementaryOperations.Exactness.Pinned)
+                  "a lookup"
+
+              Expect.equal (ElementaryOperations.exactnessOf "Elementary.sin") None "no such operation" ]

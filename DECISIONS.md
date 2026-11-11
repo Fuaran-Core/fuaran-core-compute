@@ -28,16 +28,25 @@ started: no `Distributions` project and no `Rng` existed.
 **Ruled.**
 
 1. **The package.** `Fuaran.Compute.Elementary` (namespace `Fuaran.Compute.Elementary`) holds `Elementary.fs`, moved by
-   `git mv` with its body unchanged, the `SpecialValue` union with it, an `Operations.exactness` table of its eleven
+   `git mv` with its body unchanged, the `SpecialValue` union with it, an `ElementaryOperations.exactness` table of its eleven
    operations, and `ElementaryLaws.laws` (the four laws that left `LinearAlgebraLaws`). It takes FSharp.Core alone and
    nothing of the substrate or of Compute, under LinearAlgebra's Fable rules. The module keeps its name, so a call site
    that adds `open Fuaran.Compute.Elementary` still writes `Elementary.exp`; the break is the namespace and the package a
    consumer references.
-2. **Its own `Exactness`.** The package declares `Exactness = Pinned | HostRounded` in its namespace rather than reading
-   LinearAlgebra's, which would invert the graph, or DataFrame's, which sits above both. This is D49 item 2's precedent:
-   the type is per package, one vocabulary (D43's), each package's table classifying its own surface. A file that opens
-   two of these namespaces resolves `Exactness` by the last `open`; `DataFrame.fs` therefore names the moved functions
-   qualified (`Elementary.Elementary.exp`), as it already named LinearAlgebra's, and opens neither.
+2. **Its own `Exactness`, nested in `ElementaryOperations`.** The package declares `Exactness = Pinned | HostRounded`
+   rather than reading LinearAlgebra's, which would invert the graph, or DataFrame's, which sits above both. This is D49
+   item 2's precedent: the type is per package, one vocabulary (D43's), each package's table classifying its own
+   surface. It is declared INSIDE the table's module (`ElementaryOperations.Exactness`), not at namespace level, so that
+   `open Fuaran.Compute.Elementary` is safe for every caller: an opened type of the same name would shadow the caller's
+   own, and `DataFrame.fs` sits in `Fuaran.Compute` beside `Fuaran.Compute.Exactness`. The table's module is named for
+   the package, as `ElementaryLaws` is, rather than `Operations`, because a probe showed that two opened modules of one
+   name shadow member by member: with LinearAlgebra and Elementary both opened, `Operations.exactnessOf "Blas.gemv"`
+   answered `None` from whichever was opened last, silently. So nothing the package declares at namespace level
+   (`SpecialValue`, and the modules `Elementary`, `ElementaryOperations`, `ElementaryLaws`) shares a name with anything
+   another Compute package declares, and every caller opens the namespace and writes `Elementary.exp` and
+   `SpecialValue.Compute`, exactly as before the move. The first cut of this
+   phase declared the type at namespace level and had callers qualify the module through its namespace; the operator's review
+   ruled that out, and the nesting replaced it before the phase landed. (Operator ruling 2026-11-11.)
 3. **The generator is copied, not shared.** `ElementaryLaws` carries Park and Miller's float generator and the `law`
    runner beside `LinearAlgebraLaws`'s, line for line. Sharing it would need a public type in one package that the other
    reads, and once 632 has moved `Glm` out, LinearAlgebra depends on nothing in Compute. The copy is what keeps a seed
