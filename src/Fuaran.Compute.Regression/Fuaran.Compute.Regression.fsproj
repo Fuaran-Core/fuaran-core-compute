@@ -31,6 +31,8 @@
     <ProjectReference Include="..\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <!-- The scalar pinned mathematics Glm's links and variances read (Phase 630, D74). -->
     <ProjectReference Include="..\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
+    <!-- The iterations IRLS and θ's Newton call rather than carry (Phase 634, DECISIONS.md D80). -->
+    <ProjectReference Include="..\Fuaran.Compute.Solvers\Fuaran.Compute.Solvers.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

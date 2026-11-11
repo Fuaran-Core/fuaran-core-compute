@@ -40,6 +40,9 @@
     <!-- Phase 618: the distribution functions over their pinned sample, with the candidates the
          decision was made against (`node Program.js 5 distributions`). -->
     <Compile Include="..\DistributionsBench.fs" Link="DistributionsBench.fs" />
+    <!-- Phase 634: Glm.fit over the solvers, and θ's two candidate iterations at fixed means
+         (`node Program.js 5 glm`). After ElementaryBench.fs, whose generator and timer it reads. -->
+    <Compile Include="..\GlmBench.fs" Link="GlmBench.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

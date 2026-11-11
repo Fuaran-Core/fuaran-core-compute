@@ -3,6 +3,7 @@ namespace Fuaran.Compute.Regression
 open Fuaran.Core
 open Fuaran.Compute.Elementary
 open Fuaran.Compute.LinearAlgebra
+open Fuaran.Compute.Solvers
 
 /// The error distribution a generalised linear model assumes (Phase 595, DECISIONS.md D49 items 14 to
 /// 19 and D55; Phase 598, D57; Phase 600, D58). Which links each family is fitted under is
@@ -663,6 +664,17 @@ module Glm =
 
         mu0 |> Array.map (linkFunction link), mu0
 
+    /// What an IRLS iteration stands on: the coefficients (none at the seed), the linear predictor and
+    /// means they give, the first row whose mean is out of range, and the working weights and solve that
+    /// proposed them (none at the seed).
+    type private IrlsState =
+        { Beta: float option[]
+          Eta: float[]
+          Mu: float[]
+          Bad: int option
+          Ww: float[]
+          Ls: LeastSquaresFit option }
+
     /// IRLS from `(η₀, μ₀)` under a family whose variance is known (every family but an estimated
     /// negative binomial), with `observe iteration workingWeights` called once per iteration before its
     /// solve.
@@ -762,106 +774,102 @@ module Glm =
                 let mu = eta |> Array.map (inverseLink link)
                 finish beta eta mu (deviance family ya w mu) 1 w ls)
         | _ ->
-            let evaluate (beta: float option[]) =
+            // D77 item 7 and D80: the iteration is `Damped.iterate`'s. The step is the weighted solve;
+            // a state is inadmissible where a mean leaves the pair's range (`firstBad`); the objective is
+            // the deviance, never read at an inadmissible state; a failing candidate is halved towards
+            // the coefficients the iteration stands on, at most ten times (D49 item 16); the start is a
+            // seed, `μ₀` not being a point of the model, so the first proposal is neither halved nor held
+            // to its deviance. The rule is D49 item 17's: `|dev − dev_prev| / (|dev| + 0.1) < Tol`,
+            // strict, read before the cap `MaxIter`; a rise is that test over the signed change.
+            let evaluate (beta: float option[]) (from: IrlsState) : IrlsState =
                 let eta = predictor xs n beta o
                 let mu = eta |> Array.map (inverseLink link)
-                eta, mu, firstBad family link ya w eta mu
 
-            let rec iterate
-                (iteration: int)
-                (betaOld: float option[] option)
-                (eta: float[])
-                (mu: float[])
-                (devPrev: float)
-                : Result<GlmFit, LinAlgError> =
-                // The working response `z = (η − offset) + (y − μ)/(dμ/dη)` and weight
-                // `w·(dμ/dη)²/V(μ)`. Under the log link `dμ/dη` is the mean itself, so `z` divides by
-                // `μ`, and the weight keeps Phase 595's and 598's spellings: `w·μ` under Poisson and
-                // quasi-Poisson, the prior weight under Gamma, `w·μ^(2−p)` under Tweedie.
+                { from with
+                    Beta = beta
+                    Eta = eta
+                    Mu = mu
+                    Bad = firstBad family link ya w eta mu }
+
+            let mutable iteration = 0
+
+            // The working response `z = (η − offset) + (y − μ)/(dμ/dη)` and weight `w·(dμ/dη)²/V(μ)`.
+            // Under the log link `dμ/dη` is the mean itself, so `z` divides by `μ`, and the weight keeps
+            // Phase 595's and 598's spellings: `w·μ` under Poisson and quasi-Poisson, the prior weight
+            // under Gamma, `w·μ^(2−p)` under Tweedie.
+            let step (s: IrlsState) : Result<IrlsState, LinAlgError> =
+                iteration <- iteration + 1
+
                 let dmu =
                     match link with
-                    | GlmLink.Log -> mu
-                    | _ -> eta |> Array.map (meanDerivative link)
+                    | GlmLink.Log -> s.Mu
+                    | _ -> s.Eta |> Array.map (meanDerivative link)
 
-                let z = Array.init n (fun i -> (eta[i] - o[i]) + (ya[i] - mu[i]) / dmu[i])
+                let z = Array.init n (fun i -> (s.Eta[i] - o[i]) + (ya[i] - s.Mu[i]) / dmu[i])
 
                 let ww =
                     match family, link with
-                    | (GlmFamily.Poisson | GlmFamily.QuasiPoisson), GlmLink.Log -> Array.init n (fun i -> w[i] * mu[i])
-                    | GlmFamily.Tweedie pw, _ -> Array.init n (fun i -> w[i] * Elementary.pow mu[i] (2.0 - pw))
+                    | (GlmFamily.Poisson | GlmFamily.QuasiPoisson), GlmLink.Log ->
+                        Array.init n (fun i -> w[i] * s.Mu[i])
+                    | GlmFamily.Tweedie pw, _ -> Array.init n (fun i -> w[i] * Elementary.pow s.Mu[i] (2.0 - pw))
                     | GlmFamily.Gamma, GlmLink.Log -> Array.copy w
-                    | _ -> Array.init n (fun i -> w[i] * (dmu[i] * dmu[i] / variance family mu[i]))
+                    | _ -> Array.init n (fun i -> w[i] * (dmu[i] * dmu[i] / variance family s.Mu[i]))
 
                 observe iteration ww
 
                 solve x z ww
-                |> Result.bind (fun ls ->
-                    let bNew = ls.Coefficients |> List.toArray
-                    let etaN, muN, badN = evaluate bNew
+                |> Result.map (fun ls -> evaluate (List.toArray ls.Coefficients) { s with Ww = ww; Ls = Some ls })
 
-                    let stepped =
-                        match betaOld with
-                        | None ->
-                            // The first iteration has no previous coefficients to halve towards: a
-                            // mean out of range is refused at once, and its deviance is not compared
-                            // with μ₀'s, which is the start, not a point of the model.
-                            match badN with
-                            | Some r -> Error(outOfRange family link r)
-                            | None -> Ok(bNew, etaN, muN, deviance family ya w muN)
-                        | Some bOld ->
-                            // D49 item 16: halve towards the previous coefficients on a mean out of
-                            // range or a deviance rise, at most ten times. A column the new solve
-                            // aliased stays aliased.
-                            let rec halve (k: int) (beta: float option[]) eta mu bad =
-                                let dev =
-                                    match bad with
-                                    | Some _ -> nan
-                                    | None -> deviance family ya w mu
+            // A column the new solve aliased stays aliased.
+            let midpoint (standing: IrlsState) (candidate: IrlsState) : IrlsState =
+                let half =
+                    Array.init p (fun j ->
+                        match candidate.Beta[j] with
+                        | Some b ->
+                            let old = standing.Beta[j] |> Option.defaultValue 0.0
+                            Some(0.5 * old + 0.5 * b)
+                        | None -> None)
 
-                                // A rise is one the stopping rule would see: `(dev − dev_prev) / (|dev| +
-                                // 0.1) ≥ tol` (glm2's test). A rise below it is rounding at the optimum,
-                                // which no halving removes and the stopping rule accepts.
-                                let rise =
-                                    Option.isSome bad
-                                    || not (finite dev)
-                                    || not ((dev - devPrev) / (abs dev + 0.1) < control.Tol)
+                evaluate half candidate
 
-                                if not rise then
-                                    Ok(beta, eta, mu, dev)
-                                elif k = 10 then
-                                    match bad with
-                                    | Some r -> Error(outOfRange family link r)
-                                    | None -> Error(LinAlgError.NotConverged iteration)
-                                else
-                                    let half =
-                                        Array.init p (fun j ->
-                                            match beta[j] with
-                                            | Some b ->
-                                                let old = bOld[j] |> Option.defaultValue 0.0
-                                                Some(0.5 * old + 0.5 * b)
-                                            | None -> None)
+            let problem: DampedProblem<IrlsState, LinAlgError> =
+                { Step = step
+                  Inadmissible = fun s -> s.Bad |> Option.map (outOfRange family link)
+                  Objective = fun s -> deviance family ya w s.Mu
+                  Midpoint = midpoint
+                  Halvings = 10
+                  Seeded = true }
 
-                                    let e, m, b = evaluate half
-                                    halve (k + 1) half e m b
+            let rule =
+                StoppingRule.create control.MaxIter (StoppingTest.RelativeChange(control.Tol, 0.1))
 
-                            halve 0 bNew etaN muN badN
+            let seed =
+                { Beta = Array.empty
+                  Eta = eta0
+                  Mu = mu0
+                  Bad = None
+                  Ww = Array.empty
+                  Ls = None }
 
-                    stepped
-                    |> Result.bind (fun (beta, eta', mu', dev) ->
-                        // D49 item 17, in that order, the comparison strict; the binomials' separation
-                        // rule (D58 item 5) is read wherever the iteration ends.
-                        if abs (dev - devPrev) / (abs dev + 0.1) < control.Tol then
-                            match separated family w mu' with
-                            | Some r -> Error(LinAlgError.Separation r)
-                            | None -> Ok(finish beta eta' mu' dev iteration ww ls)
-                        elif iteration >= control.MaxIter then
-                            match separated family w mu' with
-                            | Some r -> Error(LinAlgError.Separation r)
-                            | None -> Error(LinAlgError.NotConverged iteration)
-                        else
-                            iterate (iteration + 1) (Some beta) eta' mu' dev))
-
-            iterate 1 None eta0 mu0 (deviance family ya w mu0)
+            // The binomials' separation rule (D58 item 5) is read wherever the iteration ends.
+            match Damped.iterate rule problem seed with
+            | Ok s ->
+                match separated family w s.State.Mu with
+                | Some r -> Error(LinAlgError.Separation r)
+                | None ->
+                    Ok(finish s.State.Beta s.State.Eta s.State.Mu s.Value s.Iterations s.State.Ww s.State.Ls.Value)
+            | Error(SolverError.NotConverged last) ->
+                match separated family w last.State.Mu with
+                | Some r -> Error(LinAlgError.Separation r)
+                | None -> Error(LinAlgError.NotConverged last.Iterations)
+            | Error(SolverError.StepRefused e)
+            | Error(SolverError.HalvingExhausted(_, Some e)) -> Error e
+            | Error(SolverError.HalvingExhausted(k, None)) -> Error(LinAlgError.NotConverged k)
+            // Unreachable: a `GlmControl` is a valid rule by construction, and `Damped.iterate` answers no
+            // bracket or point refusal.
+            | Error SolverError.RuleInvalid
+            | Error SolverError.BracketInvalid
+            | Error(SolverError.NotFinite _) -> Error(LinAlgError.NotConverged 0)
 
     // ---- the negative binomial's θ (D58 item 8, after MASS's glm.nb and theta.ml) -----------------
 
@@ -899,15 +907,23 @@ module Glm =
     /// `2⁻¹³`, MASS's `.Machine$double.eps^0.25`: the Newton step on θ below which θ has converged.
     let private thetaStepTol = 1.220703125e-4
 
-    /// `2⁵⁰`: a θ estimate beyond it is the Poisson boundary, not a negative binomial.
-    let private thetaBound = 1125899906842624.0
+    /// `[2⁻²⁰, 2²⁰]`, the bracket θ is solved in (D80). Below it no count model is meant; above it the
+    /// score's value is within a few hundred units of its rounding, so its sign, which a bracket reads,
+    /// is no longer the data's — data no more dispersed than Poisson's, whose likelihood rises towards
+    /// the Poisson limit.
+    let private thetaLow = 9.5367431640625e-07
 
-    /// θ by Newton's method on its score at fixed means (MASS's `theta.ml`): from
-    /// `θ₀ = Σw / Σ w·(y/μ − 1)²`, `θ ← |θ| + score(|θ|)/info(|θ|)` until a step is at most `2⁻¹³` in
-    /// size, at most `MaxIter − 1` steps; answers θ and the information at it. A start or a step that is
-    /// not finite, a θ that is not positive, a θ above `2⁵⁰` — data no more dispersed than Poisson's,
-    /// whose likelihood rises without bound towards the Poisson limit — or a last step still above the
-    /// tolerance is `ThetaNotConverged alternation`.
+    let private thetaHigh = 1048576.0
+
+    /// θ by Newton's method on its score at fixed means (after MASS's `theta.ml`), as one call of
+    /// `Root.bracketedNewton` (D80): `f` the score and `f′` minus the observed information, so a Newton
+    /// step is `θ + score/info`; from `θ₀ = Σw / Σ w·(y/μ − 1)²` inside `[2⁻²⁰, 2²⁰]`, every narrowing
+    /// admitted (`shrink = 1`), so a step is replaced by the bracket's midpoint only where it leaves the
+    /// bracket; the rule a step of at most `2⁻¹³`, at most `MaxIter − 1` steps. Answers θ and the
+    /// information at it, read from the evaluation that found it. Any refusal of the solver — the score
+    /// not changing sign over the bracket (no estimate inside it, as for data no more dispersed than
+    /// Poisson's), a start outside it, a value that is not finite, the cap — is
+    /// `ThetaNotConverged alternation`.
     let private thetaMl
         (control: GlmControl)
         (alternation: int)
@@ -924,27 +940,31 @@ module Glm =
                 sw <- sw + w[i]
                 sr <- sr + w[i] * (r * r)
 
-        let mutable t = sw / sr
-        let mutable step = 1.0
-        let mutable it = 1
+        // The last point evaluated and its information: the answer is always that point.
+        let mutable last = nan, nan
 
-        while finite t && it < control.MaxIter && abs step > thetaStepTol do
-            t <- abs t
+        let fdf (t: float) =
             let score, info = thetaScoreInfo ya w mu t
-            step <- score / info
-            t <- t + step
-            it <- it + 1
+            last <- t, info
+            score, -info
 
-        if
-            not (finite t && finite step)
-            || t <= 0.0
-            || t > thetaBound
-            || abs step > thetaStepTol
-        then
+        if control.MaxIter < 2 then
             Error(LinAlgError.ThetaNotConverged alternation)
         else
-            let _, info = thetaScoreInfo ya w mu t
-            Ok(t, info)
+            let rule =
+                StoppingRule.create (control.MaxIter - 1) (StoppingTest.AbsoluteStep thetaStepTol)
+
+            match Root.bracketedNewton rule 1.0 fdf thetaLow thetaHigh (sw / sr) with
+            | Ok s when s.State <= thetaLow || s.State >= thetaHigh ->
+                // A score of exactly zero at an end of the bracket is rounding, not an estimate: it is
+                // met where the means reproduce the counts and the score is below its own rounding
+                // across the bracket (D80).
+                Error(LinAlgError.ThetaNotConverged alternation)
+            | Ok s ->
+                match last with
+                | t, info when t = s.State -> Ok(s.State, info)
+                | _ -> Ok(s.State, snd (thetaScoreInfo ya w mu s.State))
+            | Error(_: SolverError<float, unit>) -> Error(LinAlgError.ThetaNotConverged alternation)
 
     /// The negative binomial log-likelihood at θ and the means, without its `−Σ w·ln Γ(y + 1)` term, which
     /// no comparison between alternations reads: `Σ w·(Σ_{k<y} ln(θ + k) + θ·ln θ + y·ln(μ + [y = 0]) −

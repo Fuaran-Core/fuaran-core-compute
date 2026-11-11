@@ -94,10 +94,10 @@
     <Compile Include="DistributionsVectors.fs" />
     <Compile Include="LinearAlgebraTests.fs" />
     <Compile Include="RegressionTests.fs" />
-    <!-- Phase 633: the suite over Fuaran.Compute.Solvers, and the law that the solvers reproduce the
-         regression package's own iterations bit for bit. -->
+    <!-- Phase 633: the suite over Fuaran.Compute.Solvers. -->
     <Compile Include="SolversTests.fs" />
-    <Compile Include="SolversReproductionTests.fs" />
+    <!-- Phase 634: Glm calls the solvers, and answers the bits it answered before. -->
+    <Compile Include="GlmSolversTests.fs" />
     <!-- Phase 618: the suite over Fuaran.Compute.Distributions. -->
     <Compile Include="DistributionsTests.fs" />
     <Compile Include="LawVectorExport.fs" />

@@ -1,5 +1,124 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-11 — D80: `Glm` calls the solvers — its IRLS is `Damped.iterate` and θ's Newton is `Root.bracketedNewton` over `[2⁻²⁰, 2²⁰]`, an answer on the bracket's end refused; θ moves by measurement, not by reproduction, and no law vector moves; the reproduction law becomes a record of the bits `Glm.fit` answered before
+
+**Context.** Phase 634. Phase 633 shipped the solvers (D77) and a reproduction law showing that `Damped.iterate` and
+`Root.bracketedNewton`, given `Glm`'s own step, test, objective and halving, answer `Glm.fit`'s bits on the reference
+corpus. It also found that θ's iteration is NOT a bracketed Newton: `thetaMl` was MASS's `theta.ml`, an unbracketed
+Newton that reflects a negative θ (`θ ← |θ| + score/info`), refusing a θ above `2⁵⁰`. So the shard's "no bit moves"
+could not hold for θ as written, and the operator left the choice to a measurement: (a) Solvers gains θ's actual
+method as a pinned arm of its own, so no θ bit moves; or (b) θ moves to `Root.bracketedNewton`, and what moves is
+listed. The shard was read against `main` at `1a80f11` (Phases 630, 632, 621, 633, 631 and 618 landed).
+
+**Decision.**
+
+1. **The IRLS loop is one call of `Damped.iterate`** (D77 item 7). The state is the coefficients, the linear
+   predictor and means they give, the first row out of range, and the working weights and solve that proposed them.
+   The step is the weighted solve (`observe` is called inside it, once per iteration, as before); a state is
+   inadmissible where `firstBad` names a row, and the refusal is `outOfRange`'s; the objective is the deviance, never
+   read at an inadmissible state; the midpoint halves every kept coefficient towards the standing state's, an aliased
+   column staying aliased; ten halvings; the start is a seed. The rule is `RelativeChange (Tol, 0.1)` under the cap
+   `MaxIter`. The refusals map with their payloads unchanged: `StepRefused e` and `HalvingExhausted (_, Some e)` are
+   `e` (`Separation`, `MeanOutOfRange`, the solve's own); `HalvingExhausted (k, None)` is `NotConverged k`; the cap is
+   `NotConverged k` after the binomials' separation rule is read at the last state, as it is read at a converged one.
+   The Gaussian identity fit stays one solve: it is no iteration. The hand-written `iterate` and `halve` are deleted.
+
+2. **θ moves to `Root.bracketedNewton` (option b), by measurement.** `f` is the score and `f′` minus the observed
+   information, so a Newton step is `θ + score/info` exactly as before; the bracket is `[2⁻²⁰, 2²⁰]`; `shrink = 1`, so
+   a Newton point is replaced by the bracket's midpoint only where it leaves the bracket; the rule is
+   `AbsoluteStep 2⁻¹³` (MASS's `.Machine$double.eps^0.25`) under the cap `MaxIter − 1`, the old loop's; the start is
+   `Σw / Σ w·(y/μ − 1)²`. The information at the answer is read from the evaluation that found it, not computed again.
+   Every refusal of the solver is `ThetaNotConverged alternation`, as every refusal of the loop was. **An answer on
+   an end of the bracket is refused** (item 4). The constant `2⁵⁰` and the loop are deleted.
+
+3. **The measurement** (`benchmarks/Fuaran.Core.Compute.Benchmarks/GlmBench.fs`, `node Program.js 5 glm` or the same
+   program on .NET; the reference is `tests/Fuaran.Core.Compute.Tests/fixtures/glm-reference/theta_reference.py`,
+   mpmath 1.4.1 at fifty digits, θ's maximum-likelihood root at the same fixed means, the first sign change of the
+   score from `2⁻²⁰` to `2⁶⁰` bisected to `1e-40`). Each method solved θ at fixed means — the Poisson fit's, where the
+   first alternation starts, and the negative binomial fit's own — over the reference corpus's counts, over seeded
+   negative binomial data at θ = 0.05, 0.5, 8, 200 and 5000 and Poisson data (five seeds each, 30 to 400 rows), and over
+   a sweep of 3,995 small seeded designs (10 to 40 rows) at θ log-uniform over `[1e-2, 1e6]`, one in eight at
+   Poisson's limit. AMD Ryzen 9 9950X, Windows 11; .NET 10 Release x64, and node v22.23.4 over Fable 5.0.0, whose
+   reference lines agree with .NET's byte for byte (1,113 lines).
+   - **Where both answer, they answer the same bits** on every corpus and seeded case (52 sets of means: 43 both
+     answer, 9 both refuse) and on 1,832 of the sweep's designs, with the same Newton steps; 1,862 designs both refuse. The two differ only where the
+     unbracketed Newton left the bracket or went below zero, which no corpus case and no law vector reaches: 94
+     designs where both answer different bits (the bracketed answer is the nearer to the reference in 50 and the
+     reflected in 44; the bracketed one is within a relative `1.2e-5` of the root in all 94, the reflected one in all
+     but one, which has no correct digit), and 207 where one answers and the other refuses.
+   - **The reflection fails where θ is small.** On 205 designs the reflected loop reached its cap (24 Newton steps,
+     reflecting and overshooting again) where a root lies inside `[2⁻²⁰, 2²⁰]` — at θ from 0.005 to 0.4, ordinary
+     overdispersed counts — and the bracketed Newton found it. On 2 designs the bracketed Newton refused (its start
+     fell outside the bracket) where the reflected loop answered, and both of those answers are wrong in every digit
+     (`9.9e-7` for a root at `1.5e-3`, `1.9e-9` for `3.6e-5`). Over the answers the reference was run on, the
+     reflected loop answered 3 values with no correct digit and the bracketed Newton 1 (`1.5e-4` for a root at
+     `1.4e-2`: the absolute step rule stops a bisection whose width is below `2⁻¹³`, item 6). The bracketed Newton
+     refused 2 designs whose root lies inside its bracket, against the reflected loop's 205.
+   - **Accuracy.** Where both answer the same bits the accuracy is one figure: over the 43 corpus and seeded sets of means
+     (the reference was run on those and on the sweep's designs where the two differ), a median relative distance from the fifty-digit root of `5.4e-11`, a 90th percentile of
+     `1.7e-8` and a largest of `7.1e-6`. Over all 342 bracketed answers it was run on: a median of `3.5e-8`, a 90th
+     percentile of `7.1e-6` and a 99th of `9.3e-5`, larger at small θ, where the step rule's absolute `2⁻¹³` is a
+     relative one of `1e-2`. On the corpus's two estimated fits θ is the same bits as before,
+     `8.441166827096124` and `8.139668123835209`, within a relative `1e-12` of the 80-digit maximum-likelihood
+     estimate in `general.json`.
+   - **The bracket's upper end.** The same iteration over `[2⁻²⁰, 2⁵⁰]` (`Glm`'s old bound) refused 35 of the 52
+     corpus and seeded sets whose root lies inside that bracket: at `2⁵⁰` the score is far below its own rounding, its
+     sign is noise, and the bracket check reads it. Over `[2⁻²⁰, 2²⁰]` every answer the reference was run on has its
+     root inside the bracket, so no noise at `2²⁰` produced an answer, except where the means reproduce the counts
+     (item 4). The old loop answered no θ above `2²⁰` on any design measured.
+   - **Iterations and cost.** Where both answer, the bracketed Newton takes the same Newton steps and two more
+     evaluations of the score (its two ends), and reads the information at the answer from its last evaluation, where
+     the old loop evaluated it once more: a θ solve costs 1.32 times the old loop's on .NET and 1.27 times under node
+     (summed over the 43 sets where both answer), and 0.08 times where both refuse, the bracket check refusing after two
+     evaluations where the loop ran to its cap. Over whole fits, interleaved runs of each build (medians of three on .NET and six under node; this
+     machine's run-to-run spread is about ten per cent a case): IRLS fits (Poisson log and sqrt, binomial logit, Gamma
+     inverse, 30 rows) cost 1.02 times what they did on .NET and 0.98 under node, the indirection through
+     `Damped.iterate` within the spread; negative binomial fits that answer 1.04 times on .NET and 1.09 under node; fits
+     refused at θ 0.76 times on .NET and 0.81 under node. The θ solve's extra evaluations are the method's cost, not the
+     indirection's, and are surfaced here rather than hidden: they buy the bracket that item 3 measures.
+   - **Option (a) was not taken.** It would add a solver arm — an unbracketed Newton with a caller's reflection —
+     whose one reader is θ, to reproduce an iteration the measurement shows refusing ordinary data, and it would
+     carry the `2⁵⁰` bound whose upper range the score cannot resolve. Under this side's rule that an abstraction
+     needs a reader and the doctrine's preference for an existing seam, the measurement settles it.
+
+4. **An answer on the bracket's end is refused.** The solver answers an end at once when the score there is exactly
+   zero. Where the means reproduce the counts (a Poisson fit that is exact: every count equal, the case
+   `transform-179-fit-negbin-theta-refused` pins), the score at `2²⁰` rounds to zero, and the solver would answer
+   `θ = 2²⁰`; the old loop refused those with a start that is not finite. The sweep met 39 such designs before the
+   guard. A θ on an end is no estimate, so it is `ThetaNotConverged`, held by a test.
+
+5. **What moved, and what did not.** No law vector moved: every file under `conformance/laws/` is byte-identical
+   (their SHA-256 recorded before the first edit and after the last), including `regression-laws.json` (which holds
+   no GLM vector) and the three negative binomial `Fit` rows of `transform-laws.json` (`transform-173-fit-negbin-fixed`,
+   `transform-174-fit-negbin-summary`, `transform-179-fit-negbin-theta-refused`), on .NET and under node. `Glm.fit`
+   answers the bits it answered before on every case of the reference corpus and the authored cases, under three
+   controls: 87 lines, 33 of them refusals, recorded by the pre-swap build. What moved is θ where the old loop
+   reflected or overshot: it is estimated on data the loop refused, refused on the two designs above, and answered
+   differently in its last bits where the two paths differ. That is a breaking entry in STABILITY.
+
+6. **Not changed here.** θ's stopping rule stays the absolute `2⁻¹³` MASS states, so a small θ is good to a relative
+   `1e-2` at worst and a bisection narrower than the tolerance stops where it is (one sweep design). A relative rule
+   would move bits the corpus pins; it is a decision of its own. The alternation between the coefficients and θ (glm.nb's
+   outer loop) stays as it is: it is not an iteration the solvers offer, and it has one reader.
+
+7. **The reproduction law becomes a record.** D77 item 9's law transcribed what `Glm`'s loops called and drove the
+   solvers with it. With the loops gone the transcription would repeat `Glm`'s own calls, so it is deleted
+   (`SolversReproductionTests.fs`), and what it established is kept as data: `fixtures/glm-reference/glm-bits.txt`,
+   every compared cell's bits, iteration count and refusal of `Glm.fit` over the 29 cases under the three controls,
+   written by the build before the swap and compared line for line (`GlmSolversTests.fs`), with a probe that a tighter
+   rule moves a recorded line. `proofs.json`'s solvers row says the regression package now rests on the solvers
+   rather than being reproduced by them; it carries no GLM row of its own (the shard assumed one).
+
+8. **The version.** `Fuaran.Compute.Regression` references `Fuaran.Compute.Solvers` directly (it did transitively
+   through Elementary); no public surface moves (`api/Fuaran.Compute.Regression.txt` and `api/Fuaran.Compute.Solvers.txt`
+   unchanged). The θ change is behavioural and breaking, on a draft that already carries breaking moves: it rides
+   `0.45.0`.
+
+**Consequences.** A host transcribing `Glm` transcribes two solver calls and their arguments instead of two loops, and
+the solvers' own vectors pin the decisions. θ is estimated on small-θ data MASS's iteration gives up on, and a θ the
+score cannot resolve is a refusal at the bracket rather than an answer near `2⁵⁰`. A change to θ's stopping rule, or a
+relative rule for it, is its own decision and moves the corpus.
+
 ## 2026-11-11 — D79: the normal, t, chi-square and F distributions are pinned in a package of their own, `Fuaran.Compute.Distributions`, over Elementary's special functions and the solvers; the normal pair is Elementary's, read under the distribution's name; the t and the F read the incomplete beta function and its inverse and iterate nothing, the chi-square quantile is `Root.bracketedNewton`; each form chosen by measurement against a fifty-digit reference; `Predict` reads `StudentT.quantile` and the t table is gone
 
 **Context.** Phase 618. A confidence interval, a significance test and a model's p-value end in a distribution

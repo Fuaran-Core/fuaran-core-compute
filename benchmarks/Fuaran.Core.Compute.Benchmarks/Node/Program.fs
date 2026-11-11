@@ -486,6 +486,13 @@ let main argv =
     if onlyDistributions then
         DistributionsBench.run runs
 
+    // `glm` times Glm.fit over the solvers and θ's two candidate iterations at fixed means, and prints
+    // the means and answers for the fifty-digit reference check (Phase 634); `glm fits` the fits alone.
+    let onlyGlm = argv.Length > 1 && argv.[1] = "glm"
+
+    if onlyGlm then
+        GlmBench.run runs (argv.Length > 2 && argv.[2] = "fits")
+
     // `typed` as the second argument times the typed family alone (Phase 280).
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
@@ -506,6 +513,7 @@ let main argv =
         && not onlyElementary
         && not onlySpecial
         && not onlyDistributions
+        && not onlyGlm
     then
         table
             "Sheet"
@@ -556,7 +564,14 @@ let main argv =
                             (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                           n ]
 
-    if onlyChain || onlyQr || onlyElementary || onlySpecial || onlyDistributions then
+    if
+        onlyChain
+        || onlyQr
+        || onlyElementary
+        || onlySpecial
+        || onlyDistributions
+        || onlyGlm
+    then
         ()
     elif onlyState then
         stateTable ()
