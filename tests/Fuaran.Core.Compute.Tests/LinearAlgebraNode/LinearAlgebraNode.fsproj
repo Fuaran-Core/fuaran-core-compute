@@ -8,7 +8,8 @@
     it prints to the committed conformance/laws/linear-algebra-laws.json byte for byte. Since Phase 630 it
     runs the elementary package's laws and vectors (../ElementaryVectors.fs) too, held to
     conformance/laws/elementary-laws.json the same way, and since Phase 632 the regression package's
-    (../RegressionVectors.fs), held to conformance/laws/regression-laws.json.
+    (../RegressionVectors.fs), held to conformance/laws/regression-laws.json, and since Phase 633 the
+    solvers package's (../SolversVectors.fs), held to conformance/laws/solvers-laws.json.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -20,9 +21,11 @@
     <Compile Include="..\ElementaryVectors.fs" Link="ElementaryVectors.fs" />
     <Compile Include="..\LinearAlgebraVectors.fs" Link="LinearAlgebraVectors.fs" />
     <Compile Include="..\RegressionVectors.fs" Link="RegressionVectors.fs" />
+    <Compile Include="..\SolversVectors.fs" Link="SolversVectors.fs" />
     <Compile Include="LinearAlgebraNode.fs" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.Solvers\Fuaran.Compute.Solvers.fsproj" />
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />

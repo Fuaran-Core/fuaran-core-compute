@@ -48,7 +48,14 @@ let compute: Set<string> =
           "Fuaran.Compute.Elementary"
           // Phase 632: regression modelling, above LinearAlgebra and Elementary and below DataFrame; it
           // takes Column and (its accumulator codec) Wire.
-          "Fuaran.Compute.Regression" ]
+          "Fuaran.Compute.Regression"
+          // Phase 633: the pinned solvers, below everything; they take FSharp.Core alone.
+          "Fuaran.Compute.Solvers" ]
+
+/// The packages at the bottom of the graph (DECISIONS.md D77 item 10): each takes FSharp.Core and
+/// nothing else — no substrate package, and no package of this repository, so anything in Compute can
+/// call it from below.
+let bottom: Set<string> = set [ "Fuaran.Compute.Solvers" ]
 
 /// The substrate packages the compute strand stands on — and nothing above them. `Fuaran.Core.Unit`
 /// is BELOW the four, not above: since Core `1.0.0` a schema field carries a unit of measure, so
@@ -98,6 +105,26 @@ let violations (projects: Map<string, string list * string list>) : (string * st
           for r in projectRefs do
               if not (Set.contains r compute) then
                   yield name, "project " + r ]
+
+/// What a bottom package takes beyond FSharp.Core: any other package, any project of this repository.
+/// `(project, offending reference)` pairs, for the packages of `bottom` only.
+let bottomViolations (projects: Map<string, string list * string list>) : (string * string) list =
+    [ for KeyValue(name, (packages, projectRefs)) in projects do
+          if Set.contains name bottom then
+              for p in packages do
+                  if p <> "FSharp.Core" then
+                      yield name, "package " + p
+
+              for r in projectRefs do
+                  yield name, "project " + r ]
+
+/// A built bottom assembly's references into the Fuaran family: every one is a violation.
+let bottomAssemblyViolations (refs: Map<string, string list>) : (string * string) list =
+    [ for KeyValue(name, rs) in refs do
+          if Set.contains name bottom then
+              for r in rs do
+                  if r.StartsWith("Fuaran.", StringComparison.Ordinal) then
+                      yield name, r ]
 
 /// A built assembly's references into the Fuaran family that break the line: any `Fuaran.*`
 /// assembly that is neither one of this repository's nor one the assembly is allowed.
@@ -291,4 +318,82 @@ let tests =
                     "Fuaran.Compute.ColumnOps", "Fuaran.Core.OpStream"
                     "Fuaran.Compute.Conformance", "Fuaran.Core.Conformance"
                     "Fuaran.Compute.PipelineQuery", "Fuaran.Core.Query" ] do
-                  Expect.contains refs[name] below (sprintf "%s references %s" name below) ]
+                  Expect.contains refs[name] below (sprintf "%s references %s" name below)
+
+          // Phase 633 (DECISIONS.md D77 item 10): the solvers sit below every Compute package, so that
+          // the special functions' inverses and the distributions' quantiles can call them. A reference
+          // from them into Compute would close a cycle the first time one of those is written.
+          testCase "the bottom rule goes red on a Compute project, a substrate package and a Fuaran assembly"
+          <| fun _ ->
+              let clean =
+                  Map.ofList
+                      [ "Fuaran.Compute.Solvers", ([ "FSharp.Core" ], [])
+                        "Fuaran.Compute.Elementary", ([ "FSharp.Core" ], [ "Fuaran.Compute.Solvers" ]) ]
+
+              Expect.isEmpty (bottomViolations clean) "a bottom package on FSharp.Core alone breaks nothing"
+
+              Expect.equal
+                  (bottomViolations (
+                      clean
+                      |> Map.add "Fuaran.Compute.Solvers" ([ "FSharp.Core" ], [ "Fuaran.Compute.Elementary" ])
+                  ))
+                  [ "Fuaran.Compute.Solvers", "project Fuaran.Compute.Elementary" ]
+                  "a Compute project under the solvers is a violation"
+
+              Expect.equal
+                  (bottomViolations (
+                      clean
+                      |> Map.add "Fuaran.Compute.Solvers" ([ "FSharp.Core"; "Fuaran.Core.Column" ], [])
+                  ))
+                  [ "Fuaran.Compute.Solvers", "package Fuaran.Core.Column" ]
+                  "a substrate package under the solvers is a violation"
+
+              Expect.equal
+                  (bottomAssemblyViolations (
+                      Map.ofList
+                          [ "Fuaran.Compute.Solvers", [ "FSharp.Core"; "Fuaran.Compute.Elementary" ]
+                            "Fuaran.Compute.Elementary", [ "FSharp.Core"; "Fuaran.Compute.Solvers" ] ]
+                  ))
+                  [ "Fuaran.Compute.Solvers", "Fuaran.Compute.Elementary" ]
+                  "a Fuaran assembly referenced by the solvers is a violation; a reference TO them is not"
+
+          testCase "the solvers reference nothing of Compute and nothing of the substrate, by project and by assembly"
+          <| fun _ ->
+              let projects = projectReferences ()
+
+              Expect.isTrue
+                  (Set.isSubset bottom (projects |> Map.keys |> Set.ofSeq))
+                  "every bottom package is under src/"
+
+              let found = bottomViolations projects
+
+              Expect.isEmpty
+                  found
+                  (sprintf
+                      "bottom package(s) reference beyond FSharp.Core: %s. Fuaran.Compute.Solvers is generic over its caller's functions so that everything in Compute can call it; a method that needs a Compute type takes it as a function argument instead."
+                      (render found))
+
+              let refs =
+                  [ for name in bottom ->
+                        match builtAssembly name with
+                        | Ok dll -> name, referencedAssemblies dll
+                        | Error e -> failtestf "%s" e ]
+                  |> Map.ofList
+
+              Expect.isEmpty (bottomAssemblyViolations refs) "no built bottom assembly references a Fuaran assembly"
+
+              // Not vacuous: the readers do read the solvers, and do find a reference where there is one.
+              Expect.contains
+                  (fst projects["Fuaran.Compute.Solvers"])
+                  "FSharp.Core"
+                  "the solvers' project names FSharp.Core"
+
+              Expect.contains
+                  refs["Fuaran.Compute.Solvers"]
+                  "FSharp.Core"
+                  "the solvers' assembly references FSharp.Core"
+
+              Expect.contains
+                  (snd projects["Fuaran.Compute.Elementary"])
+                  "Fuaran.Compute.Solvers"
+                  "Elementary's project references the solvers" ]

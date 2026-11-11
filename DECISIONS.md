@@ -1,5 +1,122 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-11 — D77: pinned solvers are a package of their own, `Fuaran.Compute.Solvers`, at the bottom of Compute's graph, generic over the caller's functions; one `StoppingRule` every method takes, each test one written comparison; the bracketed Newton's fallback, the damped iteration's rise test and each method's order and refusals; Brent's method is not shipped; the solvers reproduce `Glm`'s loops bit for bit, and θ's Newton is not a bracketed Newton
+
+**Context.** Phase 633. Each iterative method in Compute carries its own loop and its own stopping decision, and in a
+pinned library the stopping decision is part of the answer: two hosts that stop one iteration apart differ in every bit
+after. The phase asks for one library those methods call. The shard was written before Phases 630, 632 and 621 landed;
+it was read against the tree as they left it (`Glm` in `Fuaran.Compute.Regression`), and what did not hold is item 9.
+
+**Decision.**
+
+1. **The package and where it sits.** `Fuaran.Compute.Solvers` references FSharp.Core and nothing else: no substrate
+   package and no package of this repository. A method takes the caller's function, its derivative where it uses one,
+   and for a multivariate iteration the caller's whole step, so no method names a matrix. `Fuaran.Compute.Elementary`
+   references it (the special functions' inverses will call it); nothing in Elementary reads it yet. A solver's own
+   arithmetic is `+ − × ÷` and comparisons in one written order, with no fused multiply-add (D48) and no host
+   mathematics call: an absolute value is a comparison and a negation, and finiteness is `v − v = 0`.
+
+2. **`StoppingRule` is a cap and one test from a closed set, and each test is one comparison.**
+   - `AbsoluteStep tol`: stop when `|step| ≤ tol`. Not strict.
+   - `RelativeChange (tol, floor)`: stop when `|current − previous| / (|current| + floor) < tol`. Strict. `Glm`'s rule is
+     this arm with the floor `0.1`.
+   - `BracketUlps ulps`: stop when `hi − lo ≤ ulps × 2⁻⁵² × max(|lo|, |hi|)`, the product formed left to right. A unit is
+     measured at the top of the larger end's binade, so the test reads no bit pattern and needs no host function.
+   - `ExactZero`: stop only on a function value of exactly zero.
+
+   A rule is valid when its cap is at least one and its tolerance, floor and ulp count are finite and not negative, the
+   floor above zero; anything else is `RuleInvalid`. Each method says what `previous`, `current` and `step` are. An
+   answer names the arm that stopped it (`StoppingArm`) and the iteration. A run that reaches its cap is the refusal
+   `NotConverged`, carrying the last state with the arm `Cap`: it is never returned as an answer. Every method tests
+   convergence BEFORE the cap, so a run that converges at its cap converges.
+
+3. **`Root.bisect`.** `f lo` is read before `f hi`. Checked in this order: the rule, the ends (finite, `lo < hi`), the
+   two values (finite), a zero at `lo` then at `hi` (answered with zero iterations), a sign change (`BracketInvalid`
+   otherwise). Iteration `k` evaluates `mid = lo + 0.5 × (hi − lo)` and replaces the end whose value shares its sign. It
+   stops on `f mid = 0` (`ExactZero`, whatever the rule), then the rule's test with `previous` the last midpoint (`lo`
+   before the first), `current = mid` and `step = mid − previous`, then the cap. A bracket with no float strictly inside
+   stops as `Bracket` without evaluating. A value that is not finite is `NotFinite mid`.
+
+4. **`Root.bracketedNewton`, and its fallback rule.** The caller passes one function answering `(f x, f′ x)`, a start
+   strictly inside the bracket, and a fraction `shrink` in `(0, 1]`. The ends are checked as bisection's, then the
+   bracket is narrowed by the start. Iteration `k`, with `w = hi − lo`: the proposal is Newton's `x − f/f′` when Newton
+   is allowed and the point lies inside the bracket, ends included; otherwise the midpoint. It is evaluated, the end
+   sharing its sign is replaced, and Newton is allowed in the next iteration when the narrowed bracket is at most
+   `shrink × w` wide. The rule reads `step` as `f/f′` for a Newton proposal and `x − midpoint` for a bisection.
+   - The ends are included because a converged Newton step leaves `x` where it is, and `x` is by then an end. Excluding
+     them replaced the last Newton step of a converged run with a bisection.
+   - The fraction is the caller's because the two readers differ. A quantile wants a guaranteed rate (`0.5`: a bracket
+     that did not halve is bisected next). A caller reproducing an existing Newton iteration states `1`, at which every
+     narrowing passes and the only fallback is a point outside the bracket.
+   - A step-size safeguard (bisect when a step is more than half the last) was considered and not taken: Newton from
+     far below a root takes growing steps, and such a rule would bisect a run that was converging.
+
+5. **`Root.integerSearch`.** The smallest integer `k` in `[lo, hi]` with `g k ≥ target`, for a `g` that does not fall.
+   `g hi` is read first and `g lo` second; the bracket is then halved at `lo + (hi − lo) / 2`, a value that is not
+   `≥ target` (a NaN included) moving `lo`. It takes no rule: it ends when `hi − lo = 1`, within thirty-one halvings.
+   `lo > hi`, a width beyond a 32-bit integer and `g hi ≥ target` not holding are `BracketInvalid`.
+
+6. **`Minimise.goldenSection`.** The interior points are `lo + 0.3819660112501051 × (hi − lo)` and
+   `lo + 0.6180339887498949 × (hi − lo)`, the constants literals (`0x3FD8722191A02D60`, `0x3FE3C6EF372FE950`), so no host
+   takes a square root. The left value is read first. `f c < f d`, strictly, keeps the left part; a tie keeps the
+   right. One evaluation an iteration. The estimate is the interior point with the smaller value, the left on a tie. It
+   stops when a new point is not strictly between its neighbours (`Bracket`), then on a value of zero under
+   `ExactZero`, then the rule's test with `step` the bracket's width, then the cap.
+
+7. **`Damped.iterate`.** The caller gives a step (which may refuse: `StepRefused` with the caller's reason), an
+   admissibility test answering the caller's reason, an objective, a midpoint and a count of halvings. A candidate
+   fails when it is inadmissible, when its objective is not finite, or when its objective rose. A RISE is the rule's
+   own test over the signed change (`StoppingRule.rises`): under `RelativeChange`,
+   `not ((current − previous) / (|current| + floor) < tol)`. That is `Glm`'s rule, and its reason holds generally: a
+   rise smaller than the stopping test can see is rounding at the optimum, which no halving removes. A failing
+   candidate is replaced by the midpoint towards the standing state, at most the stated number of times, then
+   `HalvingExhausted`, carrying the caller's reason when the last candidate was inadmissible. A problem may declare
+   its start a SEED: the first proposal is then not halved and its objective is not held to the seed's, and an
+   inadmissible first proposal is refused at once. `Glm` starts from a seed: `μ₀` is the start, not a point of the model.
+   `BracketUlps` reads no objective and is `RuleInvalid` here.
+
+8. **Brent's method is not shipped.** The shard left it to a measurement. The measurement is a census of readers, not
+   a timing: every root the filed phases solve has a derivative to hand (a quantile's is its density, the inverse
+   incomplete beta's is the beta density, θ's score has its information), and the one-dimensional minimisation is
+   golden section's. No reader lacks a derivative. Under this side's rule that an abstraction needs a reader, Brent
+   waits for the first caller that has none; `SolversOperations.exactnessOf "Root.brent"` is `None`, held by a test.
+
+9. **The reproduction law, and what the premise check found.**
+   - `Glm`'s IRLS is the shape the shard names. Its stopping test is `|dev − dev_prev| / (|dev| + 0.1) < Tol`, strict,
+     read before the cap `iteration ≥ MaxIter`; it halves at most ten times on a mean out of range, a deviance that is
+     not finite or a rise as item 7 states; the first iteration is not halved. `Damped.iterate` given those answers
+     `Glm.fit`'s coefficients, means, linear predictor, deviance and iteration count bit for bit, and its refusals, on
+     all 22 cases of the reference corpus (`fixtures/glm-reference/general.json`) under three controls and on authored
+     cases that halve and that are refused.
+   - **θ's Newton is NOT a bracketed Newton.** `thetaMl` is an unbracketed Newton that reflects a negative θ
+     (`θ ← |θ| + score/info`), stops on `|step| ≤ 2⁻¹³` and takes at most `MaxIter − 1` steps. `Root.bracketedNewton`
+     with `f` the score, `f′` minus the information, `shrink = 1` and the rule `AbsoluteStep 2⁻¹³` under a cap of
+     `MaxIter − 1` computes the same step (`f/f′` is `score/info` negated exactly) and answers the same θ, standard
+     error and alternation count bit for bit on every estimated case, while θ stays inside the bracket. Where the
+     hand-written loop would reflect a negative θ the solver bisects instead, so the two differ there. No corpus case
+     reaches that. Phase 634 decides whether that difference is admitted when it makes the call.
+   - The law lives in the test project and transcribes what `Glm`'s private loops call, so no Regression file moved.
+     It compares at the level of `Glm.fit`. The corpus's `Fit` vectors reach `Glm.fit` through the dataframe bridge and
+     are not driven through the solvers here; they are pinned by `transform-laws.json` itself, which goes red if
+     Phase 634 moves a bit of them.
+   - The halving refusal (`HalvingExhausted`) is held by the solver's own vectors and laws. No authored fit reaches
+     `Glm`'s exhausted halving, so that one path is not compared against `Glm`.
+
+10. **The roster and the names.** The package is registered in the solution, `pack.ps1`, the publish workflow,
+    `gate-reads.json`, the boundary, wire and coverage rosters and its own API baseline. A boundary rule holds the bottom:
+    a project or assembly reference from the solvers to any `Fuaran.*` package fails the suite. The exactness table is
+    the module `SolversOperations` in `SolversOperations.fs` (the shard said `Operations.fs`; two opened modules named
+    `Operations` shadow each other, D74 item 2), and `Exactness` is nested in it. Callers open the namespace and write
+    `Root.bisect`, `Damped.iterate`, `StoppingRule.create`. A test reads every other Compute package's top-level names
+    and finds none that the solvers' names would shadow.
+
+11. **The version.** Additive, on a draft that already carries breaking moves: it rides `0.45.0`.
+
+**Consequences.** A twin transcribes each solver once and a reviewer checks each stopping rule once. A method added
+here needs a reader, a vector for each decision it makes and a row in the exactness table. The solvers pin decisions,
+not convergence: how fast a method converges on a caller's function, and how close it ends, are the caller's to measure
+(`proofs.json`, `solvers-decisions-pinned-by-transcription`). Method cards for the solvers wait on Phase 623.
+
 ## 2026-11-11 — D76: a pinned SplitMix64 generator, `Rng`, in the Elementary package, computed in 16-bit limbs; `KMeans` and `Bootstrap` are pipeline steps seeded from it, every order pinned; a seed is required and travels as digits; the steps are planner barriers, re-evaluated whole by the incremental seam and held by tests rather than by the model
 
 **Context.** Phase 621. A segmentation is a decision, and nothing here could replay one: a clustering or a resample

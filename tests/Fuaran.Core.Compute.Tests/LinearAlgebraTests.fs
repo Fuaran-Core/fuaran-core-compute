@@ -280,11 +280,12 @@ let tests =
                   let lines = transcript.Replace("\r\n", "\n").Split('\n')
 
                   // Phase 630: the leg prints the elementary package's document beside this one, and since
-                  // Phase 632 the regression package's.
+                  // Phase 632 the regression package's, and since Phase 633 the solvers package's.
                   for fileName in
                       [ LinearAlgebraVectors.fileName
                         ElementaryVectors.fileName
-                        RegressionVectors.fileName ] do
+                        RegressionVectors.fileName
+                        SolversVectors.fileName ] do
                       let first = Array.findIndex (fun l -> l = "BEGIN " + fileName) lines
                       let last = Array.findIndex (fun l -> l = "END " + fileName) lines
                       // The document ends in a newline and `printfn` adds one more: drop that one.

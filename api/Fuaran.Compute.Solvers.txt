@@ -1,0 +1,93 @@
+# Fuaran.Compute.Solvers — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Compute.Solvers.DampedProblem`2..ctor(Microsoft.FSharp.Core.FSharpFunc`2<!0, Microsoft.FSharp.Core.FSharpResult`2<!0, !1>>, Microsoft.FSharp.Core.FSharpFunc`2<!0, Microsoft.FSharp.Core.FSharpOption`1<!1>>, Microsoft.FSharp.Core.FSharpFunc`2<!0, System.Double>, Microsoft.FSharp.Core.FSharpFunc`2<!0, Microsoft.FSharp.Core.FSharpFunc`2<!0, !0>>, System.Int32, System.Boolean)
+ctor Fuaran.Compute.Solvers.Stopped`1..ctor(!0, System.Double, System.Int32, Fuaran.Compute.Solvers.StoppingArm)
+ctor Fuaran.Compute.Solvers.StoppingRule..ctor(System.Int32, Fuaran.Compute.Solvers.StoppingTest)
+field Fuaran.Compute.Solvers.SolverError`2+Tags.BracketInvalid : System.Int32 (literal)
+field Fuaran.Compute.Solvers.SolverError`2+Tags.HalvingExhausted : System.Int32 (literal)
+field Fuaran.Compute.Solvers.SolverError`2+Tags.NotConverged : System.Int32 (literal)
+field Fuaran.Compute.Solvers.SolverError`2+Tags.NotFinite : System.Int32 (literal)
+field Fuaran.Compute.Solvers.SolverError`2+Tags.RuleInvalid : System.Int32 (literal)
+field Fuaran.Compute.Solvers.SolverError`2+Tags.StepRefused : System.Int32 (literal)
+field Fuaran.Compute.Solvers.SolversOperations+Exactness+Tags.HostRounded : System.Int32 (literal)
+field Fuaran.Compute.Solvers.SolversOperations+Exactness+Tags.Pinned : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingArm+Tags.AbsoluteStep : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingArm+Tags.Bracket : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingArm+Tags.Cap : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingArm+Tags.ExactZero : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingArm+Tags.RelativeChange : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingTest+Tags.AbsoluteStep : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingTest+Tags.BracketUlps : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingTest+Tags.ExactZero : System.Int32 (literal)
+field Fuaran.Compute.Solvers.StoppingTest+Tags.RelativeChange : System.Int32 (literal)
+method Fuaran.Compute.Solvers.Damped.iterate`2(Fuaran.Compute.Solvers.StoppingRule, Fuaran.Compute.Solvers.DampedProblem`2<!!0, !!1>, !!0) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Solvers.Stopped`1<!!0>, Fuaran.Compute.Solvers.SolverError`2<!!0, !!1>>
+method Fuaran.Compute.Solvers.Minimise.goldenSection`1(Fuaran.Compute.Solvers.StoppingRule, Microsoft.FSharp.Core.FSharpFunc`2<System.Double, System.Double>, System.Double, System.Double) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Solvers.Stopped`1<System.Double>, Fuaran.Compute.Solvers.SolverError`2<System.Double, !!0>>
+method Fuaran.Compute.Solvers.Root.bisect`1(Fuaran.Compute.Solvers.StoppingRule, Microsoft.FSharp.Core.FSharpFunc`2<System.Double, System.Double>, System.Double, System.Double) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Solvers.Stopped`1<System.Double>, Fuaran.Compute.Solvers.SolverError`2<System.Double, !!0>>
+method Fuaran.Compute.Solvers.Root.bracketedNewton`1(Fuaran.Compute.Solvers.StoppingRule, System.Double, Microsoft.FSharp.Core.FSharpFunc`2<System.Double, System.Tuple`2<System.Double, System.Double>>, System.Double, System.Double, System.Double) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Solvers.Stopped`1<System.Double>, Fuaran.Compute.Solvers.SolverError`2<System.Double, !!0>>
+method Fuaran.Compute.Solvers.Root.integerSearch`1(Microsoft.FSharp.Core.FSharpFunc`2<System.Int32, System.Double>, System.Double, System.Int32, System.Int32) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.Solvers.Stopped`1<System.Int32>, Fuaran.Compute.Solvers.SolverError`2<System.Int32, !!0>>
+method Fuaran.Compute.Solvers.SolversLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
+method Fuaran.Compute.Solvers.SolversOperations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Solvers.SolversOperations+Exactness>
+method Fuaran.Compute.Solvers.StoppingRuleModule.armOf(Fuaran.Compute.Solvers.StoppingTest) : Fuaran.Compute.Solvers.StoppingArm
+method Fuaran.Compute.Solvers.StoppingRuleModule.bracketWithin(System.Double, System.Double, System.Double) : System.Boolean
+method Fuaran.Compute.Solvers.StoppingRuleModule.create(System.Int32, Fuaran.Compute.Solvers.StoppingTest) : Fuaran.Compute.Solvers.StoppingRule
+method Fuaran.Compute.Solvers.StoppingRuleModule.rises(Fuaran.Compute.Solvers.StoppingTest, System.Double, System.Double) : System.Boolean
+method Fuaran.Compute.Solvers.StoppingRuleModule.stops(Fuaran.Compute.Solvers.StoppingTest, System.Double, System.Double, System.Double, System.Double, System.Double) : System.Boolean
+method Fuaran.Compute.Solvers.StoppingRuleModule.valid(Fuaran.Compute.Solvers.StoppingRule) : System.Boolean
+property Fuaran.Compute.Solvers.SolversOperations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.Solvers.SolversOperations+Exactness>> { get }
+record-field Fuaran.Compute.Solvers.DampedProblem`2.Halvings #4 : System.Int32
+record-field Fuaran.Compute.Solvers.DampedProblem`2.Inadmissible #1 : Microsoft.FSharp.Core.FSharpFunc`2<!0, Microsoft.FSharp.Core.FSharpOption`1<!1>>
+record-field Fuaran.Compute.Solvers.DampedProblem`2.Midpoint #3 : Microsoft.FSharp.Core.FSharpFunc`2<!0, Microsoft.FSharp.Core.FSharpFunc`2<!0, !0>>
+record-field Fuaran.Compute.Solvers.DampedProblem`2.Objective #2 : Microsoft.FSharp.Core.FSharpFunc`2<!0, System.Double>
+record-field Fuaran.Compute.Solvers.DampedProblem`2.Seeded #5 : System.Boolean
+record-field Fuaran.Compute.Solvers.DampedProblem`2.Step #0 : Microsoft.FSharp.Core.FSharpFunc`2<!0, Microsoft.FSharp.Core.FSharpResult`2<!0, !1>>
+record-field Fuaran.Compute.Solvers.Stopped`1.Arm #3 : Fuaran.Compute.Solvers.StoppingArm
+record-field Fuaran.Compute.Solvers.Stopped`1.Iterations #2 : System.Int32
+record-field Fuaran.Compute.Solvers.Stopped`1.State #0 : !0
+record-field Fuaran.Compute.Solvers.Stopped`1.Value #1 : System.Double
+record-field Fuaran.Compute.Solvers.StoppingRule.Cap #0 : System.Int32
+record-field Fuaran.Compute.Solvers.StoppingRule.Test #1 : Fuaran.Compute.Solvers.StoppingTest
+type Fuaran.Compute.Solvers.Damped (module)
+type Fuaran.Compute.Solvers.DampedProblem`2 (record)
+type Fuaran.Compute.Solvers.Minimise (module)
+type Fuaran.Compute.Solvers.Root (module)
+type Fuaran.Compute.Solvers.SolverError`2 (union)
+type Fuaran.Compute.Solvers.SolverError`2+HalvingExhausted (type)
+type Fuaran.Compute.Solvers.SolverError`2+NotConverged (type)
+type Fuaran.Compute.Solvers.SolverError`2+NotFinite (type)
+type Fuaran.Compute.Solvers.SolverError`2+StepRefused (type)
+type Fuaran.Compute.Solvers.SolverError`2+Tags (type)
+type Fuaran.Compute.Solvers.SolversLaws (module)
+type Fuaran.Compute.Solvers.SolversOperations (module)
+type Fuaran.Compute.Solvers.SolversOperations+Exactness (union)
+type Fuaran.Compute.Solvers.SolversOperations+Exactness+Tags (type)
+type Fuaran.Compute.Solvers.Stopped`1 (record)
+type Fuaran.Compute.Solvers.StoppingArm (union)
+type Fuaran.Compute.Solvers.StoppingArm+Tags (type)
+type Fuaran.Compute.Solvers.StoppingRule (record)
+type Fuaran.Compute.Solvers.StoppingRuleModule (module)
+type Fuaran.Compute.Solvers.StoppingTest (union)
+type Fuaran.Compute.Solvers.StoppingTest+AbsoluteStep (type)
+type Fuaran.Compute.Solvers.StoppingTest+BracketUlps (type)
+type Fuaran.Compute.Solvers.StoppingTest+RelativeChange (type)
+type Fuaran.Compute.Solvers.StoppingTest+Tags (type)
+union-case Fuaran.Compute.Solvers.SolverError`2.BracketInvalid #1()
+union-case Fuaran.Compute.Solvers.SolverError`2.NewHalvingExhausted #5(iteration: System.Int32, reason: Microsoft.FSharp.Core.FSharpOption`1<!1>)
+union-case Fuaran.Compute.Solvers.SolverError`2.NewNotConverged #3(last: Fuaran.Compute.Solvers.Stopped`1<!0>)
+union-case Fuaran.Compute.Solvers.SolverError`2.NewNotFinite #2(at: !0)
+union-case Fuaran.Compute.Solvers.SolverError`2.NewStepRefused #4(reason: !1)
+union-case Fuaran.Compute.Solvers.SolverError`2.RuleInvalid #0()
+union-case Fuaran.Compute.Solvers.SolversOperations+Exactness.HostRounded #1()
+union-case Fuaran.Compute.Solvers.SolversOperations+Exactness.Pinned #0()
+union-case Fuaran.Compute.Solvers.StoppingArm.AbsoluteStep #0()
+union-case Fuaran.Compute.Solvers.StoppingArm.Bracket #2()
+union-case Fuaran.Compute.Solvers.StoppingArm.Cap #4()
+union-case Fuaran.Compute.Solvers.StoppingArm.ExactZero #3()
+union-case Fuaran.Compute.Solvers.StoppingArm.RelativeChange #1()
+union-case Fuaran.Compute.Solvers.StoppingTest.ExactZero #3()
+union-case Fuaran.Compute.Solvers.StoppingTest.NewAbsoluteStep #0(tolerance: System.Double)
+union-case Fuaran.Compute.Solvers.StoppingTest.NewBracketUlps #2(ulps: System.Double)
+union-case Fuaran.Compute.Solvers.StoppingTest.NewRelativeChange #1(tolerance: System.Double, floor: System.Double)

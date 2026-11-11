@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Compute.Solvers</PackageId>
+    <Description>Fuaran.Compute.Solvers — pinned root finding, one-dimensional minimisation and damped iteration, generic over the caller's problem: a bracketed Newton with a bisection safeguard, bisection, a bracketed integer search, a golden-section minimiser and the accept-or-halve loop of an iteratively reweighted fit, every one stopped by one StoppingRule whose decision is written with + − × ÷ and comparisons alone, in one order, so a solver given pinned functions answers the same bits and stops at the same iteration on .NET, under Fable and in every host that transcribes it. No fused multiply-add and no host mathematics call on any host. FSharp.Core only, nothing of Fuaran.Compute; Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The one value every solver takes, the arm that stopped a run, and the refusals (Phase 633,
+         DECISIONS.md D77). FIRST: every method reads it. -->
+    <Compile Include="StoppingRule.fs" />
+    <!-- Bisection, the bracketed Newton and the bracketed integer search. -->
+    <Compile Include="Root.fs" />
+    <!-- The golden-section minimiser. -->
+    <Compile Include="Minimise.fs" />
+    <!-- The accept-or-halve iteration. -->
+    <Compile Include="Damped.fs" />
+    <!-- Every public operation's exactness class, as data. -->
+    <Compile Include="SolversOperations.fs" />
+    <!-- The law family over the operations above. LAST: it reads all of them. -->
+    <Compile Include="SolversLaws.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- FSharp.Core only: nothing of the substrate, nothing of Compute (DECISIONS.md D77). -->
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

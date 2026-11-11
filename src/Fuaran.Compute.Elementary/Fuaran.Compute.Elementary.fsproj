@@ -19,7 +19,13 @@
     <Compile Include="ElementaryLaws.fs" />
   </ItemGroup>
   <ItemGroup>
-    <!-- FSharp.Core only: nothing of the substrate, nothing of Compute (DECISIONS.md D74). -->
+    <!-- The pinned solvers, the one package below this one (Phase 633, DECISIONS.md D77): the special
+         functions' inverses call them. Nothing here reads them yet. -->
+    <ProjectReference Include="..\Fuaran.Compute.Solvers\Fuaran.Compute.Solvers.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- FSharp.Core and the solvers: nothing of the substrate, nothing else of Compute (DECISIONS.md
+         D74, D77). -->
     <PackageReference Include="FSharp.Core" />
   </ItemGroup>
 </Project>

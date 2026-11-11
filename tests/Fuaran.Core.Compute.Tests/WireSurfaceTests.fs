@@ -349,7 +349,10 @@ let internal notWire: (string * string) list =
       "the law families over the dataframe layer; the transform law corpus is pinned by its own emission test (`--emit-laws`)"
       // Phase 630: scalar functions over floats; nothing it publishes is encoded.
       "Fuaran.Compute.Elementary",
-      "scalar functions of a float; no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)" ]
+      "scalar functions of a float; no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)"
+      // Phase 633: solvers over the caller's functions; nothing it publishes is encoded.
+      "Fuaran.Compute.Solvers",
+      "solvers over a caller's functions; a stopping rule and an answer are values of one process, no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)" ]
 
 /// Build every document of one root: `(name, emitted bytes)`, plus the construction logs for the
 /// per-case documents so the suite can prove each reached its case.

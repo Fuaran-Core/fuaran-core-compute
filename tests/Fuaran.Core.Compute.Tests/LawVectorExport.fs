@@ -589,11 +589,11 @@ module LawVectorExport =
 
     /// Every law set this repository emits, as (path under `corpusDir`, rendered bytes) — the one
     /// list `write` walks, so a family added here cannot be rendered and then forgotten by the
-    /// writer. Five sets: the transform-parity family's drawn reference answers, the
+    /// writer. Six sets: the transform-parity family's drawn reference answers, the
     /// dataframeParity family's answers over its authored cases, the linear-algebra package's
     /// answers over its authored hard inputs (Phase 590), the elementary package's over its own
     /// (Phase 593; their own file since Phase 630), and the regression package's (Phase 591; their own
-    /// file since Phase 632). (The substrate's own
+    /// file since Phase 632), and the solvers package's over its authored functions (Phase 633). (The substrate's own
     /// `capabilityLaws` vectors are emitted by the substrate, beside the law they certify.)
     let emitted (corpusDir: string) : (string * string) list =
         [ transformPath corpusDir, renderTransformVectors ()
@@ -603,7 +603,9 @@ module LawVectorExport =
           // Phase 630: the elementary hard-input vectors, moved out of the linear-algebra file.
           Path.Combine(familyDir corpusDir, ElementaryVectors.fileName), ElementaryVectors.render ()
           // Phase 632: the regression hard-input vectors, moved out of the linear-algebra file.
-          Path.Combine(familyDir corpusDir, RegressionVectors.fileName), RegressionVectors.render () ]
+          Path.Combine(familyDir corpusDir, RegressionVectors.fileName), RegressionVectors.render ()
+          // Phase 633: the solver vectors, over authored functions.
+          Path.Combine(familyDir corpusDir, SolversVectors.fileName), SolversVectors.render () ]
 
     /// Write the vectors with LF endings, whatever the host platform — the corpus is byte-compared
     /// by several hosts on three operating systems.
