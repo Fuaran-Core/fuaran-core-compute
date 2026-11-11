@@ -1,5 +1,64 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-11 — D74: the pinned elementary functions are a package of their own, `Fuaran.Compute.Elementary`, at the bottom of Compute's graph; LinearAlgebra references it until regression leaves; the move changes no bit
+
+**Context.** `Fuaran.Compute.LinearAlgebra` held three layers in one package: the scalar pinned mathematics
+(`Elementary`, Phase 593, D52; `erfc` and the normal functions, Phase 600, D58), the matrix algebra (`Matrix`, `Blas`,
+`Triangular`, `QR`, `Wire`), and the models built on both (`Glm`). A distributions library (Phase 629) needs the scalar
+maths and should serve the models, so with `Elementary` inside LinearAlgebra it would have had to sit above them. The
+operator's rulings of 2026-11-10 and 11 set the graph this decision records:
+
+```
+Fuaran.Compute.Solvers        (nothing)                                  Phase 633
+Fuaran.Compute.Elementary     → Solvers once 631's inverse reads it       Phase 630; 631, 621
+Fuaran.Compute.Distributions  → Elementary, Solvers                       Phases 618, 629
+Fuaran.Compute.LinearAlgebra  (nothing, once 632 has moved regression out)
+Fuaran.Compute.Regression     → LinearAlgebra, Distributions, Solvers     Phases 632, 634
+Fuaran.Compute.DataFrame      → Regression …
+```
+
+Moving first, while 618 and 621 were unstarted, costs one breaking move rather than two.
+
+**Premise check** (on `06f2c02`). `Elementary.fs` was the one scalar-maths module; it compiled after `Matrix`, `Blas`,
+`Triangular`, `QR` and `Wire`, none of which reads it. Its readers were `Glm`, `Operations` (eleven exactness rows),
+`LinearAlgebraLaws` (four laws) and `DataFrame` (the evaluator's `Pow`, `Exp`, `Ln` and `Log10`), and in the suite the
+linear-algebra vectors, tests, the proof-oracle host, and the node benchmark's `ElementaryBench`. Neither 618 nor 621 had
+started: no `Distributions` project and no `Rng` existed.
+
+**Ruled.**
+
+1. **The package.** `Fuaran.Compute.Elementary` (namespace `Fuaran.Compute.Elementary`) holds `Elementary.fs`, moved by
+   `git mv` with its body unchanged, the `SpecialValue` union with it, an `Operations.exactness` table of its eleven
+   operations, and `ElementaryLaws.laws` (the four laws that left `LinearAlgebraLaws`). It takes FSharp.Core alone and
+   nothing of the substrate or of Compute, under LinearAlgebra's Fable rules. The module keeps its name, so a call site
+   that adds `open Fuaran.Compute.Elementary` still writes `Elementary.exp`; the break is the namespace and the package a
+   consumer references.
+2. **Its own `Exactness`.** The package declares `Exactness = Pinned | HostRounded` in its namespace rather than reading
+   LinearAlgebra's, which would invert the graph, or DataFrame's, which sits above both. This is D49 item 2's precedent:
+   the type is per package, one vocabulary (D43's), each package's table classifying its own surface. A file that opens
+   two of these namespaces resolves `Exactness` by the last `open`; `DataFrame.fs` therefore names the moved functions
+   qualified (`Elementary.Elementary.exp`), as it already named LinearAlgebra's, and opens neither.
+3. **The generator is copied, not shared.** `ElementaryLaws` carries Park and Miller's float generator and the `law`
+   runner beside `LinearAlgebraLaws`'s, line for line. Sharing it would need a public type in one package that the other
+   reads, and once 632 has moved `Glm` out, LinearAlgebra depends on nothing in Compute. The copy is what keeps a seed
+   drawing the same numbers it drew before the move: `ElementaryLaws.laws 590 200` runs the four laws over exactly the
+   draws `LinearAlgebraLaws.laws 590 200` gave them.
+4. **LinearAlgebra references Elementary until Phase 632.** `Glm` is its only reader; the matrix modules compile without
+   it. `DataFrame` receives the package through LinearAlgebra and needs no reference of its own until 632 re-points it.
+5. **No bit moves.** The 110 elementary vectors leave `linear-algebra-laws.json` for `elementary-laws.json` (family
+   `elementary`), each row byte for byte; the 74 that stay are byte-identical; each file's head is its own. The node leg
+   (`LinearAlgebraNode`) runs both law families and prints both documents, and the suite compares each with its committed
+   file. `transform-laws.json` moves only in its head: the `kitVersion` stamp that every version cut re-emits, and the
+   clause of its description that named `Fuaran.Compute.LinearAlgebra.Elementary` and `linear-algebra-laws.json`, which
+   would otherwise publish a namespace and a file that no longer exist. No transform vector moves.
+6. **The version.** `0.44.0` is tagged, so the breaking move advances the slot to `0.45.0`.
+7. **Publication.** The nuget.org Trusted Publishing policy for this repository names the `Fuaran.Compute.*` pattern
+   (operator, 2026-11-11), so the new id needs no registration; the workflow comment that said each new id must be named
+   is corrected.
+8. **Consumers outside the repository.** `fuaran-dotnet`'s `tests/core-fable/Program.fs` names LinearAlgebra's
+   `Elementary`; it adapts in the next cohort raise of `fuaran-dotnet` onto `0.45.0`. No twin outside this repository
+   was found reading the elementary rows of `linear-algebra-laws.json` by path.
+
 ## 2026-11-10 — D73: a range's bound is computed in floats, and every range loop reads its bound from a local
 
 **Context.** D70 wrote a join's pair emission as loops over ranges of left rows, `for i in lbound j .. lbound (j + 1)

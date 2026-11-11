@@ -67,6 +67,10 @@
     <!-- Phase 590: the linear-algebra law vectors (Fable-clean; the node leg under LinearAlgebraNode/
          compiles them too) and the suite over the package. Before LawVectorExport.fs, whose emitted
          list names the vector file. -->
+    <!-- Phase 630: the elementary vectors and the suite over Fuaran.Compute.Elementary, moved out of the
+         linear-algebra files with the module (Fable-clean; the same node leg compiles the vectors). -->
+    <Compile Include="ElementaryVectors.fs" />
+    <Compile Include="ElementaryTests.fs" />
     <Compile Include="LinearAlgebraVectors.fs" />
     <Compile Include="LinearAlgebraTests.fs" />
     <Compile Include="LawVectorExport.fs" />
@@ -102,6 +106,7 @@
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.ColumnOps\Fuaran.Compute.ColumnOps.fsproj" />

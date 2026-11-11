@@ -265,7 +265,7 @@ let tests =
               for (l, r) in [ "predicted", "predicted"; "lower", "lower"; "upper", "upper" ] do
                   Expect.equal
                       (column r response |> List.map (floatOf >> bits))
-                      (column l link |> List.map (floatOf >> LinearAlgebra.Elementary.exp >> bits))
+                      (column l link |> List.map (floatOf >> Elementary.Elementary.exp >> bits))
                       (l + ": exp of the link scale")
 
               // Phase 600 (D58 item 7): the response scale's error is the delta method's, `|dμ/dη| · se(η)`,
@@ -273,7 +273,7 @@ let tests =
               Expect.equal
                   (column "se_fit" response |> List.map (floatOf >> bits))
                   (List.zip (column "predicted" link) (column "se_fit" link)
-                   |> List.map (fun (e, s) -> bits (floatOf s * abs (LinearAlgebra.Elementary.exp (floatOf e)))))
+                   |> List.map (fun (e, s) -> bits (floatOf s * abs (Elementary.Elementary.exp (floatOf e)))))
                   "the errors are the delta method's"
 
               Expect.equal (column "se_pred" response) [ Null; Null ] "no predictive error outside the gaussian family"

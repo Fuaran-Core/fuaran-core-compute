@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Fuaran.Compute.Elementary/Fuaran.Compute.Elementary.fsproj" />
     <Project Path="src/Fuaran.Compute.LinearAlgebra/Fuaran.Compute.LinearAlgebra.fsproj" />
     <Project Path="src/Fuaran.Compute.DataFrame/Fuaran.Compute.DataFrame.fsproj" />
     <Project Path="src/Fuaran.Compute.ColumnOps/Fuaran.Compute.ColumnOps.fsproj" />

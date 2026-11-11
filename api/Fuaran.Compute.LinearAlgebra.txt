@@ -42,10 +42,6 @@ field Fuaran.Compute.LinearAlgebra.RobustVariant+Tags.HC0 : System.Int32 (litera
 field Fuaran.Compute.LinearAlgebra.RobustVariant+Tags.HC1 : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.RobustVariant+Tags.HC2 : System.Int32 (literal)
 field Fuaran.Compute.LinearAlgebra.RobustVariant+Tags.HC3 : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.SpecialValue+Tags.Compute : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.SpecialValue+Tags.NaN : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.SpecialValue+Tags.Undefined : System.Int32 (literal)
-field Fuaran.Compute.LinearAlgebra.SpecialValue+Tags.Value : System.Int32 (literal)
 method Fuaran.Compute.LinearAlgebra.Blas.add(Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
 method Fuaran.Compute.LinearAlgebra.Blas.axpy(System.Double, Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
 method Fuaran.Compute.LinearAlgebra.Blas.dot(Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.LinearAlgebra.LinAlgError>
@@ -55,17 +51,6 @@ method Fuaran.Compute.LinearAlgebra.Blas.gram(Fuaran.Compute.LinearAlgebra.Matri
 method Fuaran.Compute.LinearAlgebra.Blas.norm2(Fuaran.Core.Vector`1<System.Double>) : System.Double
 method Fuaran.Compute.LinearAlgebra.Blas.scale(System.Double, Fuaran.Core.Vector`1<System.Double>) : Fuaran.Core.Vector`1<System.Double>
 method Fuaran.Compute.LinearAlgebra.Blas.sub(Fuaran.Core.Vector`1<System.Double>, Fuaran.Core.Vector`1<System.Double>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Vector`1<System.Double>, Fuaran.Compute.LinearAlgebra.LinAlgError>
-method Fuaran.Compute.LinearAlgebra.Elementary.erfc(System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Elementary.exp(System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Elementary.expTable(System.Double) : Fuaran.Compute.LinearAlgebra.SpecialValue
-method Fuaran.Compute.LinearAlgebra.Elementary.ln(System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Elementary.lnTable(System.Double) : Fuaran.Compute.LinearAlgebra.SpecialValue
-method Fuaran.Compute.LinearAlgebra.Elementary.log10(System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Elementary.normalCdf(System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Elementary.normalDensity(System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Elementary.normalQuantile(System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Elementary.pow(System.Double, System.Double) : System.Double
-method Fuaran.Compute.LinearAlgebra.Elementary.powTable(System.Double, System.Double) : Fuaran.Compute.LinearAlgebra.SpecialValue
 method Fuaran.Compute.LinearAlgebra.Givens.Equals(System.Object) : System.Boolean
 method Fuaran.Compute.LinearAlgebra.Givens.GetHashCode() : System.Int32
 method Fuaran.Compute.LinearAlgebra.GivensModule.apply(Fuaran.Compute.LinearAlgebra.Givens, System.Double, System.Double) : System.Tuple`2<System.Double, System.Double>
@@ -177,7 +162,6 @@ record-field Fuaran.Compute.LinearAlgebra.Dims.Cols #1 : System.Int32
 record-field Fuaran.Compute.LinearAlgebra.Dims.Rows #0 : System.Int32
 type Fuaran.Compute.LinearAlgebra.Blas (module)
 type Fuaran.Compute.LinearAlgebra.Dims (record)
-type Fuaran.Compute.LinearAlgebra.Elementary (module)
 type Fuaran.Compute.LinearAlgebra.Exactness (union)
 type Fuaran.Compute.LinearAlgebra.Exactness+Tags (type)
 type Fuaran.Compute.LinearAlgebra.Givens (type)
@@ -221,9 +205,6 @@ type Fuaran.Compute.LinearAlgebra.QRAccumulator (type)
 type Fuaran.Compute.LinearAlgebra.QRAccumulatorModule (module)
 type Fuaran.Compute.LinearAlgebra.RobustVariant (union)
 type Fuaran.Compute.LinearAlgebra.RobustVariant+Tags (type)
-type Fuaran.Compute.LinearAlgebra.SpecialValue (union)
-type Fuaran.Compute.LinearAlgebra.SpecialValue+Tags (type)
-type Fuaran.Compute.LinearAlgebra.SpecialValue+Value (type)
 type Fuaran.Compute.LinearAlgebra.UpperTriangular (type)
 type Fuaran.Compute.LinearAlgebra.UpperTriangularModule (module)
 union-case Fuaran.Compute.LinearAlgebra.Exactness.HostRounded #1()
@@ -263,7 +244,3 @@ union-case Fuaran.Compute.LinearAlgebra.RobustVariant.HC0 #0()
 union-case Fuaran.Compute.LinearAlgebra.RobustVariant.HC1 #1()
 union-case Fuaran.Compute.LinearAlgebra.RobustVariant.HC2 #2()
 union-case Fuaran.Compute.LinearAlgebra.RobustVariant.HC3 #3()
-union-case Fuaran.Compute.LinearAlgebra.SpecialValue.Compute #3()
-union-case Fuaran.Compute.LinearAlgebra.SpecialValue.NaN #0()
-union-case Fuaran.Compute.LinearAlgebra.SpecialValue.NewValue #1(Item: System.Double)
-union-case Fuaran.Compute.LinearAlgebra.SpecialValue.Undefined #2()

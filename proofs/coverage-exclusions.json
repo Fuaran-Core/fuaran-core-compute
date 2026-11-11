@@ -22,6 +22,12 @@
       "note": "The law families over the dataframe layer, split out of the kit by Phase 257 (the Fuaran.Core repository's DECISIONS.md D68), and excused for the kit's own reason: a family states an obligation, so a model of `columnarOpLaws` would be a model of the statement of one. The computation those families certify is modelled where it lives — `proofs/ColumnOps.fst` for `Fuaran.Compute.ColumnOps` and `proofs/Pipeline.fst` for `Fuaran.Compute.DataFrame` — and what can be checked about the families themselves (that the roster is complete, that each runs at a reference witness, that each forward reaches its home) `ConformanceFamiliesTests` and `ConformanceVacuityTests` check."
     },
     {
+      "package": "Fuaran.Compute.Elementary",
+      "reason": "pinned-order-law-tested",
+      "phase": "fuaran-core#630",
+      "note": "The scalar pinned mathematics, cut out of Fuaran.Compute.LinearAlgebra by Phase 630 (DECISIONS.md D74) with its contract unchanged: `exp`, `ln`, `log10` and the float-exponent `pow` (Phase 593, D52), `erfc` and the normal distribution, density and quantile (Phase 600, D58), each one argument reduction and one polynomial in a fixed sequence of IEEE-754 operations, behind D43's special-value tables. Its contract is that sequence, so it is held where the sequence is observable: `ElementaryLaws.laws` holds every special-value row and IEEE edge as stated and `pow`'s exact cases byte for byte, beside the inverses and functional equations within their one-ulp bounds; `conformance/laws/elementary-laws.json` carries the package's answers over authored hard inputs, each computed vector with its correctly rounded reference, which the suite holds on .NET and under node; and a source-reading test finds no host mathematics call in `Elementary.fs`. The tables themselves are modelled in `proofs/Pipeline.fst`, test for test, where the evaluator reads them (`pipeline-power-tables-before-host`); that every transcribing host's routine is the same function is the premise `elementary-functions-pinned-by-transcription`, never a theorem."
+    },
+    {
       "package": "Fuaran.Compute.LinearAlgebra",
       "reason": "pinned-order-law-tested",
       "phase": "fuaran-core#590",

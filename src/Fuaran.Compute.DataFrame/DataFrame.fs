@@ -108,7 +108,7 @@ type SortDir =
 //    (Phase 594, D54): an INTEGER-exponent `Pow` runs one pinned routine (binary
 //    exponentiation over IEEE-754 multiplication, one reciprocal for a negative exponent);
 //    a non-integer `Pow`, `Exp`, `Ln` and `Log10` read the special-value table first and
-//    then the pinned routines of `Fuaran.Compute.LinearAlgebra.Elementary` (D52), never the
+//    then the pinned routines of `Fuaran.Compute.Elementary` (D52), never the
 //    host's maths library, so every one is byte-identical across hosts. `Sqrt` is pinned
 //    by IEEE-754 itself (correctly rounded). The static walk's `HostRounded` mark
 //    (`Exactness`) is no longer reached by any scalar function here; it stays for a value
@@ -3409,7 +3409,7 @@ module DataFrame =
     // Every one is EXACT on every host. An INTEGER exponent runs one pinned product tree over the
     // host's IEEE-754 multiply, which every host rounds the same way, so the tree and not the host
     // decides the bits. A float exponent, `Exp`, `Ln` and `Log10` read D43's special-value table
-    // FIRST — published as data by `Fuaran.Compute.LinearAlgebra.Elementary` — and every input the
+    // FIRST — published as data by `Fuaran.Compute.Elementary` — and every input the
     // table does not answer goes to that module's pinned routine (D52): one argument reduction and
     // one polynomial in `+ − × ÷` and comparisons, which a host that transcribes it computes to the
     // same bits. Until Phase 594 that arm was the host's own maths library, deterministic within one
@@ -3502,30 +3502,30 @@ module DataFrame =
     /// is D16's one NaN, the table's own value is that value, an input outside the reals is `Null`
     /// (as `Div` by zero is), and every other input is the pinned routine's — `compute`, called only
     /// there.
-    let private ofTable (table: LinearAlgebra.SpecialValue) (compute: unit -> float) : Cell =
+    let private ofTable (table: Elementary.SpecialValue) (compute: unit -> float) : Cell =
         match table with
-        | LinearAlgebra.SpecialValue.NaN -> Float System.Double.NaN
-        | LinearAlgebra.SpecialValue.Value v -> Float v
-        | LinearAlgebra.SpecialValue.Undefined -> Null
-        | LinearAlgebra.SpecialValue.Compute -> Float(compute ())
+        | Elementary.SpecialValue.NaN -> Float System.Double.NaN
+        | Elementary.SpecialValue.Value v -> Float v
+        | Elementary.SpecialValue.Undefined -> Null
+        | Elementary.SpecialValue.Compute -> Float(compute ())
 
     /// A float `Pow` (Phase 594, D54): the table, then the pinned `Elementary.pow`.
     let internal powFloat (x: float) (y: float) : Cell =
-        ofTable (LinearAlgebra.Elementary.powTable x y) (fun () -> LinearAlgebra.Elementary.pow x y)
+        ofTable (Elementary.Elementary.powTable x y) (fun () -> Elementary.Elementary.pow x y)
 
     /// `Exp` (Phase 594, D54): the table — a NaN, the overflow limit, the underflow to zero — then
     /// the pinned `Elementary.exp`.
     let internal expCell (x: float) : Cell =
-        ofTable (LinearAlgebra.Elementary.expTable x) (fun () -> LinearAlgebra.Elementary.exp x)
+        ofTable (Elementary.Elementary.expTable x) (fun () -> Elementary.Elementary.exp x)
 
     /// `Ln` and `Log10` (Phase 594, D54): the one table — a NaN, `Null` at zero and below, `0` at
     /// one, `Inf` at `Inf` — then the pinned `Elementary.ln` or `Elementary.log10`.
     let internal logCell (base10: bool) (x: float) : Cell =
-        ofTable (LinearAlgebra.Elementary.lnTable x) (fun () ->
+        ofTable (Elementary.Elementary.lnTable x) (fun () ->
             if base10 then
-                LinearAlgebra.Elementary.log10 x
+                Elementary.Elementary.log10 x
             else
-                LinearAlgebra.Elementary.ln x)
+                Elementary.Elementary.ln x)
 
     let private applyScalar (fn: ScalarFn) (args: Cell list) : Result<Cell, EvalError> =
         let arity n =

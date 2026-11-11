@@ -2315,7 +2315,7 @@ let tests =
 
               Expect.equal
                   (scalar (pow (Float 2.0) (Float 0.3)))
-                  (Float(LinearAlgebra.Elementary.pow 2.0 0.3))
+                  (Float(Elementary.Elementary.pow 2.0 0.3))
                   "the pinned pow"
 
               Expect.equal
@@ -2340,7 +2340,7 @@ let tests =
               Expect.equal (scalar (exp' (Float 710.0))) (Float System.Double.PositiveInfinity) "exp overflow is Inf"
               Expect.equal (scalar (exp' (Float -746.0))) (Float 0.0) "exp underflow is 0"
               isNaN "exp NaN" (scalar (exp' (Float System.Double.NaN)))
-              Expect.equal (scalar (exp' (Int 1))) (Float(LinearAlgebra.Elementary.exp 1.0)) "the pinned exp"
+              Expect.equal (scalar (exp' (Int 1))) (Float(Elementary.Elementary.exp 1.0)) "the pinned exp"
               Expect.equal (scalar (exp' Null)) Null "null propagates"
 
               // Ln and Log10: Null at zero and below, 0 at one, Inf at Inf, then the pinned routines (D54).
@@ -2356,9 +2356,9 @@ let tests =
                   "ln Inf"
 
               isNaN "ln NaN" (scalar (ln (Float System.Double.NaN)))
-              Expect.equal (scalar (ln (Int 10))) (Float(LinearAlgebra.Elementary.ln 10.0)) "the pinned ln"
+              Expect.equal (scalar (ln (Int 10))) (Float(Elementary.Elementary.ln 10.0)) "the pinned ln"
               Expect.equal (scalar (log10' (Float 1000.0))) (Float 3.0) "the pinned log10 is exact at a power of ten"
-              Expect.equal (scalar (log10' (Float 2.5))) (Float(LinearAlgebra.Elementary.log10 2.5)) "the pinned log10"
+              Expect.equal (scalar (log10' (Float 2.5))) (Float(Elementary.Elementary.log10 2.5)) "the pinned log10"
               Expect.equal (scalar (log10' (Int 0))) Null "log10 0 is Null"
 
               match refused (ln (Cell.decimal "2" |> Option.get)) with

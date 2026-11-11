@@ -1,6 +1,7 @@
 namespace Fuaran.Compute.LinearAlgebra
 
 open Fuaran.Core
+open Fuaran.Compute.Elementary
 
 /// The error distribution a generalised linear model assumes (Phase 595, DECISIONS.md D49 items 14 to
 /// 19 and D55; Phase 598, D57; Phase 600, D58). Which links each family is fitted under is

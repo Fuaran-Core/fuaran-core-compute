@@ -17,7 +17,7 @@ module Fuaran.Core.Compute.Benchmarks.ElementaryBench
 
 open System
 open System.Numerics
-open Fuaran.Compute.LinearAlgebra
+open Fuaran.Compute.Elementary
 
 let private nowMs () : float = float DateTime.UtcNow.Ticks / 10_000.0
 

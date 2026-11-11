@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>true</IsPackable>
     <PackageId>Fuaran.Compute.LinearAlgebra</PackageId>
-    <Description>Fuaran.Compute.LinearAlgebra — a small, dense, column-major linear-algebra contract whose every operation runs in one pinned floating-point order, so its answers are byte-identical on .NET, under Fable and in every host that ports it: an opaque immutable Matrix, vectors as Fuaran.Core's Vector&lt;float&gt; (a float column is an input without a copy), the level-1 operations (dot, axpy, scale, add, sub and the scaled norm2), gemv in column-axpy order, gemm in per-element k order, the Gram matrix, triangular solves over a checked UpperTriangular, the one Givens rotation, least squares by a streaming Givens QR whose O(p²) state survives a restart through its wire codec, batch and pivoted Householder factorizations, the pinned elementary functions exp, ln, log10 and float-exponent pow behind one special-value table, Poisson and Gamma log-link generalised linear models by IRLS with the same bits and iteration count on every host, typed errors and canonical NaN out. No fused multiply-add and no host mathematics call on any host. Fable-clean.</Description>
+    <Description>Fuaran.Compute.LinearAlgebra — a small, dense, column-major linear-algebra contract whose every operation runs in one pinned floating-point order, so its answers are byte-identical on .NET, under Fable and in every host that ports it: an opaque immutable Matrix, vectors as Fuaran.Core's Vector&lt;float&gt; (a float column is an input without a copy), the level-1 operations (dot, axpy, scale, add, sub and the scaled norm2), gemv in column-axpy order, gemm in per-element k order, the Gram matrix, triangular solves over a checked UpperTriangular, the one Givens rotation, least squares by a streaming Givens QR whose O(p²) state survives a restart through its wire codec, batch and pivoted Householder factorizations, generalised linear models by IRLS over the pinned elementary functions of Fuaran.Compute.Elementary with the same bits and iteration count on every host, typed errors and canonical NaN out. No fused multiply-add and no host mathematics call on any host. Fable-clean.</Description>
   </PropertyGroup>
   <ItemGroup>
     <!-- Types, storage and the internal kernels every module reads. -->
@@ -17,9 +17,8 @@
     <Compile Include="QR.fs" />
     <!-- The wire form of a matrix and an accumulator (Phase 591). -->
     <Compile Include="Wire.fs" />
-    <!-- The pinned exp, ln, log10 and float-exponent pow, and D43's special-value table (Phase 593). -->
-    <Compile Include="Elementary.fs" />
-    <!-- Generalised linear models by IRLS over the streaming QR and the pinned elementary functions (Phase 595). -->
+    <!-- Generalised linear models by IRLS over the streaming QR and the pinned elementary functions of
+         Fuaran.Compute.Elementary (Phase 595; the functions their own package since Phase 630). -->
     <Compile Include="Glm.fs" />
     <!-- Every public operation's exactness class, as data. -->
     <Compile Include="Operations.fs" />
@@ -31,6 +30,11 @@
          canonical JSON (DECISIONS.md D49 item 20); nothing else of the substrate is read. -->
     <PackageReference Include="Fuaran.Core.Column" />
     <PackageReference Include="Fuaran.Core.Wire" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The scalar pinned mathematics the models read (Phase 630, DECISIONS.md D74). Glm is its only
+         reader here; the matrix modules compile without it. -->
+    <ProjectReference Include="..\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

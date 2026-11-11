@@ -1,4 +1,4 @@
-namespace Fuaran.Compute.LinearAlgebra
+namespace Fuaran.Compute.Elementary
 
 open System
 
