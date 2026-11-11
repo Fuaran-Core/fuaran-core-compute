@@ -63,6 +63,9 @@
          Phase 632 the regression half is Fuaran.Compute.Regression, which brings the matrix
          operations of Fuaran.Compute.LinearAlgebra with it (DECISIONS.md D75). -->
     <ProjectReference Include="..\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />
+    <!-- Phase 618: the pinned distribution functions a Predict interval's quantile is read from
+         (DECISIONS.md D79); the t table this file carried is gone. -->
+    <ProjectReference Include="..\Fuaran.Compute.Distributions\Fuaran.Compute.Distributions.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

@@ -2,6 +2,7 @@ namespace Fuaran.Compute
 
 open Fuaran.Core
 open Fuaran.Compute.Elementary
+open Fuaran.Compute.Distributions
 open Fuaran.Compute.Regression
 // The frame's vector cases, over Core's `ColumnData` cases of the same names (Phase 423).
 open type Vec
@@ -840,8 +841,10 @@ type IntervalKind =
     /// For one new observation at the row: `η ± q·se_pred`. The gaussian family's only.
     | Prediction
 
-/// A `Predict` interval: its kind and its level, a two-sided coverage the t table carries
-/// (`0.5`, `0.8`, `0.9`, `0.95`, `0.98`, `0.99` or `0.999`), a `Slot` so a host can bind it.
+/// A `Predict` interval: its kind and its level, a two-sided coverage strictly between zero and one,
+/// a `Slot` so a host can bind it. The quantile is `Fuaran.Compute.Distributions`' pinned
+/// `StudentT.quantile` at the model's residual degrees of freedom, or `Normal.quantile` where the
+/// family fixes its dispersion (Phase 618, `DECISIONS.md` D79), so any level is admissible.
 type PredictInterval =
     { Kind: IntervalKind
       Level: Slot<float> }
@@ -1667,372 +1670,6 @@ module internal Interpolation =
                         elif y > hi then hi
                         else y
                     )
-
-/// The two-sided Student t quantiles a `Predict` interval reads (Phase 597, `DECISIONS.md` D56): for a
-/// level `L` and `ν` residual degrees of freedom, the `t` with `P(|T| < t) = L`, the `(1 + L)/2`
-/// quantile of Student's t. One row per tabled `ν` (1 to 30, 40, 50, 60, 80, 100, 120, 200, 500 and
-/// 1000) and the normal row (`ν = ∞`), one column per level. Every entry is the nearest double to the
-/// exact quantile, computed once in 70-digit decimal arithmetic from Abramowitz and Stegun's closed
-/// forms 26.7.3 and 26.7.4 (the error function for the normal row) and checked by quadrature; the
-/// table is data, so no transcendental function is on the path and every host reads the same bits.
-/// Between rows the quantile is read by `Interpolate` (`InterpKind.Linear`) in `1/ν`, the normal row
-/// at `1/ν = 0`, so a tabled `ν` answers its row exactly and a `ν` above 1000 reads between the 1000
-/// row and the normal one.
-[<RequireQualifiedAccess>]
-module internal StudentT =
-
-    /// The tabled coverage levels, ascending.
-    let levels: float[] = [| 0.5; 0.8; 0.9; 0.95; 0.98; 0.99; 0.999 |]
-
-    /// `(ν, the quantile at each level)`, `ν` ascending; `0` is the normal row (`ν = ∞`).
-    let rows: (int * float[]) list =
-        [ 1,
-          [| 1.0
-             3.0776835371752536
-             6.313751514675043
-             12.706204736174705
-             31.82051595377396
-             63.65674116287158
-             636.6192487687197 |]
-          2,
-          [| 0.816496580927726
-             1.8856180831641267
-             2.9199855803537256
-             4.302652729749464
-             6.964556734283274
-             9.924843200918293
-             31.59905457644362 |]
-          3,
-          [| 0.7648923284043453
-             1.6377443536962102
-             2.3533634348018238
-             3.1824463052837095
-             4.5407028585681335
-             5.840909309733357
-             12.923978636687483 |]
-          4,
-          [| 0.7406970841126826
-             1.5332062740589438
-             2.1318467863266504
-             2.7764451051977943
-             3.746947387979197
-             4.604094871349993
-             8.610301581379275 |]
-          5,
-          [| 0.7266868438004227
-             1.475884048824481
-             2.0150483733330242
-             2.5705818356363155
-             3.3649299989072188
-             4.032142983555228
-             6.86882662588111 |]
-          6,
-          [| 0.7175581964914126
-             1.4397557472651483
-             1.9431802805153031
-             2.44691185114497
-             3.1426684032909833
-             3.70742802132478
-             5.9588161788187595 |]
-          7,
-          [| 0.7111417780817864
-             1.4149239276505086
-             1.8945786050900073
-             2.3646242515927853
-             2.9979515668685286
-             3.499483297350494
-             5.407882520861725 |]
-          8,
-          [| 0.7063866126448386
-             1.3968153097438647
-             1.8595480375308984
-             2.3060041352041667
-             2.8964594477096224
-             3.3553873313333953
-             5.041305433373368 |]
-          9,
-          [| 0.7027221467513264
-             1.3830287383966322
-             1.8331129326562372
-             2.2621571627982053
-             2.821437925025809
-             3.2498355415921263
-             4.780912585931139 |]
-          10,
-          [| 0.6998120613124317
-             1.3721836411103356
-             1.8124611228116765
-             2.228138851986275
-             2.763769458112696
-             3.1692726726169513
-             4.586893858702636 |]
-          11,
-          [| 0.6974453275598815
-             1.3634303180205407
-             1.7958848187040442
-             2.2009851600916397
-             2.7180791838138623
-             3.105806515539281
-             4.436979338234449 |]
-          12,
-          [| 0.6954828655117926
-             1.3562173340232053
-             1.78228755564932
-             2.178812829667229
-             2.680997993120915
-             3.054539589392902
-             4.3177912836061845 |]
-          13,
-          [| 0.6938293042354409
-             1.350171288780055
-             1.770933395986873
-             2.1603686564627926
-             2.6503088379121915
-             3.0122758387165787
-             4.220831727707121 |]
-          14,
-          [| 0.6924170695700052
-             1.3450303744546506
-             1.7613101357748921
-             2.144786687917804
-             2.624494067590052
-             2.976842734370835
-             4.140454112738203 |]
-          15,
-          [| 0.6911969489584898
-             1.3406056078504556
-             1.7530503556925736
-             2.1314495455597755
-             2.6024802950111234
-             2.946712883475239
-             4.072765195903791 |]
-          16,
-          [| 0.6901322538105608
-             1.3367571673273146
-             1.74588367627625
-             2.1199052992212546
-             2.5834871852759913
-             2.9207816224251
-             4.014996327184056 |]
-          17,
-          [| 0.6891950751539389
-             1.3333793897216268
-             1.739606726075073
-             2.109815577833317
-             2.566933983724718
-             2.8982305196774187
-             3.9651262721190315 |]
-          18,
-          [| 0.6883638064662002
-             1.330390943569909
-             1.7340636066175388
-             2.1009220402410387
-             2.5523796301822514
-             2.878440472738608
-             3.9216458250851596 |]
-          19,
-          [| 0.6876214602039603
-             1.3277282090267983
-             1.7291328115213696
-             2.0930240544083096
-             2.5394831906239625
-             2.860934606464979
-             3.883405852592083 |]
-          20,
-          [| 0.6869544964488035
-             1.3253407069850462
-             1.7247182429207872
-             2.085963447265865
-             2.5279770027415736
-             2.8453397097861086
-             3.8495162749308274 |]
-          21,
-          [| 0.6863519907269535
-             1.3231878738651726
-             1.7207429028118786
-             2.0796138447276804
-             2.5176480160447423
-             2.83135955802305
-             3.8192771642744625 |]
-          22,
-          [| 0.6858050317218864
-             1.3212367416133617
-             1.7171443743802428
-             2.0738730679040263
-             2.5083245528990803
-             2.8187560606001436
-             3.792130671698391 |]
-          23,
-          [| 0.6853062780612957
-             1.319460239816162
-             1.713871527747048
-             2.0686576104190486
-             2.499866739494668
-             2.807335683769999
-             3.7676268043117807 |]
-          24,
-          [| 0.6848496272369818
-             1.3178359336731496
-             1.7108820799094284
-             2.063898561628026
-             2.492159473157756
-             2.796939504774456
-             3.7453986192900524 |]
-          25,
-          [| 0.6844299649042703
-             1.3163450726738701
-             1.7081407612518993
-             2.0595385527532977
-             2.485107175410763
-             2.7874358136769706
-             3.72514394972865 |]
-          26,
-          [| 0.6840429726828732
-             1.3149718642705168
-             1.7056179197592731
-             2.055529438642873
-             2.478629823591242
-             2.778714533329683
-             3.7066117434809107 |]
-          27,
-          [| 0.683684979131031
-             1.3137029128292739
-             1.7032884457221271
-             2.0518305164802855
-             2.472659911956007
-             2.770682957122212
-             3.689591713459236 |]
-          28,
-          [| 0.6833528429885058
-             1.3125267815926667
-             1.7011309342659315
-             2.048407141795245
-             2.4671400979674725
-             2.7632624554614447
-             3.6739064007012767 |]
-          29,
-          [| 0.6830438608216132
-             1.311433647301551
-             1.6991270265334977
-             2.0452296421327043
-             2.462021360150412
-             2.7563859036706053
-             3.659405019466333 |]
-          30,
-          [| 0.6827556933212926
-             1.3104150253913955
-             1.6972608865939578
-             2.042272456301238
-             2.4572615424005915
-             2.7499956535672254
-             3.645958635042022 |]
-          40,
-          [| 0.680672717164449
-             1.3030770526071946
-             1.6838510133356526
-             2.0210753903062733
-             2.4232567793348583
-             2.7044592674331627
-             3.550965760863311 |]
-          50,
-          [| 0.679428200326346
-             1.2987136941948096
-             1.6759050251630976
-             2.008559112100761
-             2.403271916674172
-             2.6777932709408443
-             3.496012881811139 |]
-          60,
-          [| 0.6786007206481358
-             1.2958210935157308
-             1.6706488649046365
-             2.0002978220142604
-             2.3901194726249133
-             2.660283028855037
-             3.460200469196356 |]
-          80,
-          [| 0.6775688463948343
-             1.2922235830591335
-             1.6641245785896674
-             1.9900634212544461
-             2.3738682729673433
-             2.638690596344183
-             3.416337458476946 |]
-          100,
-          [| 0.6769510430114715
-             1.290074761346516
-             1.6602343260853396
-             1.9839715185235522
-             2.364217366238482
-             2.6258905214380177
-             3.39049131116423 |]
-          120,
-          [| 0.6765397249125202
-             1.288646233656378
-             1.6576508993552357
-             1.979930405082441
-             2.3578246126487556
-             2.617421145106866
-             3.3734537685625003 |]
-          200,
-          [| 0.6757184114042202
-             1.285798793994801
-             1.6525081009108775
-             1.9718962236339095
-             2.3451370822594684
-             2.600634436191558
-             3.3398354062756783 |]
-          500,
-          [| 0.674980737965939
-             1.2832470207103743
-             1.6479068539295112
-             1.9647198374673678
-             2.333828955352305
-             2.585697835141942
-             3.31009115152267 |]
-          1000,
-          [| 0.6747351646070094
-             1.2823987214609245
-             1.6463788172854648
-             1.9623390808264085
-             2.330082674755513
-             2.580754698065951
-             3.300282648423913 |]
-          0,
-          [| 0.6744897501960817
-             1.2815515655446004
-             1.6448536269514726
-             1.9599639845400543
-             2.326347874040841
-             2.575829303548901
-             3.290526731491895 |] ]
-
-    /// The knots of one level's curve, `x = 1/ν` ascending: the normal row at `0`, then `ν` descending.
-    let private knots (column: int) : (float * float) list =
-        let normal = rows |> List.find (fun (v, _) -> v = 0) |> snd
-        let tabled = rows |> List.filter (fun (v, _) -> v > 0) |> List.rev
-
-        (0.0, normal[column])
-        :: (tabled |> List.map (fun (v, qs) -> 1.0 / float v, qs[column]))
-
-    /// One prepared curve per level.
-    let private curves: PreparedCurve[] =
-        Array.init levels.Length (fun c ->
-            match Interpolation.prepare (knots c) InterpKind.Linear InterpOutside.Clamp with
-            | Ok curve -> curve
-            | Error _ -> failwith "the t table is malformed")
-
-    /// The quantile at `level` for `df` residual degrees of freedom (`None`: the normal row); `None`
-    /// where the level is not tabled or `df` is not positive.
-    let quantile (level: float) (df: int option) : float option =
-        match Array.tryFindIndex (fun l -> l = level) levels with
-        | None -> None
-        | Some c ->
-            match df with
-            | None -> Interpolation.at curves[c] 0.0
-            | Some v when v > 0 -> Interpolation.at curves[c] (1.0 / float v)
-            | Some _ -> None
-
 
 /// Named functions over a pipeline (Phase 596, `DECISIONS.md` D48): registration and inline
 /// expansion. A pipeline's `Transform.Define` steps are its functions; `expand` checks them and every
@@ -11974,7 +11611,7 @@ module DataFrame =
         | _ -> false
 
     /// Whether the family fixes its dispersion at one (Poisson, binomial, negative binomial), so an
-    /// interval reads the normal row rather than the t at the residual degrees of freedom.
+    /// interval reads the normal quantile rather than the t at the residual degrees of freedom.
     let internal fitFixedDispersion (f: FitFamily) : bool =
         match f with
         | FitFamily.Poisson
@@ -13319,7 +12956,7 @@ module DataFrame =
     // -----------------------------------------------------------------------------------------
     //  Phase 597 — `Predict` (D56): a row coded as the fit coded its training rows, scored against its
     //  group's fit; its standard errors read the fit's `R` by one triangular solve and a sum of
-    //  squares, and an interval's quantile is read from the t table through `Interpolate`.
+    //  squares, and an interval's quantile is the pinned `StudentT.quantile` (Phase 618, D79).
     // -----------------------------------------------------------------------------------------
 
     /// A prediction's refusal, in the words the evaluator reports it.
@@ -13333,9 +12970,10 @@ module DataFrame =
     let private keyText (cells: Cell[]) : string =
         "(" + System.String.Join(", ", cells |> Array.map cellString) + ")"
 
-    /// The interval resolved before any row is read: its kind and its level. A level the t table does
-    /// not carry is refused naming the tabled ones; a prediction interval outside the gaussian family,
-    /// and any interval from a coefficient table, are refused by name.
+    /// The interval resolved before any row is read: its kind and its level. A level that is not
+    /// strictly between zero and one is refused (at zero the interval is a point, at one it is the
+    /// whole line); a prediction interval outside the gaussian family, and any interval from a
+    /// coefficient table, are refused by name.
     let private predictInterval
         (env: Map<string, Cell>)
         (spec: PredictSpec)
@@ -13349,13 +12987,12 @@ module DataFrame =
             | PredictModel.Training _ ->
                 resolveFloatSlot env "predict level" i.Level
                 |> Result.bind (fun level ->
-                    if not (Array.contains level StudentT.levels) then
+                    if not (level > 0.0 && level < 1.0) then
                         Error(
                             predictError (
                                 "the level "
                                 + cellString (Float level)
-                                + " is not tabled; a level is one of "
-                                + System.String.Join(", ", StudentT.levels |> Array.map (Float >> cellString))
+                                + " is not a coverage; a level lies strictly between 0 and 1"
                             )
                         )
                     elif i.Kind = IntervalKind.Prediction && spec.Fit.Family <> FitFamily.Gaussian then
@@ -13366,6 +13003,20 @@ module DataFrame =
                         Error(predictError "a prediction interval is stated under the identity link only")
                     else
                         Ok(Some(i.Kind, level)))
+
+    /// The two-sided quantile a `Predict` interval multiplies a standard error by (Phase 618,
+    /// `DECISIONS.md` D79): for a level `L` and `ν` residual degrees of freedom, the `t` with
+    /// `P(|T| < t) = L`, read as the negation of the pinned quantile at the lower tail `(1 − L) / 2`
+    /// (from `L = ½` that subtraction is exact, so the tail is the level's own and not a rounding of
+    /// `(1 + L) / 2`). `None` for `df`: the normal distribution. `None` out: no residual degrees of
+    /// freedom, so no interval.
+    let private predictQuantile (level: float) (df: int option) : float option =
+        let tail = (1.0 - level) / 2.0
+
+        match df with
+        | None -> Some(-(Normal.quantile tail))
+        | Some v when v > 0 -> Some(-(StudentT.quantile (float v) tail))
+        | Some _ -> None
 
     /// The step's input rows coded by the training coding (D56 item 2): per logical row, the design row
     /// and the offset, or `None` where a term or the offset is null. Every term is evaluated over the
@@ -13679,11 +13330,12 @@ module DataFrame =
                                             match interval with
                                             | None -> ()
                                             | Some(kind, level) ->
-                                                // A dispersion the family fixes reads the normal row; an
-                                                // estimated one the t at the residual df.
+                                                // A dispersion the family fixes reads the normal
+                                                // quantile; an estimated one the t at the residual df,
+                                                // and no interval where there is none.
                                                 let df = if fitFixedDispersion fit.Family then None else Some fg.Df
 
-                                                match StudentT.quantile level df with
+                                                match predictQuantile level df with
                                                 | None -> ()
                                                 | Some t ->
                                                     let se =
@@ -16166,7 +15818,7 @@ module SchemaWalk =
 
         // Phase 597 (D56) — a prediction appends closed float columns to its input: `predicted`, and from
         // training rows `se_fit`, `se_pred` and an interval's bounds. Every value is a pinned operation
-        // (the t table is read by `Interpolate`, `exp` is `Elementary`'s), so a column is host-rounded
+        // (the t quantile is `Distributions`', `exp` is `Elementary`'s), so a column is host-rounded
         // only where a term, a key or the training rows it reads already are.
         | Predict spec ->
             let fit = spec.Fit

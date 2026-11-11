@@ -50,12 +50,21 @@ let compute: Set<string> =
           // takes Column and (its accumulator codec) Wire.
           "Fuaran.Compute.Regression"
           // Phase 633: the pinned solvers, below everything; they take FSharp.Core alone.
-          "Fuaran.Compute.Solvers" ]
+          "Fuaran.Compute.Solvers"
+          // Phase 618: the pinned distributions, above Elementary and the solvers and below DataFrame;
+          // they take FSharp.Core and those two alone.
+          "Fuaran.Compute.Distributions" ]
 
 /// The packages at the bottom of the graph (DECISIONS.md D77 item 10): each takes FSharp.Core and
 /// nothing else — no substrate package, and no package of this repository, so anything in Compute can
 /// call it from below.
 let bottom: Set<string> = set [ "Fuaran.Compute.Solvers" ]
+
+/// The packages held to a stated set of this repository's own below them, and to nothing of the
+/// substrate (DECISIONS.md D79 item 1): the distributions take Elementary and the solvers, so that
+/// every package above (regression, the dataframe) can read a distribution without a cycle.
+let below: Map<string, Set<string>> =
+    Map.ofList [ "Fuaran.Compute.Distributions", set [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Solvers" ] ]
 
 /// The substrate packages the compute strand stands on — and nothing above them. `Fuaran.Core.Unit`
 /// is BELOW the four, not above: since Core `1.0.0` a schema field carries a unit of measure, so
@@ -124,6 +133,34 @@ let bottomAssemblyViolations (refs: Map<string, string list>) : (string * string
           if Set.contains name bottom then
               for r in rs do
                   if r.StartsWith("Fuaran.", StringComparison.Ordinal) then
+                      yield name, r ]
+
+/// What a package of `below` takes beyond FSharp.Core and its stated set: any other package, any
+/// other project. `(project, offending reference)` pairs.
+let belowViolations (projects: Map<string, string list * string list>) : (string * string) list =
+    [ for KeyValue(name, (packages, projectRefs)) in projects do
+          match Map.tryFind name below with
+          | None -> ()
+          | Some allowed ->
+              for p in packages do
+                  if p <> "FSharp.Core" then
+                      yield name, "package " + p
+
+              for r in projectRefs do
+                  if not (Set.contains r allowed) then
+                      yield name, "project " + r ]
+
+/// A built assembly of `below`: its references into the Fuaran family outside its stated set.
+let belowAssemblyViolations (refs: Map<string, string list>) : (string * string) list =
+    [ for KeyValue(name, rs) in refs do
+          match Map.tryFind name below with
+          | None -> ()
+          | Some allowed ->
+              for r in rs do
+                  if
+                      r.StartsWith("Fuaran.", StringComparison.Ordinal)
+                      && not (Set.contains r allowed)
+                  then
                       yield name, r ]
 
 /// A built assembly's references into the Fuaran family that break the line: any `Fuaran.*`
@@ -396,4 +433,87 @@ let tests =
               Expect.contains
                   (snd projects["Fuaran.Compute.Elementary"])
                   "Fuaran.Compute.Solvers"
-                  "Elementary's project references the solvers" ]
+                  "Elementary's project references the solvers"
+
+          // Phase 618 (DECISIONS.md D79 item 1): the distributions sit on Elementary and the solvers
+          // alone, so regression's p-values and the dataframe's intervals can read them from above.
+          testCase
+              "the below rule goes red on a project outside the stated set, a substrate package and a Fuaran assembly"
+          <| fun _ ->
+              let clean =
+                  Map.ofList
+                      [ "Fuaran.Compute.Distributions",
+                        ([ "FSharp.Core" ], [ "Fuaran.Compute.Solvers"; "Fuaran.Compute.Elementary" ])
+                        "Fuaran.Compute.DataFrame", ([ "FSharp.Core" ], [ "Fuaran.Compute.Distributions" ]) ]
+
+              Expect.isEmpty (belowViolations clean) "the distributions on Elementary and the solvers break nothing"
+
+              Expect.equal
+                  (belowViolations (
+                      clean
+                      |> Map.add
+                          "Fuaran.Compute.Distributions"
+                          ([ "FSharp.Core" ], [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Regression" ])
+                  ))
+                  [ "Fuaran.Compute.Distributions", "project Fuaran.Compute.Regression" ]
+                  "a project above the distributions is a violation"
+
+              Expect.equal
+                  (belowViolations (
+                      clean
+                      |> Map.add
+                          "Fuaran.Compute.Distributions"
+                          ([ "FSharp.Core"; "Fuaran.Core.Column" ], [ "Fuaran.Compute.Elementary" ])
+                  ))
+                  [ "Fuaran.Compute.Distributions", "package Fuaran.Core.Column" ]
+                  "a substrate package under the distributions is a violation"
+
+              Expect.equal
+                  (belowAssemblyViolations (
+                      Map.ofList
+                          [ "Fuaran.Compute.Distributions",
+                            [ "FSharp.Core"; "Fuaran.Compute.Elementary"; "Fuaran.Compute.LinearAlgebra" ] ]
+                  ))
+                  [ "Fuaran.Compute.Distributions", "Fuaran.Compute.LinearAlgebra" ]
+                  "a Fuaran assembly outside the stated set is a violation"
+
+          testCase "the distributions reference Elementary and the solvers alone, by project and by assembly"
+          <| fun _ ->
+              let projects = projectReferences ()
+
+              Expect.isTrue
+                  (below |> Map.forall (fun name _ -> Map.containsKey name projects))
+                  "every package of the below rule is under src/"
+
+              let found = belowViolations projects
+
+              Expect.isEmpty
+                  found
+                  (sprintf
+                      "package(s) reference beyond their stated set: %s. Fuaran.Compute.Distributions is written over Elementary's special functions and the solvers alone (DECISIONS.md D79 item 1)."
+                      (render found))
+
+              let refs =
+                  [ for KeyValue(name, _) in below ->
+                        match builtAssembly name with
+                        | Ok dll -> name, referencedAssemblies dll
+                        | Error e -> failtestf "%s" e ]
+                  |> Map.ofList
+
+              Expect.isEmpty (belowAssemblyViolations refs) "no built assembly references outside its stated set"
+
+              // Not vacuous: the readers do read the package, and it does take what it is allowed.
+              Expect.equal
+                  (snd projects["Fuaran.Compute.Distributions"] |> Set.ofList)
+                  (set [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Solvers" ])
+                  "the distributions' project references are Elementary and the solvers"
+
+              Expect.contains
+                  refs["Fuaran.Compute.Distributions"]
+                  "Fuaran.Compute.Elementary"
+                  "the distributions' assembly references Elementary"
+
+              Expect.contains
+                  (snd projects["Fuaran.Compute.DataFrame"])
+                  "Fuaran.Compute.Distributions"
+                  "the dataframe's project references the distributions" ]

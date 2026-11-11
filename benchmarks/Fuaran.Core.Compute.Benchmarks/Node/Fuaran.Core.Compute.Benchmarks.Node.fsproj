@@ -37,6 +37,9 @@
     <!-- Phase 631: the special functions over their pinned sample (`node Program.js 5 special`). After
          ElementaryBench.fs, whose generator and timer they read. -->
     <Compile Include="..\SpecialBench.fs" Link="SpecialBench.fs" />
+    <!-- Phase 618: the distribution functions over their pinned sample, with the candidates the
+         decision was made against (`node Program.js 5 distributions`). -->
+    <Compile Include="..\DistributionsBench.fs" Link="DistributionsBench.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
@@ -45,6 +48,8 @@
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <!-- Phase 632: the streaming accumulator the qr family times is Fuaran.Compute.Regression's. -->
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />
+    <!-- Phase 618: the distribution functions the distributions family measures. -->
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.Distributions\Fuaran.Compute.Distributions.fsproj" />
     <!-- Phase 355: the state-codec laws, run on this host before the state's wire form is measured. -->
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />
   </ItemGroup>

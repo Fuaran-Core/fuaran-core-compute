@@ -3,7 +3,8 @@
 /// Phase 630 it runs the elementary package's leg too: `ElementaryLaws.laws` at the same seed and
 /// count, and `elementary-laws.json` rendered beside the linear-algebra document; and since Phase 632
 /// the regression package's: `RegressionLaws.laws` and `regression-laws.json`; and since Phase 633 the
-/// solvers package's: `SolversLaws.laws` and `solvers-laws.json`.
+/// solvers package's: `SolversLaws.laws` and `solvers-laws.json`; and since Phase 618 the
+/// distributions package's: `DistributionsLaws.laws` and `distributions-laws.json`.
 ///
 ///   dotnet fable LinearAlgebraNode.fsproj -o <out>; node <out>/LinearAlgebraNode.js
 ///
@@ -18,6 +19,7 @@ open Fuaran.Compute.Elementary
 open Fuaran.Compute.LinearAlgebra
 open Fuaran.Compute.Regression
 open Fuaran.Compute.Solvers
+open Fuaran.Compute.Distributions
 open Fuaran.Compute.Tests
 
 [<Emit("process.exit($0)")>]
@@ -28,6 +30,7 @@ let private failures =
     @ ElementaryLaws.laws 590 200
     @ RegressionLaws.laws 590 200
     @ SolversLaws.laws 590 200
+    @ DistributionsLaws.laws 590 200
     |> List.choose (fun (name, verdict) ->
         match verdict with
         | Ok() -> None
@@ -51,6 +54,10 @@ printfn "END %s" RegressionVectors.fileName
 printfn "BEGIN %s" SolversVectors.fileName
 printfn "%s" (SolversVectors.render ())
 printfn "END %s" SolversVectors.fileName
+
+printfn "BEGIN %s" DistributionsVectors.fileName
+printfn "%s" (DistributionsVectors.render ())
+printfn "END %s" DistributionsVectors.fileName
 
 printfn "linear algebra laws under node: %s" (if List.isEmpty failures then "held" else "FAILED")
 exit (if List.isEmpty failures then 0 else 1)

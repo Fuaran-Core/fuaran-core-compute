@@ -452,10 +452,12 @@ module LawVectorExport =
         + "After the fit shapes, each iteration takes the next PREDICT shape named in its vector id (Phase 597) "
         + "over the same table, which is also each model's training rows: the appended `predicted`, `se_fit`, "
         + "`se_pred`, `lower` and `upper` are pinned bytes — a row's prediction is its fitted value, the "
-        + "standard errors one triangular solve and a sum of squares, and an interval's quantile a row of the "
-        + "t table read by `Interpolate` — and an untabled level, a prediction interval outside the gaussian "
-        + "family, a level or a group the model does not hold and a term a coefficient table lacks are each "
-        + "refused as `FitError`. "
+        + "standard errors one triangular solve and a sum of squares, and an interval's quantile the pinned "
+        + "`StudentT.quantile` of Fuaran.Compute.Distributions at the residual degrees of freedom, or its "
+        + "`Normal.quantile` where the family fixes its dispersion (Phase 618, D79; a row of a t table "
+        + "before that) — and a level that is not strictly between 0 and 1, a prediction interval outside the "
+        + "gaussian family, a level or a group the model does not hold and a term a coefficient table lacks "
+        + "are each refused as `FitError`. "
         + "After the predict shapes, each iteration takes the next FAMILY shape named in its vector id (Phase "
         + "598) over the same table: quasi-Poisson (Poisson's iterations, Pearson's dispersion) and Tweedie at "
         + "p = 1.5 (working weights w·μ^(2−p) through the pinned pow) under the log link, and the sandwich "
@@ -589,11 +591,12 @@ module LawVectorExport =
 
     /// Every law set this repository emits, as (path under `corpusDir`, rendered bytes) — the one
     /// list `write` walks, so a family added here cannot be rendered and then forgotten by the
-    /// writer. Six sets: the transform-parity family's drawn reference answers, the
+    /// writer. Seven sets: the transform-parity family's drawn reference answers, the
     /// dataframeParity family's answers over its authored cases, the linear-algebra package's
     /// answers over its authored hard inputs (Phase 590), the elementary package's over its own
     /// (Phase 593; their own file since Phase 630), and the regression package's (Phase 591; their own
-    /// file since Phase 632), and the solvers package's over its authored functions (Phase 633). (The substrate's own
+    /// file since Phase 632), the solvers package's over its authored functions (Phase 633), and the
+    /// distributions package's over its authored hard inputs (Phase 618). (The substrate's own
     /// `capabilityLaws` vectors are emitted by the substrate, beside the law they certify.)
     let emitted (corpusDir: string) : (string * string) list =
         [ transformPath corpusDir, renderTransformVectors ()
@@ -606,7 +609,9 @@ module LawVectorExport =
           // Phase 632: the regression hard-input vectors, moved out of the linear-algebra file.
           Path.Combine(familyDir corpusDir, RegressionVectors.fileName), RegressionVectors.render ()
           // Phase 633: the solver vectors, over authored functions.
-          Path.Combine(familyDir corpusDir, SolversVectors.fileName), SolversVectors.render () ]
+          Path.Combine(familyDir corpusDir, SolversVectors.fileName), SolversVectors.render ()
+          // Phase 618: the distribution hard-input vectors.
+          Path.Combine(familyDir corpusDir, DistributionsVectors.fileName), DistributionsVectors.render () ]
 
     /// Write the vectors with LF endings, whatever the host platform — the corpus is byte-compared
     /// by several hosts on three operating systems.

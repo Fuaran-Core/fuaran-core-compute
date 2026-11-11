@@ -15,17 +15,17 @@ open Fuaran.Compute.Elementary
 open Fuaran.Core.Compute.Benchmarks.ElementaryBench
 
 /// One function's sample: its name, the operands of each input, and the function over them.
-type private Sample =
+type Sample =
     { Op: string
       Inputs: float[][]
       Apply: float[] -> float }
 
-let private logUniform (d: Draw) (lo: float) (hi: float) : float =
+let logUniform (d: Draw) (lo: float) (hi: float) : float =
     let l = Elementary.ln lo
     Elementary.exp (l + d.Unit() * (Elementary.ln hi - l))
 
 /// `n` draws of `f`.
-let private draws (n: int) (f: unit -> float[]) : float[][] = Array.init n (fun _ -> f ())
+let draws (n: int) (f: unit -> float[]) : float[][] = Array.init n (fun _ -> f ())
 
 /// The digamma function's positive root, as the nearest double.
 let private digammaRoot = 1.4616321449683622
@@ -162,7 +162,7 @@ let private polygammaSample (d: Draw) : float[][] =
           for n in [ 12; 20 ] do
               yield orderSample d n 200 ]
 
-let private pass (inputs: float[][]) (f: float[] -> float) () : float =
+let pass (inputs: float[][]) (f: float[] -> float) () : float =
     let mutable c = 0.0
 
     for x in inputs do

@@ -1,5 +1,202 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-11 — D79: the normal, t, chi-square and F distributions are pinned in a package of their own, `Fuaran.Compute.Distributions`, over Elementary's special functions and the solvers; the normal pair is Elementary's, read under the distribution's name; the t and the F read the incomplete beta function and its inverse and iterate nothing, the chi-square quantile is `Root.bracketedNewton`; each form chosen by measurement against a fifty-digit reference; `Predict` reads `StudentT.quantile` and the t table is gone
+
+**Context.** Phase 618. A confidence interval, a significance test and a model's p-value end in a distribution
+function, and this repository had one: the two-sided t quantiles `Predict` read from a table in `DataFrame.fs` (D56). The
+phase asks for the cumulative distribution function and the quantile of the standard normal, Student's t, the
+chi-square and Fisher's F distributions, pinned as D52 pinned `exp`, and for `Predict` to read the function. The
+shard was written before Phases 630, 631, 633, 632 and 621 landed and was read against the tree as they left it:
+`Fuaran.Compute.Elementary` exists (D74) and holds `Special` (D78) and the normal pair (D58); the solvers are a package
+below it (D77); `Glm` is in `Fuaran.Compute.Regression` (D75). Three of the shard's statements did not hold of that
+tree, and item 10 says what each changed.
+
+**Decision.**
+
+1. **Where they live and how they are called.** `Fuaran.Compute.Distributions` is a new package between Elementary
+   and the packages above it. It references `Fuaran.Compute.Solvers` and `Fuaran.Compute.Elementary` and nothing
+   else of this repository or of the substrate; a boundary test holds its project and its built assembly to that
+   set, with a go-red case. It holds one module a family: `Normal`, `StudentT`, `ChiSquare`, `FisherF`. A caller
+   opens the namespace and writes `StudentT.quantile`. The operations table is `DistributionsOperations`, named for
+   the package as D74 item 2 requires, with its `Exactness` type nested; each of the eight functions has a `Pinned`
+   row. No other package declares a module or type of any of the six names: a test reads every source file under
+   `src/` for one (which is how it sees an `internal` module, as the dataframe's t table was) and every other
+   package's exported types. `Fuaran.Compute.DataFrame` references the package; `Regression` does not yet.
+
+2. **The normal distribution is not written twice.** `Normal.cdf` and `Normal.quantile` ARE `Elementary.normalCdf`
+   and `Elementary.normalQuantile` (Phase 600, D58): each is one line that calls the other. The implementation
+   stays in Elementary, where `Glm`'s probit link and `Special`'s inverse start read it, so no vector of
+   `elementary-laws.json` or `regression-laws.json` moves. A law holds the two spellings bit for bit on both hosts,
+   and the suite holds them over a grid of 18,200 points. It is the standard normal only; a location and a scale
+   are Phase 629's common surface.
+
+3. **What every function is built from.** `+ − × ÷`, comparisons, the correctly rounded square root, and
+   Elementary's pinned `exp`, `ln`, `pow`, `normalQuantile`, `gammaLn`, `beta`, `betaLn`, `regularizedGammaP`,
+   `regularizedGammaQ`, `regularizedBeta` and `inverseRegularizedBeta`. No special function is written here, no
+   fused multiply-add and no host mathematics call, and the package's source has no loop: a test reads it for one.
+   Two private helpers serve the t and the F:
+   - `betaNearOne a b y` is `I_{1−y}(a, b)` for a caller that holds `y` and not `1 − y`. The incomplete beta
+     function takes its argument as one double, and `1 − y` is not one. It is read at `x = fl(1 − y)`; `u = 1 − x`
+     and `d = y − u` are exact; the answer is `I_x − d · xᵃ⁻¹ uᵇ⁻¹ / B(a, b)`, the first-order term through the
+     density. This is the correction D78 item 7 makes inside the function for an argument below one half, made
+     for the other end. It is used for `y` from `2⁻²⁶`, where the second-order term is below `2⁻⁵⁶` of the answer's
+     scale.
+   - `betaOdds a b p q qExact` is `x / (1 − x)` at the root of `I_x(a, b) = p`. `inverseRegularizedBeta a b p` is
+     read first; a root at or below one half is used as it is. Above one half the function has answered `1 − y`
+     for a small `y`, and the odds divide by a `y` rounded to the last place of one. Then the mirrored problem
+     `I_y(b, a) = q` is read, whose root is `y` itself, when `q = 1 − p` is exact; when `q` is rounded, only where
+     the mirrored density at `y` is above one, which is where the rounding of `q` moves `y` by less than the
+     rounding of `1 − y` did.
+
+4. **Student's t.**
+   - `cdf ν x`: the tail beyond `|x|` is computed once and is the answer for `x < 0`; for `x ≥ 0` the answer is one
+     minus it. So a lower tail keeps its relative accuracy, and `cdf ν (−x) + cdf ν x` is one within a rounding.
+     The tail is half of `I_z(ν/2, ½)` at `z = ν / (ν + x²)`, in four arms by `w = x² / (ν + x²) = 1 − z`:
+     from `|x| = 2³⁰ √ν`, where `z` is below `2⁻⁶⁰`, the leading term `(√ν / |x|)^ν / (ν B(ν/2, ½))` by the pinned
+     `pow` (nothing overflows before the tail does, and the answer does not carry the error of an exponential of a
+     large exponent); where `x² (ν + 2) ≤ 3ν` or `w < 2⁻²⁶`, the centre `½ − ½ I_w(½, ν/2)`; where `2x² ≥ ν`,
+     `½ I_z(ν/2, ½)` with `z` formed directly; otherwise `½ betaNearOne (ν/2) ½ w`. The centre arm is a matter
+     of cost: `betaNearOne` measures the same error there, because the incomplete beta function already reads
+     its fraction at the small argument, and pays an exponential, two logarithms and a `betaLn` for it (204
+     against 228 ns a value over the sample on .NET, 398 against 469 under node).
+   - `quantile ν p`: `0` at one half; above one half the negation of the quantile at `1 − p`, a subtraction that
+     is exact, so the function is odd about one half bit for bit. Below one half `t² / ν` is the odds of a root
+     of the incomplete beta function, and the two ways of writing it take `2p` and `1 − 2p`. From `p = ¼` both
+     are exact and it is `betaOdds ½ (ν/2) (1 − 2p) (2p)`. Below `¼` only `2p` is exact:
+     `I_z(ν/2, ½) = 2p` is read, and `t = −√(ν (1 − z) / z)` stands while `z ≤ ½` or `1 − z ≥ 1/16`. For
+     `2⁻²⁶ ≤ 1 − z < 1/16` ONE Newton step on the distribution function follows, its residual the tail above and
+     its derivative the density `exp (½ (ν + 1) ln z − ½ ln ν − ln B(ν/2, ½))`; below `2⁻²⁶` the other root is
+     read. An answer at or beyond `−2³⁰ √ν` is replaced by the leading term solved for `t`,
+     `−√ν / (p ν B(ν/2, ½))^(1/ν)`. The Newton step is a fixed correction, not an iteration: it has no stopping
+     test for a host to take differently.
+
+5. **Chi-square and F.**
+   - `ChiSquare.cdf k x` is `regularizedGammaP (k/2) (x/2)`.
+   - `ChiSquare.quantile k p` is twice the root `u` of `P(k/2, u) = p` by `Root.bracketedNewton`. The residual is
+     `P − p`, read as `(1 − p) − Q` where `p > ½`; the derivative is the density
+     `exp ((a − 1) ln u − u − ln Γ(a))`. The bracket is `[0, a + √(2aL) + L]` with `L = ln 2` where `p ≤ ½` and
+     `−ln (1 − p)` above: the gamma distribution's tail beyond `a + √(2at) + t` is at most `e⁻ᵗ`, so the residual at
+     the upper end is not negative. The start is the leading term at zero solved for `u`,
+     `exp ((ln p + ln Γ(a + 1)) / a)`, where `a < −0.62 ln p` (Best and Roberts' threshold, AS 91); otherwise
+     Wilson and Hilferty's `a (1 − 1/(9a) + z √(1/(9a)))³` over the pinned normal quantile; half the bracket where
+     that lands outside it. The shrink fraction is one. The rule is `RelativeChange (2⁻⁴⁰, 2⁻¹⁰²²)` with a cap of
+     one hundred: stop when a step moved the point by less than `2⁻⁴⁰` of itself. A refusal of the solver is NaN.
+     A start at zero that underflows answers `0`: the quantile is below the smallest double.
+   - `FisherF.cdf d1 d2 x` is `I_w(d1/2, d2/2)` at `w = d1 x / (d1 x + d2)`: read at `w` where `d1 x ≤ d2`, and
+     beyond through `betaNearOne` at `z = d2 / (d1 x + d2)` (as `1 − I_z(d2/2, d1/2)` below `2⁻²⁶`).
+   - `FisherF.quantile d1 d2 p` is `(d2 / d1) · betaOdds (d1/2) (d2/2) p (1 − p)` up to one half, and
+     `d2 / (d1 · betaOdds (d2/2) (d1/2) (1 − p) p)` above, where `1 − p` is exact.
+
+6. **`Predict` reads the function.** The `StudentT` table, its 366 lines and its interpolation in `1/ν` are
+   deleted from `DataFrame.fs`. An interval's quantile for a level `L` is `−StudentT.quantile ν ((1 − L) / 2)` at
+   the fit's residual degrees of freedom, and `−Normal.quantile ((1 − L) / 2)` where the family fixes its
+   dispersion. The lower tail is read because `(1 − L) / 2` is exact from `L = ½` and `(1 + L) / 2` is not: the
+   tail is the level's own. A level is admissible when it is strictly between zero and one; anything else is
+   refused as `FitError` naming it (at zero the interval is a point, at one the whole line). The refusal of a
+   level the table did not carry is gone. No residual degrees of freedom is still no interval.
+
+7. **The special-value table.** A NaN argument answers NaN everywhere. A parameter (`ν`, `k`, `d1`, `d2`) that is
+   not above zero and finite answers NaN. A probability outside `[0, 1]` answers NaN. A quantile at `p = 0` and
+   `p = 1` answers the distribution's bounds: `−∞` and `+∞` for the normal and the t, `0` and `+∞` for the
+   chi-square and the F. A distribution function at `−∞` answers `0` and at `+∞` answers `1`; the chi-square's and
+   the F's answer `0` for every `x ≤ 0`. The shard's "a non-finite argument answers NaN" is read as the
+   parameters: an infinite `x` has a limit, `Elementary.normalCdf` and `Special.regularizedGammaP` already answer
+   it, and `Normal.cdf` could not answer otherwise without being a second function. The table is code, stated on
+   each function, and a law holds every row on both hosts; it is not published as data, for D78 item 9's reason.
+
+8. **The stopping rule, in bits.** One iteration in the package, the chi-square quantile's, and its rule is item
+   5's: `|current − previous| / (|current| + 2⁻¹⁰²²) < 2⁻⁴⁰` through `StoppingRule.stops`, a cap of one hundred, a
+   function value of exactly zero first. The t's and the F's quantiles are the special function's own roots
+   (`inverseRegularizedBeta`, D78 item 8, the same rule) read once or twice, and the t's Newton step is one step.
+
+9. **What was measured** (`benchmarks/results/2026-11-11-ryzen9-9950x-phase-618.md`; the reference is mpmath 1.4.1
+   at fifty digits, by `tests/Fuaran.Core.Compute.Tests/DistributionsReference/distributions_reference.py`, which
+   imports Phase 631's incomplete gamma and beta references). Over a seeded sample of 11,640 inputs, the same on
+   every host, .NET and node answered the same bits on every one, and on the candidates' 13,120 more. Largest
+   error in units in the last place by range, and nanoseconds a value:
+
+   | function | small parameters | to `4e4` (the t), `2e5` (χ²) | the t to `1e6` | .NET ns | node ns |
+   |---|---:|---:|---:|---:|---:|
+   | `Normal.cdf` | 1.9 | | | 24 | 64 |
+   | `Normal.quantile` | 3.5 | | | 13 | 28 |
+   | `StudentT.cdf` | 560 (`ν < 100`) | 6,095 | 137,400 | 204 | 398 |
+   | `StudentT.quantile` | 314 (`ν < 100`) | 2,509 | 24,590 | 2,054 | 3,375 |
+   | `ChiSquare.cdf` | 656 (`k < 2e3`) | 63 | | 194 | 268 |
+   | `ChiSquare.quantile` | 2,380 (`k < 2e3`) | 0.6 | | 1,666 | 2,259 |
+   | `FisherF.cdf` | 1,198 (`d1, d2 < 1e3`) | 15,800 | | 216 | 476 |
+   | `FisherF.quantile` | 320 (`d1, d2 < 1e3`) | 3,143 | | 2,536 | 4,407 |
+
+   The 99th percentiles are 81, 92, 208, 348, 364 and 163 in the first column. The bound is not uniform, and three
+   things set it, each the special functions' own. The incomplete beta function at one large and one small
+   parameter, read within a few `1 / a` of one, is out by an amount that grows with `a` (a relative error of 260
+   units of `2⁻⁵²` at `a = 500`, 6,400 at `20,000`, 200,000 at `500,000`): that is the t from `ν = 100` and the F
+   with one large degree of freedom, and it leaves a tail at `ν = 1,000` good to fourteen digits and at a million
+   to eleven. A tail far out carries about twice its exponent. And a quantile where the mass is at zero carries
+   the function's error times `2 / k`. The chi-square quantile's iteration took 3.5 steps on average and 27 at
+   most; with Wilson and Hilferty's start alone, or from the middle of the bracket, 147 of the 1,573 runs reached
+   the cap.
+
+10. **What the tree and the measurement changed of the shard's plan.**
+    - **The t table was not "transcribed at four or five significant figures".** Its entries were the nearest
+      doubles to the exact quantiles, and the function answers every one of its 280 within 24 units in the last
+      place, 45 of them to the bit (a test holds the distance at 32, with the table kept as its data). So at a tabled `ν` and level an interval's
+      bounds move in their last digit or two, by the function's own error against a correctly rounded entry, and
+      that is not a gain. What the function gains is everything the table could not say: a `ν` between its rows,
+      where it read linearly in `1/ν` and was `5.2e-5` above the quantile at `ν = 35`, a
+      `ν` that is not an integer, and any level.
+    - **The interval-bearing transform vectors moved by units in the last place, not in the fourth figure.** Every
+      one of them has a tabled `ν` and level. Three rows' bounds moved (`transform-142-predict-poisson-response`,
+      `transform-143-predict-gamma-link`, `transform-175-predict-logit-response`), by at most seven units; the two
+      gaussian interval rows did not move a bit. `transform-145-predict-level-refused` asked for a level of `0.97`,
+      which is admissible now: it asks for a level of one, and is still refused as `FitError`. The file's head
+      `description` says what the quantile is. Every other row is the line it was.
+    - **The normal distribution was already pinned** (D58), so it is read, not built (item 2). The package's
+      first families are four modules and six new functions.
+    - **`Special` publishes no complement.** The t's lower tail and a small F probability need
+      `I_{1−y}(a, b)` for a small `y` the caller holds, and a quantile needs the inverse's `1 − x`. The function
+      computes both inside itself and publishes neither, so the package restores what the public argument rounds
+      away (`betaNearOne`), chooses between two inverses by the density (`betaOdds`), and takes one Newton step
+      where neither inverse is good (the t at a large `ν` in its tail). Each is measured against the form it
+      replaced (the candidates of the measurement): reading the function at `ν / (ν + x²)` directly is `1e8` to
+      `1e10` units out, splitting at the centre without the correction `1e15`, one inverse alone `1e5` to `1e15`,
+      two inverses without the step `1e7` to `1e9`.
+    - **The far tail is the leading term.** The shard did not ask for it; the vectors did. `ν / x²` underflows
+      long before a Cauchy tail does, and the function's own prefix is two hundred units out at `z = 1e-301`.
+    - **The dependency is Elementary and Solvers**, as the shard's Goal says and its Acceptance line does not.
+
+**Falsifiers.** Each is a way this decision would be wrong, and what would show it.
+
+- A host answers other bits: the 215 vectors of `conformance/laws/distributions-laws.json` are rendered on .NET
+  and under node and compared byte for byte, and each of the 143 the routines computed carries its distance from
+  the reference, which a host must reproduce too.
+- A stated bound is exceeded: the suite holds every referenced vector to its function's bound
+  (`DistributionsVectors.referenceUlps`, one figure for parameters to forty thousand and one beyond, each the
+  power of two at or above its worst vector), and `DistributionsLaws.laws` holds, on both hosts and for parameters
+  from one quarter to 512: the distribution function of each quantile is `p` within `2⁻⁴⁴`;
+  `FisherF.cdf 1 ν (t²) = 2 StudentT.cdf ν |t| − 1` within `2⁻⁴⁴`; `StudentT.cdf ν (−t) + StudentT.cdf ν t = 1`
+  within `2⁻⁵²`; the t's quantile above one half is the negation of the one below, bit for bit; and no distribution
+  function falls as its argument rises beyond `2⁻⁴⁴` of itself.
+- The normal pair drifts from Elementary's: the law and the grid test of item 2.
+- The accuracy is worse somewhere the sample did not reach: it is a measurement over the stated ranges, never a
+  theorem. A `ν`, `d1` or `d2` above a million, or a `k` above two hundred thousand, is computed by the same rules
+  and is not covered by the figures; where a special function's series does not settle (a `k` beyond about `10⁸`)
+  the answer is NaN, never an unconverged value.
+- `Special.regularizedBeta` changes where it reads its fraction: the centre arm of the t and the choice in
+  `betaOdds` were measured against the function as D78 left it. The referenced vectors on either side of each
+  arm's boundary would move, and the bound test would say so.
+- `Special` publishes the complement and its inverse: then `betaNearOne`, the density test of `betaOdds` and the
+  t's Newton step are each a longer way round than a direct read, and the figures of item 9 from `ν = 100` are
+  what a direct read would be measured against.
+
+**Alternatives considered.** Moving the normal pair into this package and leaving Elementary's names as readers:
+rejected, because Elementary cannot reference a package above it and `Special` reads the quantile. Keeping the
+table's rows as a fast path at the tabled `ν`: rejected, because two sources for one quantile is what the phase
+removes, and the difference is the function's last digit. A Cornish–Fisher expansion for the t at a large `ν`:
+not built; it is a second algorithm with a boundary of its own, and the measured loss there is the special
+function's, which is where it would be repaired. Adding the complement to `Special` in this phase: out of the
+phase's region, and it would move `elementary-laws.json`, which this phase was told to leave byte-identical.
+Publishing the densities: Phase 629's.
+
 ## 2026-11-11 — D78: the special functions are pinned in `Special`, a module of `Fuaran.Compute.Elementary` of its own — `gammaLn`, `gamma`, `betaLn`, `beta`, `regularizedGammaP`, `regularizedGammaQ`, `regularizedBeta`, `inverseRegularizedBeta`, `polygamma`, `digamma` and `trigamma`; each algorithm, kernel, threshold and stopping rule chosen by measurement against a fifty-digit reference; every series stops on the solvers' `StoppingRule` and the inverse is `Root.bracketedNewton`; the accuracy is a measurement, stated by range
 
 **Context.** Phase 631. The distributions, likelihoods, tests and intervals above this package reduce to a small set of

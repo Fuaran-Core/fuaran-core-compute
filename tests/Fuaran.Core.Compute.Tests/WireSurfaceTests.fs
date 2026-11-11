@@ -352,7 +352,10 @@ let internal notWire: (string * string) list =
       "scalar functions of a float; no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)"
       // Phase 633: solvers over the caller's functions; nothing it publishes is encoded.
       "Fuaran.Compute.Solvers",
-      "solvers over a caller's functions; a stopping rule and an answer are values of one process, no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)" ]
+      "solvers over a caller's functions; a stopping rule and an answer are values of one process, no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)"
+      // Phase 618: distribution functions over floats; nothing it publishes is encoded.
+      "Fuaran.Compute.Distributions",
+      "scalar functions of floats; no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)" ]
 
 /// Build every document of one root: `(name, emitted bytes)`, plus the construction logs for the
 /// per-case documents so the suite can prove each reached its case.

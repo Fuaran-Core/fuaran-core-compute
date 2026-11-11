@@ -1,0 +1,29 @@
+# Fuaran.Compute.Distributions — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+field Fuaran.Compute.Distributions.DistributionsOperations+Exactness+Tags.HostRounded : System.Int32 (literal)
+field Fuaran.Compute.Distributions.DistributionsOperations+Exactness+Tags.Pinned : System.Int32 (literal)
+method Fuaran.Compute.Distributions.ChiSquare.cdf(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Distributions.ChiSquare.quantile(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Distributions.DistributionsLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
+method Fuaran.Compute.Distributions.DistributionsOperations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Distributions.DistributionsOperations+Exactness>
+method Fuaran.Compute.Distributions.FisherF.cdf(System.Double, System.Double, System.Double) : System.Double
+method Fuaran.Compute.Distributions.FisherF.quantile(System.Double, System.Double, System.Double) : System.Double
+method Fuaran.Compute.Distributions.Normal.cdf(System.Double) : System.Double
+method Fuaran.Compute.Distributions.Normal.quantile(System.Double) : System.Double
+method Fuaran.Compute.Distributions.StudentT.cdf(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Distributions.StudentT.quantile(System.Double, System.Double) : System.Double
+property Fuaran.Compute.Distributions.DistributionsOperations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.Distributions.DistributionsOperations+Exactness>> { get }
+type Fuaran.Compute.Distributions.ChiSquare (module)
+type Fuaran.Compute.Distributions.DistributionsLaws (module)
+type Fuaran.Compute.Distributions.DistributionsOperations (module)
+type Fuaran.Compute.Distributions.DistributionsOperations+Exactness (union)
+type Fuaran.Compute.Distributions.DistributionsOperations+Exactness+Tags (type)
+type Fuaran.Compute.Distributions.FisherF (module)
+type Fuaran.Compute.Distributions.Normal (module)
+type Fuaran.Compute.Distributions.StudentT (module)
+union-case Fuaran.Compute.Distributions.DistributionsOperations+Exactness.HostRounded #1()
+union-case Fuaran.Compute.Distributions.DistributionsOperations+Exactness.Pinned #0()

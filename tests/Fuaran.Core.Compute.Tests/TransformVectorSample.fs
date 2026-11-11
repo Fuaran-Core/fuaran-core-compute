@@ -243,9 +243,11 @@ module TransformVectorSample =
     /// model's training rows: the training rows scored on the response scale (each prediction its row's
     /// fitted value), a grouped model over a categorical term with a prediction interval, a confidence
     /// interval on the link scale, Poisson and Gamma means with intervals read from the normal and the
-    /// t rows, a coefficient table's point estimates, and the five refusals by name — an untabled level,
-    /// a prediction interval outside the gaussian family, a level the training rows did not hold, a term
-    /// a coefficient table lacks, and a group the model has none for.
+    /// t quantiles, a coefficient table's point estimates, and the five refusals by name — a level that
+    /// is not a coverage (Phase 618: a level of one; any level strictly between zero and one is
+    /// admissible since the t table went, `DECISIONS.md` D79), a prediction interval outside the
+    /// gaussian family, a level the training rows did not hold, a term a coefficient table lacks, and
+    /// a group the model has none for.
     let private predictShapeNames =
         [ "predict-training"
           "predict-grouped-prediction-interval"
@@ -1251,7 +1253,7 @@ module TransformVectorSample =
         | "predict-level-refused" ->
             [ Predict
                   { predict ols with
-                      Interval = interval IntervalKind.Confidence 0.97 } ]
+                      Interval = interval IntervalKind.Confidence 1.0 } ]
         | "predict-poisson-prediction-refused" ->
             [ Predict
                   { predict poisson with

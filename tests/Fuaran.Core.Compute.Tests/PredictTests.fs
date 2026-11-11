@@ -6,8 +6,10 @@ module Fuaran.Compute.Tests.PredictTests
 //
 //  A training row's prediction is its fitted value, byte for byte; the
 //  standard errors are the textbook ones, se_pred² = se_fit² + σ̂²; an
-//  interval at a tabled df uses the tabled quantile exactly, and the table
-//  is read through `Interpolate` with the normal row at 1/df = 0; new rows
+//  interval's quantile is the pinned `StudentT.quantile` at the residual df
+//  (Phase 618, D79: the t table is gone, so any level strictly between zero
+//  and one and any positive df is admissible), or `Normal.quantile` where the
+//  family fixes its dispersion, each held to its fifty-digit reference; new rows
 //  are coded against the fit's own reference level; the log link answers
 //  exp η through `Elementary.exp`; a coefficient table scores point
 //  estimates; the units; the static walk; the wire; the refusals by name.
@@ -17,6 +19,7 @@ open Expecto
 open Fuaran.Core
 open Fuaran.Compute
 open Fuaran.Compute.Elementary
+open Fuaran.Compute.Distributions
 
 let private ok =
     function
@@ -77,6 +80,9 @@ let private floatOf (c: Cell) : float =
     | other -> failtestf "expected a float cell, got %A" other
 
 let private bits (v: float) = System.BitConverter.DoubleToInt64Bits v
+
+/// The distance between two positive floats in units in the last place.
+let private ulpsApart (a: float) (b: float) : int64 = abs (bits a - bits b)
 
 let private run (pipeline: Transform list) (t: Table) = DataFrame.evalPipeline pipeline t
 
@@ -140,11 +146,15 @@ let tests =
                   nearly sf expected (sprintf "se_fit at %g" x0)
                   nearly (sp * sp) (sf * sf + sigma * sigma) (sprintf "se_pred² at %g" x0)
 
-          testCase "an interval at a tabled df uses the tabled quantile exactly"
+          testCase "an interval's bounds are the pinned t quantile at the residual df, held to the reference"
           <| fun _ ->
-              // Eight rows, two coefficients: six residual degrees of freedom.
-              let q6 = 2.44691185114497
-              Expect.equal (StudentT.quantile 0.95 (Some 6) |> Option.map bits) (Some(bits q6)) "the table's row"
+              // Eight rows, two coefficients: six residual degrees of freedom. The quantile is read at
+              // the lower tail (1 - level) / 2, which is the level's own (D79 item 6).
+              let q6 = -(StudentT.quantile 6.0 ((1.0 - 0.95) / 2.0))
+
+              // The true t(0.975, 6) at fifty digits, rounded once: 2.4469118511449692 (the retired
+              // table's row, which was correctly rounded).
+              Expect.isLessThanOrEqual (ulpsApart q6 2.4469118511449692) 4L (sprintf "t(0.975, 6) is %.17g" q6)
 
               let out =
                   ok (
@@ -168,35 +178,42 @@ let tests =
               let sf = floatOf (column "se_fit" conf).Head
               Expect.equal (bits (floatOf (column "upper" conf).Head)) (bits (eta + q6 * sf)) "a confidence bound"
 
-          testCase "the t table: every row exact at its knot, the normal row at infinity, and between rows in 1/df"
+          testCase "any level strictly between zero and one, and any positive df, is admissible (Phase 618)"
           <| fun _ ->
-              for (v, qs) in StudentT.rows do
-                  for c in 0 .. StudentT.levels.Length - 1 do
-                      let df = if v = 0 then None else Some v
+              // A level the retired table did not carry: 0.97 at six degrees of freedom, whose quantile
+              // is t(0.985, 6) = 2.828927862488332 at fifty digits, rounded once.
+              let q = -(StudentT.quantile 6.0 ((1.0 - 0.97) / 2.0))
+              Expect.isLessThanOrEqual (ulpsApart q 2.828927862488332) 8L "t(0.985, 6)"
 
-                      Expect.equal
-                          (StudentT.quantile StudentT.levels[c] df |> Option.map bits)
-                          (Some(bits qs[c]))
-                          (sprintf "df %d, level %g" v StudentT.levels[c])
+              for level in [ 0.97; 0.5; 0.123; 0.9999; 1e-6 ] do
+                  let t = -(StudentT.quantile 6.0 ((1.0 - level) / 2.0))
 
-              // Spot values against the published tables (to their printed digits).
-              nearly (Option.get (StudentT.quantile 0.95 (Some 10))) 2.228138851964938 "t(0.975, 10)"
-              nearly (Option.get (StudentT.quantile 0.95 None)) 1.959963984540054 "z(0.975)"
-              nearly (Option.get (StudentT.quantile 0.99 (Some 1))) 63.65674116287399 "t(0.995, 1)"
+                  let out =
+                      ok (
+                          run
+                              [ Predict(predict ols |> withInterval IntervalKind.Confidence level) ]
+                              (newRows [ 4.5, "red", "north" ])
+                      )
 
-              let between = Option.get (StudentT.quantile 0.95 (Some 2000))
-              let t1000 = Option.get (StudentT.quantile 0.95 (Some 1000))
-              let z = Option.get (StudentT.quantile 0.95 None)
-              Expect.isTrue (between < t1000 && between > z) "above the table: between the 1000 row and the normal"
-              nearly between ((t1000 + z) / 2.0) "halfway in 1/df"
+                  let eta = floatOf (column "predicted" out).Head
+                  let sf = floatOf (column "se_fit" out).Head
 
-              let mid = Option.get (StudentT.quantile 0.95 (Some 35))
-              let t30 = Option.get (StudentT.quantile 0.95 (Some 30))
-              let t40 = Option.get (StudentT.quantile 0.95 (Some 40))
-              Expect.isTrue (mid < t30 && mid > t40) "an untabled df reads between its neighbours"
-              Expect.isTrue (abs (mid - 2.0301079282503425) < 2e-4) "linear in 1/df is close to the exact t"
-              Expect.isNone (StudentT.quantile 0.97 (Some 6)) "an untabled level"
-              Expect.isNone (StudentT.quantile 0.95 (Some 0)) "no residual df"
+                  Expect.equal
+                      (bits (floatOf (column "lower" out).Head))
+                      (bits (eta - t * sf))
+                      (sprintf "lower at level %g" level)
+
+                  Expect.equal
+                      (bits (floatOf (column "upper" out).Head))
+                      (bits (eta + t * sf))
+                      (sprintf "upper at level %g" level)
+
+              // A wider level is a wider interval, and the t is wider than the normal at any df.
+              let width (level: float) =
+                  -(StudentT.quantile 6.0 ((1.0 - level) / 2.0))
+
+              Expect.isTrue (width 0.5 < width 0.97 && width 0.97 < width 0.9999) "the quantile rises with the level"
+              Expect.isTrue (width 0.95 > -(Normal.quantile 0.025)) "heavier tails than the normal"
 
           testCase "a new row is coded against the fit's reference level; the reference scores no indicator"
           <| fun _ ->
@@ -279,8 +296,10 @@ let tests =
 
               Expect.equal (column "se_pred" response) [ Null; Null ] "no predictive error outside the gaussian family"
 
-              // Poisson fixes its dispersion, so the interval reads the normal row.
-              let z = Option.get (StudentT.quantile 0.95 None)
+              // Poisson fixes its dispersion, so the interval reads the normal quantile at the lower
+              // tail (1 - 0.95) / 2 as a double holds it: 1.9599639845400538 at fifty digits, rounded.
+              let z = -(Normal.quantile ((1.0 - 0.95) / 2.0))
+              Expect.isLessThanOrEqual (ulpsApart z 1.9599639845400538) 2L "z(0.975)"
               let eta = floatOf (column "predicted" link).Head
               let sf = floatOf (column "se_fit" link).Head
               Expect.equal (bits (floatOf (column "upper" link).Head)) (bits (eta + z * sf)) "the normal quantile"
@@ -438,8 +457,13 @@ let tests =
           <| fun _ ->
               let rows = newRows [ 2.5, "red", "north" ]
 
-              run [ Predict(predict ols |> withInterval IntervalKind.Confidence 0.97) ] rows
-              |> refusedWith "the level 0.97 is not tabled"
+              for level, text in [ 1.0, "1"; 0.0, "0"; 1.5, "1.5"; -0.25, "-0.25" ] do
+                  run [ Predict(predict ols |> withInterval IntervalKind.Confidence level) ] rows
+                  |> refusedWith (
+                      "the level "
+                      + text
+                      + " is not a coverage; a level lies strictly between 0 and 1"
+                  )
 
               run [ Predict(predict poisson |> withInterval IntervalKind.Prediction 0.95) ] rows
               |> refusedWith "a prediction interval is stated for the gaussian family only"

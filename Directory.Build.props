@@ -49,7 +49,9 @@
          elementary functions leave Fuaran.Compute.LinearAlgebra for a package of their own,
          Fuaran.Compute.Elementary) advanced the slot to 0.45.0, a DRAFT; Phase 632's change of the same
          class (regression leaves Fuaran.Compute.LinearAlgebra for Fuaran.Compute.Regression) rides it, as
-         do Phase 621's and Phase 633's additions (the pinned generator; Fuaran.Compute.Solvers). -->
+         do Phase 621's and Phase 633's additions (the pinned generator; Fuaran.Compute.Solvers) and
+         Phase 618's breaking change (Fuaran.Compute.Distributions is cut, and a Predict interval's
+         bounds move from the t table's quantile to the pinned function's). -->
     <Version>0.45.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>

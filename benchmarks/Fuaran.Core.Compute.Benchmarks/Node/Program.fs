@@ -479,6 +479,13 @@ let main argv =
     if onlySpecial then
         SpecialBench.run runs
 
+    // `distributions` measures the pinned distribution functions and the candidates they were chosen
+    // against over their sample, and prints it for the reference check (Phase 618).
+    let onlyDistributions = argv.Length > 1 && argv.[1] = "distributions"
+
+    if onlyDistributions then
+        DistributionsBench.run runs
+
     // `typed` as the second argument times the typed family alone (Phase 280).
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
@@ -498,6 +505,7 @@ let main argv =
         && not onlyQr
         && not onlyElementary
         && not onlySpecial
+        && not onlyDistributions
     then
         table
             "Sheet"
@@ -548,7 +556,7 @@ let main argv =
                             (fun (input, pipeline) () -> box (Fuaran.Compute.DataFrame.evalPipeline pipeline input)) ]
                           n ]
 
-    if onlyChain || onlyQr || onlyElementary || onlySpecial then
+    if onlyChain || onlyQr || onlyElementary || onlySpecial || onlyDistributions then
         ()
     elif onlyState then
         stateTable ()

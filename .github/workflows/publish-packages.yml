@@ -1,9 +1,9 @@
 name: publish-packages
 
-# Released distribution channel for this repository's eight packages (Fuaran.Compute.Solvers,
-# Fuaran.Compute.Elementary, Fuaran.Compute.LinearAlgebra, Fuaran.Compute.Regression,
-# Fuaran.Compute.DataFrame, Fuaran.Compute.ColumnOps, Fuaran.Compute.PipelineQuery,
-# Fuaran.Compute.Conformance):
+# Released distribution channel for this repository's nine packages (Fuaran.Compute.Solvers,
+# Fuaran.Compute.Elementary, Fuaran.Compute.Distributions, Fuaran.Compute.LinearAlgebra,
+# Fuaran.Compute.Regression, Fuaran.Compute.DataFrame, Fuaran.Compute.ColumnOps,
+# Fuaran.Compute.PipelineQuery, Fuaran.Compute.Conformance):
 # nuget.org — the public, no-auth-restore channel. Bump <Version> in Directory.Build.props, commit,
 # then tag vX.Y.Z and push the tag to trigger this workflow. A branch push reaches no job here.
 # Re-runs of the same tag are idempotent (--skip-duplicate).
@@ -19,9 +19,10 @@ name: publish-packages
 # scoped to package ids, and the policy for this repository names the `Fuaran.Compute.*` pattern, so
 # an id first packed later is covered without a registration of its own: Fuaran.Compute.LinearAlgebra
 # (Phase 590) first shipped at 0.43.0, and Fuaran.Compute.Elementary (Phase 630),
-# Fuaran.Compute.Regression (Phase 632) and Fuaran.Compute.Solvers (Phase 633) first ship at 0.45.0,
-# under the same policy. A failed NuGet/login (or a push refused for an id) on a tag is a policy that
-# no longer names the pattern, not an authentication fault.
+# Fuaran.Compute.Regression (Phase 632), Fuaran.Compute.Solvers (Phase 633) and
+# Fuaran.Compute.Distributions (Phase 618) first ship at 0.45.0, under the same policy. A failed
+# NuGet/login (or a push refused for an id) on a tag is a policy that no longer names the pattern, not
+# an authentication fault.
 #
 # Phase 404 - a publish is the repository's own gate in Release, and the pack is `--no-build` over
 # THAT output: `verify.ps1 -Configuration Release` builds and runs the whole suite (and the clock leg)

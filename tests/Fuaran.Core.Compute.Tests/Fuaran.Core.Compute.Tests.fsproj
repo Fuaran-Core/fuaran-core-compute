@@ -88,12 +88,18 @@
          LinearAlgebraVectors.fs, whose cells they render through; before LinearAlgebraTests.fs, whose node
          leg compares their document. -->
     <Compile Include="RegressionVectors.fs" />
+    <!-- Phase 618: the distribution vectors (Fable-clean; the same node leg compiles them). After
+         ElementaryVectors.fs, whose float cell they render through; before LinearAlgebraTests.fs, whose
+         node leg compares their document. -->
+    <Compile Include="DistributionsVectors.fs" />
     <Compile Include="LinearAlgebraTests.fs" />
     <Compile Include="RegressionTests.fs" />
     <!-- Phase 633: the suite over Fuaran.Compute.Solvers, and the law that the solvers reproduce the
          regression package's own iterations bit for bit. -->
     <Compile Include="SolversTests.fs" />
     <Compile Include="SolversReproductionTests.fs" />
+    <!-- Phase 618: the suite over Fuaran.Compute.Distributions. -->
+    <Compile Include="DistributionsTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
@@ -129,6 +135,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Fuaran.Compute.Solvers\Fuaran.Compute.Solvers.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
+    <ProjectReference Include="..\..\src\Fuaran.Compute.Distributions\Fuaran.Compute.Distributions.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />

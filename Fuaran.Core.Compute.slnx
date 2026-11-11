@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Fuaran.Compute.Solvers/Fuaran.Compute.Solvers.fsproj" />
     <Project Path="src/Fuaran.Compute.Elementary/Fuaran.Compute.Elementary.fsproj" />
+    <Project Path="src/Fuaran.Compute.Distributions/Fuaran.Compute.Distributions.fsproj" />
     <Project Path="src/Fuaran.Compute.LinearAlgebra/Fuaran.Compute.LinearAlgebra.fsproj" />
     <Project Path="src/Fuaran.Compute.Regression/Fuaran.Compute.Regression.fsproj" />
     <Project Path="src/Fuaran.Compute.DataFrame/Fuaran.Compute.DataFrame.fsproj" />
