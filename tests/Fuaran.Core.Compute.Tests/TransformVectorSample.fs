@@ -309,6 +309,35 @@ module TransformVectorSample =
           "fit-negbin-theta-refused"
           "predict-identity-range-refused" ]
 
+    /// The seeded shapes (Phase 621, `DECISIONS.md` D76), over the seeded table: k-means over the
+    /// four-cluster plane answering its assignments, its centres and its summary with the silhouette
+    /// over three seedings; a grouped, standardised clustering of int, float and decimal features; a
+    /// spend-and-visits profile (a decimal and an int feature, standardised, four seedings); a derived
+    /// feature; rows that coincide, where a cluster left empty is re-seeded; bootstrap replicates of
+    /// int, float and decimal aggregates; a grouped summary with its percentile interval; whole
+    /// clusters drawn; a decimal aggregate's summary; and the refusals by name.
+    let private seededShapeNames =
+        [ "kmeans-plane-assignments"
+          "kmeans-plane-centres"
+          "kmeans-plane-summary-silhouette"
+          "kmeans-grouped-standardised-centres"
+          "kmeans-profile-decimal-assignments"
+          "kmeans-derived-feature-summary"
+          "kmeans-coincident-rows"
+          "bootstrap-replicates"
+          "bootstrap-grouped-summary"
+          "bootstrap-cluster-replicates"
+          "bootstrap-decimal-summary"
+          "kmeans-k-refused"
+          "kmeans-rows-refused"
+          "kmeans-null-feature-refused"
+          "kmeans-no-features-refused"
+          "kmeans-string-feature-refused"
+          "bootstrap-zero-replicates-refused"
+          "bootstrap-null-cluster-refused"
+          "bootstrap-aggregate-refused"
+          "bootstrap-level-refused" ]
+
     /// Every shape after the base draws, in the order the iterations take them.
     let private drawnShapeNames =
         decimalShapeNames
@@ -324,6 +353,7 @@ module TransformVectorSample =
         @ predictShapeNames
         @ fitFamilyShapeNames
         @ glmShapeNames
+        @ seededShapeNames
 
     /// Every shape a vector is rendered for, in the order the iterations take them.
     let shapeNames = baseShapeNames @ drawnShapeNames
@@ -1261,6 +1291,165 @@ module TransformVectorSample =
                | Error e -> "error " + DataFrame.errorString e))
         |> String.concat "\n"
 
+    /// The seeded table (Phase 621): sixteen rows, four about each corner of a square of side ten in
+    /// `(x, y)`, interleaved; two groups of eight (`g`); a label no step reads; an int and a decimal
+    /// measure; the corner as a cluster name (`unit`); and two columns carrying one null each.
+    let seededTable: Table =
+        let rows = 16
+        let corner i = i % 4
+        let jitter i = float ((i * 7) % 5 - 2) / 8.0
+
+        { Schema =
+            [ Field.create "id" IntType
+              Field.create "g" StringType
+              Field.create "label" StringType
+              Field.create "x" FloatType |> Field.withUnit (unitOf "m")
+              Field.create "y" FloatType
+              Field.create "n" IntType
+              Field.create "m" DecimalType
+              Field.create "unit" StringType
+              Field.create "hole" StringType
+              Field.create "gap" FloatType ]
+          Columns =
+            [ KitColumn.create "id" IntType [ for i in 0 .. rows - 1 -> Int i ]
+              KitColumn.create "g" StringType [ for i in 0 .. rows - 1 -> Str(if i < 8 then "a" else "b") ]
+              KitColumn.create "label" StringType [ for i in 0 .. rows - 1 -> Str("row-" + string i) ]
+              KitColumn.create
+                  "x"
+                  FloatType
+                  [ for i in 0 .. rows - 1 -> Float((if corner i % 2 = 1 then 10.0 else 0.0) + jitter i) ]
+              KitColumn.create
+                  "y"
+                  FloatType
+                  [ for i in 0 .. rows - 1 -> Float((if corner i >= 2 then 10.0 else 0.0) + jitter (i + 3)) ]
+              KitColumn.create "n" IntType [ for i in 0 .. rows - 1 -> Int((i * 5) % 7 + 20 * (i % 3)) ]
+              KitColumn.create "m" DecimalType [ for i in 0 .. rows - 1 -> cents (1250 * (i % 3) + (53 * i) % 17 * 10) ]
+              KitColumn.create "unit" StringType [ for i in 0 .. rows - 1 -> Str("u" + string (corner i)) ]
+              KitColumn.create "hole" StringType [ for i in 0 .. rows - 1 -> if i = 5 then Null else Str "h" ]
+              KitColumn.create "gap" FloatType [ for i in 0 .. rows - 1 -> if i = 3 then Null else Float(float i) ] ] }
+
+    /// The seeded shapes (Phase 621, D76) over `seededTable`.
+    let private seededPipelineOf (shape: string) : Transform list =
+        let plane = KMeansSpec.create [ "x", Col "x"; "y", Col "y" ] 4 20261111L
+        let sumN = agg "total" Sum "n"
+        let meanX = agg "mean_x" Mean "x"
+        let resample = BootstrapSpec.create [ sumN; meanX ] 6 7L
+
+        match shape with
+        | "kmeans-plane-assignments" -> [ KMeans plane ]
+        | "kmeans-plane-centres" ->
+            [ KMeans
+                  { plane with
+                      Output = KMeansOutput.Centres } ]
+        | "kmeans-plane-summary-silhouette" ->
+            [ KMeans
+                  { plane with
+                      Restarts = 3
+                      Silhouette = true
+                      Output = KMeansOutput.Summary } ]
+        | "kmeans-grouped-standardised-centres" ->
+            [ KMeans
+                  { plane with
+                      GroupBy = [ "g" ]
+                      Features = [ "x", Col "x"; "y", Col "y"; "n", Col "n"; "m", Col "m" ]
+                      Standardise = true
+                      K = Slot.Lit 2
+                      Output = KMeansOutput.Centres } ]
+        | "kmeans-profile-decimal-assignments" ->
+            [ KMeans
+                  { plane with
+                      Features = [ "spend", Col "m"; "visits", Col "n" ]
+                      Standardise = true
+                      K = Slot.Lit 3
+                      Restarts = 4
+                      Seed = Slot.Lit -9007199254740993L } ]
+        | "kmeans-derived-feature-summary" ->
+            [ KMeans
+                  { plane with
+                      Features = [ "r2", Binary(Add, Binary(Mul, Col "x", Col "x"), Binary(Mul, Col "y", Col "y")) ]
+                      K = Slot.Lit 2
+                      Output = KMeansOutput.Summary } ]
+        | "kmeans-coincident-rows" ->
+            [ Derive("x", Lit(Float 2.5))
+              KMeans
+                  { plane with
+                      Features = [ "x", Col "x" ]
+                      K = Slot.Lit 3 } ]
+        | "bootstrap-replicates" ->
+            [ Bootstrap
+                  { resample with
+                      Aggregates = [ sumN; meanX; agg "top" Max "m"; agg "rows" Count "n" ] } ]
+        | "bootstrap-grouped-summary" ->
+            [ Bootstrap
+                  { resample with
+                      GroupBy = [ "g" ]
+                      Replicates = Slot.Lit 30
+                      Level = Some 0.9
+                      Output = BootstrapOutput.Summary } ]
+        | "bootstrap-cluster-replicates" ->
+            [ Bootstrap
+                  { resample with
+                      Cluster = Some "unit"
+                      Replicates = Slot.Lit 5
+                      Aggregates = [ sumN; agg "rows" Count "n" ] } ]
+        | "bootstrap-decimal-summary" ->
+            [ Bootstrap
+                  { resample with
+                      Replicates = Slot.Lit 20
+                      Aggregates = [ agg "spend" Sum "m" ]
+                      Level = Some 0.5
+                      Output = BootstrapOutput.Summary } ]
+        | "kmeans-k-refused" -> [ KMeans { plane with K = Slot.Lit 1 } ]
+        | "kmeans-rows-refused" ->
+            [ KMeans
+                  { plane with
+                      GroupBy = [ "g" ]
+                      K = Slot.Lit 9 } ]
+        | "kmeans-null-feature-refused" ->
+            [ KMeans
+                  { plane with
+                      Features = [ "gap", Col "gap" ] } ]
+        | "kmeans-no-features-refused" -> [ KMeans { plane with Features = [] } ]
+        | "kmeans-string-feature-refused" ->
+            [ KMeans
+                  { plane with
+                      Features = [ "label", Col "label" ] } ]
+        | "bootstrap-zero-replicates-refused" ->
+            [ Bootstrap
+                  { resample with
+                      Replicates = Slot.Lit 0 } ]
+        | "bootstrap-null-cluster-refused" -> [ Bootstrap { resample with Cluster = Some "hole" } ]
+        | "bootstrap-aggregate-refused" ->
+            [ Bootstrap
+                  { resample with
+                      Aggregates = [ agg "s" Sum "label" ] } ]
+        | _ -> [ Bootstrap { resample with Level = Some 1.0 } ]
+
+    /// Every seeded shape's answer over `seededTable`, one line each, as `fitRender` renders the fit
+    /// shapes': the node leg prints it under Fable and the suite holds it equal to this host's, line for
+    /// line (Phase 621) — every draw, assignment, centre, replicate and interval, byte for byte. Each
+    /// line also carries the pipeline's wire string and whether it decodes to the pipeline it encodes,
+    /// so the seed's digit-string codec is held on that host too.
+    let seededRender () : string =
+        seededShapeNames
+        |> List.map (fun shape ->
+            let pipeline = seededPipelineOf shape
+            let wire = DataFrameCodec.encodePipeline pipeline
+
+            shape
+            + " "
+            + wire
+            + (if DataFrameCodec.decodePipeline wire = Ok pipeline then
+                   " round-trips "
+               else
+                   " DOES-NOT-ROUND-TRIP ")
+            + (match DataFrame.evalPipeline pipeline seededTable with
+               | Ok t -> ColumnCodec.encode (Embedded t)
+               | Error e -> "error " + DataFrame.errorString e))
+        |> String.concat
+            "
+"
+
     let private pipelineOf (k: int) : Transform list =
         match k with
         | 0 -> [ Filter(Binary(Gt, Col "v", Lit(Int 0))) ]
@@ -1333,6 +1522,8 @@ module TransformVectorSample =
                 (decimalTable rows offset, functionPipelineOf shape), r2
             elif shape.StartsWith "fit-" || shape.StartsWith "predict-" then
                 (fitTable, fitPipelineOf shape), r2
+            elif shape.StartsWith "kmeans-" || shape.StartsWith "bootstrap-" then
+                (seededTable, seededPipelineOf shape), r2
             else
                 (decimalTable rows offset, decimalPipelineOf shape rows offset), r2
 

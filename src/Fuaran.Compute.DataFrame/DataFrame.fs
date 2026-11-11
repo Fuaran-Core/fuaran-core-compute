@@ -482,6 +482,165 @@ type FnDef =
       Params: FnParam list
       Body: ColExpr }
 
+/// The slot bindings a spec's `substituteSlots` shares: an int slot and (Phase 621) a seed slot, each
+/// bound from an int cell of the env where it names a param one binds.
+module internal SlotBinding =
+
+    let bindInt (env: Map<string, Cell>) (s: Slot<int>) : Slot<int> =
+        match s with
+        | Slot.Param n ->
+            match Map.tryFind n env with
+            | Some(Int v) -> Slot.Lit v
+            | _ -> s
+        | Slot.Lit _ -> s
+
+    let bindSeed (env: Map<string, Cell>) (s: Slot<int64>) : Slot<int64> =
+        match s with
+        | Slot.Param n ->
+            match Map.tryFind n env with
+            | Some(Int v) -> Slot.Lit(int64 v)
+            | _ -> s
+        | Slot.Lit _ -> s
+
+/// Which table a `KMeans` step answers (Phase 621, `DECISIONS.md` D76). Every one has a closed
+/// schema, decided before any row is read.
+[<RequireQualifiedAccess>]
+type KMeansOutput =
+    /// The step's input rows, in order, with a `cluster` column appended: the row's cluster, numbered
+    /// from one in the order the clusters were seeded.
+    | Assignments
+    /// One row per group and cluster: the group keys, `cluster`, one column per feature holding the
+    /// centre's coordinate (in the space the clustering ran in), `size` and `withinSS`.
+    | Centres
+    /// One row per group: the group keys, `k`, `restarts`, `iterations`, `withinSS` (the total),
+    /// `converged`, `seed`, and `silhouette` where the spec asks for it.
+    | Summary
+
+/// A clustering a pipeline computes (Phase 621, D76): k-means over named features, seeded from the
+/// pinned generator `Fuaran.Compute.Elementary.Rng`, so the same spec over the same rows answers the
+/// same bytes on every host. One clustering per group of `GroupBy` (none: one over every row); group
+/// `g`, in first-appearance order, draws stream `g` of the seed. The types of this phase's two steps
+/// stand before `FitSpec` so a record written or read by field name alone (`GroupBy`, `Output`) still
+/// resolves to the fit's, as it did before they existed.
+type KMeansSpec =
+    {
+        /// The grouping columns; one clustering per group, groups in first-appearance order.
+        GroupBy: string list
+        /// The named features, each numeric (int, float or decimal, read as its float). A null or a
+        /// non-finite feature is refused by name: the pipeline filters first.
+        Features: (string * ColExpr) list
+        /// Whether each feature is centred and scaled within its group — `(x − mean) / sd`, `sd` over
+        /// `n − 1`, a constant feature answering zero — before any distance is read.
+        Standardise: bool
+        /// The number of clusters: at least two, at most the group's rows.
+        K: Slot<int>
+        /// How many seedings are run, each to convergence; the lowest total within-cluster sum of
+        /// squares is answered, a tie to the earliest. At least one.
+        Restarts: int
+        /// The most assignment passes one seeding runs. At least one.
+        MaxIterations: int
+        /// The seed. REQUIRED, with no default, so a run is replayable by construction. A param binds
+        /// an int cell.
+        Seed: Slot<int64>
+        /// Whether `Summary` states the mean silhouette width, which reads every pair of a group's rows.
+        Silhouette: bool
+        Output: KMeansOutput
+    }
+
+/// Construction and derivations of a `KMeansSpec` (Phase 621).
+[<RequireQualifiedAccess>]
+module KMeansSpec =
+
+    /// `k` clusters of `features` from `seed`: ungrouped, unstandardised, one seeding of at most 100
+    /// passes, answering the assignments.
+    let create (features: (string * ColExpr) list) (k: int) (seed: int64) : KMeansSpec =
+        { GroupBy = []
+          Features = features
+          Standardise = false
+          K = Slot.Lit k
+          Restarts = 1
+          MaxIterations = 100
+          Seed = Slot.Lit seed
+          Silhouette = false
+          Output = KMeansOutput.Assignments }
+
+    /// Every expression the spec carries: the features, in order.
+    let exprs (spec: KMeansSpec) : ColExpr list = spec.Features |> List.map snd
+
+    /// The spec with `f` applied to every expression it carries.
+    let mapExprs (f: ColExpr -> ColExpr) (spec: KMeansSpec) : KMeansSpec =
+        { spec with
+            Features = spec.Features |> List.map (fun (n, e) -> n, f e) }
+
+    /// The params the spec's slots name: `K`, then the seed.
+    let slotParams (spec: KMeansSpec) : string list =
+        Slot.paramName spec.K @ Slot.paramName spec.Seed
+
+    /// The spec with every slot param bound to an int cell in `env` replaced by its literal.
+    let substituteSlots (env: Map<string, Cell>) (spec: KMeansSpec) : KMeansSpec =
+        { spec with
+            K = SlotBinding.bindInt env spec.K
+            Seed = SlotBinding.bindSeed env spec.Seed }
+
+/// Which table a `Bootstrap` step answers (Phase 621, `DECISIONS.md` D76).
+[<RequireQualifiedAccess>]
+type BootstrapOutput =
+    /// One row per group and replicate: the group keys, `replicate` (from one), then one column per
+    /// aggregate, typed as a `GroupBy` would type it.
+    | Replicates
+    /// One row per group and aggregate: the group keys, `aggregate`, `estimate` (the aggregate over
+    /// the group's own rows), `std_error` (the standard deviation of the replicates) and, where the
+    /// spec states a level, `lower` and `upper`, the percentile interval.
+    | Summary
+
+/// A resampling a pipeline computes (Phase 621, D76): per group and replicate, as many draws with
+/// replacement as the group has rows (or, with `Cluster`, as it has clusters, each drawn whole), then
+/// the aggregates over the draw. Seeded from the pinned generator, group `g` drawing stream `g` of
+/// the seed, so a replicate is the same rows on every host.
+type BootstrapSpec =
+    {
+        /// The grouping columns; one resampling per group, groups in first-appearance order.
+        GroupBy: string list
+        /// The column whose values name the units drawn, if any: every row of a drawn value is in the
+        /// replicate. A null in it is refused by name.
+        Cluster: string option
+        /// The number of replicates: at least one.
+        Replicates: Slot<int>
+        /// The seed. REQUIRED, with no default. A param binds an int cell.
+        Seed: Slot<int64>
+        /// The aggregates computed over every replicate: `GroupBy`'s vocabulary.
+        Aggregates: Agg list
+        /// The two-sided coverage of `Summary`'s percentile interval, strictly between zero and one, if
+        /// it states one.
+        Level: float option
+        Output: BootstrapOutput
+    }
+
+/// Construction and derivations of a `BootstrapSpec` (Phase 621).
+[<RequireQualifiedAccess>]
+module BootstrapSpec =
+
+    /// `replicates` resamples of every row from `seed`, ungrouped, answering each replicate's
+    /// `aggregates`.
+    let create (aggregates: Agg list) (replicates: int) (seed: int64) : BootstrapSpec =
+        { GroupBy = []
+          Cluster = None
+          Replicates = Slot.Lit replicates
+          Seed = Slot.Lit seed
+          Aggregates = aggregates
+          Level = None
+          Output = BootstrapOutput.Replicates }
+
+    /// The params the spec's slots name: the replicate count, then the seed.
+    let slotParams (spec: BootstrapSpec) : string list =
+        Slot.paramName spec.Replicates @ Slot.paramName spec.Seed
+
+    /// The spec with every slot param bound to an int cell in `env` replaced by its literal.
+    let substituteSlots (env: Map<string, Cell>) (spec: BootstrapSpec) : BootstrapSpec =
+        { spec with
+            Replicates = SlotBinding.bindInt env spec.Replicates
+            Seed = SlotBinding.bindSeed env spec.Seed }
+
 /// The error distribution a `Fit` assumes (Phase 592, `DECISIONS.md` D5 of the accepted plan): one
 /// verb, the family and the link as data. `Gaussian` under `FitLink.Identity` is ordinary least
 /// squares; every other admitted pair is a generalised linear model fitted by IRLS through
@@ -657,18 +816,10 @@ module FitSpec =
                 | _ -> s
             | Slot.Lit _ -> s
 
-        let bindInt (s: Slot<int>) =
-            match s with
-            | Slot.Param n ->
-                match Map.tryFind n env with
-                | Some(Int v) -> Slot.Lit v
-                | _ -> s
-            | Slot.Lit _ -> s
-
         { spec with
             Ridge = spec.Ridge |> Option.map bindFloat
             Control =
-                { MaxIter = bindInt spec.Control.MaxIter
+                { MaxIter = SlotBinding.bindInt env spec.Control.MaxIter
                   Tol = bindFloat spec.Control.Tol } }
 
 /// The scale a `Predict` answers on (Phase 597).
@@ -814,6 +965,17 @@ type Transform =
     /// "coefficients","source":…},"scale":"link"|"response","interval":{"kind":"confidence"|
     /// "prediction","level":<slot>}?}`.
     | Predict of PredictSpec
+    /// Phase 621 — cluster the step's input rows (`DECISIONS.md` D76): k-means, one clustering per
+    /// group, seeded from the pinned generator, answering the table `KMeansOutput` names. Wire:
+    /// `{"$type":"kmeans","groupBy":[…],"features":[{"name":…,"expr":…},…],"standardise":…,
+    /// "k":<slot>,"restarts":…,"maxIterations":…,"seed":<slot>,"silhouette":…,"output":…}`, a literal
+    /// seed written as its decimal digits in a string.
+    | KMeans of KMeansSpec
+    /// Phase 621 — resample the step's input rows (D76): per group and replicate, a draw with
+    /// replacement and the aggregates over it, answering the table `BootstrapOutput` names. Wire:
+    /// `{"$type":"bootstrap","groupBy":[…],"cluster":…?,"replicates":<slot>,"seed":<slot>,
+    /// "aggregates":[<agg>,…],"level":…?,"output":…}`.
+    | Bootstrap of BootstrapSpec
 
 // ---------------------------------------------------------------------------
 //  Phase 269 — the planner's report vocabulary. The planner itself is `Plan` (Plan.fs), over the
@@ -1093,6 +1255,11 @@ module Transform =
         | Predict spec ->
             (FitSpec.exprs spec.Fit |> List.collect ColExpr.paramNames)
             @ PredictSpec.slotParams spec
+        // Phase 621: the features' params, then the slots' (`k` and the seed; the replicates and the seed).
+        | KMeans spec ->
+            (KMeansSpec.exprs spec |> List.collect ColExpr.paramNames)
+            @ KMeansSpec.slotParams spec
+        | Bootstrap spec -> BootstrapSpec.slotParams spec
         | Project _
         | GroupBy _
         | Join _
@@ -1162,6 +1329,13 @@ module Transform =
                     |> PredictSpec.mapExprs (ColExpr.substitute env)
                     |> PredictSpec.substituteSlots env
                 )
+            | KMeans spec ->
+                KMeans(
+                    spec
+                    |> KMeansSpec.mapExprs (ColExpr.substitute env)
+                    |> KMeansSpec.substituteSlots env
+                )
+            | Bootstrap spec -> Bootstrap(BootstrapSpec.substituteSlots env spec)
             | other -> other)
 
     /// Substitute every LIST param bound in `listEnv` through the whole pipeline (Phase 91) —
@@ -1178,6 +1352,7 @@ module Transform =
                         Body = ColExpr.substituteListParams listEnv fd.Body }
             | Fit spec -> Fit(FitSpec.mapExprs (ColExpr.substituteListParams listEnv) spec)
             | Predict spec -> Predict(PredictSpec.mapExprs (ColExpr.substituteListParams listEnv) spec)
+            | KMeans spec -> KMeans(KMeansSpec.mapExprs (ColExpr.substituteListParams listEnv) spec)
             | other -> other)
 
     /// Pin the clock through the whole pipeline (Phase 125): every `ColExpr.Now` becomes the
@@ -1199,6 +1374,7 @@ module Transform =
                         Body = ColExpr.substituteWithPinned pinned fd.Body }
             | Fit spec -> Fit(FitSpec.mapExprs (ColExpr.substituteWithPinned pinned) spec)
             | Predict spec -> Predict(PredictSpec.mapExprs (ColExpr.substituteWithPinned pinned) spec)
+            | KMeans spec -> KMeans(KMeansSpec.mapExprs (ColExpr.substituteWithPinned pinned) spec)
             | other -> other)
 
     /// The literal `Limit` — `Transform.limit 10 0` for the common case, so a call site that never
@@ -1221,6 +1397,8 @@ module Transform =
             | Limit(n, offset) -> Slot.paramName n @ Slot.paramName offset
             | Fit spec -> FitSpec.slotParams spec
             | Predict spec -> PredictSpec.slotParams spec
+            | KMeans spec -> KMeansSpec.slotParams spec
+            | Bootstrap spec -> BootstrapSpec.slotParams spec
             | _ -> [])
         |> List.distinct
 
@@ -1235,6 +1413,7 @@ module Transform =
             | Define fd -> ColExpr.usesNow fd.Body
             | Fit spec -> FitSpec.exprs spec |> List.exists ColExpr.usesNow
             | Predict spec -> FitSpec.exprs spec.Fit |> List.exists ColExpr.usesNow
+            | KMeans spec -> KMeansSpec.exprs spec |> List.exists ColExpr.usesNow
             | _ -> false)
 
 /// The reference evaluator's recoverable error envelope — names the failure, enumerates the
@@ -1299,6 +1478,16 @@ type EvalError =
     /// IRLS fit that did not converge (Phase 595). A mean that leaves its range is the separation
     /// `OverflowError`.
     | FitError of detail: string
+    /// A `KMeans` refused (Phase 621, D76): a spec that cannot be clustered as written (`k` below two,
+    /// no feature, a feature named twice, a restart or pass bound below one, an output column that
+    /// already exists), a row whose feature is null or not finite, naming the step's input row, or a
+    /// group with fewer rows than `k`, naming the group.
+    | KMeansError of detail: string
+    /// A `Bootstrap` refused (Phase 621, D76): a spec that cannot be resampled as written (no
+    /// replicate, no aggregate, a level outside `(0, 1)`, an output name stated twice), a null in the
+    /// cluster column, naming the row, or a replicate whose aggregate a summary cannot state, naming
+    /// the group, the replicate and the aggregate.
+    | BootstrapError of detail: string
 
 /// A curve prepared once per step (Phase 596, `DECISIONS.md` D48): the knots as arrays, and for a
 /// monotone cubic the tangent at every knot under the pinned slope rule.
@@ -2179,6 +2368,7 @@ module FnDef =
                 // Phase 592: a fit's terms and offset are expressions of the step like any other.
                 | Fit spec -> FitSpec.exprs spec |> List.map (fun e -> "fit", e)
                 | Predict spec -> FitSpec.exprs spec.Fit |> List.map (fun e -> "predict", e)
+                | KMeans spec -> KMeansSpec.exprs spec |> List.map (fun e -> "kmeans", e)
                 | _ -> [])
 
 
@@ -2215,6 +2405,7 @@ module FnDef =
                         | Derive(name, e) -> Some(Derive(name, inline' defs Map.empty e))
                         | Fit spec -> Some(Fit(FitSpec.mapExprs (inline' defs Map.empty) spec))
                         | Predict spec -> Some(Predict(PredictSpec.mapExprs (inline' defs Map.empty) spec))
+                        | KMeans spec -> Some(KMeans(KMeansSpec.mapExprs (inline' defs Map.empty) spec))
                         | other -> Some other))
 
 /// A description of what changed in a source table between a prior evaluation and now (Phase 34) — the
@@ -5218,7 +5409,10 @@ module DataFrame =
             // Phase 592: a fit reaches the factorization, whose refusals the schema cannot vouch for.
             | Fit _
             // Phase 597: and so does a prediction, which also reads a model source.
-            | Predict _ -> false
+            | Predict _
+            // Phase 621: a seeded step refuses by row and by group, which the schema cannot vouch for.
+            | KMeans _
+            | Bootstrap _ -> false
             | GroupBy _
             | Join _
             | Window _
@@ -5263,6 +5457,10 @@ module DataFrame =
                 | FitOutput.Residuals -> None
             // Phase 597: a prediction hands every input column on.
             | Predict _
+            // Phase 621: a seeded step is a barrier — no column is pruned and no filter moved across a
+            // step whose draws are counted against the rows it is handed.
+            | KMeans _
+            | Bootstrap _
             | Join _
             | Window _
             | Unpivot _
@@ -5364,6 +5562,8 @@ module DataFrame =
             | Define _ -> "define"
             | Fit _ -> "fit"
             | Predict _ -> "predict"
+            | KMeans _ -> "kmeans"
+            | Bootstrap _ -> "bootstrap"
 
         // ---- reordering: a Filter bubbles ahead of the Sort / Derive it follows ----
 
@@ -12094,6 +12294,46 @@ module DataFrame =
         | NumericTerm of name: string * cells: Cell[] * unit: UnitOfMeasure option
         | CategoricalTerm of name: string * cells: Cell[]
 
+    /// The groups of `rows` (logical rows of the frame, ascending) under the key columns `keys`, in
+    /// first-appearance order (`GroupBy`'s rule): each group's rows in order, and its key cells. Every
+    /// key is a column of the frame.
+    let private groupedRows (f: Frame) (keys: string list) (rows: int[]) : int[][] * Cell[][] =
+        let phys = Frame.physical f
+
+        let keyIdx =
+            keys |> List.map (fun key -> colIndex f.Cols key |> Option.get) |> List.toArray
+
+        let keyVecs = keyIdx |> Array.map (fun ci -> f.Vecs[ci])
+
+        let slotOf, _ =
+            keySlots Kernels.oneThread keyVecs (rows |> Array.map (fun i -> phys[i]))
+
+        let groups = if rows.Length = 0 then 0 else (Array.max slotOf + 1)
+        let members = Array.init groups (fun _ -> ResizeArray<int>())
+
+        for u in 0 .. rows.Length - 1 do
+            members[slotOf[u]].Add rows[u]
+
+        let members = members |> Array.map (fun m -> m.ToArray())
+
+        members,
+        members
+        |> Array.map (fun m -> keyIdx |> Array.map (fun ci -> Vec.cellAt f.Vecs[ci] phys[m[0]]))
+
+    /// The fields of the key columns `keys`, in key order.
+    let private keyFields (f: Frame) (keys: string list) : Field list =
+        keys |> List.map (fun key -> f.Cols |> List.find (fun fd -> fd.Name = key))
+
+    /// A frame of `cols` holding `cells`, one array per row.
+    let private frameOfRows (cols: Field list) (cells: Cell[][]) : Frame =
+        { Cols = cols
+          Vecs =
+            cols
+            |> List.mapi (fun c fd -> Vec.pack fd.Type (cells |> Array.map (fun row -> row[c])))
+            |> List.toArray
+          Sel = None
+          Count = cells.Length }
+
     /// Assemble the design (D53 items 3 to 6). The checks run in this order, each refusal naming what
     /// it refuses: the response column, the group keys, the weights column, the appended output's
     /// name, then each term, then the offset, then the rows.
@@ -12388,33 +12628,7 @@ module DataFrame =
                                             // Groups over the rows in the design, in first-appearance
                                             // order (`GroupBy`'s rule).
                                             let usedRows = Array.init n id |> Array.filter (fun i -> used[i])
-
-                                            let keyIdx =
-                                                spec.GroupBy
-                                                |> List.map (fun key -> colIndex f.Cols key |> Option.get)
-                                                |> List.toArray
-
-                                            let keyVecs = keyIdx |> Array.map (fun ci -> f.Vecs[ci])
-
-                                            let slotOf, _ =
-                                                keySlots
-                                                    Kernels.oneThread
-                                                    keyVecs
-                                                    (usedRows |> Array.map (fun i -> phys[i]))
-
-                                            let groups = if usedRows.Length = 0 then 0 else (Array.max slotOf + 1)
-                                            let members = Array.init groups (fun _ -> ResizeArray<int>())
-
-                                            for u in 0 .. usedRows.Length - 1 do
-                                                members[slotOf[u]].Add usedRows[u]
-
-                                            let members = members |> Array.map (fun m -> m.ToArray())
-
-                                            let keyCells =
-                                                members
-                                                |> Array.map (fun m ->
-                                                    keyIdx
-                                                    |> Array.map (fun ci -> Vec.cellAt f.Vecs[ci] phys[m[0]]))
+                                            let members, keyCells = groupedRows f spec.GroupBy usedRows
 
                                             Ok
                                                 { Names = names
@@ -12431,10 +12645,7 @@ module DataFrame =
                                                   YUnit = yUnit
                                                   Members = members
                                                   KeyCells = keyCells
-                                                  KeyCols =
-                                                    spec.GroupBy
-                                                    |> List.map (fun key ->
-                                                        f.Cols |> List.find (fun fd -> fd.Name = key))
+                                                  KeyCols = keyFields f spec.GroupBy
                                                   Coding = coding })))))
 
     /// The data accumulator of one group: its member rows from `from` on folded onto `acc`, in member
@@ -13006,15 +13217,6 @@ module DataFrame =
                         | Some u -> Str(Unit.render u)
                         | None -> Null
 
-                    let table (cols: Field list) (cells: Cell[][]) : Frame =
-                        { Cols = cols
-                          Vecs =
-                            cols
-                            |> List.mapi (fun c fd -> Vec.pack fd.Type (cells |> Array.map (fun row -> row[c])))
-                            |> List.toArray
-                          Sel = None
-                          Count = cells.Length }
-
                     let units = fitStatUnits spec d.YUnit
 
                     let out =
@@ -13039,7 +13241,7 @@ module DataFrame =
                                                   floatCell fits[g].T[j]
                                                   unitCell d.CoefUnits[j] |] |]
 
-                            table cols cells
+                            frameOfRows cols cells
                         | FitOutput.Summary ->
                             let devType = if units.DecimalDeviance then fitCellType d else FloatType
 
@@ -13086,7 +13288,7 @@ module DataFrame =
                                              else
                                                  [||])))
 
-                            table cols cells
+                            frameOfRows cols cells
                         | FitOutput.Fitted
                         | FitOutput.Residuals ->
                             let name = fitAppendedColumn spec.Output |> Option.get
@@ -13742,6 +13944,747 @@ module DataFrame =
                     evalSource resolve source
                     |> Result.bind (fun t -> predictFromCoefficients k env f spec (Frame.ofTable t)))
 
+    // -----------------------------------------------------------------------------------------
+    //  Phase 621 — the seeded steps, `KMeans` and `Bootstrap` (`DECISIONS.md` D76). Every draw is
+    //  `Fuaran.Compute.Elementary.Rng`'s, group `g` (first-appearance order) reading stream `g` of
+    //  the step's seed; every sum is a left-to-right fold in row order and every distance is formed
+    //  with `+ − ×` alone, so a step answers the same bytes on every host.
+    // -----------------------------------------------------------------------------------------
+
+    /// The wire spelling of a k-means output.
+    let internal kmeansOutputTag (o: KMeansOutput) : string =
+        match o with
+        | KMeansOutput.Assignments -> "assignments"
+        | KMeansOutput.Centres -> "centres"
+        | KMeansOutput.Summary -> "summary"
+
+    /// The wire spelling of a bootstrap output.
+    let internal bootstrapOutputTag (o: BootstrapOutput) : string =
+        match o with
+        | BootstrapOutput.Replicates -> "replicates"
+        | BootstrapOutput.Summary -> "summary"
+
+    /// The column `KMeansOutput.Assignments` appends.
+    let internal kmeansClusterColumn = "cluster"
+
+    /// The columns a `KMeans` table states after its group keys, in order (`Assignments` appends the
+    /// first to its input and states no other).
+    let internal kmeansColumns (spec: KMeansSpec) : (string * ColumnType) list =
+        match spec.Output with
+        | KMeansOutput.Assignments -> [ kmeansClusterColumn, IntType ]
+        | KMeansOutput.Centres ->
+            [ kmeansClusterColumn, IntType ]
+            @ (spec.Features |> List.map (fun (name, _) -> name, FloatType))
+            @ [ "size", IntType; "withinSS", FloatType ]
+        | KMeansOutput.Summary ->
+            [ "k", IntType
+              "restarts", IntType
+              "iterations", IntType
+              "withinSS", FloatType
+              "converged", BoolType
+              "seed", DecimalType ]
+            @ (if spec.Silhouette then [ "silhouette", FloatType ] else [])
+
+    /// The columns a `Bootstrap` `Summary` states after its group keys, in order.
+    let internal bootstrapSummaryColumns (spec: BootstrapSpec) : (string * ColumnType) list =
+        [ "aggregate", StringType; "estimate", FloatType; "std_error", FloatType ]
+        @ (if Option.isSome spec.Level then
+               [ "lower", FloatType; "upper", FloatType ]
+           else
+               [])
+
+    /// A seed slot: its literal, or the int cell its param is bound to.
+    let private resolveSeedSlot (env: Map<string, Cell>) (slot: string) (s: Slot<int64>) : Result<int64, EvalError> =
+        match s with
+        | Slot.Lit v -> Ok v
+        | Slot.Param n -> resolveIntSlot env slot (Slot.Param n) |> Result.map int64
+
+    /// The first name a table would state twice, if any.
+    let private namedTwice (names: string list) : string option =
+        names |> List.countBy id |> List.tryFind (fun (_, c) -> c > 1) |> Option.map fst
+
+    /// The squared Euclidean distance between row `i` of `a` and row `j` of `b`, `p` coordinates
+    /// each, summed left to right.
+    let private squaredDistance (a: float[]) (i: int) (b: float[]) (j: int) (p: int) : float =
+        let mutable s = 0.0
+
+        for d in 0 .. p - 1 do
+            let t = a[i * p + d] - b[j * p + d]
+            s <- s + t * t
+
+        s
+
+    /// One seeding of k-means run to its end.
+    type private KMeansRun =
+        {
+            /// Each row's cluster, from zero in seed order.
+            Assign: int[]
+            /// Row-major, `p` per cluster.
+            Centres: float[]
+            Sizes: int[]
+            Within: float[]
+            Total: float
+            Iterations: int
+            Converged: bool
+        }
+
+    /// One seeding over the `n` rows of `x` (row-major, `p` each), D76's pinned order. k-means++: the
+    /// first centre is row `below n`; each later one is drawn with probability proportional to its
+    /// squared distance from the nearest centre chosen so far — the first row whose running sum of
+    /// those distances exceeds `uniform53 · total` — and where every row coincides with a centre, the
+    /// lowest row that is not yet a seed, with no draw. Lloyd: every row to its nearest centre, a tie
+    /// to the lowest cluster; a cluster left empty takes the row farthest from its own centre among
+    /// the clusters that keep another row (a tie to the lowest row), in cluster order; a pass that
+    /// leaves every row where the last pass left it has converged; otherwise each centre becomes its
+    /// rows' mean, summed in row order.
+    let private kmeansOnce (x: float[]) (n: int) (p: int) (k: int) (maxIterations: int) (rng: Rng.Stream) : KMeansRun =
+        let centres: float[] = Array.zeroCreate (k * p)
+        let seeded: bool[] = Array.zeroCreate n
+        let nearest = Array.create n System.Double.PositiveInfinity
+
+        let seedWith (c: int) (row: int) =
+            seeded[row] <- true
+
+            for d in 0 .. p - 1 do
+                centres[c * p + d] <- x[row * p + d]
+
+        seedWith 0 (Rng.below rng n)
+
+        for c in 1 .. k - 1 do
+            let mutable total = 0.0
+
+            for i in 0 .. n - 1 do
+                let d = squaredDistance x i centres (c - 1) p
+
+                if d < nearest[i] then
+                    nearest[i] <- d
+
+                total <- total + nearest[i]
+
+            let mutable pick = -1
+
+            if total > 0.0 then
+                let r = Rng.uniform53 rng * total
+                let mutable cum = 0.0
+                let mutable i = 0
+
+                while pick < 0 && i < n do
+                    cum <- cum + nearest[i]
+
+                    if cum > r then pick <- i else i <- i + 1
+
+                // A product that rounded up to the total itself: the last row off a centre.
+                if pick < 0 then
+                    let mutable j = n - 1
+
+                    while pick < 0 && j >= 0 do
+                        if nearest[j] > 0.0 then pick <- j else j <- j - 1
+
+            if pick < 0 then
+                let mutable i = 0
+
+                while pick < 0 do
+                    if seeded[i] then i <- i + 1 else pick <- i
+
+            seedWith c pick
+
+        let assign = Array.create n -1
+        let next: int[] = Array.zeroCreate n
+        let dist: float[] = Array.zeroCreate n
+        let sizes: int[] = Array.zeroCreate k
+        let mutable iterations = 0
+        let mutable converged = false
+        let mutable running = true
+
+        while running do
+            for c in 0 .. k - 1 do
+                sizes[c] <- 0
+
+            for i in 0 .. n - 1 do
+                let mutable best = 0
+                let mutable bestD = squaredDistance x i centres 0 p
+
+                for c in 1 .. k - 1 do
+                    let d = squaredDistance x i centres c p
+
+                    if d < bestD then
+                        best <- c
+                        bestD <- d
+
+                next[i] <- best
+                dist[i] <- bestD
+                sizes[best] <- sizes[best] + 1
+
+            for c in 0 .. k - 1 do
+                if sizes[c] = 0 then
+                    let mutable far = -1
+                    let mutable farD = -1.0
+
+                    for i in 0 .. n - 1 do
+                        if sizes[next[i]] > 1 && dist[i] > farD then
+                            far <- i
+                            farD <- dist[i]
+
+                    // `k ≤ n`, so a cluster is empty only while another holds two rows.
+                    sizes[next[far]] <- sizes[next[far]] - 1
+                    next[far] <- c
+                    dist[far] <- 0.0
+                    sizes[c] <- 1
+
+            iterations <- iterations + 1
+            let mutable same = true
+
+            for i in 0 .. n - 1 do
+                if next[i] <> assign[i] then
+                    same <- false
+
+                assign[i] <- next[i]
+
+            if same then
+                converged <- true
+                running <- false
+            else
+                for j in 0 .. k * p - 1 do
+                    centres[j] <- 0.0
+
+                for i in 0 .. n - 1 do
+                    let c = assign[i]
+
+                    for d in 0 .. p - 1 do
+                        centres[c * p + d] <- centres[c * p + d] + x[i * p + d]
+
+                for c in 0 .. k - 1 do
+                    let size = float sizes[c]
+
+                    for d in 0 .. p - 1 do
+                        centres[c * p + d] <- centres[c * p + d] / size
+
+                if iterations >= maxIterations then
+                    running <- false
+
+        let within: float[] = Array.zeroCreate k
+
+        for i in 0 .. n - 1 do
+            let c = assign[i]
+            within[c] <- within[c] + squaredDistance x i centres c p
+
+        let mutable total = 0.0
+
+        for c in 0 .. k - 1 do
+            total <- total + within[c]
+
+        { Assign = assign
+          Centres = centres
+          Sizes = Array.copy sizes
+          Within = within
+          Total = total
+          Iterations = iterations
+          Converged = converged }
+
+    /// The mean silhouette width of a clustering (Rousseeuw 1987) over Euclidean distances: per row,
+    /// `a` its mean distance to its own cluster's other rows and `b` the least mean distance to
+    /// another cluster's rows, `(b − a) / max(a, b)`, zero for a row alone in its cluster or where
+    /// both are zero; the rows' widths summed in row order over `n`.
+    let private silhouette (x: float[]) (n: int) (p: int) (k: int) (run: KMeansRun) : float =
+        let sums: float[] = Array.zeroCreate k
+        let mutable total = 0.0
+
+        for i in 0 .. n - 1 do
+            for c in 0 .. k - 1 do
+                sums[c] <- 0.0
+
+            for j in 0 .. n - 1 do
+                if j <> i then
+                    sums[run.Assign[j]] <- sums[run.Assign[j]] + sqrt (squaredDistance x i x j p)
+
+            let own = run.Assign[i]
+
+            if run.Sizes[own] > 1 then
+                let a = sums[own] / float (run.Sizes[own] - 1)
+                let mutable b = System.Double.PositiveInfinity
+
+                for c in 0 .. k - 1 do
+                    if c <> own then
+                        let m = sums[c] / float run.Sizes[c]
+
+                        if m < b then
+                            b <- m
+
+                let m = if a > b then a else b
+
+                if m > 0.0 then
+                    total <- total + (b - a) / m
+
+        total / float n
+
+    /// `KMeans` over the frame (Phase 621, D76). The checks run in this order, each refusal naming what
+    /// it refuses: `k`, the restarts, the pass bound, the seed, the features, the group keys, the
+    /// output's names, each feature's type, each row's features, then each group's row count.
+    let private evalKMeans
+        (kernels: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (spec: KMeansSpec)
+        : Result<Frame, EvalError> =
+        let refuse (what: string) : Result<'a, EvalError> = Error(KMeansError("kmeans: " + what))
+        let featureNames = spec.Features |> List.map fst
+        let p = featureNames.Length
+
+        let outputNames () =
+            match spec.Output with
+            | KMeansOutput.Assignments ->
+                if Option.isSome (colIndex f.Cols kmeansClusterColumn) then
+                    refuse ("the input already has a column '" + kmeansClusterColumn + "'")
+                else
+                    Ok()
+            | KMeansOutput.Centres
+            | KMeansOutput.Summary ->
+                match namedTwice (spec.GroupBy @ (kmeansColumns spec |> List.map fst)) with
+                | Some name -> refuse ("the " + kmeansOutputTag spec.Output + " table would name '" + name + "' twice")
+                | None -> Ok()
+
+        let featureColumn (name: string, e: ColExpr) =
+            fitColumn kernels env f ("kmeans feature '" + name + "'") e
+            |> Result.bind (fun (cells, ty, unit) ->
+                match ty with
+                | IntType
+                | FloatType
+                | DecimalType -> Ok(name, cells, unit)
+                | other ->
+                    Error(
+                        TypeError(
+                            "kmeans: the feature '"
+                            + name
+                            + "' is a "
+                            + ColumnType.tag other
+                            + " column; a feature is int, float or decimal"
+                        )
+                    ))
+
+        resolveIntSlot env "kmeans k" spec.K
+        |> Result.bind (fun k ->
+            if k < 2 then
+                refuse "k must be at least 2"
+            elif spec.Restarts < 1 then
+                refuse "restarts must be at least 1"
+            elif spec.MaxIterations < 1 then
+                refuse "maxIterations must be at least 1"
+            else
+                Ok k)
+        |> Result.bind (fun k -> resolveSeedSlot env "kmeans seed" spec.Seed |> Result.map (fun seed -> k, seed))
+        |> Result.bind (fun (k, seed) ->
+            if p = 0 then
+                refuse "no features"
+            else
+                match namedTwice featureNames, unknownKey f.Cols spec.GroupBy with
+                | Some name, _ -> refuse ("the feature '" + name + "' is named twice")
+                | None, Some e -> Error e
+                | None, None -> outputNames () |> Result.map (fun () -> k, seed))
+        |> Result.bind (fun (k, seed) ->
+            spec.Features
+            |> List.map featureColumn
+            |> sequenceR
+            |> Result.bind (fun features ->
+                let n = Frame.rows f
+                let features = List.toArray features
+                let raw: float[] = Array.zeroCreate (n * p)
+                let mutable failure = None
+                let mutable i = 0
+
+                while Option.isNone failure && i < n do
+                    let mutable d = 0
+
+                    while Option.isNone failure && d < p do
+                        let name, cells, _ = features[d]
+
+                        match cells[i] with
+                        | Null ->
+                            failure <-
+                                Some(KMeansError("kmeans: row " + string i + ": the feature '" + name + "' is null"))
+                        | cell ->
+                            match fitFloat cell with
+                            | Some v when finite v -> raw[i * p + d] <- v
+                            | _ ->
+                                failure <-
+                                    Some(
+                                        KMeansError(
+                                            "kmeans: row " + string i + ": the feature '" + name + "' is not finite"
+                                        )
+                                    )
+
+                        d <- d + 1
+
+                    i <- i + 1
+
+                match failure with
+                | Some e -> Error e
+                | None ->
+                    let members, keyCells = groupedRows f spec.GroupBy (Array.init n id)
+
+                    match members |> Array.tryFindIndex (fun m -> m.Length < k) with
+                    | Some g ->
+                        refuse (
+                            "k is "
+                            + string k
+                            + " and group "
+                            + string (g + 1)
+                            + " has "
+                            + string members[g].Length
+                            + " rows"
+                        )
+                    | None ->
+                        // Per group: its rows gathered (and standardised), then the seedings in order
+                        // from the group's one stream, the lowest total kept, a tie to the earliest.
+                        let runs =
+                            members
+                            |> Array.mapi (fun g rows ->
+                                let m = rows.Length
+                                let x: float[] = Array.zeroCreate (m * p)
+
+                                for t in 0 .. m - 1 do
+                                    for d in 0 .. p - 1 do
+                                        x[t * p + d] <- raw[rows[t] * p + d]
+
+                                if spec.Standardise then
+                                    for d in 0 .. p - 1 do
+                                        let mutable sum = 0.0
+
+                                        for t in 0 .. m - 1 do
+                                            sum <- sum + x[t * p + d]
+
+                                        let mean = sum / float m
+                                        let mutable ss = 0.0
+
+                                        for t in 0 .. m - 1 do
+                                            let c = x[t * p + d] - mean
+                                            ss <- ss + c * c
+
+                                        let sd = sqrt (ss / float (m - 1))
+
+                                        for t in 0 .. m - 1 do
+                                            x[t * p + d] <- if sd > 0.0 then (x[t * p + d] - mean) / sd else 0.0
+
+                                let rng = Rng.ofSeed seed g
+                                let mutable best = kmeansOnce x m p k spec.MaxIterations rng
+
+                                for _ in 2 .. spec.Restarts do
+                                    let run = kmeansOnce x m p k spec.MaxIterations rng
+
+                                    if run.Total < best.Total then
+                                        best <- run
+
+                                x, best)
+
+                        let keyCols = keyFields f spec.GroupBy
+                        let columns = kmeansColumns spec
+
+                        match spec.Output with
+                        | KMeansOutput.Assignments ->
+                            let cells = Array.create n Null
+
+                            members
+                            |> Array.iteri (fun g rows ->
+                                let _, run = runs[g]
+                                rows |> Array.iteri (fun t row -> cells[row] <- Int(run.Assign[t] + 1)))
+
+                            let phys = Frame.physical f
+                            let v = Vec.packAt IntType f.Count (fun i -> phys[i]) cells
+                            Ok(Frame.appendColumn f kmeansClusterColumn IntType v)
+                        | KMeansOutput.Centres ->
+                            let units = features |> Array.map (fun (_, _, unit) -> unit)
+
+                            let fields =
+                                columns
+                                |> List.mapi (fun c (name, ty) ->
+                                    let field = Field.create name ty
+                                    // A centre is in its feature's unit unless the features were scaled.
+                                    if c >= 1 && c <= p && not spec.Standardise then
+                                        field |> stated units[c - 1]
+                                    else
+                                        field)
+
+                            let cells =
+                                [| for g in 0 .. members.Length - 1 do
+                                       let _, run = runs[g]
+
+                                       for c in 0 .. k - 1 do
+                                           Array.concat
+                                               [ keyCells[g]
+                                                 [| Int(c + 1) |]
+                                                 Array.init p (fun d ->
+                                                     canonicalNaNCell (Float run.Centres[c * p + d]))
+                                                 [| Int run.Sizes[c]; canonicalNaNCell (Float run.Within[c]) |] ] |]
+
+                            Ok(frameOfRows (keyCols @ fields) cells)
+                        | KMeansOutput.Summary ->
+                            let seedCell = Cell.decimal (string seed) |> Option.defaultValue Null
+
+                            let cells =
+                                Array.init members.Length (fun g ->
+                                    let x, run = runs[g]
+
+                                    Array.concat
+                                        [ keyCells[g]
+                                          [| Int k
+                                             Int spec.Restarts
+                                             Int run.Iterations
+                                             canonicalNaNCell (Float run.Total)
+                                             Bool run.Converged
+                                             seedCell |]
+                                          (if spec.Silhouette then
+                                               [| canonicalNaNCell (Float(silhouette x members[g].Length p k run)) |]
+                                           else
+                                               [||]) ])
+
+                            Ok(
+                                frameOfRows
+                                    (keyCols @ (columns |> List.map (fun (name, ty) -> Field.create name ty)))
+                                    cells
+                            )))
+
+    /// The quantile of the ascending `sorted` at probability `q` in `[0, 1]`, D76's pinned rule:
+    /// position `h = (B − 1) · q`, the value at `⌊h⌋` plus the fraction of the way to the next
+    /// (Hyndman and Fan's type 7), every step one float operation.
+    let private quantileOfSorted (sorted: float[]) (q: float) : float =
+        let h = float (sorted.Length - 1) * q
+        let lo = int h
+
+        if lo + 1 >= sorted.Length then
+            sorted[sorted.Length - 1]
+        else
+            sorted[lo] + (h - float lo) * (sorted[lo + 1] - sorted[lo])
+
+    /// `Bootstrap` over the frame (Phase 621, D76). The checks run in this order: the replicate
+    /// count, the seed, the level, the aggregates, the group keys, the cluster column, each
+    /// aggregate's source, the output's names, then (for a summary) each aggregate's type. Per group, in
+    /// first-appearance order, from the group's stream: per replicate, one `below` per row of the
+    /// group (per cluster, with `Cluster`, clusters in first-appearance order and each drawn whole),
+    /// then every aggregate over the drawn rows in draw order.
+    let private evalBootstrap
+        (kernels: KernelSet)
+        (env: Map<string, Cell>)
+        (f: Frame)
+        (spec: BootstrapSpec)
+        : Result<Frame, EvalError> =
+        let refuse (what: string) : Result<'a, EvalError> =
+            Error(BootstrapError("bootstrap: " + what))
+
+        let aggNames = spec.Aggregates |> List.map (fun a -> a.Name)
+
+        let known (name: string) =
+            match colType f.Cols name with
+            | Some ty -> Ok ty
+            | None -> Error(UnknownColumn(name, available f.Cols))
+
+        let outputNames () =
+            let names =
+                match spec.Output with
+                | BootstrapOutput.Replicates -> spec.GroupBy @ ("replicate" :: aggNames)
+                | BootstrapOutput.Summary -> spec.GroupBy @ (bootstrapSummaryColumns spec |> List.map fst)
+
+            match namedTwice names, namedTwice aggNames with
+            | Some name, _
+            | None, Some name ->
+                refuse (
+                    "the "
+                    + bootstrapOutputTag spec.Output
+                    + " table would name '"
+                    + name
+                    + "' twice"
+                )
+            | None, None -> Ok()
+
+        resolveIntSlot env "bootstrap replicates" spec.Replicates
+        |> Result.bind (fun b ->
+            if b < 1 then
+                refuse "replicates must be at least 1"
+            else
+                Ok b)
+        |> Result.bind (fun b ->
+            resolveSeedSlot env "bootstrap seed" spec.Seed
+            |> Result.map (fun seed -> b, seed))
+        |> Result.bind (fun (b, seed) ->
+            match spec.Level with
+            | Some l when not (finite l && l > 0.0 && l < 1.0) -> refuse "the level must lie strictly between 0 and 1"
+            | _ when List.isEmpty spec.Aggregates -> refuse "no aggregates"
+            | _ ->
+                match unknownKey f.Cols (spec.GroupBy @ Option.toList spec.Cluster) with
+                | Some e -> Error e
+                | None ->
+                    spec.Aggregates
+                    |> List.map (fun a -> known a.Of |> Result.map (fun ty -> a, ty))
+                    |> sequenceR
+                    |> Result.bind (fun aggs -> outputNames () |> Result.map (fun () -> b, seed, aggs)))
+        |> Result.bind (fun (b, seed, aggs) ->
+            let nonNumeric =
+                match spec.Output with
+                | BootstrapOutput.Replicates -> None
+                | BootstrapOutput.Summary ->
+                    aggs
+                    |> List.tryPick (fun (a, ty) ->
+                        match aggType a.Fn ty with
+                        | IntType
+                        | FloatType
+                        | DecimalType -> None
+                        | other -> Some(a.Name, other))
+
+            match nonNumeric with
+            | Some(name, ty) ->
+                Error(
+                    TypeError(
+                        "bootstrap: the aggregate '"
+                        + name
+                        + "' is a "
+                        + ColumnType.tag ty
+                        + " column; a summary states int, float or decimal aggregates"
+                    )
+                )
+            | None ->
+                let n = Frame.rows f
+                let phys = Frame.physical f
+                let aggs = List.toArray aggs
+
+                // Each aggregate's source cells, by logical row.
+                let sources =
+                    aggs
+                    |> Array.map (fun (a, _) ->
+                        let v = f.Vecs[colIndex f.Cols a.Of |> Option.get]
+                        phys |> Array.map (Vec.cellAt v))
+
+                let members, keyCells = groupedRows f spec.GroupBy (Array.init n id)
+
+                // The units a group is resampled by: its rows, or with `Cluster` its clusters in
+                // first-appearance order, each the rows that share a value.
+                let unitsOf (rows: int[]) : Result<int[][], EvalError> =
+                    match spec.Cluster with
+                    | None -> Ok(rows |> Array.map (fun row -> [| row |]))
+                    | Some cluster ->
+                        let v = f.Vecs[colIndex f.Cols cluster |> Option.get]
+
+                        match rows |> Array.tryFind (fun row -> Vec.cellAt v phys[row] = Null) with
+                        | Some row -> refuse ("row " + string row + ": the cluster column '" + cluster + "' is null")
+                        | None -> Ok(fst (groupedRows f [ cluster ] rows))
+
+                let aggregate (j: int) (rows: int[]) : Result<Cell, EvalError> =
+                    let a, ty = aggs[j]
+                    aggCells a.Fn ty (rows |> Array.map (fun row -> sources[j][row]) |> List.ofArray)
+
+                // One group's replicates: `b` rows of aggregate cells, from the group's stream.
+                let replicatesOf (g: int) (units: int[][]) : Result<Cell[][], EvalError> =
+                    let rng = Rng.ofSeed seed g
+                    let out: Cell[][] = Array.zeroCreate b
+                    let mutable failure = None
+                    let mutable r = 0
+
+                    while Option.isNone failure && r < b do
+                        let drawn =
+                            Array.init units.Length (fun _ -> units[Rng.below rng units.Length])
+                            |> Array.concat
+
+                        let row: Cell[] = Array.create aggs.Length Null
+                        let mutable j = 0
+
+                        while Option.isNone failure && j < aggs.Length do
+                            match aggregate j drawn with
+                            | Ok cell -> row[j] <- cell
+                            | Error e -> failure <- Some e
+
+                            j <- j + 1
+
+                        out[r] <- row
+                        r <- r + 1
+
+                    match failure with
+                    | Some e -> Error e
+                    | None -> Ok out
+
+                let groups =
+                    members
+                    |> Array.toList
+                    |> List.mapi (fun g rows -> unitsOf rows |> Result.bind (replicatesOf g))
+                    |> sequenceR
+                    |> Result.map List.toArray
+
+                let keyCols = keyFields f spec.GroupBy
+
+                groups
+                |> Result.bind (fun groups ->
+                    match spec.Output with
+                    | BootstrapOutput.Replicates ->
+                        let fields =
+                            Field.create "replicate" IntType
+                            :: (aggs
+                                |> Array.toList
+                                |> List.map (fun (a, ty) ->
+                                    Field.create a.Name (aggType a.Fn ty)
+                                    |> stated (aggregateUnitOf a.Fn (colUnit f.Cols a.Of))))
+
+                        let cells =
+                            [| for g in 0 .. groups.Length - 1 do
+                                   for r in 0 .. b - 1 do
+                                       Array.concat [ keyCells[g]; [| Int(r + 1) |]; groups[g][r] ] |]
+
+                        Ok(frameOfRows (keyCols @ fields) cells)
+                    | BootstrapOutput.Summary ->
+                        let floatCell (c: Cell) : Cell =
+                            match fitFloat c with
+                            | Some v -> canonicalNaNCell (Float v)
+                            | None -> Null
+
+                        // One summary row: the group's own aggregate, the replicates' standard
+                        // deviation as `GroupBy`'s `StdDev` over the replicate column answers it, and
+                        // the percentile interval over the replicates sorted ascending.
+                        let summaryRow (g: int) (j: int) : Result<Cell[], EvalError> =
+                            let a, ty = aggs[j]
+                            let outTy = aggType a.Fn ty
+                            let cells = groups[g] |> Array.map (fun row -> row[j])
+                            let values = cells |> Array.map fitFloat
+
+                            match values |> Array.tryFindIndex (fun v -> not (v |> Option.exists finite)) with
+                            | Some r ->
+                                refuse (
+                                    "group "
+                                    + string (g + 1)
+                                    + ", replicate "
+                                    + string (r + 1)
+                                    + ": the aggregate '"
+                                    + a.Name
+                                    + (if cells[r] = Null then "' is null" else "' is not finite")
+                                )
+                            | None ->
+                                aggregate j members[g]
+                                |> Result.bind (fun estimate ->
+                                    aggCells StdDev outTy (List.ofArray cells)
+                                    |> Result.map (fun stdError ->
+                                        let interval =
+                                            match spec.Level with
+                                            | None -> [||]
+                                            | Some level ->
+                                                // `+ 0.0` reads a negative zero as zero, so the order
+                                                // of two zeros is no host's to decide.
+                                                let sorted = values |> Array.map (fun v -> Option.get v + 0.0)
+                                                Array.sortInPlace sorted
+                                                let tail = (1.0 - level) * 0.5
+
+                                                [| Float(quantileOfSorted sorted tail)
+                                                   Float(quantileOfSorted sorted (1.0 - tail)) |]
+
+                                        Array.concat
+                                            [ keyCells[g]
+                                              [| Str a.Name; floatCell estimate; floatCell stdError |]
+                                              interval ]))
+
+                        [ for g in 0 .. groups.Length - 1 do
+                              for j in 0 .. aggs.Length - 1 do
+                                  summaryRow g j ]
+                        |> sequenceR
+                        |> Result.map (fun rows ->
+                            frameOfRows
+                                (keyCols
+                                 @ (bootstrapSummaryColumns spec
+                                    |> List.map (fun (name, ty) -> Field.create name ty)))
+                                (List.toArray rows))))
+
     /// A table's rows for the right-hand side of a two-table verb — the same transpose the left
     /// side paid at the boundary, without unpacking a frame it would only gather again.
     /// One step over the frame, running the row-local verbs through the kernel set `k` (Phase 270).
@@ -13797,6 +14740,9 @@ module DataFrame =
         | Fit spec -> evalFit k env f spec
         // Phase 597: the model, then every input row scored against its group's fit (D56).
         | Predict spec -> evalPredict k resolve env f spec
+        // Phase 621: the seeded steps (D76).
+        | KMeans spec -> evalKMeans k env f spec
+        | Bootstrap spec -> evalBootstrap k env f spec
 
     /// One step over the frame through the host kernels (`Kernels.host`, chosen when the package is
     /// compiled). Internal so the suite can hold the frame's well-formedness after every step of a
@@ -13849,7 +14795,9 @@ module DataFrame =
                 // Phase 592: a fit evaluates its terms at every input row, once per step.
                 | Fit _
                 // Phase 597: and so does a prediction (its training rows are another table's).
-                | Predict _ -> Frame.rows f
+                | Predict _
+                // Phase 621: and a clustering its features.
+                | KMeans _ -> Frame.rows f
                 | _ -> 0
 
             evalStepWith k resolve env f step |> Result.map (fun f' -> f', cost, rest)
@@ -14480,6 +15428,15 @@ module DataFrame =
         // Phase 597: the keys and every column a term or the offset reads; the model's source is
         // another table, as a join's right side is.
         | Predict spec -> unionAll (Set.ofList spec.Fit.GroupBy :: (FitSpec.exprs spec.Fit |> List.map exprCols))
+        // Phase 621: the keys and every column a feature reads; the keys, the cluster column and every
+        // aggregate's source.
+        | KMeans spec -> unionAll (Set.ofList spec.GroupBy :: (KMeansSpec.exprs spec |> List.map exprCols))
+        | Bootstrap spec ->
+            Set.ofList (
+                spec.GroupBy
+                @ Option.toList spec.Cluster
+                @ (spec.Aggregates |> List.map (fun a -> a.Of))
+            )
         | Distinct
         | Limit _
         | Union _
@@ -14594,6 +15551,8 @@ module DataFrame =
             + link
             + "' is not evaluated by this version"
         | FitError detail -> detail
+        | KMeansError detail -> detail
+        | BootstrapError detail -> detail
         | UnitMismatch(step, expr, left, right) ->
             "unit mismatch in "
             + step
@@ -15245,6 +16204,76 @@ module SchemaWalk =
                 DataFrame.predictColumns spec
                 |> List.fold (fun k name -> appendColumn (col mark name (units.Of name)) k) input
 
+        // Phase 621 (D76) — a clustering's tables are closed: the input with `cluster` appended, or the
+        // keys and a fixed set of columns. Every value is a pinned operation over the features (the
+        // draws are `Rng`'s), so a column is host-rounded only where a key or a feature already is.
+        | KMeans spec ->
+            let mark =
+                (spec.GroupBy |> List.map (markOf input))
+                @ (KMeansSpec.exprs spec |> List.map (exprExactness input))
+                |> List.fold ColumnKnowledge.joinExactness Exactness.Pinned
+
+            let col (name: string, ty: ColumnType) =
+                ColumnKnowledge.named name (Some ty) |> ColumnKnowledge.withExactness mark
+
+            match spec.Output with
+            | KMeansOutput.Assignments -> input |> appendColumn (col (DataFrame.kmeansClusterColumn, IntType))
+            | KMeansOutput.Centres ->
+                // A centre is in its feature's unit unless the features were scaled.
+                let units =
+                    if spec.Standardise then
+                        Map.empty
+                    else
+                        spec.Features
+                        |> List.map (fun (name, e) -> name, derivedUnit input e)
+                        |> Map.ofList
+
+                SchemaKnowledge.Closed(
+                    (spec.GroupBy |> List.map (fun key -> known key input))
+                    @ (DataFrame.kmeansColumns spec
+                       |> List.map (fun (name, ty) ->
+                           col (name, ty)
+                           |> ColumnKnowledge.withUnit (units |> Map.tryFind name |> Option.flatten)))
+                )
+            | KMeansOutput.Summary ->
+                SchemaKnowledge.Closed(
+                    (spec.GroupBy |> List.map (fun key -> known key input))
+                    @ (DataFrame.kmeansColumns spec |> List.map col)
+                )
+
+        // Phase 621 (D76) — a resampling's tables are closed: the keys, the replicate and one column
+        // per aggregate typed as a `GroupBy` types it, or the keys and the summary's fixed columns. A
+        // column is host-rounded only where a key, the cluster column or an aggregate's source is.
+        | Bootstrap spec ->
+            let mark =
+                (spec.GroupBy
+                 @ Option.toList spec.Cluster
+                 @ (spec.Aggregates |> List.map (fun a -> a.Of)))
+                |> List.map (markOf input)
+                |> List.fold ColumnKnowledge.joinExactness Exactness.Pinned
+
+            let col (name: string, ty: ColumnType option) =
+                ColumnKnowledge.named name ty |> ColumnKnowledge.withExactness mark
+
+            let keys = spec.GroupBy |> List.map (fun key -> known key input)
+
+            match spec.Output with
+            | BootstrapOutput.Replicates ->
+                SchemaKnowledge.Closed(
+                    keys
+                    @ (col ("replicate", Some IntType)
+                       :: (spec.Aggregates
+                           |> List.map (fun agg ->
+                               col (agg.Name, aggregateType agg.Fn (typeOf agg.Of input))
+                               |> ColumnKnowledge.withUnit (DataFrame.aggregateUnit agg.Fn (unitOf agg.Of input)))))
+                )
+            | BootstrapOutput.Summary ->
+                SchemaKnowledge.Closed(
+                    keys
+                    @ (DataFrame.bootstrapSummaryColumns spec
+                       |> List.map (fun (name, ty) -> col (name, Some ty)))
+                )
+
         // A window column's lineage is its source column and its keys (Phase 557): a value window
         // reads the source, and every window's partition and order are decided over the keys.
         | Window spec ->
@@ -15495,6 +16524,25 @@ module SchemaWalk =
                             Operand = operand } ]
                     | None -> [])
                    @ decisionsIn i input e))
+        // Phase 621: a clustering groups on its keys and assigns each row to its nearest centre over the
+        // values its features compute; a resampling groups on its keys and its cluster column.
+        | KMeans spec ->
+            keyed "kmeans key" spec.GroupBy
+            @ (KMeansSpec.exprs spec
+               |> List.collect (fun e ->
+                   (match hostRoundedOperand input e with
+                    | Some operand ->
+                        [ { Step = i
+                            Verb = "kmeans assignment"
+                            Operand = operand } ]
+                    | None -> [])
+                   @ decisionsIn i input e))
+        | Bootstrap spec ->
+            keyed "bootstrap key" (spec.GroupBy @ Option.toList spec.Cluster)
+            @ (spec.Aggregates
+               |> List.filter (fun agg -> agg.Fn = CountDistinct)
+               |> List.map _.Of
+               |> keyed "count-distinct")
         | Project _
         | Limit _
         | Union _
@@ -16418,6 +17466,74 @@ module DataFrameCodec =
             | FitStdErrors.HC2 -> [ "stdErrors", JStr "hc2" ]
             | FitStdErrors.HC3 -> [ "stdErrors", JStr "hc3" ]))
 
+    // ---- Phase 621 (D76): the seeded steps ----
+
+    /// A literal seed: its decimal digits in a JSON string, so a seed past `2⁵³` is the same integer
+    /// on a host whose JSON numbers are doubles.
+    let private seedJson (seed: int64) : JVal = JStr(string seed)
+
+    let private seedRefusal =
+        MalformedShape "a seed is a signed 64-bit integer written as its decimal digits in a JSON string"
+
+    /// The seed a string of canonical decimal digits names: an optional `-`, no leading zero, no
+    /// `-0`, inside the signed 64-bit range. Read digit by digit, so no host's number parser or
+    /// culture is consulted.
+    let private seedOf (el: JVal) : Result<int64, ColumnError> =
+        match el with
+        | JStr s ->
+            let negative = s.StartsWith "-"
+            let digits = if negative then s.Substring 1 else s
+
+            let limit =
+                if negative then
+                    "9223372036854775808"
+                else
+                    "9223372036854775807"
+
+            let canonical =
+                digits.Length >= 1
+                && digits.Length <= 19
+                && digits |> Seq.forall (fun ch -> ch >= '0' && ch <= '9')
+                && (digits = "0" && not negative || digits[0] <> '0')
+                && (digits.Length < 19 || digits <= limit)
+
+            if canonical then
+                // Accumulated on the seed's own side of zero, so the most negative value is reached
+                // without passing through a magnitude the type cannot hold.
+                digits
+                |> Seq.fold
+                    (fun acc ch ->
+                        let d = int64 (int ch - int '0')
+                        if negative then acc * 10L - d else acc * 10L + d)
+                    0L
+                |> Ok
+            else
+                Error seedRefusal
+        | _ -> Error seedRefusal
+
+    let private namedExprJson (name: string, e: ColExpr) : JVal =
+        JObj [ "name", JStr name; "expr", encodeExpr e ]
+
+    let private kmeansFields (spec: KMeansSpec) : (string * JVal) list =
+        [ "groupBy", strList spec.GroupBy
+          "features", JArr(spec.Features |> List.map namedExprJson)
+          "standardise", JBool spec.Standardise
+          "k", slotJson JInt spec.K
+          "restarts", JInt spec.Restarts
+          "maxIterations", JInt spec.MaxIterations
+          "seed", slotJson seedJson spec.Seed
+          "silhouette", JBool spec.Silhouette
+          "output", JStr(DataFrame.kmeansOutputTag spec.Output) ]
+
+    let private bootstrapFields (spec: BootstrapSpec) : (string * JVal) list =
+        [ "groupBy", strList spec.GroupBy ]
+        @ (spec.Cluster |> Option.map (fun c -> "cluster", JStr c) |> Option.toList)
+        @ [ "replicates", slotJson JInt spec.Replicates
+            "seed", slotJson seedJson spec.Seed
+            "aggregates", JArr(spec.Aggregates |> List.map aggJson) ]
+        @ (spec.Level |> Option.map (fun l -> "level", JFloat l) |> Option.toList)
+        @ [ "output", JStr(DataFrame.bootstrapOutputTag spec.Output) ]
+
     let encodeTransform (t: Transform) : JVal =
         match t with
         | Filter pred -> Canonical.typed "filter" [ "pred", encodeExpr pred ]
@@ -16484,6 +17600,8 @@ module DataFrameCodec =
         // `offset` and `ridge` only where the spec carries them; `stdErrors` (Phase 598) only where it
         // is not classical.
         | Fit spec -> Canonical.typed "fit" (fitFields spec)
+        | KMeans spec -> Canonical.typed "kmeans" (kmeansFields spec)
+        | Bootstrap spec -> Canonical.typed "bootstrap" (bootstrapFields spec)
         // Phase 597 (D56): the model's spec as the fit step's members, the model's source, the scale,
         // and `interval` only where the spec carries one.
         | Predict spec ->
@@ -16549,6 +17667,12 @@ module DataFrameCodec =
         | JBool b -> Ok b
         | _ -> Error(MalformedShape "expected boolean")
 
+    /// A member that may be absent.
+    let private optionalField (name: string) (f: JVal -> Result<'a, ColumnError>) (el: JVal) =
+        match tryField name el with
+        | Some v -> f v |> Result.map Some
+        | None -> Ok None
+
     /// A fit step's spec (Phase 592, D53). Every member but `weights`, `offset`, `ridge`, `power`, `theta`
     /// and `stdErrors` is required; `power` is required for, and only read with, a Tweedie family;
     /// `theta` is read only with a negative binomial family, which estimates θ without it (Phase 600). A
@@ -16560,11 +17684,6 @@ module DataFrameCodec =
             match table |> List.tryFind (fun (t, _) -> t = s) with
             | Some(_, v) -> Ok v
             | None -> Error(WireRefusal.unknownTag (s, table |> List.map fst))
-
-        let optional (name: string) (f: JVal -> Result<'a, ColumnError>) : Result<'a option, ColumnError> =
-            match tryField name el with
-            | Some v -> f v |> Result.map Some
-            | None -> Ok None
 
         let predictorOf (p: JVal) =
             field "name" p
@@ -16590,7 +17709,7 @@ module DataFrameCodec =
                             match familyTag with
                             | "tweedie" -> field "power" el |> Result.bind floatOf |> Result.map FitFamily.Tweedie
                             | "negativeBinomial" ->
-                                optional "theta" floatOf |> Result.map FitFamily.NegativeBinomial
+                                optionalField "theta" floatOf el |> Result.map FitFamily.NegativeBinomial
                             | other ->
                                 tag
                                     [ "gaussian", FitFamily.Gaussian
@@ -16663,13 +17782,13 @@ module DataFrameCodec =
                                               "residuals", FitOutput.Residuals ]
                                     )
                                     |> Result.bind (fun output ->
-                                        optional "weights" strOf
+                                        optionalField "weights" strOf el
                                         |> Result.bind (fun weights ->
-                                            optional "offset" decodeExpr
+                                            optionalField "offset" decodeExpr el
                                             |> Result.bind (fun offset ->
-                                                optional "ridge" (slotOf floatOf "fit ridge")
+                                                optionalField "ridge" (slotOf floatOf "fit ridge") el
                                                 |> Result.bind (fun ridge ->
-                                                    optional
+                                                    optionalField
                                                         "stdErrors"
                                                         (strOf
                                                          >> Result.bind (
@@ -16681,6 +17800,7 @@ module DataFrameCodec =
                                                                    "hc3", FitStdErrors.HC3
                                                                    "robust", FitStdErrors.Robust ]
                                                          ))
+                                                        el
                                                     |> Result.map (fun stdErrors ->
                                                         { Response = response
                                                           Predictors = predictors
@@ -16696,6 +17816,90 @@ module DataFrameCodec =
                                                           StdErrors =
                                                             stdErrors
                                                             |> Option.defaultValue FitStdErrors.Classical }))))))))))))
+
+    /// Phase 621 (D76): a `kmeans` step's members. Every one is required: the wire carries no default.
+    let private kmeansSpecOf (el: JVal) : Result<KMeansSpec, ColumnError> =
+        let featureOf (p: JVal) =
+            field "name" p
+            |> Result.bind strOf
+            |> Result.bind (fun name -> field "expr" p |> Result.bind decodeExpr |> Result.map (fun e -> name, e))
+
+        field "groupBy" el
+        |> Result.bind strListOf
+        |> Result.bind (fun groupBy ->
+            field "features" el
+            |> Result.bind arrOf
+            |> Result.bind (mapM featureOf)
+            |> Result.bind (fun features ->
+                field "standardise" el
+                |> Result.bind boolOf
+                |> Result.bind (fun standardise ->
+                    field "k" el
+                    |> Result.bind (slotOf intOf "kmeans k")
+                    |> Result.bind (fun k ->
+                        field "restarts" el
+                        |> Result.bind intOf
+                        |> Result.bind (fun restarts ->
+                            field "maxIterations" el
+                            |> Result.bind intOf
+                            |> Result.bind (fun maxIterations ->
+                                field "seed" el
+                                |> Result.bind (slotOf seedOf "kmeans seed")
+                                |> Result.bind (fun seed ->
+                                    field "silhouette" el
+                                    |> Result.bind boolOf
+                                    |> Result.bind (fun silhouette ->
+                                        field "output" el
+                                        |> Result.bind (
+                                            tagOf
+                                                [ KMeansOutput.Assignments, "assignments"
+                                                  KMeansOutput.Centres, "centres"
+                                                  KMeansOutput.Summary, "summary" ]
+                                        )
+                                        |> Result.map (fun output ->
+                                            { GroupBy = groupBy
+                                              Features = features
+                                              Standardise = standardise
+                                              K = k
+                                              Restarts = restarts
+                                              MaxIterations = maxIterations
+                                              Seed = seed
+                                              Silhouette = silhouette
+                                              Output = output })))))))))
+
+    /// Phase 621 (D76): a `bootstrap` step's members; `cluster` and `level` may be absent.
+    let private bootstrapSpecOf (el: JVal) : Result<BootstrapSpec, ColumnError> =
+        field "groupBy" el
+        |> Result.bind strListOf
+        |> Result.bind (fun groupBy ->
+            optionalField "cluster" strOf el
+            |> Result.bind (fun cluster ->
+                field "replicates" el
+                |> Result.bind (slotOf intOf "bootstrap replicates")
+                |> Result.bind (fun replicates ->
+                    field "seed" el
+                    |> Result.bind (slotOf seedOf "bootstrap seed")
+                    |> Result.bind (fun seed ->
+                        field "aggregates" el
+                        |> Result.bind arrOf
+                        |> Result.bind (mapM aggOf)
+                        |> Result.bind (fun aggregates ->
+                            optionalField "level" floatOf el
+                            |> Result.bind (fun level ->
+                                field "output" el
+                                |> Result.bind (
+                                    tagOf
+                                        [ BootstrapOutput.Replicates, "replicates"
+                                          BootstrapOutput.Summary, "summary" ]
+                                )
+                                |> Result.map (fun output ->
+                                    { GroupBy = groupBy
+                                      Cluster = cluster
+                                      Replicates = replicates
+                                      Seed = seed
+                                      Aggregates = aggregates
+                                      Level = level
+                                      Output = output })))))))
 
     /// A predict step's spec (Phase 597, D56): `fit` (a fit step's members), `model`, `scale` and an
     /// optional `interval`.
@@ -17010,6 +18214,8 @@ module DataFrameCodec =
                                       Body = body })))
                 | "fit" -> fitSpecOf el |> Result.map Fit
                 | "predict" -> predictSpecOf el |> Result.map Predict
+                | "kmeans" -> kmeansSpecOf el |> Result.map KMeans
+                | "bootstrap" -> bootstrapSpecOf el |> Result.map Bootstrap
                 | other ->
                     Error(
                         WireRefusal.unknownTag (
@@ -17030,7 +18236,9 @@ module DataFrameCodec =
                               "except"
                               "define"
                               "fit"
-                              "predict" ]
+                              "predict"
+                              "kmeans"
+                              "bootstrap" ]
                         )
                     ))
 

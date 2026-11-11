@@ -101,6 +101,10 @@ if isMainThread then
     printfn "BEGIN fit-vectors"
     printfn "%s" (TransformVectorSample.fitRender ())
     printfn "END fit-vectors"
+    // Phase 621 — and the seeded steps' vectors, the same way.
+    printfn "BEGIN seeded-vectors"
+    printfn "%s" (TransformVectorSample.seededRender ())
+    printfn "END seeded-vectors"
 
 if isMainThread then
     Async.StartWithContinuations(

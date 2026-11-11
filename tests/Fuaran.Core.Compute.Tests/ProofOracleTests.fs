@@ -1067,6 +1067,9 @@ let private pTransformToModel (t: Transform) : ModelPipe.transform =
     // Phase 592 (D53): the model carries no regression; `Fit` is measured elsewhere (FitTests).
     | Fit _ -> failtestf "not in the model (Phase 592, D53): %A" t
     | Predict _ -> failtestf "not in the model (Phase 597, D56): %A" t
+    // Phase 621 (D76): the model carries no seeded step; held by `SeededStepsTests`.
+    | KMeans _
+    | Bootstrap _ -> failtestf "not in the model (Phase 621, D76): %A" t
 
 let private pTransformOfModel (t: ModelPipe.transform) : Transform =
     match t with
@@ -1134,6 +1137,9 @@ let private pErrToModel (e: EvalError) : ModelPipe.eval_error =
     // Phase 592 (D53): a fit's refusals; no modelled pipeline reaches one.
     | UnsupportedFit _
     | FitError _ -> failtestf "not in the model (Phase 592, D53): %A" e
+    // Phase 621 (D76): a seeded step's refusals; no modelled pipeline reaches one.
+    | KMeansError _
+    | BootstrapError _ -> failtestf "not in the model (Phase 621, D76): %A" e
 
 let private pErrOfModel (e: ModelPipe.eval_error) : EvalError =
     match e with
@@ -1283,6 +1289,8 @@ let private pVerbTag (t: Transform) : string =
     | Define _ -> "Define"
     | Fit _ -> "Fit"
     | Predict _ -> "Predict"
+    | KMeans _ -> "KMeans"
+    | Bootstrap _ -> "Bootstrap"
 
 let rec private pExprTags (e: ColExpr) : string list =
     match e with
@@ -1460,13 +1468,15 @@ let private pLawVectors () : (string * Transform list * Table * bool) list =
                 | Derive(_, e) -> pExprTags e |> List.contains "Interpolate"
                 | _ -> false)
 
-        // Phase 592 (D53): a fit is outside the model too, held by `FitTests`; and (Phase 597, D56) a
-        // prediction, held by `PredictTests`.
+        // Phase 592 (D53): a fit is outside the model too, held by `FitTests`; (Phase 597, D56) a
+        // prediction, held by `PredictTests`; and (Phase 621, D76) a seeded step, by `SeededStepsTests`.
         let fits (p: Transform list) =
             p
             |> List.exists (function
                 | Fit _
-                | Predict _ -> true
+                | Predict _
+                | KMeans _
+                | Bootstrap _ -> true
                 | _ -> false)
 
         match FnDef.expand pipeline with
@@ -1474,9 +1484,9 @@ let private pLawVectors () : (string * Transform list * Table * bool) list =
         | _ -> None)
 
 /// How many law vectors `pLawVectors` leaves out (Phase 596, D48): every curve shape, every
-/// named-function shape refused at registration, (Phase 592, D53) every fit shape and (Phase 597, D56)
-/// every predict shape — counted from the shape names, so a vector dropped
-/// for any other reason still turns a count red.
+/// named-function shape refused at registration, (Phase 592, D53) every fit shape, (Phase 597, D56)
+/// every predict shape and (Phase 621, D76) every seeded shape — counted from the shape names, so a
+/// vector dropped for any other reason still turns a count red.
 let private pOutOfModelVectors () : int =
     [ 0 .. LawVectorExport.iterations - 1 ]
     |> List.filter (fun i ->
@@ -1485,7 +1495,9 @@ let private pOutOfModelVectors () : int =
         shape.StartsWith "curve-"
         || (shape.StartsWith "function-" && shape.EndsWith "-refused")
         || shape.StartsWith "fit-"
-        || shape.StartsWith "predict-")
+        || shape.StartsWith "predict-"
+        || shape.StartsWith "kmeans-"
+        || shape.StartsWith "bootstrap-")
     |> List.length
 
 /// The generated sample — the vectors' own draw recipe for the table (a tie-heavy string key, an

@@ -1,5 +1,115 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-11 — D76: a pinned SplitMix64 generator, `Rng`, in the Elementary package, computed in 16-bit limbs; `KMeans` and `Bootstrap` are pipeline steps seeded from it, every order pinned; a seed is required and travels as digits; the steps are planner barriers, re-evaluated whole by the incremental seam and held by tests rather than by the model
+
+**Context.** Phase 621. A segmentation is a decision, and nothing here could replay one: a clustering or a resample
+drew from a host generator, so one spec over one table answered differently on another day. The phase asks for one
+pinned generator and two steps seeded from it, so that a pipeline, a seed and the data reproduce the answer bit for bit
+on any host. The shard was written before Phases 630 and 632; it was read against the tree as they left it, and the
+premises that did not hold are recorded in item 14.
+
+**Decision.**
+
+1. **The generator is SplitMix64** (Steele, Lea and Flood 2014): the state advances by `0x9E3779B97F4A7C15`, and a draw
+   is the state through two xor-shift-multiply rounds (`0xBF58476D1CE4E5B9`, `0x94D049BB133111EB`) and a final
+   xor-shift. It is `Rng` in `Fuaran.Compute.Elementary` (`Rng.fs`), the bottom of the graph, so the distributions'
+   sampling and these steps read one generator. `Rng` is a module; its one type, the stream, is nested in it
+   (`Rng.Stream`), so `open Fuaran.Compute.Elementary` brings in the module's name and nothing else. No other Compute
+   package declares `Rng` (checked against `src/` and the `api/` baselines).
+2. **Every step is computed over four 16-bit limbs.** The addition carries between limbs in `int`s. A limb product is
+   below `2³²` and a column of them below `2³⁵`; both are formed in floats, where every integer below `2⁵³` is exact, and
+   the carry out of a column is the quotient by `2¹⁶`, truncated. The shifts and exclusive-ors act on limbs. A draw
+   therefore forms no 64-bit integer and no 32-bit product on any host.
+3. **The measurement the shard asked for.** Fuaran.Core's Phase 495 measured a `uint32` multiply collapsing under Fable
+   (1579 distinct draws on .NET against 6 under node). The `uint64` product does NOT collapse: Fable carries a 64-bit
+   integer as an arbitrary-precision integer wrapped to 64 bits, and `ElementaryLaws.laws` holds the limb product equal
+   to the host's own `uint64` product over drawn operand pairs, and eight draws from a drawn state equal to the
+   recurrence written in the host's `uint64`, on .NET and under node, at every iteration. The probe in 495's shape is a
+   vector member: `distinct`, the number of distinct draws among a stream's first two thousand, is 2000 on both hosts at
+   all three seeds. The limbs are kept all the same, for two reasons that do not depend on the measurement: a draw
+   allocates no arbitrary-precision integer under JavaScript (D73 records what those cost per row), and a host with no
+   64-bit integer at all transcribes the routine as written. `Rng.next` alone assembles a `uint64`, for a caller that
+   wants the draw whole.
+4. **A seed's streams are named by an index.** `Rng.ofSeed seed stream` starts at the state
+   `mix(seed + (stream + 1) · γ)`, the `(stream + 1)`-th draw of the generator whose state is `seed`, by one limb
+   product. Every stream of a seed therefore starts from a mixed state, and stream `k` costs what stream `0` does. The
+   streams of one seed share the increment `γ`, so they are offsets into one cycle of length `2⁶⁴`; two of them overlap
+   only if their starting states lie within the number of draws taken, which for `d` draws over `s` streams has
+   probability about `s² · d / 2⁶⁴`. A negative stream index is refused.
+5. **`uniform53` is the draw's top 53 bits times `2⁻⁵³`.** **`below n` is by rejection:** the top 32 bits `x` of a draw
+   are redrawn while `x < 2³² mod n`, and the answer is `x mod n`, so every value in `0 .. n − 1` is equally likely.
+   Both are float operations on integers below `2³³`. `n` is an `int`, so at most `2³¹ − 1`.
+6. **Fuaran.Core's `Xorshift32` is not this kernel, and the two coexist.** That one is internal to `Fuaran.Core.Text`
+   and seeds the conformance fuzzer; its 32 bits of state are too few to resample a million rows over a thousand
+   replicates. This one is a published operation whose bytes a decision record cites.
+7. **Both steps are `Transform` cases in `Fit`'s class**: a per-group step whose spec is data and whose table is chosen
+   by an `Output` case, wire `$type` `kmeans` and `bootstrap`. Group `g`, in first-appearance order, draws stream `g`
+   of the step's seed. Their types stand BEFORE `FitSpec` in the source, so a record written or read by a field name
+   they share with it (`GroupBy`, `Output`) still infers as the fit's, as it did before they existed.
+8. **A seed is required and is a `Slot<int64>`.** There is no default, so a run is replayable by construction. `Cell`
+   has no 64-bit integer (`Int` is 32 bits), so a PARAM binds an int cell, read as its 64-bit value, and a LITERAL
+   carries all 64 bits. On the wire a literal seed is its decimal digits in a JSON string (`"seed":"42"`): a JSON number
+   past `2⁵³` is not the same integer on a host whose numbers are doubles. The form is canonical: an optional `-`, no
+   leading zero, no `-0`, inside the signed 64-bit range; anything else is refused at decode. The digits are read one by
+   one, so no host's number parser or culture is consulted.
+9. **`KMeans`, in pinned order.** Each feature is a named `ColExpr` of int, float or decimal type, read as its float; a
+   null or non-finite feature is refused by name, naming the row. With `Standardise`, each feature is centred and scaled
+   within its group, `(x − mean) / sd` with `sd` over `n − 1`, and a constant feature answers zero. Seeding is
+   k-means++: the first centre is row `below n`; each later one is the first row whose running sum of squared distances
+   to the nearest chosen centre exceeds `uniform53 · total`, sums left to right in row order. Where every row coincides
+   with a centre (`total = 0`) the next seed is the lowest row that is not yet one, with no draw; where the product
+   rounds up to the total itself it is the last row off a centre. Lloyd's passes follow: every row to its nearest centre
+   by squared Euclidean distance in `+ − ×`, a tie to the lowest cluster; a cluster left empty takes the row farthest
+   from its own centre among the clusters that keep another row, a tie to the lowest row, in cluster order; a pass that
+   leaves every row where the last pass left it has CONVERGED; otherwise each centre becomes its rows' mean, summed in
+   row order, and the passes stop unconverged at `MaxIterations`. `iterations` counts assignment passes, the confirming
+   one included. `Restarts` seedings run in order from the group's one stream; the lowest total within-cluster sum of
+   squares is answered, a tie to the earliest. Clusters are numbered from ONE in the order they were seeded, never by
+   size, so a replay's labels are stable. A centre is stated in the space the clustering ran in (standardised scores
+   where `Standardise` is set), and carries its feature's unit only where it is not. The silhouette is opt-in
+   (`Silhouette`, a column of `Summary`), because it reads every pair of a group's rows: the mean over rows of
+   `(b − a) / max(a, b)` on Euclidean distances, zero for a row alone in its cluster. Refusals, checked in this order
+   and each naming what it refuses: `k` below two, a restart or pass bound below one, the seed, no feature, a feature
+   named twice, an unknown key, an output name that collides, a feature of a type no clustering reads (`TypeError`), a
+   null or non-finite feature, and a group with fewer rows than `k`.
+10. **`Bootstrap`, in pinned order.** Per group and replicate, `below n` once per row of the group, in replicate order;
+    with `Cluster`, once per distinct cluster value (first-appearance order), each drawn cluster contributing all its
+    rows. Each aggregate is then `Column.aggregate` over the drawn rows' cells in draw order: `GroupBy`'s vocabulary and
+    its refusals, so an aggregate the group cannot evaluate is the aggregate's own named error. Replicates are numbered
+    from one. `Replicates` answers one row per group and replicate, each aggregate typed and unit-stated as a `GroupBy`
+    states it. `Summary` answers one row per group and aggregate, as floats: `estimate`, the aggregate over the group's
+    own rows; `std_error`, the `StdDev` aggregate over the replicate column, so a `GroupBy` over the `Replicates` table
+    reproduces it bit for bit; and, where `Level` is stated, `lower` and `upper` by ONE quantile rule: the replicates
+    sorted ascending (a negative zero read as zero first, so no host orders two zeros), position `h = (B − 1) · q`, the
+    value at `⌊h⌋` plus `h − ⌊h⌋` of the way to the next (Hyndman and Fan's type 7), at `q = (1 − Level) / 2` and
+    `1 − q`. A summary refuses an aggregate of a non-numeric type, and a replicate whose aggregate is null or not
+    finite, naming the group, the replicate and the aggregate. Other refusals: no replicate, a level outside `(0, 1)`, no
+    aggregate, an unknown column, a null in the cluster column, an output name stated twice.
+11. **Both steps are planner barriers.** Their draws are counted against the rows they are handed, so no filter is moved
+    ahead of one and no column pruned across one; `Plan.isTotal` answers `false`, because both refuse by row and by
+    group. The static walk states each table's names, types and units, every column `Pinned`.
+12. **The incremental seam re-evaluates a seeded step whole** (`StepNotRowLocal`, as it does a `Predict`), which is
+    byte-equal to a full evaluation by construction. A per-group memo was considered and not built. A group's stream is
+    its ordinal among the groups, so a delta that creates or removes an earlier group renumbers every later group's
+    stream; a memo would have to prove the ordinals stable before it reused anything, and no consumer's refresh cost has
+    been measured to size that against. A measured one is the reason to revisit.
+13. **Held by tests, not by the model.** `proofs/Pipeline.fst` carries no regression and no seeded step: `Fit` and
+    `Predict` are recorded exclusions of class `measured-elsewhere`, and these two steps join them
+    (`proofs/coverage-exclusions.json`, stand-in `SeededStepsTests.fs`). What the pin guarantees is the premise row
+    `rng-splitmix64-pinned-by-limbs` in `proofs.json`: byte identity given the limb arithmetic's transcription and the
+    basic-operations premise (Phase 589) for the steps' sums, means, distances and one square root.
+14. **Where the shard and the tree differed.** (a) The shard has `Pipeline.fst` and its oracle "learn both steps' schema
+    effects"; the model has no case for `Fit`-class steps, so neither file moved (item 13). (b) It names a consumer's
+    profile table "from the regression corpus" as a vector fixture; this repository holds no such table, and a
+    consumer's data does not enter a public repository's corpus. The vectors carry an authored profile shape instead: a
+    decimal and an int feature, standardised, four seedings. (c) Phases 604 (the pipeline wire specification), 617
+    (weighted aggregates) and 623 (method cards) have not landed, so there is no specification document to add the two
+    members to, the weighted aggregates are not in `Agg`'s vocabulary yet (a `Bootstrap` takes whatever `AggFn` holds
+    when they are), and the generator's and the steps' method cards wait on 623's roster law.
+15. **The law vectors are additions.** `elementary-laws.json` gains three `rng` rows and a `generator` head member;
+    `transform-laws.json` gains twenty rows (iterations 181 to 200), a `seeded` head member, and its `iterations` count
+    moves from 181 to 201. Every row that was there answers the bytes it did.
+
 ## 2026-11-11 — D75: regression modelling is a package of its own, `Fuaran.Compute.Regression`, above LinearAlgebra and Elementary; LinearAlgebra holds matrix operations only and depends on nothing in Compute; Regression reads LinearAlgebra's internals by `InternalsVisibleTo`; the move changes no bit
 
 **Context.** Phase 632, on the operator's rulings of 2026-11-10 and 2026-11-11: functions specific to regression

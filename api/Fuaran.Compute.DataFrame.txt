@@ -5,6 +5,7 @@
 # One ordinal-sorted line per externally-visible type, member, record field and union case.
 # See STABILITY.md "Public-surface baselines" for what each move class means.
 ctor Fuaran.Compute.Agg..ctor(System.String, Fuaran.Core.AggFn, System.String)
+ctor Fuaran.Compute.BootstrapSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Fuaran.Compute.Slot`1<System.Int32>, Fuaran.Compute.Slot`1<System.Int64>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Agg>, Microsoft.FSharp.Core.FSharpOption`1<System.Double>, Fuaran.Compute.BootstrapOutput)
 ctor Fuaran.Compute.ColumnKnowledge..ctor(System.String, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.ColumnType>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Core.UnitOfMeasure>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>, Fuaran.Compute.Exactness)
 ctor Fuaran.Compute.FitControl..ctor(Fuaran.Compute.Slot`1<System.Int32>, Fuaran.Compute.Slot`1<System.Double>)
 ctor Fuaran.Compute.FitSpec..ctor(System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ColExpr>>, System.Boolean, Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.ColExpr>, Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Slot`1<System.Double>>, Fuaran.Compute.FitFamily, Fuaran.Compute.FitLink, Fuaran.Compute.FitControl, Fuaran.Compute.FitOutput, Fuaran.Compute.FitStdErrors)
@@ -13,6 +14,7 @@ ctor Fuaran.Compute.FnParam..ctor(System.String, Microsoft.FSharp.Core.FSharpOpt
 ctor Fuaran.Compute.HostRoundedDecision..ctor(System.Int32, System.String, System.String)
 ctor Fuaran.Compute.IncrementalPlan..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.StepIncrementality>, Fuaran.Compute.IncrementalStrategy)
 ctor Fuaran.Compute.IncrementalStateKey..ctor(System.String, System.String)
+ctor Fuaran.Compute.KMeansSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ColExpr>>, System.Boolean, Fuaran.Compute.Slot`1<System.Int32>, System.Int32, System.Int32, Fuaran.Compute.Slot`1<System.Int64>, System.Boolean, Fuaran.Compute.KMeansOutput)
 ctor Fuaran.Compute.PivotSpec..ctor(Microsoft.FSharp.Collections.FSharpList`1<System.String>, System.String, System.String, Fuaran.Core.AggFn)
 ctor Fuaran.Compute.PlanDeclined..ctor(Fuaran.Compute.RewriteClass, System.Int32, System.String)
 ctor Fuaran.Compute.PlanReport..ctor(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanRewrite>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PlanDeclined>)
@@ -40,6 +42,8 @@ field Fuaran.Compute.BinOp+Tags.Ne : System.Int32 (literal)
 field Fuaran.Compute.BinOp+Tags.Or : System.Int32 (literal)
 field Fuaran.Compute.BinOp+Tags.StartsWith : System.Int32 (literal)
 field Fuaran.Compute.BinOp+Tags.Sub : System.Int32 (literal)
+field Fuaran.Compute.BootstrapOutput+Tags.Replicates : System.Int32 (literal)
+field Fuaran.Compute.BootstrapOutput+Tags.Summary : System.Int32 (literal)
 field Fuaran.Compute.Change+Tags.ColumnValuesChanged : System.Int32 (literal)
 field Fuaran.Compute.Change+Tags.FullChange : System.Int32 (literal)
 field Fuaran.Compute.Change+Tags.RowsAppended : System.Int32 (literal)
@@ -75,11 +79,13 @@ field Fuaran.Compute.DeltaDefect+Tags.NegativeOrdinal : System.Int32 (literal)
 field Fuaran.Compute.DeltaDefect+Tags.SchemeMismatch : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.AggError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.ArityError : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.BootstrapError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.ExpansionTooLarge : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.FitError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.FunctionError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.InvalidKnots : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.JoinError : System.Int32 (literal)
+field Fuaran.Compute.EvalError+Tags.KMeansError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.OverflowError : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.RecursiveFunction : System.Int32 (literal)
 field Fuaran.Compute.EvalError+Tags.TypeError : System.Int32 (literal)
@@ -146,6 +152,9 @@ field Fuaran.Compute.JoinKind+Tags.Left : System.Int32 (literal)
 field Fuaran.Compute.JoinKind+Tags.Outer : System.Int32 (literal)
 field Fuaran.Compute.JoinKind+Tags.Right : System.Int32 (literal)
 field Fuaran.Compute.JoinKind+Tags.Semi : System.Int32 (literal)
+field Fuaran.Compute.KMeansOutput+Tags.Assignments : System.Int32 (literal)
+field Fuaran.Compute.KMeansOutput+Tags.Centres : System.Int32 (literal)
+field Fuaran.Compute.KMeansOutput+Tags.Summary : System.Int32 (literal)
 field Fuaran.Compute.KeyEqualityDisagreement+Tags.DistinctIdsEqualKey : System.Int32 (literal)
 field Fuaran.Compute.KeyEqualityDisagreement+Tags.EqualIdsDistinctKeys : System.Int32 (literal)
 field Fuaran.Compute.KeyEqualityDisagreement+Tags.NotDeclared : System.Int32 (literal)
@@ -215,6 +224,7 @@ field Fuaran.Compute.StepIncrementality+Tags.RecomputeFrame : System.Int32 (lite
 field Fuaran.Compute.StepIncrementality+Tags.TruncateOrder : System.Int32 (literal)
 field Fuaran.Compute.TableDelta+Tags.FullRefresh : System.Int32 (literal)
 field Fuaran.Compute.TableDelta+Tags.RowSet : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.Bootstrap : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Define : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Derive : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Distinct : System.Int32 (literal)
@@ -224,6 +234,7 @@ field Fuaran.Compute.Transform+Tags.Fit : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.GroupBy : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Intersect : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Join : System.Int32 (literal)
+field Fuaran.Compute.Transform+Tags.KMeans : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Limit : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Pivot : System.Int32 (literal)
 field Fuaran.Compute.Transform+Tags.Predict : System.Int32 (literal)
@@ -246,6 +257,9 @@ field Fuaran.Compute.WindowFn+Tags.RollingSum : System.Int32 (literal)
 field Fuaran.Compute.WindowFn+Tags.RowNumber : System.Int32 (literal)
 field Fuaran.Compute.WorkerPool.PoolRows : System.Int32 (literal)
 interface-marker Fuaran.Compute.MorselWorker
+method Fuaran.Compute.BootstrapSpecModule.create(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Agg>, System.Int32, System.Int64) : Fuaran.Compute.BootstrapSpec
+method Fuaran.Compute.BootstrapSpecModule.slotParams(Fuaran.Compute.BootstrapSpec) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.BootstrapSpecModule.substituteSlots(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.BootstrapSpec) : Fuaran.Compute.BootstrapSpec
 method Fuaran.Compute.ColExprModule.paramsOf(Fuaran.Compute.ColExpr) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 method Fuaran.Compute.ColExprModule.substitute(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
 method Fuaran.Compute.ColExprModule.substituteListParams(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Cell>>, Fuaran.Compute.ColExpr) : Fuaran.Compute.ColExpr
@@ -372,6 +386,11 @@ method Fuaran.Compute.IncrementalCodec.encodeDetached(Fuaran.Compute.Incremental
 method Fuaran.Compute.IncrementalCodec.keyOf(Fuaran.Compute.IncrementalEval) : Fuaran.Compute.IncrementalStateKey
 method Fuaran.Compute.IncrementalCodec.pipelineHash(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : System.String
 method Fuaran.Compute.IncrementalCodec.sourceFingerprint(Fuaran.Core.Table) : System.String
+method Fuaran.Compute.KMeansSpecModule.create(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ColExpr>>, System.Int32, System.Int64) : Fuaran.Compute.KMeansSpec
+method Fuaran.Compute.KMeansSpecModule.exprs(Fuaran.Compute.KMeansSpec) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.ColExpr>
+method Fuaran.Compute.KMeansSpecModule.mapExprs(Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.ColExpr, Fuaran.Compute.ColExpr>, Fuaran.Compute.KMeansSpec) : Fuaran.Compute.KMeansSpec
+method Fuaran.Compute.KMeansSpecModule.slotParams(Fuaran.Compute.KMeansSpec) : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+method Fuaran.Compute.KMeansSpecModule.substituteSlots(Microsoft.FSharp.Collections.FSharpMap`2<System.String, Fuaran.Core.Cell>, Fuaran.Compute.KMeansSpec) : Fuaran.Compute.KMeansSpec
 method Fuaran.Compute.MorselWorker.Listen(Microsoft.FSharp.Core.FSharpFunc`2<System.Object, Microsoft.FSharp.Core.Unit>) : System.Void
 method Fuaran.Compute.MorselWorker.Post(System.Object) : System.Void
 method Fuaran.Compute.MorselWorker.Stop() : System.Void
@@ -463,6 +482,13 @@ property Fuaran.Compute.Syntax.litNull : Fuaran.Compute.ColExpr { get }
 record-field Fuaran.Compute.Agg.Fn #1 : Fuaran.Core.AggFn
 record-field Fuaran.Compute.Agg.Name #0 : System.String
 record-field Fuaran.Compute.Agg.Of #2 : System.String
+record-field Fuaran.Compute.BootstrapSpec.Aggregates #4 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Agg>
+record-field Fuaran.Compute.BootstrapSpec.Cluster #1 : Microsoft.FSharp.Core.FSharpOption`1<System.String>
+record-field Fuaran.Compute.BootstrapSpec.GroupBy #0 : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+record-field Fuaran.Compute.BootstrapSpec.Level #5 : Microsoft.FSharp.Core.FSharpOption`1<System.Double>
+record-field Fuaran.Compute.BootstrapSpec.Output #6 : Fuaran.Compute.BootstrapOutput
+record-field Fuaran.Compute.BootstrapSpec.Replicates #2 : Fuaran.Compute.Slot`1<System.Int32>
+record-field Fuaran.Compute.BootstrapSpec.Seed #3 : Fuaran.Compute.Slot`1<System.Int64>
 record-field Fuaran.Compute.ColumnKnowledge.Description #4 : Microsoft.FSharp.Core.FSharpOption`1<System.String>
 record-field Fuaran.Compute.ColumnKnowledge.Exactness #6 : Fuaran.Compute.Exactness
 record-field Fuaran.Compute.ColumnKnowledge.Ext #5 : Microsoft.FSharp.Collections.FSharpMap`2<System.String, System.String>
@@ -496,6 +522,15 @@ record-field Fuaran.Compute.IncrementalPlan.Steps #0 : Microsoft.FSharp.Collecti
 record-field Fuaran.Compute.IncrementalPlan.Strategy #1 : Fuaran.Compute.IncrementalStrategy
 record-field Fuaran.Compute.IncrementalStateKey.Pipeline #0 : System.String
 record-field Fuaran.Compute.IncrementalStateKey.Source #1 : System.String
+record-field Fuaran.Compute.KMeansSpec.Features #1 : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.ColExpr>>
+record-field Fuaran.Compute.KMeansSpec.GroupBy #0 : Microsoft.FSharp.Collections.FSharpList`1<System.String>
+record-field Fuaran.Compute.KMeansSpec.K #3 : Fuaran.Compute.Slot`1<System.Int32>
+record-field Fuaran.Compute.KMeansSpec.MaxIterations #5 : System.Int32
+record-field Fuaran.Compute.KMeansSpec.Output #8 : Fuaran.Compute.KMeansOutput
+record-field Fuaran.Compute.KMeansSpec.Restarts #4 : System.Int32
+record-field Fuaran.Compute.KMeansSpec.Seed #6 : Fuaran.Compute.Slot`1<System.Int64>
+record-field Fuaran.Compute.KMeansSpec.Silhouette #7 : System.Boolean
+record-field Fuaran.Compute.KMeansSpec.Standardise #2 : System.Boolean
 record-field Fuaran.Compute.PivotSpec.Agg #3 : Fuaran.Core.AggFn
 record-field Fuaran.Compute.PivotSpec.Index #0 : Microsoft.FSharp.Collections.FSharpList`1<System.String>
 record-field Fuaran.Compute.PivotSpec.On #1 : System.String
@@ -535,6 +570,10 @@ record-field Fuaran.Compute.WindowSpec.PartitionBy #0 : Microsoft.FSharp.Collect
 type Fuaran.Compute.Agg (record)
 type Fuaran.Compute.BinOp (union)
 type Fuaran.Compute.BinOp+Tags (type)
+type Fuaran.Compute.BootstrapOutput (union)
+type Fuaran.Compute.BootstrapOutput+Tags (type)
+type Fuaran.Compute.BootstrapSpec (record)
+type Fuaran.Compute.BootstrapSpecModule (module)
 type Fuaran.Compute.Change (union)
 type Fuaran.Compute.Change+ColumnValuesChanged (type)
 type Fuaran.Compute.Change+SchemaChanged (type)
@@ -579,11 +618,13 @@ type Fuaran.Compute.DeltaDefect+Tags (type)
 type Fuaran.Compute.EvalError (union)
 type Fuaran.Compute.EvalError+AggError (type)
 type Fuaran.Compute.EvalError+ArityError (type)
+type Fuaran.Compute.EvalError+BootstrapError (type)
 type Fuaran.Compute.EvalError+ExpansionTooLarge (type)
 type Fuaran.Compute.EvalError+FitError (type)
 type Fuaran.Compute.EvalError+FunctionError (type)
 type Fuaran.Compute.EvalError+InvalidKnots (type)
 type Fuaran.Compute.EvalError+JoinError (type)
+type Fuaran.Compute.EvalError+KMeansError (type)
 type Fuaran.Compute.EvalError+OverflowError (type)
 type Fuaran.Compute.EvalError+RecursiveFunction (type)
 type Fuaran.Compute.EvalError+Tags (type)
@@ -639,6 +680,10 @@ type Fuaran.Compute.IntervalKind (union)
 type Fuaran.Compute.IntervalKind+Tags (type)
 type Fuaran.Compute.JoinKind (union)
 type Fuaran.Compute.JoinKind+Tags (type)
+type Fuaran.Compute.KMeansOutput (union)
+type Fuaran.Compute.KMeansOutput+Tags (type)
+type Fuaran.Compute.KMeansSpec (record)
+type Fuaran.Compute.KMeansSpecModule (module)
 type Fuaran.Compute.KeyEqualityDisagreement (union)
 type Fuaran.Compute.KeyEqualityDisagreement+DistinctIdsEqualKey (type)
 type Fuaran.Compute.KeyEqualityDisagreement+EqualIdsDistinctKeys (type)
@@ -713,6 +758,7 @@ type Fuaran.Compute.TableDelta (union)
 type Fuaran.Compute.TableDelta+RowSet (type)
 type Fuaran.Compute.TableDelta+Tags (type)
 type Fuaran.Compute.Transform (union)
+type Fuaran.Compute.Transform+Bootstrap (type)
 type Fuaran.Compute.Transform+Define (type)
 type Fuaran.Compute.Transform+Derive (type)
 type Fuaran.Compute.Transform+Except (type)
@@ -721,6 +767,7 @@ type Fuaran.Compute.Transform+Fit (type)
 type Fuaran.Compute.Transform+GroupBy (type)
 type Fuaran.Compute.Transform+Intersect (type)
 type Fuaran.Compute.Transform+Join (type)
+type Fuaran.Compute.Transform+KMeans (type)
 type Fuaran.Compute.Transform+Limit (type)
 type Fuaran.Compute.Transform+Pivot (type)
 type Fuaran.Compute.Transform+Predict (type)
@@ -752,6 +799,8 @@ union-case Fuaran.Compute.BinOp.Ne #6()
 union-case Fuaran.Compute.BinOp.Or #12()
 union-case Fuaran.Compute.BinOp.StartsWith #14()
 union-case Fuaran.Compute.BinOp.Sub #1()
+union-case Fuaran.Compute.BootstrapOutput.Replicates #0()
+union-case Fuaran.Compute.BootstrapOutput.Summary #1()
 union-case Fuaran.Compute.Change.FullChange #3()
 union-case Fuaran.Compute.Change.NewColumnValuesChanged #0(column: System.String)
 union-case Fuaran.Compute.Change.NewSchemaChanged #2(Item: Fuaran.Core.SchemaDelta)
@@ -787,11 +836,13 @@ union-case Fuaran.Compute.DeltaDefect.NewNegativeOrdinal #2(index: System.Int32)
 union-case Fuaran.Compute.DeltaDefect.NewSchemeMismatch #7(left: System.String, right: System.String)
 union-case Fuaran.Compute.EvalError.NewAggError #2(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewArityError #4(fn: System.String, expected: System.Int32, got: System.Int32)
+union-case Fuaran.Compute.EvalError.NewBootstrapError #17(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewExpansionTooLarge #12(at: System.String, bound: System.Int32)
 union-case Fuaran.Compute.EvalError.NewFitError #15(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewFunctionError #10(name: System.String, detail: System.String)
 union-case Fuaran.Compute.EvalError.NewInvalidKnots #13(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewJoinError #3(detail: System.String)
+union-case Fuaran.Compute.EvalError.NewKMeansError #16(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewOverflowError #6(detail: System.String)
 union-case Fuaran.Compute.EvalError.NewRecursiveFunction #11(cycle: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
 union-case Fuaran.Compute.EvalError.NewTypeError #1(detail: System.String)
@@ -858,6 +909,9 @@ union-case Fuaran.Compute.JoinKind.Left #1()
 union-case Fuaran.Compute.JoinKind.Outer #3()
 union-case Fuaran.Compute.JoinKind.Right #2()
 union-case Fuaran.Compute.JoinKind.Semi #4()
+union-case Fuaran.Compute.KMeansOutput.Assignments #0()
+union-case Fuaran.Compute.KMeansOutput.Centres #1()
+union-case Fuaran.Compute.KMeansOutput.Summary #2()
 union-case Fuaran.Compute.KeyEqualityDisagreement.NewDistinctIdsEqualKey #2(row: System.Int32, other: System.Int32, key: System.String)
 union-case Fuaran.Compute.KeyEqualityDisagreement.NewEqualIdsDistinctKeys #1(row: System.Int32, other: System.Int32, key: System.String, otherKey: System.String)
 union-case Fuaran.Compute.KeyEqualityDisagreement.NewNotDeclared #0(scheme: System.String)
@@ -928,6 +982,7 @@ union-case Fuaran.Compute.StepIncrementality.PropagateRows #0()
 union-case Fuaran.Compute.TableDelta.FullRefresh #0()
 union-case Fuaran.Compute.TableDelta.NewRowSet #1(Item: Fuaran.Compute.RowSetDelta)
 union-case Fuaran.Compute.Transform.Distinct #9()
+union-case Fuaran.Compute.Transform.NewBootstrap #18(Item: Fuaran.Compute.BootstrapSpec)
 union-case Fuaran.Compute.Transform.NewDefine #14(Item: Fuaran.Compute.FnDef)
 union-case Fuaran.Compute.Transform.NewDerive #2(Item1: System.String, Item2: Fuaran.Compute.ColExpr)
 union-case Fuaran.Compute.Transform.NewExcept #13(Item: Fuaran.Core.DataSource)
@@ -936,6 +991,7 @@ union-case Fuaran.Compute.Transform.NewFit #15(Item: Fuaran.Compute.FitSpec)
 union-case Fuaran.Compute.Transform.NewGroupBy #3(Item1: Microsoft.FSharp.Collections.FSharpList`1<System.String>, Item2: Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Agg>)
 union-case Fuaran.Compute.Transform.NewIntersect #12(Item: Fuaran.Core.DataSource)
 union-case Fuaran.Compute.Transform.NewJoin #4(Item1: Fuaran.Core.DataSource, Item2: Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, System.String>>, Item3: Fuaran.Compute.JoinKind)
+union-case Fuaran.Compute.Transform.NewKMeans #17(Item: Fuaran.Compute.KMeansSpec)
 union-case Fuaran.Compute.Transform.NewLimit #10(n: Fuaran.Compute.Slot`1<System.Int32>, offset: Fuaran.Compute.Slot`1<System.Int32>)
 union-case Fuaran.Compute.Transform.NewPivot #6(Item: Fuaran.Compute.PivotSpec)
 union-case Fuaran.Compute.Transform.NewPredict #16(Item: Fuaran.Compute.PredictSpec)

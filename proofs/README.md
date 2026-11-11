@@ -70,6 +70,7 @@ rewrites it); no count here is written by hand.
 | Package | Owner | Operations | Ladder | trivial | forward | obsolete | host-seam | measured-elsewhere |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | `Fuaran.Compute.ColumnOps` | `ColumnOps` | 17 | 5 | 1 | 0 | 0 | 0 | 11 |
+| `Fuaran.Compute.DataFrame` | `BootstrapSpec` | 3 | 0 | 0 | 0 | 0 | 0 | 3 |
 | `Fuaran.Compute.DataFrame` | `ColExpr` | 5 | 0 | 0 | 0 | 0 | 0 | 5 |
 | `Fuaran.Compute.DataFrame` | `ColumnKnowledge` | 8 | 0 | 8 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `DataFrame` | 42 | 11 | 2 | 7 | 0 | 0 | 22 |
@@ -80,6 +81,7 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `FnDef` | 1 | 0 | 0 | 0 | 0 | 0 | 1 |
 | `Fuaran.Compute.DataFrame` | `Incremental` | 25 | 3 | 0 | 0 | 0 | 0 | 22 |
 | `Fuaran.Compute.DataFrame` | `IncrementalCodec` | 7 | 0 | 0 | 0 | 0 | 0 | 7 |
+| `Fuaran.Compute.DataFrame` | `KMeansSpec` | 5 | 0 | 0 | 0 | 0 | 0 | 5 |
 | `Fuaran.Compute.DataFrame` | `MorselWorker` | 3 | 0 | 0 | 0 | 0 | 3 | 0 |
 | `Fuaran.Compute.DataFrame` | `NowGrain` | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `Plan` | 3 | 0 | 0 | 0 | 0 | 0 | 3 |
@@ -88,9 +90,9 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `SchemaWalk` | 17 | 2 | 0 | 1 | 0 | 0 | 14 |
 | `Fuaran.Compute.DataFrame` | `Slot` | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `Syntax` | 33 | 0 | 33 | 0 | 0 | 0 | 0 |
-| `Fuaran.Compute.DataFrame` | `Transform` | 25 | 14 | 0 | 0 | 0 | 0 | 11 |
+| `Fuaran.Compute.DataFrame` | `Transform` | 27 | 14 | 0 | 0 | 0 | 0 | 13 |
 | `Fuaran.Compute.DataFrame` | `WorkerPool` | 5 | 0 | 0 | 0 | 0 | 2 | 3 |
-| **Total** |  | 242 | 35 | 49 | 8 | 0 | 5 | 145 |
+| **Total** |  | 252 | 35 | 49 | 8 | 0 | 5 | 155 |
 <!-- operation-coverage:end -->
 
 ## Adopted from the kit's release asset

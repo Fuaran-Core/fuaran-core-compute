@@ -221,6 +221,13 @@ module PipelineQuery =
             @ (spec.Interval
                |> Option.map (fun i -> slotRead FloatType i.Level)
                |> Option.defaultValue [])
+        // Phase 621: the features' reads, then the slots' (an int cell binds a seed) —
+        // `Transform.paramsOf`'s order.
+        | KMeans spec ->
+            (KMeansSpec.exprs spec |> List.collect (exprReads cols None))
+            @ slotRead IntType spec.K
+            @ slotRead IntType spec.Seed
+        | Bootstrap spec -> slotRead IntType spec.Replicates @ slotRead IntType spec.Seed
         | Project _
         | GroupBy _
         | Join _
@@ -285,7 +292,9 @@ module PipelineQuery =
             | Distinct
             | Limit _
             | Define _
-            | Fit _ -> []
+            | Fit _
+            | KMeans _
+            | Bootstrap _ -> []
 
         refOf pq.Query.Source @ (pq.Pipeline |> List.collect stepRefs) |> List.distinct
 

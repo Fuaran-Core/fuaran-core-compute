@@ -56,6 +56,8 @@
     <Compile Include="FitFamiliesTests.fs" />
     <Compile Include="FitGeneralTests.fs" />
     <Compile Include="PredictTests.fs" />
+    <!-- Phase 621: the seeded steps, KMeans and Bootstrap, over the pinned generator. -->
+    <Compile Include="SeededStepsTests.fs" />
     <Compile Include="IncrementalGroupByTests.fs" />
     <Compile Include="IncrementalRefreshCostTests.fs" />
     <Compile Include="IncrementalStateCodecTests.fs" />

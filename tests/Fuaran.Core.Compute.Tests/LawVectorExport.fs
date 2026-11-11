@@ -182,6 +182,17 @@ module LawVectorExport =
         // Phase 597 (D56): every prediction refusal is a `FitError` naming what it refuses.
         elif shape.StartsWith "predict-" && shape.EndsWith "-refused" then
             Some "FitError"
+        // Phase 621 (D76): a seeded step's refusals are its own class, but a feature of a type no
+        // clustering reads, which is the type error, and an aggregate the group cannot evaluate, which
+        // is the aggregate's own.
+        elif shape = "kmeans-string-feature-refused" then
+            Some "TypeError"
+        elif shape = "bootstrap-aggregate-refused" then
+            Some "AggError"
+        elif shape.StartsWith "kmeans-" then
+            Some "KMeansError"
+        elif shape.StartsWith "bootstrap-" then
+            Some "BootstrapError"
         else
             None
 
@@ -194,6 +205,8 @@ module LawVectorExport =
         || shape.StartsWith "curve-"
         || shape.StartsWith "fit-"
         || shape.StartsWith "predict-"
+        || shape.StartsWith "kmeans-"
+        || shape.StartsWith "bootstrap-"
 
     /// The class a named family's refused shape carries, checked against what the reference answered:
     /// a refused shape the reference answers otherwise, or an answered one it refuses, is a broken
@@ -459,6 +472,27 @@ module LawVectorExport =
         + "`OverflowError`, and a mean below its range, a θ with no estimate and a prediction with no mean as "
         + "`FitError`."
 
+    /// Phase 621 (D76): what the seeded shapes hold, stated beside `description` so that member's bytes
+    /// are the ones they were.
+    let private seeded =
+        "The `kmeans-` and `bootstrap-` shapes (Phase 621, DECISIONS.md D76) run over one authored table of "
+        + "sixteen rows, four about each corner of a square, and hold the two seeded steps: every draw is "
+        + "the pinned SplitMix64 generator's (`laws/elementary-laws.json`, `op: rng`), group `g` in "
+        + "first-appearance order reading stream `g` of the step's seed, so each answer is pinned bytes. "
+        + "`kmeans` seeds by k-means++ and iterates Lloyd's passes in row order, a tie to the lowest cluster, "
+        + "an empty cluster taking the farthest row, clusters numbered from one in seed order; the shapes "
+        + "answer the assignments, the centres, the summary with the opt-in silhouette over three seedings, "
+        + "a grouped standardised clustering of int, float and decimal features, a decimal-and-int profile "
+        + "under a negative seed past 2^53, a derived feature, and rows that coincide. `bootstrap` draws, "
+        + "per replicate, `below n` once per row of the group (per cluster with `cluster`, each drawn "
+        + "whole) and aggregates the draw; the shapes answer the replicates of int, float, decimal and "
+        + "count aggregates, a grouped summary (the estimate, the replicates' standard deviation and the "
+        + "percentile interval by the sort-and-interpolate rule), whole clusters, and a decimal aggregate's "
+        + "summary. A `k` below two, a group with fewer rows than `k`, a null feature and no feature are "
+        + "refused as `KMeansError`, a string feature as `TypeError`; no replicate, a null in the cluster "
+        + "column and a level outside (0, 1) as `BootstrapError`, and an aggregate the group cannot "
+        + "evaluate as `AggError`."
+
     let renderTransformVectors () : string =
         CorpusFile.render
             { Head =
@@ -466,7 +500,8 @@ module LawVectorExport =
                   "kitVersion", str (kitVersion ())
                   "seed", CorpusFile.num seed
                   "iterations", CorpusFile.num iterations
-                  "description", str description ]
+                  "description", str description
+                  "seeded", str seeded ]
               Items = "vectors"
               Rows = allVectors () @ wireVectors () |> List.map vectorCell }
 

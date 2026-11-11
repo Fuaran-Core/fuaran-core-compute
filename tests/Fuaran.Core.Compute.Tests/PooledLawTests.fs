@@ -111,6 +111,22 @@ let tests =
 
                   for i in 0 .. onDotnet.Length - 1 do
                       Expect.equal underNode[i] onDotnet[i] (sprintf "under node, fit vector %d differs from .NET" i)
+
+                  // Phase 621 — and the seeded steps' vectors: every draw, assignment, centre, replicate
+                  // and interval under node is this host's, line for line.
+                  let first = Array.IndexOf(lines, "BEGIN seeded-vectors")
+                  let last = Array.IndexOf(lines, "END seeded-vectors")
+                  Expect.isTrue (first >= 0 && last > first) "the node leg printed the seeded vectors"
+                  let underNode = lines[first + 1 .. last - 1]
+                  let onDotnet = TransformVectorSample.seededRender().Split('\n')
+                  Expect.equal underNode.Length onDotnet.Length "one line per seeded shape"
+
+                  Expect.isTrue
+                      (onDotnet |> Array.forall (fun line -> line.Contains " round-trips "))
+                      "every seeded pipeline round-trips its wire on .NET"
+
+                  for i in 0 .. onDotnet.Length - 1 do
+                      Expect.equal underNode[i] onDotnet[i] (sprintf "under node, seeded vector %d differs from .NET" i)
               finally
                   try
                       Directory.Delete(scratch, true)

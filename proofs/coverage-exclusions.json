@@ -25,7 +25,7 @@
       "package": "Fuaran.Compute.Elementary",
       "reason": "pinned-order-law-tested",
       "phase": "fuaran-core#630",
-      "note": "The scalar pinned mathematics, cut out of Fuaran.Compute.LinearAlgebra by Phase 630 (DECISIONS.md D74) with its contract unchanged: `exp`, `ln`, `log10` and the float-exponent `pow` (Phase 593, D52), `erfc` and the normal distribution, density and quantile (Phase 600, D58), each one argument reduction and one polynomial in a fixed sequence of IEEE-754 operations, behind D43's special-value tables. Its contract is that sequence, so it is held where the sequence is observable: `ElementaryLaws.laws` holds every special-value row and IEEE edge as stated and `pow`'s exact cases byte for byte, beside the inverses and functional equations within their one-ulp bounds; `conformance/laws/elementary-laws.json` carries the package's answers over authored hard inputs, each computed vector with its correctly rounded reference, which the suite holds on .NET and under node; and a source-reading test finds no host mathematics call in `Elementary.fs`. The tables themselves are modelled in `proofs/Pipeline.fst`, test for test, where the evaluator reads them (`pipeline-power-tables-before-host`); that every transcribing host's routine is the same function is the premise `elementary-functions-pinned-by-transcription`, never a theorem."
+      "note": "The scalar pinned mathematics, cut out of Fuaran.Compute.LinearAlgebra by Phase 630 (DECISIONS.md D74) with its contract unchanged: `exp`, `ln`, `log10` and the float-exponent `pow` (Phase 593, D52), `erfc` and the normal distribution, density and quantile (Phase 600, D58), each one argument reduction and one polynomial in a fixed sequence of IEEE-754 operations, behind D43's special-value tables. Its contract is that sequence, so it is held where the sequence is observable: `ElementaryLaws.laws` holds every special-value row and IEEE edge as stated and `pow`'s exact cases byte for byte, beside the inverses and functional equations within their one-ulp bounds; `conformance/laws/elementary-laws.json` carries the package's answers over authored hard inputs, each computed vector with its correctly rounded reference, which the suite holds on .NET and under node; and a source-reading test finds no host mathematics call in `Elementary.fs`. The pinned SplitMix64 generator `Rng` (Phase 621, D76) is held the same way: `ElementaryLaws.laws` holds its limb arithmetic to the draws its authors publish and to the recurrence in the host's own 64-bit integers, and a seed's streams, `uniform53` and `below` to the stated functions of the draws; the same file carries twenty draws at three seeds, which the suite holds on .NET and under node (the premise `rng-splitmix64-pinned-by-limbs`). The tables themselves are modelled in `proofs/Pipeline.fst`, test for test, where the evaluator reads them (`pipeline-power-tables-before-host`); that every transcribing host's routine is the same function is the premise `elementary-functions-pinned-by-transcription`, never a theorem."
     },
     {
       "package": "Fuaran.Compute.LinearAlgebra",
@@ -377,6 +377,30 @@
       "class": "measured-elsewhere",
       "reason": "Rows scored against a fitted model (Phase 597, D56). The model carries no regression; a training row's prediction is held byte for byte to the fit's fitted value, the standard errors to the textbook formulae, the interval to the t table's row exactly, with the coding, the units, the refusals, the wire round trip and the static walk tested, and the transform law vectors carry the predict shapes under .NET and node.",
       "standIn": "tests/Fuaran.Core.Compute.Tests/PredictTests.fs"
+    },
+    {
+      "members": [
+        "KMeansSpec.create",
+        "KMeansSpec.exprs",
+        "KMeansSpec.mapExprs",
+        "KMeansSpec.slotParams",
+        "KMeansSpec.substituteSlots",
+        "Transform.KMeans"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "A clustering computed per group from a seed (Phase 621, D76). The model carries no seeded step, as it carries no regression; every draw is the pinned generator's (the premise `rng-splitmix64-pinned-by-limbs`), and the seeding, the passes, a centre as its rows' mean, the re-seeding of an empty cluster and the silhouette are held bit for bit against values worked by hand, with a replay byte-equal and another seed differing, the refusals, the slots, the wire round trip, the static walk, the planner's barrier and the incremental seam tested, and the transform law vectors carry the kmeans shapes under .NET and node.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/SeededStepsTests.fs"
+    },
+    {
+      "members": [
+        "BootstrapSpec.create",
+        "BootstrapSpec.slotParams",
+        "BootstrapSpec.substituteSlots",
+        "Transform.Bootstrap"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "A resampling computed per group from a seed (Phase 621, D76). The model carries no seeded step; a replicate's rows are re-derived in the suite from the pinned generator's `below` and its aggregates held to them bit for bit, a summary's standard error to the `StdDev` a `GroupBy` over the replicates answers and its interval to the pinned quantile rule, with whole-cluster draws, the refusals, the wire round trip, the static walk and the incremental seam tested, and the transform law vectors carry the bootstrap shapes under .NET and node.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/SeededStepsTests.fs"
     },
     {
       "members": [

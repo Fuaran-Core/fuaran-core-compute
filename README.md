@@ -28,7 +28,7 @@ were renamed, and the mapping, is D4.
 
 | Package | What it owns | Built over |
 |---|---|---|
-| **`Fuaran.Compute.Elementary`** | the scalar pinned mathematics at the bottom of the graph (`DECISIONS.md` D52, D74): `Elementary.exp`, `ln`, `log10` and the float-exponent `pow`, each answered first by D43's special-value table (`expTable`, `lnTable`, `powTable`, published as data), and `erfc` with the normal distribution, density and quantile (`normalCdf`, `normalDensity`, `normalQuantile`, D58) — each one argument reduction and one polynomial in `+ − × ÷` and comparisons, within one ulp of the true value and byte-identical on every host that transcribes it; every operation's exactness class (`ElementaryOperations.exactness`) and `ElementaryLaws.laws`; no fused multiply-add and no host mathematics call | FSharp.Core only |
+| **`Fuaran.Compute.Elementary`** | the scalar pinned mathematics at the bottom of the graph (`DECISIONS.md` D52, D74): `Elementary.exp`, `ln`, `log10` and the float-exponent `pow`, each answered first by D43's special-value table (`expTable`, `lnTable`, `powTable`, published as data), and `erfc` with the normal distribution, density and quantile (`normalCdf`, `normalDensity`, `normalQuantile`, D58) — each one argument reduction and one polynomial in `+ − × ÷` and comparisons, within one ulp of the true value and byte-identical on every host that transcribes it; the pinned SplitMix64 generator `Rng` (`ofSeed`, `next`, `uniform53`, `below`, D76), computed in 16-bit limbs so every host draws the same bits; every operation's exactness class (`ElementaryOperations.exactness`) and `ElementaryLaws.laws`; no fused multiply-add and no host mathematics call | FSharp.Core only |
 | **`Fuaran.Compute.LinearAlgebra`** | a small dense linear-algebra contract in which every operation runs in one pinned floating-point order, so its answers are byte-identical on .NET, under Fable and in every host that ports it (`DECISIONS.md` D49, D50): an opaque immutable column-major `Matrix` (`Matrix.init` / `identity` / `ofColumns` / `column` / `transpose`), vectors as the substrate's `Vector<float>` (a float column is an input without a copy), levels 1 to 3 in module `Blas` (`dot`, `axpy`, `scale`, `add`, `sub`, the scaled `norm2`, `gemv` in column-axpy order, `gemm` in per-element `k` order, `gram`), the checked `UpperTriangular` with `solveUpper` / `solveUpperT`, the one `Givens` rotation, the batch `QR.householder` / `QR.pivoted` with D49's one rank rule, the bit-exact matrix codec `LinAlgWire` (D51), typed `LinAlgError`s, canonical NaN out, every operation's exactness class (`Operations.exactness`), and `LinearAlgebraLaws.laws`; matrix operations only, depending on nothing in Compute (D75); no fused multiply-add on any host | `Fuaran.Core.Column`, `Fuaran.Core.Wire` |
 | **`Fuaran.Compute.Regression`** | regression modelling over the matrix operations, every answer byte-identical on .NET, under Fable and in every host that ports it (`DECISIONS.md` D49, D75): least squares by a streaming Givens QR (`QRAccumulator`: O(p²) state, weighted rows, `LeastSquares.ofAccumulator` / `solve` with aliased columns reported), its bit-exact codec `RegressionWire` so a primed fit survives a restart (D51), generalised linear models by IRLS in `Glm` over `Fuaran.Compute.Elementary`'s pinned functions (`Glm.fit`, `Glm.nullDeviance`: Gaussian, Poisson, quasi-Poisson, Gamma, Tweedie, binomial, quasi-binomial, inverse Gaussian and negative binomial families under the identity, log, logit, probit, cloglog, inverse, inverse-square and square-root links, D55, D57, D58), sandwich standard errors HC0 to HC3 (`RobustVariant`, `LeastSquares.robustStandardErrors`, `Glm.robustStandardErrors`, D57), every operation's exactness class (`RegressionOperations.exactness`), and `RegressionLaws.laws`; no fused multiply-add on any host | `LinearAlgebra`, `Elementary`, `Fuaran.Core.Column`, `Fuaran.Core.Wire` |
 | **`Fuaran.Compute.DataFrame`** | the declarative-compute layer: a serializable `Transform` / `ColExpr` algebra (the verb set below), a pure reference evaluator with pinned null, coercion, ordering and float semantics (the cross-host parity contract), a canonical wire codec, the change-relevance `evalFrom`, the typed row delta (`TableDelta`, `Delta.diff`, an associative composition) and the incremental evaluator (`Incremental.plan` / `prime` / `refresh`) | `Fuaran.Core.Column`, `Fuaran.Core.Wire` |
@@ -58,6 +58,8 @@ it has a canonical wire form, so a pipeline can be stored, diffed, sent and eval
 | `Define of FnDef` | a named function the pipeline carries (below); it changes no frame |
 | `Fit of FitSpec` | fit a regression per group by the pinned streaming Givens QR (below): coefficients, a summary, fitted values or residuals |
 | `Predict of PredictSpec` | score rows against a fitted model (below): the prediction, its standard errors and an interval read from a pinned t table |
+| `KMeans of KMeansSpec` | cluster rows per group from a required seed (below): the assignments, the centres or a summary |
+| `Bootstrap of BootstrapSpec` | resample rows per group from a required seed (below): each replicate's aggregates, or a summary with a percentile interval |
 
 | `ColExpr` | |
 |---|---|
@@ -115,6 +117,20 @@ From the training rows it also appends `se_fit` and `se_pred` (`σ̂·√(x₀�
 declared level, a confidence or prediction interval's `lower` and `upper`, whose quantile is a row of a
 **Student t table carried as data** and read through `Interpolate` — so a training row's prediction is
 its fitted value bit for bit, and every column is byte-identical on every host.
+
+**A clustering and a resampling replay from a seed** (`DECISIONS.md` D76). `KMeans` and `Bootstrap` draw from
+`Rng`, the pinned SplitMix64 of `Fuaran.Compute.Elementary`, and from nothing else, so a pipeline, a seed and the data
+answer the same bytes on every host and on every day. The seed is required: a spec has no default, a param slot binds
+it per run, and on the wire a literal seed is its digits in a string. Each group, in first-appearance order, draws its
+own stream of the seed. `KMeans` names its features as `ColExpr`s, seeds by k-means++ and runs Lloyd's passes in row
+order (a tie to the lowest cluster, an empty cluster re-seeded from the farthest row), keeps the best of `Restarts`
+seedings, and answers `Assignments` (the input rows with `cluster` appended, clusters numbered from one in seed order),
+`Centres` (each centre with its `size` and `withinSS`) or `Summary` (the passes, the total, whether it converged, the
+seed, and the silhouette where asked). `Bootstrap` draws as many rows as the group has, with replacement, per
+replicate — whole clusters where `Cluster` names a column — computes any `GroupBy` aggregates over the draw, and answers
+`Replicates` or `Summary`: the group's own estimate, the replicates' standard deviation, and a percentile interval at
+`Level` by one sort-and-interpolate rule. A null feature, a `k` the group cannot fill and a null cluster value are
+refused by name. Both steps are planner barriers, and the incremental seam re-evaluates them whole.
 
 **The power functions are exact on every host** (`DECISIONS.md` D43, D54). `Pow` under an integer
 exponent runs one pinned routine, binary exponentiation over IEEE-754 multiplication with one
