@@ -7,7 +7,10 @@ open Fuaran.Compute.Solvers
 //  Phase 631 — the pinned special functions: the gamma function and its
 //  logarithm, the beta function and its logarithm, the regularized incomplete
 //  gamma and beta functions, the inverse of the regularized incomplete beta,
-//  and the polygamma functions (DECISIONS.md D78).
+//  and the polygamma functions (DECISIONS.md D78). Phase 636 — the incomplete
+//  beta function's complement and that complement's inverse, and the function's
+//  continued fraction in its contracted form from a parameter sum of 128
+//  (DECISIONS.md D81).
 //
 //  Every function is written with `+ − × ÷`, comparisons, the correctly
 //  rounded square root and this package's own `exp`, `ln` and `pow`, in one
@@ -21,12 +24,12 @@ open Fuaran.Compute.Solvers
 //  fifty digits by `tests/Fuaran.Core.Compute.Tests/SpecialReference/
 //  special_reference.py`, which also computes every reference the vectors
 //  carry. The accuracy stated for each function is measured against that
-//  reference (D78 and benchmarks/results/), not proved.
+//  reference (D78, D81 and benchmarks/results/), not proved.
 //
 //  FSharp.Core and the solvers only; Fable-clean.
 // ============================================================================
 
-/// The pinned special functions (DECISIONS.md D78). A NaN argument answers NaN everywhere; what each
+/// The pinned special functions (DECISIONS.md D78, D81). A NaN argument answers NaN everywhere; what each
 /// function answers outside its domain and at its bounds is stated on it.
 [<RequireQualifiedAccess>]
 module Special =
@@ -855,6 +858,76 @@ module Special =
 
         answer
 
+    /// From this sum of the parameters the fraction is read in its contracted form (below). Under it
+    /// the first denominator of the form above, `1 − (a + b) x / (a + 1)`, is at least `2 / (a + b + 2)`
+    /// on the fraction's side of the switch, so it has lost at most six bits to its subtraction.
+    let private betaContractedFrom = 128.0
+
+    /// `λ = a + 1 − (a + b)(x + xLow)`, what the fraction's first denominator is `a + 1` times, for an
+    /// argument held as a double and what its rounding left out. The sum `a + b`, the product and
+    /// `a + 1` are each taken with their rounding errors, so the difference of two numbers that agree
+    /// in most of their digits (a large `a` read within a few `1 / a` of the mean) keeps its relative
+    /// accuracy. On the fraction's side of the switch `λ ≥ 2x`.
+    let private betaLambda (a: float) (b: float) (x: float) (xLow: float) : float =
+        let struct (s, e) = Elementary.twoSum a b
+        let struct (ph, pl) = Elementary.twoProd x s
+        let struct (t, tl) = Elementary.twoSum a 1.0
+        (((t - ph) + (tl - pl)) - x * e) - xLow * s
+
+    /// The denominator `f` of `I_x(a, b) = prefix / f`: the even part of the continued fraction above
+    /// (DiDonato and Morris 1992, equation 9), by the modified Lentz method,
+    /// `f = β₀ + α₁ / (β₁ + α₂ / (β₂ + …))` with `β₀ = a λ / (a + 1)`,
+    /// `αₘ = (a + m − 1)(a + b + m − 1) m (b − m) x² / (a + 2m − 1)²` and
+    /// `βₘ = m + m (b − m) x / (a + 2m − 1) + (a + m)(λ + m (2 − x)) / (a + 2m + 1)`.
+    /// It is the same fraction two partial quotients at a time, written so that the one difference
+    /// that cancels, `λ`, is formed once and exactly (see `betaLambda`) and no term subtracts two
+    /// numbers near one.
+    let private betaFractionContracted (a: float) (b: float) (x: float) (lambda: float) : float =
+        let mutable f = a * lambda / (a + 1.0)
+
+        if magnitude f < tiny then
+            f <- tiny
+
+        let mutable c = f
+        let mutable d = 0.0
+        let mutable m = 0
+        let mutable answer = Double.NaN
+        let mutable running = true
+
+        while running do
+            m <- m + 1
+            let fm = float m
+            // `m − 1` and `2m − 1` are formed first: a parameter far below one must not pass through a
+            // sum with one on its way to being read alone.
+            let down = fm - 1.0
+            let t = a + (2.0 * fm - 1.0)
+            let alpha = (a + down) * (a + b + down) * fm * (b - fm) * x * x / (t * t)
+
+            let beta =
+                fm + fm * (b - fm) * x / t + (a + fm) * (lambda + fm * (2.0 - x)) / (t + 2.0)
+
+            d <- beta + alpha * d
+
+            if magnitude d < tiny then
+                d <- tiny
+
+            c <- beta + alpha / c
+
+            if magnitude c < tiny then
+                c <- tiny
+
+            d <- 1.0 / d
+            let previous = f
+            f <- f * (c * d)
+
+            if settled previous f then
+                answer <- f
+                running <- false
+            elif m >= seriesRule.Cap then
+                running <- false
+
+        answer
+
     /// `Σ_{n ≥ 0} (a + b)ₙ / (a + 1)ₙ xⁿ`, Gauss's series `₂F₁(a + b, 1; a + 1; x)`: `I_x(a, b)` over
     /// `prefix / a`, every term positive. Read only where `b < 1` and `x ≤ 0.99`, where each term is
     /// less than `x` times the one before.
@@ -883,9 +956,57 @@ module Special =
     /// Up to this argument the series above stands in for a complement (some 3600 terms at the most).
     let private betaSeriesTo = 0.99
 
-    /// `(I_x(a, b), 1 − I_x(a, b), prefix)` for `0 < x < 1`. The one on the fraction's side of the
-    /// switch `x = (a + 1) / (a + b + 2)` is the continued fraction, directly. The other is its
-    /// complement, except where that complement is below the fraction's own argument and the other
+    /// `1 − I_x(a, b)` for `0 < a < 1`, a `b` of `127` and more and `x` at or before the switch,
+    /// directly: `−expm1 L − exp L · a · Σ_{n ≥ 1} (1 − b)ₙ xⁿ / ((a + n) n!)` with
+    /// `L = a ln x + ln (Γ(a + b) / Γ(b)) − ln Γ(1 + a)`, which is the function's own series
+    /// `xᵃ / (a B(a, b)) · ₂F₁(a, 1 − b; a + 1; x)` taken from one. It is `upperSmall`, the incomplete
+    /// gamma function's, with `b`'s falling products where that has powers: there `b x < 2`, so the
+    /// terms alternate and fall from the second. Every part of `L` is formed relative to `a`
+    /// (`ln (Γ(a + b) / Γ(b))` as `a ln b + ((a + b − ½) ln (1 + a / b) − a)` and the difference of the
+    /// two Stirling tails, three terms of it factored through `1 / (a + b) − 1 / b`), so the answer
+    /// keeps its relative accuracy as `a` falls to zero, where it is `a` times a number of order one.
+    let private betaUpperSmall (a: float) (b: float) (x: float) : float =
+        let u0 = 1.0 / b
+        let u1 = 1.0 / (a + b)
+        let v0 = u0 * u0
+        let v1 = u1 * u1
+        let w = u0 * u1
+
+        let tails =
+            -(a * w)
+            * (1.0 / 12.0 - (v1 + w + v0) / 360.0
+               + (v1 * v1 + v1 * w + v1 * v0 + w * v0 + v0 * v0) / 1260.0)
+
+        let struct (ph, pl) = Elementary.twoProd x b
+
+        let l =
+            a * (Elementary.ln ph + pl / ph) + (((a + b - 0.5) * ln1p (a / b) - a) + tails)
+            - gammaLnOnePlus a
+
+        let mutable term = 1.0
+        let mutable sum = 0.0
+        let mutable n = 0
+        let mutable answer = Double.NaN
+        let mutable running = true
+
+        while running do
+            n <- n + 1
+            let fn = float n
+            term <- term * ((fn - b) * x / fn)
+            let previous = sum
+            sum <- sum + term / (a + fn)
+
+            if settled previous sum then
+                answer <- sum
+                running <- false
+            elif n >= seriesRule.Cap then
+                running <- false
+
+        -(expm1 l) - Elementary.exp l * a * answer
+
+    /// `(I_x(a, b), 1 − I_x(a, b), prefix)` for `0 < x < 1` and `a + b < 128`. The one on the fraction's
+    /// side of the switch `x = (a + 1) / (a + b + 2)` is the continued fraction, directly. The other is
+    /// its complement, except where that complement is below the fraction's own argument and the other
     /// side's own parameter is below one (the density is unbounded at that end, and the small value
     /// would be a difference of two near ones): there it is Gauss's series, up to an argument of
     /// `0.99`. The series loses at most about `3 / (1 − x)` units in the last place of its sum to its
@@ -894,10 +1015,14 @@ module Special =
     /// The upper value is a function of `y = 1 − x`, which a double holds exactly only from `x = ½`.
     /// What the subtraction rounded away, `yLow = (1 − y) − x`, is restored to first order through the
     /// density `prefix / (x y)`: without it a large `b` multiplies that rounding into the answer.
-    let private regularizedBetaBoth (a: float) (b: float) (x: float) : struct (float * float * float) =
-        let y = 1.0 - x
-        let yLow = (1.0 - y) - x
-        let prefix = betaPrefix a b x y
+    let private regularizedBetaBothSmall
+        (a: float)
+        (b: float)
+        (x: float)
+        (y: float)
+        (yLow: float)
+        (prefix: float)
+        : struct (float * float * float) =
         let restored = yLow * (prefix / (x * y))
 
         if x > (a + 1.0) / (a + b + 2.0) then
@@ -915,6 +1040,49 @@ module Special =
             else
                 struct (lower, 1.0 - lower, prefix)
 
+    /// The same triple from `a + b = 128`. The one on the fraction's side of the switch is the
+    /// contracted fraction, whose `λ` takes what `1 − x` rounded away itself: the prefix is already a
+    /// function of `x` and not of the rounded `y`, so nothing is added through the density. The other
+    /// is its complement, except where the fraction's own parameter is below one and its value above
+    /// one half: there the small one of the pair is `betaUpperSmall`, computed and not subtracted.
+    /// (A parameter below one on the fraction's side puts the switch within `2 / 130` of that end, so
+    /// its argument is small and Gauss's series, which wants the other argument at most `0.99`, is
+    /// not read from this sum up.)
+    let private regularizedBetaBothLarge
+        (a: float)
+        (b: float)
+        (x: float)
+        (y: float)
+        (yLow: float)
+        (prefix: float)
+        : struct (float * float * float) =
+        if x > (a + 1.0) / (a + b + 2.0) then
+            let upper = prefix / betaFractionContracted b a y (betaLambda b a y yLow)
+
+            if b < 1.0 && upper > 0.5 then
+                struct (betaUpperSmall b a y, upper, prefix)
+            else
+                struct (1.0 - upper, upper, prefix)
+        else
+            let lower = prefix / betaFractionContracted a b x (betaLambda a b x 0.0)
+
+            if a < 1.0 && lower > 0.5 then
+                struct (lower, betaUpperSmall a b x, prefix)
+            else
+                struct (lower, 1.0 - lower, prefix)
+
+    /// `(I_x(a, b), 1 − I_x(a, b), prefix)` for `0 < x < 1`: Abramowitz and Stegun's fraction below a
+    /// parameter sum of `128`, the contracted one from it.
+    let private regularizedBetaBoth (a: float) (b: float) (x: float) : struct (float * float * float) =
+        let y = 1.0 - x
+        let yLow = (1.0 - y) - x
+        let prefix = betaPrefix a b x y
+
+        if a + b >= betaContractedFrom then
+            regularizedBetaBothLarge a b x y yLow prefix
+        else
+            regularizedBetaBothSmall a b x y yLow prefix
+
     /// What the incomplete beta function and its inverse refuse: a NaN, a parameter not above zero or
     /// not finite, or a third argument outside `[0, 1]`.
     let private regularizedBetaRefused (a: float) (b: float) (x: float) : bool =
@@ -927,9 +1095,14 @@ module Special =
     ///
     /// The continued fraction by the modified Lentz method times the prefix `xᵃ (1 − x)ᵇ / (a B(a, b))`,
     /// read at `x` where `x ≤ (a + 1) / (a + b + 2)` and, beyond that switch, as
-    /// `1 − I_{1 − x}(b, a)`. Where `b < 1` and that complement is below `1 − x`, the function is
-    /// Gauss's series instead, for `x` up to `0.99`; beyond `0.99` it stays the complement, accurate to
-    /// a unit in the last place of one and not of itself.
+    /// `1 − I_{1 − x}(b, a)`. Below `a + b = 128` the fraction is Abramowitz and Stegun 26.5.8; from
+    /// `128` it is that fraction's even part with its first denominator formed exactly, which keeps
+    /// the function's accuracy where one parameter is large and `x` is within a few standard
+    /// deviations of the mean. Beyond the switch with `b < 1` the function can be the small one of the
+    /// pair. Below `128` it is then Gauss's series where the complement is below `1 − x`, for `x` up to
+    /// `0.99`, and beyond `0.99` it stays the complement, accurate to a unit in the last place of one
+    /// and not of itself. From `128` it is its own series from one (`betaUpperSmall`) wherever the
+    /// complement is above one half, so it keeps its relative accuracy there.
     ///
     /// `0` at `x = 0` and `1` at `x = 1`. NaN for a parameter not above zero or not finite, for an `x`
     /// outside `[0, 1]`, and where the fraction has not settled in 65536 iterations.
@@ -943,6 +1116,33 @@ module Special =
         else
             let struct (lower, _, _) = regularizedBetaBoth a b x
             lower
+
+    /// `1 − I_x(a, b)`, the complement of the regularized incomplete beta function, for `a > 0`,
+    /// `b > 0` and `x` in `[0, 1]`: `I_{1 − x}(b, a)` with `1 − x` taken in full, not as the double
+    /// nearest it.
+    ///
+    /// It is computed and not subtracted from one where it is small. Beyond the switch
+    /// `x = (a + 1) / (a + b + 2)` it is the continued fraction of the mirrored function with what
+    /// `1 − x` rounded away restored. Before the switch with `a < 1` it is, from `a + b = 128`, the
+    /// function's own series from one wherever the function is above one half, and below `128` Gauss's
+    /// series where the value is below `x` and `x` is at least `0.01`. Elsewhere before the switch the
+    /// function itself is the small one of the pair and this is one minus it. So an upper tail keeps
+    /// its relative accuracy, but for the one case `regularizedBeta` states of itself, mirrored: below a
+    /// parameter sum of `128` with `a < 1`, wherever Gauss's series is not read, it is one minus a
+    /// function that can be near one, accurate to a unit in the last place of one and not of itself.
+    /// A caller that holds `y = 1 − x` and not `x` reads `regularizedBeta b a y`.
+    ///
+    /// `1` at `x = 0` and `0` at `x = 1`. NaN wherever `regularizedBeta` is.
+    let regularizedBetaComplement (a: float) (b: float) (x: float) : float =
+        if regularizedBetaRefused a b x then
+            Double.NaN
+        elif x = 0.0 then
+            1.0
+        elif x = 1.0 then
+            0.0
+        else
+            let struct (_, upper, _) = regularizedBetaBoth a b x
+            upper
 
     /// The inverse's start for the tails and for a parameter below one: the leading term of the
     /// incomplete beta function at whichever end `p` is nearer, solved for `x`.
@@ -1015,13 +1215,34 @@ module Special =
             | Ok at -> at.State
             | Error _ -> Double.NaN
 
+    /// The root of `I_x(a, b) = p` inside `(0, 1)`, for `p` and `q = 1 − p` both inside `(0, 1)` as the
+    /// caller holds them: whichever is at most a half is exact, and it is the one every residual reads.
+    ///
+    /// The residual `I_x(a, b) − p` is read at `x = ½` first (as `q − (1 − I_x)` where `p > ½`, so
+    /// an upper tail keeps its precision). Not negative there, the root is in the lower half and is
+    /// solved for directly; negative, the mirrored problem `I_y(b, a) = q` is solved for
+    /// `y = 1 − x`, so the solver always works on the small one of `x` and `1 − x` and its relative
+    /// stopping test measures that.
+    let private inverseBoth (a: float) (b: float) (p: float) (q: float) : float =
+        let middle, _ = inverseResidual a b p q 0.5
+
+        if Double.IsNaN middle then
+            Double.NaN
+        elif middle = 0.0 then
+            0.5
+        elif middle > 0.0 then
+            inverseLowerHalf a b p q
+        else
+            let mirrored, _ = inverseResidual b a q p 0.5
+
+            if Double.IsNaN mirrored then Double.NaN
+            elif mirrored <= 0.0 then 0.5
+            else 1.0 - inverseLowerHalf b a q p
+
     /// The `x` in `[0, 1]` with `I_x(a, b) = p`, for `a > 0`, `b > 0` and `p` in `[0, 1]`.
     ///
-    /// The residual `I_x(a, b) − p` is read at `x = ½` first (as `(1 − p) − (1 − I_x)` where `p > ½`, so
-    /// an upper tail keeps its precision). Not negative there, the root is in the lower half and is
-    /// solved for directly; negative, the mirrored problem `I_y(b, a) = 1 − p` is solved for
-    /// `y = 1 − x`, so the solver always works on the small one of `x` and `1 − x` and its relative
-    /// stopping test measures that. Each solve is a pinned start (see `inverseStart`), then
+    /// The half the root lies in is found first (see `inverseBoth`), and the solver works on the small
+    /// one of `x` and `1 − x`. Each solve is a pinned start (see `inverseStart`), then
     /// `Root.bracketedNewton` over `[0, 1]` with the density `xᵃ⁻¹ (1 − x)ᵇ⁻¹ / B(a, b)` for a
     /// derivative, a shrink fraction of one, and the rule: stop when a step moved the point by less
     /// than `2⁻⁴⁰` of itself, at most one hundred iterations.
@@ -1031,25 +1252,22 @@ module Special =
     /// zero or not finite, for a `p` outside `[0, 1]`, and where the solver refuses (the cap, or a
     /// fraction that did not settle).
     let inverseRegularizedBeta (a: float) (b: float) (p: float) : float =
-        if regularizedBetaRefused a b p then
-            Double.NaN
-        elif p = 0.0 then
-            0.0
-        elif p = 1.0 then
-            1.0
-        else
-            let q = 1.0 - p
-            let middle, _ = inverseResidual a b p q 0.5
+        if regularizedBetaRefused a b p then Double.NaN
+        elif p = 0.0 then 0.0
+        elif p = 1.0 then 1.0
+        else inverseBoth a b p (1.0 - p)
 
-            if Double.IsNaN middle then
-                Double.NaN
-            elif middle = 0.0 then
-                0.5
-            elif middle > 0.0 then
-                inverseLowerHalf a b p q
-            else
-                let mirrored, _ = inverseResidual b a q p 0.5
-
-                if Double.IsNaN mirrored then Double.NaN
-                elif mirrored <= 0.0 then 0.5
-                else 1.0 - inverseLowerHalf b a q p
+    /// The `x` in `[0, 1]` with `1 − I_x(a, b) = q`, for `a > 0`, `b > 0` and `q` in `[0, 1]`: the
+    /// inverse of `regularizedBetaComplement` in its third argument.
+    ///
+    /// It is `inverseRegularizedBeta`'s solve with the upper probability the one that is held exactly:
+    /// a small `q` is read as it is, where `inverseRegularizedBeta a b (1 − q)` would read a `1 − q`
+    /// rounded to the last place of one. A caller that wants `1 − x` reads
+    /// `inverseRegularizedBeta b a q`, which solves for it directly.
+    ///
+    /// `1` at `q = 0` and `0` at `q = 1`. NaN wherever `inverseRegularizedBeta` is.
+    let inverseRegularizedBetaComplement (a: float) (b: float) (q: float) : float =
+        if regularizedBetaRefused a b q then Double.NaN
+        elif q = 0.0 then 1.0
+        elif q = 1.0 then 0.0
+        else inverseBoth a b (1.0 - q) q

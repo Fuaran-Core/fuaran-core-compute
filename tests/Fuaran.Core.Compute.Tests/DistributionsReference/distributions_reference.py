@@ -30,8 +30,8 @@ The functions:
       agrees with itself at seventy digits; integrating the density instead is five parts in `1e12` out
       in a deep tail). The lower tail is the tail and the upper its complement.
   `ChiSquare.cdf k x` is `P(k/2, x/2)`.
-  `FisherF.cdf d1 d2 x` is `I_w(d1/2, d2/2)` at `w = d1 x / (d1 x + d2)` formed at fifty digits (see
-      `beta_lower` for the one place it does not take the special functions' reference as it is).
+  `FisherF.cdf d1 d2 x` is `I_w(d1/2, d2/2)` at `w = d1 x / (d1 x + d2)` formed at fifty digits, the
+      special functions' reference as it is.
   A quantile has no closed reference: the package's answer is corrected by Newton steps on the
       distribution function taken at fifty digits, which land within `1e-25` of the root from any answer
       the package gives, and that corrected value is the reference (the root nearest the answer).
@@ -50,7 +50,6 @@ mp.dps = 50
 
 TINY_RESULT = mpf(10) ** -290
 HALF = mpf(1) / 2
-TAIL = mpf(10) ** -9
 
 
 def t_density(nu, t):
@@ -79,23 +78,13 @@ def chi_density(k, x):
     return mpmath.exp((a - 1) * mpmath.log(x / 2) - x / 2 - mpmath.loggamma(a)) / 2
 
 
-def beta_lower(a, b, w):
-    """I_w(a, b). The special functions' reference, except in a tail where both parameters are large:
-    it integrates the density there, which is accurate about the mean and parts in a million out
-    forty decades down, where the hypergeometric route it avoids is quick."""
-    value = regularized_beta(a, b, w)
-    if a + b < 2000 or a < 10 or b < 10:
-        return value
-    if value < TAIL:
-        return mpmath.betainc(a, b, 0, w, regularized=True)
-    if 1 - value < TAIL:
-        return 1 - mpmath.betainc(b, a, 0, 1 - w, regularized=True)
-    return value
-
-
 def f_cdf(d1, d2, x):
+    # The special functions' reference as it is. (Until Phase 636 that reference integrated the density
+    # where both parameters are large, parts in a million out forty decades down a tail, and this
+    # function read `betainc` there instead; the reference is a continued fraction now, accurate in a
+    # tail, and every vector's reference re-derives to the same bits.)
     d1, d2, x = mpf(d1), mpf(d2), mpf(x)
-    return beta_lower(d1 / 2, d2 / 2, d1 * x / (d1 * x + d2))
+    return regularized_beta(d1 / 2, d2 / 2, d1 * x / (d1 * x + d2))
 
 
 def f_density(d1, d2, x):

@@ -11,8 +11,13 @@
 /// byte for byte. A line whose op is `<function>:<label>` is scored under its own heading: a
 /// candidate the decision was made against (`direct`, `split`, `near-one`, `two-inverses`), computed
 /// here over the same inputs, and, after a `@`, the range of the parameters where they are large
-/// (`nu-to-4e4`, `nu-to-1e6`, `k-to-2e5`, `d-to-4e4`). `node Program.js <runs> distributions`, or the
-/// same program on .NET.
+/// (`nu-to-4e4`, `nu-to-1e6`, `k-to-2e5`, `d-to-4e4`, `d-to-1e6`). `node Program.js <runs> distributions`,
+/// or the same program on .NET.
+///
+/// Phase 636 (DECISIONS.md D81) made the t's and the F's forms direct reads of the incomplete beta
+/// function's complement and of its inverse. The forms Phase 618 shipped, which were written round
+/// their absence, are candidates here under `d79`, so the two are measured over one sample; and the F
+/// is drawn with one parameter up to a million as well, after every draw the sample already had.
 module Fuaran.Core.Compute.Benchmarks.DistributionsBench
 
 open Fuaran.Compute.Solvers
@@ -164,6 +169,119 @@ let private fQuantileDirect (d1: float) (d2: float) (p: float) : float =
     let w = Special.inverseRegularizedBeta (0.5 * d1) (0.5 * d2) p
     d2 * w / (d1 * (1.0 - w))
 
+// ---- the forms Phase 618 shipped (D79), which read no complement ------------------------------------
+
+/// The density of the beta distribution at `x` with `y = 1 − x`.
+let private betaDensity (a: float) (b: float) (x: float) (y: float) : float =
+    Elementary.exp ((a - 1.0) * Elementary.ln x + (b - 1.0) * Elementary.ln y - Special.betaLn a b)
+
+/// `I_{1−y}(a, b)` for a caller that holds `y`: the function at `fl(1 − y)`, less what that
+/// subtraction rounded away times the density.
+let private betaNearOne (a: float) (b: float) (y: float) : float =
+    let x = 1.0 - y
+    let u = 1.0 - x
+    Special.regularizedBeta a b x - (y - u) * betaDensity a b x u
+
+/// The odds at the root of `I_x(a, b) = p`: the root itself up to one half; beyond, the mirrored
+/// problem's root where `q` is exact or the mirrored density there is above one.
+let private betaOddsD79 (a: float) (b: float) (p: float) (q: float) (qExact: bool) : float =
+    let x = Special.inverseRegularizedBeta a b p
+
+    if not (x > 0.5) then
+        x / (1.0 - x)
+    else
+        let y0 = 1.0 - x
+
+        if qExact || betaDensity b a y0 x > 1.0 then
+            let y = Special.inverseRegularizedBeta b a q
+            (1.0 - y) / y
+        else
+            x / y0
+
+/// The t's upper tail in D79's four arms.
+let private tTailD79 (nu: float) (t: float) : float =
+    let a = 0.5 * nu
+    let t2 = t * t
+    let w = t2 / (nu + t2)
+
+    if t >= 1073741824.0 * sqrt nu then
+        Elementary.pow (sqrt nu / t) nu / (nu * Special.beta a 0.5)
+    elif t2 * (nu + 2.0) <= 3.0 * nu || w < 1.4901161193847656e-08 then
+        0.5 - 0.5 * Special.regularizedBeta 0.5 a w
+    elif 2.0 * t2 >= nu then
+        0.5 * Special.regularizedBeta a 0.5 (nu / (nu + t2))
+    else
+        0.5 * betaNearOne a 0.5 w
+
+let private tCdfD79 (nu: float) (x: float) : float =
+    if x < 0.0 then tTailD79 nu -x else 1.0 - tTailD79 nu x
+
+/// The t's quantile as D79 had it: `betaOdds` from `p = ¼`; below, the one root, one Newton step
+/// where `1 − z` is between `2⁻²⁶` and `1/16`, the other root below `2⁻²⁶`.
+let private tQuantileD79 (nu: float) (p: float) : float =
+    let lower (p: float) =
+        let a = 0.5 * nu
+
+        let t =
+            if p >= 0.25 then
+                -(sqrt (nu * betaOddsD79 0.5 a (1.0 - 2.0 * p) (2.0 * p) true))
+            else
+                let z = Special.inverseRegularizedBeta a 0.5 (2.0 * p)
+
+                if not (z > 0.5) then
+                    -(sqrt (nu * (1.0 - z) / z))
+                else
+                    let y = 1.0 - z
+                    let t = -(sqrt (nu * y / z))
+
+                    if y >= 0.0625 then
+                        t
+                    elif y >= 1.4901161193847656e-08 then
+                        let density =
+                            Elementary.exp (
+                                0.5 * (nu + 1.0) * Elementary.ln (nu / (nu + t * t))
+                                - 0.5 * Elementary.ln nu
+                                - Special.betaLn a 0.5
+                            )
+
+                        t - (tTailD79 nu -t - p) / density
+                    else
+                        let w = Special.inverseRegularizedBeta 0.5 a (1.0 - 2.0 * p)
+                        -(sqrt (nu * w / (1.0 - w)))
+
+        if -t >= 1073741824.0 * sqrt nu then
+            -(sqrt nu / Elementary.pow (p * nu * Special.beta a 0.5) (1.0 / nu))
+        else
+            t
+
+    if p < 0.5 then lower p
+    elif p > 0.5 then -(lower (1.0 - p))
+    else 0.0
+
+let private fCdfD79 (d1: float) (d2: float) (x: float) : float =
+    let a = 0.5 * d1
+    let b = 0.5 * d2
+    let n = d1 * x
+
+    if n <= d2 then
+        Special.regularizedBeta a b (n / (n + d2))
+    else
+        let z = d2 / (n + d2)
+
+        if z >= 1.4901161193847656e-08 then
+            betaNearOne a b z
+        else
+            1.0 - Special.regularizedBeta b a z
+
+let private fQuantileD79 (d1: float) (d2: float) (p: float) : float =
+    let a = 0.5 * d1
+    let b = 0.5 * d2
+
+    if p <= 0.5 then
+        d2 * betaOddsD79 a b p (1.0 - p) (p = 0.5) / d1
+    else
+        d2 / (d1 * betaOddsD79 b a (1.0 - p) p true)
+
 /// How one chi-square solve ended: the quantile is below the smallest double and no solve was run;
 /// the solver's answer; or its refusal.
 type private ChiRun =
@@ -254,12 +372,34 @@ let run (runs: int) : unit =
             draws n (fun () -> [| logUniform d lo1 hi1; logUniform d lo2 hi2; probability d |]))
         |> Array.concat
 
+    let normalInputs = draws 600 (fun () -> [| d.Range -38.0 9.0 |])
+    let normalProbabilities = draws 600 (fun () -> [| probability d |])
+
+    // Phase 636: the F with one parameter up to a million, drawn after everything above so that
+    // every input Phase 618 measured is the input it was.
+    let fWide = [ 300, 0.1, 10.0, 4e4, 1e6; 300, 4e4, 1e6, 0.1, 10.0 ]
+
+    let fInputs =
+        Array.append
+            fInputs
+            (fWide
+             |> List.map (fun (n, lo1, hi1, lo2, hi2) -> fTriples d n lo1 hi1 lo2 hi2)
+             |> Array.concat)
+
+    let fProbabilities =
+        Array.append
+            fProbabilities
+            (fWide
+             |> List.map (fun (n, lo1, hi1, lo2, hi2) ->
+                 draws n (fun () -> [| logUniform d lo1 hi1; logUniform d lo2 hi2; probability d |]))
+             |> Array.concat)
+
     let shipped =
         [ { Op = "Normal.cdf"
-            Inputs = draws 600 (fun () -> [| d.Range -38.0 9.0 |])
+            Inputs = normalInputs
             Apply = fun a -> Normal.cdf a[0] }
           { Op = "Normal.quantile"
-            Inputs = draws 600 (fun () -> [| probability d |])
+            Inputs = normalProbabilities
             Apply = fun a -> Normal.quantile a[0] }
           { Op = "StudentT.cdf"
             Inputs = tInputs
@@ -301,7 +441,19 @@ let run (runs: int) : unit =
             Apply = fun a -> fCdfDirect a[0] a[1] a[2] }
           { Op = "FisherF.quantile:direct"
             Inputs = fProbabilities
-            Apply = fun a -> fQuantileDirect a[0] a[1] a[2] } ]
+            Apply = fun a -> fQuantileDirect a[0] a[1] a[2] }
+          { Op = "StudentT.cdf:d79"
+            Inputs = tInputs
+            Apply = fun a -> tCdfD79 a[0] a[1] }
+          { Op = "StudentT.quantile:d79"
+            Inputs = tProbabilities
+            Apply = fun a -> tQuantileD79 a[0] a[1] }
+          { Op = "FisherF.cdf:d79"
+            Inputs = fInputs
+            Apply = fun a -> fCdfD79 a[0] a[1] a[2] }
+          { Op = "FisherF.quantile:d79"
+            Inputs = fProbabilities
+            Apply = fun a -> fQuantileD79 a[0] a[1] a[2] } ]
 
     printfn ""
     printfn "### Distributions (Phase 618): ns per value over the pinned sample"
@@ -367,7 +519,9 @@ let run (runs: int) : unit =
                 elif s.Op.StartsWith "ChiSquare." then
                     if a[0] >= 2e3 then "@k-to-2e5" else ""
                 elif s.Op.StartsWith "FisherF." then
-                    if a[0] >= 1e3 || a[1] >= 1e3 then "@d-to-4e4" else ""
+                    if a[0] >= 4e4 || a[1] >= 4e4 then "@d-to-1e6"
+                    elif a[0] >= 1e3 || a[1] >= 1e3 then "@d-to-4e4"
+                    else ""
                 else
                     ""
 

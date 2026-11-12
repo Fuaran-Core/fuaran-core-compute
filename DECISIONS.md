@@ -1,5 +1,337 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-12 — D81: the incomplete beta function keeps its accuracy at a large parameter — from a parameter sum of `128` its continued fraction is read in the contracted form with its one cancelling difference formed exactly, and a parameter below one is answered by its own series; `Special` publishes `regularizedBetaComplement` and `inverseRegularizedBetaComplement`; the t and the F read them directly; each form chosen by measurement against a fifty-digit reference, whose own quadrature was wrong in a deep tail and is replaced
+
+**Context.** Phase 636. Phase 618 measured `Special.regularizedBeta` (D78) losing accuracy where one parameter is large
+and the other small, read within a few `1 / a` of one, and wrote the t's and the F's forms round a complement `Special`
+did not publish (D79 items 3, 4, 5 and 10). The phase asks for the corner repaired, the complement and its inverse
+published, and the distributions re-read where a measurement says a direct read is the more accurate. The shard was
+read against `main` at `b324aa6` (Phases 630, 632, 621, 633, 631, 618 and 634 landed). Its premise was re-run before
+anything changed (item 1), and what the measurement changed of its plan is item 11.
+
+**Decision.**
+
+1. **The premise holds, and its cause is one subtraction.** On the tree as it stood, `I_x(a, ½)` at
+   `x = 2a / (2a + 3.84)` (the t's tail at a `t²` of 3.84) is 35 units in the last place from the fifty-digit value at
+   `a = 50`, 247 at `500`, 3,660 at `5,000`, 1,420 at `20,000`, 11,900 at `50,000` and 176,900 at `500,000` (after
+   this decision: 35, where the parameters sum below its threshold, then 5, 25, 3, 7 and 20). The
+   function there is Abramowitz and Stegun's continued fraction 26.5.8, whose first denominator is
+   `1 − (a + b) x / (a + 1)`. On the fraction's side of the switch that denominator is `λ / (a + 1)` with
+   `λ = a + 1 − (a + b) x ≥ 2x`, so near the switch it is as small as `2 / (a + b + 2)`: a difference of two numbers
+   that agree in all but their last `log₂ ((a + b) / 2)` bits, formed in one rounded subtraction. The relative error is
+   about `(a + 1) / λ` units, which is the growth measured. The same subtraction is read from the other end
+   (`I_x(b, a)` at a small `x`, the mirrored call the function makes beyond its switch), and where both parameters are
+   large and `x` is within a standard deviation of the mean, where D78's sample measured hundreds of units and not
+   thousands because `λ` there is of order `√a` and not of order one.
+
+2. **From `a + b = 128` the fraction is read in its contracted form, with `λ` formed exactly.** The even part of the
+   same fraction (DiDonato and Morris 1992, equation 9) is `I_x(a, b) = prefix / f`,
+   `f = β₀ + α₁ / (β₁ + α₂ / (β₂ + …))`, with `β₀ = a λ / (a + 1)`,
+   `αₘ = (a + m − 1)(a + b + m − 1) m (b − m) x² / (a + 2m − 1)²` and
+   `βₘ = m + m (b − m) x / (a + 2m − 1) + (a + m)(λ + m (2 − x)) / (a + 2m + 1)`. It is the fraction D78 reads, two
+   partial quotients at a time, written so that the one difference that cancels is `λ` and no other term subtracts
+   two numbers near one. `λ` is formed once (`betaLambda`): the sum `a + b`, the product `x (a + b)` and `a + 1` each
+   with their rounding errors (`twoSum`, `twoProd`, which `Elementary` already holds), so
+   `λ = ((t − ph) + (tl − pl)) − x e − xLow s` keeps its relative accuracy. The fraction is evaluated by the modified
+   Lentz method under the rule every series of the module stops on (D78 item 9): relative change below `2⁻⁵²`, a cap
+   of 65536, NaN at the cap. `m − 1` and `2m − 1` are formed before they are added to `a`, because a parameter far
+   below one must not pass through a sum with one on its way to being read alone (written `(a + m) − 1` the first
+   numerator lost ten bits at `a = 0.0014`, 600 units of the answer).
+
+3. **Why `128`, and why a threshold at all.** Below a sum of `128` the first denominator is at least `2 / 130`, so
+   the subtraction has lost at most six bits, and the function below that sum answers the bits it answered: every
+   vector there is the line it was. The threshold was chosen on a sample drawn by the sum, a power of two a range,
+   half with one parameter small and half with both of a size, `x` within six standard deviations of the mean
+   (240 a range; largest, 99th percentile and mean, in units in the last place):
+
+   | `a + b` | the fraction as D78 left it | the contracted fraction |
+   |---|---:|---:|
+   | `[16, 32)` | 109 / 44 / 7.9 | 198 / 125 / 7.9 |
+   | `[32, 64)` | 76 / 50 / 7.5 | 72 / 53 / 6.9 |
+   | `[64, 128)` | 163 / 125 / 9.4 | 163 / 79 / 6.4 |
+   | `[128, 256)` | 131 / 95 / 11.2 | 73 / 36 / 5.3 |
+   | `[256, 512)` | 377 / 247 / 16.3 | 58 / 51 / 5.3 |
+   | `[512, 1024)` | 559 / 318 / 25.5 | 72 / 53 / 5.2 |
+   | `[1024, 2048)` | 1,097 / 824 / 49 | 92 / 49 / 6.4 |
+
+   (The second column is the contracted fraction with nothing else exchanged, read at every sum in a working copy;
+   from `128` it is the function as shipped.) Below `64` the contracted form is not the better one: it is the worse
+   at the 99th percentile in `[16, 32)`, where the errors are the tails' and not the fraction's. In `[64, 128)` it
+   is ahead at the 99th percentile and level at worst. From `128` the old form's 99th percentile is 2.6 to 17 times
+   the new one's, and its mean two to eight times. A threshold on the sum is one comparison a host transcribes, it
+   does not depend on `x` (so the function changes form nowhere along its argument), and it leaves the pinned bits
+   of every small parameter where they were. Replacing the fraction at every sum is the simpler function and was
+   not taken: the measurement does not ask for it below `64`, and it would move every incomplete beta vector and
+   every t and F vector.
+
+4. **What `1 − x` rounded away, from `128`.** The function beyond its switch is the mirrored fraction at
+   `y = 1 − x`, which a double holds exactly only from `x = ½`. D78 restores the rounding to first order through the
+   density (item 7 there). From `128` it is not added: `λ` takes `yLow = (1 − y) − x` itself, and the prefix is
+   already a function of `x` and not of the rounded `y`, so the density's term would count the prefix's share
+   twice. Measured on 400 inputs with a parameter in `[0.5, 500)` against one in `[1e3, 1e5)`, `x` below one half
+   and up to eight standard deviations beyond the switch: the upper value is 38,920 units out at worst as D78 left
+   it, 25,080 with the contracted fraction at the rounded `y` and the density's correction, and 273 with `λ` taking
+   `yLow` and no correction (99th percentiles 24,850, 10,840 and 102).
+
+5. **A parameter below one, from `128`, is answered by its own series where its side is the small one.** The pair
+   `(I_x, 1 − I_x)` is the fraction's value and its complement. Where the fraction's own parameter is below one, its
+   value can be within `10⁻⁶` of one at the switch (most of the mass is at that end), and the complement is then a
+   difference of two near ones: D78 reads Gauss's series there, up to an argument of `0.99`, and beyond it states
+   the function as "accurate to a unit in the last place of one and not of itself". From a sum of `128` that
+   argument is always beyond `0.99` (the switch is within `2 / 130` of the end), so the small one is computed
+   instead (`betaUpperSmall`), wherever the fraction's parameter is below one and its value above one half:
+   `1 − I_x(a, b) = −expm1 L − exp L · a · Σ_{n ≥ 1} (1 − b)ₙ xⁿ / ((a + n) n!)` with
+   `L = a ln (x b) + ((a + b − ½) ln (1 + a / b) − a) + (tail (a + b) − tail b) − ln Γ(1 + a)`. It is the function's
+   own series `xᵃ / (a B(a, b)) · ₂F₁(a, 1 − b; a + 1; x)` taken from one, the form D78's `upperSmall` gives the
+   incomplete gamma function, with `b`'s falling products where that has powers. There `b x < 2`, so the terms
+   alternate and fall from the second. Every part of `L` is formed relative to `a`: the product `x b` with its
+   rounding error, the difference of the two Stirling tails as three terms factored through
+   `1 / (a + b) − 1 / b`, and `ln Γ(1 + a)` by the kernel (D78 item 3). So the answer keeps its relative accuracy as
+   `a` falls to zero, where it is `a` times a number of order one. It stops on the module's rule. Gauss's series is
+   not read from a sum of `128` up. Without this arm the corner with the small parameter in `[0.05, 1)` measured 373
+   units at worst (a value of `0.015` read as one minus `0.985`), and the loss grows as the parameter falls, being
+   the reciprocal of the value.
+
+6. **The complement.** `Special.regularizedBetaComplement a b x` is `1 − I_x(a, b)`: `I_{1 − x}(b, a)` with `1 − x`
+   taken in full and not as the double nearest it. It is the second member of the pair the function already
+   computed (`regularizedBetaBoth`), so it is computed and not subtracted wherever it is the small one: beyond the
+   switch it is the mirrored fraction with what `1 − x` rounded away restored; before the switch it is Gauss's
+   series (below `128`) or `betaUpperSmall` (from it) where the fraction's parameter is below one. Elsewhere before
+   the switch the function itself is the small one of the pair and the complement is one minus it, which is exact
+   to a unit in the last place of one and is what a complement near one can be. `1` at `x = 0`, `0` at `x = 1`, NaN
+   wherever `regularizedBeta` is. A caller that holds `y = 1 − x` and not `x` reads `regularizedBeta b a y`; the two
+   agree within the function's own error. The names follow D74's rule: the module qualifies them once
+   (`Special.regularizedBetaComplement`), and no qualifier is doubled.
+
+7. **The complement's inverse.** `Special.inverseRegularizedBetaComplement a b q` is the `x` with
+   `1 − I_x(a, b) = q`. D78's inverse (item 8) is refactored into one solve over the pair `(p, q)` as the caller
+   holds them (`inverseBoth`): whichever is at most one half is exact, and it is the one every residual reads.
+   `inverseRegularizedBeta a b p` is that solve at `(p, 1 − p)`, the arithmetic it was; the complement's inverse is it
+   at `(1 − q, q)`. So a small upper probability is read as it stands, where `inverseRegularizedBeta a b (1 − q)`
+   reads a `1 − q` rounded to the last place of one (at `q = 10⁻²⁰` that is one, and the plain inverse can only
+   answer one). From `q = ½` up, `1 − q` is exact and the two inverses are one function, bit for bit: a law holds
+   it. `1` at `q = 0`, `0` at `q = 1`, NaN wherever the inverse is. A caller that wants `1 − x` reads
+   `inverseRegularizedBeta b a q`, which solves for it directly. Each of the two has a `Pinned` row in
+   `ElementaryOperations.exactness`.
+
+8. **The distributions read them directly.** Each t and F form D79 wrote round the missing complement was measured
+   against the form that reads it, on the repaired function, over D79's own sample and 1,200 more F inputs with a
+   degree of freedom up to a million (item 9's second table). The direct read is kept for all four:
+   - `betaNearOne a b y` (the function at `fl (1 − y)`, corrected through the density) is
+     `Special.regularizedBetaComplement b a y`.
+   - `StudentT.cdf`: the tail is `½ (1 − I_w(½, ν/2))` by the complement at `w = t² / (ν + t²)` wherever D79 read
+     the centre or `betaNearOne` (`t² (ν + 2) ≤ 3ν` or `2t² < ν`), `½ I_z(ν/2, ½)` with `z` formed directly
+     otherwise, and the leading term from `t = 2³⁰ √ν`. Three arms where there were four. In the centre the
+     complement is the subtraction D79 wrote, the same bits, except where the function now computes the small
+     member.
+   - `StudentT.quantile`, below `p = ¼`: the root `z` of `I_z(ν/2, ½) = 2p` while it is at most one half; beyond,
+     the same root from its other end, `w = 1 − z` by `Special.inverseRegularizedBetaComplement ½ (ν/2) (2p)`, which
+     takes the exact `2p`. D79's one Newton step on the distribution function, its `1/16` and `2⁻²⁶` thresholds and
+     the root read at a rounded `1 − 2p` are gone. From `p = ¼` the form is unchanged (`betaOdds ½ (ν/2) (1 − 2p)`).
+   - `betaOdds a b p`, the odds at the root of `I_x(a, b) = p`: the root while it is at most one half; beyond, the
+     same root from its other end, `Special.inverseRegularizedBetaComplement b a p`. The choice between two
+     inverses by the mirrored density, and the argument saying whether `1 − p` was exact, are gone.
+   - `FisherF.cdf`, beyond `d1 x = d2`: `Special.regularizedBetaComplement (d2/2) (d1/2) z` at
+     `z = d2 / (d1 x + d2)`, at every `z`; the `2⁻²⁶` threshold is gone. `FisherF.quantile` reads the new `betaOdds`.
+
+   `Kernel` loses `betaDensity`, `betaNearOne` and `nearOneFrom`; `StudentT` loses its density. The package still
+   writes no loop and no special function, and its public surface is the eight functions it was.
+
+9. **What was measured** (`benchmarks/results/2026-11-12-ryzen9-9950x-phase-636.md`; the reference is mpmath 1.4.1
+   at fifty digits, by `tests/Fuaran.Core.Compute.Tests/SpecialReference/special_reference.py` and the distributions'
+   script that imports it). .NET and node answered the same bits on every line of the three samples: 17,960 of the
+   new family `beta-corner`, 35,480 of `distributions` and 29,563 of `special`. Largest error in units in the last
+   place, with the 99th percentile and the mean, before and after, over a seeded draw of 300 a row
+   (`corner` is `(a, b, 1 − c / a)` with `a` the large parameter and `c` log-uniform over `[1e-3, 30)`; `mirror` is
+   the same point read from the other end, `(b, a, c / a)`):
+
+   | `regularizedBeta` | before | after |
+   |---|---:|---:|
+   | corner, `a` in `[128, 2e4)`, `b` in `[0.05, 1)` | 18,790 / 2,860 / 222 | 43 / 27 / 3.4 |
+   | corner, `a` in `[128, 2e4)`, `b` in `[1, 10)` | 4,859 / 3,435 / 132 | 128 / 64 / 5.1 |
+   | corner, `a` in `[128, 1e6)`, `b` in `[1e-6, 0.05)` | 18,190,000 / 5,826,000 / 314,000 | 59 / 35 / 3.8 |
+   | corner, `a` in `[2e4, 1e6)`, `b` in `[0.05, 1)` | 432,900 / 189,800 / 12,200 | 32 / 29 / 3.7 |
+   | corner, `a` in `[2e4, 1e6)`, `b` in `[1, 10)` | 99,410 / 59,210 / 2,570 | 180 / 109 / 9.5 |
+   | mirror, the five ranges in that order | 200, 557, 309, 14,060, 16,940 | 18, 139, 22, 26, 328 |
+   | both parameters in `[1e3, 1e6)`, within six standard deviations of the mean (120) | 9,139 / 4,445 / 290 | 50 / 33 / 4.7 |
+
+   So: with the small parameter below one the function is within 64 units of the reference at a large parameter up
+   to a million, at every distance from one the sample drew; with the small parameter in `[1, 10)`, within 512 (the
+   largest are tails of `10⁻²⁰` and below; where the value is at least `1/16` the largest is 189). The complement
+   over the same rows: 14, 179, 23, 27 and 252 at the corner and 45, 67, 46, 29 and 158 mirrored (before, as the
+   function's unpublished upper value: up to 15,280,000), 32 with both large, and 819 over D78's own draw of triples,
+   in a deep tail (78 where the value is at least `1/16`). The inverse and the complement's inverse are
+   within two units where the root is near one, and within 420, 61, 4,826, 485 and 101 (303, 50, 1,215, 234 and 65 for
+   the complement's) where the root is the small one, which is D78's conditioning, about `1 / a` for a small root
+   (before: up to 8,920,000). D78's own sample, re-run: `regularizedBeta` 405 at worst (402), 104 at the 99th
+   percentile (130) and 6.8 on average (8.3), 182 where the value is between `10⁻¹⁰` and `10¹⁰` (as before);
+   `inverseRegularizedBeta` 477 (477), mean 7.1 (7.7); every other function of the module answers the bits and the
+   figures it did. D78's stated range for the incomplete beta function (parameters to `2 × 10⁴`) is `10⁶` now for
+   one large and one small parameter and for both large within six standard deviations of the mean.
+
+   The distributions, the same statistics, by D79's ranges and one more:
+
+   | function | range | Phase 618 | D79's forms on the repaired function | the direct forms (shipped) |
+   |---|---|---:|---:|---:|
+   | `StudentT.cdf` | `ν < 100` | 560 / 81 / 5.3 | 560 / 81 / 5.3 | 560 / 81 / 5.4 |
+   | | `100 ≤ ν < 4e4` | 6,095 / 1,969 / 104 | 133 / 73 / 6.4 | 140 / 73 / 5.9 |
+   | | `4e4 ≤ ν < 1e6` | 137,400 / 66,190 / 3,580 | 445 / 64 / 7.6 | 124 / 61 / 5.4 |
+   | `StudentT.quantile` | `ν < 100` | 314 / 92 / 8.1 | 314 / 92 / 8.1 | 314 / 92 / 8.1 |
+   | | `100 ≤ ν < 4e4` | 2,509 / 634 / 27 | 21 / 15 / 2.6 | 16 / 9.7 / 1.8 |
+   | | `4e4 ≤ ν < 1e6` | 24,590 / 18,700 / 796 | 21 / 16 / 3.0 | 16 / 9.4 / 1.9 |
+   | `FisherF.cdf` | `d1, d2 < 1e3` | 1,198 / 364 / 20 | 1,198 / 364 / 18.5 | 1,198 / 364 / 18.3 |
+   | | a parameter in `[1e3, 4e4)` | 15,800 / 2,817 / 127 | 1,299 / 251 / 15.1 | 1,271 / 218 / 15.0 |
+   | | a parameter in `[4e4, 1e6)` | not drawn | 790 / 133 / 11.9 | 841 / 213 / 13.2 |
+   | `FisherF.quantile` | `d1, d2 < 1e3` | 320 / 163 / 16 | 320 / 131 / 13.6 | 320 / 131 / 13.4 |
+   | | a parameter in `[1e3, 4e4)` | 3,143 / 1,004 / 63 | 492 / 204 / 16 | 289 / 131 / 11.1 |
+   | | a parameter in `[4e4, 1e6)` | not drawn | 10,010 / 2,559 / 109 | 387 / 90 / 13.3 |
+
+   The repair is most of it: a t tail at a million degrees of freedom was good to eleven digits and is good to
+   fourteen, as it is at a hundred. The direct forms are then at least as accurate on every row but two, and
+   cheaper: the t's distribution function at `100 ≤ ν < 4e4` (140 against 133 at worst, lower at the 99th percentile
+   and on average) and the F's with a parameter beyond `4e4` (841 against 790, and 213 against 133 at the 99th
+   percentile). On that last row the two forms differ on 136 of 535 inputs, the direct read the nearer on 74 and
+   the farther on 62, and the largest differences are probabilities below `10⁻²⁵`, where the prefix's exponent
+   carries the error (D78 item 10) and the two forms round it differently. It is kept for the F too: it is one read where D79's was a
+   function value, a density and a correction, and where they differ the difference is not the form's. What still
+   sets the largest figures is unchanged from D79 item 9: a tail far out carries about twice its exponent, and a
+   quantile where the mass is at zero carries the function's error times `2 / d`.
+
+   Cost. Over the corner's rows on .NET, the lowest of three interleaved captures of each build, nanoseconds a
+   value: with the small parameter below one the function costs 179 to 240 where it cost 147 to 152 (the series of
+   item 5, read on about half those inputs); with it in `[1, 10)`, 120 to 145 where it cost 126 to 185; with both
+   parameters large, 347 where it cost 481 (the contracted fraction takes one division an iteration where the old
+   one took two); from a sum of `128` on the by-sum sample 205 to 269 where it cost 235 to 263. The complement costs
+   what the function does (119 to 302 over the same rows), and its inverse what the inverse does (1,164 to 1,967
+   against 1,250 to 2,108). The distributions, one capture a host on a machine that was not quiet, .NET and then
+   node: `StudentT.cdf` 172 and 434 where D79's form over the same function costs 295 and 586; `FisherF.cdf` 217 and
+   449 against 398 and 572; `StudentT.quantile` 2,533 and 5,751 against 2,656 and 4,436; `FisherF.quantile` 3,353 and
+   6,830 against 3,724 and 6,076. The distribution functions are cheaper by the density D79's correction paid for;
+   the quantiles are two inverses either way, and their captures differ by less than the captures of one build do.
+
+10. **The moved vectors.** Every file under `conformance/laws/` had its SHA-256 recorded before the first edit.
+    `dataframe-parity.json`, `linear-algebra-laws.json`, `regression-laws.json`, `solvers-laws.json` and
+    `transform-laws.json` are byte-identical. That last one is a fact about its rows and not about `Predict`: its
+    interval rows read `StudentT.quantile` at a handful of degrees of freedom and levels, and each of those
+    quantiles happens to be the same bits under the direct form. Over degrees of freedom of 1 to 130 and eight
+    levels from one half to `0.999`, 580 of 1,040 quantiles answer other bits than Phase 618's, by 34 units in the
+    last place at most (8 at most to thirty degrees of freedom, 1 on 244 of them).
+    - `elementary-laws.json`: 58 vectors appended (17 of `regularizedBeta` and `inverseRegularizedBeta` in the
+      repaired region and either side of its threshold, 25 of the complement, 16 of its inverse) and one head
+      member, `complements`. Five vectors that were there moved, each a `regularizedBeta` vector with a parameter sum
+      of `128` or more, each because the fraction is the contracted one there (distance from the reference before
+      and after): `beta-inc-large-at-mean` 14 to 2, `beta-inc-large-below-mean` 14 to 2,
+      `beta-inc-very-large-at-mean` 48 to 8, `beta-inc-very-large-skewed` 71 to 3, `beta-inc-small-and-large` 3 to 7.
+      Every other vector is the line it was, but for the comma that now follows the last of them.
+    - `distributions-laws.json`: four vectors appended (the F at a degree of freedom of a million). 34 moved. By
+      the repaired function alone, under D79's forms or the direct ones: `t-cdf-thousand-2.5-percent` 403 to 8,
+      `t-cdf-thousand-three` 70 to 6, `t-cdf-thousand-tail-1e-10` 23 to 7, `t-cdf-ten-thousand-2.5-percent` 210 to 19,
+      `t-cdf-ten-thousand-tail-1e-10` 602 to 15, `t-cdf-forty-thousand-three` 1,428 to 1,
+      `t-cdf-forty-thousand-tail-1e-10` 1,085 to 33, `t-cdf-million-three` 43,078 to 2,
+      `t-cdf-million-tail-1e-10` 17,739 to 5, `t-cdf-million-upper` 9,251 to 0,
+      `t-quantile-thousand-2.5-percent` 25 to 2, `t-quantile-thousand-99.95-percent` 4 to 1,
+      `t-quantile-thousand-1e-10` 0 to 2, `t-quantile-thousand-40-percent` 2 to 4,
+      `t-quantile-ten-thousand-2.5-percent` 201 to 1, `t-quantile-ten-thousand-1e-10` 10 to 0,
+      `t-quantile-forty-thousand-0.1-percent` 329 to 0, `t-quantile-forty-thousand-near-half` 6 to 9,
+      `t-quantile-million-2.5-percent` 52,406 to 1, `t-quantile-million-1e-10` 91 to 0,
+      `t-quantile-million-upper-1e-10` 744 to 1, `f-cdf-thousand-two-small` 0 to 2,
+      `f-cdf-three-ten-thousand` 141 to 2, `f-cdf-ten-thousand-both-median` 27 to 1,
+      `f-cdf-ten-thousand-both-upper` 1 to 0, `f-quantile-thousand-one-1e-10` 10 to 1,
+      `f-quantile-three-ten-thousand-95-percent` 580 to 3, `f-quantile-ten-thousand-both-median` 8 to 0. By the direct
+      form alone, at parameters the repair does not reach: `t-cdf-cauchy-minus-one` 2 to 1,
+      `t-quantile-thirty-95-percent` 6 to 5, `t-quantile-thirty-five-97.5-percent` 1 to 0,
+      `t-quantile-hundred-twenty-99.5-percent` 1 to 2, `f-cdf-hundred-two` 0 to 5,
+      `f-quantile-two-tenth-30-percent` 60 to 34. Twenty-eight of the 34 are nearer their reference than they were
+      and six are farther, by five units at most (`t-quantile-thousand-1e-10`, `t-quantile-thousand-40-percent`,
+      `t-quantile-forty-thousand-near-half`, `t-quantile-hundred-twenty-99.5-percent`, `f-cdf-thousand-two-small`,
+      `f-cdf-hundred-two`), as is `beta-inc-small-and-large` in the other file, by four: a form is chosen on the
+      sample of item 9, and a single input can land a few units either way. The 34 distances summed to 128,544 and
+      sum to 173.
+    - The suite's recorded bounds follow (`SpecialVectors.referenceUlps`, `DistributionsVectors.referenceUlps`, each
+      the power of two at or above its worst vector): `regularizedBeta` 64 (128), the complement 64, its inverse 8;
+      `StudentT.cdf` 64 to forty thousand degrees of freedom and 8 beyond (2,048 and 65,536), `StudentT.quantile` 128
+      and 1 (512 and 65,536), `FisherF.cdf` 16 and 2 (256, none beyond), `FisherF.quantile` 256 and 4 (1,024, none
+      beyond).
+
+11. **What the tree and the measurement changed of the shard's plan.**
+    - **The repair is not an asymptotic expansion.** The shard names Temme's uniform form and a better-conditioned
+      fraction as candidates. The loss was one cancelling subtraction in a fraction that otherwise converges in
+      thirty to seventy iterations at a parameter of a million, so the better-conditioned fraction is the whole
+      repair, and it reuses the prefix, the switch, the Lentz evaluation and the stopping rule D78 chose. Four forms
+      of it were measured on a prototype before the package was touched (the fraction as it was; with only its
+      first denominator formed from `λ`; contracted with `λ` in plain doubles; contracted with `λ` exact): at `a`
+      up to a million and `b` below one they are 224,000, 253,000, 72,700 and 28 units out at worst. An expansion in
+      the large parameter (DiDonato and Morris's for a small second parameter, or Temme's) would be a second
+      algorithm with a boundary of its own and was not built.
+    - **"Computed directly, never as `1 − regularizedBeta`" is true where the complement is the small one.** Where
+      the function itself is below one half on its own side of the switch, its complement is one minus it, which
+      loses nothing a complement near one has. What the shard's sentence rules out, and item 5 and item 6 do not
+      do, is a small complement formed by subtraction. Below a sum of `128` D78's own limit stands for both
+      functions (item 12).
+    - **The series arm of item 5 was not in the shard.** The measurement asked for it: the corner with a small
+      parameter below one is where the t lives (`b = ½`), and without it the function there is a complement.
+    - **The reference was wrong in a deep tail.** `special_reference.py` integrated the density where both
+      parameters are at least ten and sum to two thousand or more, the interval cut at the standard deviation's
+      scale. Against `betainc` at seventy digits that quadrature is out by `1.2e-4` of the value 23 standard
+      deviations into a tail, `1.2e-5` at 28 and `1e-13` at thirteen; the first complement measured with both parameters large was
+      "4.6e9 units" from it and correct. It is replaced by Abramowitz and Stegun's fraction evaluated from its tail
+      at eighty digits, the count of partial quotients doubled until two evaluations agree to `1e-45`, which agrees
+      with `betainc` at ninety digits to `6.6e-52` over 30 such inputs out to thirty standard deviations and runs in
+      under a tenth of a second at parameters of a million. The same fraction now serves every sum of two thousand
+      or more (it agrees with `betainc` to `2.3e-51` over 1,241 inputs with one parameter below ten), where
+      `betainc` can take minutes an input: the F's sample with a degree of freedom up to a million did not finish
+      in half an hour of fourteen processes. Every reference the vectors carried re-derives to the same bits under
+      it: 182 of `SpecialVectors` and 143 of `DistributionsVectors`. D78 item 10's figures were taken against the
+      quadrature; re-run against the fraction they are the figures of item 9, and none moved by more than the
+      function did. The distributions' script had worked round the quadrature in its own tails
+      (`beta_lower`); that work-round is removed.
+    - **The method card waits for Phase 623**, as for D78 and D79.
+
+12. **Not changed here.**
+    - Below a parameter sum of `128`, D78's statement stands: where `b < 1` and `x` is beyond `0.99`, the function
+      is a complement, accurate to a unit in the last place of one and not of itself, and the complement has the
+      mirrored limit (`a < 1`, wherever Gauss's series is not read: `x` below `0.01`, or a value not below `x`).
+      Measured at a large parameter in
+      `[64, 128)` with the small one drawn down to `10⁻⁶`: 151,300 units at worst. `betaUpperSmall` would answer it,
+      with more terms of its Stirling difference than the three a parameter of `127` needs; extending it below
+      `128` moves vectors there and is a decision of its own.
+    - The prefix. With the small parameter in `[1, 10)` and the large one beyond ten the prefix is
+      `exp (a ln x + b ln (1 − x) − ln B(a, b))`, three terms of size `b ln a` that cancel to order one. That is the
+      likeliest source of the 100 to 330 units of item 9's `[1, 10)` rows (the mean is 5 to 32): the fraction is the
+      one that measures 30 with the parameter below one, and the prefix is what differs. It was not isolated by a
+      measurement. D78's form for both parameters from ten, with the small parameter's Stirling tail computed
+      exactly, is the candidate; it was neither built nor measured.
+    - The inverse's start, bracket and rule (D78 item 8), the incomplete gamma functions, and every other function
+      of the module.
+
+**Falsifiers.** Each is a way this decision would be wrong, and what would show it.
+
+- A host answers other bits: the 58 new vectors and the five moved ones of `elementary-laws.json`, and the 38 of
+  `distributions-laws.json`, are rendered on .NET and under node and compared byte for byte, each with its distance
+  from the reference; `ElementaryLaws.laws` gains a law over the complements, run on both hosts.
+- The corner is worse than stated: the suite holds every vector of the repaired region
+  (`beta-inc-corner-*`, `beta-comp-corner-*`, and both parameters at a million) to 32 units, and the functions to
+  their recorded bounds. The figures are a measurement over the stated ranges, never a theorem: a large parameter
+  beyond a million, or both large and more than six standard deviations from the mean, is computed by the same
+  rules and not covered.
+- The threshold is in the wrong place: `beta-inc-below-contracted` and `beta-inc-at-contracted` are the same
+  function a quarter either side of a sum of `128`, 46 and 5 units from their references, and a test holds the
+  function continuous across it.
+- The complement is a subtraction somewhere it should not be: a test reads four vectors where it is small and
+  finds one minus the function hundreds of units from the reference the complement meets within 64.
+- The direct forms are worse than D79's somewhere the sample did not draw: `DistributionsBench.fs` keeps D79's
+  forms as candidates (`d79`) over the public functions, scored over the same inputs, so the comparison of item 9
+  is one run.
+- The reference is wrong again: its fraction is checked against `betainc` wherever both can be run, and the two
+  figures above are the check.
+
+**Alternatives considered.** The contracted fraction at every parameter sum, and an asymptotic expansion: item 3 and
+item 11. `1 − regularizedBeta` behind the new name: it is what the phase exists to end. A complement that takes
+`1 − x` as its argument: that is `regularizedBeta b a y`, which `Special` already publishes, and a caller that holds
+`x` would have to round `1 − x` to call it. Publishing the pair as one function returning both: no reader, and a
+struct return is not the shape of the module. Keeping D79's Newton step as a polish after the direct root: measured
+as part of `d79`, and the direct root is already the nearer.
+
 ## 2026-11-11 — D80: `Glm` calls the solvers — its IRLS is `Damped.iterate` and θ's Newton is `Root.bracketedNewton` over `[2⁻²⁰, 2²⁰]`, an answer on the bracket's end refused; θ moves by measurement, not by reproduction, and no law vector moves; the reproduction law becomes a record of the bits `Glm.fit` answered before
 
 **Context.** Phase 634. Phase 633 shipped the solvers (D77) and a reproduction law showing that `Damped.iterate` and

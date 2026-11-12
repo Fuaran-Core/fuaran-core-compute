@@ -107,6 +107,12 @@ let tests =
               has "beta-inc-x-above-one" "\"value\": \"nan\""
               has "beta-inv-p-zero" (value 0.0)
               has "beta-inv-p-one" (value 1.0)
+              has "beta-comp-x-zero" (value 1.0)
+              has "beta-comp-x-one" (value 0.0)
+              has "beta-comp-x-above-one" "\"value\": \"nan\""
+              has "beta-inv-comp-q-zero" (value 1.0)
+              has "beta-inv-comp-q-one" (value 0.0)
+              has "beta-inv-comp-q-negative" "\"value\": \"nan\""
               has "digamma-zero" "\"value\": \"nan\""
               has "trigamma-infinity" (value 0.0)
               has "polygamma-order-not-an-integer" "\"value\": \"nan\""
@@ -121,6 +127,8 @@ let tests =
               Expect.isLessThanOrEqual (ulpsFrom "beta-ones" 1.0) 0L "B (1, 1) is one"
               Expect.isLessThanOrEqual (ulpsFrom "beta-inc-uniform" 0.3) 2L "I_x (1, 1) is x"
               Expect.isLessThanOrEqual (ulpsFrom "beta-inv-uniform" 0.3) 2L "the inverse of I_x (1, 1) is p"
+              Expect.isLessThanOrEqual (ulpsFrom "beta-comp-uniform" 0.7) 2L "1 - I_x (1, 1) is 1 - x"
+              Expect.isLessThanOrEqual (ulpsFrom "beta-inv-comp-uniform" 0.7) 2L "its inverse is 1 - q"
               Expect.isLessThanOrEqual (ulpsFrom "beta-inv-halves-middle" 0.5) 16L "the median of B (1/2, 1/2)"
               Expect.isLessThanOrEqual (ulpsFrom "beta-inv-symmetric-middle" 0.5) 16L "the median of B (5, 5)"
               Expect.isLessThanOrEqual (ulpsFrom "gammaQ-x-is-a-one" 0.36787944117144233) 2L "Q (1, 1) is 1/e"
@@ -139,6 +147,89 @@ let tests =
               // The symmetry is exact.
               has "beta-swapped" (value (Special.beta 2.5 7.25))
               has "betaLn-swapped" (value (Special.betaLn 2.5 7.25))
+
+          testCase
+              "the incomplete beta function keeps its accuracy where one parameter is large, up to a million (Phase 636)"
+          <| fun () ->
+              // The vectors of the repaired region: the t's tail at a square of 3.84 and its neighbours,
+              // from the large parameter's end and from the other. Each is within 32 units of its
+              // reference; before the repair the function was 247 units out at a = 500 and 176,900
+              // at a = 500,000 on the first of these inputs (DECISIONS.md D81).
+              let corner =
+                  SpecialVectors.references
+                  |> List.filter (fun (id, _) ->
+                      id.StartsWith "beta-inc-corner"
+                      || id.StartsWith "beta-comp-corner"
+                      || id.StartsWith "beta-inc-million"
+                      || id.StartsWith "beta-comp-million")
+
+              Expect.isTrue (corner.Length >= 18) "the corner has its vectors"
+
+              for id, h in corner do
+                  let apart = ulpsFrom id (ElementaryVectors.ofHex h)
+                  Expect.isLessThanOrEqual apart 32L (sprintf "%s is %d ulps from its reference" id apart)
+
+              // Either side of the parameter sum at which the fraction changes form: the same function,
+              // and the two answers are neighbours' answers, not two functions'.
+              let below = SpecialVectors.answer (caseOf "beta-inc-below-contracted")
+              let at = SpecialVectors.answer (caseOf "beta-inc-at-contracted")
+              Expect.isTrue (at < below && below - at < 1.0e-3) "the function is continuous across the sum of 128"
+
+          testCase "the complement is computed and not subtracted from one, and so is its inverse (Phase 636)"
+          <| fun () ->
+              // Go-red: one minus the function, on the vectors where the complement is small, is far
+              // from the reference the complement meets.
+              for id in
+                  [ "beta-comp-upper-tail"
+                    "beta-comp-skewed-upper"
+                    "beta-comp-x-near-one"
+                    "beta-comp-corner-tiny-a" ] do
+                  let c = caseOf id
+
+                  let v (name: string) =
+                      c.Input |> List.find (fun (n, _) -> n = name) |> snd
+
+                  let reference = SpecialVectors.references |> List.find (fun (i, _) -> i = id) |> snd
+                  let subtracted = 1.0 - Special.regularizedBeta (v "a") (v "b") (v "x")
+
+                  Expect.isGreaterThan
+                      (ElementaryVectors.ulpsApart subtracted (ElementaryVectors.ofHex reference))
+                      100L
+                      (sprintf "%s: one minus the function is not the complement" id)
+
+                  Expect.isLessThanOrEqual
+                      (ulpsFrom id (ElementaryVectors.ofHex reference))
+                      64L
+                      (sprintf "%s: the complement is" id)
+
+              // A caller that holds `y = 1 - x` reads the mirrored function, and the two agree.
+              let y = 1.0 / 1048576.0
+              let mirrored = Special.regularizedBeta 0.5 5.0e5 y
+              let complement = Special.regularizedBetaComplement 5.0e5 0.5 (1.0 - y)
+
+              Expect.isLessThanOrEqual
+                  (ElementaryVectors.ulpsApart mirrored complement)
+                  16L
+                  "I_y(b, a) is 1 - I_(1 - y)(a, b)"
+
+              // The inverse reads a small upper probability as it is: at `1 - q` rounded to one the
+              // plain inverse can only answer one.
+              let q = 1.0e-20
+              Expect.equal (Special.inverseRegularizedBeta 2.0 3.0 (1.0 - q)) 1.0 "1 - q is one"
+              let x = Special.inverseRegularizedBetaComplement 2.0 3.0 q
+              Expect.isTrue (x < 1.0 && x > 0.999) "the complement's inverse is short of one"
+
+              Expect.isLessThanOrEqual
+                  (abs (Special.regularizedBetaComplement 2.0 3.0 x - q))
+                  (q * 1.0e-6)
+                  "and the complement there is q, as nearly as an x beside one can say"
+
+              // From a half up the two inverses are one function, bit for bit.
+              for q in [ 0.5; 0.625; 0.999 ] do
+                  Expect.equal
+                      (ElementaryVectors.hex (Special.inverseRegularizedBetaComplement 7.5 0.75 q))
+                      (ElementaryVectors.hex (Special.inverseRegularizedBeta 7.5 0.75 (1.0 - q)))
+                      (sprintf "q = %g" q)
 
           testCase
               "the host's own gamma function answers other bits on at least one special vector, so the byte comparison sees a port that cheats"

@@ -14,7 +14,8 @@ Three modes, each reading and writing plain text:
       Each input line is `<id> <op> <hex> [<hex> ...]`, the operands as IEEE-754 binary64 bit patterns in
       sixteen lowercase hex digits, in the function's argument order. Each output line is `<id> <hex>`:
       the true value rounded once to the nearest double. This is how `SpecialVectors.references` was made.
-      A case of `inverseRegularizedBeta` carries the package's answer as one more operand (see below).
+      A case of `inverseRegularizedBeta` or `inverseRegularizedBetaComplement` carries the package's
+      answer as one more operand (see below).
 
   python special_reference.py check < answers.txt
       Each input line is `<op> <hex> [<hex> ...] <hex>`: the operands and then the package's answer (an
@@ -27,12 +28,14 @@ Three modes, each reading and writing plain text:
 The functions, as mpmath spells them: `gammaLn` is `log(|gamma(x)|)`; `gamma`; `betaLn` and `beta` from
 `loggamma`; `regularizedGammaP` and `regularizedGammaQ` are `gammainc(..., regularized=True)` (for `a` of
 five hundred and more, the lower series summed here at ninety digits, because mpmath's own summation gives
-up); `regularizedBeta` is `betainc(a, b, 0, x, regularized=True)` (for `a + b` of two thousand and more
-with both parameters at least ten, the density integrated by `quad` from the nearer end, because the hypergeometric route takes minutes a
-value there); `polygamma`, with `digamma` its order
-zero and `trigamma` its order one. `inverseRegularizedBeta` has no closed reference: the answer `x` is
-corrected by Newton steps taken at fifty digits, which land within `1e-25` of the root from any `x` the
-package answers, and that corrected value is the reference.
+up); `regularizedBeta` is `betainc(a, b, 0, x, regularized=True)` (for `a + b` of two thousand and more,
+Abramowitz and Stegun's continued fraction 26.5.8 evaluated from its tail at eighty digits, because the
+hypergeometric route can take minutes a value there);
+`regularizedBetaComplement` (Phase 636, DECISIONS.md D81) is the same function of the exchanged
+parameters at `1 - x`, that subtraction exact at fifty digits; `polygamma`, with `digamma` its order
+zero and `trigamma` its order one. `inverseRegularizedBeta` and `inverseRegularizedBetaComplement` have
+no closed reference: the answer `x` is corrected by Newton steps taken at fifty digits, which land
+within `1e-25` of the root from any `x` the package answers, and that corrected value is the reference.
 """
 import math
 import struct
@@ -135,28 +138,47 @@ def beta_ln(a, b):
     return mpmath.loggamma(mpf(a)) + mpmath.loggamma(mpf(b)) - mpmath.loggamma(mpf(a) + mpf(b))
 
 
+def beta_fraction(a, b, x):
+    """`I_x(a, b)` for `x` at or below `(a + 1) / (a + b + 2)`: Abramowitz and Stegun 26.5.8 evaluated
+    from its tail at eighty digits, the count of partial quotients doubled until two evaluations agree
+    to `1e-45` of the value."""
+    with mp.workdps(mp.dps + 30):
+        a, b, x = mpf(a), mpf(b), mpf(x)
+        prefix = mpmath.exp(a * mpmath.log(x) + b * mpmath.log1p(-x) - beta_ln(a, b)) / a
+
+        def evaluate(count):
+            tail = mpf(0)
+            for m in range(count, 0, -1):
+                even = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m))
+                odd = -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1))
+                tail = even / (1 + odd / (1 + tail))
+            return prefix / (1 - (a + b) * x / (a + 1) / (1 + tail))
+
+        count = 64
+        value = evaluate(count)
+        while True:
+            count *= 2
+            again = evaluate(count)
+            if abs(again - value) <= abs(again) * mpf(10) ** -45:
+                return +again
+            if count > 1 << 22:
+                raise ValueError("the reference fraction did not settle")
+            value = again
+
+
 def regularized_beta(a, b, x):
     a, b, x = mpf(a), mpf(b), mpf(x)
-    if a + b < 2000 or a < 10 or b < 10:
+    if a + b < 2000:
         return mpmath.betainc(a, b, 0, x, regularized=True)
-    # Beyond that mpmath's hypergeometric route takes minutes a value. The density is integrated
-    # instead, from the nearer end to `x`, the interval cut at 1, 2, 4, ... standard deviations from
-    # `x` so each piece is smooth at the quadrature's scale.
-    mean = a / (a + b)
-    sd = mpmath.sqrt(a * b / ((a + b) ** 2 * (a + b + 1)))
-    ln_b = beta_ln(a, b)
-
-    def density(t):
-        if t <= 0 or t >= 1:
-            return mpf(0)
-        return mpmath.exp((a - 1) * mpmath.log(t) + (b - 1) * mpmath.log(1 - t) - ln_b)
-
-    steps = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256]
-    if x <= mean:
-        points = sorted({max(mpf(0), x - j * sd) for j in steps} | {mpf(0)})
-        return mpmath.quad(density, points)
-    points = sorted({min(mpf(1), x + j * sd) for j in steps} | {mpf(1)})
-    return 1 - mpmath.quad(density, points)
+    # Beyond that mpmath's hypergeometric route can take minutes a value. The continued fraction is
+    # evaluated instead, on its own side of the switch. (Until Phase 636 this was, for both parameters
+    # at least ten, a quadrature of the density cut at the standard deviation's scale, which is out by
+    # up to `1e-4` of the value some twenty standard deviations into a tail, and `betainc` for a
+    # parameter below ten. The fraction agrees with `betainc` to forty digits and more wherever both
+    # were run: Phase 636's sample of the corner, and every vector's reference re-derives unchanged.)
+    if x <= (a + 1) / (a + b + 2):
+        return beta_fraction(a, b, x)
+    return 1 - beta_fraction(b, a, 1 - x)
 
 
 def inverse_reference(a, b, p, answer):
@@ -168,6 +190,30 @@ def inverse_reference(a, b, p, answer):
     return x
 
 
+def regularized_beta_complement(a, b, x):
+    """`1 - I_x(a, b)`: `I_(1 - x)(b, a)` with the subtraction taken at fifty digits, where it is exact
+    (an `x` of `1e-30` and more); below that, one minus the function, which is not near one there
+    unless `a` is far below anything sampled."""
+    x = mpf(x)
+    if x >= mpf(10) ** -30:
+        return regularized_beta(b, a, 1 - x)
+    return 1 - regularized_beta(a, b, x)
+
+
+def inverse_complement_reference(a, b, q, answer):
+    """The root of `1 - I_x(a, b) = q` nearest the package's answer, by the same Newton steps. The
+    residual is read on the side that does not cancel: `1 - I_x - q` for a `q` below one half, and
+    `I_x - (1 - q)` otherwise, `1 - q` being exact at fifty digits."""
+    x = mpf(answer)
+    for _ in range(3):
+        density = mpmath.exp((mpf(a) - 1) * mpmath.log(x) + (mpf(b) - 1) * mpmath.log(1 - x) - beta_ln(a, b))
+        if q < 0.5:
+            x = x + (regularized_beta_complement(a, b, x) - mpf(q)) / density
+        else:
+            x = x - (regularized_beta(a, b, x) - (1 - mpf(q))) / density
+    return x
+
+
 REFERENCE = {
     "gammaLn": lambda x: mpmath.log(abs(mpmath.gamma(mpf(x)))) if x < 0 else mpmath.loggamma(mpf(x)),
     "gamma": lambda x: mpmath.gamma(mpf(x)),
@@ -176,6 +222,7 @@ REFERENCE = {
     "regularizedGammaP": gamma_p,
     "regularizedGammaQ": gamma_q,
     "regularizedBeta": regularized_beta,
+    "regularizedBetaComplement": regularized_beta_complement,
     "polygamma": lambda n, x: mpmath.polygamma(int(n), mpf(x)),
     "digamma": lambda x: mpmath.digamma(mpf(x)),
     "trigamma": lambda x: mpmath.polygamma(1, mpf(x)),
@@ -187,6 +234,10 @@ def reference(op, operands, answer=None):
         if answer is None or not (0.0 < answer < 1.0):
             raise ValueError("the inverse's reference is taken from the package's answer inside (0, 1)")
         return inverse_reference(*operands, answer)
+    if op == "inverseRegularizedBetaComplement":
+        if answer is None or not (0.0 < answer < 1.0):
+            raise ValueError("the inverse's reference is taken from the package's answer inside (0, 1)")
+        return inverse_complement_reference(*operands, answer)
     return REFERENCE[op](*operands)
 
 
@@ -204,7 +255,7 @@ def references():
         if not parts:
             continue
         identity, op, operands = parts[0], parts[1], [of_hex(h) for h in parts[2:]]
-        if op == "inverseRegularizedBeta":
+        if op in ("inverseRegularizedBeta", "inverseRegularizedBetaComplement"):
             want = reference(op, operands[:-1], operands[-1])
         else:
             want = reference(op, operands)

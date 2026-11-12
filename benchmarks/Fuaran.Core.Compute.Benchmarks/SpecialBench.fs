@@ -86,7 +86,7 @@ let private regularizedGammaSample (d: Draw) : float[][] =
 
 /// `(a, b, x)` with both parameters log-uniform over `[lo, hi)` and `x` within six standard deviations
 /// of the mean six draws in ten, uniform two in ten, and within twelve decades of an end otherwise.
-let private betaTriples (d: Draw) (n: int) (lo: float) (hi: float) : float[][] =
+let betaTriples (d: Draw) (n: int) (lo: float) (hi: float) : float[][] =
     draws n (fun () ->
         let a = logUniform d lo hi
         let b = logUniform d lo hi
@@ -118,7 +118,7 @@ let private regularizedBetaSample (d: Draw) : float[][] =
               let x = a / (a + b) * Elementary.pow 10.0 (d.Range -2.0 1.0)
               [| a; b; (if x < 0.999 then x else 0.999) |]) ]
 
-let private inverseSample (d: Draw) : float[][] =
+let inverseSample (d: Draw) : float[][] =
     draws 1200 (fun () ->
         let a = logUniform d 0.05 1e3
         let b = logUniform d 0.05 1e3

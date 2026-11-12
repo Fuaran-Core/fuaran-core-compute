@@ -33,8 +33,10 @@ method Fuaran.Compute.Elementary.Special.digamma(System.Double) : System.Double
 method Fuaran.Compute.Elementary.Special.gamma(System.Double) : System.Double
 method Fuaran.Compute.Elementary.Special.gammaLn(System.Double) : System.Double
 method Fuaran.Compute.Elementary.Special.inverseRegularizedBeta(System.Double, System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.inverseRegularizedBetaComplement(System.Double, System.Double, System.Double) : System.Double
 method Fuaran.Compute.Elementary.Special.polygamma(System.Double, System.Double) : System.Double
 method Fuaran.Compute.Elementary.Special.regularizedBeta(System.Double, System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Special.regularizedBetaComplement(System.Double, System.Double, System.Double) : System.Double
 method Fuaran.Compute.Elementary.Special.regularizedGammaP(System.Double, System.Double) : System.Double
 method Fuaran.Compute.Elementary.Special.regularizedGammaQ(System.Double, System.Double) : System.Double
 method Fuaran.Compute.Elementary.Special.trigamma(System.Double) : System.Double

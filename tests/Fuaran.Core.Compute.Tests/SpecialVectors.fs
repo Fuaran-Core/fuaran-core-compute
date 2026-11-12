@@ -45,16 +45,20 @@ module SpecialVectors =
         | "regularizedGammaQ" -> Special.regularizedGammaQ (v "a") (v "x")
         | "regularizedBeta" -> Special.regularizedBeta (v "a") (v "b") (v "x")
         | "inverseRegularizedBeta" -> Special.inverseRegularizedBeta (v "a") (v "b") (v "p")
+        | "regularizedBetaComplement" -> Special.regularizedBetaComplement (v "a") (v "b") (v "x")
+        | "inverseRegularizedBetaComplement" -> Special.inverseRegularizedBetaComplement (v "a") (v "b") (v "q")
         | "polygamma" -> Special.polygamma (v "n") (v "x")
         | "digamma" -> Special.digamma (v "x")
         | "trigamma" -> Special.trigamma (v "x")
         | other -> failwithf "special vector %s: %s is not a special function" c.Id other
 
     /// The most units in the last place a function's answer is from its reference on any vector here
-    /// that carries one (DECISIONS.md D78 item 10). The figures are of these authored inputs, each a
-    /// power of two at or above the worst vector: the incomplete functions' and `beta`'s are set by the
+    /// that carries one (DECISIONS.md D78 item 10; D81 item 10 for the incomplete beta function, its
+    /// complement and their inverses). The figures are of these authored inputs, each a power of two
+    /// at or above the worst vector: the incomplete gamma functions' and `beta`'s are set by the
     /// vectors with parameters in the tens of thousands and up, where a long series or a large
-    /// exponent carries the error; the drawn sample's figures, by range, are in the decision.
+    /// exponent carries the error; the incomplete beta function's by a deep tail and by the vector just
+    /// below the parameter sum of 128. The drawn samples' figures, by range, are in the decisions.
     let referenceUlps: (string * int) list =
         [ "gammaLn", 2
           "gamma", 4
@@ -62,8 +66,10 @@ module SpecialVectors =
           "beta", 256
           "regularizedGammaP", 256
           "regularizedGammaQ", 128
-          "regularizedBeta", 128
+          "regularizedBeta", 64
           "inverseRegularizedBeta", 32
+          "regularizedBetaComplement", 64
+          "inverseRegularizedBetaComplement", 8
           "polygamma", 8
           "digamma", 2
           "trigamma", 2 ]
@@ -100,6 +106,12 @@ module SpecialVectors =
         case id "inverseRegularizedBeta" [ "a", a; "b", b; "p", p ]
 
     let private nx (id: string) (n: float) (x: float) : Case = two id "polygamma" "n" n "x" x
+
+    let private abc (id: string) (a: float) (b: float) (x: float) : Case =
+        case id "regularizedBetaComplement" [ "a", a; "b", b; "x", x ]
+
+    let private abq (id: string) (a: float) (b: float) (q: float) : Case =
+        case id "inverseRegularizedBetaComplement" [ "a", a; "b", b; "q", q ]
 
     /// The digamma function's positive root, as the nearest double.
     let private digammaRoot = 1.4616321449683622
@@ -364,7 +376,70 @@ module SpecialVectors =
           nx "polygamma-two-infinity" 2.0 inf
           nx "polygamma-zero-negative" 0.0 -0.5
           nx "polygamma-nan-order" nan 2.0
-          nx "polygamma-nan" 2.0 nan ]
+          nx "polygamma-nan" 2.0 nan
+          // ---- Phase 636 (D81): the incomplete beta function where one parameter is large. The t's
+          // tail at a square of 3.84, either side of the switch, a parameter far below one, the
+          // other end, both parameters large, and either side of the parameter sum of 128 ----
+          abx "beta-inc-corner-500" 500.0 0.5 (1000.0 / 1003.84)
+          abx "beta-inc-corner-20000" 2.0e4 0.5 (4.0e4 / 40003.84)
+          abx "beta-inc-corner-500000" 5.0e5 0.5 (1.0e6 / 1000003.84)
+          abx "beta-inc-corner-million" 1.0e6 0.5 (1.0 - pow2 -19)
+          abx "beta-inc-corner-above-switch" 5.0e5 0.5 (1.0 - pow2 -20)
+          abx "beta-inc-corner-near-one" 5.0e5 0.5 (1.0 - pow2 -23)
+          abx "beta-inc-corner-tiny-b" 1.0e5 1.0e-3 (1.0 - 1.0e-6)
+          abx "beta-inc-corner-b-five" 1.0e5 5.0 (1.0 - 5.0e-5)
+          abx "beta-inc-corner-mirror" 0.5 5.0e5 2.0e-6
+          abx "beta-inc-corner-mirror-above-switch" 0.5 5.0e5 1.0e-5
+          abx "beta-inc-million-at-mean" 1.0e6 1.0e6 0.5
+          abx "beta-inc-million-skewed" 1.0e6 2.0e6 0.3333
+          abx "beta-inc-below-contracted" 127.5 0.25 0.99
+          abx "beta-inc-at-contracted" 127.75 0.25 0.99
+          abp "beta-inv-corner-500" 500.0 0.5 0.05
+          abp "beta-inv-corner-500000" 5.0e5 0.5 0.05
+          abp "beta-inv-corner-mirror" 0.5 5.0e5 0.95
+          // ---- the complement: both tails, each arm, the corner from both ends, the table ----
+          abc "beta-comp-uniform" 1.0 1.0 0.3
+          abc "beta-comp-halves" 0.5 0.5 0.3
+          abc "beta-comp-upper-tail" 5.0 5.0 0.996
+          abc "beta-comp-lower-tail" 5.0 5.0 0.004
+          abc "beta-comp-skewed-upper" 2.0 50.0 0.9
+          abc "beta-comp-below-half-restored" 2.0 50.0 0.3
+          abc "beta-comp-small-a-series" 1.0e-3 3.0 0.3
+          abc "beta-comp-x-near-one" 3.0 0.5 (1.0 - pow2 -53)
+          abc "beta-comp-tiny-x" 0.5 2.0 1.0e-300
+          abc "beta-comp-corner-500" 500.0 0.5 (1000.0 / 1003.84)
+          abc "beta-comp-corner-500000" 5.0e5 0.5 (1.0e6 / 1000003.84)
+          abc "beta-comp-corner-above-switch" 5.0e5 0.5 (1.0 - pow2 -20)
+          abc "beta-comp-corner-mirror" 0.5 5.0e5 2.0e-6
+          abc "beta-comp-corner-mirror-tail" 0.5 5.0e5 1.0e-5
+          abc "beta-comp-corner-tiny-a" 1.0e-3 1.0e4 1.0e-5
+          abc "beta-comp-small-and-large" 2.5 1.0e4 1.0e-4
+          abc "beta-comp-million-at-mean" 1.0e6 1.0e6 0.5
+          abc "beta-comp-x-zero" 2.0 3.0 0.0
+          abc "beta-comp-x-one" 2.0 3.0 1.0
+          abc "beta-comp-x-negative" 2.0 3.0 -0.1
+          abc "beta-comp-x-above-one" 2.0 3.0 1.5
+          abc "beta-comp-a-zero" 0.0 3.0 0.5
+          abc "beta-comp-b-negative" 2.0 -3.0 0.5
+          abc "beta-comp-a-infinity" inf 3.0 0.5
+          abc "beta-comp-nan" 2.0 3.0 nan
+          // ---- the complement's inverse: near zero and one, both halves, the corner, the table ----
+          abq "beta-inv-comp-uniform" 1.0 1.0 0.3
+          abq "beta-inv-comp-near-zero" 2.0 3.0 1.0e-12
+          abq "beta-inv-comp-near-one" 2.0 3.0 (1.0 - 1.0e-12)
+          abq "beta-inv-comp-tiny-q" 2.0 3.0 1.0e-300
+          abq "beta-inv-comp-halves-middle" 0.5 0.5 0.5
+          abq "beta-inv-comp-small-b" 30.0 0.05 0.3
+          abq "beta-inv-comp-upper-half" 10.0 2.0 0.1
+          abq "beta-inv-comp-corner-500" 500.0 0.5 0.05
+          abq "beta-inv-comp-corner-500000" 5.0e5 0.5 0.05
+          abq "beta-inv-comp-corner-mirror" 0.5 5.0e5 0.05
+          abq "beta-inv-comp-q-zero" 2.0 3.0 0.0
+          abq "beta-inv-comp-q-one" 2.0 3.0 1.0
+          abq "beta-inv-comp-q-negative" 2.0 3.0 -0.5
+          abq "beta-inv-comp-q-above-one" 2.0 3.0 1.5
+          abq "beta-inv-comp-a-zero" 0.0 3.0 0.5
+          abq "beta-inv-comp-nan" 2.0 3.0 nan ]
 
     /// The true value for every vector the routine computes to a finite, non-zero answer, rounded once
     /// to the nearest double: mpmath 1.4.1 at fifty digits, by `SpecialReference/special_reference.py
@@ -552,7 +627,50 @@ module SpecialVectors =
           "polygamma-ten", "c0638758daf466ae"
           "polygamma-ten-at-threshold", "be683703d87b7a32"
           "polygamma-largest-order", "e6d3f84577fb8d50"
-          "polygamma-zero-negative", "3fa2aed059bd608a" ]
+          "polygamma-zero-negative", "3fa2aed059bd608a"
+          "beta-inc-corner-500", "3fa9c3ac2c930386"
+          "beta-inc-corner-20000", "3fa9a03699b493d7"
+          "beta-inc-corner-500000", "3fa99f573ccca17d"
+          "beta-inc-corner-million", "3faa0312fb57635c"
+          "beta-inc-corner-above-switch", "3fd50ad395d9245d"
+          "beta-inc-corner-near-one", "3fe75b4a14c8f995"
+          "beta-inc-corner-tiny-b", "3f5dd9ff81c4573b"
+          "beta-inc-corner-b-five", "3fdc306527bd3dbb"
+          "beta-inc-corner-mirror", "3feaf767def80af1"
+          "beta-inc-corner-mirror-above-switch", "3feff32d319922bf"
+          "beta-inc-million-at-mean", "3fe0000000000000"
+          "beta-inc-million-skewed", "3fdce2571285835a"
+          "beta-inc-below-contracted", "3fa743afe60fe318"
+          "beta-inc-at-contracted", "3fa72eaa0466b868"
+          "beta-inv-corner-500", "3fefe0935186885a"
+          "beta-inv-corner-500000", "3feffff7f1a2ab83"
+          "beta-inv-corner-mirror", "3ed01cbaa8f913e4"
+          "beta-comp-uniform", "3fe6666666666666"
+          "beta-comp-halves", "3fe43111b0925577"
+          "beta-comp-upper-tail", "3de17f691da3a569"
+          "beta-comp-lower-tail", "3fefffffffee8097"
+          "beta-comp-skewed-upper", "35e58367e5c8e413"
+          "beta-comp-below-half-restored", "3e934f9543d6132e"
+          "beta-comp-small-a-series", "3f30fba8c3a0d5e9"
+          "beta-comp-x-near-one", "3e5536948017480f"
+          "beta-comp-tiny-x", "3ff0000000000000"
+          "beta-comp-corner-500", "3fee63c53d36cfc8"
+          "beta-comp-corner-500000", "3fee660a8c3335e8"
+          "beta-comp-corner-above-switch", "3fe57a9635136dd2"
+          "beta-comp-corner-mirror", "3fc42260841fd43c"
+          "beta-comp-corner-mirror-tail", "3f59a59ccdba8244"
+          "beta-comp-corner-tiny-a", "3f5dda26be9803a2"
+          "beta-comp-small-and-large", "3feb2be9a9220d28"
+          "beta-comp-million-at-mean", "3fe0000000000000"
+          "beta-inv-comp-uniform", "3fe6666666666666"
+          "beta-inv-comp-near-zero", "3fefff7be2b81bee"
+          "beta-inv-comp-near-one", "3e9b6593992ee1d6"
+          "beta-inv-comp-halves-middle", "3fe0000000000000"
+          "beta-inv-comp-small-b", "3fefffffffffe7b7"
+          "beta-inv-comp-upper-half", "3fee6ae3f5b5a938"
+          "beta-inv-comp-corner-500", "3feffff7bfe59336"
+          "beta-inv-comp-corner-500000", "3feffffffde3920e"
+          "beta-inv-comp-corner-mirror", "3ed01cbaa8f913e5" ]
 
     /// The lines `special_reference.py references` reads, one per vector whose answer is finite and not
     /// zero and that no special-value row answers: `<id> <op> <operand bits> …`, and for the inverse the
@@ -567,13 +685,15 @@ module SpecialVectors =
                 // The rows a table answers exactly: nothing was computed, so nothing is measured.
                 (c.Op = "regularizedGammaP" || c.Op = "regularizedGammaQ")
                 && (scalar c "x" = 0.0 || Double.IsInfinity(scalar c "x"))
-                || (c.Op = "regularizedBeta" && (scalar c "x" = 0.0 || scalar c "x" = 1.0))
-                || (c.Op = "inverseRegularizedBeta" && (value = 0.0 || value = 1.0))
+                || ((c.Op = "regularizedBeta" || c.Op = "regularizedBetaComplement")
+                    && (scalar c "x" = 0.0 || scalar c "x" = 1.0))
+                || ((c.Op = "inverseRegularizedBeta" || c.Op = "inverseRegularizedBetaComplement")
+                    && (value = 0.0 || value = 1.0))
 
             if finite && value <> 0.0 && not exact then
                 let operands =
                     (c.Input |> List.map (snd >> ElementaryVectors.hex))
-                    @ (if c.Op = "inverseRegularizedBeta" then
+                    @ (if c.Op = "inverseRegularizedBeta" || c.Op = "inverseRegularizedBetaComplement" then
                            [ ElementaryVectors.hex value ]
                        else
                            [])
@@ -616,7 +736,20 @@ module SpecialVectors =
         + "the package's distance from it in units in the last place, which is itself part of the document a "
         + "host must reproduce."
 
+    let private complements =
+        "Phase 636 (DECISIONS.md D81): the vectors whose `op` is `regularizedBetaComplement` or "
+        + "`inverseRegularizedBetaComplement` hold the two complements `Special` publishes, `1 - I_x(a, b)` "
+        + "and the `x` at which it is `q` (`input` is `a`, `b`, `x` and `a`, `b`, `q`), read as the vectors "
+        + "above are. They follow the `regularizedBeta` and `inverseRegularizedBeta` vectors this phase adds "
+        + "after `polygamma`'s, whose ids begin `beta-inc-corner`, `beta-inc-million`, `beta-inc-below-contracted`, "
+        + "`beta-inc-at-contracted` and `beta-inv-corner`: the incomplete beta function where one parameter is "
+        + "large and the argument within a few standard deviations of the mean. From a parameter sum of 128 "
+        + "the function reads its continued fraction in another form, so every vector with a sum that large "
+        + "answers the bits of that form."
+
     /// The elementary family's whole document: every vector `ElementaryVectors` holds, unchanged, then
     /// this module's, as the one corpus writer renders them.
     let render () : string =
-        ElementaryVectors.renderWith [ "special", CorpusFile.str special ] (cases |> List.map caseCell)
+        ElementaryVectors.renderWith
+            [ "special", CorpusFile.str special; "complements", CorpusFile.str complements ]
+            (cases |> List.map caseCell)

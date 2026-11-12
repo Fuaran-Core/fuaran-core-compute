@@ -522,6 +522,72 @@ module ElementaryLaws =
         else
             Some(sprintf "at x = %.17g the central difference is %.17g and digamma %.17g" x difference derivative)
 
+    /// The two complements (D81). Their table rows answer as stated. `I_x(a, b)` and its complement sum
+    /// to one within `8u`. For an `x` of at least a half, where `1 − x` is exact, the complement is the
+    /// mirrored function `I_{1 − x}(b, a)` within `2⁻⁴⁰` of itself. That inverse and the mirrored
+    /// function's sum to one within `64u`, and for a `q` of at least a half it is
+    /// `inverseRegularizedBeta` at `1 − q`, bit for bit. The parameters of those run from a quarter to
+    /// `2¹²`, so both of the function's fractions are read. The complement of its own inverse is `q`
+    /// within `2⁻⁴⁰` for parameters in `[1, 64)` and `q` in `[0.001, 0.999]`, where the density at the
+    /// root is small enough that the root's own rounding does not show.
+    let private betaComplements (d: Draw) =
+        let nan = Double.NaN
+        let inf = Double.PositiveInfinity
+        let isNaN (x: float) = Double.IsNaN x
+        let is (want: float) (x: float) = bits x = bits want
+        let a = positive d -2 11
+        let b = positive d -2 11
+        let x = (d.Unit() + 1.0) * 0.5
+        let high = 0.5 + (d.Unit() + 1.0) * 0.25
+        let lower = Special.regularizedBeta a b x
+        let upper = Special.regularizedBetaComplement a b x
+        let upperHigh = Special.regularizedBetaComplement a b high
+        let mirrored = Special.regularizedBeta b a (1.0 - high)
+        let q = 0.5 + d.Unit() * 0.499
+        let root = Special.inverseRegularizedBetaComplement a b q
+        let ar = positive d 0 5
+        let br = positive d 0 5
+
+        let back =
+            Special.regularizedBetaComplement ar br (Special.inverseRegularizedBetaComplement ar br q)
+
+        let mirror = Special.inverseRegularizedBeta b a q
+        let qHigh = 0.5 + (d.Unit() + 1.0) * 0.2495
+
+        firstFailure
+            (sprintf
+                "a = %.17g, b = %.17g, x = %.17g and %.17g, q = %.17g and %.17g (root = %.17g); a = %.17g, b = %.17g (back = %.17g)"
+                a
+                b
+                x
+                high
+                q
+                qHigh
+                root
+                ar
+                br
+                back)
+            [ "complement x = 0", is 1.0 (Special.regularizedBetaComplement 2.0 3.0 0.0)
+              "complement x = 1", is 0.0 (Special.regularizedBetaComplement 2.0 3.0 1.0)
+              "complement x < 0", isNaN (Special.regularizedBetaComplement 2.0 3.0 -0.1)
+              "complement x > 1", isNaN (Special.regularizedBetaComplement 2.0 3.0 1.5)
+              "complement a = 0", isNaN (Special.regularizedBetaComplement 0.0 3.0 0.5)
+              "complement b = inf", isNaN (Special.regularizedBetaComplement 2.0 inf 0.5)
+              "complement NaN", isNaN (Special.regularizedBetaComplement 2.0 3.0 nan)
+              "inverse complement q = 0", is 1.0 (Special.inverseRegularizedBetaComplement 2.0 3.0 0.0)
+              "inverse complement q = 1", is 0.0 (Special.inverseRegularizedBetaComplement 2.0 3.0 1.0)
+              "inverse complement q < 0", isNaN (Special.inverseRegularizedBetaComplement 2.0 3.0 -0.5)
+              "inverse complement q > 1", isNaN (Special.inverseRegularizedBetaComplement 2.0 3.0 1.5)
+              "inverse complement b < 0", isNaN (Special.inverseRegularizedBetaComplement 2.0 -3.0 0.5)
+              "inverse complement NaN", isNaN (Special.inverseRegularizedBetaComplement nan 3.0 0.5)
+              "I + complement = 1", abs (lower + upper - 1.0) <= 8.0 * u
+              "complement a b x = I_(1 - x)(b, a)", abs (upperHigh - mirrored) <= pow2 -40 * mirrored
+              "complement (inverse complement q) = q", abs (back - q) <= pow2 -40
+              "inverse complement a b q = 1 - inverse b a q", abs (root + mirror - 1.0) <= 64.0 * u
+              "inverse complement a b q = inverse a b (1 - q)",
+              bits (Special.inverseRegularizedBetaComplement a b qHigh) =
+                  bits (Special.inverseRegularizedBeta a b (1.0 - qHigh)) ]
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "every special-value row and IEEE edge of the elementary functions is answered as stated", elementaryTables
@@ -537,5 +603,6 @@ module ElementaryLaws =
           "the incomplete beta function of its inverse is p, and the inverse mirrors", inverseRoundTrip
           "digamma's recurrence and constants hold, and digamma and trigamma are polygamma 0 and 1 bit for bit",
           polygammaIdentities
-          "a central difference of gammaLn agrees with digamma", gammaLnDerivative ]
+          "a central difference of gammaLn agrees with digamma", gammaLnDerivative
+          "the incomplete beta function's complement and its inverse are the stated functions of it", betaComplements ]
         |> List.map (fun (name, body) -> name, law seed count body)

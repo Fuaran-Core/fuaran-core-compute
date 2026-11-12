@@ -680,6 +680,12 @@ let tests =
               // The package reads Elementary's special functions and the solvers' iteration.
               Expect.isTrue (code.Contains "Special.regularizedBeta") "the incomplete beta function is Special's"
               Expect.isTrue (code.Contains "Special.inverseRegularizedBeta") "the inverse is Special's"
+
+              Expect.isTrue
+                  (code.Contains "Special.regularizedBetaComplement"
+                   && code.Contains "Special.inverseRegularizedBetaComplement")
+                  "the complement and its inverse are Special's, read directly (DECISIONS.md D81)"
+
               Expect.isTrue (code.Contains "Special.regularizedGammaP") "the incomplete gamma function is Special's"
               Expect.isTrue (code.Contains "Root.bracketedNewton") "the one iteration is the solvers'"
 

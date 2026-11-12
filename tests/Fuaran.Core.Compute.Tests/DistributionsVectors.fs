@@ -321,7 +321,13 @@ module DistributionsVectors =
           fQuantile "f-quantile-d1-zero" 0.0 4.0 0.25
           fQuantile "f-quantile-d2-negative" 3.0 -4.0 0.25
           fQuantile "f-quantile-d1-infinite" inf 4.0 0.25
-          fQuantile "f-quantile-d2-nan" 3.0 nan 0.25 ]
+          fQuantile "f-quantile-d2-nan" 3.0 nan 0.25
+
+          // ---- Phase 636 (DECISIONS.md D81): a degree of freedom of a million ----
+          fCdf "f-cdf-three-million" 3.0 1e6 2.6
+          fCdf "f-cdf-million-three-upper" 1e6 3.0 5.0
+          fQuantile "f-quantile-three-million-95-percent" 3.0 1e6 0.95
+          fQuantile "f-quantile-million-three-5-percent" 1e6 3.0 0.05 ]
 
     /// Whether a case has a parameter (a degrees-of-freedom operand) above forty thousand: beyond the
     /// range the special functions' own accuracy was measured over (an incomplete beta parameter of
@@ -331,19 +337,20 @@ module DistributionsVectors =
 
     /// The most units in the last place a function's answer is from its reference on any vector here
     /// that carries one, as `(function, the bound with every parameter at most forty thousand, the
-    /// bound beyond)` (DECISIONS.md D79 item 9). The figures are of these authored inputs, each a
-    /// power of two at or above the worst vector (`0`: the function has no such vector). The t's and
-    /// the F's are set by their vectors at the largest parameters, where the special functions' own
-    /// error is largest; the drawn sample's figures, by range, are in the decision.
+    /// bound beyond)` (DECISIONS.md D79 item 9, re-measured by D81). The figures are of these authored
+    /// inputs, each a power of two at or above the worst vector (`0`: the function has no such
+    /// vector). Since Phase 636 the t's and the F's no longer grow with the degrees of freedom: their
+    /// largest are far tails and a quantile where the mass is at zero. The drawn sample's figures, by
+    /// range, are in the decisions.
     let referenceUlps: (string * int * int) list =
         [ "Normal.cdf", 1, 0
           "Normal.quantile", 2, 0
-          "StudentT.cdf", 2048, 65536
-          "StudentT.quantile", 512, 65536
+          "StudentT.cdf", 64, 8
+          "StudentT.quantile", 128, 1
           "ChiSquare.cdf", 16, 32
           "ChiSquare.quantile", 16, 1
-          "FisherF.cdf", 256, 0
-          "FisherF.quantile", 1024, 0 ]
+          "FisherF.cdf", 16, 2
+          "FisherF.quantile", 256, 4 ]
 
     /// The bound a case's answer is held to.
     let boundOf (c: Case) : int =
@@ -498,7 +505,11 @@ module DistributionsVectors =
           "f-quantile-ten-thousand-both-97.5-percent", "3ff0a3c21a947230"
           "f-quantile-tenth-both-median", "3ff0000000000000"
           "f-quantile-tenth-both-1e-10", "17a6afc01481df69"
-          "f-quantile-just-above-half", "3feeba729d50505f" ]
+          "f-quantile-just-above-half", "3feeba729d50505f"
+          "f-cdf-three-million", "3fee63aec87b221c"
+          "f-cdf-million-three-upper", "3fecaf92e312eac4"
+          "f-quantile-three-million-95-percent", "4004d6df5756f2ba"
+          "f-quantile-million-three-5-percent", "3fd891a4145c4e53" ]
 
     /// The lines `distributions_reference.py references` reads, one per vector whose answer is finite,
     /// not zero and not exactly one: `<id> <op> <operand bits> …`, and for a quantile the package's own

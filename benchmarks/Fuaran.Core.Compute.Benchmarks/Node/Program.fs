@@ -486,6 +486,13 @@ let main argv =
     if onlyDistributions then
         DistributionsBench.run runs
 
+    // `beta-corner` measures the incomplete beta function where one parameter is large, and the two
+    // complements, over their sample, and prints it for the reference check (Phase 636).
+    let onlyBetaCorner = argv.Length > 1 && argv.[1] = "beta-corner"
+
+    if onlyBetaCorner then
+        BetaCornerBench.run runs
+
     // `glm` times Glm.fit over the solvers and θ's two candidate iterations at fixed means, and prints
     // the means and answers for the fifty-digit reference check (Phase 634); `glm fits` the fits alone.
     let onlyGlm = argv.Length > 1 && argv.[1] = "glm"
@@ -513,6 +520,7 @@ let main argv =
         && not onlyElementary
         && not onlySpecial
         && not onlyDistributions
+        && not onlyBetaCorner
         && not onlyGlm
     then
         table
@@ -570,6 +578,7 @@ let main argv =
         || onlyElementary
         || onlySpecial
         || onlyDistributions
+        || onlyBetaCorner
         || onlyGlm
     then
         ()

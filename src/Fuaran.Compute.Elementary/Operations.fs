@@ -49,6 +49,8 @@ module ElementaryOperations =
           "Special.regularizedGammaQ", Exactness.Pinned
           "Special.regularizedBeta", Exactness.Pinned
           "Special.inverseRegularizedBeta", Exactness.Pinned
+          "Special.regularizedBetaComplement", Exactness.Pinned
+          "Special.inverseRegularizedBetaComplement", Exactness.Pinned
           "Rng.ofSeed", Exactness.Pinned
           "Rng.next", Exactness.Pinned
           "Rng.uniform53", Exactness.Pinned
