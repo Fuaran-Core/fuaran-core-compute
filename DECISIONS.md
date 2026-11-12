@@ -1094,6 +1094,12 @@ Phase 630 (D74) `Fuaran.Compute.LinearAlgebra`'s `QR.fs` still held two things, 
    FS1118). `Kernels.canonical` and `Kernels.lend` were `inline`, so they lose the keyword in `Matrix.fs`; their bodies do
    not change. Within LinearAlgebra the optimizer still inlines both (each is one comparison or one field pair), and no
    bit can move, because the operations performed are the same operations in the same order.
+   **Measured (Phase 637, `benchmarks/results/2026-11-12-ryzen9-9950x-phase-637.md`):** the same tree with both kernels
+   inlined at Regression's 14 call sites, against the tree as shipped, over `LeastSquares.solve`, `Glm.fit` and the
+   DataFrame's `Fit` and `Predict` at 100, 10,000 and 100,000 rows, seven processes per configuration on each host: every
+   difference is below the run-to-run spread (.NET geometric mean of the shipped-over-inlined ratios 0.996; node 1.023, a
+   direction at a millisecond clock and inside each configuration's range), so the boundary stays as it is and nothing
+   under `src/` changed.
 
 3. **No bit moves.** This is a move: the bodies are unchanged beyond the qualified names it forces (the namespace line,
    an `open Fuaran.Compute.LinearAlgebra`, the codec helpers spelled `LinAlgWire.bitsText` and so on from

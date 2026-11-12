@@ -46,6 +46,9 @@
     <!-- Phase 634: Glm.fit over the solvers, and θ's two candidate iterations at fixed means
          (`node Program.js 5 glm`). After ElementaryBench.fs, whose generator and timer it reads. -->
     <Compile Include="..\GlmBench.fs" Link="GlmBench.fs" />
+    <!-- Phase 637: what Regression pays to call the matrix kernels across the package boundary
+         (`node Program.js 15 boundary`). -->
+    <Compile Include="..\BoundaryBench.fs" Link="BoundaryBench.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

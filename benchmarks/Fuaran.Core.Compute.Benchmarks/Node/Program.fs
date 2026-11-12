@@ -500,6 +500,13 @@ let main argv =
     if onlyGlm then
         GlmBench.run runs (argv.Length > 2 && argv.[2] = "fits")
 
+    // `boundary` times Fit, Predict, least squares and the GLM across the LinearAlgebra / Regression
+    // package boundary (Phase 637).
+    let onlyBoundary = argv.Length > 1 && argv.[1] = "boundary"
+
+    if onlyBoundary then
+        BoundaryBench.run runs
+
     // `typed` as the second argument times the typed family alone (Phase 280).
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
@@ -522,6 +529,7 @@ let main argv =
         && not onlyDistributions
         && not onlyBetaCorner
         && not onlyGlm
+        && not onlyBoundary
     then
         table
             "Sheet"
@@ -580,6 +588,7 @@ let main argv =
         || onlyDistributions
         || onlyBetaCorner
         || onlyGlm
+        || onlyBoundary
     then
         ()
     elif onlyState then
