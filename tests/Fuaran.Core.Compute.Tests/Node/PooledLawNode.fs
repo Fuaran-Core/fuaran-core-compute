@@ -109,6 +109,10 @@ if isMainThread then
     printfn "BEGIN pipeline-hash"
     printfn "%s" (PipelineHashSample.render ())
     printfn "END pipeline-hash"
+    // Phase 603 — and the pipeline tree's law document, the same way.
+    printfn "BEGIN pipeline-tree-vectors"
+    printfn "%s" (PipelineTreeVectors.render ())
+    printfn "END pipeline-tree-vectors"
 
 if isMainThread then
     Async.StartWithContinuations(

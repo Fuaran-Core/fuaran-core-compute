@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Compute.PipelineTree</PackageId>
+    <Description>Fuaran.Compute.PipelineTree — a Transform pipeline as a Fuaran.Core tree, edited by the substrate's skeleton ops (Phase 603). The root is the pipeline and each step a node holding one Transform case; lift and lower are a lossless round trip to and from the Transform list. An edit applies through Fuaran.Core.Ops under a containment grammar and is refused, with the tree unchanged, when it leaves a step reading a column the static schema walk shows absent at that step. Edits append to a Fuaran.Core.OpStream stream whose replay reproduces the tree, Ops.footprint names the steps an edit touches, and derive answers the op script between two versions through Core's Diff. The pipeline hash is the lowered list's and excludes the step ids; the tree's content address includes them. A canonical wire codec for the tree and its op scripts. FSharp.Core only, Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="PipelineTree.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The tree, the skeleton ops, the footprint and the diff are the substrate's (Tree and Ops); the
+         op-stream is the substrate's (OpStream); the step a node holds, its codec and the static schema
+         walk are this repository's dataframe layer. The substrate references neither this package nor
+         the dataframe layer, and the boundary tests on both sides hold that. -->
+    <PackageReference Include="Fuaran.Core.Tree" />
+    <PackageReference Include="Fuaran.Core.Ops" />
+    <PackageReference Include="Fuaran.Core.OpStream" />
+    <PackageReference Include="Fuaran.Core.Column" />
+    <PackageReference Include="Fuaran.Core.Wire" />
+    <ProjectReference Include="..\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

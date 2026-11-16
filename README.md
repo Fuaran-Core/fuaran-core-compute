@@ -36,6 +36,7 @@ were renamed, and the mapping, is D4.
 | **`Fuaran.Compute.DataFrame`** | the declarative-compute layer: a serializable `Transform` / `ColExpr` algebra (the verb set below), a pure reference evaluator with pinned null, coercion, ordering and float semantics (the cross-host parity contract), a canonical wire codec, the change-relevance `evalFrom`, the typed row delta (`TableDelta`, `Delta.diff`, an associative composition) and the incremental evaluator (`Incremental.plan` / `prime` / `refresh`) | `Fuaran.Core.Column`, `Fuaran.Core.Wire` |
 | **`Fuaran.Compute.ColumnOps`** | the columnar op algebra: a `ColumnOp` union (`SetCell` / `SetColumn` / `InsertColumn` / `RemoveColumn` / `AppendRows` / `ApplyTransform`) with a total `apply` / `canApply`, a partial `invert` (undo/redo), a structural `Diff`, a wire codec and a `StreamWitness` — so table edits ride `Fuaran.Core.OpStream` — plus `deltaOf` and `changedColumns`, the bridges into incremental evaluation | `DataFrame`, `Fuaran.Core.OpStream` |
 | **`Fuaran.Compute.PipelineQuery`** | the registered pipeline query: a substrate `Query` declaration paired with the `Transform` pipeline that is its body (`PipelineQuery`), a registry on the substrate's default-deny pattern that admits a pair only when the pipeline's static output schema is closed and IS the declared result schema and its parameter reads agree with the declared parameters both ways and by type (`PipelineQueryRegistry.register` / `enumerate` / `dispatch`, reusing the substrate's `DuplicateQuery` / `NoSuchQuery` and its `Deferred` dispatch), and a canonical wire codec | `DataFrame`, `Fuaran.Core.Query` |
+| **`Fuaran.Compute.PipelineTree`** | a pipeline as a substrate tree, edited by the skeleton ops (`DECISIONS.md` D82): `PipelineTree.lift` / `lower`, a lossless round trip between a `Transform list` and a tree whose root is the pipeline and whose nodes are its steps (ids minted from each step's position and content); `PipelineTree.apply` / `applyScript`, an edit through `Ops.apply` under a containment grammar, refused with the tree unchanged when it leaves a step reading a column the static schema walk shows absent there (`PipelineEditRefusal.UnknownColumn`, naming the step); `insertAfter`, the `InsertChild` + `ReorderChildren` batch that places a step mid-pipeline; `streamWitness`, so edits ride `Fuaran.Core.OpStream` and a replay reproduces the tree; `footprint` at the base tree, under which rewrites of different steps are independent; `derive`, the op script between two versions through the substrate's `Diff`; `pipelineHash` (the lowered list's, ids excluded) beside `contentAddress` (ids included); and a canonical wire codec for the tree and its op scripts | `DataFrame`, `Fuaran.Core.Tree`, `Fuaran.Core.Ops`, `Fuaran.Core.OpStream` |
 | **`Fuaran.Compute.Conformance`** | the law families over the packages above, beside the substrate's law kit they extend: `transformLaws` (host-evaluator parity against the reference), `aggregateParityLaws`, `columnarOpLaws` / `columnarOpLawsWith`, `incrementalLaws` / `incrementalLawsWith`, `IncrementalDelta.laws` / `lawsWith` / `stateLaws`, `paramLaws`, `schemaWalkLaws`, `nowLaws`, `slotParamLaws` — in module `DataFrameConformance` — and `PipelineQueryConformance.laws` | `Fuaran.Core.Conformance` |
 
 Dependency order: `Elementary` → `LinearAlgebra` → `Regression` → `DataFrame` → `ColumnOps` → `PipelineQuery` → `Conformance`. **This table is a derived roster, not a hand-kept list**: the suite holds its rows equal
@@ -292,6 +293,29 @@ Whether the one-row refresh beats a full evaluation is the question the section 
 pipeline shape — for a row-preserving node like `lines`, measure first
 ([`docs/incremental-evaluation.md`](docs/incremental-evaluation.md), Phase 250).
 
+## Editing a pipeline as a tree: `Fuaran.Compute.PipelineTree`
+
+A pipeline is an ordered `Transform list`, and its hash says that two pipelines differ, never how.
+`PipelineTree.lift` turns it into a substrate tree, so a change to it is a recorded, validated,
+replayable op, the edit model every tree domain has:
+
+```fsharp
+let context = PipelineContext.ofSchema schema          // what the edits are checked against
+let v1 = PipelineTree.lift pipeline
+let step = PipelineTree.step (PipelineTree.freshId v1) (Filter(Binary(Gt, Col "x", Lit(Float 0.0))))
+let edit = PipelineTree.insertAfter v1 (Some v1.Children[0].Id) step
+
+match PipelineTree.apply context edit v1 with
+| Ok v2 -> PipelineTree.lower v2                       // the Transform list the evaluator runs
+| Error(PipelineEditRefusal.UnknownColumn(stepId, column, _)) -> failwithf "%s reads %s" stepId column
+| Error refusal -> failwithf "%A" refusal
+```
+
+The pipeline hash stays the lowered list's (`PipelineTree.pipelineHash`), so one pipeline reached by
+two edit histories has one identity; the tree's `contentAddress` includes the step ids. An applied
+edit is the record of a version; `PipelineTree.derive v1 v2` answers a script for two versions that
+carry none, and two lifts of unrelated lists derive the honest worst case, every step replaced.
+
 ## How it sits on the substrate
 
 The compute strand stands on four `Fuaran.Core` packages and on nothing above them:
@@ -300,6 +324,10 @@ The compute strand stands on four `Fuaran.Core` packages and on nothing above th
 `Fuaran.Core.OpStream` records columnar edits; `Fuaran.Core.Conformance` is the law kit the
 dataframe families extend. All four are taken **by package**, at one pin (`FuaranCoreVersion` in [`Directory.Packages.props`](Directory.Packages.props)),
 and the `Compute boundary` tests refuse a fifth — or any reference that is not a public package.
+
+Two projects take more, each a designed widening the boundary tests hold for that project alone:
+`Fuaran.Compute.PipelineQuery` takes `Fuaran.Core.Query` (Phase 281), and `Fuaran.Compute.PipelineTree`
+takes `Fuaran.Core.Tree` and `Fuaran.Core.Ops` (Phase 603).
 
 ## The law kit
 

@@ -290,6 +290,33 @@ let private derived<'T> (package: string) (label: string) (encode: 'T -> string)
 let internal roots: WireRoot list =
     [ // Phase 281 — the registered pipeline query: the declaration, the pipeline and the sources.
       derived<PipelineQuery> "Fuaran.Compute.PipelineQuery" "pipelineQuery" PipelineQueryCodec.encode
+      // Phase 603 — the pipeline tree and its op scripts. The step a node carries is the dataframe
+      // codec's own `Transform`, pinned under that package's `pipeline` root, so the documents here are
+      // written by hand to reach every member and discriminator THIS package names: both node kinds,
+      // every op and a script.
+      Specimens(
+          "Fuaran.Compute.PipelineTree",
+          "pipelineTree",
+          fun () ->
+              let step = PipelineTree.step "s0" Distinct
+
+              let tree =
+                  { PipelineTree.empty with
+                      Children = [ step ] }
+
+              let ops: PipelineOp list =
+                  [ InsertChild(PipelineTree.rootId, step)
+                    RemoveNode "s0"
+                    MoveNode("s0", PipelineTree.rootId)
+                    ReorderChildren(PipelineTree.rootId, [ "s0" ])
+                    Batch [ RemoveNode "s0" ]
+                    UpdateNode step ]
+
+              [ "pipelineTree / tree", PipelineTreeWire.encode tree
+                "pipelineTree / script", PipelineTreeCodec.encodeScript ops ]
+              @ (ops
+                 |> List.mapi (fun i op -> sprintf "pipelineTree / op %d" i, PipelineTreeCodec.encodeOp op))
+      )
       derived<Transform list> "Fuaran.Compute.DataFrame" "pipeline" DataFrameCodec.encodePipeline
       derived<TableDelta> "Fuaran.Compute.DataFrame" "tableDelta" DeltaCodec.encode
       derived<ColumnOp> "Fuaran.Compute.ColumnOps" "columnOp" ColumnOps.encode

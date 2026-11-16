@@ -32,6 +32,10 @@
          Fable-clean; the node harness under benchmarks/results/ compiles it too. -->
     <Compile Include="MorselHandOffLaw.fs" />
     <Compile Include="MorselHandOffTests.fs" />
+    <!-- Phase 603: the pipeline-tree law vectors (Fable-clean; the node leg compiles them too), before
+         PooledLawTests.fs, which holds the node leg's render of them, and LawVectorExport.fs, which
+         writes their document. -->
+    <Compile Include="PipelineTreeVectors.fs" />
     <!-- Phase 376: the worker pool's laws, Fable-clean; the node leg under Node/ compiles them too. -->
     <Compile Include="PooledLaw.fs" />
     <Compile Include="PooledLawTests.fs" />
@@ -127,6 +131,9 @@
          corpus. After WireSurfaceTests.fs, whose harness the emitter reads. -->
     <Compile Include="PipelineSpecCorpus.fs" />
     <Compile Include="PipelineSpecTests.fs" />
+    <!-- Phase 603: the suite over Fuaran.Compute.PipelineTree. After WireSurfaceTests.fs, whose derived
+         document set is its every-Transform-case sample. -->
+    <Compile Include="PipelineTreeTests.fs" />
     <Compile Include="ComputeBoundaryTests.fs" />
     <!-- The F* oracles as hosts: the extracted ColumnOps and Pipeline models run beside production
          (the Proofs.Oracle family the proof leg's host step runs). -->
@@ -150,6 +157,7 @@
     <ProjectReference Include="..\..\src\Fuaran.Compute.ColumnOps\Fuaran.Compute.ColumnOps.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.PipelineQuery\Fuaran.Compute.PipelineQuery.fsproj" />
+    <ProjectReference Include="..\..\src\Fuaran.Compute.PipelineTree\Fuaran.Compute.PipelineTree.fsproj" />
     <!-- The F*-extracted oracle (never packed; see proofs/README.md). -->
     <ProjectReference Include="..\..\proofs\oracle\Fuaran.Core.Compute.Proofs.Oracle.fsproj" />
   </ItemGroup>

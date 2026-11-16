@@ -1,0 +1,14 @@
+# Wire-surface baseline for Fuaran.Compute.PipelineTree (Phase 214) — GENERATED, do not edit.
+# The canonical bytes of a document set reaching every member and discriminator this package emits:
+# one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
+# Regenerate with:
+#   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# class since v0.44.0: first snapshot
+doc	pipelineTree / op 0	sha256:19208a71b3a66b5f95dd4b54bad7b83e9200bae850abc59315d64d3806728770	{"$type":"insertChild","node":{"$type":"step","children":[],"id":"s0","step":{"$type":"distinct"}},"parent":"pipeline"}
+doc	pipelineTree / op 1	sha256:d76c0e3dcd366584107921bcb1278947d1b288a03ef236bb890434ae1a056cff	{"$type":"removeNode","target":"s0"}
+doc	pipelineTree / op 2	sha256:15218a024ca01f89a3ffb0bc6d7bd4bf00d2fd57c4c4f5adebd4ef135d7cbb91	{"$type":"moveNode","newParent":"pipeline","target":"s0"}
+doc	pipelineTree / op 3	sha256:a9288d62f03d856009f9ffdba4b89400f0cd35b44be205784be8a3887fba89d2	{"$type":"reorderChildren","order":["s0"],"parent":"pipeline"}
+doc	pipelineTree / op 4	sha256:5c16a91e4839602ea83954a02593f8b2e74d7f538eca23890ee48a6c1a2edc5c	{"$type":"batch","ops":[{"$type":"removeNode","target":"s0"}]}
+doc	pipelineTree / op 5	sha256:4db3f538b9c6f45967d1f4ca83a82b7a7eb4188d5168f005a597605bdc255035	{"$type":"updateNode","node":{"$type":"step","children":[],"id":"s0","step":{"$type":"distinct"}}}
+doc	pipelineTree / script	sha256:c081955071e1e2b32c11b0ffcc23a60efd022dc167bbbfb937edd1b165b17da3	[{"$type":"insertChild","node":{"$type":"step","children":[],"id":"s0","step":{"$type":"distinct"}},"parent":"pipeline"},{"$type":"removeNode","target":"s0"},{"$type":"moveNode","newParent":"pipeline","target":"s0"},{"$type":"reorderChildren","order":["s0"],"parent":"pipeline"},{"$type":"batch","ops":[{"$type":"removeNode","target":"s0"}]},{"$type":"updateNode","node":{"$type":"step","children":[],"id":"s0","step":{"$type":"distinct"}}}]
+doc	pipelineTree / tree	sha256:81e03ab4f831424d719bd05e5a3e4c454ab7440d478721703699df7ca9e62b3e	{"$type":"pipeline","children":[{"$type":"step","children":[],"id":"s0","step":{"$type":"distinct"}}],"id":"pipeline"}
