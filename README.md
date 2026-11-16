@@ -325,6 +325,10 @@ The compute strand stands on four `Fuaran.Core` packages and on nothing above th
 dataframe families extend. All four are taken **by package**, at one pin (`FuaranCoreVersion` in [`Directory.Packages.props`](Directory.Packages.props)),
 and the `Compute boundary` tests refuse a fifth — or any reference that is not a public package.
 
+Two projects take more, each a designed widening the boundary tests hold for that project alone:
+`Fuaran.Compute.PipelineQuery` takes `Fuaran.Core.Query` (Phase 281), and `Fuaran.Compute.PipelineTree`
+takes `Fuaran.Core.Tree` and `Fuaran.Core.Ops` (Phase 603).
+
 ## The law kit
 
 `Fuaran.Core.Conformance` is a property-based law kit a domain runs against its own witness; this
