@@ -1,7 +1,7 @@
 namespace Fuaran.Compute.Tests
 
 // ============================================================================
-//  Phase 604 (`DECISIONS.md` D163) — the declared pipelines the pipeline hash is
+//  Phase 604 (`DECISIONS.md` D83) — the declared pipelines the pipeline hash is
 //  held to on both hosts the gate runs.
 //
 //  Realistic pipelines, one reaching each step kind and each expression kind,

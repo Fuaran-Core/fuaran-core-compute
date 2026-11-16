@@ -1,7 +1,7 @@
 module Fuaran.Compute.Tests.PipelineSpecTests
 
 // ---------------------------------------------------------------------------
-// Phase 604 (`DECISIONS.md` D163) — this repository certified against the pipeline wire
+// Phase 604 (`DECISIONS.md` D83) — this repository certified against the pipeline wire
 // specification's corpus, and `Pipeline.hash` held to its laws.
 //
 // The corpus is resolved by `PipelineSpecCorpus.resolve` and an absent corpus FAILS here: the gate
@@ -171,7 +171,7 @@ let tests =
               Expect.isEmpty
                   (stale @ orphans)
                   (sprintf
-                      "the specification's corpus is not this repository's emission. A Transform or ColExpr change lands in the codec, the text, the schemas, the corpus and the manifest in ONE change-set (D163): regenerate with\n  dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-pipeline-corpus <specification root>\nthen update PIPELINE_WIRE.md and the schema to match.\n%s"
+                      "the specification's corpus is not this repository's emission. A Transform or ColExpr change lands in the codec, the text, the schemas, the corpus and the manifest in ONE change-set (D83): regenerate with\n  dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-pipeline-corpus <specification root>\nthen update PIPELINE_WIRE.md and the schema to match.\n%s"
                       (String.concat "\n" (stale @ orphans)))
 
           testCase "every vector the manifest enumerates certifies, and the count run is the count enumerated"

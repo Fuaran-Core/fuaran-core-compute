@@ -1,7 +1,7 @@
 module Fuaran.Compute.Tests.PipelineSpecCorpus
 
 // ---------------------------------------------------------------------------
-// Phase 604 (`DECISIONS.md` D163) — the pipeline wire specification's corpus, generated here and
+// Phase 604 (`DECISIONS.md` D83) — the pipeline wire specification's corpus, generated here and
 // certified here.
 //
 // The specification is a separate repository (`fuaran-pipeline-specification`); its `wire-fixtures/`
@@ -13,7 +13,7 @@ module Fuaran.Compute.Tests.PipelineSpecCorpus
 //     reject and accept vectors are written below by hand, each with the refusal (or the reading) this
 //     repository's reader gives it. A case added to `Transform` or `ColExpr` therefore lands in the
 //     emission without anyone listing it, and the freshness test then reds until the specification's
-//     corpus is regenerated in the same change-set (the forward-coupling rule, D163).
+//     corpus is regenerated in the same change-set (the forward-coupling rule, D83).
 //   * RESOLVES it. `FUARAN_PIPELINE_SPEC` names a checkout explicitly; otherwise the checkout beside
 //     this repository's MAIN working tree, under the directory name `Fuaran-Pipeline-Specification`
 //     (the name is the interface, the specification's DECISIONS.md settles it). An absent corpus

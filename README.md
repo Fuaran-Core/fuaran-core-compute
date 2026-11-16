@@ -334,7 +334,7 @@ is absent. Clone it beside this repository's main working tree, under the direct
 git clone https://github.com/Fuaran-Core/fuaran-pipeline-specification ../Fuaran-Pipeline-Specification
 ```
 
-or point `FUARAN_PIPELINE_SPEC` at a checkout. **Forward coupling** (`DECISIONS.md` D163): a new `Transform` or
+or point `FUARAN_PIPELINE_SPEC` at a checkout. **Forward coupling** (`DECISIONS.md` D83): a new `Transform` or
 `ColExpr` case, a new registry token, or a change to any member, ordering or encoding lands in one change-set across
 this codec and the specification's text, schema, corpus and `manifest.json`. The corpus is generated here,
 

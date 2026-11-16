@@ -16493,7 +16493,7 @@ module DataFrameCodec =
                 | Some(JInt i), "Float" -> Ok(Float(float i))
                 | Some(JBool b), "Bool" -> Ok(Bool b)
                 | Some(JStr s), "Str" -> Ok(Str s)
-                // Phase 604 (D163): a date or an instant is its ONE canonical text (`TemporalText`), as a
+                // Phase 604 (D83): a date or an instant is its ONE canonical text (`TemporalText`), as a
                 // column's cells already are; any other text is refused, so one value has one spelling and
                 // one pipeline hash.
                 | Some(JStr s), "Date" when TemporalText.isCanonicalDate s -> Ok(Date s)

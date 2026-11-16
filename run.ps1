@@ -39,7 +39,7 @@ if (-not $SkipFormat) {
 pwsh -NoProfile -File ./gates/check-publication-boundary.ps1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# Phase 604 (DECISIONS.md D163) - the pipeline wire specification's corpus is a build input: the suite
+# Phase 604 (DECISIONS.md D83) - the pipeline wire specification's corpus is a build input: the suite
 # certifies against it and FAILS without it. FUARAN_PIPELINE_SPEC names a checkout; unset, it is the
 # directory `Fuaran-Pipeline-Specification` beside this repository's MAIN working tree (git's common
 # dir, so a linked worktree resolves it too). Checked here, before the build, so a missing clone is one

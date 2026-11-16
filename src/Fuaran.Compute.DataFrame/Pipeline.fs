@@ -3,7 +3,7 @@ namespace Fuaran.Compute
 open Fuaran.Core
 
 // ============================================================================
-//  Phase 604 (`DECISIONS.md` D163) — the pipeline hash, a registered minting
+//  Phase 604 (`DECISIONS.md` D83) — the pipeline hash, a registered minting
 //  rule rather than a convention one repository keeps.
 //
 //  A pipeline's canonical bytes are `DataFrameCodec.encodePipeline`'s; the
@@ -24,7 +24,7 @@ open Fuaran.Core
 //  the same digest over the same bytes, written bare.
 // ============================================================================
 
-/// The pipeline hash (Phase 604, `DECISIONS.md` D163): the minting rule `compute-pipeline-sha256-v1`
+/// The pipeline hash (Phase 604, `DECISIONS.md` D83): the minting rule `compute-pipeline-sha256-v1`
 /// over a pipeline's canonical bytes, as the pipeline wire specification states it.
 [<RequireQualifiedAccess>]
 module Pipeline =

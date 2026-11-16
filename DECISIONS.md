@@ -1,6 +1,6 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-11-16 — D163: a pipeline's bytes and its hash are a published specification — `Pipeline.hash` mints `compute-pipeline-sha256-v1` over the codec's canonical text, the specification's corpus is a build input the suite fails without, and a new `Transform` or `ColExpr` case lands in the codec, the text, the schema, the corpus and the manifest in one change-set
+## 2026-11-16 — D83: a pipeline's bytes and its hash are a published specification — `Pipeline.hash` mints `compute-pipeline-sha256-v1` over the codec's canonical text, the specification's corpus is a build input the suite fails without, and a new `Transform` or `ColExpr` case lands in the codec, the text, the schema, the corpus and the manifest in one change-set
 
 **Context.** Phase 604 (Layer 1 of the model specification format plan). A pipeline's canonical bytes were written down
 only in this repository's codec and its generated `api/wire/` baselines, and "the pipeline hash" other formats cite was

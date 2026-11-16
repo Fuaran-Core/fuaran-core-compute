@@ -344,7 +344,7 @@ stated by range in D81 item 9 and is a measurement: with one parameter large, up
 one, the incomplete beta function and its complement are within 64 units in the last place of a fifty-digit
 reference; the t's functions within 140 from a hundred degrees of freedom to a million.
 
-### `Pipeline.hash` mints `compute-pipeline-sha256-v1`, and the suite certifies against the pipeline wire specification (Phase 604, `DECISIONS.md` D163) — additive
+### `Pipeline.hash` mints `compute-pipeline-sha256-v1`, and the suite certifies against the pipeline wire specification (Phase 604, `DECISIONS.md` D83) — additive
 
 The draft already carries breaking moves, so this change RIDES `0.45.0`.
 

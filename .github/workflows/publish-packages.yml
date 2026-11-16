@@ -64,7 +64,7 @@ jobs:
         with:
           repository: fuaran-ui/fuaran-ui-specification
           path: wire-format-fixtures
-      # Phase 604 (DECISIONS.md D163) - the pipeline wire specification's corpus, a build input: the suite
+      # Phase 604 (DECISIONS.md D83) - the pipeline wire specification's corpus, a build input: the suite
       # certifies against it and FAILS without it. Checked out inside the workspace, as the corpus above is.
       - name: Check out the pipeline wire specification
         uses: actions/checkout@v4
