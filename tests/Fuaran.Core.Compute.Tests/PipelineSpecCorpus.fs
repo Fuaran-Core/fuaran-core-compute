@@ -616,6 +616,21 @@ let acceptVectors () : Vector list =
           """[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Decimal","value":7}}}]"""
           "A decimal written as an integer token, which is exact. The canonical text is the string `\"7\"`."
       accept
+          "expr"
+          "accept-unit-spelling"
+          """[{"$type":"derive","expr":{"$type":"convert","expr":{"$type":"col","name":"force"},"unit":"m.kg/(s.s)"},"name":"newtons"}]"""
+          "A unit text the grammar parses that is not the unit's canonical text. A reader reads the unit; the canonical text is `kg.m/s2`."
+      accept
+          "step"
+          "accept-std-errors-classical"
+          """[{"$type":"fit","control":{"maxIter":25,"tol":1E-08},"family":"gaussian","groupBy":[],"intercept":true,"link":"identity","output":"coefficients","predictors":[{"expr":{"$type":"col","name":"price"},"name":"price"}],"response":"sales","stdErrors":"classical"}]"""
+          "A fit naming classical standard errors, which the canonical form says by omitting `stdErrors`."
+      accept
+          "source"
+          "accept-ref-without-schema"
+          """[{"$type":"union","source":{"ref":"archive"}}]"""
+          "A source by reference without the empty `schema` member the canonical form writes."
+      accept
           "cell"
           "accept-float-layout"
           """[{"$type":"filter","pred":{"$type":"lit","cell":{"$type":"Float","value":1.0e-5}}}]"""

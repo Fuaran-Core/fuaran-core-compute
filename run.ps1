@@ -39,6 +39,25 @@ if (-not $SkipFormat) {
 pwsh -NoProfile -File ./gates/check-publication-boundary.ps1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+# Phase 604 (DECISIONS.md D163) - the pipeline wire specification's corpus is a build input: the suite
+# certifies against it and FAILS without it. FUARAN_PIPELINE_SPEC names a checkout; unset, it is the
+# directory `Fuaran-Pipeline-Specification` beside this repository's MAIN working tree (git's common
+# dir, so a linked worktree resolves it too). Checked here, before the build, so a missing clone is one
+# line naming the remedy rather than a red suite twenty minutes later.
+$global:LASTEXITCODE = 0
+$pipelineSpec = $env:FUARAN_PIPELINE_SPEC
+if ([string]::IsNullOrWhiteSpace($pipelineSpec)) {
+    $commonDir = git rev-parse --path-format=absolute --git-common-dir
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $pipelineSpec = Join-Path (Split-Path -Parent (Split-Path -Parent $commonDir)) 'Fuaran-Pipeline-Specification'
+}
+if (-not (Test-Path (Join-Path $pipelineSpec 'wire-fixtures/manifest.json'))) {
+    Write-Host "==== the pipeline wire specification's corpus is ABSENT at '$pipelineSpec'" -ForegroundColor Red
+    Write-Host '     git clone https://github.com/Fuaran-Core/fuaran-pipeline-specification <that path>, or set FUARAN_PIPELINE_SPEC' -ForegroundColor Red
+    exit 1
+}
+$env:FUARAN_PIPELINE_SPEC = $pipelineSpec
+
 if (-not $SkipBuild) {
     $global:LASTEXITCODE = 0
     dotnet build Fuaran.Core.Compute.slnx --nologo -c $Configuration

@@ -312,6 +312,38 @@ package reads the same reference answers from
 stamped with this repository's version, and carried as a declared copy in the shared wire-format
 corpus.
 
+## The pipeline wire specification, and the pipeline hash
+
+A pipeline's bytes are a published format: the
+[pipeline wire specification](https://github.com/Fuaran-Core/fuaran-pipeline-specification) states the canonical
+encoding of every `Transform` and `ColExpr` case, and the minting rule `compute-pipeline-sha256-v1`, which
+`Pipeline.hash` implements:
+
+```fsharp
+Pipeline.hash [ Distinct ]   // Ok "sha256:a82d75f66b759246871af23ec87fbb425d2c136f262ecc7e601d7b61c0424436"
+Pipeline.hashAlgorithm       // "compute-pipeline-sha256-v1" - carry it beside the value
+```
+
+A pipeline with no canonical bytes (a NaN or infinite literal, an ill-formed string) has no hash: `Pipeline.hash`
+answers `Error`, never a digest of a substitute.
+
+**The specification's corpus is a build input of this repository.** The suite certifies against it, and fails when it
+is absent. Clone it beside this repository's main working tree, under the directory name the suite looks for:
+
+```powershell
+git clone https://github.com/Fuaran-Core/fuaran-pipeline-specification ../Fuaran-Pipeline-Specification
+```
+
+or point `FUARAN_PIPELINE_SPEC` at a checkout. **Forward coupling** (`DECISIONS.md` D163): a new `Transform` or
+`ColExpr` case, a new registry token, or a change to any member, ordering or encoding lands in one change-set across
+this codec and the specification's text, schema, corpus and `manifest.json`. The corpus is generated here,
+
+```powershell
+dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-pipeline-corpus ../Fuaran-Pipeline-Specification
+```
+
+and the suite holds the specification's committed corpus to that emission, so a case added here alone fails the build.
+
 ## Building and testing
 
 Requirements: the .NET SDK pinned in [`global.json`](global.json).

@@ -33,6 +33,13 @@ jobs:
         with:
           repository: fuaran-ui/fuaran-ui-specification
           path: wire-format-fixtures
+      # Phase 604 (DECISIONS.md D163) - the pipeline wire specification's corpus, a build input: the suite
+      # certifies against it and FAILS without it. Checked out inside the workspace, as the corpus above is.
+      - name: Check out the pipeline wire specification
+        uses: actions/checkout@v4
+        with:
+          repository: Fuaran-Core/fuaran-pipeline-specification
+          path: Fuaran-Pipeline-Specification
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
@@ -53,6 +60,7 @@ jobs:
         shell: pwsh
         env:
           FUARAN_CORE_CORPUS_DIR: ${{ github.workspace }}/wire-format-fixtures
+          FUARAN_PIPELINE_SPEC: ${{ github.workspace }}/Fuaran-Pipeline-Specification
         run: ./verify.ps1 -Configuration ${{ matrix.configuration }}
 
   # The proof leg: proofs/ColumnOps.fst and proofs/Pipeline.fst (and Limits.fst, which Pipeline

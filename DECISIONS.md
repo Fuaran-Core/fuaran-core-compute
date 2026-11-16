@@ -1,5 +1,70 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-16 — D163: a pipeline's bytes and its hash are a published specification — `Pipeline.hash` mints `compute-pipeline-sha256-v1` over the codec's canonical text, the specification's corpus is a build input the suite fails without, and a new `Transform` or `ColExpr` case lands in the codec, the text, the schema, the corpus and the manifest in one change-set
+
+**Context.** Phase 604 (Layer 1 of the model specification format plan). A pipeline's canonical bytes were written down
+only in this repository's codec and its generated `api/wire/` baselines, and "the pipeline hash" other formats cite was
+a contract with no definition. The phase cuts the pipeline wire specification as its own public repository,
+[`fuaran-pipeline-specification`](https://github.com/Fuaran-Core/fuaran-pipeline-specification), states the minting
+rule there, and implements it here.
+
+**Premises read at take** (item 1 of the shard). On `main` at `f947c23`: `Fit` (Phase 592), `Predict` (597), `Define`
+and `invoke` with `Interpolate` (596), `KMeans` and `Bootstrap` (621) have shipped and are specified; the sequence and
+host-function kinds (Phase 599), the term decomposition (602) and the tree form (603) have not, so the text names them
+as planned and absent, the corpus reserves the family `tree`, and each phase adds its own cases under item 4. One
+premise was partly false: "there is no pipeline-hash function". `IncrementalCodec.pipelineHash` existed — the bare hex
+SHA-256 of `encodePipeline`, the key a saved incremental state is matched by. It was unspecified, unregistered and
+unguarded (it digests whatever the unguarded writer writes, a non-finite float's quoted token included), so it was not
+the contract the shard asks for; it was the right digest, and item 1 keeps it.
+
+**Decision.**
+
+1. **`Pipeline.hash`** (`src/Fuaran.Compute.DataFrame/Pipeline.fs`): `sha256:` and the lowercase hex SHA-256 of the
+   UTF-8 bytes of the pipeline's canonical text (`Pipeline.canonicalText`, which is `encodePipeline`'s text written
+   through the GUARDED writer), and `Pipeline.hashAlgorithm` = `compute-pipeline-sha256-v1`. A pipeline the guarded
+   writer refuses — a non-finite float, an ill-formed string, a repeated member — has no hash: `Result.Error` names
+   why. Over every mintable pipeline the hash is `"sha256:" + IncrementalCodec.pipelineHash p`, which the suite holds:
+   one digest over one set of bytes, written as a content address where it is an identity and bare where it is a
+   stored state's key. The incremental key stays as it is: it is part of a stored state's encoding, and moving it
+   would invalidate every saved state for no gain. The file compiles after `Incremental.fs` to reuse the package's one
+   SHA-256 (`StateWire.sha256Hex`, Fable-clean) rather than mint a second copy of it.
+2. **The identifier names the format major** (the plan's ruling F6). A change that moves an existing document's bytes
+   mints under `-v2`, and a `-v1` hash stays valid and distinguishable. The text (§7.4) and the specification's own
+   `DECISIONS.md` D3 carry the rule; this repository changes the identifier only in a change that moves the bytes.
+3. **The specification's corpus is a build input.** `tests/Fuaran.Core.Compute.Tests/PipelineSpecCorpus.fs` resolves
+   it from `FUARAN_PIPELINE_SPEC` (the specification's checkout) or, unset, from `Fuaran-Pipeline-Specification` beside
+   this repository's MAIN working tree (`git rev-parse --git-common-dir`, the anchor `SiblingCorpus` uses, so a linked
+   worktree finds it too). The directory name is the interface (the specification's D2). An absent corpus FAILS the
+   suite, naming the paths tried and the clone command; there is no skip. `run.ps1` checks for it before the build;
+   CI checks it out. `PipelineSpecTests` certifies every vector (round trip, recorded digest, each reject refused with
+   the refusal its class names, each accept read as its canonical document), asserts the count run is the count the
+   manifest enumerates, and proves a mutated document goes red.
+4. **Forward coupling.** From this phase on, a new `Transform` or `ColExpr` case, a new registry token, or any change
+   to a member, ordering, encoding or refusal lands in ONE change-set across this repository's codec, the
+   specification's text, its schema, its corpus and its `manifest.json` (the Program and App precedent). The corpus is
+   GENERATED here — the wire-surface harness's per-case documents, realised to values a reader accepts, plus the
+   declared pipelines of `PipelineHashSample` and the authored reject and accept vectors — by
+   `dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-pipeline-corpus <specification root>`, and a test
+   holds the specification's committed corpus equal to that emission, so a case added here without regenerating the
+   corpus reds this suite. The specification's `DECISIONS.md` D4 records the same rule from its side.
+5. **Fable parity.** `PipelineHashSample` (Fable-clean) declares pipelines reaching every step and expression kind the
+   harness reaches (a test holds that), the float layout's boundaries, a seed past `2⁵³`, text outside ASCII and the
+   three refusals. The node leg (`Node/PooledLawNode.fsproj`) prints each one's hash or refusal and the suite holds the
+   lines to .NET's; the corpus's `pipeline` family carries the same pipelines, so the hashes node reproduces are the
+   corpus's. The corpus's hash vectors are the minting rule's law vectors.
+6. **A `lit` date or instant is read only in its canonical text** (`TemporalText.isCanonicalDate`,
+   `isCanonicalTimestamp`), as a column's cells already were. A decimal's non-canonical text is still read as the
+   number it names; `15/01/2026` names no day, and two spellings of one day would be two hashes. No emitter writes
+   another text, so no committed document moved.
+7. **Exactness.** The text states that every shipped step and expression kind is `Pinned` over pinned inputs, that
+   `HostRounded` enters only through an input column so declared, and that the planned host-function kind is the first
+   that is not pinned (`Exactness`, D43, D54).
+
+**Consequences.** `Fuaran.Compute.DataFrame` gains `Pipeline` (additive; `api/Fuaran.Compute.DataFrame.txt`); no wire
+byte moves (`api/wire/` unchanged). `proofs/coverage-exclusions.json` records the two operations as measured
+elsewhere, standing in `PipelineSpecTests.fs`. A machine running this suite needs the specification's checkout beside
+the main working tree or named by `FUARAN_PIPELINE_SPEC`.
+
 ## 2026-11-12 — D81: the incomplete beta function keeps its accuracy at a large parameter — from a parameter sum of `128` its continued fraction is read in the contracted form with its one cancelling difference formed exactly, and a parameter below one is answered by its own series; `Special` publishes `regularizedBetaComplement` and `inverseRegularizedBetaComplement`; the t and the F read them directly; each form chosen by measurement against a fifty-digit reference, whose own quadrature was wrong in a deep tail and is replaced
 
 **Context.** Phase 636. Phase 618 measured `Special.regularizedBeta` (D78) losing accuracy where one parameter is large

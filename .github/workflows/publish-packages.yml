@@ -64,10 +64,18 @@ jobs:
         with:
           repository: fuaran-ui/fuaran-ui-specification
           path: wire-format-fixtures
+      # Phase 604 (DECISIONS.md D163) - the pipeline wire specification's corpus, a build input: the suite
+      # certifies against it and FAILS without it. Checked out inside the workspace, as the corpus above is.
+      - name: Check out the pipeline wire specification
+        uses: actions/checkout@v4
+        with:
+          repository: Fuaran-Core/fuaran-pipeline-specification
+          path: Fuaran-Pipeline-Specification
       - name: Verify the Release build (./verify.ps1 -Configuration Release)
         shell: pwsh
         env:
           FUARAN_CORE_CORPUS_DIR: ${{ github.workspace }}/wire-format-fixtures
+          FUARAN_PIPELINE_SPEC: ${{ github.workspace }}/Fuaran-Pipeline-Specification
         run: ./verify.ps1 -Configuration Release
       - name: Pack what was verified (every packable src project, --no-build)
         run: dotnet pack Fuaran.Core.Compute.slnx -c Release --no-build -o ${{ runner.temp }}/nupkgs
