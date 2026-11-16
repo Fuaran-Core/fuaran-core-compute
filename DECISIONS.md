@@ -1,6 +1,6 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-11-16 — D162: a pipeline is a substrate tree edited by the skeleton ops, in a package of its own, `Fuaran.Compute.PipelineTree`; the pipeline is the root and each step one node; a lifted step's id is its position and a digest of the step; an edit is refused when it adds a column read the static walk shows absent; the footprint is read at the base; the pipeline hash stays the list's and excludes the ids
+## 2026-11-16 — D82: a pipeline is a substrate tree edited by the skeleton ops, in a package of its own, `Fuaran.Compute.PipelineTree`; the pipeline is the root and each step one node; a lifted step's id is its position and a digest of the step; an edit is refused when it adds a column read the static walk shows absent; the footprint is read at the base; the pipeline hash stays the list's and excludes the ids
 
 **Context.** Phase 603. A pipeline is an ordered `Transform list` over a source the caller holds, so a new version of
 one is a new list, and its canonical hash (`IncrementalCodec.pipelineHash`) says that two versions differ and never

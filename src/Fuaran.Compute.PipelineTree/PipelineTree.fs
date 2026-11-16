@@ -3,7 +3,7 @@ namespace Fuaran.Compute
 open Fuaran.Core
 
 // ============================================================================
-//  Fuaran.Compute.PipelineTree (Phase 603, DECISIONS.md D162) — a `Transform`
+//  Fuaran.Compute.PipelineTree (Phase 603, DECISIONS.md D82) — a `Transform`
 //  pipeline as a `Fuaran.Core` tree, edited by the substrate's skeleton ops.
 //
 //  A pipeline is an ordered `Transform list`, and its canonical hash says THAT
@@ -27,7 +27,7 @@ type PipelineNodeContent =
     /// One step: one `Transform` case. A step holds no children.
     | Step of Transform
 
-/// A node of a pipeline tree (Phase 603, DECISIONS.md D162): its permanent id, what it holds, and its
+/// A node of a pipeline tree (Phase 603, DECISIONS.md D82): its permanent id, what it holds, and its
 /// children. Only the root holds children, and every child of the root is a step; the containment
 /// grammar the edits run under (`PipelineTree.policy`) keeps it so, and `PipelineTree.shape` names the
 /// first node of a tree built by hand that breaks it.
@@ -230,7 +230,7 @@ module PipelineTreeCodec =
     let decodeScript (s: string) : Result<PipelineOp list, string> =
         Json.parse s |> Result.bind (mapList decodeOpJson)
 
-/// A pipeline as a `Fuaran.Core` tree (Phase 603, DECISIONS.md D162): the witnesses Core's engine sees
+/// A pipeline as a `Fuaran.Core` tree (Phase 603, DECISIONS.md D82): the witnesses Core's engine sees
 /// it through, the lossless round trip to and from `Transform list`, validated edits, the op-stream
 /// witness, the footprint, and the derivation between two versions.
 module PipelineTree =

@@ -344,7 +344,7 @@ stated by range in D81 item 9 and is a measurement: with one parameter large, up
 one, the incomplete beta function and its complement are within 64 units in the last place of a fifty-digit
 reference; the t's functions within 140 from a hundred degrees of freedom to a million.
 
-### A pipeline is a substrate tree edited by ops, in `Fuaran.Compute.PipelineTree` (Phase 603, `DECISIONS.md` D162) — additive
+### A pipeline is a substrate tree edited by ops, in `Fuaran.Compute.PipelineTree` (Phase 603, `DECISIONS.md` D82) — additive
 
 The draft already carries breaking moves, so this change RIDES `0.45.0`.
 
@@ -358,7 +358,7 @@ It takes `Fuaran.Core.Tree` and `Fuaran.Core.Ops`, and a consumer of it restores
 every other file under `api/` and `api/wire/` is unchanged.
 
 **The wire.** New, in `api/wire/Fuaran.Compute.PipelineTree.txt`: the tree (`pipeline` and `step` nodes, a step carrying
-the dataframe codec's own `Transform`) and the six ops and a script (D162 item 9). Nothing an existing package emits
+the dataframe codec's own `Transform`) and the six ops and a script (D82 item 9). Nothing an existing package emits
 moves.
 
 **The law vectors.** `conformance/laws/pipeline-tree-laws.json` is new: lift, lower, the build script, each op kind

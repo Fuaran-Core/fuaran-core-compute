@@ -2,7 +2,7 @@ module Fuaran.Compute.Tests.PipelineTreeTests
 
 // ============================================================================
 //  Phase 603 — a pipeline is a Core tree and is edited by ops
-//  (Fuaran.Compute.PipelineTree, DECISIONS.md D162).
+//  (Fuaran.Compute.PipelineTree, DECISIONS.md D82).
 //
 //  The round trip over every `Transform` case, enumerated by reflection so a
 //  case added tomorrow is in tomorrow's sample; the pipeline hash unchanged

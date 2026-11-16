@@ -6,7 +6,7 @@ namespace Fuaran.Compute.Tests
 //  builds a tree, the footprint verdict and `derive`, each answer computed by
 //  calling Fuaran.Compute.PipelineTree and rendered through the substrate's
 //  one corpus writer (`CorpusFile`) into
-//  `conformance/laws/pipeline-tree-laws.json` (DECISIONS.md D162).
+//  `conformance/laws/pipeline-tree-laws.json` (DECISIONS.md D82).
 //
 //  Fable-clean: the node leg (Node/PooledLawNode.fsproj) compiles this file
 //  and prints the same document under JavaScript, and the suite holds the two
@@ -228,7 +228,7 @@ module PipelineTreeVectors =
               "expected", c.Run() ]
 
     let private description =
-        "The reference answers for Fuaran.Compute.PipelineTree (Phase 603, DECISIONS.md D162): a Transform "
+        "The reference answers for Fuaran.Compute.PipelineTree (Phase 603, DECISIONS.md D82): a Transform "
         + "pipeline lifted to a Core tree, edited by the skeleton ops, and lowered back. `lift` answers the "
         + "tree's canonical wire, its `pipelineHash` (the lowered list's, step ids excluded) and its "
         + "`contentAddress` (SHA-256 of the tree's wire, ids included); `lower` answers the pipeline's wire; "
