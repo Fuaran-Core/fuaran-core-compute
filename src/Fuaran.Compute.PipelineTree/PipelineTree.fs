@@ -519,11 +519,15 @@ module PipelineTree =
           Encode = PipelineTreeCodec.encodeOp
           Decode = PipelineTreeCodec.decodeOp }
 
-    /// The footprint of an op script (`Ops.footprint` under `policy` and `scope`): the steps it rewrites
-    /// and the parents whose children it changes. Two rewrites of different steps are independent; two
-    /// edits that change the pipeline's step list (an insert, a removal, a reorder) both write the root
-    /// and are not.
-    let footprint (ops: PipelineOp list) : Footprint = Ops.footprint policy scope ops
+    /// The footprint of an op script at the tree it applies to (`Ops.footprintIn` under `policy` and
+    /// `scope`): the steps it reads and rewrites, and the step list it changes. Two rewrites of different
+    /// steps are independent, and so are a rewrite of one step and the removal of another; two edits that
+    /// both change the step list (an insert, a removal, a move, a reorder) both write the root and are
+    /// not. The base is what makes a rewrite independent: without it `Ops.footprint` cannot name the
+    /// parent an `UpdateNode` rewrites under and records it as the unknown-parent write, against which
+    /// every structural edit, and every other rewrite, is dependent. Footprint independence is about
+    /// the tree; whether the merged pipeline still passes the schema check is `apply`'s answer.
+    let footprint (tree: PipelineNode) (ops: PipelineOp list) : Footprint = Ops.footprintIn policy scope tree ops
 
     /// The op script taking `before` to `after` (Phase 603), through Core's content-aware `Diff` over the
     /// canonical node encoding: a step present in both by id is kept, reordered or rewritten; a step in
