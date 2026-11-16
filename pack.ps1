@@ -1,7 +1,8 @@
-# Pack the nine packages this repository produces into a local folder feed:
+# Pack the ten packages this repository produces into a local folder feed:
 # Fuaran.Compute.Solvers, Fuaran.Compute.Elementary, Fuaran.Compute.Distributions,
 # Fuaran.Compute.LinearAlgebra, Fuaran.Compute.Regression, Fuaran.Compute.DataFrame,
-# Fuaran.Compute.ColumnOps, Fuaran.Compute.PipelineQuery and Fuaran.Compute.Conformance, at the
+# Fuaran.Compute.ColumnOps, Fuaran.Compute.PipelineQuery, Fuaran.Compute.PipelineTree and
+# Fuaran.Compute.Conformance, at the
 # standing <Version> in Directory.Build.props, in dependency order.
 #
 #   pwsh ./pack.ps1                 pack into ../../local-nuget-feed (the development loop's feed)
@@ -31,6 +32,7 @@ $projects = @(
     'src/Fuaran.Compute.DataFrame/Fuaran.Compute.DataFrame.fsproj'
     'src/Fuaran.Compute.ColumnOps/Fuaran.Compute.ColumnOps.fsproj'
     'src/Fuaran.Compute.PipelineQuery/Fuaran.Compute.PipelineQuery.fsproj'
+    'src/Fuaran.Compute.PipelineTree/Fuaran.Compute.PipelineTree.fsproj'
     'src/Fuaran.Compute.Conformance/Fuaran.Compute.Conformance.fsproj'
 )
 

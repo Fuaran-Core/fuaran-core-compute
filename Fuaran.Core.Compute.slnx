@@ -9,6 +9,7 @@
     <Project Path="src/Fuaran.Compute.ColumnOps/Fuaran.Compute.ColumnOps.fsproj" />
     <Project Path="src/Fuaran.Compute.Conformance/Fuaran.Compute.Conformance.fsproj" />
     <Project Path="src/Fuaran.Compute.PipelineQuery/Fuaran.Compute.PipelineQuery.fsproj" />
+    <Project Path="src/Fuaran.Compute.PipelineTree/Fuaran.Compute.PipelineTree.fsproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Fuaran.Core.Compute.Tests/Fuaran.Core.Compute.Tests.fsproj" />
