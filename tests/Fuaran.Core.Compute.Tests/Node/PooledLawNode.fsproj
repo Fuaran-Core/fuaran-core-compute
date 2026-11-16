@@ -18,6 +18,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\TransformVectorSample.fs" Link="TransformVectorSample.fs" />
+    <!-- Phase 604: the declared pipelines the pipeline hash is held to on both hosts. -->
+    <Compile Include="..\PipelineHashSample.fs" Link="PipelineHashSample.fs" />
     <Compile Include="..\PreparedResultLaw.fs" Link="PreparedResultLaw.fs" />
     <Compile Include="..\MorselHandOffLaw.fs" Link="MorselHandOffLaw.fs" />
     <Compile Include="..\PooledLaw.fs" Link="PooledLaw.fs" />

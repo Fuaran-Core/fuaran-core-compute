@@ -524,6 +524,15 @@
     },
     {
       "members": [
+        "Pipeline.canonicalText",
+        "Pipeline.hash"
+      ],
+      "class": "measured-elsewhere",
+      "reason": "The pipeline hash, the minting rule `compute-pipeline-sha256-v1` (Phase 604, D163): a SHA-256 over the codec's canonical text, refused where that text is not canonical. The model has no digest; the pipeline wire specification's corpus is certified vector by vector (every round trip, every recorded digest, every refusal for its class, the count run equal to the count enumerated, a mutation going red), the hash is held equal to the incremental state's pipeline key, and the node leg reproduces every declared pipeline's hash.",
+      "standIn": "tests/Fuaran.Core.Compute.Tests/PipelineSpecTests.fs"
+    },
+    {
+      "members": [
         "Delta.compose",
         "Delta.composeAll",
         "Delta.composeChange",

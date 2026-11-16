@@ -20,6 +20,9 @@
     <!-- Phase 342: the transform vectors' declared sample, and the prepared-result law over it. Both
          Fable-clean; the node benchmark harness compiles them too. -->
     <Compile Include="TransformVectorSample.fs" />
+    <!-- Phase 604 - the declared pipelines the pipeline hash is held to on both hosts (Fable-clean; the
+         node leg links it). Before PooledLawTests.fs, which compares the node leg's hashes with these. -->
+    <Compile Include="PipelineHashSample.fs" />
     <Compile Include="PreparedResultLaw.fs" />
     <Compile Include="DataFrameTests.fs" />
     <!-- Phase 626: the ColExpr authoring helpers build exactly the constructors' nodes. -->
@@ -119,6 +122,11 @@
     <!-- The committed WIRE-surface baseline per wire-bearing package (api/wire/). Reads
          PublicSurfaceTests.fs and PackageRosterTests.fs, so it follows both. -->
     <Compile Include="WireSurfaceTests.fs" />
+    <!-- Phase 604 - the pipeline wire specification's corpus: the emitter and resolver over the
+         wire-surface harness's documents, and the certification against the specification's committed
+         corpus. After WireSurfaceTests.fs, whose harness the emitter reads. -->
+    <Compile Include="PipelineSpecCorpus.fs" />
+    <Compile Include="PipelineSpecTests.fs" />
     <Compile Include="ComputeBoundaryTests.fs" />
     <!-- The F* oracles as hosts: the extracted ColumnOps and Pipeline models run beside production
          (the Proofs.Oracle family the proof leg's host step runs). -->

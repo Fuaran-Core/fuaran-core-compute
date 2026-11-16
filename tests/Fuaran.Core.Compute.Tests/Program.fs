@@ -170,6 +170,16 @@ let main argv =
             printfn "%s" line
 
         0
+    // Phase 604 - write the pipeline wire specification's corpus (`wire-fixtures/` and its manifest)
+    // into a checkout of the specification, from the wire-surface harness's documents:
+    //   dotnet run --project tests/Fuaran.Core.Compute.Tests -- --emit-pipeline-corpus <specification root>
+    // A flag rather than a test side-effect, for the reason `--emit-laws` gives: the suite COMPARES the
+    // committed corpus with this emission and names this command.
+    | [ "--emit-pipeline-corpus"; root ] ->
+        for rel in PipelineSpecCorpus.write root do
+            printfn "Wrote wire-fixtures/%s" rel
+
+        0
     | "--clock-leg" :: rest -> ClockLeg.run rest
     // The calibration probe (Phase 285): the saturation guard's workload, `n` readings, quiet or
     // under load — the measurement k in ScalingTests.Calibration is justified from:

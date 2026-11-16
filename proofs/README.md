@@ -84,6 +84,7 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `KMeansSpec` | 5 | 0 | 0 | 0 | 0 | 0 | 5 |
 | `Fuaran.Compute.DataFrame` | `MorselWorker` | 3 | 0 | 0 | 0 | 0 | 3 | 0 |
 | `Fuaran.Compute.DataFrame` | `NowGrain` | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
+| `Fuaran.Compute.DataFrame` | `Pipeline` | 2 | 0 | 0 | 0 | 0 | 0 | 2 |
 | `Fuaran.Compute.DataFrame` | `Plan` | 3 | 0 | 0 | 0 | 0 | 0 | 3 |
 | `Fuaran.Compute.DataFrame` | `PredictSpec` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
 | `Fuaran.Compute.DataFrame` | `RowIdentity` | 4 | 0 | 0 | 0 | 0 | 0 | 4 |
@@ -92,7 +93,7 @@ rewrites it); no count here is written by hand.
 | `Fuaran.Compute.DataFrame` | `Syntax` | 33 | 0 | 33 | 0 | 0 | 0 | 0 |
 | `Fuaran.Compute.DataFrame` | `Transform` | 27 | 14 | 0 | 0 | 0 | 0 | 13 |
 | `Fuaran.Compute.DataFrame` | `WorkerPool` | 5 | 0 | 0 | 0 | 0 | 2 | 3 |
-| **Total** |  | 252 | 35 | 49 | 8 | 0 | 5 | 155 |
+| **Total** |  | 254 | 35 | 49 | 8 | 0 | 5 | 157 |
 <!-- operation-coverage:end -->
 
 ## Adopted from the kit's release asset

@@ -161,6 +161,7 @@ field Fuaran.Compute.KeyEqualityDisagreement+Tags.NotDeclared : System.Int32 (li
 field Fuaran.Compute.KeyEqualityDisagreement+Tags.UnequalHashes : System.Int32 (literal)
 field Fuaran.Compute.NowGrain+Tags.Date : System.Int32 (literal)
 field Fuaran.Compute.NowGrain+Tags.Timestamp : System.Int32 (literal)
+field Fuaran.Compute.Pipeline.hashAlgorithm : System.String (literal)
 field Fuaran.Compute.PredictModel+Tags.Coefficients : System.Int32 (literal)
 field Fuaran.Compute.PredictModel+Tags.Training : System.Int32 (literal)
 field Fuaran.Compute.PredictScale+Tags.Link : System.Int32 (literal)
@@ -396,6 +397,8 @@ method Fuaran.Compute.MorselWorker.Post(System.Object) : System.Void
 method Fuaran.Compute.MorselWorker.Stop() : System.Void
 method Fuaran.Compute.NowGrainModule.ofTag(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.NowGrain>
 method Fuaran.Compute.NowGrainModule.tag(Fuaran.Compute.NowGrain) : System.String
+method Fuaran.Compute.Pipeline.canonicalText(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Core.FSharpResult`2<System.String, System.String>
+method Fuaran.Compute.Pipeline.hash(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Core.FSharpResult`2<System.String, System.String>
 method Fuaran.Compute.Plan.explain(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.PlanReport
 method Fuaran.Compute.Plan.isTotal(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Fuaran.Compute.Transform) : System.Boolean
 method Fuaran.Compute.Plan.rewrite(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
@@ -694,6 +697,7 @@ type Fuaran.Compute.MorselWorker (interface)
 type Fuaran.Compute.NowGrain (union)
 type Fuaran.Compute.NowGrain+Tags (type)
 type Fuaran.Compute.NowGrainModule (module)
+type Fuaran.Compute.Pipeline (module)
 type Fuaran.Compute.PivotSpec (record)
 type Fuaran.Compute.Plan (module)
 type Fuaran.Compute.PlanDeclined (record)

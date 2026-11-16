@@ -25,6 +25,9 @@
          `RowIdentity`) and after DataFrame.fs (it calls the reference evaluator's exposed
          primitives, and degrades to the reference evaluator itself). -->
     <Compile Include="Incremental.fs" />
+    <!-- Phase 604 - the pipeline hash (`compute-pipeline-sha256-v1`). After Incremental.fs: it reuses
+         the package's one SHA-256, which the incremental state's pipeline key digests the same bytes with. -->
+    <Compile Include="Pipeline.fs" />
     <!-- Phase 626 - the opt-in ColExpr authoring helpers (`open Fuaran.Compute.Syntax`). Last: it
          builds only the nodes DataFrame.fs declares, and nothing here reads it. -->
     <Compile Include="Syntax.fs" />

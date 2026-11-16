@@ -127,6 +127,18 @@ let tests =
 
                   for i in 0 .. onDotnet.Length - 1 do
                       Expect.equal underNode[i] onDotnet[i] (sprintf "under node, seeded vector %d differs from .NET" i)
+
+                  // Phase 604 - and the pipeline hash: every declared pipeline's hash, or its refusal,
+                  // under node is this host's, line for line (the corpus holds the same hashes).
+                  let first = Array.IndexOf(lines, "BEGIN pipeline-hash")
+                  let last = Array.IndexOf(lines, "END pipeline-hash")
+                  Expect.isTrue (first >= 0 && last > first) "the node leg printed the pipeline hashes"
+                  let underNode = lines[first + 1 .. last - 1]
+                  let onDotnet = PipelineHashSample.render().Split('\n')
+                  Expect.equal underNode.Length onDotnet.Length "one line per declared pipeline"
+
+                  for i in 0 .. onDotnet.Length - 1 do
+                      Expect.equal underNode[i] onDotnet[i] (sprintf "under node, pipeline hash %d differs from .NET" i)
               finally
                   try
                       Directory.Delete(scratch, true)

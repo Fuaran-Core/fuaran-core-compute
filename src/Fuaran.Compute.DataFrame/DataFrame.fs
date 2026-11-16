@@ -16493,8 +16493,11 @@ module DataFrameCodec =
                 | Some(JInt i), "Float" -> Ok(Float(float i))
                 | Some(JBool b), "Bool" -> Ok(Bool b)
                 | Some(JStr s), "Str" -> Ok(Str s)
-                | Some(JStr s), "Date" -> Ok(Date s)
-                | Some(JStr s), "Timestamp" -> Ok(Timestamp s)
+                // Phase 604 (D163): a date or an instant is its ONE canonical text (`TemporalText`), as a
+                // column's cells already are; any other text is refused, so one value has one spelling and
+                // one pipeline hash.
+                | Some(JStr s), "Date" when TemporalText.isCanonicalDate s -> Ok(Date s)
+                | Some(JStr s), "Timestamp" when TemporalText.isCanonicalTimestamp s -> Ok(Timestamp s)
                 // Decimal text, canonicalised on read; an integer token is exact and read too, and
                 // anything else — a fractional number token included — is refused (D72 K5).
                 | Some(JStr s), "Decimal" ->

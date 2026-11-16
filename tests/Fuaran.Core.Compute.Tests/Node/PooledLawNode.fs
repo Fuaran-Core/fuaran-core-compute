@@ -105,6 +105,10 @@ if isMainThread then
     printfn "BEGIN seeded-vectors"
     printfn "%s" (TransformVectorSample.seededRender ())
     printfn "END seeded-vectors"
+    // Phase 604 - and the pipeline hash of every declared pipeline, the same way.
+    printfn "BEGIN pipeline-hash"
+    printfn "%s" (PipelineHashSample.render ())
+    printfn "END pipeline-hash"
 
 if isMainThread then
     Async.StartWithContinuations(
