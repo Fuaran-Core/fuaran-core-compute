@@ -16988,7 +16988,13 @@ module DataFrameCodec =
                           "apply"
                           "in"
                           "isNull"
-                          "now" ]
+                          "now"
+                          "quotient"
+                          "rounded"
+                          "convert"
+                          "arg"
+                          "invoke"
+                          "interpolate" ]
                     )
                 ))
 
@@ -17604,7 +17610,7 @@ module DataFrameCodec =
         | Error(MissingField "$type") ->
             Error(
                 MalformedShape(
-                    "a pipeline step is a $type-discriminated op (filter | project | derive | groupBy | join | window | pivot | unpivot | sort | distinct | limit | union | intersect | except | define) — this step object has no \"$type\""
+                    "a pipeline step is a $type-discriminated op (filter | project | derive | groupBy | join | window | pivot | unpivot | sort | distinct | limit | union | intersect | except | define | fit | predict | kmeans | bootstrap) — this step object has no \"$type\""
                 )
             )
         | r ->
