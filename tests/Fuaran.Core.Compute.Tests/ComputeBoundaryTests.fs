@@ -13,7 +13,9 @@
 /// substrate's `Query` declaration with a pipeline, so `Fuaran.Compute.PipelineQuery` (and
 /// the families' package, through its law family) takes `Fuaran.Core.Query` and, with it,
 /// `Fuaran.Core.Function`. The widening is held PER PROJECT (`allowedFor`), so the dataframe layer
-/// itself still stands on the four.
+/// itself still stands on the four. Phase 603 is the second: a pipeline tree is a Core tree edited by
+/// the skeleton ops, so `Fuaran.Compute.PipelineTree` alone takes `Fuaran.Core.Tree` and
+/// `Fuaran.Core.Ops`.
 ///
 /// Two readings, because each misses what the other sees:
 ///
@@ -53,7 +55,9 @@ let compute: Set<string> =
           "Fuaran.Compute.Solvers"
           // Phase 618: the pinned distributions, above Elementary and the solvers and below DataFrame;
           // they take FSharp.Core and those two alone.
-          "Fuaran.Compute.Distributions" ]
+          "Fuaran.Compute.Distributions"
+          // Phase 603: a pipeline as a Core tree, above DataFrame; it takes Tree and Ops (`allowedFor`).
+          "Fuaran.Compute.PipelineTree" ]
 
 /// The packages at the bottom of the graph (DECISIONS.md D77 item 10): each takes FSharp.Core and
 /// nothing else — no substrate package, and no package of this repository, so anything in Compute can
@@ -81,7 +85,7 @@ let allowedSubstrate: Set<string> =
           "Fuaran.Core.Unit"
           "Fuaran.Core.Text" ]
 
-/// The one designed widening, per project (Phase 281): the registered pipeline query pairs the
+/// The designed widenings, per project. The first (Phase 281): the registered pipeline query pairs the
 /// substrate's `Query` declaration with a pipeline, so it takes `Fuaran.Core.Query` — and, through
 /// it, `Fuaran.Core.Function`, whose `Deferred` envelope a dispatch answers in. The dataframe
 /// families' package uses both through that package's law family. No other project may: the
@@ -89,7 +93,15 @@ let allowedSubstrate: Set<string> =
 let allowedFor: Map<string, Set<string>> =
     let query = set [ "Fuaran.Core.Query"; "Fuaran.Core.Function" ]
 
-    Map.ofList [ "Fuaran.Compute.PipelineQuery", query; "Fuaran.Compute.Conformance", query ]
+    // Phase 603: the second designed widening. A pipeline tree is a Core tree edited by the skeleton
+    // ops, so `Fuaran.Compute.PipelineTree` takes `Fuaran.Core.Tree` (the witnesses, the walks, the
+    // fresh ids) and `Fuaran.Core.Ops` (the engine, the footprint, the diff). No other project may.
+    let tree = set [ "Fuaran.Core.Tree"; "Fuaran.Core.Ops" ]
+
+    Map.ofList
+        [ "Fuaran.Compute.PipelineQuery", query
+          "Fuaran.Compute.Conformance", query
+          "Fuaran.Compute.PipelineTree", tree ]
 
 let private allowedSubstrateOf (project: string) : Set<string> =
     match Map.tryFind project allowedFor with

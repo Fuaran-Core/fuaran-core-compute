@@ -1,5 +1,111 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-16 — D162: a pipeline is a substrate tree edited by the skeleton ops, in a package of its own, `Fuaran.Compute.PipelineTree`; the pipeline is the root and each step one node; a lifted step's id is its position and a digest of the step; an edit is refused when it adds a column read the static walk shows absent; the footprint is read at the base; the pipeline hash stays the list's and excludes the ids
+
+**Context.** Phase 603. A pipeline is an ordered `Transform list` over a source the caller holds, so a new version of
+one is a new list, and its canonical hash (`IncrementalCodec.pipelineHash`) says that two versions differ and never
+how. Every tree domain built on the substrate edits its artefact by the substrate's skeleton ops, with the engine, the
+op-stream, the footprint and the diff that come with them. The phase brings a pipeline into that model. The shard
+was read against the tree at `f947c23` and the substrate at `0.41.0` before anything was built. Four of its
+premises did not hold as written, and items 1, 6 and 8 record what was built instead.
+
+**Decision.**
+
+1. **Node granularity.** The root is the pipeline (`PipelineNodeContent.Pipeline`, id `pipeline` in every tree, since
+   `Diff` derives a script only between two trees whose roots share an id). Each step is one node holding one
+   `Transform` case (`PipelineNodeContent.Step`), and its expressions and parameters are its content, rewritten by an
+   `UpdateNode` of the step. Expression-level nodes are a possible later extension and are not built.
+   - *Premise checked: the source is not part of the pipeline.* The shard put the source in the root. A pipeline does not
+     carry its source (`DataFrameCodec.encodePipeline` and the pipeline hash read the list alone; the evaluator takes
+     the input table as an argument), and an embedded source would put rows on the op-stream. The source is therefore
+     the caller's, as it is to the evaluator, and an edit is checked against it as a `PipelineContext`: the input's
+     `SchemaKnowledge` and the declared schemas of the named sources.
+   - *Premise checked: no source is a pipeline.* The shard made a `Join` or `Union` source that is itself a pipeline a
+     child subtree. A `DataSource` is `Embedded` rows or a `Ref` name, never a pipeline, so the tree is one level deep and
+     there is no subtree to build. When a source can be a pipeline, its subtree is the extension this item names.
+   - The node is a record (`Id`, `Content`, `Children`) rather than a union with a childless case, so the witness's
+     `ReplaceChildren` is lawful on every node. Only the pipeline may hold children (`OpScope.contained`), and the
+     containment grammar (`Policy.grammar`: a pipeline holds steps, a step holds nothing) refuses a pipeline placed
+     anywhere in a tree. No node has a keyed position (the keyed declaration is `None`).
+
+2. **Ids.** A step keeps its id across every edit. `lift` mints `s<index>-` and the first twelve hex digits of the SHA-256
+   of the step's canonical encoding, so the same list lifts to the same ids on every host. The digest is the shard's
+   "deterministically from position" made honest for item 8: two lifts share an id only where they hold the same step at
+   the same position, which is the one alignment that is not a guess. A step an edit introduces takes
+   `PipelineTree.freshId`, the substrate's `FreshIds.sequential` (`step-1`, `step-2`, …, the first the tree does not hold).
+
+3. **Order.** `InsertChild` appends, so a step is placed mid-pipeline by `PipelineTree.insertAfter tree after node`:
+   the `Batch` of the insert and the `ReorderChildren` that places it after `after` (first, for `None`). The order is
+   stated against the tree the caller holds, so an `after` it does not hold makes the reorder, and with it the batch,
+   refuse.
+
+4. **Identity.** Two values, for two purposes. The **pipeline hash** (`PipelineTree.pipelineHash`) is
+   `IncrementalCodec.pipelineHash` of the lowered list, so it is unchanged from Phase 592's for the same list and the same
+   pipeline reached by two edit histories has one identity: ids name places in one history and say nothing about what
+   the pipeline computes. The **content address** (`PipelineTree.contentAddress`) is the SHA-256 of the tree's canonical
+   wire, ids included: the identity of a tree on an op-stream, where an id is what an op addresses.
+
+5. **Edits are validated, and the check is "no new unknown read".** `PipelineTree.apply context op tree` refuses a tree
+   that is not a pipeline tree (`IllShaped`), then runs `Ops.apply` under the grammar and the contained scope
+   (`Rejected` carries the engine's refusal), then the schema check: the edited pipeline is walked by `SchemaWalk` from
+   the context's input, and a step that names a column the walk shows absent at that step is refused as
+   `UnknownColumn(step id, column, available)`. Only closed knowledge refutes a name, as `SchemaKnowledge` states. The
+   refusal is for a read the tree before the edit did not already have, so a pipeline that was already broken can be
+   repaired one edit at a time; on a sound pipeline this is the shard's "still passes". A `Batch` is all-or-nothing and
+   checked once, on the tree it lands on, so a script may pass through an intermediate state that reads a column it
+   restores later. Every refusal leaves the tree unchanged.
+   - The walk carries no refusal verdict (D26's walk answers the input rather than refuse), so the columns a step names
+     are read by a census in this package, one arm per `Transform` case (a new case does not compile until it is
+     classified, FS0025 being an error here). The planner's `reads` is the nearest existing function, but it is private,
+     answers "the whole row" for nine verbs, and lives in `DataFrame.fs`. The census is held to the evaluator for every
+     class of read: the suite builds one step per class naming an absent column and requires the evaluator to refuse each
+     as `UnknownColumn` of that name, so a census entry the evaluator does not share fails rather than refusing an edit
+     the evaluator would run. One public census shared with the planner is the follow-up recorded with this phase.
+
+6. **The footprint is read at the base.** `PipelineTree.footprint tree ops` is `Ops.footprintIn` (Phase 500) at the tree
+   the script applies to. *Premise checked:* the shard expected `Ops.footprint` to make two edits to different steps
+   independent. Without a base, the substrate records an `UpdateNode`'s parent as an unknown-parent write, against which
+   every structural edit and every other update is dependent, so two rewrites of different steps are reported
+   dependent; a test pins that. At the base the parent is resolved, and two rewrites of different steps, or a rewrite of
+   one and the removal of another, are independent. Two edits that both change the step list (an insert, a removal, a
+   move, a reorder) write the root and are not. Footprint independence is a statement about the tree; whether the merged
+   pipeline still passes the schema check is `apply`'s answer when the merge is applied.
+
+7. **The op-stream.** `PipelineTree.streamWitness context` is the substrate's `StreamWitness` with `apply` as its reducer
+   and the op codec as its encoding, so `OpStream.append` refuses an edit `apply` refuses and `OpStream.replay` from
+   `PipelineTree.empty` reproduces the tree, and therefore its pipeline hash. A pipeline never edited starts its stream
+   with `PipelineTree.script tree` (the substrate's `Ops.lower`), one insert per step.
+
+8. **Derivation between versions.** `PipelineTree.derive before after` is the substrate's content-aware `Diff.toOpsWith`
+   over the canonical node encoding. Ids align the two versions: a step present in both is kept, reordered or
+   rewritten, and a step in one only is inserted or removed. Two lifts of unrelated lists share no id, by item 2, so they
+   derive the worst case, every step removed and every step inserted. *Premise checked:* with ids minted from the
+   position alone, two unrelated lists would share `s0`, `s1`, … and derive as rewrites of each step in place, which is
+   the guessed alignment the shard refuses. Where the edit that made a version was applied and recorded, that script is
+   the record, and `derive` is for versions that carry none.
+
+9. **The wire.** A node is `{"$type":"pipeline"|"step","id":…,"children":[…]}`, a step carrying its `Transform` as `"step"`
+   in the dataframe codec's own encoding; an op is `insertChild` (`parent`, `node`), `removeNode` (`target`), `moveNode`
+   (`target`, `newParent`), `reorderChildren` (`parent`, `order`), `batch` (`ops`) or `updateNode` (`node`); a script is a
+   JSON array of ops. All are rendered by `Canonical.write Rendering.CrossHost`. `PipelineTreeWire.decode` reads a node
+   and refuses one that is not a pipeline tree. The substrate publishes no op codec, so this is the first spelling of the
+   skeleton ops on a Compute wire; it uses the op names as the substrate's union spells them.
+
+10. **The package and its boundary.** `Fuaran.Compute.PipelineTree` stands above `Fuaran.Compute.DataFrame` and takes
+    `Fuaran.Core.Tree` and `Fuaran.Core.Ops` besides the substrate packages the strand stands on. That is the boundary's
+    second designed widening, held per project as Phase 281's is: no other project may take either. The substrate's
+    `Validator` is not taken: the containment grammar is the engine's, and the schema check is this repository's own.
+
+**What it does not change.** The evaluator, the `Transform` union, the dataframe codec and the pipeline hash are
+untouched, and so is every other package's public and wire surface. No other law file moves.
+
+**Consequences.** Additive: a new package, which rides the `0.45.0` draft (`STABILITY.md`). Its law vectors are
+`conformance/laws/pipeline-tree-laws.json` (lift, lower, the build script, each op kind accepted and refused, five
+ill-typed edits refused by name, `derive` and the footprint verdict), held byte for byte on .NET and under node. The
+suite also runs the substrate's witness, containment, diff, footprint and stream laws over the pipeline witness; the
+lowering laws are not run, because their adequacy guard needs a filled container below the root, which a pipeline tree
+cannot hold.
+
 ## 2026-11-12 — D81: the incomplete beta function keeps its accuracy at a large parameter — from a parameter sum of `128` its continued fraction is read in the contracted form with its one cancelling difference formed exactly, and a parameter below one is answered by its own series; `Special` publishes `regularizedBetaComplement` and `inverseRegularizedBetaComplement`; the t and the F read them directly; each form chosen by measurement against a fifty-digit reference, whose own quadrature was wrong in a deep tail and is replaced
 
 **Context.** Phase 636. Phase 618 measured `Special.regularizedBeta` (D78) losing accuracy where one parameter is large

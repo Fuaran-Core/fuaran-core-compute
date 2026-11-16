@@ -21,11 +21,14 @@
     <Compile Include="..\PreparedResultLaw.fs" Link="PreparedResultLaw.fs" />
     <Compile Include="..\MorselHandOffLaw.fs" Link="MorselHandOffLaw.fs" />
     <Compile Include="..\PooledLaw.fs" Link="PooledLaw.fs" />
+    <!-- Phase 603: the pipeline-tree law vectors, printed under node and held to the .NET render. -->
+    <Compile Include="..\PipelineTreeVectors.fs" Link="PipelineTreeVectors.fs" />
     <Compile Include="PooledLawNode.fs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.PipelineTree\Fuaran.Compute.PipelineTree.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

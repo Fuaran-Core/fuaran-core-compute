@@ -127,6 +127,21 @@ let tests =
 
                   for i in 0 .. onDotnet.Length - 1 do
                       Expect.equal underNode[i] onDotnet[i] (sprintf "under node, seeded vector %d differs from .NET" i)
+
+                  // Phase 603 — the pipeline tree's law document under node is this host's, line for line:
+                  // every lifted tree, content address, applied edit, refusal and derived script.
+                  let first = Array.IndexOf(lines, "BEGIN pipeline-tree-vectors")
+                  let last = Array.IndexOf(lines, "END pipeline-tree-vectors")
+                  Expect.isTrue (first >= 0 && last > first) "the node leg printed the pipeline-tree vectors"
+                  let underNode = lines[first + 1 .. last - 1]
+                  let onDotnet = PipelineTreeVectors.render().Replace("\r\n", "\n").Split('\n')
+                  Expect.equal underNode.Length onDotnet.Length "one line per document line"
+
+                  for i in 0 .. onDotnet.Length - 1 do
+                      Expect.equal
+                          underNode[i]
+                          onDotnet[i]
+                          (sprintf "under node, pipeline-tree line %d differs from .NET" i)
               finally
                   try
                       Directory.Delete(scratch, true)

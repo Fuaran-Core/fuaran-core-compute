@@ -1,0 +1,74 @@
+# Fuaran.Compute.PipelineTree — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Compute.PipelineContext..ctor(Fuaran.Compute.SchemaKnowledge, Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>>)
+ctor Fuaran.Compute.PipelineNode..ctor(System.String, Fuaran.Compute.PipelineNodeContent, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PipelineNode>)
+field Fuaran.Compute.PipelineEditRefusal+Tags.IllShaped : System.Int32 (literal)
+field Fuaran.Compute.PipelineEditRefusal+Tags.Rejected : System.Int32 (literal)
+field Fuaran.Compute.PipelineEditRefusal+Tags.UnknownColumn : System.Int32 (literal)
+field Fuaran.Compute.PipelineNodeContent+Tags.Pipeline : System.Int32 (literal)
+field Fuaran.Compute.PipelineNodeContent+Tags.Step : System.Int32 (literal)
+field Fuaran.Compute.PipelineTree.rootId : System.String (literal)
+method Fuaran.Compute.PipelineContextModule.ofSchema(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>) : Fuaran.Compute.PipelineContext
+method Fuaran.Compute.PipelineContextModule.ofSource(Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>>, Fuaran.Core.DataSource) : Fuaran.Compute.PipelineContext
+method Fuaran.Compute.PipelineTree.apply(Fuaran.Compute.PipelineContext, Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>, Fuaran.Compute.PipelineNode) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineNode, Fuaran.Compute.PipelineEditRefusal>
+method Fuaran.Compute.PipelineTree.applyScript(Fuaran.Compute.PipelineContext, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>>, Fuaran.Compute.PipelineNode) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineNode, Fuaran.Compute.PipelineEditRefusal>
+method Fuaran.Compute.PipelineTree.contentAddress(Fuaran.Compute.PipelineNode) : System.String
+method Fuaran.Compute.PipelineTree.derive(Fuaran.Compute.PipelineNode, Fuaran.Compute.PipelineNode) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>>, Fuaran.Core.Rejection`1<System.String>>
+method Fuaran.Compute.PipelineTree.footprint(Fuaran.Compute.PipelineNode, Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>>) : Fuaran.Core.Footprint
+method Fuaran.Compute.PipelineTree.freshId(Fuaran.Compute.PipelineNode) : System.String
+method Fuaran.Compute.PipelineTree.grammar(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<System.String>>
+method Fuaran.Compute.PipelineTree.insertAfter(Fuaran.Compute.PipelineNode, Microsoft.FSharp.Core.FSharpOption`1<System.String>, Fuaran.Compute.PipelineNode) : Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>
+method Fuaran.Compute.PipelineTree.lift(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>) : Fuaran.Compute.PipelineNode
+method Fuaran.Compute.PipelineTree.liftedId(System.Int32, Fuaran.Compute.Transform) : System.String
+method Fuaran.Compute.PipelineTree.lower(Fuaran.Compute.PipelineNode) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.Transform>
+method Fuaran.Compute.PipelineTree.pipelineHash(Fuaran.Compute.PipelineNode) : System.String
+method Fuaran.Compute.PipelineTree.script(Fuaran.Compute.PipelineNode) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>>
+method Fuaran.Compute.PipelineTree.shape(Fuaran.Compute.PipelineNode) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.Tuple`2<System.String, System.String>>
+method Fuaran.Compute.PipelineTree.step(System.String, Fuaran.Compute.Transform) : Fuaran.Compute.PipelineNode
+method Fuaran.Compute.PipelineTree.streamWitness(Fuaran.Compute.PipelineContext) : Fuaran.Core.StreamWitness`3<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>, Fuaran.Compute.PipelineNode, Fuaran.Compute.PipelineEditRefusal>
+method Fuaran.Compute.PipelineTree.unknownReads(Fuaran.Compute.PipelineContext, Fuaran.Compute.PipelineNode) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`3<System.String, System.String, Microsoft.FSharp.Collections.FSharpList`1<System.String>>>
+method Fuaran.Compute.PipelineTreeCodec.decodeNode(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineNode, System.String>
+method Fuaran.Compute.PipelineTreeCodec.decodeNodeJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineNode, System.String>
+method Fuaran.Compute.PipelineTreeCodec.decodeOp(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>, System.String>
+method Fuaran.Compute.PipelineTreeCodec.decodeOpJson(Fuaran.Core.JVal) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>, System.String>
+method Fuaran.Compute.PipelineTreeCodec.decodeScript(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>>, System.String>
+method Fuaran.Compute.PipelineTreeCodec.encodeNode(Fuaran.Compute.PipelineNode) : System.String
+method Fuaran.Compute.PipelineTreeCodec.encodeNodeJson(Fuaran.Compute.PipelineNode) : Fuaran.Core.JVal
+method Fuaran.Compute.PipelineTreeCodec.encodeOp(Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>) : System.String
+method Fuaran.Compute.PipelineTreeCodec.encodeOpJson(Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>) : Fuaran.Core.JVal
+method Fuaran.Compute.PipelineTreeCodec.encodeScript(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.SkeletonOp`2<Fuaran.Compute.PipelineNode, System.String>>) : System.String
+method Fuaran.Compute.PipelineTreeWire.decode(System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineNode, System.String>
+method Fuaran.Compute.PipelineTreeWire.encode(Fuaran.Compute.PipelineNode) : System.String
+property Fuaran.Compute.PipelineTree.empty : Fuaran.Compute.PipelineNode { get }
+property Fuaran.Compute.PipelineTree.ids : Fuaran.Core.IdWitness`1<System.String> { get }
+property Fuaran.Compute.PipelineTree.nodes : Fuaran.Core.NodeWitness`2<Fuaran.Compute.PipelineNode, System.String> { get }
+property Fuaran.Compute.PipelineTree.policy : Fuaran.Core.Policy`2<Fuaran.Compute.PipelineNode, System.String> { get }
+property Fuaran.Compute.PipelineTree.scope : Fuaran.Core.OpScope`2<Fuaran.Compute.PipelineNode, System.String> { get }
+record-field Fuaran.Compute.PipelineContext.Input #0 : Fuaran.Compute.SchemaKnowledge
+record-field Fuaran.Compute.PipelineContext.Sources #1 : Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>>
+record-field Fuaran.Compute.PipelineNode.Children #2 : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PipelineNode>
+record-field Fuaran.Compute.PipelineNode.Content #1 : Fuaran.Compute.PipelineNodeContent
+record-field Fuaran.Compute.PipelineNode.Id #0 : System.String
+type Fuaran.Compute.PipelineContext (record)
+type Fuaran.Compute.PipelineContextModule (module)
+type Fuaran.Compute.PipelineEditRefusal (union)
+type Fuaran.Compute.PipelineEditRefusal+IllShaped (type)
+type Fuaran.Compute.PipelineEditRefusal+Rejected (type)
+type Fuaran.Compute.PipelineEditRefusal+Tags (type)
+type Fuaran.Compute.PipelineEditRefusal+UnknownColumn (type)
+type Fuaran.Compute.PipelineNode (record)
+type Fuaran.Compute.PipelineNodeContent (union)
+type Fuaran.Compute.PipelineNodeContent+Step (type)
+type Fuaran.Compute.PipelineNodeContent+Tags (type)
+type Fuaran.Compute.PipelineTree (module)
+type Fuaran.Compute.PipelineTreeCodec (module)
+type Fuaran.Compute.PipelineTreeWire (module)
+union-case Fuaran.Compute.PipelineEditRefusal.NewIllShaped #1(node: System.String, reason: System.String)
+union-case Fuaran.Compute.PipelineEditRefusal.NewRejected #0(Item: Fuaran.Core.Rejection`1<System.String>)
+union-case Fuaran.Compute.PipelineEditRefusal.NewUnknownColumn #2(step: System.String, column: System.String, available: Microsoft.FSharp.Collections.FSharpList`1<System.String>)
+union-case Fuaran.Compute.PipelineNodeContent.NewStep #1(Item: Fuaran.Compute.Transform)
+union-case Fuaran.Compute.PipelineNodeContent.Pipeline #0()

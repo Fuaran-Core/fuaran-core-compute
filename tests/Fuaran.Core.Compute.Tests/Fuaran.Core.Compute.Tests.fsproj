@@ -29,6 +29,10 @@
          Fable-clean; the node harness under benchmarks/results/ compiles it too. -->
     <Compile Include="MorselHandOffLaw.fs" />
     <Compile Include="MorselHandOffTests.fs" />
+    <!-- Phase 603: the pipeline-tree law vectors (Fable-clean; the node leg compiles them too), before
+         PooledLawTests.fs, which holds the node leg's render of them, and LawVectorExport.fs, which
+         writes their document. -->
+    <Compile Include="PipelineTreeVectors.fs" />
     <!-- Phase 376: the worker pool's laws, Fable-clean; the node leg under Node/ compiles them too. -->
     <Compile Include="PooledLaw.fs" />
     <Compile Include="PooledLawTests.fs" />
@@ -100,9 +104,6 @@
     <Compile Include="GlmSolversTests.fs" />
     <!-- Phase 618: the suite over Fuaran.Compute.Distributions. -->
     <Compile Include="DistributionsTests.fs" />
-    <!-- Phase 603: the pipeline-tree law vectors (Fable-clean; the node leg compiles them too), before
-         LawVectorExport.fs, which renders their document. -->
-    <Compile Include="PipelineTreeVectors.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
