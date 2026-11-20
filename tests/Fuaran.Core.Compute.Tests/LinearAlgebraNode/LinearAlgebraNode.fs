@@ -22,7 +22,10 @@ open Fuaran.Compute.Solvers
 open Fuaran.Compute.Distributions
 open Fuaran.Compute.Tests
 
-[<Emit("process.exit($0)")>]
+/// Sets the exit code and lets node exit once stdout drains. `process.exit` would end the process at once,
+/// and on a POSIX pipe stdout is written asynchronously, so a transcript longer than the pipe buffer loses its
+/// tail — the "held" line first. That happened once the elementary document joined the leg (Phase 631).
+[<Emit("process.exitCode = $0")>]
 let private exit (code: int) : unit = jsNative
 
 let private failures =
