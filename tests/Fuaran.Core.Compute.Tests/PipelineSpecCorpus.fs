@@ -260,7 +260,7 @@ let harnessVectors () : Vector list =
         WireSurfaceTests.roots
         |> List.find (fun r ->
             match r with
-            | WireSurfaceTests.Derived(_, "pipeline", _, _) -> true
+            | WireSurfaceTests.Derived(_, "pipeline", _, _, _) -> true
             | _ -> false)
 
     let _, cases = WireSurfaceTests.documentsOf root

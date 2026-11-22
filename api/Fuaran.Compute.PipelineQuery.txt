@@ -34,7 +34,7 @@ method Fuaran.Compute.PipelineQueryModule.paramReads(Fuaran.Compute.PipelineQuer
 method Fuaran.Compute.PipelineQueryModule.resultKnowledge(Fuaran.Compute.PipelineQuery) : Fuaran.Compute.SchemaKnowledge
 method Fuaran.Compute.PipelineQueryModule.sources(Fuaran.Compute.PipelineQuery) : Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpOption`1<Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Core.Field>>>
 method Fuaran.Compute.PipelineQueryModule.substitute(Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.Cell>>, Fuaran.Compute.PipelineQuery) : Fuaran.Compute.PipelineQuery
-method Fuaran.Compute.PipelineQueryRegistryModule.declarations(Fuaran.Compute.PipelineQueryRegistry) : Fuaran.Core.QueryRegistry
+method Fuaran.Compute.PipelineQueryRegistryModule.declarations(Fuaran.Compute.PipelineQueryRegistry) : Fuaran.Core.QueryRegistry`1<Microsoft.FSharp.Core.Unit>
 method Fuaran.Compute.PipelineQueryRegistryModule.dispatch(Fuaran.Compute.PipelineQueryRegistry, System.String, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Core.Cell>>, Microsoft.FSharp.Core.FSharpFunc`2<Fuaran.Compute.PipelineQuery, Fuaran.Core.Deferred`1<Fuaran.Core.QueryResult>>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Core.Deferred`1<Fuaran.Core.QueryResult>, Fuaran.Core.QueryError>
 method Fuaran.Compute.PipelineQueryRegistryModule.enumerate(Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.PipelineQuery>
 method Fuaran.Compute.PipelineQueryRegistryModule.register(Fuaran.Compute.PipelineQuery, Fuaran.Compute.PipelineQueryRegistry) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.PipelineQueryRegistry, Fuaran.Compute.PipelineQueryError>

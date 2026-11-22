@@ -35,7 +35,8 @@ let private everyCasePipelines () : Transform list list =
             "Fuaran.Compute.DataFrame",
             "pipeline",
             typeof<Transform list>,
-            fun o -> DataFrameCodec.encodePipeline (unbox<Transform list> o)
+            (fun o -> Some(DataFrameCodec.encodePipeline (unbox<Transform list> o))),
+            []
         )
     )
     |> fst
