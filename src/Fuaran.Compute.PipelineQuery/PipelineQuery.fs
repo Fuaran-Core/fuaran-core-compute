@@ -449,7 +449,7 @@ module PipelineQuery =
 /// declaration cannot be in one: `register` is the only way in, and it refuses that pair.
 type PipelineQueryRegistry =
     private
-        { Declarations: QueryRegistry
+        { Declarations: QueryRegistry<unit>
           Bodies: Map<string, PipelineQuery> }
 
 /// Register, enumerate, dispatch (Phase 281) — the substrate's registry pattern, over pairs.
@@ -524,7 +524,7 @@ module PipelineQueryRegistry =
 
     /// The declarations alone, as the substrate's registry — for a host or a model that discovers
     /// queries through the substrate's surface and never needs the bodies.
-    let declarations (r: PipelineQueryRegistry) : QueryRegistry = r.Declarations
+    let declarations (r: PipelineQueryRegistry) : QueryRegistry<unit> = r.Declarations
 
     /// Dispatch an invocation. This IS the substrate's `QueryRegistry.dispatch` over the
     /// declarations: an unregistered id is `NoSuchQuery`, the arguments are validated by
@@ -545,7 +545,7 @@ module PipelineQueryRegistry =
         (resolve: PipelineQuery -> Deferred<QueryResult>)
         : Result<Deferred<QueryResult>, QueryError> =
         let viaSubstrate (gateArgs: (string * Cell) list) =
-            QueryRegistry.dispatch r.Declarations id gateArgs (fun q ->
+            QueryRegistry.dispatch r.Declarations () None id gateArgs (fun q ->
                 match Map.tryFind q.Id r.Bodies with
                 | Some pq -> resolve (PipelineQuery.substitute args pq)
                 // Unreachable: the declarations and the bodies are added together, in `register` only.
@@ -626,11 +626,24 @@ module PipelineQueryCodec =
         mapList (fun e -> ColumnCodec.decodeField e |> Result.mapError ColumnCodec.errorString) el
 
     /// The pair as a JSON value.
+    ///
+    /// Since Phase 724 (`Fuaran.Core` 0.45.0, whose `QueryCodec.encode` takes an `AdmittedQuery`) the
+    /// declaration is admitted (`QueryRegistry.admit`) before it is written, so no declaration the
+    /// substrate's gate refuses is written as a pipeline query: such a pair raises, naming the
+    /// refusal. A pair `PipelineQueryRegistry.register` accepted is always admitted, and the
+    /// substrate's declaration reader already refused such a declaration on `Fuaran.Core` 0.41.0, so
+    /// the text the encoder wrote for one never read back as a pipeline query.
     let encodeJson (pq: PipelineQuery) : JVal =
+        let admitted =
+            match QueryRegistry.admit pq.Query with
+            | Ok a -> a
+            | Error e ->
+                invalidArg "pq" ("the declaration is refused by the query gate: " + QueryCodec.encodeQueryError e)
+
         let query =
             // The substrate's codec renders the declaration canonically; reading its own output back
             // cannot fail, and doing so is what keeps one encoding of a `Query` rather than two.
-            match Json.parse (QueryCodec.encode pq.Query) with
+            match Json.parse (QueryCodec.encode admitted) with
             | Ok j -> j
             | Error m -> failwith ("QueryCodec.encode produced unparseable JSON: " + m)
 
@@ -686,6 +699,11 @@ module PipelineQueryCodec =
         |> Result.bind query
         |> Result.bind (fun q ->
             pipeline ()
-            |> Result.bind (fun p -> sources () |> Result.map (fun s -> { Query = q; Pipeline = p; Sources = s })))
+            |> Result.bind (fun p ->
+                sources ()
+                |> Result.map (fun s ->
+                    { Query = q.Declaration
+                      Pipeline = p
+                      Sources = s })))
 
     let decode (s: string) : Result<PipelineQuery, string> = Json.parse s |> Result.bind decodeJson

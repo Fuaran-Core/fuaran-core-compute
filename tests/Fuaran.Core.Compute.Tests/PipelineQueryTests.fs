@@ -380,4 +380,29 @@ let tests =
 
               match PipelineQueryCodec.decode twice with
               | Error m -> Expect.stringContains m "ledger" "names the source"
-              | Ok _ -> failtest "a source declared twice was decoded" ]
+              | Ok _ -> failtest "a source declared twice was decoded"
+
+          // Phase 724: the substrate's encoder takes an admitted declaration (Fuaran.Core 0.45.0),
+          // so a pair whose declaration its gate refuses is not written, and the refusal is named.
+          testCase "the codec writes no pair whose declaration the substrate's gate refuses"
+          <| fun _ ->
+              let repeated =
+                  { daily with
+                      Query =
+                          { daily.Query with
+                              Params = [ param "floor" DecimalType true; param "floor" DecimalType true ] } }
+
+              Expect.equal
+                  (QueryRegistry.admit repeated.Query |> Result.map ignore)
+                  (Error(DuplicateParam "floor"))
+                  "the gate refuses it"
+
+              let raised =
+                  try
+                      PipelineQueryCodec.encode repeated |> Ok
+                  with :? System.ArgumentException as e ->
+                      Error e.Message
+
+              match raised with
+              | Error m -> Expect.stringContains m "floor" "names the repeated parameter"
+              | Ok text -> failtestf "a refused declaration was written: %s" text ]

@@ -329,7 +329,7 @@ module PipelineQueryConformance =
                 let declared =
                     PipelineQueryRegistry.declarations reg
                     |> QueryRegistry.enumerate
-                    |> List.map _.Id
+                    |> List.map _.Declaration.Id
 
                 record registry (ids = List.sort ids && ids = declared) (fun () ->
                     sprintf "enumeration %A is not id-sorted or disagrees with the declarations %A" ids declared)
@@ -344,7 +344,9 @@ module PipelineQueryConformance =
                 // ---- the lifecycle: unregister, replace, restrict and union (Phase 378) ----
                 let view (x: PipelineQueryRegistry) =
                     PipelineQueryRegistry.enumerate x,
-                    PipelineQueryRegistry.declarations x |> QueryRegistry.enumerate |> List.map _.Id
+                    PipelineQueryRegistry.declarations x
+                    |> QueryRegistry.enumerate
+                    |> List.map _.Declaration.Id
 
                 let agrees (x: PipelineQueryRegistry) =
                     PipelineQueryRegistry.enumerate x |> List.map _.Query.Id = snd (view x)
