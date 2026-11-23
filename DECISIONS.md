@@ -203,6 +203,11 @@ neither a card nor a step vector: those phases' rosters gain these five function
     measurement and confirmed against the reference, give each of `sin`, `cos`, `atan` and `atan2` at least three at
     which the pinned answer is one double from the correctly rounded one (`ulps` 1), and `sinCos` one where its sine
     is, so a correctly rounded port fails a vector of each; the suite holds that from the committed references alone.
+    D52's vectors had the same gap, held by the same kind of host-library test: no `log10` vector was off the
+    correctly rounded double, and `exp` and `ln` had one each. Seven vectors join those functions' own
+    (`exp-`, `ln-` and `log10-not-correctly-rounded-*`, scored by D52's eighty-digit `decimal` reference), so `exp`,
+    `ln`, `log10` and `pow` each have three, and the older test is rewritten the same way; this note sits here and
+    not in D52, whose record of Phase 593 stays as written.
 
 12. **What the pin guarantees, and what it does not** (`proofs.json`, `trigonometry-pinned-by-transcription`). A host
     that transcribes the tables, the two reductions, the kernels and the arc tangent exactly answers the same bits:
