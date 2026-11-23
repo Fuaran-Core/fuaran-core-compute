@@ -16,7 +16,9 @@
 ///   * every checked model carries at least one proved row;
 ///   * a TESTED row on the `Proofs.Oracle` family names a model with a proved row, and every case it
 ///     lists is a test of that family, word for word;
-///   * the host-arithmetic premises the pinned kernels cite (D43, D49) are present as assumed premises.
+///   * the host-arithmetic premises the pinned kernels cite (D43, D49) are present as assumed premises;
+///   * the geometric algebra strand's row (D85) is at `policy`, citing the decision record, exactly while
+///     the algebra package has no source, and is no longer there once it has.
 ///
 /// `Proofs.Coverage` lives in `ProofCoverageTests.fs` (Phase 432), beside the operation census.
 ///
@@ -41,6 +43,7 @@ type internal Row =
       Theorem: string option
       Model: string option
       Family: string option
+      Document: string option
       Cases: string list }
 
 let private levels = set [ "proved"; "tested"; "assumed"; "policy" ]
@@ -77,6 +80,7 @@ let internal parseRows (json: string) : Row list =
             Theorem = evStr "theorem"
             Model = evStr "model"
             Family = evStr "family"
+            Document = evStr "document"
             Cases =
               match ev with
               | Some e ->
@@ -194,6 +198,34 @@ let internal premiseFindings (rows: Row list) : string list =
               yield sprintf "%s: level `%s`, class %A — a premise is an assumed row of class premise" id r.Level r.Class
           | Some _ -> () ]
 
+/// The geometric algebra strand's row (DECISIONS.md D85). Phase 726 recorded the rules before any kernel,
+/// so the row opens at `policy`: stated, and nothing tested, because nothing exists to test.
+let internal geometricAlgebraRow = "geometric-algebra-pinned-by-recorded-rules"
+
+/// The decision record the row cites while it is at `policy`.
+let internal decisionRecord = "DECISIONS.md"
+
+/// One finding per way the strand's row disagrees with the tree. The row is missing; or it says
+/// "rules recorded, nothing tested" (`policy`) while the algebra package's sources exist, which is then
+/// false; or it claims more than that while there is no source to test; or, at `policy`, it cites
+/// something other than the decision record. The phase that adds the package moves the row in the
+/// same change, and this rule is what makes it.
+let internal rulesRecordedFindings (packageExists: bool) (rows: Row list) : string list =
+    match rows |> List.tryFind (fun r -> r.Id = geometricAlgebraRow) with
+    | None -> [ sprintf "%s: the row is missing from the ladder" geometricAlgebraRow ]
+    | Some r ->
+        [ if packageExists && r.Level = "policy" then
+              yield
+                  sprintf
+                      "%s: the package's sources exist, so a row that says the rules are recorded and nothing is tested is false"
+                      r.Id
+
+          if not packageExists && r.Level <> "policy" then
+              yield sprintf "%s: level `%s` while the package has no source to test" r.Id r.Level
+
+          if r.Level = "policy" && r.Document <> Some decisionRecord then
+              yield sprintf "%s: a rules-recorded row cites %s, not %A" r.Id decisionRecord r.Document ]
+
 let private root () = Snapshots.repoFile ""
 
 /// The `$modules` literal line of proofs/check.ps1, parsed.
@@ -238,6 +270,7 @@ let private row id level =
       Theorem = None
       Model = None
       Family = None
+      Document = None
       Cases = [] }
 
 [<Tests>]
@@ -279,6 +312,56 @@ let ladderTests =
                    |> List.length)
                   arithmeticPremises.Length
                   "a promoted row and every missing row are each named"
+
+          testCase "the geometric algebra row says what the tree says: rules recorded until the package has a source"
+          <| fun _ ->
+              // DECISIONS.md D85: the conventions are fixed before any kernel, and the ladder says so and
+              // no more. The row is read against the tree both ways, so it cannot be dropped while the
+              // record cites it and cannot stay at `policy` once there is something to test.
+              let packageExists =
+                  Directory.Exists(Path.Combine(root (), "src", "Fuaran.Compute.GeometricAlgebra"))
+
+              Expect.isEmpty (rulesRecordedFindings packageExists (liveRows ())) "the row against the tree"
+
+              if not packageExists then
+                  Expect.stringContains
+                      (File.ReadAllText(Path.Combine(root (), decisionRecord)))
+                      "— D85: the geometric algebra rules, recorded before any kernel lands"
+                      "the entry the row cites is in the decision record"
+
+              let policy =
+                  { row geometricAlgebraRow "policy" with
+                      Document = Some decisionRecord }
+
+              Expect.isEmpty (rulesRecordedFindings false [ policy ]) "rules recorded and no source: true"
+
+              Expect.isEmpty
+                  (rulesRecordedFindings true [ row geometricAlgebraRow "tested" ])
+                  "a source and a tested row: true"
+
+              Expect.equal
+                  (rulesRecordedFindings false [ row "another-row" "policy" ] |> List.length)
+                  1
+                  "a missing row is named"
+
+              Expect.equal
+                  (rulesRecordedFindings true [ policy ] |> List.length)
+                  1
+                  "a policy row beside a source is named"
+
+              Expect.equal
+                  (rulesRecordedFindings false [ row geometricAlgebraRow "tested" ] |> List.length)
+                  1
+                  "a tested row with no source is named"
+
+              Expect.equal
+                  (rulesRecordedFindings
+                      false
+                      [ { policy with
+                            Document = Some "proofs/README.md" } ]
+                   |> List.length)
+                  1
+                  "a policy row citing another document is named"
 
           testCase "the form rules go red on a bad level, a missing class, a bad closes and a bad phase"
           <| fun _ ->
