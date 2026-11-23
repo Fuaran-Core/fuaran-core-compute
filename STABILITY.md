@@ -62,7 +62,7 @@ tail are the expressions they were (D84 item 4).
 
 **The wire.** None. The package encodes nothing.
 
-**The law vectors.** `conformance/laws/elementary-laws.json` gains 169 vectors between `pow`'s and the generator's, and
+**The law vectors.** `conformance/laws/elementary-laws.json` gains 172 vectors between `pow`'s and the generator's, and
 its description says so. Every vector that was there is the line it was, byte for byte, the 309 special-function
 vectors among them, which the suite now pins by digest. Re-emitted at `0.47.0`, `transform-laws.json` moves only in its
 `kitVersion` stamp, and every other file under `conformance/laws/` is byte-identical.
@@ -72,8 +72,11 @@ and writes `Elementary.sin`. A host that ports the functions certifies against t
 the function's bits and, where the routine computed them, its distance from a fifty-digit reference. The argument is
 reduced exactly at every finite double, so there is no bound past which the answer degrades (D84 item 3). The accuracy
 is a measurement, stated by range in D84 item 9: every function was within one unit in the last place of the true value
-over the 55,998-value sample, at every magnitude. The evaluator's scalar set gains nothing: a pipeline cannot yet ask
-for a sine.
+over the 55,998-value sample, at every magnitude. A wider search, of hundreds of millions of inputs where each
+function's error is largest, found `sin`, `cos` and `atan` no more than 0.953, 0.952 and 0.854 units away, and
+`atan2` up to 1.02 units away where `x` is positive and the quotient is just above `11/16` (about one input in a
+million there): `atan2` is not within one unit everywhere, and every answer found is within one double of the
+correctly rounded one. The evaluator's scalar set gains nothing: a pipeline cannot yet ask for a sine.
 
 ## 0.46.0 — released 2026-11-22 as `v0.46.0`
 

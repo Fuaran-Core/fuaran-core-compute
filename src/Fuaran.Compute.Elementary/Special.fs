@@ -46,7 +46,6 @@ module Special =
     /// modify it).
     let private tiny = 1.0e-300
 
-    let private pi = 3.141592653589793
     let private twoPi = 6.283185307179586
 
     /// `½ ln 2π`.
@@ -162,9 +161,9 @@ module Special =
 
         let struct (s, c) =
             if ar <= 0.25 then
-                struct (Elementary.sinKernel (pi * r) 0.0, Elementary.cosKernel (pi * r) 0.0)
+                struct (Elementary.sinKernel (Elementary.pi * r) 0.0, Elementary.cosKernel (Elementary.pi * r) 0.0)
             else
-                let t = pi * (0.5 - ar)
+                let t = Elementary.pi * (0.5 - ar)
                 let s = Elementary.cosKernel t 0.0
                 struct ((if r < 0.0 then -s else s), Elementary.sinKernel t 0.0)
 
@@ -272,7 +271,7 @@ module Special =
             gammaLnKernel x - Elementary.ln (-x * (1.0 + x))
         else
             let struct (s, _) = trigPi x
-            Elementary.ln (pi / magnitude (x * s)) - gammaLnPositive (-x)
+            Elementary.ln (Elementary.pi / magnitude (x * s)) - gammaLnPositive (-x)
 
     /// `Γ(x)` for `0 < x ≤ gammaOverflow`.
     let private gammaPositive (x: float) : float =
@@ -326,7 +325,7 @@ module Special =
                 else
                     gammaPositive -x
 
-            (-pi / (x * s)) / g
+            (-Elementary.pi / (x * s)) / g
 
     // ---- the digamma kernel and the polygamma functions -------------------------------------------
 
@@ -417,7 +416,7 @@ module Special =
             Double.NaN
         else
             let struct (s, c) = trigPi x
-            digammaPositive (1.0 - x) - pi * c / s
+            digammaPositive (1.0 - x) - Elementary.pi * c / s
 
     /// The Bernoulli numbers `B₂ₖ` for `k = 1 .. 10`.
     let private bernoulli: float[] =

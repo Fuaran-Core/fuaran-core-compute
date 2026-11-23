@@ -13,7 +13,8 @@ module Fuaran.Compute.Tests.ElementaryTests
 //   * `ElementaryOperations.exactness` is the published operation set, both ways.
 //   * Phase 725 (DECISIONS.md D84): the trigonometric vectors answer what was
 //     worked by hand, `sinCos` is the pair of `sin` and `cos`, and each
-//     polynomial summed in another order answers another bit at its witness.
+//     polynomial summed in another order inside its shipped path answers
+//     another bit at its witness.
 // ---------------------------------------------------------------------------
 
 open System
@@ -234,12 +235,14 @@ let tests =
                       (c.Id + " is the pair")
 
           testCase
-              "a polynomial summed in another order answers another bit at its witness, so the byte comparison sees a transcription that reorders (Phase 725)"
+              "a polynomial summed in another order, inside the shipped path, answers another bit at its witness, so the byte comparison sees a transcription that reorders (Phase 725)"
           <| fun () ->
-              // The same coefficients, each polynomial's even and odd halves summed apart (the sine's and
-              // the cosine's, which the package sums by Horner's rule), or by Horner's rule (the arc
-              // tangent's, which the package sums in halves). Each is as good a polynomial; none is the
-              // pinned order.
+              // Each function's path is written out here once, with the sum of its polynomial a
+              // parameter: the square, the correction and the last additions are the package's, so the
+              // path under the pinned order must BE the package, and whatever the other order moves, the
+              // order moved. The sine and the cosine are pinned to Horner's rule and reordered to their
+              // even and odd halves summed apart; the arc tangent is pinned to its halves and reordered
+              // to Horner's rule. Each is as good a polynomial; only one is the pinned order.
               let s =
                   [| -0.16666666666666666
                      0.008333333333333333
@@ -262,20 +265,6 @@ let tests =
                      4.779477332387385e-14
                      -1.5619206968586225e-16 |]
 
-              let halves (k: float[]) (z: float) =
-                  let w = z * z
-                  let even = k[0] + w * (k[2] + w * (k[4] + w * (k[6] + w * k[8])))
-                  let odd = z * (k[1] + w * (k[3] + w * (k[5] + w * k[7])))
-                  even + odd
-
-              let sinReordered (y: float) =
-                  let z = y * y
-                  y + y * z * halves s z
-
-              let cosReordered (y: float) =
-                  let z = y * y
-                  1.0 + z * halves c z
-
               let at =
                   [| 0.3333333333333293
                      -0.19999999999876483
@@ -289,35 +278,113 @@ let tests =
                      -0.036531572744216916
                      0.016285820115365782 |]
 
-              let atanReordered (x: float) =
-                  let z = x * x
-                  let mutable p = at[10]
+              let horner (k: float[]) (z: float) =
+                  let mutable p = k[k.Length - 1]
 
-                  for i in 9..-1..0 do
-                      p <- p * z + at[i]
+                  for i in k.Length - 2 .. -1 .. 0 do
+                      p <- p * z + k[i]
 
-                  x - x * (z * p)
+                  p
 
-              for id, pinned, reordered in
-                  [ "sin-reordered-polynomial-witness", Elementary.sin, sinReordered
-                    "cos-reordered-polynomial-witness", Elementary.cos, cosReordered
-                    "atan-reordered-polynomial-witness", Elementary.atan, atanReordered ] do
-                  let x =
-                      ElementaryVectors.cases
-                      |> List.find (fun c -> c.Id = id)
-                      |> fun c -> snd c.Input.Head
+              let halves (k: float[]) (z: float) =
+                  let w = z * z
+                  let even = k[0] + w * (k[2] + w * (k[4] + w * (k[6] + w * k[8])))
+                  let odd = z * (k[1] + w * (k[3] + w * (k[5] + w * k[7])))
+                  even + odd
+
+              // `sin y` within π/4, where nothing is reduced and the tail is zero.
+              let sinPath (poly: float[] -> float -> float) (y: float) =
+                  let z = y * y
+                  y + y * z * poly s z
+
+              // `a · b` and its rounding error (Dekker's product over Veltkamp's split), as the package
+              // forms the square of the cosine's argument.
+              let twoProd (a: float) (b: float) =
+                  let p = a * b
+                  let ca = 134217729.0 * a
+                  let ah = ca - (ca - a)
+                  let al = a - ah
+                  let cb = 134217729.0 * b
+                  let bh = cb - (cb - b)
+                  let bl = b - bh
+                  struct (p, ((ah * bh - p) + ah * bl + al * bh) + al * bl)
+
+              // `cos y` within π/4: the polynomial added to one, then the exact rounding error of that
+              // addition, less the correction for the rounding error of `y²`, added back.
+              let cosPath (poly: float[] -> float -> float) (y: float) =
+                  let struct (z, e) = twoProd y y
+                  let correction = e * (0.5 - 0.08333333333333333 * z)
+                  let w = z * poly c z
+                  let sum = 1.0 + w
+                  sum + (((1.0 - sum) + w) - correction)
+
+              // `atan x` below 7/16, where the argument stands and the tail is zero.
+              let atanPath (poly: float -> float) (x: float) = x - x * poly (x * x)
+
+              let atanHalves (z: float) =
+                  let w = z * z
+
+                  let s1 =
+                      z * (at[0] + w * (at[2] + w * (at[4] + w * (at[6] + w * (at[8] + w * at[10])))))
+
+                  let s2 = w * (at[1] + w * (at[3] + w * (at[5] + w * (at[7] + w * at[9]))))
+                  s1 + s2
+
+              let atanHorner (z: float) = z * horner at z
+
+              let argumentOf (id: string) =
+                  ElementaryVectors.cases
+                  |> List.find (fun case -> case.Id = id)
+                  |> fun case -> snd case.Input.Head
+
+              let goesRed (id: string) (pinned: float) (transcribed: float) (reordered: float) =
+                  Expect.equal
+                      (bits transcribed)
+                      (bits pinned)
+                      (id + ": the path written out under the pinned order is the package, bit for bit")
+
+                  Expect.notEqual (bits reordered) (bits pinned) (id + ": the other order answers another bit")
+
+                  Expect.isLessThanOrEqual
+                      (ElementaryVectors.ulpsApart reordered pinned)
+                      1L
+                      (id + ": and it is one unit away, a rounding and not a mistake")
+
+              for id, pinned, transcribed, reordered in
+                  [ "sin-reordered-polynomial-witness", Elementary.sin, sinPath horner, sinPath halves
+                    "cos-reordered-polynomial-witness", Elementary.cos, cosPath horner, cosPath halves
+                    "atan-reordered-polynomial-witness", Elementary.atan, atanPath atanHalves, atanPath atanHorner ] do
+                  let x = argumentOf id
 
                   Expect.stringContains
                       (lineOf id)
                       (sprintf "\"value\": \"%s\"" (ElementaryVectors.hex (pinned x)))
                       (id + " records the pinned order's bits")
 
-                  Expect.notEqual (bits (reordered x)) (bits (pinned x)) (id + ": the other order answers another bit")
+                  goesRed id (pinned x) (transcribed x) (reordered x)
 
-                  Expect.isLessThanOrEqual
-                      (ElementaryVectors.ulpsApart (reordered x) (pinned x))
-                      1L
-                      (id + ": and it is one unit away, a rounding and not a mistake")
+              // The pair is asked at the cosine's witness, where BOTH its halves move: a host whose
+              // `sinCos` sums either polynomial in the other order fails this one vector.
+              let pair = "sincos-reordered-polynomial-witness"
+              let x = argumentOf pair
+
+              Expect.equal
+                  (bits x)
+                  (bits (argumentOf "cos-reordered-polynomial-witness"))
+                  "the pair is asked at the cosine's witness"
+
+              let struct (sine, cosine) = Elementary.sinCos x
+
+              Expect.stringContains
+                  (lineOf pair)
+                  (sprintf
+                      "\"sin\": \"%s\", \"cos\": \"%s\""
+                      (ElementaryVectors.hex sine)
+                      (ElementaryVectors.hex cosine))
+                  (pair + " records the pinned order's bits")
+
+              goesRed (pair + ", the sine") sine (sinPath horner x) (sinPath halves x)
+              goesRed (pair + ", the cosine") cosine (cosPath horner x) (cosPath halves x)
 
           testCase "Elementary's and Rng's sources reach no host mathematics call"
           <| fun () ->

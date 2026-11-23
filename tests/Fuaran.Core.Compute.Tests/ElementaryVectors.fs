@@ -291,7 +291,7 @@ module ElementaryVectors =
           "cos-1e300", "bfe2699022adc4c1"
           "cos-nearest-any-multiple", "bc214ae72e6ba22f"
           "cos-max", "bfefffe62ecfab75"
-          "cos-reordered-polynomial-witness", "3fefcad37551437f"
+          "cos-reordered-polynomial-witness", "3febebec3b041697"
           "atan-min-subnormal", "0000000000000001"
           "atan-1e-300", "01a56e1fc2f8f359"
           "atan-below-two-to-minus-29", "3e1fffffffffffff"
@@ -345,7 +345,9 @@ module ElementaryVectors =
           "atan2-one-third", "3fd4978fa3269ee1"
           "atan2-one-third-left", "c0068f095fdf593c"
           "atan2-three-minus-one", "3ffe47df3d0dd4d1"
-          "atan2-five-six", "3fe63b4bc3f16a8a" ]
+          "atan2-five-six", "3fe63b4bc3f16a8a"
+          "atan2-error-above-sample-maximum", "bfe4643d30632d1d"
+          "atan2-error-above-one-unit", "3fe36799add188eb" ]
 
     /// The reference cells of an elementary case that carries one: the correctly rounded bits and the
     /// package's distance from them in units in the last place.
@@ -416,15 +418,19 @@ module ElementaryVectors =
           "max", Double.MaxValue ]
 
     /// The trigonometric cases, in file order: `sin` and `cos` over `circular` and each at the input
-    /// where its polynomial summed in another order answers another bit; `sinCos` over a part of it;
+    /// where its polynomial summed in another order, inside the shipped path, answers another bit;
+    /// `sinCos` over a part of it and at the cosine's witness, where both halves of the pair move;
     /// `atan` over its table, its tiny and huge arms and each boundary between its five arms, with the
     /// same witness; `atan2` over every row of IEEE 754's table, the four quadrants, quotients that
-    /// underflow and overflow, and operands at both ends of the exponent range.
+    /// underflow and overflow, operands at both ends of the exponent range, and two points found by
+    /// searching for its largest error (D84 item 9): one above the measured sample's maximum, and
+    /// the worst found, which is more than one unit in the last place from the true value and still
+    /// one double from the correctly rounded one.
     let private trigCases: Case list =
         (circular |> List.map (fun (name, x) -> case ("sin-" + name) "sin" [ "x", x ]))
         @ [ case "sin-reordered-polynomial-witness" "sin" [ "x", 0.512 ] ]
         @ (circular |> List.map (fun (name, x) -> case ("cos-" + name) "cos" [ "x", x ]))
-        @ [ case "cos-reordered-polynomial-witness" "cos" [ "x", 0.114 ] ]
+        @ [ case "cos-reordered-polynomial-witness" "cos" [ "x", 0.5104 ] ]
         @ ([ "zero"
              "negative-zero"
              "infinity"
@@ -438,6 +444,7 @@ module ElementaryVectors =
              "nearest-any-multiple" ]
            |> List.map (fun name ->
                case ("sincos-" + name) "sinCos" [ "x", circular |> List.find (fun (n, _) -> n = name) |> snd ]))
+        @ [ case "sincos-reordered-polynomial-witness" "sinCos" [ "x", 0.5104 ] ]
         @ [ case "atan-zero" "atan" [ "x", 0.0 ]
             case "atan-negative-zero" "atan" [ "x", -0.0 ]
             case "atan-infinity" "atan" [ "x", inf ]
@@ -521,7 +528,9 @@ module ElementaryVectors =
             case "atan2-one-third" "atan2" [ "y", 1.0; "x", 3.0 ]
             case "atan2-one-third-left" "atan2" [ "y", -1.0; "x", -3.0 ]
             case "atan2-three-minus-one" "atan2" [ "y", 3.0; "x", -1.0 ]
-            case "atan2-five-six" "atan2" [ "y", 5.0; "x", 6.0 ] ]
+            case "atan2-five-six" "atan2" [ "y", 5.0; "x", 6.0 ]
+            case "atan2-error-above-sample-maximum" "atan2" [ "y", -5.7095617164256116e-11; "x", 7.712947901312854e-11 ]
+            case "atan2-error-above-one-unit" "atan2" [ "y", 1.2396717428269162; "x", 1.7873816307575356 ] ]
 
     /// Every authored case, in file order.
     let cases: Case list =
@@ -729,7 +738,11 @@ module ElementaryVectors =
         + "over to the digits of two over pi, and the edges of the arc tangent's five arms), the doubles "
         + "nearest multiples of half pi, large arguments up to the largest double, and for each of the "
         + "three polynomials one vector (`*-reordered-polynomial-witness`) at which the same coefficients "
-        + "summed in another order answer another bit. A vector whose `op` is `sinCos` answers `{ verdict: "
+        + "summed in another order, inside the same path, answer another bit, the pair asked at the "
+        + "cosine's, where both its halves move. Two vectors of `atan2` are inputs a search for its largest "
+        + "error found (`atan2-error-above-sample-maximum`, `atan2-error-above-one-unit`): at the second "
+        + "the answer is 1.02 units in the last place from the true value, which `ulps`, a count of doubles "
+        + "from the correctly rounded one, states as one. A vector whose `op` is `sinCos` answers `{ verdict: "
         + "ok, sin, cos, sinTable, cosTable }`, the pair `Elementary.sinCos` returns, which is `sin x` and "
         + "`cos x` bit for bit, and what each function's table said."
 

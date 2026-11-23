@@ -769,8 +769,8 @@ module Elementary =
     // ---- sin, cos, atan and atan2 (Phase 725, DECISIONS.md D84) -----------------------------------
 
     /// The doubles nearest `π`, `π/2`, `π/4` and `3π/4`, and the doubles nearest what `π` and `π/2`
-    /// leave past their own.
-    let private pi = 3.141592653589793
+    /// leave past their own. `Special`'s reflections read `pi`.
+    let internal pi = 3.141592653589793
     let private piLo = 1.2246467991473532e-16
     let private halfPi = 1.5707963267948966
     let private halfPiLo = 6.123233995736766e-17
@@ -1211,9 +1211,11 @@ module Elementary =
     /// D84): IEEE 754's table, then the arc tangent of `|y| / |x|` with the quotient's remainder
     /// carried as the tail, so the division's rounding does not reach the answer, taken from zero
     /// where `x` is positive and from `π` where it is negative, and given the sign of `y`. A quotient
-    /// below `2⁻²⁹` or from `2⁶⁶` needs no tail: its arc tangent is the quotient or `π/2`. The
-    /// measured distance from the true value is below one unit in the last place in every quadrant
-    /// (D84). `atan2 y 1` is `atan y` bit for bit.
+    /// below `2⁻²⁹` or from `2⁶⁶` needs no tail: its arc tangent is the quotient or `π/2`. Over D84's
+    /// sample the measured distance from the true value is below one unit in the last place in every
+    /// quadrant; a wider search finds it up to 1.02 units where `x` is positive and the quotient is
+    /// just above `11/16`, and below one unit everywhere else it asked (D84 item 9). `atan2 y 1` is
+    /// `atan y` bit for bit.
     let atan2 (y: float) (x: float) : float =
         match atan2Table y x with
         | SpecialValue.NaN -> Double.NaN

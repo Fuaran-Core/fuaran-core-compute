@@ -722,8 +722,11 @@ module ElementaryLaws =
 
     /// `Special`'s reflections answer the bits they answered before their sine and cosine kernels
     /// became `Elementary`'s (D84 item 5): `gammaLn`, `gamma` and `digamma` below zero, at arguments
-    /// on both sides of the reflection's quarter and at both parities, each against the answer
-    /// recorded at `0.46.0`.
+    /// on both sides of the reflection's quarter and at both parities. Each pinned answer is what the
+    /// sources at the tag `v0.46.0` answer: the three at `−0.5` are vectors of that tag's
+    /// `conformance/laws/elementary-laws.json`, and all twenty-four are reproduced by loading that
+    /// tag's `Elementary.fs` and `Special.fs`, after the solvers' sources they read, in `dotnet fsi`
+    /// and printing the same calls.
     let private reflectionsReproduce (_: Draw) =
         let is (want: float) (x: float) = bits x = bits want
 
