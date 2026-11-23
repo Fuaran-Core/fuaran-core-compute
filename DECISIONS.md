@@ -169,7 +169,7 @@ neither a card nor a step vector: those phases' rosters gain these five function
    from a quotient of `2⁻⁴⁰` to one of `2⁷⁰`. For `atan2` that is the result of this search and not of the sample: the
    form first written passed the sample and was 1.020 units away at its worst input (item 7). The 395 inputs the
    search found a unit or more away under that form are kept beside the results file; asked again, each is within
-   0.020 units, and five of them are law vectors. It remains a measurement and not a bound. None of the 132
+   0.020 units, and five of them are law vectors. It remains a measurement and not a bound. None of the 139
    referenced vectors is more than one double from its reference, and a large argument is answered as accurately as a
    small one.
 
@@ -177,7 +177,7 @@ neither a card nor a step vector: those phases' rosters gain these five function
     `2²⁰` on .NET, 69 against 34 under node); `atan` at the host's cost and `atan2` a half more; ten times more beyond
     `2²⁰`, where the digits reduce. `sinCos` is cheaper than the two calls it replaces (40 ns against 54).
 
-11. **The law vectors.** `elementary-laws.json` gains 182 vectors after `pow`'s: the tables' rows, `atan2`'s four
+11. **The law vectors.** `elementary-laws.json` gains 190 vectors after `pow`'s: the tables' rows, `atan2`'s four
     quadrants and both axes, arguments at and beside each reduction boundary (`π/4`, `2²⁰`, `2⁷⁹` where the digits'
     first index moves, the edges of the arc tangent's arms, `2⁻²⁹` and `2⁶⁶`), the doubles nearest multiples of `π/2`,
     large arguments to the largest double, quotients that underflow and overflow, and eight inputs at which the middle
@@ -197,8 +197,12 @@ neither a card nor a step vector: those phases' rosters gain these five function
     place: at `cos 0.114` the uncorrected `1 + y² · p` answers the same bit in either order, a bit other than the
     shipped path's only because the correction is missing, and the shipped path answers one bit in both orders. With
     the correction in place the order decides the last bit at about one argument in twenty within `π/4` (512,990 of
-    10,000,000 asked). The suite also shows the host's own function answers other
-    bits on at least one vector of each function, so a port that calls its host is seen.
+    10,000,000 asked). As first shipped, every `sin` vector with a reference was correctly rounded, so the document
+    could not tell the pinned sine from a correctly rounded one, and the test that stood for it asked the host's own
+    library, which differed on one host and not on another. Eight vectors (`*-not-correctly-rounded-*`), found by
+    measurement and confirmed against the reference, give each of `sin`, `cos`, `atan` and `atan2` at least three at
+    which the pinned answer is one double from the correctly rounded one (`ulps` 1), and `sinCos` one where its sine
+    is, so a correctly rounded port fails a vector of each; the suite holds that from the committed references alone.
 
 12. **What the pin guarantees, and what it does not** (`proofs.json`, `trigonometry-pinned-by-transcription`). A host
     that transcribes the tables, the two reductions, the kernels and the arc tangent exactly answers the same bits:

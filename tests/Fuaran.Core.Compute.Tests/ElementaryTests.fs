@@ -150,29 +150,33 @@ let tests =
 
               Expect.isNonEmpty differing "the host's libm and the pinned routine differ somewhere on the vectors"
 
-          testCase
-              "the host's own libm answers other bits on at least one trigonometric vector of each function (Phase 725)"
+          testCase "a correctly rounded port fails at least one trigonometric vector of each function (Phase 725)"
           <| fun () ->
-              for op, pinned, host in
-                  [ "sin",
-                    (fun (c: ElementaryVectors.Case) -> Elementary.sin (snd c.Input.Head)),
-                    (fun x _ -> Math.Sin x)
-                    "cos", (fun c -> Elementary.cos (snd c.Input.Head)), (fun x _ -> Math.Cos x)
-                    "atan", (fun c -> Elementary.atan (snd c.Input.Head)), (fun x _ -> Math.Atan x)
-                    "atan2",
-                    (fun c -> Elementary.atan2 (snd c.Input.Head) (snd c.Input.Tail.Head)),
-                    (fun y x -> Math.Atan2(y, x)) ] do
+              // Host-independent: the pinned answer against the correctly rounded double each vector records
+              // as its reference. Where they differ, a port that answers the correctly rounded double fails.
+              let pinned (c: ElementaryVectors.Case) =
+                  let operand name =
+                      c.Input |> List.find (fun (n, _) -> n = name) |> snd
+
+                  match c.Op with
+                  | "sin" -> Elementary.sin (operand "x")
+                  | "cos" -> Elementary.cos (operand "x")
+                  | "atan" -> Elementary.atan (operand "x")
+                  | _ -> Elementary.atan2 (operand "y") (operand "x")
+
+              for op in [ "sin"; "cos"; "atan"; "atan2" ] do
                   let differing =
                       ElementaryVectors.cases
                       |> List.filter (fun c -> c.Op = op)
-                      |> List.filter (fun c ->
-                          let first = snd c.Input.Head
-                          let second = if c.Input.Length > 1 then snd c.Input.Tail.Head else 0.0
-                          let ours = pinned c
-                          let theirs = host first second
-                          not (Double.IsNaN ours) && not (Double.IsNaN theirs) && bits ours <> bits theirs)
+                      |> List.choose (fun c ->
+                          ElementaryVectors.references
+                          |> List.tryFind (fun (id, _) -> id = c.Id)
+                          |> Option.map (fun (_, h) -> c, ElementaryVectors.ofHex h))
+                      |> List.filter (fun (c, rounded) -> bits (pinned c) <> bits rounded)
 
-                  Expect.isNonEmpty differing (sprintf "the host's %s differs from the pinned one on a vector" op)
+                  Expect.isNonEmpty
+                      differing
+                      (sprintf "a vector of %s whose pinned answer is not the correctly rounded double" op)
 
           testCase "the trigonometric vectors answer what was worked by hand (Phase 725)"
           <| fun () ->

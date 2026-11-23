@@ -62,8 +62,9 @@ tail are the expressions they were (D84 item 4).
 
 **The wire.** None. The package encodes nothing.
 
-**The law vectors.** `conformance/laws/elementary-laws.json` gains 182 vectors between `pow`'s and the generator's, and
-its description says so. Every vector that was there is the line it was, byte for byte, the 309 special-function
+**The law vectors.** `conformance/laws/elementary-laws.json` gains 190 vectors between `pow`'s and the generator's, and
+its description says so. At some of them (`*-not-correctly-rounded-*`) the pinned answer is one double from the
+correctly rounded one, so a port that answers any of the four functions correctly rounded fails. Every vector that was there is the line it was, byte for byte, the 309 special-function
 vectors among them, which the suite now pins by digest. Re-emitted at `0.47.0`, `transform-laws.json` moves only in its
 `kitVersion` stamp, and every other file under `conformance/laws/` is byte-identical.
 
