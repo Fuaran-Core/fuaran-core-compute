@@ -89,14 +89,40 @@ neither a card nor a step vector: those phases' rosters gain these five function
    before the last addition. The candidate was three arms with the constant added after the polynomial is rounded: a
    sample maximum of 1.43 units against 0.74.
 
-7. **`atan2`** is the arc tangent of `|y| / |x|` with two changes to fdlibm's `e_atan2.c`, each measured. The
-   quotient's remainder is carried (Dekker's two-product over operands scaled by one power of two where they lie
-   outside `2^±400`) and joins each arm's numerator as a tail, so the division's rounding does not reach the answer.
-   And where `x` is negative each arm reads `π` less its constant, as a double and its remainder, so the answer is
-   rounded once and not twice. Over the sample fdlibm's form was at most 1.2 units from the true value in both
-   half-planes and this one 0.78 and 0.74; neither figure bounds the function, and item 9 says where this form is more
-   than one unit away. A quotient below `2⁻²⁹` is its own arc tangent and one from `2⁶⁶` answers `π/2`. `atan2 y 1` is
-   `atan y` bit for bit.
+7. **`atan2`** is the arc tangent of `|y| / |x|` with three changes to fdlibm's `e_atan2.c`, each measured. Where
+   the quotient lies between `7/16` and `39/16`, the arms against `atan ½`, `atan 1` and `atan 3/2` are formed from
+   the two operands and not from their quotient: `(2y − x) / (2x + y)`, `(y − x) / (y + x)` and
+   `(y − 3x/2) / (x + 3y/2)`, the first two numerators exact and the third rounded once, over operands scaled by one
+   power of two where they lie outside `2^±400`. Below `7/16` and from `39/16` the quotient's remainder is carried
+   (Dekker's two-product) and joins the arm as a tail, so the division's rounding does not reach the answer. And where
+   `x` is negative each arm reads `π` less its constant, as a double and its remainder, so the answer is rounded once
+   and not twice. A quotient below `2⁻²⁹` is its own arc tangent and one from `2⁶⁶` answers `π/2`. With `x = 1`
+   every arm is the expression `atan` evaluates, so `atan2 y 1` is `atan y` bit for bit, which a law holds; `atan`
+   itself answers the bits it did (no bit moved over 20,000,000 arguments, nor at any `atan` vector).
+
+   *How the middle arms were chosen.* The form first written carried the quotient's remainder into every arm, as
+   `((q − 1) + tail) / (q + 1)` against `atan 1`. Over the sample it was at most 0.78 units from the true value where
+   fdlibm's form was 1.2. The search of item 9 then found it MORE than one unit away where `x` is positive and the
+   quotient is in the sixteenth above `11/16`: 384 of 300,000,000 inputs asked between `11/16` and `0.72`, the worst
+   1.020 units. There the numerator's sum, the divisor's sum and the quotient each round a value near 0.19 while the
+   answer lies in `[½, 1)`. An answer more than one unit away is not one of the two doubles beside the true value,
+   so that form does not ship. Three candidates were measured beside it by the screen of item 9, on the same seeded
+   inputs (2,000,000 to each sixteenth of the quotient from `1/4` to `4` on each side of `x = 0`, and 50,000,000
+   between `11/16` and `0.72`), largest error against `atan ½`, `atan 1` and `atan 3/2` with `x` positive, and how many
+   of the 50,000,000 were a unit away or more:
+
+   | form | `atan ½` | `atan 1` | `atan 3/2` | a unit or more |
+   |---|---:|---:|---:|---:|
+   | the quotient and its tail, as first written | 0.950 | 1.014 | 0.813 | 58 |
+   | the tail carried into the divisor too | 0.950 | 1.014 | 0.813 | 58 |
+   | the arm against `atan 1` from the operands | 0.950 | 0.922 | 0.813 | 0 |
+   | all three middle arms from the operands | 0.864 | 0.922 | 0.793 | 0 |
+
+   Carrying the tail into the divisor changes nothing: the tail is below half a unit in the last place of the divisor,
+   so the sum rounds back to the divisor. Forming the arm from the operands removes the numerator's rounding and the
+   divisor's missing tail together, and nothing was a unit away. All three arms take it, and that is what ships: it is
+   the better form in each (the arm against `atan ½` stood at 0.95 under the quotient's form), and it makes
+   `atan2 y 1 = atan y` hold by construction. With `x` negative no form was above 0.81, before or after.
 
 8. **The reference.** `tests/Fuaran.Core.Compute.Tests/SpecialReference/trig_reference.py`: Python's standard library
    only, exact rational and fixed-point integer arithmetic at 620 fractional bits and more, `π` by Machin's formula,
@@ -122,7 +148,7 @@ neither a card nor a step vector: those phases' rosters gain these five function
    | cos | `2²⁰` to the largest double | 0.76 | 0.56 |
    | sin, cos | the doubles nearest multiples of `π/2` | 0.50 | 0.49 |
    | atan | `2⁻⁴⁰` to `2⁷⁰` | 0.74 | 0.64 |
-   | atan2 | every quadrant, any exponent | 0.78 | 0.60 |
+   | atan2 | every quadrant, any exponent | 0.74 | 0.58 |
 
    No answer in the sample is a whole unit from the true value.
 
@@ -135,56 +161,53 @@ neither a card nor a step vector: those phases' rosters gain these five function
    |---|---:|---|---|
    | sin | 0.953 | `x = 1312.3961111785018` | 300,000,000 arguments within 0.09 of the first 2,000 odd multiples of `π/4` |
    | cos | 0.952 | `x = 16.491372400987107` | the same 300,000,000 |
-   | atan | 0.854 | `x = 0.6923583728807784` | 600,000,000 arguments from `1/4` to `4` |
-   | atan2, `x` positive | **1.020** | `(y, x) = (1.2396717428269162, 1.7873816307575356)` | 600,000,000 quotients from `1/4` to `4`, and 300,000,000 from `11/16` to `0.72` |
-   | atan2, `x` negative | 0.801 | `(y, x) = (2.8512558519943667, -1.178659990047412)` | 600,000,000 quotients from `1/4` to `4` |
+   | atan | 0.854 | `x = 0.6923583728807784` | 600,000,000 arguments from `1/4` to `4`, and 60,000,000 below and above |
+   | atan2, `x` positive | 0.924 | `(y, x) = (0.8169514258312074, 1.1859452743949115)` | 600,000,000 quotients from `1/4` to `4`, 300,000,000 from `11/16` to `0.72`, and 60,000,000 below and above |
+   | atan2, `x` negative | 0.796 | `(y, x) = (4.199258022477436, -1.7602745130473163)` | 600,000,000 quotients from `1/4` to `4`, and 60,000,000 below and above |
 
-   So `sin`, `cos` and `atan` were not found a whole unit from the true value, and **`atan2` is not within one unit
-   everywhere**. Where `x` is positive and the quotient lies in the sixteenth above `11/16`, about one input in a
-   million is more than one unit away: 384 of the 300,000,000 asked between `11/16` and `0.72`, the worst of them 1.020
-   units. No input outside that sixteenth was found a whole unit away (the sixteenths either side reach 0.945 and
-   0.919). The cause is the arm against `atan 1`. It forms `((q − 1) + tail) / (q + 1)`: the numerator's sum, the
-   denominator's sum and the quotient each round a value near 0.19 while the answer lies in `[½, 1)`, and with the
-   two additions that follow they can together pass one unit. Plain `atan` has no tail, so its numerator `q − 1` is
-   exact, and it was not found above 0.86.
-
-   An answer 1.02 units from the true value is still one double from the correctly rounded one, so every vector's
-   `ulps` cell is at most one, the two vectors the search added among them (`atan2-error-above-sample-maximum`, 0.83
-   units from the true value, and `atan2-error-above-one-unit`): none of the 122 referenced vectors is more than one
-   double from its reference. A large argument is answered as accurately as a small one. This entry states the
-   measurement and does not change the arm.
+   No function was found a whole unit from the true value, in any arm of the arc tangents, on either side of `x = 0`,
+   from a quotient of `2⁻⁴⁰` to one of `2⁷⁰`. For `atan2` that is the result of this search and not of the sample: the
+   form first written passed the sample and was 1.020 units away at its worst input (item 7). The 395 inputs the
+   search found a unit or more away under that form are kept beside the results file; asked again, each is within
+   0.020 units, and five of them are law vectors. It remains a measurement and not a bound. None of the 132
+   referenced vectors is more than one double from its reference, and a large argument is answered as accurately as a
+   small one.
 
 10. **Cost.** About twice the host's own function on an ordinary argument (26 ns against 13 for `sin` and `cos` up to
     `2²⁰` on .NET, 69 against 34 under node); `atan` at the host's cost and `atan2` a half more; ten times more beyond
     `2²⁰`, where the digits reduce. `sinCos` is cheaper than the two calls it replaces (40 ns against 54).
 
-11. **The law vectors.** `elementary-laws.json` gains 172 vectors after `pow`'s: the tables' rows, `atan2`'s four
+11. **The law vectors.** `elementary-laws.json` gains 182 vectors after `pow`'s: the tables' rows, `atan2`'s four
     quadrants and both axes, arguments at and beside each reduction boundary (`π/4`, `2²⁰`, `2⁷⁹` where the digits'
     first index moves, the edges of the arc tangent's arms, `2⁻²⁹` and `2⁶⁶`), the doubles nearest multiples of `π/2`,
-    large arguments to the largest double, quotients that underflow and overflow, and the two inputs of item 9's
-    search. Four are go-red cases (`*-reordered-polynomial-witness`). At `sin 0.512`, `cos 0.5104` and `atan 0.36`
+    large arguments to the largest double, quotients that underflow and overflow, and eight inputs at which the middle
+    arms formed from the operands answer another bit than the same arms formed from the quotient (item 7): six
+    against `atan 1`, five of them inputs the quotient's arm answered more than one unit away, and one each against
+    `atan ½` and `atan 3/2` (`atan2-operands-arm-*`), beside four that ask those two arms near the largest double and
+    among the subnormals, where the operands are scaled. With the quotient's arms put back into `Elementary.fs` those
+    eight vectors and `atan2-five-six` fail on .NET, and nothing else does. Four are go-red cases
+    (`*-reordered-polynomial-witness`). At `sin 0.512`, `cos 0.5104` and `atan 0.36`
     the same coefficients summed in another order INSIDE the shipped path (everything else as shipped: the square, the
     cosine's correction, the last additions) answer another bit; and `sinCos 0.5104` asks the pair where both its
     halves move. The suite shows each two ways: the path written out under the pinned order is the package bit for
     bit, and under the other order it is one unit away. Each was also confirmed with the other order put into
-    `Elementary.fs` in place of the pinned one and the document's 172 trigonometric vectors evaluated on .NET: the
+    `Elementary.fs` in place of the pinned one and the document's trigonometric vectors evaluated on .NET: the
     sine's order turns `sin-` and `sincos-reordered-polynomial-witness` red, the cosine's `cos-` and `sincos-`, the
     arc tangent's `atan-`, and nothing else. The cosine's witness has to be sought with the correction of item 4 in
-    place: at `cos 0.114` the uncorrected `1 + y² · p` in the other order answers another bit and the shipped path in
-    the other order does not. With the correction in place the order decides the last bit at about one argument in
-    twenty within `π/4` (512,990 of 10,000,000 asked). The suite also shows the host's own function answers other
+    place: at `cos 0.114` the uncorrected `1 + y² · p` answers the same bit in either order, a bit other than the
+    shipped path's only because the correction is missing, and the shipped path answers one bit in both orders. With
+    the correction in place the order decides the last bit at about one argument in twenty within `π/4` (512,990 of
+    10,000,000 asked). The suite also shows the host's own function answers other
     bits on at least one vector of each function, so a port that calls its host is seen.
 
 12. **What the pin guarantees, and what it does not** (`proofs.json`, `trigonometry-pinned-by-transcription`). A host
     that transcribes the tables, the two reductions, the kernels and the arc tangent exactly answers the same bits:
     the law vectors and 111,996 sample lines were byte-identical on .NET and under node. It does not say the answers
-    are correctly rounded, or within one unit: the accuracy above is measured, and item 9 says where `atan2` is more
-    than one unit from the true value.
+    are correctly rounded: the accuracy above is measured, by a sample and by a search, and neither found an answer a
+    whole unit from the true value.
 
 **Not here.** `tan`, `asin`, `acos` and the hyperbolic functions wait for a reader. The evaluator's scalar set
 (`ColExpr`) gains no `Sin` or `Cos`: that is a change to the pipeline wire specification, filed when a pipeline asks.
-`atan2`'s arm against `atan 1` is not tightened (item 9): that would move `atan2`'s bits, which can still move while
-`0.47.0` is a draft and cannot once it is released.
 
 **Version.** `v0.46.0` is tagged, so this addition advances the slot to `0.47.0`. Additive: no existing surface, wire
 byte or vector moves.

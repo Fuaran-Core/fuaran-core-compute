@@ -346,8 +346,18 @@ module ElementaryVectors =
           "atan2-one-third-left", "c0068f095fdf593c"
           "atan2-three-minus-one", "3ffe47df3d0dd4d1"
           "atan2-five-six", "3fe63b4bc3f16a8a"
-          "atan2-error-above-sample-maximum", "bfe4643d30632d1d"
-          "atan2-error-above-one-unit", "3fe36799add188eb" ]
+          "atan2-operands-arm-one-a", "bfe4643d30632d1d"
+          "atan2-operands-arm-one-b", "3fe36799add188eb"
+          "atan2-operands-arm-one-c", "3fe360224b626a17"
+          "atan2-operands-arm-one-d", "3fe349fa1a61fc4d"
+          "atan2-operands-arm-one-e", "3fe34a6e5a91aef1"
+          "atan2-operands-arm-one-f", "3fe360c06993d331"
+          "atan2-operands-arm-half", "3fe2e491275e52db"
+          "atan2-operands-arm-three-halves", "3febebf94bc102b7"
+          "atan2-huge-operands-arm-half", "3fe103e230ebecf3"
+          "atan2-subnormal-operands-arm-half", "3fe14b1dd5f90ce1"
+          "atan2-huge-operands-arm-three-halves", "3ff0a00a3bce369f"
+          "atan2-subnormal-operands-arm-three-halves", "3ff0a00a3bce369f" ]
 
     /// The reference cells of an elementary case that carries one: the correctly rounded bits and the
     /// package's distance from them in units in the last place.
@@ -422,10 +432,13 @@ module ElementaryVectors =
     /// `sinCos` over a part of it and at the cosine's witness, where both halves of the pair move;
     /// `atan` over its table, its tiny and huge arms and each boundary between its five arms, with the
     /// same witness; `atan2` over every row of IEEE 754's table, the four quadrants, quotients that
-    /// underflow and overflow, operands at both ends of the exponent range, and two points found by
-    /// searching for its largest error (D84 item 9): one above the measured sample's maximum, and
-    /// the worst found, which is more than one unit in the last place from the true value and still
-    /// one double from the correctly rounded one.
+    /// underflow and overflow, operands at both ends of the exponent range, and eight points at which
+    /// the three middle arms formed from the operands answer another bit than the same arms formed
+    /// from the rounded quotient (D84 item 7): six against `atan 1`, the first the input that showed
+    /// the first sample's maximum was not the function's and the next five inputs the quotient's arm
+    /// answered more than one unit in the last place from the true value, and one each against
+    /// `atan ½` and `atan 3/2`; then those two arms over operands near the largest double and among
+    /// the subnormals, where the sums they form would overflow or lose their digits unscaled.
     let private trigCases: Case list =
         (circular |> List.map (fun (name, x) -> case ("sin-" + name) "sin" [ "x", x ]))
         @ [ case "sin-reordered-polynomial-witness" "sin" [ "x", 0.512 ] ]
@@ -529,8 +542,18 @@ module ElementaryVectors =
             case "atan2-one-third-left" "atan2" [ "y", -1.0; "x", -3.0 ]
             case "atan2-three-minus-one" "atan2" [ "y", 3.0; "x", -1.0 ]
             case "atan2-five-six" "atan2" [ "y", 5.0; "x", 6.0 ]
-            case "atan2-error-above-sample-maximum" "atan2" [ "y", -5.7095617164256116e-11; "x", 7.712947901312854e-11 ]
-            case "atan2-error-above-one-unit" "atan2" [ "y", 1.2396717428269162; "x", 1.7873816307575356 ] ]
+            case "atan2-operands-arm-one-a" "atan2" [ "y", -5.7095617164256116e-11; "x", 7.712947901312854e-11 ]
+            case "atan2-operands-arm-one-b" "atan2" [ "y", 1.2396717428269162; "x", 1.7873816307575356 ]
+            case "atan2-operands-arm-one-c" "atan2" [ "y", 1.0661697543255941; "x", 1.5402189886850395 ]
+            case "atan2-operands-arm-one-d" "atan2" [ "y", 1.2821163018800226; "x", 1.8629282865966337 ]
+            case "atan2-operands-arm-one-e" "atan2" [ "y", 0.7864480845130665; "x", 1.1425816016935657 ]
+            case "atan2-operands-arm-one-f" "atan2" [ "y", 0.8912986262544735; "x", 1.2873877870325874 ]
+            case "atan2-operands-arm-half" "atan2" [ "y", 1.0462350421206623; "x", 1.5612257703026877 ]
+            case "atan2-operands-arm-three-halves" "atan2" [ "y", 1.3701507306624734; "x", 1.149948030314384 ]
+            case "atan2-huge-operands-arm-half" "atan2" [ "y", 1e+308; "x", 1.7e+308 ]
+            case "atan2-subnormal-operands-arm-half" "atan2" [ "y", 3e-323; "x", 5e-323 ]
+            case "atan2-huge-operands-arm-three-halves" "atan2" [ "y", 1.7e+308; "x", 1e+308 ]
+            case "atan2-subnormal-operands-arm-three-halves" "atan2" [ "y", 8.4e-323; "x", 5e-323 ] ]
 
     /// Every authored case, in file order.
     let cases: Case list =
@@ -739,10 +762,10 @@ module ElementaryVectors =
         + "nearest multiples of half pi, large arguments up to the largest double, and for each of the "
         + "three polynomials one vector (`*-reordered-polynomial-witness`) at which the same coefficients "
         + "summed in another order, inside the same path, answer another bit, the pair asked at the "
-        + "cosine's, where both its halves move. Two vectors of `atan2` are inputs a search for its largest "
-        + "error found (`atan2-error-above-sample-maximum`, `atan2-error-above-one-unit`): at the second "
-        + "the answer is 1.02 units in the last place from the true value, which `ulps`, a count of doubles "
-        + "from the correctly rounded one, states as one. A vector whose `op` is `sinCos` answers `{ verdict: "
+        + "cosine's, where both its halves move. Eight vectors of `atan2` (`atan2-operands-arm-*`) are "
+        + "inputs at which an arm formed from the rounded quotient `y / x` answers another bit than the arm "
+        + "formed from the two operands, which is the pinned one; at five of them the quotient's arm is more "
+        + "than one unit in the last place from the true value. A vector whose `op` is `sinCos` answers `{ verdict: "
         + "ok, sin, cos, sinTable, cosTable }`, the pair `Elementary.sinCos` returns, which is `sin x` and "
         + "`cos x` bit for bit, and what each function's table said."
 

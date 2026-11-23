@@ -1131,16 +1131,21 @@ module Elementary =
     let private at9 = -0.036531572744216916
     let private at10 = 0.016285820115365782
 
-    /// `atan (x + tail)` for a finite `x > 0` and a `tail` below half a unit in the last place of `x`,
-    /// or `π` less it where `fromPi` is set (fdlibm's `s_atan.c`, Sun Microsystems, 1993, with its
-    /// published coefficients): below `7/16` the argument stands; up to `11/16`, `19/16` and `39/16`
-    /// it is moved against `atan ½`, `atan 1` and `atan 3/2`, and beyond against `π/2`, each of those
-    /// a double and its remainder; then one odd polynomial, its even and odd halves summed apart as
-    /// fdlibm sums them. The tail joins each arm's numerator, which is otherwise exact. Taken from
-    /// `π`, each arm reads `π` less its constant as a double and its remainder, so the answer is
-    /// rounded once and not twice. Below `2⁻²⁹` the arc tangent is the argument, and from `2⁶⁶` it
-    /// is `π/2`.
-    let private atanCompute (x: float) (tail: float) (fromPi: bool) : float =
+    /// `atan (y / w)` for finite positive `y` and `w`, or `π` less it where `fromPi` is set, given
+    /// `x`, their quotient rounded, and `tail`, what that rounding left, below half a unit in the
+    /// last place of `x` (fdlibm's `s_atan.c`, Sun Microsystems, 1993, with its published
+    /// coefficients): below `7/16` the quotient stands; up to `11/16`, `19/16` and `39/16` it is
+    /// moved against `atan ½`, `atan 1` and `atan 3/2`, and beyond against `π/2`, each of those a
+    /// double and its remainder; then one odd polynomial, its even and odd halves summed apart as
+    /// fdlibm sums them. The three middle arms are formed from `y` and `w` themselves, as
+    /// `(2y − w) / (2w + y)`, `(y − w) / (y + w)` and `(y − 3w/2) / (w + 3y/2)`: the first two
+    /// numerators are exact and the third is rounded once (`3w/2` is taken with its rounding error),
+    /// so the quotient's own rounding never reaches them, and with `w = 1` each is the expression
+    /// `atan` evaluates (D84 item 7). The first and the last arm read `x`, and the tail's first-order
+    /// term joins before the last addition. Taken from `π`, each arm reads `π` less its constant as a
+    /// double and its remainder, so the answer is rounded once and not twice. Below `2⁻²⁹` the arc
+    /// tangent is the quotient, and from `2⁶⁶` it is `π/2`.
+    let private atanCompute (y: float) (w: float) (x: float) (tail: float) (fromPi: bool) : float =
         if x >= twoTo66 then
             halfPi
         elif x < twoToMinus29 then
@@ -1154,11 +1159,19 @@ module Elementary =
                 else 4
 
             let t =
-                if arm = 0 then x
-                elif arm = 1 then ((2.0 * x - 1.0) + 2.0 * tail) / (2.0 + x)
-                elif arm = 2 then ((x - 1.0) + tail) / (x + 1.0)
-                elif arm = 3 then ((x - 1.5) + tail) / (1.0 + 1.5 * x)
-                else -1.0 / x
+                if arm = 0 then
+                    x
+                elif arm = 1 then
+                    (2.0 * y - w) / (2.0 * w + y)
+                elif arm = 2 then
+                    (y - w) / (y + w)
+                elif arm = 3 then
+                    // `3w/2` as a double `p` and its exact rounding error `h − (p − w)`.
+                    let h = 0.5 * w
+                    let p = w + h
+                    ((y - p) - (h - (p - w))) / (w + 1.5 * y)
+                else
+                    -1.0 / x
 
             let z = t * t
             let w = z * z
@@ -1188,8 +1201,8 @@ module Elementary =
             else
                 halfPi - ((s - (halfPiLo + tail * z)) - t)
 
-    /// The pinned arc tangent (Phase 725, D84): the table, then fdlibm's reduction and polynomial,
-    /// odd in its argument bit for bit. The measured distance from the true value is below one unit in
+    /// The pinned arc tangent (Phase 725, D84): the table, then fdlibm's reduction and polynomial
+    /// over the argument and one, odd in its argument bit for bit. The measured distance from the true value is below one unit in
     /// the last place (D84). `atan NaN` is NaN, `atan ±0` is `±0` and `atan ±∞` is `±π/2`.
     let atan (x: float) : float =
         match atanTable x with
@@ -1198,9 +1211,9 @@ module Elementary =
         | SpecialValue.Undefined -> Double.NaN
         | SpecialValue.Compute ->
             if x < 0.0 then
-                -(atanCompute -x 0.0 false)
+                -(atanCompute -x 1.0 -x 0.0 false)
             else
-                atanCompute x 0.0 false
+                atanCompute x 1.0 x 0.0 false
 
     let private twoTo400 = 2.5822498780869086e+120
     let private twoToMinus400 = 3.8725919148493183e-121
@@ -1208,14 +1221,14 @@ module Elementary =
     let private twoToMinus600 = 2.409919865102884e-181
 
     /// The pinned two-argument arc tangent, the angle of the point `(x, y)` in `[−π, π]` (Phase 725,
-    /// D84): IEEE 754's table, then the arc tangent of `|y| / |x|` with the quotient's remainder
-    /// carried as the tail, so the division's rounding does not reach the answer, taken from zero
-    /// where `x` is positive and from `π` where it is negative, and given the sign of `y`. A quotient
-    /// below `2⁻²⁹` or from `2⁶⁶` needs no tail: its arc tangent is the quotient or `π/2`. Over D84's
-    /// sample the measured distance from the true value is below one unit in the last place in every
-    /// quadrant; a wider search finds it up to 1.02 units where `x` is positive and the quotient is
-    /// just above `11/16`, and below one unit everywhere else it asked (D84 item 9). `atan2 y 1` is
-    /// `atan y` bit for bit.
+    /// D84): IEEE 754's table, then the arc tangent of `|y| / |x|`, taken from zero where `x` is
+    /// positive and from `π` where it is negative, and given the sign of `y`. Where the quotient lies
+    /// between `7/16` and `39/16` the arm is formed from the two operands themselves, so the
+    /// division's rounding never enters it; below and above, the quotient's remainder is carried as
+    /// the tail. A quotient below `2⁻²⁹` or from `2⁶⁶` needs neither: its arc tangent is the quotient
+    /// or `π/2`. The measured distance from the true value is below one unit in the last place in
+    /// every arm and both half-planes, over D84's sample and over the wider search of its item 9,
+    /// whose largest is 0.924 units. `atan2 y 1` is `atan y` bit for bit.
     let atan2 (y: float) (x: float) : float =
         match atan2Table y x with
         | SpecialValue.NaN -> Double.NaN
@@ -1226,20 +1239,23 @@ module Elementary =
             let ax = if x < 0.0 then -x else x
             let q = ay / ax
 
+            // Both operands by one power of two, so no sum or product of theirs overflows or falls
+            // into the subnormals; the quotient is the same.
+            let scale =
+                if ax > twoTo400 then twoToMinus600
+                elif ax < twoToMinus400 then twoTo600
+                else 1.0
+
+            let sy = ay * scale
+            let sx = ax * scale
+
+            // The middle arms read the operands and no tail; the tiny and the huge quotient need none.
             let tail =
-                if q < twoToMinus29 || q >= twoTo66 then
+                if q < twoToMinus29 || q >= twoTo66 || (q >= 0.4375 && q < 2.4375) then
                     0.0
                 else
-                    // Both operands by one power of two, so the product's halves neither overflow
-                    // nor fall into the subnormals; the quotient is the same.
-                    let scale =
-                        if ax > twoTo400 then twoToMinus600
-                        elif ax < twoToMinus400 then twoTo600
-                        else 1.0
-
-                    let sx = ax * scale
                     let struct (p, e) = twoProd q sx
-                    ((ay * scale - p) - e) / sx
+                    ((sy - p) - e) / sx
 
-            let z = atanCompute q tail (x < 0.0)
+            let z = atanCompute sy sx q tail (x < 0.0)
             if y < 0.0 then -z else z

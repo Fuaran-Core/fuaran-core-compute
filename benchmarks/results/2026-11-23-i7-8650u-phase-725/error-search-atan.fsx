@@ -9,15 +9,23 @@
 //   python tests/Fuaran.Core.Compute.Tests/SpecialReference/trig_reference.py check < found.txt
 //
 // <mode> is `atan`, `atan2` (x positive), `atan2-left` (x negative) or `atan2-focus` (x positive, the
-// quotient in [11/16, 0.72], where the error is largest). The first three ask <count> quotients in each
-// sixteenth from 1/4 to 4, drawn by a seeded generator; the last asks <count> in its one band. The table
+// quotient in [11/16, 0.72], where the first arm's error was largest). The first three ask <count>
+// quotients in each sixteenth from 1/4 to 4, drawn by a seeded generator; the last asks <count> in its
+// one band. Each of the first three with `-ends` after it (`atan2-ends`) asks <count> quotients in each
+// of six bands below 1/4 and above 4, from 2^-40 to 2^70, spread evenly over the exponents. The table
 // goes to the error stream and the worst inputs to the output. A figure this program prints is the
 // screen's; a figure the results file states is the exact reference's over the inputs printed here.
+//
+//   dotnet fsi .../error-search-atan.fsx again 0 < atan2-first-arm-one-unit-or-more.txt > asked-again.txt
+//
+// reads lines of that form and prints each input with the answer the package gives it now, for the
+// exact reference to score: it is how the inputs the first arm answered a unit away were asked again.
 //
 // The reference: atan (y / x) = atan c + atan ((y - c x) / (x + c y)) with c the sixteenth nearest the
 // quotient, the products exact (a fused multiply-add gives each product's rounding error; this program
 // is a measuring tool and is not held to the package's rule against one), atan c built by the same
 // formula from one sixteenth to the next, and the small arc tangent by its series to the 27th power.
+// A quotient above 4 is pi/2 less the arc tangent of its reciprocal.
 
 #r "../../../src/Fuaran.Compute.Elementary/bin/Release/net10.0/Fuaran.Compute.Elementary.dll"
 
@@ -90,9 +98,10 @@ let atanSixteenths =
     table
 
 let pi = struct (3.141592653589793, 1.2246467991473532e-16)
+let halfPi = struct (1.5707963267948966, 6.123233995736766e-17)
 
-/// `atan (y / x)` for positive `y` and `x` whose quotient lies in `[1/4, 4]`.
-let truth (y: float) (x: float) =
+/// `atan (y / x)` for positive `y` and `x` whose quotient is at most `4`.
+let within (y: float) (x: float) =
     let j = int (Math.Round(16.0 * (y / x)))
     let c = float j / 16.0
     let struct (cx, cxe) = twoProd c x
@@ -103,19 +112,26 @@ let truth (y: float) (x: float) =
 
     ddAdd atanSixteenths[j] (atanSmall u)
 
-let unitOf (value: float) =
-    if value >= 2.0 then 4.440892098500626e-16
-    elif value >= 1.0 then 2.220446049250313e-16
-    elif value >= 0.5 then 1.1102230246251565e-16
-    else 5.551115123125783e-17
+/// `atan (y / x)` for positive `y` and `x`.
+let truth (y: float) (x: float) =
+    if y / x > 4.0 then
+        ddAdd halfPi (ddNeg (within x y))
+    else
+        within y x
 
-let mode = fsi.CommandLineArgs[1]
+/// One unit in the last place of a double of this size.
+let unitOf (value: float) =
+    Math.BitIncrement(abs value) - abs value
+
+let asked = fsi.CommandLineArgs[1]
+let ends = asked.EndsWith "-ends"
+let mode = if ends then asked.Substring(0, asked.Length - 5) else asked
 let count = int64 fsi.CommandLineArgs[2]
 
-/// The inputs worth the exact reference: every one more than a unit away, and each band's worst.
+/// The inputs worth the exact reference: every one a unit away or more, and each band's worst.
 let found = Collections.Generic.List<float * string>()
 
-let search (label: string) (seed: int) (lo: float) (hi: float) =
+let search (label: string) (seed: int) (draw: Random -> float) =
     let rng = Random seed
     let mutable worst = 0.0
     let mutable worstLine = ""
@@ -123,7 +139,7 @@ let search (label: string) (seed: int) (lo: float) (hi: float) =
     let mutable i = 0L
 
     while i < count do
-        let q = lo + rng.NextDouble() * (hi - lo)
+        let q = draw rng
         let x = if mode = "atan" then 1.0 else 1.0 + rng.NextDouble()
         let y = q * x
 
@@ -140,14 +156,14 @@ let search (label: string) (seed: int) (lo: float) (hi: float) =
 
         let error = abs (((answer - th) - tl) / unitOf th)
 
-        if error > worst || error > 1.0 then
+        if error > worst || error >= 1.0 then
             let line =
                 if mode = "atan" then
                     sprintf "atan %s %s" (hex y) (hex answer)
                 else
                     sprintf "atan2 %s %s %s" (hex y) (hex (if mode = "atan2-left" then -x else x)) (hex answer)
 
-            if error > 1.0 then
+            if error >= 1.0 then
                 over <- over + 1L
 
                 if found.Count < 2000 then
@@ -162,21 +178,46 @@ let search (label: string) (seed: int) (lo: float) (hi: float) =
     found.Add((worst, worstLine))
     eprintfn "| %s | %s | %d | %.3f | %d |" mode label count worst over
 
-eprintfn "| function | quotient | screened | largest error (screen) | more than one unit away |"
-eprintfn "|---|---|---:|---:|---:|"
+let uniform (lo: float) (hi: float) (rng: Random) = lo + rng.NextDouble() * (hi - lo)
 
-if mode = "atan2-focus" then
-    search "11/16 to 0.72" 20261123 0.6875 0.72
+let exponents (lo: int) (hi: int) (rng: Random) =
+    (1.0 + rng.NextDouble()) * Math.ScaleB(1.0, rng.Next(lo, hi))
+
+if mode = "again" then
+    let mutable line = stdin.ReadLine()
+
+    while not (isNull line) do
+        let parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+
+        if parts.Length = 4 && parts[0] = "atan2" then
+            let y = BitConverter.Int64BitsToDouble(Convert.ToInt64(parts[1], 16))
+            let x = BitConverter.Int64BitsToDouble(Convert.ToInt64(parts[2], 16))
+            printfn "atan2 %s %s %s" parts[1] parts[2] (hex (Elementary.atan2 y x))
+
+        line <- stdin.ReadLine()
 else
-    let index =
-        match mode with
-        | "atan" -> 0
-        | "atan2" -> 1
-        | "atan2-left" -> 2
-        | _ -> failwith "mode: atan, atan2, atan2-left or atan2-focus"
+    eprintfn "| function | quotient | screened | largest error (screen) | one unit away or more |"
+    eprintfn "|---|---|---:|---:|---:|"
 
-    for k in 4..63 do
-        search (sprintf "%d/16 to %d/16" k (k + 1)) (725000 + 1000 * index + k) (float k / 16.0) (float (k + 1) / 16.0)
+    if mode = "atan2-focus" then
+        search "11/16 to 0.72" 20261123 (uniform 0.6875 0.72)
+    else
+        let index =
+            match mode with
+            | "atan" -> 0
+            | "atan2" -> 1
+            | "atan2-left" -> 2
+            | _ -> failwith "mode: atan, atan2, atan2-left, each alone or with -ends, atan2-focus or again"
+
+        if ends then
+            for band, (lo, hi) in List.indexed [ -40, -29; -29, -8; -8, -2; 2, 8; 8, 30; 30, 70 ] do
+                search (sprintf "2^%d to 2^%d" lo hi) (726000 + 1000 * index + band) (exponents lo hi)
+        else
+            for k in 4..63 do
+                search
+                    (sprintf "%d/16 to %d/16" k (k + 1))
+                    (725000 + 1000 * index + k)
+                    (uniform (float k / 16.0) (float (k + 1) / 16.0))
 
 for _, line in found |> Seq.distinctBy snd |> Seq.sortByDescending fst |> Seq.truncate 400 do
     printfn "%s" line
