@@ -18,7 +18,7 @@
 ///     lists is a test of that family, word for word;
 ///   * the host-arithmetic premises the pinned kernels cite (D43, D49) are present as assumed premises;
 ///   * the geometric algebra strand's row (D85) is at `policy`, citing the decision record, exactly while
-///     the algebra package has no source, and is no longer there once it has.
+///     the algebra package has no project file, and is no longer there once it has.
 ///
 /// `Proofs.Coverage` lives in `ProofCoverageTests.fs` (Phase 432), beside the operation census.
 ///
@@ -318,8 +318,17 @@ let ladderTests =
               // DECISIONS.md D85: the conventions are fixed before any kernel, and the ladder says so and
               // no more. The row is read against the tree both ways, so it cannot be dropped while the
               // record cites it and cannot stay at `policy` once there is something to test.
+              // The package is its project file: a `bin` or an `obj` that a build left under the directory,
+              // in a checkout from before the package existed, is not one.
               let packageExists =
-                  Directory.Exists(Path.Combine(root (), "src", "Fuaran.Compute.GeometricAlgebra"))
+                  File.Exists(
+                      Path.Combine(
+                          root (),
+                          "src",
+                          "Fuaran.Compute.GeometricAlgebra",
+                          "Fuaran.Compute.GeometricAlgebra.fsproj"
+                      )
+                  )
 
               Expect.isEmpty (rulesRecordedFindings packageExists (liveRows ())) "the row against the tree"
 

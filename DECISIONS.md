@@ -7,7 +7,7 @@ pinned-numerics contract (operator ruling 2026-11-23). Its algebra is the confor
 Euclidean space, `Cl(4,1)`. A pinned library's conventions are part of its answers: the blade order decides the order
 of every sum, the sign of the dual decides the sign of every `meet`, and the first law vector that is committed makes
 each of them permanent. So they are written before the first kernel, as D49 wrote the linear-algebra rules before
-Phase 590, and a review of Phases 727 to 731 cites "D85 item n" rather than arguing from first principles. A twin
+Phase 590, and Phases 727 to 731 are held to "D85 item n" rather than argued from first principles. A twin
 author porting the library reads items 1 to 7 as its contract. No source file moves and no public surface moves.
 
 **Premise check** (on `cc3ca8f`, the tree this phase was cut from). No geometric algebra source exists: `src/` holds
@@ -126,8 +126,8 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    *Rejected: bitmap order* (the blade whose vectors are the set bits of its index), which needs no table to find a
    blade. Grade order keeps each grade a contiguous run (0, 1–5, 6–15, 16–25, 26–30, 31), which is how a law vector
    is read and how a typed object is laid out; the table above is short enough to transcribe once. *Rejected: `n0`
-   last but one* (`e1 e2 e3 n0 n∞`): the order chosen is DFM's own for its reference implementation
-   (`no e1 e2 e3 ni`), so a multivector printed there is read here coefficient for coefficient. *Rejected: cyclic
+   last but one* (`e1 e2 e3 n0 n∞`): the order chosen is the order in which DFM writes the basis, `o`, `e1`, `e2`,
+   `e3`, `∞` (chapter 13), so a point reads here from left to right as its formula does, `n0 + x + ½ x² n∞`. *Rejected: cyclic
    bivectors* (`e2∧e3`, `e3∧e1`, `e1∧e2`): a sign per blade is a second table every port must carry.
 
 3. **One summation order for every product, and what a zero does.**
@@ -224,24 +224,32 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    - **Reverse**, **grade involution** and **grade projection**: the signs of item 2's table applied by exact
      negation, and a copy of one grade's run with `+0.0` elsewhere. The Clifford conjugate is their composition
      and is not published separately.
-   - **Dual** `A* = A ⌋ I⁻¹` and its inverse, the **undual**, `A ⌋ I`, with `I` of item 1. Because `I` is the
-     pseudoscalar, each is also the geometric product with `I⁻¹` or `I`, and because `I` is central it does not
-     matter on which side. Each is the signed permutation in item 2's last column (the undual its inverse
-     permutation), applied by copying and exact negation: no arithmetic, so `undual (dual A)` is `A` bit for bit on
-     every input free of a NaN. This is DFM's dual. *Rejected:* `A I`, multiplication by the pseudoscalar itself
-     (DL's usage), which is the same map with the other sign, and here the undual; one of the two had to be the
-     dual, and DFM's tables are written with this one.
-   - **Join** `A ∧ B`, one outer product, and **meet** `(B* ∧ A*)` undualled, which is `B* ⌋ A`: one outer product
-     between the duals, in that order of the operands (DFM chapter 5; the other order is the same blade up to
-     `(−1)^((5−a)(5−b))`). Both are taken in the whole space. A zero blade is an answer and is named: the join of
-     two operands that share a factor (two flats always share `n∞`), the meet of two that do not span the space
-     (two coplanar lines; two skew lines do span it, and their meet is a multiple of `n∞`). For those the **meet
-     within a span** ships beside it, `(B ⌋ J⁻¹) ⌋ A` for a blade `J`
-     the caller supplies that contains both, with `J⁻¹ = J̃ / (J ∗ J̃)` and each coefficient divided once. For two
-     lines the span is the join of the first with a point of the second: its point nearest the origin, or that
-     point moved by the second line's direction when the first join is the zero blade; if both are zero the lines
-     are one line. *Rejected:* a general join that factors its operands, which needs a threshold at every step
-     and is no single product.
+   - **Dual** and its inverse, the **undual**. In meaning the dual is `A* = A ⌋ I⁻¹` and the undual `A ⌋ I`, with
+     `I` of item 1; because `I` is the pseudoscalar each is also the geometric product with `I⁻¹` or `I`, and
+     because `I` is central it does not matter on which side. **What ships is the signed permutation in item 2's
+     last column** (the undual its inverse permutation), applied by copying and exact negation: no arithmetic, so
+     `undual (dual A)` is `A` bit for bit on every input free of a NaN. The contraction and the product, written
+     out as folds, give the same multivector under the float identity of item 8 and not bit for bit: the
+     permutation's negation turns a `+0.0` into a `−0.0`, which no fold returns. This is DFM's dual. *Rejected:*
+     `A I`, multiplication by the pseudoscalar itself (DL's usage), which is the same map with the other sign, and
+     here the undual; one of the two had to be the dual, and DFM's tables are written with this one. *Rejected as
+     the shipping form:* the contraction as a fold, which is thirty-two products and sums to do what a copy does.
+   - **Join** `A ∧ B`, one outer product. **Meet** `meet A B = B* ⌋ A`: the dual of the second operand, by the
+     permutation, contracted onto the first, one fold (DFM chapter 5). It is the blade whose dual is `B* ∧ A*`, and
+     with the operands exchanged it is the same blade up to `(−1)^((5−a)(5−b))`. *Rejected as the shipping form:*
+     `B* ∧ A*` undualled, which is two duals, an outer product and an undual where this is one dual and one
+     contraction, and whose last step can return a `−0.0`, which item 3 lets no product do. The two forms agree
+     under the float identity and not bit for bit. Both the join and the meet are taken in the whole space. A zero
+     blade is an answer and is named: the join of two operands that share a factor (two flats always share `n∞`),
+     the meet of two that do not span the space (two coplanar lines; two skew lines do span it, and their meet is a
+     multiple of `n∞`). For those the **meet within a span** ships beside it, `(B ⌋ J⁻¹) ⌋ A` for a blade `J` the
+     caller supplies that contains both, with `J⁻¹ = J̃ / (J ∗ J̃)` and each coefficient divided once; with `J = I`
+     it is the meet bit for bit. For two lines the span is the join of the first with a point of the second: its
+     point nearest the origin, or, when that join is the zero blade, the point whose coordinates are that point's
+     plus the second line's direction as it is stored, not divided by its weight, one addition for each; if that
+     join is the zero blade too, the lines are one line. "Is the zero blade" is item 6's test of a kind, with the
+     caller's `τ`, so at `τ = 0` it is exact. *Rejected:* a general join that factors its operands, which needs a
+     threshold at every step and is no single product.
    - **A blade's inverse** is `X̃ / (X ∗ X̃)`, refused when the divisor is zero. No inverse of a general
      multivector ships.
 
@@ -260,7 +268,7 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    | line | 3 | `P ∧ Q ∧ n∞` | `up p ∧ d̂ ∧ n∞`: a point and a direction |
    | circle | 3 | `P ∧ Q ∧ R` | `meet (sphere c r) (plane n̂ (n̂ · c))`: a centre, a radius and a normal |
    | plane | 4 | `P ∧ Q ∧ R ∧ n∞` | `(n̂ + δ n∞)*`: a normal and the distance `δ` of the plane from the origin along it |
-   | sphere | 4 | `P ∧ Q ∧ R ∧ S` | `(up c − ½ r² n∞)*`: a centre and a radius |
+   | sphere | 4 | `P ∧ Q ∧ R ∧ S` | `(up c − ½ r² n∞)*`: a centre and a radius; `½ r²` is `0.5 × (r × r)`, the square first, subtracted from the coefficient of `up c` at index 5 |
 
    A direction parameter (a line's direction, a normal, an axis) is divided by its norm, D49 item 4's, one
    division for each component, before it is used; a zero or non-finite one is refused by name, as is a negative or
@@ -270,14 +278,19 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    sphere through four points is `det [q − p, r − p, s − p]`. The **vector** of a plane or a sphere is its undual,
    `n̂ + δ n∞` or `up c − ½ r² n∞` times its weight: an exact read, since the dual is a permutation.
 
-   **Read-back.** Write `W = n∞ ⌋ X`. The **weight** of a point or a round is the norm of its coefficients on the
-   blades that hold `n0` and not `n∞` (one signed coefficient for a point, index 1, and for a sphere, index 26);
-   the weight of a flat is the norm of its coefficients on the blades that hold both (a line's direction, a plane's
-   normal). A point's coordinates are `P[2..4]`, each divided by `P[1]`. The **centre** of a round is the point
+   **Read-back.** Write `W = n∞ ⌋ X`. The **weight** of a point is its coefficient at index 1, and of a sphere its
+   coefficient at index 26: one signed number each, and not a norm. The weight of a point pair or a circle is the
+   norm (D49 item 4) of its coefficients on the blades that hold `n0` and not `n∞`, and the weight of a flat the
+   norm of its coefficients on the blades that hold both (a line's direction, a plane's normal); those are never
+   negative. A point's coordinates are `P[2..4]`, each divided by `P[1]`. The **centre** of a round is the point
    `⟨(X n∞) X⟩₁`, read as a point is; its **squared radius** is `−(X ∗ X̃) / (W ∗ W̃)`, which is negative for the
-   meet of two spheres that do not touch and is reported, never hidden. A point pair's two points are
-   `⟨(X − s) W⁻¹⟩₁` and `⟨(X + s) W⁻¹⟩₁` with `s = +√(X ∗ X)`, in that order: for `P ∧ Q` they are `P` then `Q`,
-   and for the meet of a line with a sphere built from its parameters they run along the line's direction. A line's direction is its
+   meet of two spheres that do not touch and is reported, never hidden. **A point pair's two points** are asked for
+   with a `τ`, and the answer has three cases, decided by item 6's test of the squared radius before any root is
+   taken. A *real* pair answers `⟨(X − s) W⁻¹⟩₁` and `⟨(X + s) W⁻¹⟩₁` with `s = +√(X ∗ X)`, in that order: for
+   `P ∧ Q` they are `P` then `Q`, and for the meet of a line with a sphere built from its parameters they run along
+   the line's direction. A *tangent* pair answers its one point, the centre. An *imaginary* pair answers its centre
+   and its squared radius, which is negative. No root of a negative number is taken, and a NaN is never how a
+   caller learns that two objects do not meet. A line's direction is its
    coefficients at indices 18, 20 and 21, read and not computed, and its moment `p ∧ d` is at 23, 24 and 25; a
    plane's normal and distance are its vector's. The point of a flat nearest the origin is `⟨(n0 ⌋ X) X⁻¹⟩₁`.
 
@@ -318,7 +331,9 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    rotation's part. So **`φ` lies in `[0, π]`** and the rotation it names lies in `[0, 2π]`. It never replaces a versor by its negative to take the shorter way: a
    caller who wants that negates a rotor of negative scalar part first. At `B′ = 0` with `c < 0` no plane is
    determined, and that is a named refusal. **Interpolation** is `V₁ exp (t log (Ṽ₁ V₂))`, formed in that order, so
-   `t = 0` returns `V₁`'s coefficients, a negative zero among them coming back positive (item 3).
+   `t = 0` returns `V₁`'s coefficients, a negative zero among them coming back positive (item 3). It follows the
+   logarithm's branch, so it can go the long way round. A caller who wants the shorter way passes `−V₂` in place of
+   `V₂` when the scalar coefficient of `Ṽ₁ V₂` is negative: the negated versor is the same motion.
 
    **The matrix.** A similarity `x ↦ s R x + t` is sixteen doubles in column-major order acting on column vectors:
    columns 0 to 2 hold `s R`, column 3 holds `t`, and the last row is `0 0 0 1`. A rotor, a translator, a motor
@@ -335,7 +350,8 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    sense in which a value arrives normalised. Three routines normalise, each named, each called by the caller,
    each dividing every coefficient the type carries by one scalar, once:
    - a **point** by its weight `P[1]`;
-   - any other **object** by its weight (item 4), signed for a sphere;
+   - any other **object** by its weight (item 4); a sphere's is signed, so one of negative weight changes
+     orientation when it is normalised;
    - a **versor** by `√(V ∗ Ṽ)`.
    Each refuses by name a divisor that is zero, not finite or, for a versor, not positive; those are exact
    comparisons and take no threshold. A read-back that divides by a weight (a point's coordinates, a centre, a
@@ -347,8 +363,11 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
 6. **Incidence, and what a zero test is.** **A zero test is the comparison `|statistic| ≤ τ` with `τ` passed by the
    caller on every call**: a finite `τ ≥ 0`, anything else refused by name. `τ = 0` is the exact comparison, so
    there is one kind of test and not two. Each function that takes a `τ` documents its statistic and the unit it is
-   in. **No tolerance is a constant in either package**: no default argument, no named epsilon, no literal
-   compared against, and the suite of Phase 728 reads the sources to hold that. At `τ = 0` a statistic that is a
+   in. **No tolerance is a constant in either package**: no default argument, no named epsilon, and
+   no float literal in a comparison but `0.0`, and that only in a comparison this entry itself states: a divisor
+   against zero, `V ∗ Ṽ > 0`, a factor `s > 0`, a radius or a `τ` that is not negative, `|B′| = 0`, the sign of a
+   scalar part, and the signs of a numerator and a denominator at `τ = 0`. A test for a NaN or an infinity names no
+   tolerance and is outside the rule. The suite of Phase 728 reads the sources to hold that. At `τ = 0` a statistic that is a
    quotient is decided from the signs of its numerator and denominator and no quotient is formed, so a test on
    integer coordinates is exact wherever its products are.
 
@@ -364,9 +383,9 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
      order of the circle's three points, where the in-circle determinant changes sign with their orientation.
      Whether the point is in the plane is the plane test, and the caller's to make.
    - **What kind of blade an answer is**: by the norm (D49 item 4) of a group of its coefficients, in coefficient
-     units. A *round* has a weight above `τ` on the blades that hold `n0` and not `n∞`; it is *real*, *tangent* or
+     units. A *round* has coefficients of norm above `τ` on the blades that hold `n0` and not `n∞`; it is *real*, *tangent* or
      *imaginary* as its squared radius is above `τ`, within it or below `−τ`. A *flat* has none there, none on the
-     blades that hold neither, and a weight on the blades that hold both. A blade with coefficients only on the
+     blades that hold neither, and coefficients of norm above `τ` on the blades that hold both. A blade with coefficients only on the
      blades that hold `n∞` and not `n0` is *at infinity*: the meet of two parallel planes, and of two parallel
      lines within their plane. The zero blade is a kind, and so is anything else, which is no object. Three
      collinear points define no circle: their outer product is a flat, and the answer is that case carrying the
@@ -383,7 +402,9 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    and D74 item 2 apply it: the package declares its own `Exactness = Pinned | HostRounded`, nested in the module
    `GeometricAlgebraOperations`, whose `exactness` table has a row for every published function, and the suite
    holds the table equal to the surface both ways. The module is not called `Operations`, which would shadow
-   LinearAlgebra's member by member (D74 item 2). Nothing is `HostRounded`: no host mathematics function is called
+   LinearAlgebra's member by member (D74 item 2). The op package's table is `GeometricAlgebraOpsOperations`, with
+   its own nested `Exactness`, and its law family is `GeometricAlgebraOpsLaws`.
+   Nothing is `HostRounded`: no host mathematics function is called
    on any path, and a source-reading test holds that as it does for `Elementary`. What stands behind the class
    differs, and the table's documentation says which:
 
@@ -399,14 +420,32 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    `Elementary.exp`, `ln` and `pow` are called nowhere in the first surface: the dilator is item 4's roots. Phases
    727 and 728 therefore reference nothing but FSharp.Core, and Phase 729 adds `Fuaran.Compute.Elementary`.
 
-   **Laws that hold bit for bit on inputs whose arithmetic is exact** (integers and dyadic fractions small enough
-   that every product and partial sum is a double): the signature (`e_i² = 1`, `n0² = n∞² = 0`, `n0 ∗ n∞ = −1`, and
-   `½ n∞ − n0` and `½ n∞ + n0` square to `+1` and `−1`); associativity and distributivity of the geometric product;
-   the reverse as an anti-automorphism; `a ∧ a = 0`; `I² = −1`; `(A ∧ B) ∗ C = A ∗ (B ⌋ C)`; `(A ∧ B)* = A ⌋ B*`;
-   `up x ∗ up x = 0` and `up x ∗ up y = −½ |x − y|²`; a point on the circle or sphere built through it; the meet of
-   two planes in both; a translator composed with its opposite; two reflections in perpendicular planes as a half
-   turn; a dilation by a power of four; and the sign of every incidence statistic. The undual of a dual is the
-   input on every input without a NaN, exact or not. **Everywhere else an identity holds only to rounding**, and a
+   **Laws on inputs whose arithmetic is exact** (integers and dyadic fractions small enough that every product and
+   partial sum is a double, and free of a NaN). Each holds under one of two comparisons, and a law says which. *Bit
+   for bit* compares the sixty-four bits of each coefficient, which tells the two zeros apart. *Under the float
+   identity* is item 8's comparison, in which the two zeros are one value. The second is needed wherever one side
+   of a law ends in a negation and the other in a fold: a negation turns `+0.0` into `−0.0`, and a fold never
+   returns one (item 3), so the two sides are the same multivector with different zeros.
+
+   - **Bit for bit:** the signature (`e_i² = 1`, `n0² = n∞² = 0`, `n0 ∗ n∞ = −1`, and `½ n∞ − n0` and `½ n∞ + n0`
+     square to `+1` and `−1`); associativity and distributivity of the geometric product; `a ∧ a = 0`; `I² = −1`;
+     `(A ∧ B) ∗ C = A ∗ (B ⌋ C)`; `up x ∗ up x = 0`, and `up x ∗ up y = −½ |x − y|²` for two different points; a
+     point on the circle or sphere built through it; the meet of two planes in both; the meet within the whole
+     space against the meet; a translator composed with its opposite, against the identity; two reflections in
+     perpendicular planes, against the half turn written as its coefficients; a dilation by a power of four,
+     against the point it should give. The undual of a dual is its input bit for bit on every input without a NaN,
+     exact or not, because a coefficient is negated twice or not at all.
+   - **Under the float identity, and not bit for bit:** the reverse as an anti-automorphism,
+     `rev (A B) = rev B rev A` (the left side ends in the reverse's negations: `rev (e1 e2)` holds nineteen negative
+     zeros and `rev e2 rev e1` none); `(A ∧ B)* = A ⌋ B*` (the left side ends in the dual's: sixteen against none at
+     `A = e1`, `B = e2`); the dual against the contraction `A ⌋ I⁻¹` written as a fold; the meet against `B* ∧ A*`
+     undualled; and `up x ∗ up x` against `−½ |x − x|²`, whose right side is `−0.0`.
+   - **The sign of every incidence statistic** is the sign exact arithmetic gives, a comparison of signs and not of
+     bits.
+
+   Each was evaluated in binary64 under the comparison named, on exact inputs, before it was listed.
+
+   **Everywhere else an identity holds only to rounding**, and a
    law that states it states a bound: a rotor times its reverse, the logarithm of an exponential, an inverse
    transform, a compaction, an answer beside its closed form. **This entry fixes the form of every such bound and
    no number.** A bound is in units in the last place of the reference value, or absolute and in the statistic's
@@ -437,9 +476,22 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    Each widens to a `Multivector` and is copied back from one (item 4), and its functions live in a module of its
    own name. A function that can refuse returns `Result` with a union of named cases, and one whose answer has
    kinds returns a union of them (D49 item 6): nothing throws on bad data. **There are no operators**: a product is
-   a named function, because `*` between two multivectors would have to be one of four products. Equality is F#'s
-   own over the coefficients, under which a NaN equals nothing and the two zeros are equal; **a law compares bits,
-   through the corpus writer, never with `=`**. No type is generic in its scalar, its grade or its signature, and
+   a named function, because `*` between two multivectors would have to be one of four products.
+
+   **Equality.** `Multivector` is a class, so its `Equals` and
+   `GetHashCode` are written, and they are **the float identity `Matrix` compares under**. Two multivectors are
+   equal when at every index the two coefficients are both NaN or are equal as numbers: every NaN is one value and
+   `−0.0` equals `0.0`. The hash starts at `32` and takes each coefficient in index order as `h × 31 + k`, where
+   `k` is `0x7FC00000` for a NaN, `0` for either zero and F#'s `hash` of the double otherwise, so equal
+   multivectors hash alike and `x.Equals x` is true whatever `x` holds. The hash is not a pinned number: it is one
+   value for equal multivectors on a host and may differ between hosts. A caller's `=` on two multivectors answers
+   that identity. The wrappers are records and keep F#'s own equality, which is another thing: `=` on two records
+   is false where a field is a NaN on both sides and true across the two zeros, while the `Equals` F# writes for a
+   record counts a NaN equal to itself on .NET. **Neither is what a law compares with.** A law compares bits, the
+   sixty-four of each coefficient (`BitConverter.DoubleToInt64Bits`, or the corpus writer's bytes), or it says that
+   it compares under the float identity (item 7); it never uses `=`. *Rejected:* an `Equals` under which a NaN
+   equals nothing, which breaks the rule that a value equals itself, and with it every hashed collection that
+   holds one. No type is generic in its scalar, its grade or its signature, and
    nothing is `inline` for the sake of a constraint.
 
    *What was checked.* A scratch project holding these shapes (the sealed class over a `float[]`, a record of five
@@ -447,7 +499,8 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    built by item 3's rule, compiled without a warning on .NET and with the Fable the tool manifest pins (5.0.0),
    and run under node 22. The table's digest on .NET is item 3's. Forty products of full multivectors drawn with
    both zeros among the coefficients, the product whose only terms are negative zeros, and each equality answered
-   the same bytes on the two hosts. A `float[]` is a `Float64Array` under Fable (D10's premise check found the
+   the same bytes on the two hosts. The probe's class compared its coefficients with `=`; the identity ruled above
+   is `Matrix`'s, whose class runs on both hosts in every gate. A `float[]` is a `Float64Array` under Fable (D10's premise check found the
    same); a struct record compiles there to an object like any other, so `[<Struct>]` would buy nothing on one host
    and change copying on the other, and the wrappers are plain records.
 
@@ -473,17 +526,18 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    products, the objects, the versors, `GeometricAlgebraOperations` and the law family `GeometricAlgebraLaws`. It
    knows nothing of names, histories, units or tables.
 
-   **The conversion with `Matrix` is the algebra package's, written against sixteen doubles, and neither package
-   references the other.** The algebra package publishes item 4's conversion to and from a `float[]` of sixteen
-   in column-major order, which is the layout `Matrix.toColumnMajor` already answers. `Fuaran.Compute.LinearAlgebra`
-   gains `Matrix.ofColumnMajor`, the inverse of the function it already has, refusing a length that is not rows
-   times columns by `ShapeMismatch`: a matrix operation that knows no geometry (D75 holds). A caller holding both
-   writes one line each way, and the suite, which references both, holds the round trip and the agreement of the
-   two routes on points. *Rejected:* the algebra package referencing LinearAlgebra (it would take
-   `Fuaran.Core.Column` and `Fuaran.Core.Wire` for the sake of a four by four, and move with every raise of the
-   substrate); LinearAlgebra referencing the algebra package (D75: it holds matrix operations only and depends on
-   nothing in Compute, and every regression consumer would carry a geometry library); a third package for the two
-   functions (an id and a release for a conversion with one reader).
+   **The conversion with `Matrix` is the algebra package's, written against sixteen doubles; neither package
+   references the other, and LinearAlgebra gains nothing.** The algebra package gives and takes item 4's matrix as
+   a `float[]` of sixteen in column-major order, a fresh array each way, which is the layout `Matrix.toColumnMajor`
+   answers. A caller holding both packages writes one line each way: `Matrix.init 4 4 (fun i j -> m[4 * j + i])`
+   to make the `Matrix`, and `Matrix.toColumnMajor` to hand one back. The suite, which references both, holds the
+   round trip and the agreement of the two routes on points. *Rejected:* a `Matrix.ofColumnMajor` in LinearAlgebra
+   (`Matrix.init` already builds a matrix from any layout, and a wrong array length is not the two shapes
+   `ShapeMismatch` carries, so it would be new surface and a new refusal for one line); the algebra package
+   referencing LinearAlgebra (it would take `Fuaran.Core.Column` and `Fuaran.Core.Wire` for the sake of a four by
+   four, and move with every raise of the substrate); LinearAlgebra referencing the algebra package (D75: it holds
+   matrix operations only and depends on nothing in Compute, and every regression consumer would carry a geometry
+   library); a third package for the conversion (an id and a release for one reader).
 
    **`Fuaran.Compute.GeometricAlgebraOps`** references the algebra package, `Fuaran.Core.OpStream`,
    `Fuaran.Core.Wire` and FSharp.Core, and is the only geometric package that references `Fuaran.Core.OpStream`,
@@ -537,16 +591,24 @@ motor or a blade is never a node kind and never a member of a domain's wire cont
 orientation, branch, normalisation or threshold: each is above. They record, in their own entries, the names this
 entry leaves (the cases of each refusal and each kind, and a function's name where none is given here); each bound a
 law states, with the sample behind it; and, where this entry defines a derived quantity and not the expression that
-computes it (the sixteen entries of a versor's matrix, a rotor read from a rotation, a motor's logarithm), the
+computes it (the sixteen entries of a versor's matrix; a rotor read from a rotation; a motor's
+logarithm; how a motor's exponential forms the two parts of `v`, along the axis and across it, which several routes
+give equally in exact arithmetic and differently in binary64; and the two statistics of the matrix test, how far the
+columns are from orthogonal and from one length, which are chosen with the cases of that refusal so that one `τ`
+means the same at any size of entry), the
 expression, written in item 4's products in item 3's order, chosen by measurement as D84 chose its forms and pinned
-by a vector. Where an expression is written above, it is the one that ships.
+by a vector. Where an expression is written above, it is the one that ships; and where a formula and
+coefficients are both given (a point, a rotor, a translator, a dilator), the coefficients are the expression and the
+formula is what they mean.
 
 **Ladder.** `proofs.json` gains `geometric-algebra-pinned-by-recorded-rules` at `policy`, citing this record: the
 rules are stated and nothing is tested, because nothing exists to test, and a policy row asserts no coverage.
-`ProofsLadderTests` holds it to the tree both ways. While `src/Fuaran.Compute.GeometricAlgebra` is absent the row is
-there, at `policy`, citing `DECISIONS.md`, and this entry's heading is in that file. Once the directory exists a row
-still at `policy` is a false statement and the case goes red, so Phase 727 moves the row in the change that adds the
-package, with no edit to the test.
+`ProofsLadderTests` holds it to the tree both ways. While the algebra package's project file,
+`src/Fuaran.Compute.GeometricAlgebra/Fuaran.Compute.GeometricAlgebra.fsproj`, is absent, the row is there, at `policy`,
+citing `DECISIONS.md`, and this entry's heading is in that file. Once that file exists a row still at `policy` is a
+false statement and the case goes red, so Phase 727 moves the row in the change that adds the package, with no edit to
+the test. The test reads the project file and not the directory, so a build's leftover `bin` or `obj` in an older
+checkout is not a package.
 
 **What a consumer does.** Nothing: no surface moves, so `STABILITY.md` has no entry and the version stays `0.47.0`.
 
