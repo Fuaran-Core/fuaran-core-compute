@@ -54,8 +54,10 @@
          bounds move from the t table's quantile to the pinned function's), released as `v0.45.0`.
          0.45.0 is tagged, so Phase 724's breaking change (the substrate at Core 0.45.0: the
          pipeline-query registry's declarations are a `QueryRegistry<unit>`, and the pipeline-query codec
-         writes only a declaration the substrate's gate admits) advanced the slot to 0.46.0, a DRAFT. -->
-    <Version>0.46.0</Version>
+         writes only a declaration the substrate's gate admits) advanced the slot to 0.46.0, released as
+         `v0.46.0`. 0.46.0 is tagged, so Phase 725's addition (the pinned sine, cosine and arc tangents
+         of Fuaran.Compute.Elementary) advanced the slot to 0.47.0, a DRAFT. -->
+    <Version>0.47.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

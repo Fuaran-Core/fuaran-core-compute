@@ -1,5 +1,145 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-23 — D84: sine, cosine and the two arc tangents are pinned in `Elementary` — `sin`, `cos`, `sinCos`, `atan` and `atan2`, each behind a table published as data; the argument is reduced exactly at every finite double, by three pieces of `π/2` up to `2²⁰` and by the digits of `2/π` beyond, so no bound ships; the kernels are the ones `Special`'s reflections were built on, moved, so no bit of `Special` moves; each form chosen by measurement against a fifty-digit reference, and every function is within one unit in the last place over the sample
+
+**Context.** Phase 725. `Fuaran.Compute.Elementary` pinned `exp`, `ln`, `log10`, `pow`, `erfc` and the special
+functions (D52, D58, D78) and published no trigonometric function. Its `Special` module held a sine and a cosine kernel
+for `|y| ≤ π/4`, private to the reflection formulas. A rotation is built from the sine and cosine of half its angle and
+its angle is read back through `atan2`, so a geometric algebra over this package needs all three pinned, or every
+rotation it computes is the host's answer and not the library's. The functions have other readers (a seasonal term, a
+great-circle distance), so they belong here and not in a geometry package.
+
+**Premises read at take.** On `main` at `79716de`: `api/Fuaran.Compute.Elementary.txt` published no `sin`, `cos`,
+`atan` or `atan2`; `Special.fs` held the private `sinTaylor`, `cosTaylor`, `sinKernel` and `cosKernel` and one
+`(sin πx, cos πx)` pair over them; `v0.46.0` was tagged at that commit, so the slot was released and this phase opens
+`0.47.0`. All three held. Phase 623 (method cards) and Phase 666 (step vectors) had not shipped, so this phase adds
+neither a card nor a step vector: those phases' rosters gain these five functions.
+
+**Decision.**
+
+1. **The surface.** `Elementary.sin`, `Elementary.cos`, `Elementary.sinCos` (a struct pair from one reduction, `sin x`
+   and `cos x` bit for bit), `Elementary.atan` and `Elementary.atan2 y x`. Each is answered first by a table published
+   as data, as D43 and D52 did for the first four: `sinTable`, `cosTable`, `atanTable`, `atan2Table`. All nine have a
+   `Pinned` row in `ElementaryOperations.exactness`. Every path is `+ − × ÷` and comparisons over literal constants,
+   in one written order, with no fused multiply-add and no host mathematics call.
+
+2. **The tables.** A NaN operand answers NaN everywhere. `sin` and `cos` of an infinity are outside the reals
+   (`Undefined`; the functions answer NaN). `sin ±0` is `±0`; `cos` has no zero row, because the routine answers
+   exactly `1` there. `atan ±0` is `±0` and `atan ±∞` is `±π/2`. `atan2`'s table is IEEE 754's in full, every answer
+   taking the sign of `y`, a zero's included: a zero `y` answers a zero against a positive or `+0` `x` and `π` against
+   a negative or `−0` one; a zero `x` answers `π/2`; an infinite `y` answers `π/4`, `3π/4` or `π/2` as `x` is `+∞`,
+   `−∞` or finite; a finite `y` answers a zero against `+∞` and `π` against `−∞`. Each multiple of `π/4` is the double
+   nearest it. Unlike `pow`, whose table D43 made stricter than C99, `atan2` has no `Undefined` row: the angle of a
+   zero vector under each pair of signs is what IEEE 754 states, and a caller composing rotations reads it.
+
+3. **The reduction, which this phase decides by measurement.** Three forms were measured.
+   - *The cheaper one*: `π/2` in two pieces, eighty-six bits, with the remainder rounded to one double. Inside `2²⁰` it
+     is a third of a unit worse on an ordinary argument (1.3 to 1.4 against 0.8 to 0.9). At the doubles nearest
+     multiples of `π/2` the remainder is the difference of two nearly equal numbers and has no digits left: `6.6e8`
+     units. Beyond `2²⁰` its multiple of the first piece is no longer exact and the answer is noise. It is no quicker
+     than what ships (26.9 ns against 26.6).
+   - *The digits of `2/π` for every argument*: correct everywhere, and ten times dearer on an ordinary argument (260 ns
+     against 26 on .NET, 850 against 69 under node).
+   - *What ships*: both, each exact. Up to `π/4` the argument stands. Up to `2²⁰`, `π/2` is read in three pieces of
+     thirty-three bits and the double nearest what they leave, 152 bits in all; a multiple below `2²⁰` of each piece
+     is exact, each subtraction's rounding error is kept (Knuth's two-sum), and the remainder is a double and its
+     tail. Beyond `2²⁰` the argument is an integer below `2⁵³` times a power of two; the integer, in three limbs of
+     twenty-four bits, is multiplied by nine digits of `2/π` in base `2²⁴` (a table of fifty, 1200 bits), the first of
+     them the first whose products are not all multiples of eight. Every product and carry is an integer below `2⁵⁰`,
+     exact in a double on every host, and the product is known to `2⁻¹³⁷`; its fraction, taken to the nearer integer,
+     is multiplied by `π/2` as a double and its remainder.
+
+   So **no bound ships, and there is nothing the functions answer "beyond" one**: the remainder is exact to its tail at
+   every finite double. The double of all nearest a multiple of `π/2` (`6381956970095103 · 2⁷⁹⁷`, whose cosine is
+   `−4.687e-19`) and the largest double are vectors, and both answer their correctly rounded bits. `2²⁰` is where the
+   hand-over falls because a multiple of a thirty-three-bit piece is exact only below it. The pieces and the digits are
+   the ones fdlibm publishes (`pio2_1`, `pio2_2`, `pio2_3`, `pio2_3t`, and the head of its table of `2/π`); the
+   reference script generates them from `π` and they agree bit for bit.
+
+4. **The kernels: one, not two.** `Special`'s own Taylor polynomials (to `y¹⁹` and `y¹⁸`, the coefficients the doubles
+   nearest `±1/n!`, by Horner's rule in `y²`) moved to `Elementary` as the internal `sinKernel` and `cosKernel`, and
+   `Special`'s reflections read them. The candidate was fdlibm's minimax kernels (`k_sin.c`, `k_cos.c`). Within `π/4`
+   the worst sine is the same (0.658 units) and the worst cosines are 0.788 and 0.826: nothing to choose on accuracy.
+   The minimax kernels are quicker (six terms against nine). The Taylor kernels ship because they are the ones the
+   special functions' released answers were computed with, and a pinned function's bits are its contract.
+
+   Each kernel takes what the reduction leaves. `sinKernel y tail` joins the tail's first-order term before its one
+   last addition. `cosKernel y correction` adds its polynomial to one, then adds back the exact rounding error of that
+   addition (Dekker's, the first term being the larger) less the correction. Under a zero tail and a zero correction
+   both are, bit for bit, the expressions `Special` evaluated: a zero tail adds a zero, and the cosine's last sum is
+   then the first addition's true value, which rounds to the first addition's own answer. That is why no bit of
+   `Special` moves at ANY argument, not only at its vectors. `cos` passes the tail's term and what the rounding error
+   of `y²` moves the cosine by, which the kernel's own square cannot see. Without that second term the cosine measured
+   1.05 to 1.12 units beside `π/4`; with it, 0.83 to 0.90.
+
+5. **The reproduction is held three ways.** The 309 special-function vectors of `0.46.0` in
+   `conformance/laws/elementary-laws.json` are byte-identical, and the suite pins the SHA-256 of their `<id> <value>`
+   lines as the `v0.46.0` document holds them. `ElementaryLaws.laws` gains a law that runs on every host: twenty-four
+   reflection answers (`gammaLn`, `gamma` and `digamma` below zero, on both sides of the reflection's quarter and at
+   both parities) against the bits recorded at `0.46.0`. And the suite reads `Special.fs` and finds nothing declared
+   there that is named for a sine or a cosine.
+
+6. **`atan`** is fdlibm's `s_atan.c` with its published coefficients: five arms (the argument as it stands below
+   `7/16`; moved against `atan ½`, `atan 1` and `atan 3/2` up to `11/16`, `19/16` and `39/16`; against `π/2` beyond),
+   one odd polynomial with its even and odd halves summed apart, and each constant a double and its remainder joined
+   before the last addition. The candidate was three arms with the constant added after the polynomial is rounded:
+   1.43 units against 0.74.
+
+7. **`atan2`** is the arc tangent of `|y| / |x|` with two changes to fdlibm's `e_atan2.c`, each measured. The
+   quotient's remainder is carried (Dekker's two-product over operands scaled by one power of two where they lie
+   outside `2^±400`) and joins each arm's numerator as a tail, so the division's rounding does not reach the answer.
+   And where `x` is negative each arm reads `π` less its constant, as a double and its remainder, so the answer is
+   rounded once and not twice. fdlibm's form measured 1.2 units in both half-planes; this one 0.78 and 0.74. A quotient
+   below `2⁻²⁹` is its own arc tangent and one from `2⁶⁶` answers `π/2`. `atan2 y 1` is `atan y` bit for bit.
+
+8. **The reference.** `tests/Fuaran.Core.Compute.Tests/SpecialReference/trig_reference.py`: Python's standard library
+   only, exact rational and fixed-point integer arithmetic at 620 fractional bits and more, `π` by Machin's formula,
+   each value rounded once to the nearest double. It prints the constants `Elementary.fs` holds, computes the
+   references the vectors carry from the committed document, and scores a sample. Nothing is installed to run it. The
+   special functions' reference (D78) is mpmath; these three functions need no more than a series and an exact
+   subtraction, and a reference with no dependency can be re-run anywhere the suite can.
+
+9. **Accuracy, which is a measurement and not a theorem.** Over the 55,998-value seeded sample
+   (`benchmarks/results/2026-11-23-i7-8650u-phase-725.md`), in units in the last place of the correctly rounded value:
+
+   | function | range | max | 99th percentile |
+   |---|---|---:|---:|
+   | sin | within `π/4` | 0.66 | 0.52 |
+   | sin | to `2²⁰` | 0.80 | 0.58 |
+   | sin | `2²⁰` to the largest double | 0.82 | 0.58 |
+   | cos | within `π/4` | 0.83 | 0.59 |
+   | cos | to `2²⁰` | 0.90 | 0.57 |
+   | cos | `2²⁰` to the largest double | 0.76 | 0.56 |
+   | sin, cos | the doubles nearest multiples of `π/2` | 0.50 | 0.49 |
+   | atan | `2⁻⁴⁰` to `2⁷⁰` | 0.74 | 0.64 |
+   | atan2 | every quadrant, any exponent | 0.78 | 0.60 |
+
+   No answer in the sample is a whole unit from the true value, and none of the 120 referenced vectors is more than
+   one unit in the last place from its reference. A large argument is answered as accurately as a small one.
+
+10. **Cost.** About twice the host's own function on an ordinary argument (26 ns against 13 for `sin` and `cos` up to
+    `2²⁰` on .NET, 69 against 34 under node); `atan` at the host's cost and `atan2` a half more; ten times more beyond
+    `2²⁰`, where the digits reduce. `sinCos` is cheaper than the two calls it replaces (40 ns against 54).
+
+11. **The law vectors.** `elementary-laws.json` gains 169 vectors after `pow`'s: the tables' rows, `atan2`'s four
+    quadrants and both axes, arguments at and beside each reduction boundary (`π/4`, `2²⁰`, `2⁷⁹` where the digits'
+    first index moves, the edges of the arc tangent's arms, `2⁻²⁹` and `2⁶⁶`), the doubles nearest multiples of `π/2`,
+    large arguments to the largest double, and quotients that underflow and overflow. Three are go-red cases
+    (`*-reordered-polynomial-witness`): at `sin 0.512`, `cos 0.114` and `atan 0.36` the same coefficients summed in
+    another order answer another bit, and the suite shows it. The suite also shows the host's own function answers
+    other bits on at least one vector of each function, so a port that calls its host is seen.
+
+12. **What the pin guarantees, and what it does not** (`proofs.json`, `trigonometry-pinned-by-transcription`). A host
+    that transcribes the tables, the two reductions, the kernels and the arc tangent exactly answers the same bits:
+    the law vectors and 111,996 sample lines were byte-identical on .NET and under node. It does not say the answers
+    are correctly rounded: the accuracy above is measured over a sample.
+
+**Not here.** `tan`, `asin`, `acos` and the hyperbolic functions wait for a reader. The evaluator's scalar set
+(`ColExpr`) gains no `Sin` or `Cos`: that is a change to the pipeline wire specification, filed when a pipeline asks.
+
+**Version.** `v0.46.0` is tagged, so this addition advances the slot to `0.47.0`. Additive: no existing surface, wire
+byte or vector moves.
+
 ## 2026-11-16 — D83: a pipeline's bytes and its hash are a published specification — `Pipeline.hash` mints `compute-pipeline-sha256-v1` over the codec's canonical text, the specification's corpus is a build input the suite fails without, and a new `Transform` or `ColExpr` case lands in the codec, the text, the schema, the corpus and the manifest in one change-set
 
 **Context.** Phase 604 (Layer 1 of the model specification format plan). A pipeline's canonical bytes were written down

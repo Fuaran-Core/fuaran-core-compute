@@ -13,6 +13,10 @@
 /// patterns between `BEGIN elementary-samples` and `END` lines, so a checker with a high-precision
 /// reference can state each candidate's error in units in the last place and compare two hosts' lines
 /// byte for byte. `node Program.js <runs> elementary`, or the same program on .NET.
+///
+/// Phase 725 — the measurement behind DECISIONS.md D84: `sin`, `cos`, `sinCos`, `atan` and `atan2`
+/// against the host's own, by range, and against the candidates each choice was made between
+/// (`TrigCandidates`), in the same run, its sample between `BEGIN trig-samples` and `END trig-samples`.
 module Fuaran.Core.Compute.Benchmarks.ElementaryBench
 
 open System
@@ -555,6 +559,290 @@ let private passBinary (xys: (float * float)[]) (f: float -> float -> float) () 
 
     c
 
+// ---- Phase 725: sin, cos, sinCos, atan and atan2 (DECISIONS.md D84) -----------------------------------
+
+/// The forms the package's trigonometric functions were measured against and did not take, kept HERE
+/// and nowhere else. Each is a candidate for one choice D84 makes: the kernel, the reduction, the
+/// arc tangent's arms, and what `atan2` does with its quotient.
+module TrigCandidates =
+
+    let private s1 = -0.16666666666666632
+    let private s2 = 0.00833333333332249
+    let private s3 = -0.0001984126982985795
+    let private s4 = 2.7557313707070068e-06
+    let private s5 = -2.5050760253406863e-08
+    let private s6 = 1.58969099521155e-10
+    let private c1 = 0.0416666666666666
+    let private c2 = -0.001388888888887411
+    let private c3 = 2.480158728947673e-05
+    let private c4 = -2.7557314351390663e-07
+    let private c5 = 2.087572321298175e-09
+    let private c6 = -1.1359647557788195e-11
+
+    /// THE KERNEL: fdlibm's `k_sin.c`, a minimax polynomial to `x¹³`, for `|x| ≤ π/4`.
+    let sinMinimax (x: float) : float =
+        let z = x * x
+        let v = z * x
+        let r = s2 + z * (s3 + z * (s4 + z * (s5 + z * s6)))
+        x + v * (s1 + z * r)
+
+    /// THE KERNEL: fdlibm's `k_cos.c`, a minimax polynomial to `x¹⁴` and its split of `1 − x²/2`, for
+    /// `|x| ≤ π/4`.
+    let cosMinimax (x: float) : float =
+        let z = x * x
+        let r = z * (c1 + z * (c2 + z * (c3 + z * (c4 + z * (c5 + z * c6)))))
+        let ax = if x < 0.0 then -x else x
+
+        if ax < 0.3 then
+            1.0 - (0.5 * z - z * r)
+        else
+            // A quarter of `|x|` cut to twenty-one bits, as fdlibm cuts it by its high word.
+            let scale = if ax >= 0.5 then 2097152.0 else 4194304.0
+
+            let qx =
+                if ax > 0.78125 then
+                    0.28125
+                else
+                    0.25 * (floor (ax * scale) / scale)
+
+            let hz = 0.5 * z - qx
+            (1.0 - qx) - (hz - z * r)
+
+    let private quarterPi = 0.7853981633974483
+    let private twoOverPi = 0.6366197723675814
+    let private halfPiHigh = 1.5707963267341256
+    let private halfPiRest = 6.077100506506192e-11
+
+    /// THE REDUCTION: the cheaper one, `π/2` in two pieces and no tail kept, then the package's
+    /// kernels. It reads `π/2` to eighty-six bits and rounds the remainder to one double. The multiple
+    /// is held as a float, so that an argument past the integers' range is still answered the same
+    /// way on every host.
+    let private twoPieces (x: float) : struct (int * float) =
+        let fn = floor (x * twoOverPi + 0.5)
+        struct (int (fn - 4.0 * floor (fn * 0.25)), (x - fn * halfPiHigh) - fn * halfPiRest)
+
+    let sinTwoPieces (x: float) : float =
+        let ax = if x < 0.0 then -x else x
+
+        if ax <= quarterPi then
+            Elementary.sin x
+        else
+            let struct (n, r) = twoPieces ax
+
+            let v =
+                if n = 0 then Elementary.sin r
+                elif n = 1 then Elementary.cos r
+                elif n = 2 then -(Elementary.sin r)
+                else -(Elementary.cos r)
+
+            if x < 0.0 then -v else v
+
+    let cosTwoPieces (x: float) : float =
+        let ax = if x < 0.0 then -x else x
+
+        if ax <= quarterPi then
+            Elementary.cos x
+        else
+            let struct (n, r) = twoPieces ax
+
+            if n = 0 then Elementary.cos r
+            elif n = 1 then -(Elementary.sin r)
+            elif n = 2 then -(Elementary.cos r)
+            else Elementary.sin r
+
+    /// THE ARC TANGENT'S ARMS: three in place of five. Below `tan π/8` the argument stands; up to
+    /// `tan 3π/8` it is moved against `π/4`, and beyond against `π/2`; the constant and its remainder
+    /// are added to the polynomial's rounded answer.
+    let atanThreeArms (x: float) : float =
+        let ax = if x < 0.0 then -x else x
+
+        let v =
+            if ax < 0.41421356237309503 then
+                Elementary.atan ax
+            elif ax < 2.414213562373095 then
+                0.7853981633974483
+                + (Elementary.atan ((ax - 1.0) / (ax + 1.0)) + 3.061616997868383e-17)
+            else
+                1.5707963267948966 + (Elementary.atan (-1.0 / ax) + 6.123233995736766e-17)
+
+        if x < 0.0 then -v else v
+
+    /// THE QUOTIENT: `atan2` as fdlibm's `e_atan2.c` forms it, the arc tangent of the rounded quotient,
+    /// taken from `π` after it is rounded.
+    let atan2PlainQuotient (y: float) (x: float) : float =
+        let z = Elementary.atan ((if y < 0.0 then -y else y) / (if x < 0.0 then -x else x))
+
+        let v =
+            if x > 0.0 then
+                z
+            else
+                3.141592653589793 - (z - 1.2246467991473532e-16)
+
+        if y < 0.0 then -v else v
+
+let private signed (d: Draw) (x: float) : float = if d.Unit() < 0.5 then -x else x
+
+/// The `sin` and `cos` sample, by range: within `π/4`, where no reduction runs; to a hundred and to
+/// `2²⁰`, where the pieces of `π/2` reduce; beyond `2²⁰` to `2⁵³` and beyond `2⁵³` to the largest
+/// double, log-uniform, where the digits of `2/π` reduce; and the doubles nearest the first two
+/// thousand multiples of `π/2` with the double above each, where the remainder cancels.
+let private circularSamples (d: Draw) : (string * float[]) list =
+    [ "within-quarter-pi", [| for _ in 1..3000 -> d.Range -0.7853981633974483 0.7853981633974483 |]
+      "to-100", [| for _ in 1..3000 -> d.Range -100.0 100.0 |]
+      "to-2^20", [| for _ in 1..3000 -> d.Range -1048576.0 1048576.0 |]
+      "2^20-to-2^53", [| for _ in 1..3000 -> signed d (twoTo (20 + int (d.Range 0.0 33.0)) * d.Range 1.0 2.0) |]
+      "beyond-2^53", [| for _ in 1..3000 -> signed d (twoTo (53 + int (d.Range 0.0 970.0)) * d.Range 1.0 2.0) |]
+      "nearest-multiples",
+      [| for k in 1..2000 do
+             let x = float k * 1.5707963267948966
+             yield x
+             yield x + x * 2.220446049250313e-16 |] ]
+
+/// The `atan` sample: uniform over `[−4, 4]`, which every arm meets, and log-uniform from `2⁻⁴⁰` to
+/// `2⁷⁰` in both signs.
+let private atanSamples (d: Draw) : (string * float[]) list =
+    [ "within-four", [| for _ in 1..4000 -> d.Range -4.0 4.0 |]
+      "2^-40-to-2^70", [| for _ in 1..3000 -> signed d (twoTo (int (d.Range -40.0 70.0)) * d.Range 1.0 2.0) |] ]
+
+/// The `atan2` sample: points uniform over `[−3, 3]²`, apart by the sign of `x`, and points whose
+/// coordinates are anywhere in the exponent range and within `2⁴⁰` of each other.
+let private atan2Samples (d: Draw) : (string * (float * float)[]) list =
+    let square = [| for _ in 1..8000 -> d.Range -3.0 3.0, d.Range -3.0 3.0 |]
+
+    [ "x-positive", square |> Array.filter (fun (_, x) -> x > 0.0)
+      "x-negative", square |> Array.filter (fun (_, x) -> x < 0.0)
+      "any-exponent",
+      [| for _ in 1..3000 do
+             let y = twoTo (int (d.Range -1000.0 1000.0)) * d.Range 1.0 2.0
+             let x = signed d (y * twoTo (int (d.Range -40.0 40.0)) * d.Range 1.0 2.0)
+
+             if x - x = 0.0 && x <> 0.0 then
+                 yield signed d y, x |] ]
+
+let private sumOfPair (f: float -> struct (float * float)) (x: float) : float =
+    let struct (s, c) = f x
+    s + c
+
+/// The trigonometric functions' part of the run: nanoseconds per value for the pinned function and
+/// the host's over each range, the candidates beside them, then the sample with the package's answers
+/// and each candidate's between `BEGIN trig-samples` and `END trig-samples`, each line
+/// `<function>:<range>[:<candidate>] <operands> <answer>` as
+/// `tests/Fuaran.Core.Compute.Tests/SpecialReference/trig_reference.py check` reads it.
+let private runTrig (runs: int) : unit =
+    let d = Draw 725
+    let circular = circularSamples d
+    let arcs = atanSamples d
+    let points = atan2Samples d
+    printfn ""
+    printfn "### Trigonometric functions (Phase 725): ns per value, pinned against the host's"
+    printfn ""
+    printfn "| function | range | sample | pinned ns | host ns |"
+    printfn "|---|---|---:|---:|---:|"
+
+    let row name range n (pinned: unit -> float) (host: unit -> float) =
+        let pinnedNs, _ = perValue runs n pinned
+        let hostNs, _ = perValue runs n host
+        printfn "| %s | %s | %d | %.1f | %.1f |" name range n pinnedNs hostNs
+
+    for range, xs in circular do
+        row "sin" range xs.Length (passUnary xs Elementary.sin) (passUnary xs sin)
+
+    for range, xs in circular do
+        row "cos" range xs.Length (passUnary xs Elementary.cos) (passUnary xs cos)
+
+    for range, xs in circular do
+        row
+            "sinCos"
+            range
+            xs.Length
+            (passUnary xs (sumOfPair Elementary.sinCos))
+            (passUnary xs (fun x -> sin x + cos x))
+
+    for range, xs in arcs do
+        row "atan" range xs.Length (passUnary xs Elementary.atan) (passUnary xs atan)
+
+    for range, ps in points do
+        row "atan2" range ps.Length (passBinary ps Elementary.atan2) (passBinary ps atan2)
+
+    printfn ""
+    printfn "| candidate | range | sample | candidate ns | pinned ns |"
+    printfn "|---|---|---:|---:|---:|"
+
+    let within =
+        circular |> List.find (fun (range, _) -> range = "within-quarter-pi") |> snd
+
+    let hundred = circular |> List.find (fun (range, _) -> range = "to-100") |> snd
+    let four = arcs |> List.find (fun (range, _) -> range = "within-four") |> snd
+    let left = points |> List.find (fun (range, _) -> range = "x-negative") |> snd
+
+    row
+        "sin, the minimax kernel"
+        "within-quarter-pi"
+        within.Length
+        (passUnary within TrigCandidates.sinMinimax)
+        (passUnary within Elementary.sin)
+
+    row
+        "cos, the minimax kernel"
+        "within-quarter-pi"
+        within.Length
+        (passUnary within TrigCandidates.cosMinimax)
+        (passUnary within Elementary.cos)
+
+    row
+        "sin, two pieces and no tail"
+        "to-100"
+        hundred.Length
+        (passUnary hundred TrigCandidates.sinTwoPieces)
+        (passUnary hundred Elementary.sin)
+
+    row
+        "atan, three arms"
+        "within-four"
+        four.Length
+        (passUnary four TrigCandidates.atanThreeArms)
+        (passUnary four Elementary.atan)
+
+    row
+        "atan2, the rounded quotient"
+        "x-negative"
+        left.Length
+        (passBinary left TrigCandidates.atan2PlainQuotient)
+        (passBinary left Elementary.atan2)
+
+    printfn ""
+    printfn "BEGIN trig-samples"
+
+    for range, xs in circular do
+        for x in xs do
+            printfn "sin:%s %s %s" range (hex x) (hex (Elementary.sin x))
+            printfn "cos:%s %s %s" range (hex x) (hex (Elementary.cos x))
+
+            if range <> "within-quarter-pi" then
+                printfn "sin:%s:two-pieces %s %s" range (hex x) (hex (TrigCandidates.sinTwoPieces x))
+                printfn "cos:%s:two-pieces %s %s" range (hex x) (hex (TrigCandidates.cosTwoPieces x))
+            else
+                printfn "sin:%s:minimax-kernel %s %s" range (hex x) (hex (TrigCandidates.sinMinimax x))
+                printfn "cos:%s:minimax-kernel %s %s" range (hex x) (hex (TrigCandidates.cosMinimax x))
+
+    for range, xs in arcs do
+        for x in xs do
+            printfn "atan:%s %s %s" range (hex x) (hex (Elementary.atan x))
+            printfn "atan:%s:three-arms %s %s" range (hex x) (hex (TrigCandidates.atanThreeArms x))
+
+    for range, ps in points do
+        for y, x in ps do
+            printfn "atan2:%s %s %s %s" range (hex y) (hex x) (hex (Elementary.atan2 y x))
+
+            printfn
+                "atan2:%s:rounded-quotient %s %s %s"
+                range
+                (hex y)
+                (hex x)
+                (hex (TrigCandidates.atan2PlainQuotient y x))
+
+    printfn "END trig-samples"
+
 let run (runs: int) : unit =
     let d = Draw 593
     let xs = expSample d
@@ -614,3 +902,4 @@ let run (runs: int) : unit =
         printfn "pow %s %s %s %s" (hex x) (hex y) (hex (Elementary.pow x y)) (hex (CorrectlyRounded.pow x y))
 
     printfn "END elementary-samples"
+    runTrig runs

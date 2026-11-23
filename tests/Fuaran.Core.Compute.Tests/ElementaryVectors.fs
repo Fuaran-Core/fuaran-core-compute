@@ -14,6 +14,12 @@ namespace Fuaran.Compute.Tests
 //  as its IEEE-754 binary64 bit pattern, so a host compares its answer byte
 //  for byte.
 //
+//  Phase 725 (DECISIONS.md D84) adds the trigonometric vectors after pow's:
+//  sin, cos, sinCos, atan and atan2 over every row of their tables, atan2's
+//  quadrant boundaries, arguments at and beside each reduction boundary, large
+//  arguments, and one input per polynomial at which another order of evaluation
+//  answers another bit.
+//
 //  Fable-clean: the node leg (LinearAlgebraNode/) compiles this file and
 //  renders the same document under JavaScript, and the suite holds the two
 //  renderings and the committed file equal.
@@ -74,15 +80,39 @@ module ElementaryVectors =
         | "pow" ->
             let x, y = scalar c "x", scalar c "y"
             Elementary.powTable x y, Elementary.pow x y
+        | "sin" ->
+            let x = scalar c "x"
+            Elementary.sinTable x, Elementary.sin x
+        | "cos" ->
+            let x = scalar c "x"
+            Elementary.cosTable x, Elementary.cos x
+        | "atan" ->
+            let x = scalar c "x"
+            Elementary.atanTable x, Elementary.atan x
+        | "atan2" ->
+            let y, x = scalar c "y", scalar c "x"
+            Elementary.atan2Table y x, Elementary.atan2 y x
         | other -> failwithf "elementary vector %s: %s is not an elementary function" c.Id other
 
     let private elementaryCell (c: Case) : CorpusCell =
-        let table, answer = elementary c
+        if c.Op = "sinCos" then
+            // Phase 725: the pair, and what each function's own table said of the input.
+            let x = scalar c "x"
+            let struct (s, co) = Elementary.sinCos x
 
-        CorpusCell.Row
-            [ "verdict", CorpusFile.str "ok"
-              "value", CorpusFile.str (hex answer)
-              "table", CorpusFile.str (tableName table) ]
+            CorpusCell.Row
+                [ "verdict", CorpusFile.str "ok"
+                  "sin", CorpusFile.str (hex s)
+                  "cos", CorpusFile.str (hex co)
+                  "sinTable", CorpusFile.str (tableName (Elementary.sinTable x))
+                  "cosTable", CorpusFile.str (tableName (Elementary.cosTable x)) ]
+        else
+            let table, answer = elementary c
+
+            CorpusCell.Row
+                [ "verdict", CorpusFile.str "ok"
+                  "value", CorpusFile.str (hex answer)
+                  "table", CorpusFile.str (tableName table) ]
 
     /// The float whose bit pattern is these sixteen hex digits.
     let ofHex (h: string) : float =
@@ -114,6 +144,8 @@ module ElementaryVectors =
     /// The correctly rounded answer for every vector the routine computes, as its bit pattern: the
     /// true value to eighty decimal digits (Python's `decimal`: `exp`, `ln`, `log10`, and `pow` as
     /// `exp(y · ln x)`) rounded once to the nearest double. A vector the table answers carries none.
+    /// The trigonometric rows (Phase 725) are `SpecialReference/trig_reference.py references` over the
+    /// committed document: exact rational arithmetic to beyond fifty digits, rounded once.
     let references: (string * string) list =
         [ "exp-one", "4005bf0a8b145769"
           "exp-minus-one", "3fd78b56362cef38"
@@ -193,13 +225,134 @@ module ElementaryVectors =
           "pow-tenth-minus-300", "7e37e43c8800752c"
           "pow-negative-base-odd", "c020000000000000"
           "pow-negative-base-even", "4010000000000000"
-          "pow-negative-base-huge-even-exponent", "7ff0000000000000" ]
+          "pow-negative-base-huge-even-exponent", "7ff0000000000000"
+          "sin-min-subnormal", "0000000000000001"
+          "sin-1e-300", "01a56e1fc2f8f359"
+          "sin-1e-8", "3e45798ee2308c3a"
+          "sin-half", "3fdeaee8744b05f0"
+          "sin-one", "3feaed548f090cee"
+          "sin-minus-one", "bfeaed548f090cee"
+          "sin-below-quarter-pi", "3fe6a09e667f3bcc"
+          "sin-at-quarter-pi", "3fe6a09e667f3bcc"
+          "sin-above-quarter-pi", "3fe6a09e667f3bcd"
+          "sin-two", "3fed18f6ead1b446"
+          "sin-minus-two", "bfed18f6ead1b446"
+          "sin-three", "3fc210386db6d55b"
+          "sin-ten", "bfe1689ef5f34f52"
+          "sin-hundred", "bfe03425b78c4db8"
+          "sin-nearest-half-pi", "3ff0000000000000"
+          "sin-nearest-pi", "3ca1a62633145c07"
+          "sin-nearest-three-half-pi", "bff0000000000000"
+          "sin-nearest-two-pi", "bcb1a62633145c07"
+          "sin-nearest-1000-half-pi", "bd469e20a6f0f0ef"
+          "sin-below-two-to-20", "3fd526ccb2de52a8"
+          "sin-at-two-to-20", "3fd526ccb2fc8656"
+          "sin-above-two-to-20", "3fd526ccb338edb1"
+          "sin-1e10", "bfdf334c7896a4e3"
+          "sin-two-to-53", "bfeb2a66c8f35586"
+          "sin-1e22", "bfeb453ab76bf397"
+          "sin-minus-1e22", "3feb453ab76bf397"
+          "sin-two-to-78", "3fd05416f786511e"
+          "sin-two-to-79", "bfdf938236d3a45a"
+          "sin-1e300", "bfea2c16b010e385"
+          "sin-nearest-any-multiple", "3ff0000000000000"
+          "sin-max", "3f7452fc98b34e97"
+          "sin-reordered-polynomial-witness", "3fdf5ae0ca75ebaf"
+          "cos-zero", "3ff0000000000000"
+          "cos-negative-zero", "3ff0000000000000"
+          "cos-min-subnormal", "3ff0000000000000"
+          "cos-1e-300", "3ff0000000000000"
+          "cos-1e-8", "3ff0000000000000"
+          "cos-half", "3fec1528065b7d50"
+          "cos-one", "3fe14a280fb5068c"
+          "cos-minus-one", "3fe14a280fb5068c"
+          "cos-below-quarter-pi", "3fe6a09e667f3bcd"
+          "cos-at-quarter-pi", "3fe6a09e667f3bcd"
+          "cos-above-quarter-pi", "3fe6a09e667f3bcc"
+          "cos-two", "bfdaa22657537205"
+          "cos-minus-two", "bfdaa22657537205"
+          "cos-three", "bfefae04be85e5d2"
+          "cos-ten", "bfead9ac890c6b1f"
+          "cos-hundred", "3feb981dbf665fdf"
+          "cos-nearest-half-pi", "3c91a62633145c07"
+          "cos-nearest-pi", "bff0000000000000"
+          "cos-nearest-three-half-pi", "bcaa79394c9e8a0a"
+          "cos-nearest-two-pi", "3ff0000000000000"
+          "cos-nearest-1000-half-pi", "3ff0000000000000"
+          "cos-below-two-to-20", "3fee33ada9352c61"
+          "cos-at-two-to-20", "3fee33ada92fe2ae"
+          "cos-above-two-to-20", "3fee33ada9254f48"
+          "cos-1e10", "3febf098901c931a"
+          "cos-two-to-53", "bfe0e9918bb35aac"
+          "cos-1e22", "3fe0be2cef01c8f4"
+          "cos-minus-1e22", "3fe0be2cef01c8f4"
+          "cos-two-to-78", "bfeef0e51a24d003"
+          "cos-two-to-79", "3febd58607ead8f2"
+          "cos-1e300", "bfe2699022adc4c1"
+          "cos-nearest-any-multiple", "bc214ae72e6ba22f"
+          "cos-max", "bfefffe62ecfab75"
+          "cos-reordered-polynomial-witness", "3fefcad37551437f"
+          "atan-min-subnormal", "0000000000000001"
+          "atan-1e-300", "01a56e1fc2f8f359"
+          "atan-below-two-to-minus-29", "3e1fffffffffffff"
+          "atan-at-two-to-minus-29", "3e20000000000000"
+          "atan-quarter", "3fcf5b75f92c80dd"
+          "atan-reordered-polynomial-witness", "3fd61d9527631ea9"
+          "atan-below-seven-sixteenths", "3fda64eec3cc23fc"
+          "atan-at-seven-sixteenths", "3fda64eec3cc23fd"
+          "atan-half", "3fddac670561bb4f"
+          "atan-below-eleven-sixteenths", "3fe345f01cce37bb"
+          "atan-at-eleven-sixteenths", "3fe345f01cce37bb"
+          "atan-one", "3fe921fb54442d18"
+          "atan-minus-one", "bfe921fb54442d18"
+          "atan-below-nineteen-sixteenths", "3febde70ed439fe6"
+          "atan-at-nineteen-sixteenths", "3febde70ed439fe7"
+          "atan-three-halves", "3fef730bd281f69b"
+          "atan-below-thirty-nine-sixteenths", "3ff2e75728833a54"
+          "atan-at-thirty-nine-sixteenths", "3ff2e75728833a54"
+          "atan-ten", "3ff789bd2c160054"
+          "atan-minus-1e10", "bff921fb543d4de0"
+          "atan-below-two-to-66", "3ff921fb54442d18"
+          "atan-at-two-to-66", "3ff921fb54442d18"
+          "atan-max", "3ff921fb54442d18"
+          "atan2-first-diagonal", "3fe921fb54442d18"
+          "atan2-second-diagonal", "4002d97c7f3321d2"
+          "atan2-third-diagonal", "c002d97c7f3321d2"
+          "atan2-fourth-diagonal", "bfe921fb54442d18"
+          "atan2-first-quadrant", "3fe4978fa3269ee1"
+          "atan2-second-quadrant", "4003fc176b7a8560"
+          "atan2-third-quadrant", "c003fc176b7a8560"
+          "atan2-fourth-quadrant", "bfe4978fa3269ee1"
+          "atan2-beside-positive-x-axis", "01a56e1fc2f8f359"
+          "atan2-beside-negative-x-axis-above", "400921fb54442d18"
+          "atan2-beside-negative-x-axis-below", "c00921fb54442d18"
+          "atan2-beside-positive-y-axis", "3ff921fb54442d18"
+          "atan2-beside-positive-y-axis-left", "3ff921fb54442d18"
+          "atan2-beside-negative-y-axis", "bff921fb54442d18"
+          "atan2-quotient-underflows", "00000000000007e8"
+          "atan2-quotient-underflows-left", "400921fb54442d18"
+          "atan2-quotient-overflows", "3ff921fb54442d18"
+          "atan2-quotient-below-two-to-minus-29", "3e112e0be826d695"
+          "atan2-quotient-below-two-to-minus-29-left", "400921fb5421d100"
+          "atan2-subnormal-operands", "3fe4978fa3269ee1"
+          "atan2-huge-operands", "3fe4978fa3269ee1"
+          "atan2-huge-operands-left", "4003fc176b7a8560"
+          "atan2-tiny-operands", "c003fc176b7a8560"
+          "atan2-each-arm-a", "3fddac670561bb4f"
+          "atan2-each-arm-b", "3fef730bd281f69b"
+          "atan2-each-arm-c", "3ff4782cbabc8157"
+          "atan2-each-arm-c-left", "3ffdcbc9edcbd8da"
+          "atan2-one-third", "3fd4978fa3269ee1"
+          "atan2-one-third-left", "c0068f095fdf593c"
+          "atan2-three-minus-one", "3ffe47df3d0dd4d1"
+          "atan2-five-six", "3fe63b4bc3f16a8a" ]
 
     /// The reference cells of an elementary case that carries one: the correctly rounded bits and the
     /// package's distance from them in units in the last place.
     let private referenceCells (c: Case) : (string * CorpusCell) list =
         match references |> List.tryFind (fun (id, _) -> id = c.Id) with
         | None -> []
+        | Some _ when c.Op = "sinCos" -> []
         | Some(_, h) ->
             let _, answer = elementary c
 
@@ -215,6 +368,160 @@ module ElementaryVectors =
 
     let private case (id: string) (op: string) (input: (string * float) list) : Case =
         { Id = id; Op = op; Input = input }
+
+    // ---- Phase 725 (DECISIONS.md D84): the trigonometric vectors ----
+
+    /// The arguments `sin` and `cos` are both asked: the table's rows; tiny arguments; `π/4`, where
+    /// the reduction starts, and the doubles beside it; the doubles nearest multiples of `π/2`, where
+    /// the remainder cancels; `2²⁰`, where the pieces of `π/2` hand over to the digits of `2/π`, and
+    /// the doubles beside it; `2⁷⁸` and `2⁷⁹`, where the digits' first index moves from zero; and
+    /// large arguments, among them the double of all nearest a multiple of `π/2`
+    /// (`6381956970095103 · 2⁷⁹⁷`) and the largest.
+    let private circular: (string * float) list =
+        [ "zero", 0.0
+          "negative-zero", -0.0
+          "infinity", inf
+          "negative-infinity", -inf
+          "nan", nan
+          "min-subnormal", tiny
+          "1e-300", 1e-300
+          "1e-8", 1e-08
+          "half", 0.5
+          "one", 1.0
+          "minus-one", -1.0
+          "below-quarter-pi", 0.7853981633974482
+          "at-quarter-pi", 0.7853981633974483
+          "above-quarter-pi", 0.7853981633974484
+          "two", 2.0
+          "minus-two", -2.0
+          "three", 3.0
+          "ten", 10.0
+          "hundred", 100.0
+          "nearest-half-pi", 1.5707963267948966
+          "nearest-pi", 3.141592653589793
+          "nearest-three-half-pi", 4.71238898038469
+          "nearest-two-pi", 6.283185307179586
+          "nearest-1000-half-pi", 1570.7963267948965
+          "below-two-to-20", 1048575.9999999999
+          "at-two-to-20", 1048576.0
+          "above-two-to-20", 1048576.0000000002
+          "1e10", 10000000000.0
+          "two-to-53", 9007199254740992.0
+          "1e22", 1e+22
+          "minus-1e22", -1e+22
+          "two-to-78", 3.022314549036573e+23
+          "two-to-79", 6.044629098073146e+23
+          "1e300", 1e+300
+          "nearest-any-multiple", 5.319372648326541e+255
+          "max", Double.MaxValue ]
+
+    /// The trigonometric cases, in file order: `sin` and `cos` over `circular` and each at the input
+    /// where its polynomial summed in another order answers another bit; `sinCos` over a part of it;
+    /// `atan` over its table, its tiny and huge arms and each boundary between its five arms, with the
+    /// same witness; `atan2` over every row of IEEE 754's table, the four quadrants, quotients that
+    /// underflow and overflow, and operands at both ends of the exponent range.
+    let private trigCases: Case list =
+        (circular |> List.map (fun (name, x) -> case ("sin-" + name) "sin" [ "x", x ]))
+        @ [ case "sin-reordered-polynomial-witness" "sin" [ "x", 0.512 ] ]
+        @ (circular |> List.map (fun (name, x) -> case ("cos-" + name) "cos" [ "x", x ]))
+        @ [ case "cos-reordered-polynomial-witness" "cos" [ "x", 0.114 ] ]
+        @ ([ "zero"
+             "negative-zero"
+             "infinity"
+             "nan"
+             "one"
+             "minus-two"
+             "above-quarter-pi"
+             "nearest-pi"
+             "above-two-to-20"
+             "1e22"
+             "nearest-any-multiple" ]
+           |> List.map (fun name ->
+               case ("sincos-" + name) "sinCos" [ "x", circular |> List.find (fun (n, _) -> n = name) |> snd ]))
+        @ [ case "atan-zero" "atan" [ "x", 0.0 ]
+            case "atan-negative-zero" "atan" [ "x", -0.0 ]
+            case "atan-infinity" "atan" [ "x", inf ]
+            case "atan-negative-infinity" "atan" [ "x", -inf ]
+            case "atan-nan" "atan" [ "x", nan ]
+            case "atan-min-subnormal" "atan" [ "x", tiny ]
+            case "atan-1e-300" "atan" [ "x", 1e-300 ]
+            case "atan-below-two-to-minus-29" "atan" [ "x", 1.8626451492309568e-09 ]
+            case "atan-at-two-to-minus-29" "atan" [ "x", 1.862645149230957e-09 ]
+            case "atan-quarter" "atan" [ "x", 0.25 ]
+            case "atan-reordered-polynomial-witness" "atan" [ "x", 0.36 ]
+            case "atan-below-seven-sixteenths" "atan" [ "x", 0.43749999999999994 ]
+            case "atan-at-seven-sixteenths" "atan" [ "x", 0.4375 ]
+            case "atan-half" "atan" [ "x", 0.5 ]
+            case "atan-below-eleven-sixteenths" "atan" [ "x", 0.6874999999999999 ]
+            case "atan-at-eleven-sixteenths" "atan" [ "x", 0.6875 ]
+            case "atan-one" "atan" [ "x", 1.0 ]
+            case "atan-minus-one" "atan" [ "x", -1.0 ]
+            case "atan-below-nineteen-sixteenths" "atan" [ "x", 1.1874999999999998 ]
+            case "atan-at-nineteen-sixteenths" "atan" [ "x", 1.1875 ]
+            case "atan-three-halves" "atan" [ "x", 1.5 ]
+            case "atan-below-thirty-nine-sixteenths" "atan" [ "x", 2.4374999999999996 ]
+            case "atan-at-thirty-nine-sixteenths" "atan" [ "x", 2.4375 ]
+            case "atan-ten" "atan" [ "x", 10.0 ]
+            case "atan-minus-1e10" "atan" [ "x", -10000000000.0 ]
+            case "atan-below-two-to-66" "atan" [ "x", 7.37869762948382e+19 ]
+            case "atan-at-two-to-66" "atan" [ "x", 7.378697629483821e+19 ]
+            case "atan-max" "atan" [ "x", Double.MaxValue ]
+            case "atan2-zero-zero" "atan2" [ "y", 0.0; "x", 0.0 ]
+            case "atan2-zero-negative-zero" "atan2" [ "y", 0.0; "x", -0.0 ]
+            case "atan2-negative-zero-zero" "atan2" [ "y", -0.0; "x", 0.0 ]
+            case "atan2-negative-zero-negative-zero" "atan2" [ "y", -0.0; "x", -0.0 ]
+            case "atan2-zero-positive" "atan2" [ "y", 0.0; "x", 1.0 ]
+            case "atan2-negative-zero-positive" "atan2" [ "y", -0.0; "x", 1.0 ]
+            case "atan2-zero-negative" "atan2" [ "y", 0.0; "x", -1.0 ]
+            case "atan2-negative-zero-negative" "atan2" [ "y", -0.0; "x", -1.0 ]
+            case "atan2-positive-zero" "atan2" [ "y", 1.0; "x", 0.0 ]
+            case "atan2-positive-negative-zero" "atan2" [ "y", 1.0; "x", -0.0 ]
+            case "atan2-negative-zero-x" "atan2" [ "y", -1.0; "x", 0.0 ]
+            case "atan2-negative-negative-zero-x" "atan2" [ "y", -1.0; "x", -0.0 ]
+            case "atan2-infinity-infinity" "atan2" [ "y", inf; "x", inf ]
+            case "atan2-infinity-negative-infinity" "atan2" [ "y", inf; "x", -inf ]
+            case "atan2-negative-infinity-infinity" "atan2" [ "y", -inf; "x", inf ]
+            case "atan2-negative-infinity-negative-infinity" "atan2" [ "y", -inf; "x", -inf ]
+            case "atan2-infinity-finite" "atan2" [ "y", inf; "x", -3.0 ]
+            case "atan2-negative-infinity-finite" "atan2" [ "y", -inf; "x", 3.0 ]
+            case "atan2-finite-infinity" "atan2" [ "y", 2.0; "x", inf ]
+            case "atan2-negative-finite-infinity" "atan2" [ "y", -2.0; "x", inf ]
+            case "atan2-finite-negative-infinity" "atan2" [ "y", 2.0; "x", -inf ]
+            case "atan2-negative-finite-negative-infinity" "atan2" [ "y", -2.0; "x", -inf ]
+            case "atan2-nan-y" "atan2" [ "y", nan; "x", 1.0 ]
+            case "atan2-nan-x" "atan2" [ "y", 1.0; "x", nan ]
+            case "atan2-nan-zero" "atan2" [ "y", nan; "x", 0.0 ]
+            case "atan2-first-diagonal" "atan2" [ "y", 1.0; "x", 1.0 ]
+            case "atan2-second-diagonal" "atan2" [ "y", 1.0; "x", -1.0 ]
+            case "atan2-third-diagonal" "atan2" [ "y", -1.0; "x", -1.0 ]
+            case "atan2-fourth-diagonal" "atan2" [ "y", -1.0; "x", 1.0 ]
+            case "atan2-first-quadrant" "atan2" [ "y", 3.0; "x", 4.0 ]
+            case "atan2-second-quadrant" "atan2" [ "y", 3.0; "x", -4.0 ]
+            case "atan2-third-quadrant" "atan2" [ "y", -3.0; "x", -4.0 ]
+            case "atan2-fourth-quadrant" "atan2" [ "y", -3.0; "x", 4.0 ]
+            case "atan2-beside-positive-x-axis" "atan2" [ "y", 1e-300; "x", 1.0 ]
+            case "atan2-beside-negative-x-axis-above" "atan2" [ "y", 1e-300; "x", -1.0 ]
+            case "atan2-beside-negative-x-axis-below" "atan2" [ "y", -1e-300; "x", -1.0 ]
+            case "atan2-beside-positive-y-axis" "atan2" [ "y", 1.0; "x", 1e-300 ]
+            case "atan2-beside-positive-y-axis-left" "atan2" [ "y", 1.0; "x", -1e-300 ]
+            case "atan2-beside-negative-y-axis" "atan2" [ "y", -1.0; "x", 1e-300 ]
+            case "atan2-quotient-underflows" "atan2" [ "y", 1e-310; "x", 10000000000.0 ]
+            case "atan2-quotient-underflows-left" "atan2" [ "y", 1e-310; "x", -10000000000.0 ]
+            case "atan2-quotient-overflows" "atan2" [ "y", 1e+300; "x", 1e-300 ]
+            case "atan2-quotient-below-two-to-minus-29" "atan2" [ "y", 1e-09; "x", 1.0 ]
+            case "atan2-quotient-below-two-to-minus-29-left" "atan2" [ "y", 1e-09; "x", -1.0 ]
+            case "atan2-subnormal-operands" "atan2" [ "y", 1.5e-323; "x", 2e-323 ]
+            case "atan2-huge-operands" "atan2" [ "y", 1.2e+308; "x", 1.6e+308 ]
+            case "atan2-huge-operands-left" "atan2" [ "y", 1.2e+308; "x", -1.6e+308 ]
+            case "atan2-tiny-operands" "atan2" [ "y", -3e-300; "x", -4e-300 ]
+            case "atan2-each-arm-a" "atan2" [ "y", 1.0; "x", 2.0 ]
+            case "atan2-each-arm-b" "atan2" [ "y", 3.0; "x", 2.0 ]
+            case "atan2-each-arm-c" "atan2" [ "y", 10.0; "x", 3.0 ]
+            case "atan2-each-arm-c-left" "atan2" [ "y", 10.0; "x", -3.0 ]
+            case "atan2-one-third" "atan2" [ "y", 1.0; "x", 3.0 ]
+            case "atan2-one-third-left" "atan2" [ "y", -1.0; "x", -3.0 ]
+            case "atan2-three-minus-one" "atan2" [ "y", 3.0; "x", -1.0 ]
+            case "atan2-five-six" "atan2" [ "y", 5.0; "x", 6.0 ] ]
 
     /// Every authored case, in file order.
     let cases: Case list =
@@ -328,6 +635,7 @@ module ElementaryVectors =
           case "pow-minus-one-infinity" "pow" [ "x", -1.0; "y", inf ]
           case "pow-anything-zero" "pow" [ "x", -7.5; "y", 0.0 ]
           case "pow-zero-zero" "pow" [ "x", 0.0; "y", 0.0 ] ]
+        @ trigCases
 
     let private caseCell (c: Case) : CorpusCell =
         CorpusCell.Row(
@@ -414,7 +722,16 @@ module ElementaryVectors =
         + "`undefined`), compared byte for byte; a vector the routine computed also carries `reference`, the "
         + "correctly rounded bits of the true value, and `ulps`, the package's distance from it in units in "
         + "the last place, which is at most one on every such vector (DECISIONS.md D52) and is itself part "
-        + "of the document a host must reproduce."
+        + "of the document a host must reproduce. Phase 725 (DECISIONS.md D84) adds `sin`, `cos`, `atan` and "
+        + "`atan2` in the same form (`atan2` over `y` then `x`), each answered first by its own table: the "
+        + "rows of those tables, the four quadrants and both axes of `atan2`, arguments at and beside each "
+        + "boundary of a reduction (a quarter of pi, two to the twentieth, where the pieces of half pi hand "
+        + "over to the digits of two over pi, and the edges of the arc tangent's five arms), the doubles "
+        + "nearest multiples of half pi, large arguments up to the largest double, and for each of the "
+        + "three polynomials one vector (`*-reordered-polynomial-witness`) at which the same coefficients "
+        + "summed in another order answer another bit. A vector whose `op` is `sinCos` answers `{ verdict: "
+        + "ok, sin, cos, sinTable, cosTable }`, the pair `Elementary.sinCos` returns, which is `sin x` and "
+        + "`cos x` bit for bit, and what each function's table said."
 
     /// The family's document as the one corpus writer renders it: this module's head and vectors, then
     /// the head members and vectors the special functions add (Phase 631, `SpecialVectors.render`, the

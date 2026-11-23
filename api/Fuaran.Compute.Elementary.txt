@@ -10,6 +10,12 @@ field Fuaran.Compute.Elementary.SpecialValue+Tags.Compute : System.Int32 (litera
 field Fuaran.Compute.Elementary.SpecialValue+Tags.NaN : System.Int32 (literal)
 field Fuaran.Compute.Elementary.SpecialValue+Tags.Undefined : System.Int32 (literal)
 field Fuaran.Compute.Elementary.SpecialValue+Tags.Value : System.Int32 (literal)
+method Fuaran.Compute.Elementary.Elementary.atan(System.Double) : System.Double
+method Fuaran.Compute.Elementary.Elementary.atan2(System.Double, System.Double) : System.Double
+method Fuaran.Compute.Elementary.Elementary.atan2Table(System.Double, System.Double) : Fuaran.Compute.Elementary.SpecialValue
+method Fuaran.Compute.Elementary.Elementary.atanTable(System.Double) : Fuaran.Compute.Elementary.SpecialValue
+method Fuaran.Compute.Elementary.Elementary.cos(System.Double) : System.Double
+method Fuaran.Compute.Elementary.Elementary.cosTable(System.Double) : Fuaran.Compute.Elementary.SpecialValue
 method Fuaran.Compute.Elementary.Elementary.erfc(System.Double) : System.Double
 method Fuaran.Compute.Elementary.Elementary.exp(System.Double) : System.Double
 method Fuaran.Compute.Elementary.Elementary.expTable(System.Double) : Fuaran.Compute.Elementary.SpecialValue
@@ -21,6 +27,9 @@ method Fuaran.Compute.Elementary.Elementary.normalDensity(System.Double) : Syste
 method Fuaran.Compute.Elementary.Elementary.normalQuantile(System.Double) : System.Double
 method Fuaran.Compute.Elementary.Elementary.pow(System.Double, System.Double) : System.Double
 method Fuaran.Compute.Elementary.Elementary.powTable(System.Double, System.Double) : Fuaran.Compute.Elementary.SpecialValue
+method Fuaran.Compute.Elementary.Elementary.sin(System.Double) : System.Double
+method Fuaran.Compute.Elementary.Elementary.sinCos(System.Double) : System.ValueTuple`2<System.Double, System.Double>
+method Fuaran.Compute.Elementary.Elementary.sinTable(System.Double) : Fuaran.Compute.Elementary.SpecialValue
 method Fuaran.Compute.Elementary.ElementaryLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
 method Fuaran.Compute.Elementary.ElementaryOperations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.Elementary.ElementaryOperations+Exactness>
 method Fuaran.Compute.Elementary.Rng.below(Fuaran.Compute.Elementary.Rng+Stream, System.Int32) : System.Int32

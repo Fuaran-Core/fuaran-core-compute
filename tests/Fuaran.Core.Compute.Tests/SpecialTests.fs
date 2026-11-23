@@ -8,7 +8,9 @@ module Fuaran.Compute.Tests.SpecialTests
 //     its function's recorded bound of it;
 //   * the vectors answer what was worked by hand;
 //   * the source reaches no host mathematics call;
-//   * `Special` is declared once across the packages.
+//   * `Special` is declared once across the packages;
+//   * every vector recorded at 0.46.0 answers the bits it answered then, and
+//     the module holds no sine or cosine kernel of its own (Phase 725).
 //
 //  The identity laws are `ElementaryLaws.laws`, which ElementaryTests runs on
 //  .NET and the node leg runs under Fable; the byte comparison of the document
@@ -301,4 +303,42 @@ let tests =
                   |> Array.map (fun path -> Path.GetFileName(Path.GetDirectoryName path) + "/" + Path.GetFileName path)
                   |> List.ofArray
 
-              Expect.equal declaring [ "Fuaran.Compute.Elementary/Special.fs" ] "one declaration of Special" ]
+              Expect.equal declaring [ "Fuaran.Compute.Elementary/Special.fs" ] "one declaration of Special"
+
+          testCase "every special vector recorded at 0.46.0 answers the bits it answered then (Phase 725)"
+          <| fun () ->
+              // Phase 725 moved the reflections' sine and cosine kernels into `Elementary`, where `sin`
+              // and `cos` read them (DECISIONS.md D84). The 309 vectors of 0.46.0 are the first 309 here
+              // (a later vector is appended, never inserted), and the digest is the SHA-256 of their
+              // `<id> <value>` lines as the document of the `v0.46.0` tag holds them.
+              let recorded = 309
+              Expect.isGreaterThanOrEqual SpecialVectors.cases.Length recorded "the recorded vectors are all here"
+
+              let lines =
+                  SpecialVectors.cases
+                  |> List.truncate recorded
+                  |> List.map (fun c -> sprintf "%s %s\n" c.Id (ElementaryVectors.hex (SpecialVectors.answer c)))
+                  |> String.concat ""
+
+              let digest =
+                  Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes lines)
+                  |> Convert.ToHexString
+
+              Expect.equal
+                  (digest.ToLowerInvariant())
+                  "e4a21e1197b1c139c36ee3be41ba5159ab2e29f832f7c8ce7167d100bdefebe0"
+                  "no special vector moved a bit when the kernels moved"
+
+          testCase "Special holds no sine or cosine kernel of its own: it reads Elementary's (Phase 725)"
+          <| fun () ->
+              let source =
+                  File.ReadAllText(Snapshots.repoFile (Path.Combine("src", "Fuaran.Compute.Elementary", "Special.fs")))
+
+              let own =
+                  Text.RegularExpressions.Regex.Matches(source, @"let\s+(private\s+|internal\s+)?(sin|cos)\w*")
+                  |> Seq.map (fun m -> m.Value)
+                  |> List.ofSeq
+
+              Expect.isEmpty own "Special declares nothing named for a sine or a cosine"
+              Expect.stringContains source "Elementary.sinKernel" "the reflections read Elementary's sine kernel"
+              Expect.stringContains source "Elementary.cosKernel" "the reflections read Elementary's cosine kernel" ]

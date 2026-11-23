@@ -11,6 +11,9 @@ module Fuaran.Compute.Tests.ElementaryTests
 //     computed vector within one ulp of its correctly rounded reference.
 //   * The source reaches no host mathematics call.
 //   * `ElementaryOperations.exactness` is the published operation set, both ways.
+//   * Phase 725 (DECISIONS.md D84): the trigonometric vectors answer what was
+//     worked by hand, `sinCos` is the pair of `sin` and `cos`, and each
+//     polynomial summed in another order answers another bit at its witness.
 // ---------------------------------------------------------------------------
 
 open System
@@ -146,6 +149,176 @@ let tests =
 
               Expect.isNonEmpty differing "the host's libm and the pinned routine differ somewhere on the vectors"
 
+          testCase
+              "the host's own libm answers other bits on at least one trigonometric vector of each function (Phase 725)"
+          <| fun () ->
+              for op, pinned, host in
+                  [ "sin",
+                    (fun (c: ElementaryVectors.Case) -> Elementary.sin (snd c.Input.Head)),
+                    (fun x _ -> Math.Sin x)
+                    "cos", (fun c -> Elementary.cos (snd c.Input.Head)), (fun x _ -> Math.Cos x)
+                    "atan", (fun c -> Elementary.atan (snd c.Input.Head)), (fun x _ -> Math.Atan x)
+                    "atan2",
+                    (fun c -> Elementary.atan2 (snd c.Input.Head) (snd c.Input.Tail.Head)),
+                    (fun y x -> Math.Atan2(y, x)) ] do
+                  let differing =
+                      ElementaryVectors.cases
+                      |> List.filter (fun c -> c.Op = op)
+                      |> List.filter (fun c ->
+                          let first = snd c.Input.Head
+                          let second = if c.Input.Length > 1 then snd c.Input.Tail.Head else 0.0
+                          let ours = pinned c
+                          let theirs = host first second
+                          not (Double.IsNaN ours) && not (Double.IsNaN theirs) && bits ours <> bits theirs)
+
+                  Expect.isNonEmpty differing (sprintf "the host's %s differs from the pinned one on a vector" op)
+
+          testCase "the trigonometric vectors answer what was worked by hand (Phase 725)"
+          <| fun () ->
+              let has (id: string) (fragment: string) =
+                  Expect.stringContains (lineOf id) fragment (sprintf "%s answers %s" id fragment)
+
+              let h = ElementaryVectors.hex
+
+              let valued (x: float) =
+                  sprintf "\"value\": \"%s\", \"table\": \"value\"" (h x)
+
+              let computed (x: float) =
+                  sprintf "\"value\": \"%s\", \"table\": \"compute\"" (h x)
+
+              has "sin-zero" (valued 0.0)
+              has "sin-negative-zero" (valued -0.0)
+              has "sin-infinity" "\"value\": \"nan\", \"table\": \"undefined\""
+              has "sin-nan" "\"value\": \"nan\", \"table\": \"nan\""
+              has "sin-min-subnormal" (computed Double.Epsilon)
+              has "sin-nearest-any-multiple" (computed 1.0)
+              has "cos-zero" (computed 1.0)
+              has "cos-negative-infinity" "\"value\": \"nan\", \"table\": \"undefined\""
+              has "cos-nearest-any-multiple" (computed -4.687165924254628e-19)
+              has "sin-1e22" (computed -0.8522008497671888)
+              has "atan-negative-zero" (valued -0.0)
+              has "atan-infinity" (valued 1.5707963267948966)
+              has "atan-negative-infinity" (valued -1.5707963267948966)
+              has "atan-one" (computed 0.7853981633974483)
+              has "atan-max" (computed 1.5707963267948966)
+              has "atan2-zero-zero" (valued 0.0)
+              has "atan2-zero-negative-zero" (valued 3.141592653589793)
+              has "atan2-negative-zero-zero" (valued -0.0)
+              has "atan2-negative-zero-negative-zero" (valued -3.141592653589793)
+              has "atan2-negative-zero-x" (valued -1.5707963267948966)
+              has "atan2-infinity-negative-infinity" (valued 2.356194490192345)
+              has "atan2-negative-finite-infinity" (valued -0.0)
+              has "atan2-finite-negative-infinity" (valued 3.141592653589793)
+              has "atan2-nan-zero" "\"value\": \"nan\", \"table\": \"nan\""
+              has "atan2-first-diagonal" (computed 0.7853981633974483)
+              has "atan2-second-diagonal" (computed 2.356194490192345)
+              has "atan2-third-diagonal" (computed -2.356194490192345)
+              has "atan2-beside-negative-x-axis-below" (computed -3.141592653589793)
+              has "atan2-quotient-overflows" (computed 1.5707963267948966)
+
+          testCase "a sinCos vector is its sin vector and its cos vector, bit for bit (Phase 725)"
+          <| fun () ->
+              let pairs = ElementaryVectors.cases |> List.filter (fun c -> c.Op = "sinCos")
+              Expect.isGreaterThan pairs.Length 8 "the pair is asked across the tables and the reductions"
+
+              for c in pairs do
+                  let x = snd c.Input.Head
+                  let line = lineOf c.Id
+
+                  Expect.stringContains
+                      line
+                      (sprintf
+                          "\"sin\": \"%s\", \"cos\": \"%s\""
+                          (ElementaryVectors.hex (Elementary.sin x))
+                          (ElementaryVectors.hex (Elementary.cos x)))
+                      (c.Id + " is the pair")
+
+          testCase
+              "a polynomial summed in another order answers another bit at its witness, so the byte comparison sees a transcription that reorders (Phase 725)"
+          <| fun () ->
+              // The same coefficients, each polynomial's even and odd halves summed apart (the sine's and
+              // the cosine's, which the package sums by Horner's rule), or by Horner's rule (the arc
+              // tangent's, which the package sums in halves). Each is as good a polynomial; none is the
+              // pinned order.
+              let s =
+                  [| -0.16666666666666666
+                     0.008333333333333333
+                     -0.0001984126984126984
+                     2.7557319223985893e-06
+                     -2.505210838544172e-08
+                     1.6059043836821613e-10
+                     -7.647163731819816e-13
+                     2.8114572543455206e-15
+                     -8.22063524662433e-18 |]
+
+              let c =
+                  [| -0.5
+                     0.041666666666666664
+                     -0.001388888888888889
+                     2.48015873015873e-05
+                     -2.755731922398589e-07
+                     2.08767569878681e-09
+                     -1.1470745597729725e-11
+                     4.779477332387385e-14
+                     -1.5619206968586225e-16 |]
+
+              let halves (k: float[]) (z: float) =
+                  let w = z * z
+                  let even = k[0] + w * (k[2] + w * (k[4] + w * (k[6] + w * k[8])))
+                  let odd = z * (k[1] + w * (k[3] + w * (k[5] + w * k[7])))
+                  even + odd
+
+              let sinReordered (y: float) =
+                  let z = y * y
+                  y + y * z * halves s z
+
+              let cosReordered (y: float) =
+                  let z = y * y
+                  1.0 + z * halves c z
+
+              let at =
+                  [| 0.3333333333333293
+                     -0.19999999999876483
+                     0.14285714272503466
+                     -0.11111110405462356
+                     0.09090887133436507
+                     -0.0769187620504483
+                     0.06661073137387531
+                     -0.058335701337905735
+                     0.049768779946159324
+                     -0.036531572744216916
+                     0.016285820115365782 |]
+
+              let atanReordered (x: float) =
+                  let z = x * x
+                  let mutable p = at[10]
+
+                  for i in 9..-1..0 do
+                      p <- p * z + at[i]
+
+                  x - x * (z * p)
+
+              for id, pinned, reordered in
+                  [ "sin-reordered-polynomial-witness", Elementary.sin, sinReordered
+                    "cos-reordered-polynomial-witness", Elementary.cos, cosReordered
+                    "atan-reordered-polynomial-witness", Elementary.atan, atanReordered ] do
+                  let x =
+                      ElementaryVectors.cases
+                      |> List.find (fun c -> c.Id = id)
+                      |> fun c -> snd c.Input.Head
+
+                  Expect.stringContains
+                      (lineOf id)
+                      (sprintf "\"value\": \"%s\"" (ElementaryVectors.hex (pinned x)))
+                      (id + " records the pinned order's bits")
+
+                  Expect.notEqual (bits (reordered x)) (bits (pinned x)) (id + ": the other order answers another bit")
+
+                  Expect.isLessThanOrEqual
+                      (ElementaryVectors.ulpsApart (reordered x) (pinned x))
+                      1L
+                      (id + ": and it is one unit away, a rounding and not a mistake")
+
           testCase "Elementary's and Rng's sources reach no host mathematics call"
           <| fun () ->
               // Phase 621: the generator's file is held to the same rule as the functions'.
@@ -159,7 +332,7 @@ let tests =
 
               let hostCall =
                   Text.RegularExpressions.Regex(
-                      @"Math\.(Exp|Log|Log10|Log2|Pow|Floor|Ceiling|Round|Truncate|FusedMultiplyAdd|ScaleB|ILogB|Sqrt|Cbrt)\b|\*\*"
+                      @"Math\.(Exp|Log|Log10|Log2|Pow|Floor|Ceiling|Round|Truncate|FusedMultiplyAdd|ScaleB|ILogB|Sqrt|Cbrt|Sin|Cos|Tan|Asin|Acos|Atan|Atan2|SinCos)\b|\*\*"
                   )
 
               let hits =
@@ -190,4 +363,4 @@ let tests =
                   (Some ElementaryOperations.Exactness.Pinned)
                   "a lookup"
 
-              Expect.equal (ElementaryOperations.exactnessOf "Elementary.sin") None "no such operation" ]
+              Expect.equal (ElementaryOperations.exactnessOf "Elementary.tan") None "no such operation" ]

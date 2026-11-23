@@ -38,6 +38,15 @@ module ElementaryOperations =
           "Elementary.normalCdf", Exactness.Pinned
           "Elementary.normalDensity", Exactness.Pinned
           "Elementary.normalQuantile", Exactness.Pinned
+          "Elementary.sinTable", Exactness.Pinned
+          "Elementary.cosTable", Exactness.Pinned
+          "Elementary.atanTable", Exactness.Pinned
+          "Elementary.atan2Table", Exactness.Pinned
+          "Elementary.sin", Exactness.Pinned
+          "Elementary.cos", Exactness.Pinned
+          "Elementary.sinCos", Exactness.Pinned
+          "Elementary.atan", Exactness.Pinned
+          "Elementary.atan2", Exactness.Pinned
           "Special.gammaLn", Exactness.Pinned
           "Special.gamma", Exactness.Pinned
           "Special.digamma", Exactness.Pinned

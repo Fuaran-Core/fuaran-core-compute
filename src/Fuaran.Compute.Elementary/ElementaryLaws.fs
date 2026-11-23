@@ -5,7 +5,8 @@ open System
 /// `elementaryLaws` (Phase 593; its own package since Phase 630): the laws the pinned elementary
 /// functions are held to, on whichever host runs them — every row of D43's special-value table and
 /// IEEE-754's edge rules answered as stated, `pow`'s exact cases byte for byte, and the inverses and
-/// functional equations within the bounds a one-ulp routine admits.
+/// functional equations within the bounds a one-ulp routine admits. Since Phase 725 the trigonometric
+/// functions' tables, exact symmetries and identities are held the same way.
 ///
 /// Every input is drawn by a pinned generator whose every step is an exact float operation, so a seed
 /// draws the same numbers on every host, and running the laws under Fable runs them over the same
@@ -588,6 +589,171 @@ module ElementaryLaws =
               bits (Special.inverseRegularizedBetaComplement a b qHigh) =
                   bits (Special.inverseRegularizedBeta a b (1.0 - qHigh)) ]
 
+    // ---- Phase 725 (DECISIONS.md D84): sin, cos, sinCos, atan and atan2 ----
+
+    /// Every row of the four trigonometric tables and IEEE 754's edge rules, each answered as stated
+    /// (D84 item 2): a NaN propagates, an infinity is outside the reals for `sin` and `cos`, a zero
+    /// keeps its sign through `sin`, `atan` and `atan2`, and `atan2` answers IEEE 754's whole table,
+    /// each multiple of `π/4` the double nearest it.
+    let private trigTables (_: Draw) =
+        let nan = Double.NaN
+        let inf = Double.PositiveInfinity
+        let is (want: float) (x: float) = bits x = bits want
+        let pi = 3.141592653589793
+        let halfPi = 1.5707963267948966
+        let quarterPi = 0.7853981633974483
+        let threeQuarterPi = 2.356194490192345
+        let struct (sinZero, cosZero) = Elementary.sinCos -0.0
+        let struct (sinInf, cosInf) = Elementary.sinCos inf
+
+        firstFailure
+            "the tables"
+            [ "sinTable NaN", Elementary.sinTable nan = SpecialValue.NaN
+              "sinTable Inf", Elementary.sinTable inf = SpecialValue.Undefined
+              "sinTable -Inf", Elementary.sinTable -inf = SpecialValue.Undefined
+              "sinTable 0", Elementary.sinTable 0.0 = SpecialValue.Value 0.0
+              "sinTable the least subnormal", Elementary.sinTable Double.Epsilon = SpecialValue.Compute
+              "sinTable the largest double", Elementary.sinTable Double.MaxValue = SpecialValue.Compute
+              "cosTable NaN", Elementary.cosTable nan = SpecialValue.NaN
+              "cosTable -Inf", Elementary.cosTable -inf = SpecialValue.Undefined
+              "cosTable 0", Elementary.cosTable 0.0 = SpecialValue.Compute
+              "atanTable NaN", Elementary.atanTable nan = SpecialValue.NaN
+              "atanTable Inf", Elementary.atanTable inf = SpecialValue.Value halfPi
+              "atanTable 1", Elementary.atanTable 1.0 = SpecialValue.Compute
+              "atan2Table (NaN, 1)", Elementary.atan2Table nan 1.0 = SpecialValue.NaN
+              "atan2Table (1, NaN)", Elementary.atan2Table 1.0 nan = SpecialValue.NaN
+              "atan2Table (1, 1)", Elementary.atan2Table 1.0 1.0 = SpecialValue.Compute
+              "atan2Table (1, -1)", Elementary.atan2Table 1.0 -1.0 = SpecialValue.Compute
+              "sin NaN is the canonical NaN", canonicalNaNBits (Elementary.sin nan)
+              "sin Inf is the canonical NaN", canonicalNaNBits (Elementary.sin inf)
+              "sin -Inf is the canonical NaN", canonicalNaNBits (Elementary.sin -inf)
+              "sin 0 is +0", is 0.0 (Elementary.sin 0.0)
+              "sin -0 is -0", is -0.0 (Elementary.sin -0.0)
+              "sin of the least subnormal is itself", is Double.Epsilon (Elementary.sin Double.Epsilon)
+              "cos NaN is the canonical NaN", canonicalNaNBits (Elementary.cos nan)
+              "cos Inf is the canonical NaN", canonicalNaNBits (Elementary.cos inf)
+              "cos 0 is 1", is 1.0 (Elementary.cos 0.0)
+              "cos -0 is 1", is 1.0 (Elementary.cos -0.0)
+              "sinCos -0 is (-0, 1)", is -0.0 sinZero && is 1.0 cosZero
+              "sinCos Inf is (NaN, NaN)", canonicalNaNBits sinInf && canonicalNaNBits cosInf
+              "atan NaN is the canonical NaN", canonicalNaNBits (Elementary.atan nan)
+              "atan 0 is +0", is 0.0 (Elementary.atan 0.0)
+              "atan -0 is -0", is -0.0 (Elementary.atan -0.0)
+              "atan Inf is pi/2", is halfPi (Elementary.atan inf)
+              "atan -Inf is -pi/2", is -halfPi (Elementary.atan -inf)
+              "atan of the largest double is pi/2", is halfPi (Elementary.atan Double.MaxValue)
+              "atan 1 is pi/4", is quarterPi (Elementary.atan 1.0)
+              "atan2 (NaN, 1) is the canonical NaN", canonicalNaNBits (Elementary.atan2 nan 1.0)
+              "atan2 (1, NaN) is the canonical NaN", canonicalNaNBits (Elementary.atan2 1.0 nan)
+              "atan2 (+0, +0) is +0", is 0.0 (Elementary.atan2 0.0 0.0)
+              "atan2 (-0, +0) is -0", is -0.0 (Elementary.atan2 -0.0 0.0)
+              "atan2 (+0, -0) is pi", is pi (Elementary.atan2 0.0 -0.0)
+              "atan2 (-0, -0) is -pi", is -pi (Elementary.atan2 -0.0 -0.0)
+              "atan2 (+0, 2) is +0", is 0.0 (Elementary.atan2 0.0 2.0)
+              "atan2 (-0, 2) is -0", is -0.0 (Elementary.atan2 -0.0 2.0)
+              "atan2 (+0, -2) is pi", is pi (Elementary.atan2 0.0 -2.0)
+              "atan2 (-0, -2) is -pi", is -pi (Elementary.atan2 -0.0 -2.0)
+              "atan2 (2, +0) is pi/2", is halfPi (Elementary.atan2 2.0 0.0)
+              "atan2 (2, -0) is pi/2", is halfPi (Elementary.atan2 2.0 -0.0)
+              "atan2 (-2, +0) is -pi/2", is -halfPi (Elementary.atan2 -2.0 0.0)
+              "atan2 (-2, -0) is -pi/2", is -halfPi (Elementary.atan2 -2.0 -0.0)
+              "atan2 (Inf, Inf) is pi/4", is quarterPi (Elementary.atan2 inf inf)
+              "atan2 (-Inf, Inf) is -pi/4", is -quarterPi (Elementary.atan2 -inf inf)
+              "atan2 (Inf, -Inf) is 3pi/4", is threeQuarterPi (Elementary.atan2 inf -inf)
+              "atan2 (-Inf, -Inf) is -3pi/4", is -threeQuarterPi (Elementary.atan2 -inf -inf)
+              "atan2 (Inf, 2) is pi/2", is halfPi (Elementary.atan2 inf 2.0)
+              "atan2 (-Inf, -2) is -pi/2", is -halfPi (Elementary.atan2 -inf -2.0)
+              "atan2 (2, Inf) is +0", is 0.0 (Elementary.atan2 2.0 inf)
+              "atan2 (-2, Inf) is -0", is -0.0 (Elementary.atan2 -2.0 inf)
+              "atan2 (2, -Inf) is pi", is pi (Elementary.atan2 2.0 -inf)
+              "atan2 (-2, -Inf) is -pi", is -pi (Elementary.atan2 -2.0 -inf)
+              "atan2 (1, 1) is pi/4", is quarterPi (Elementary.atan2 1.0 1.0)
+              "atan2 (1, -1) is 3pi/4", is threeQuarterPi (Elementary.atan2 1.0 -1.0)
+              "atan2 (-1, -1) is -3pi/4", is -threeQuarterPi (Elementary.atan2 -1.0 -1.0)
+              "atan2 (-1, 1) is -pi/4", is -quarterPi (Elementary.atan2 -1.0 1.0) ]
+
+    /// The pair is the two functions and the symmetries are exact, bit for bit, at every magnitude:
+    /// `sinCos x` is `(sin x, cos x)`; `sin` and `atan` are odd and `cos` is even; `atan2` is odd in
+    /// `y`; and `atan2 y 1` is `atan y`.
+    let private trigSymmetries (d: Draw) =
+        let x = positive d -60 1000
+        let y = positive d -40 70
+        let w = positive d -40 40 * (if d.Unit() < 0.0 then -1.0 else 1.0)
+        let struct (s, c) = Elementary.sinCos x
+        let struct (sn, cn) = Elementary.sinCos -x
+
+        firstFailure
+            (sprintf "x = %.17g, y = %.17g, w = %.17g" x y w)
+            [ "sinCos x = (sin x, cos x)", bits s = bits (Elementary.sin x) && bits c = bits (Elementary.cos x)
+              "sinCos -x = (sin -x, cos -x)", bits sn = bits (Elementary.sin -x) && bits cn = bits (Elementary.cos -x)
+              "sin -x = -(sin x)", bits (Elementary.sin -x) = bits (-(Elementary.sin x))
+              "cos -x = cos x", bits (Elementary.cos -x) = bits (Elementary.cos x)
+              "atan -y = -(atan y)", bits (Elementary.atan -y) = bits (-(Elementary.atan y))
+              "atan2 y 1 = atan y", bits (Elementary.atan2 y 1.0) = bits (Elementary.atan y)
+              "atan2 -y w = -(atan2 y w)", bits (Elementary.atan2 -y w) = bits (-(Elementary.atan2 y w)) ]
+
+    /// The identities hold within the bounds a one-ulp routine admits, at every magnitude the
+    /// reduction meets (doubling an argument is exact, so the double-angle formulas test the reduction
+    /// itself): `sin² + cos²` is one within `8u`; `sin 2x` is `2 sin x cos x` and `cos 2x` is
+    /// `1 − 2 sin² x`, each within `16u`; `atan y + atan (1/y)` is `π/2` within `8u`; and the angle
+    /// `atan2` answers for a point is the point's own, its sine and cosine times the point's distance
+    /// within `16u` of that distance from the point.
+    let private trigIdentities (d: Draw) =
+        let x = positive d -30 1000 * (if d.Unit() < 0.0 then -1.0 else 1.0)
+        let y = positive d -30 30
+        let px = positive d -20 20 * (if d.Unit() < 0.0 then -1.0 else 1.0)
+        let py = positive d -20 20 * (if d.Unit() < 0.0 then -1.0 else 1.0)
+        let s = Elementary.sin x
+        let c = Elementary.cos x
+        let angle = Elementary.atan2 py px
+        let distance = sqrt (px * px + py * py)
+
+        firstFailure
+            (sprintf "x = %.17g, y = %.17g, the point (%.17g, %.17g)" x y px py)
+            [ "sin^2 + cos^2 = 1", abs (s * s + c * c - 1.0) <= 8.0 * u
+              "sin 2x = 2 sin x cos x", abs (Elementary.sin (2.0 * x) - 2.0 * s * c) <= 16.0 * u
+              "cos 2x = 1 - 2 sin^2 x", abs (Elementary.cos (2.0 * x) - (1.0 - 2.0 * s * s)) <= 16.0 * u
+              "atan y + atan (1 / y) = pi / 2",
+              abs (Elementary.atan y + Elementary.atan (1.0 / y) - 1.5707963267948966)
+              <= 8.0 * u
+              "the angle of a point is the point's",
+              abs (Elementary.cos angle * distance - px) <= 16.0 * u * distance
+              && abs (Elementary.sin angle * distance - py) <= 16.0 * u * distance ]
+
+    /// `Special`'s reflections answer the bits they answered before their sine and cosine kernels
+    /// became `Elementary`'s (D84 item 5): `gammaLn`, `gamma` and `digamma` below zero, at arguments
+    /// on both sides of the reflection's quarter and at both parities, each against the answer
+    /// recorded at `0.46.0`.
+    let private reflectionsReproduce (_: Draw) =
+        let is (want: float) (x: float) = bits x = bits want
+
+        firstFailure
+            "the recorded answers"
+            [ "gammaLn -0.5", is 1.2655121234846454 (Special.gammaLn -0.5)
+              "gamma -0.5", is -3.5449077018110318 (Special.gamma -0.5)
+              "digamma -0.5", is 0.03648997397857652 (Special.digamma -0.5)
+              "gammaLn -0.625", is 1.333077611516383 (Special.gammaLn -0.625)
+              "gamma -0.625", is -3.792697895066561 (Special.gamma -0.625)
+              "digamma -0.625", is -1.1539990491451397 (Special.digamma -0.625)
+              "gammaLn -0.875", is 2.152949750178319 (Special.gammaLn -0.875)
+              "gamma -0.875", is -8.610218970054413 (Special.gamma -0.875)
+              "digamma -0.875", is -7.245635520438711 (Special.digamma -0.875)
+              "gammaLn -1.25", is 1.3664317612369763 (Special.gammaLn -1.25)
+              "gamma -1.25", is 3.9213334478885686 (Special.gamma -1.25)
+              "digamma -1.25", is 3.7141391202135283 (Special.digamma -1.25)
+              "gammaLn -2.75", is 0.004487897535955909 (Special.gammaLn -2.75)
+              "gamma -2.75", is -1.0044979832303123 (Special.gamma -2.75)
+              "digamma -2.75", is -1.9590552649779973 (Special.digamma -2.75)
+              "gammaLn -7.9", is -8.072039736012833 (Special.gammaLn -7.9)
+              "gamma -7.9", is 0.0003121459359719531 (Special.gamma -7.9)
+              "digamma -7.9", is -7.54000722441948 (Special.digamma -7.9)
+              "gammaLn -100.25", is -363.4009232278215 (Special.gammaLn -100.25)
+              "gamma -100.25", is -1.5030877093227506e-158 (Special.gamma -100.25)
+              "digamma -100.25", is 7.754238959208646 (Special.digamma -100.25)
+              "gammaLn -170.4", is -707.434114102398 (Special.gammaLn -170.4)
+              "gamma -170.4", is -5.824624534443869e-308 (Special.gamma -170.4)
+              "digamma -170.4", is 6.161845347412788 (Special.digamma -170.4) ]
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "every special-value row and IEEE edge of the elementary functions is answered as stated", elementaryTables
@@ -604,5 +770,9 @@ module ElementaryLaws =
           "digamma's recurrence and constants hold, and digamma and trigamma are polygamma 0 and 1 bit for bit",
           polygammaIdentities
           "a central difference of gammaLn agrees with digamma", gammaLnDerivative
-          "the incomplete beta function's complement and its inverse are the stated functions of it", betaComplements ]
+          "the incomplete beta function's complement and its inverse are the stated functions of it", betaComplements
+          "every special-value row and IEEE edge of the trigonometric functions is answered as stated", trigTables
+          "sinCos is sin and cos, and the symmetries of sin, cos, atan and atan2 hold, bit for bit", trigSymmetries
+          "the trigonometric identities hold within their bounds at every magnitude", trigIdentities
+          "the special functions' reflections answer the bits recorded before their kernels moved", reflectionsReproduce ]
         |> List.map (fun (name, body) -> name, law seed count body)

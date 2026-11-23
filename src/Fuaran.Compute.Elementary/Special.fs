@@ -149,43 +149,11 @@ module Special =
 
     // ---- sin πx and cos πx ------------------------------------------------------------------------
 
-    /// `(−1)ᵏ / (2k + 1)!` for `k = 9 .. 1`.
-    let private sinTaylor: float[] =
-        [| -1.0 / 121645100408832000.0
-           1.0 / 355687428096000.0
-           -1.0 / 1307674368000.0
-           1.0 / 6227020800.0
-           -1.0 / 39916800.0
-           1.0 / 362880.0
-           -1.0 / 5040.0
-           1.0 / 120.0
-           -1.0 / 6.0 |]
-
-    /// `(−1)ᵏ / (2k)!` for `k = 9 .. 1`.
-    let private cosTaylor: float[] =
-        [| -1.0 / 6402373705728000.0
-           1.0 / 20922789888000.0
-           -1.0 / 87178291200.0
-           1.0 / 479001600.0
-           -1.0 / 3628800.0
-           1.0 / 40320.0
-           -1.0 / 720.0
-           1.0 / 24.0
-           -1.0 / 2.0 |]
-
-    /// `sin y` for `|y| ≤ π/4`, its Taylor polynomial to `y¹⁹`.
-    let private sinKernel (y: float) : float =
-        let z = y * y
-        y + y * z * horner sinTaylor z
-
-    /// `cos y` for `|y| ≤ π/4`, its Taylor polynomial to `y¹⁸`.
-    let private cosKernel (y: float) : float =
-        let z = y * y
-        1.0 + z * horner cosTaylor z
-
     /// `(sin πx, cos πx)` for a finite `|x| < 2⁵²`. `x` is split exactly into its nearest integer and a
     /// remainder in `[−½, ½]`; the remainder's sine and cosine are a kernel at `πr` within a quarter, and
     /// the other kernel at `π(½ − |r|)` beyond it, so the answer near a zero keeps its relative accuracy.
+    /// The kernels are `Elementary`'s, the ones its `sin` and `cos` read (Phase 725, DECISIONS.md D84),
+    /// called with no tail.
     let private trigPi (x: float) : struct (float * float) =
         let ax = magnitude x
         let n = (ax + Elementary.twoTo52) - Elementary.twoTo52
@@ -194,11 +162,11 @@ module Special =
 
         let struct (s, c) =
             if ar <= 0.25 then
-                struct (sinKernel (pi * r), cosKernel (pi * r))
+                struct (Elementary.sinKernel (pi * r) 0.0, Elementary.cosKernel (pi * r) 0.0)
             else
                 let t = pi * (0.5 - ar)
-                let s = cosKernel t
-                struct ((if r < 0.0 then -s else s), sinKernel t)
+                let s = Elementary.cosKernel t 0.0
+                struct ((if r < 0.0 then -s else s), Elementary.sinKernel t 0.0)
 
         let struct (s, c) =
             if Elementary.isOddInteger n then
