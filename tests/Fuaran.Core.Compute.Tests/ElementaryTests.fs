@@ -54,6 +54,39 @@ let private publishedOperations () : Set<string> =
             [||])
     |> Set.ofArray
 
+/// Host-independent: for each named function, at least one vector whose pinned answer is not the correctly
+/// rounded double the vector records as its reference, so a port that answers correctly rounded fails it.
+/// Reads only the committed references and the package; no host mathematics call.
+let private correctlyRoundedPortFails (ops: string list) =
+    let pinned (c: ElementaryVectors.Case) =
+        let operand name =
+            c.Input |> List.find (fun (n, _) -> n = name) |> snd
+
+        match c.Op with
+        | "exp" -> Elementary.exp (operand "x")
+        | "ln" -> Elementary.ln (operand "x")
+        | "log10" -> Elementary.log10 (operand "x")
+        | "pow" -> Elementary.pow (operand "x") (operand "y")
+        | "sin" -> Elementary.sin (operand "x")
+        | "cos" -> Elementary.cos (operand "x")
+        | "atan" -> Elementary.atan (operand "x")
+        | "atan2" -> Elementary.atan2 (operand "y") (operand "x")
+        | other -> failwithf "%s is not an elementary function" other
+
+    for op in ops do
+        let differing =
+            ElementaryVectors.cases
+            |> List.filter (fun c -> c.Op = op)
+            |> List.choose (fun c ->
+                ElementaryVectors.references
+                |> List.tryFind (fun (id, _) -> id = c.Id)
+                |> Option.map (fun (_, h) -> c, ElementaryVectors.ofHex h))
+            |> List.filter (fun (c, rounded) -> bits (pinned c) <> bits rounded)
+
+        Expect.isNonEmpty
+            differing
+            (sprintf "a vector of %s whose pinned answer is not the correctly rounded double" op)
+
 [<Tests>]
 let tests =
     testList
@@ -130,53 +163,11 @@ let tests =
               has "pow-zero-zero" (sprintf "\"value\": \"%s\", \"table\": \"value\"" (h 1.0))
               has "pow-two-cubed" (sprintf "\"value\": \"%s\"" (h 8.0))
 
-          testCase
-              "the host's own libm answers other bits on at least one elementary vector, so the byte comparison sees a port that cheats"
-          <| fun () ->
-              let differing =
-                  ElementaryVectors.cases
-                  |> List.choose (fun c ->
-                      let scalar name =
-                          c.Input |> List.find (fun (n, _) -> n = name) |> snd
-
-                      match c.Op with
-                      | "exp" -> Some(c.Id, Elementary.exp (scalar "x"), Math.Exp(scalar "x"))
-                      | "ln" -> Some(c.Id, Elementary.ln (scalar "x"), Math.Log(scalar "x"))
-                      | "log10" -> Some(c.Id, Elementary.log10 (scalar "x"), Math.Log10(scalar "x"))
-                      | "pow" -> Some(c.Id, Elementary.pow (scalar "x") (scalar "y"), Math.Pow(scalar "x", scalar "y"))
-                      | _ -> None)
-                  |> List.filter (fun (_, pinned, host) ->
-                      not (Double.IsNaN pinned) && not (Double.IsNaN host) && bits pinned <> bits host)
-
-              Expect.isNonEmpty differing "the host's libm and the pinned routine differ somewhere on the vectors"
+          testCase "a correctly rounded port fails at least one vector of exp, ln, log10 and pow each (Phase 593)"
+          <| fun () -> correctlyRoundedPortFails [ "exp"; "ln"; "log10"; "pow" ]
 
           testCase "a correctly rounded port fails at least one trigonometric vector of each function (Phase 725)"
-          <| fun () ->
-              // Host-independent: the pinned answer against the correctly rounded double each vector records
-              // as its reference. Where they differ, a port that answers the correctly rounded double fails.
-              let pinned (c: ElementaryVectors.Case) =
-                  let operand name =
-                      c.Input |> List.find (fun (n, _) -> n = name) |> snd
-
-                  match c.Op with
-                  | "sin" -> Elementary.sin (operand "x")
-                  | "cos" -> Elementary.cos (operand "x")
-                  | "atan" -> Elementary.atan (operand "x")
-                  | _ -> Elementary.atan2 (operand "y") (operand "x")
-
-              for op in [ "sin"; "cos"; "atan"; "atan2" ] do
-                  let differing =
-                      ElementaryVectors.cases
-                      |> List.filter (fun c -> c.Op = op)
-                      |> List.choose (fun c ->
-                          ElementaryVectors.references
-                          |> List.tryFind (fun (id, _) -> id = c.Id)
-                          |> Option.map (fun (_, h) -> c, ElementaryVectors.ofHex h))
-                      |> List.filter (fun (c, rounded) -> bits (pinned c) <> bits rounded)
-
-                  Expect.isNonEmpty
-                      differing
-                      (sprintf "a vector of %s whose pinned answer is not the correctly rounded double" op)
+          <| fun () -> correctlyRoundedPortFails [ "sin"; "cos"; "atan"; "atan2" ]
 
           testCase "the trigonometric vectors answer what was worked by hand (Phase 725)"
           <| fun () ->

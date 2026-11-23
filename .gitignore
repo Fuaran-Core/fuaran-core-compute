@@ -6,6 +6,8 @@ obj/
 artifacts/
 fable_modules/
 .fable/
+# Python's bytecode cache, left by importing a reference script (tests/**/*Reference/, benchmarks/results/).
+__pycache__/
 
 # The shared wire-format conformance corpus is a separate repository, and one of the places the
 # suite looks for it is inside this repository root — which is where CI checks it out, and the

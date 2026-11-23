@@ -12,7 +12,9 @@ namespace Fuaran.Compute.Tests
 //  subnormal results and inputs, the near-one band of ln, the exact shortcuts
 //  of pow, and every row of D43's special-value table. Every float is written
 //  as its IEEE-754 binary64 bit pattern, so a host compares its answer byte
-//  for byte.
+//  for byte. The `*-not-correctly-rounded-*` vectors of exp, ln and log10
+//  (DECISIONS.md D84 item 11) are inputs, found by measurement, at which the
+//  pinned answer is one unit from the correctly rounded double.
 //
 //  Phase 725 (DECISIONS.md D84) adds the trigonometric vectors after pow's:
 //  sin, cos, sinCos, atan and atan2 over every row of their tables, atan2's
@@ -166,6 +168,8 @@ module ElementaryVectors =
           "exp-ln-two-to-128", "47efffffdffffff5"
           "exp-minus-700", "00d14f2b0fb9307f"
           "exp-fifty-and-half", "447cf65319c5751a"
+          "exp-not-correctly-rounded-negative", "3ed6ee14012d54b9"
+          "exp-not-correctly-rounded-large", "7b16fd0331b60b61"
           "ln-two", "3fe62e42fefa39ef"
           "ln-half", "bfe62e42fefa39ef"
           "ln-ten", "40026bb1bbb55516"
@@ -186,6 +190,8 @@ module ElementaryVectors =
           "ln-1e-300", "c085963447f87fb5"
           "ln-tenth", "c0026bb1bbb55515"
           "ln-seven", "3fff2272ae325a57"
+          "ln-not-correctly-rounded-near-one", "bfaa8b469b432691"
+          "ln-not-correctly-rounded-large", "4018bd18fc7f6d6f"
           "log10-ten", "3ff0000000000000"
           "log10-hundred", "4000000000000000"
           "log10-thousand", "4008000000000000"
@@ -199,6 +205,9 @@ module ElementaryVectors =
           "log10-max", "40734413509f79ff"
           "log10-just-above-one", "3c9bcb7b1526e50d"
           "log10-seven", "3feb0b0b0b78cc3f"
+          "log10-not-correctly-rounded-moderate", "3fda5e90ce955cd9"
+          "log10-not-correctly-rounded-small", "c0236c41e466d885"
+          "log10-not-correctly-rounded-large", "406e710ea5cde21d"
           "pow-root-shortcut", "3ff6a09e667f3bcd"
           "pow-square-shortcut", "4059000000000000"
           "pow-reciprocal-shortcut", "3fb999999999999a"
@@ -608,6 +617,8 @@ module ElementaryVectors =
           case "exp-infinity" "exp" [ "x", inf ]
           case "exp-negative-infinity" "exp" [ "x", -inf ]
           case "exp-nan" "exp" [ "x", nan ]
+          case "exp-not-correctly-rounded-negative" "exp" [ "x", -12.116792191805757 ]
+          case "exp-not-correctly-rounded-large" "exp" [ "x", 656.0796307828648 ]
           case "ln-two" "ln" [ "x", 2.0 ]
           case "ln-half" "ln" [ "x", 0.5 ]
           case "ln-ten" "ln" [ "x", 10.0 ]
@@ -634,6 +645,8 @@ module ElementaryVectors =
           case "ln-one" "ln" [ "x", 1.0 ]
           case "ln-infinity" "ln" [ "x", inf ]
           case "ln-nan" "ln" [ "x", nan ]
+          case "ln-not-correctly-rounded-near-one" "ln" [ "x", 0.9494771255410636 ]
+          case "ln-not-correctly-rounded-large" "ln" [ "x", 485.25068211404175 ]
           case "log10-ten" "log10" [ "x", 10.0 ]
           case "log10-hundred" "log10" [ "x", 100.0 ]
           case "log10-thousand" "log10" [ "x", 1000.0 ]
@@ -650,6 +663,9 @@ module ElementaryVectors =
           case "log10-zero" "log10" [ "x", 0.0 ]
           case "log10-one" "log10" [ "x", 1.0 ]
           case "log10-nan" "log10" [ "x", nan ]
+          case "log10-not-correctly-rounded-moderate" "log10" [ "x", 2.5823899885091883 ]
+          case "log10-not-correctly-rounded-small" "log10" [ "x", 1.9433891890727215e-10 ]
+          case "log10-not-correctly-rounded-large" "log10" [ "x", 3.412228028419943e+243 ]
           case "pow-root-shortcut" "pow" [ "x", 2.0; "y", 0.5 ]
           case "pow-square-shortcut" "pow" [ "x", 10.0; "y", 2.0 ]
           case "pow-reciprocal-shortcut" "pow" [ "x", 10.0; "y", -1.0 ]
@@ -790,9 +806,11 @@ module ElementaryVectors =
         + "cosine's, where both its halves move. Eight vectors of `atan2` (`atan2-operands-arm-*`) are "
         + "inputs at which an arm formed from the rounded quotient `y / x` answers another bit than the arm "
         + "formed from the two operands, which is the pinned one; at five of them the quotient's arm is more "
-        + "than one unit in the last place from the true value. The vectors `*-not-correctly-rounded-*` are "
-        + "inputs at which the pinned answer is one unit from the correctly rounded double (`ulps` 1), so "
-        + "a host that answers each function correctly rounded fails at least one vector of each. "
+        + "than one unit in the last place from the true value. The vectors `*-not-correctly-rounded-*`, of "
+        + "`exp`, `ln`, `log10` and the trigonometric functions, are inputs at which the pinned answer is one "
+        + "unit from the correctly rounded double (`ulps` 1); with those of `pow` and the others already at "
+        + "`ulps` 1, a host that answers any of `exp`, `ln`, `log10`, `pow`, `sin`, `cos`, `atan` or `atan2` "
+        + "correctly rounded fails at least one vector of that function. "
         + "A vector whose `op` is `sinCos` answers `{ verdict: "
         + "ok, sin, cos, sinTable, cosTable }`, the pair `Elementary.sinCos` returns, which is `sin x` and "
         + "`cos x` bit for bit, and what each function's table said."
