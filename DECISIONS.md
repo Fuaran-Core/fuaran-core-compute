@@ -244,9 +244,10 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
      the meet of two that do not span the space (two coplanar lines; two skew lines do span it, and their meet is a
      multiple of `n∞`). For those the **meet within a span** ships beside it, `(B ⌋ J⁻¹) ⌋ A` for a blade `J` the
      caller supplies that contains both, with `J⁻¹ = J̃ / (J ∗ J̃)` and each coefficient divided once; with `J = I`
-     it is the meet bit for bit. For two lines the span is the join of the first with a point of the second: its
-     point nearest the origin, or, when that join is the zero blade, the point whose coordinates are that point's
-     plus the second line's direction as it is stored, not divided by its weight, one addition for each; if that
+     it is the meet bit for bit. For two lines the span is the join of the first with a point of the second: `up` of
+     the coordinates of its point nearest the origin, or, when that join is the zero blade, `up` of those
+     coordinates plus the second line's direction as it is stored, not divided by its weight, one addition for
+     each. Both cases go through coordinates, so the point joined has weight one and is null by construction; if that
      join is the zero blade too, the lines are one line. "Is the zero blade" is item 6's test of a kind, with the
      caller's `τ`, so at `τ = 0` it is exact. *Rejected:* a general join that factors its operands, which needs a
      threshold at every step and is no single product.
@@ -292,7 +293,10 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    and its squared radius, which is negative. No root of a negative number is taken, and a NaN is never how a
    caller learns that two objects do not meet. A line's direction is its
    coefficients at indices 18, 20 and 21, read and not computed, and its moment `p ∧ d` is at 23, 24 and 25; a
-   plane's normal and distance are its vector's. The point of a flat nearest the origin is `⟨(n0 ⌋ X) X⁻¹⟩₁`.
+   plane's normal and distance are its vector's. The point of a flat nearest the origin has the coordinates of the
+   vector `⟨(n0 ⌋ X) X⁻¹⟩₁`, its indices 2 to 4 each divided by its index 1. That vector is not itself the point:
+   its `n∞` coefficient is `x²` and not `½ x²`. Wherever the point is wanted as a multivector it is `up` of those
+   coordinates.
 
    **The versors.** Each is a unit versor, `V Ṽ = 1`, built from parameters; angles are in radians.
 
@@ -364,24 +368,35 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    caller on every call**: a finite `τ ≥ 0`, anything else refused by name. `τ = 0` is the exact comparison, so
    there is one kind of test and not two. Each function that takes a `τ` documents its statistic and the unit it is
    in. **No tolerance is a constant in either package**: no default argument, no named epsilon, and
-   no float literal in a comparison but `0.0`, and that only in a comparison this entry itself states: a divisor
-   against zero, `V ∗ Ṽ > 0`, a factor `s > 0`, a radius or a `τ` that is not negative, `|B′| = 0`, the sign of a
-   scalar part, and the signs of a numerator and a denominator at `τ = 0`. A test for a NaN or an infinity names no
-   tolerance and is outside the rule. The suite of Phase 728 reads the sources to hold that. At `τ = 0` a statistic that is a
+   no float literal in a comparison but the two this entry itself requires. `0.0` may be named only in a comparison
+   stated here: a divisor against zero (a weight, `V ∗ Ṽ`, `J ∗ J̃`, `X ∗ X̃`, `W ∗ W̃`); the norm of a direction
+   parameter against zero; `V ∗ Ṽ > 0`; a factor `s > 0`; a radius or a `τ` that is not negative; the
+   exponential's `φ = 0` and the logarithm's `|B′| = 0`; the sign of a scalar part (the logarithm's `c`, and the
+   rotor read from a matrix, with the sign of its largest axis component at a half turn); the sign of whatever
+   says that a matrix reverses orientation; each of the first three entries of a matrix's last row; and the signs
+   of a numerator and a denominator at `τ = 0`. `1.0` may be named in exactly one comparison: the fourth entry of a
+   matrix's last row. A test for a NaN or an infinity names no tolerance and is outside the rule, and so are the
+   two tests inside the norm itself, `m = 0` and `m = +∞` (D49 item 4). The suite of Phase 728 reads the sources to
+   hold that. At `τ = 0` a statistic that is a
    quotient is decided from the signs of its numerator and denominator and no quotient is formed, so a test on
    integer coordinates is exact wherever its products are.
 
    The statistics, each a geometric quantity with the weights divided out in its own definition (`w` a weight,
    `σ` and `π` the vectors of item 4):
-   - a point against a **sphere**: the power `−2 (P ∗ σ) / (w_P × w_σ)`, which is `|x − c|² − r²`, in squared
+   - a point against a **sphere**: the power `(−2.0 × (P ∗ σ)) / (w_P × w_σ)`, which is `|x − c|² − r²`, in squared
      length. Negative is inside, within `τ` is on, positive is outside.
    - a point against a **plane**: the signed distance `(P ∗ π) / (w_P × w_π)`, positive on the side the normal
      points to, in length.
    - a point against a **circle**, for a point in the circle's plane: the power
-     `−2 ((P ∧ X) ∗ Ỹ) / (w_P × (Y ∗ Ỹ))` with `Y = X ∧ n∞` the circle's plane; the same reading as the sphere's.
+     `(−2.0 × ((P ∧ X) ∗ Ỹ)) / (w_P × (Y ∗ Ỹ))` with `Y = X ∧ n∞` the circle's plane; the same reading as the sphere's.
      On integer coordinates its numerator is formed exactly, and it is negative for a point inside whatever the
      order of the circle's three points, where the in-circle determinant changes sign with their orientation.
      Whether the point is in the plane is the plane test, and the caller's to make.
+   - **Each statistic is published twice**: as a function that returns its value, and as the test that returns
+     the kind. The value is formed in one order: the scalar product by item 3's fold; for a power, `−2.0` times
+     it, which is exact; the product of the two factors of the divisor; then one division. So a power that is zero
+     is `−0.0` over a positive divisor and `+0.0` over a negative one, and a signed distance that is zero is `+0.0`
+     over a positive divisor. The kind compares a magnitude with `τ` and does not read the sign of a zero.
    - **What kind of blade an answer is**: by the norm (D49 item 4) of a group of its coefficients, in coefficient
      units. A *round* has coefficients of norm above `τ` on the blades that hold `n0` and not `n∞`; it is *real*, *tangent* or
      *imaginary* as its squared radius is above `τ`, within it or below `−τ`. A *flat* has none there, none on the
@@ -431,15 +446,21 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
      square to `+1` and `−1`); associativity and distributivity of the geometric product; `a ∧ a = 0`; `I² = −1`;
      `(A ∧ B) ∗ C = A ∗ (B ⌋ C)`; `up x ∗ up x = 0`, and `up x ∗ up y = −½ |x − y|²` for two different points; a
      point on the circle or sphere built through it; the meet of two planes in both; the meet within the whole
-     space against the meet; a translator composed with its opposite, against the identity; two reflections in
-     perpendicular planes, against the half turn written as its coefficients; a dilation by a power of four,
+     space against the meet; a translator composed with its opposite, against the identity; the reflection in the plane
+     `x1 = 0` and then the one in `x2 = 0`,
+     the product `e2 e1`, against the motor that holds `−1.0` at index 10 and `+0.0` at each of its seven other
+     indices (and likewise `e3 e2` against `−1.0` at index 13, and `e1 e3` against `+1.0` at index 11); a dilation by a
+     power of four,
      against the point it should give. The undual of a dual is its input bit for bit on every input without a NaN,
      exact or not, because a coefficient is negated twice or not at all.
    - **Under the float identity, and not bit for bit:** the reverse as an anti-automorphism,
      `rev (A B) = rev B rev A` (the left side ends in the reverse's negations: `rev (e1 e2)` holds nineteen negative
      zeros and `rev e2 rev e1` none); `(A ∧ B)* = A ⌋ B*` (the left side ends in the dual's: sixteen against none at
      `A = e1`, `B = e2`); the dual against the contraction `A ⌋ I⁻¹` written as a fold; the meet against `B* ∧ A*`
-     undualled; and `up x ∗ up x` against `−½ |x − x|²`, whose right side is `−0.0`.
+     undualled; `up x ∗ up x` against `−½ |x − x|²`, whose right side is `−0.0`; and those products of two
+     reflections against the rotor's coefficient formulas of item 4 at `c = 0`, `s = 1`, which hold
+     `−(1 × 0) = −0.0` where a product holds `+0.0`. The half turn is written out in the law above because it
+     cannot be built: no double is `π`, so the rotor's constructor never returns one.
    - **The sign of every incidence statistic** is the sign exact arithmetic gives, a comparison of signs and not of
      bits.
 
