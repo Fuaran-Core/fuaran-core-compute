@@ -106,7 +106,8 @@ one entry (item 11).
    against zero: `x = 0.0`. D85 item 6 lists every comparison that may name `0.0`, and Phase 728's suite reads the
    sources against that list; the list omitted this one, which item 8 requires. **This phase adds the phrase "the
    zero test inside `Multivector`'s hash (item 8)" to item 6's list**, and changes nothing else in D85. The package's
-   sources name `0.0` in no other comparison. Under Fable the class's `Equals` is called by `=` and its
+   operation modules name `0.0` in no other comparison; the law family is not one of them, and compares bits against
+   float literals, as a law must (the scope was named in Phase 728, D87 item 8: the sentence said "sources"). Under Fable the class's `Equals` is called by `=` and its
    `GetHashCode` by `hash`; the law family holds both on each host (item 8 here).
 
 8. **The law family, and which comparison each law holds under.** `GeometricAlgebraLaws.laws seed count` runs

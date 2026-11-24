@@ -307,8 +307,37 @@ module GeometricAlgebraVectors =
                     Op = "coefficient"
                     Input = [ "index", Whole index; "a", Coefficients mixed ] } ]
 
-    /// Every case, in document order.
-    let cases: Case list = tableRows @ hardInputs @ generalInputs
+    // ============================================================================================
+    //  Phase 728 — vectors carried from Phase 727, and the conformal objects
+    //  (DECISIONS.md D85 items 4 to 6, D87). New cases are appended: the 167 cases above keep
+    //  their place and their bytes.
+    // ============================================================================================
+
+    /// Four vectors over the multivector's own functions. The squared norm's scalar coefficient is
+    /// `1 − (1 + 2^-30)(1 − 2^-30) + 1 − (1 − 2^-30)(1 + 2^-30)`: two roundings answer `+0.0` and a
+    /// fused multiply-add `2^-60`. It is `((2^60 + 1) − 2^60) + 1 = 1` in the recorded order and `0`
+    /// descending. Twenty-four of its thirty-two terms can be a negative zero and here each is one;
+    /// the other eight are squares, so the answer is `+0.0` under any summation. And the scalar
+    /// product `((2^60 + 1) − 2^60) + 2 = 2` is `((2^60 + 2) − 2^60) + 1 = 1` with the right operand's
+    /// index outermost.
+    let private carried: Case list =
+        [ unary
+              "squaredNorm-fma-witness"
+              "squaredNorm"
+              (sparse [ 0, 1.0; 1, 1.0 + pow2 -30; 2, 1.0; 5, 1.0 - pow2 -30 ])
+          unary "squaredNorm-absorbed-then-cancelled" "squaredNorm" (sparse [ 0, pow2 30; 2, 1.0; 9, pow2 30; 10, 1.0 ])
+          unary
+              "squaredNorm-every-term-that-can-be-a-negative-zero"
+              "squaredNorm"
+              (sparse [ 12, -0.0; 14, -0.0; 15, -0.0; 30, -0.0 ])
+          binary
+              "scalar-right-index-outermost"
+              "scalarProduct"
+              (sparse [ 0, pow2 60; 1, 1.0; 2, -(pow2 60); 5, 1.0 ])
+              (sparse [ 0, 1.0; 1, -2.0; 2, 1.0; 5, -1.0 ]) ]
+
+    /// Every case, in document order: Phase 727's, and then the ones appended since.
+    let cases: Case list = tableRows @ hardInputs @ generalInputs @ carried
 
     /// The case with this id.
     let find (id: string) : Case = cases |> List.find (fun c -> c.Id = id)
