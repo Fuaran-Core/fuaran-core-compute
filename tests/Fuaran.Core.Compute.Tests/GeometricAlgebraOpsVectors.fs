@@ -548,7 +548,11 @@ module GeometricAlgebraOpsVectors =
         member this.Big() : float =
             let mutable x = (this.Next() / 1073741824.0 - 1.0) * 4.0
 
-            for _ in 1 .. this.Int 0 160 do
+            // The count is drawn once, before the loop: a loop bound that calls the generator is read on every
+            // pass under Fable and once on .NET.
+            let times = this.Int 0 160
+
+            for _ in 1..times do
                 x <- x * 10.0
 
             x
@@ -650,7 +654,7 @@ module GeometricAlgebraOpsVectors =
         let p, u = small (), d.Direction()
 
         let later =
-            [ for _ in 1 .. d.Int 2 3 -> GeometricOp.Translate("b", small ()) ]
+            List.init (d.Int 2 3) (fun _ -> GeometricOp.Translate("b", small ()))
             @ [ GeometricOp.Rotate("b", p, u, d.Angle())
                 GeometricOp.Rotate("b", p, u, d.Angle()) ]
 
