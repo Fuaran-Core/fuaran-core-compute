@@ -152,7 +152,7 @@ module internal Motion =
         Conformal.unit r axis
         |> Result.bind (fun a ->
             if finite theta then
-                typed rotorIndices (rotorOfUnit r a theta) |> Result.map rotorOf
+                typed rotorIndices (rotorOfUnit r (r.UnitAsGiven a) theta) |> Result.map rotorOf
             else
                 Error GeometryRefusal.NonFiniteAngle)
 
@@ -171,15 +171,17 @@ module internal Motion =
     let motorOfRotorTranslator (r: Arithmetic) (rotor: Rotor) (translator: Translator) : Motor =
         motorOf (compose r motorIndices (translatorMv translator) (rotorMv rotor))
 
-    /// The screw `T_(d û) ((T_p R) T̃_p)` about an axis already of length one.
+    /// The screw `T_(d û) ((T_p R) T̃_p)` about an axis already of length one: `R` the rotor about
+    /// that `û` as it is, not divided by its norm again, and `p` as it is given.
     let private screwOfUnit
         (r: Arithmetic)
-        (p: float * float * float)
-        (u1: float, u2: float, u3: float)
+        (point: float * float * float)
+        (unitDirection: float * float * float)
         (theta: float)
         (d: float)
         : Result<Motor, GeometryRefusal> =
-        let toAxis = translatorOfFinite p
+        let (u1, u2, u3) = r.UnitAsGiven unitDirection
+        let toAxis = translatorOfFinite (r.PointAsGiven point (u1, u2, u3))
         let along = translatorOfFinite (d * u1, d * u2, d * u3)
 
         let screw =
@@ -264,6 +266,7 @@ module internal Motion =
         (delta: float)
         : Result<Reflection, GeometryRefusal> =
         Conformal.unit r normal
+        |> Result.map r.UnitAsGiven
         |> Result.bind (fun (n1, n2, n3) ->
             if finite delta then
                 Ok
@@ -298,6 +301,8 @@ module internal Motion =
         u, Multivector.reverse u
 
     /// `exp B = cos φ + (sin φ / φ) B` with `φ = |B|`, the quotient formed once; `1 + B` at `φ = 0`.
+    /// The scalar and the bivector part lie on different blades, so each coefficient is PLACED and none
+    /// is a sum: a zero of `B` keeps its sign (D88 item 3).
     let rotorExp (r: Arithmetic) (b12: float, b13: float, b23: float) : Result<Rotor, GeometryRefusal> =
         if not (finite3 (b12, b13, b23)) then
             Error GeometryRefusal.NonFiniteBivector
@@ -308,16 +313,18 @@ module internal Motion =
                 let one = 1.0
 
                 Ok
-                    { Scalar = one
-                      E1E2 = b12
-                      E1E3 = b13
-                      E2E3 = b23 }
+                    { Scalar = r.Placed one
+                      E1E2 = r.Placed b12
+                      E1E3 = r.Placed b13
+                      E2E3 = r.Placed b23 }
             elif not (finite phi) then
                 Error GeometryRefusal.NonFiniteBivector
             else
                 let struct (s, c) = r.SinCos phi
                 let k = r.ByQuotient r.Divide s phi [| b12; b13; b23 |]
-                Conformal.numbers [| c; k[0]; k[1]; k[2] |] |> Result.map rotorOf
+
+                Conformal.numbers ([| c; k[0]; k[1]; k[2] |] |> Array.map r.Placed)
+                |> Result.map rotorOf
 
     /// The logarithm of a rotor: `(φ / |B′|) B′` with `φ = atan2 |B′| c`, the quotient formed once;
     /// `B′` itself where `|B′| = 0` and `c > 0`; refused where `|B′| = 0` and `c` is not positive.
@@ -358,13 +365,13 @@ module internal Motion =
                 let one = 1.0
 
                 Ok
-                    { Scalar = one
+                    { Scalar = r.Placed one
                       E1E2 = 0.0
                       E1E3 = 0.0
-                      E1NInf = v1
+                      E1NInf = r.Placed v1
                       E2E3 = 0.0
-                      E2NInf = v2
-                      E3NInf = v3
+                      E2NInf = r.Placed v2
+                      E3NInf = r.Placed v3
                       E1E2E3NInf = 0.0 }
             elif not (finite phi) then
                 Error GeometryRefusal.NonFiniteBivector

@@ -244,7 +244,11 @@ module Motor =
     /// not negative. `tau` is the threshold of the test that the three columns are of one length and
     /// orthogonal, in the statistics `MatrixRefusal` names, which have no unit; `0` is the exact
     /// comparison. The last row is compared exactly. A matrix that is not a similarity, or reverses
-    /// orientation, is refused by name with the measure that failed.
+    /// orientation, is refused by name with the measure that failed. The squared lengths of the
+    /// columns are plain sums of squares, so a caller whose entries are smaller than about `1e-150` or
+    /// larger than about `1e150` scales the matrix first: below that a similarity can be refused
+    /// `NotOneLength`, a name that does not describe it, and then `ZeroDivisor`; above it,
+    /// `NonFiniteDivisor`.
     let ofMatrix (tau: float) (matrix: float[]) : Result<Motor * float, MatrixRefusal> =
         Motion.motorOfMatrix Arithmetic.shipped tau matrix
 

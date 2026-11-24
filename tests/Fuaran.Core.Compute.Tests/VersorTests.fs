@@ -329,7 +329,25 @@ let private versorPorts: (string * string list * Arithmetic) list =
                   if q[0] < 0.0 || (q[0] = 0.0 && q[largest] < 0.0) then
                       q |> Array.map (fun v -> -v)
                   else
-                      q } ]
+                      q }
+      "a direction divided by its norm a second time",
+      [ "UnitAsGiven" ],
+      { shipped with
+          UnitAsGiven =
+              fun (a, b, c) ->
+                  let n = Norm.scaled [| a; b; c |]
+                  a / n, b / n, c / n }
+      "a screw's point moved to the point of its axis nearest the origin",
+      [ "PointAsGiven" ],
+      { shipped with
+          PointAsGiven =
+              fun (p1, p2, p3) (u1, u2, u3) ->
+                  let along = (p1 * u1 + p2 * u2) + p3 * u3
+                  p1 - along * u1, p2 - along * u2, p3 - along * u3 }
+      "an exponential's parts summed with a zero",
+      [ "Placed" ],
+      { shipped with
+          Placed = fun x -> 0.0 + x } ]
 
 /// The member each port of Phase 728 changes, by the port's name in `ConformalTests.wrongPorts`.
 let private objectPortMembers: (string * string list) list =
@@ -364,8 +382,8 @@ let private ports: (string * string list * Arithmetic) list =
 /// The members of the arithmetic each computing function reads, by what `Motion` writes.
 let private reads (op: string) : Set<string> =
     let norm = [ "Scaled"; "SumOfSquares" ]
-    let unit = norm @ [ "IsZeroNorm"; "Divide" ]
-    let exp = norm @ [ "IsZeroAngle"; "SinCos"; "ByQuotient"; "Divide" ]
+    let unit = norm @ [ "IsZeroNorm"; "Divide"; "UnitAsGiven" ]
+    let exp = norm @ [ "IsZeroAngle"; "SinCos"; "ByQuotient"; "Divide"; "Placed" ]
     let log = norm @ [ "IsZeroBivector"; "Atan2"; "ByQuotient"; "Divide" ]
     let motorExp = exp @ [ "SplitAlong"; "Geometric"; "Outer" ]
     let motorLog = log @ [ "MotorAcross"; "Geometric" ]
@@ -393,7 +411,7 @@ let private reads (op: string) : Set<string> =
             | _, "Rotor.log" -> log
             | _, "Rotor.interpolate" -> exp @ log @ [ "Geometric"; "VersorReverse"; "Between" ]
             | _, "Motor.ofRotorTranslator" -> [ "Geometric"; "Compose" ]
-            | _, "Motor.ofScrew" -> unit @ [ "SinCos"; "Screw"; "Geometric" ]
+            | _, "Motor.ofScrew" -> unit @ [ "SinCos"; "Screw"; "Geometric"; "PointAsGiven" ]
             | _, "Motor.ofLine" ->
                 norm
                 @ [ "IsZeroDivisor"
@@ -402,7 +420,9 @@ let private reads (op: string) : Set<string> =
                     "Contraction"
                     "Scalar"
                     "SinCos"
-                    "Screw" ]
+                    "Screw"
+                    "UnitAsGiven"
+                    "PointAsGiven" ]
             | _, "Motor.exp" -> motorExp
             | _, "Motor.log" -> motorLog
             | _, "Motor.interpolate" -> motorExp @ motorLog @ [ "VersorReverse"; "Between" ]
@@ -464,14 +484,16 @@ let private thresholdsOf (c: V.Case) : float list =
 
         next 0.0 []
 
-/// The drawn sample: `V.versorSearched 0 .. 149`, every function that computes over each, and a matrix
+/// The drawn sample: `V.versorSearched 0 .. 449`, every function that computes over each, and a matrix
 /// asked again at every threshold its statistics name. The first ninety are drawn versors, the even
-/// ones with zeros of both signs among their coefficients; the last sixty are versors and objects every
-/// coefficient of which is a zero of a drawn sign, or every one but one. Each element is the number drawn at, the case
+/// ones with zeros of both signs among their coefficients; the next sixty are versors and objects every
+/// coefficient of which is a zero of a drawn sign, or every one but one; and the last three hundred are versors
+/// and objects a third of whose coefficients are such zeros and a third powers of two so small that a
+/// product of two of them underflows to a zero of either sign. Each element is the number drawn at, the case
 /// as drawn, and the case asked.
 let private drawnSample: Lazy<(int * V.Case * V.Case)[]> =
     lazy
-        ([| for index in 0..149 do
+        ([| for index in 0..449 do
                 for c in V.versorSearched index do
                     if not (copies.Contains c.Op) then
                         yield index, c, c
@@ -525,8 +547,11 @@ let private changedUnder (r: Arithmetic) : Map<string, int * string * float opti
 /// it reads the member, no committed vector of it fails the port, and the port answers it as the shipped
 /// arithmetic does on every element of the drawn sample.
 let private unable: (string * string * string list) list =
-    [ "a fold seeded from its first term",
-      "a fold from a negative zero answers otherwise only where every signed term of a coefficient is a negative zero, and the search finds no such coefficient: it asks each of these functions sixty times over versors and objects whose every coefficient is a zero of a drawn sign, or every one but one, and thirty times more with zeros of both signs among a versor's coefficients. That is a search and no proof",
+    [ "an exponential's parts summed with a zero",
+      "the exponential it forms enters one more product as a factor, and the sign of a zero factor cannot move a bit of a product: a fold starts at a positive zero and never holds a negative one, so a zero term of either sign leaves it as it is (D85 item 3)",
+      [ "Rotor.interpolate"; "Motor.interpolate" ]
+      "a fold seeded from its first term",
+      "a fold from a negative zero answers otherwise only where every signed term of a coefficient is a negative zero, and the search finds no such coefficient: it asks each of these functions sixty times over versors and objects whose every coefficient is a zero of a drawn sign, or every one but one, three hundred times over operands a third of whose coefficients are such zeros and a third so small that their products underflow to a zero of either sign, and forty-five times more with zeros of both signs among a versor's coefficients. That is a search and no proof",
       [ "Rotor.applyToPoint"
         "Rotor.applyToPointPair"
         "Rotor.applyToLine"
@@ -581,40 +606,46 @@ let private unable: (string * string * string list) list =
         "Motor.ofMatrix"
         "Dilator.ofCentreFactor" ]
       "another order of summation",
-      "its squared norm is one term, the square of its scalar part: the blades a translator holds beside it square to zero",
+      "its squared norm has one term that is not a zero, the square of its scalar part: every other term pairs a blade a translator holds with one its reverse holds as a zero, and a zero term leaves a sum as it is in any order",
       [ "Translator.normalise" ]
       "another order of summation",
-      "its squared norm is two terms, the square of its scalar part less the square of its part on n0^ninf, and two terms round alike in either order",
+      "its squared norm has two terms that are not zeros, the square of its scalar part and the negated square of its part on n0^ninf, among zero terms: two terms round alike in either order, a zero term moves neither, and a sum that is a zero is refused whatever its sign",
       [ "Dilator.normalise" ]
       "another order of summation",
-      "each coefficient of the product of two translators is a sum of at most two terms that are not zeros, which round alike in either order",
+      "each coefficient of the product of two translators has at most two terms that are not zeros, a scalar part times a part each way, among zero terms: two terms round alike in either order, and where both underflow the fold answers a positive zero in either order",
       [ "Translator.compose" ]
       "another order of summation",
-      "the one product it reads has a left operand of one coefficient, so each coefficient it reads is one term",
+      "the one product it reads has a left operand of one coefficient, so each coefficient it reads has one term that is not a zero among zero terms, and a fold from a positive zero answers one term and zeros alike in any order",
       [ "Motor.log" ]
       "another order of summation",
-      "each entry it reads is one term of its products, or two, which round alike in either order: a translator's parts beside its scalar square to zero",
+      "no argument is given that covers every coefficient. It is believed that each coefficient it reads of an image has one term that is not a zero, or two, because a translator's parts beside its scalar square to zero; that count was not computed, and the search, over 450 configurations, finds that the other order answers the same bits. That is a search and no proof",
       [ "Translator.toMatrix" ]
       "a fused multiply-add",
-      "its squared norm is one term, and one product fused into a zero is that product rounded",
+      "its squared norm has one term that is not a zero, a square, which is not negative: fused into the fold's positive zero it is that square rounded, the zero terms after it leave a positive sum as it is, and a sum that is a zero is refused whatever its sign",
       [ "Translator.normalise" ]
       "a fused multiply-add",
-      "each coefficient it reads of its one product is one term, and one product fused into a zero is that product rounded",
-      [ "Motor.log" ]
-      "a fused multiply-add",
-      "each entry it reads is one term of its products, or two equal terms, which fused or not round to twice one",
+      "where no term underflows, each entry it reads is one term of its products, or two equal terms, which fused or not round to twice one. Where a term underflows, a fused product can leave a negative zero in a fold, and no argument is given that none survives to an entry: the search draws translators whose parts underflow in a product beside a weight that does not, and finds that the zero terms after it restore the positive zero every time. That half is a search and no proof",
       [ "Translator.toMatrix" ]
       "a product of three factors formed from the right",
-      "on the four blades whose images it reads, either grouping forms the same terms: each entry is one term or two equal ones",
+      "no argument is given. On the four blades whose images it reads each entry is one term or two equal ones under the grouping shipped, and the search, over 450 configurations, finds that the other grouping answers the same bits. That is a search and no proof",
       [ "Translator.toMatrix" ]
       "the composition in the other order",
-      "two translators commute, and each coefficient of their product is the sum of the same two terms in either order",
+      "two translators commute, and each coefficient of their product has the same two terms that are not zeros in either order of the operands, a scalar part times a part each way, which one rounded sum adds alike",
       [ "Translator.compose" ] ]
 
 /// The rules D85 states by name, each with a committed vector that is red under the one member that
 /// names it: the vector, and the port.
 let private named: (string * string) list =
-    [ "Rotor.ofAxisAngle-at-a-sine-a-unit-from-correctly-rounded",
+    [ "Motor.ofScrew-searched-1000", "a direction divided by its norm a second time"
+      "Motor.ofLine-searched-of-a-weighted-line-1000", "a direction divided by its norm a second time"
+      "Rotor.ofAxisAngle-general-2", "a direction divided by its norm a second time"
+      "Reflection.ofNormalDistance-general-1", "a direction divided by its norm a second time"
+      "Motor.ofScrew-general-1", "a screw's point moved to the point of its axis nearest the origin"
+      "Motor.log-whose-one-product-underflows-to-a-negative-zero", "a fused multiply-add"
+      "Rotor.exp-of-zeros-keeps-each-sign", "an exponential's parts summed with a zero"
+      "Rotor.exp-of-a-bivector-with-a-zero-of-each-sign", "an exponential's parts summed with a zero"
+      "Motor.exp-of-a-vector-alone-is-one-and-the-vector", "an exponential's parts summed with a zero"
+      "Rotor.ofAxisAngle-at-a-sine-a-unit-from-correctly-rounded",
       "the correctly rounded sine and cosine where the pinned pair is a unit from them"
       "Rotor.ofAxisAngle-at-a-cosine-a-unit-from-correctly-rounded",
       "the correctly rounded sine and cosine where the pinned pair is a unit from them"
@@ -861,7 +892,7 @@ let tests =
 
           testCase "the versors' vectors are the shipped arithmetic's answers"
           <| fun () ->
-              Expect.equal (List.length versorVectors) 520 "the versors' vectors"
+              Expect.equal (List.length versorVectors) 531 "the versors' vectors"
 
               for c in versorVectors do
                   match answerUnder shipped c with
@@ -885,12 +916,12 @@ let tests =
               let computing =
                   Set.difference (versorVectors |> List.map (fun c -> c.Op) |> Set.ofList) copies
 
-              Expect.equal (List.length ports) 45 "forty-five wrong ports"
+              Expect.equal (List.length ports) 48 "forty-eight wrong ports"
 
               Expect.equal
                   drawnSample.Value.Length
-                  10653
-                  "the drawn sample: every computing function over a hundred and fifty configurations, and each matrix at its own thresholds"
+                  32001
+                  "the drawn sample: every computing function over four hundred and fifty configurations, and each matrix at its own thresholds"
 
               let listed =
                   [ for port, reason, functions in unable do
@@ -960,11 +991,31 @@ let tests =
                       (List.length findings)
                       (String.Join("\n", findings))
 
-              Expect.equal (red + notRead + listedUnable) (45 * 58) "every pair was read"
+              Expect.equal (red + notRead + listedUnable) (48 * 58) "every pair was read"
+
+              // The search is not blind to an underflow. A motor's logarithm reads one product each of
+              // whose coefficients is one term, so a fused product can move it only where that term
+              // underflows to a negative zero; and among the last three hundred configurations it does.
+              let _, _, fusedPort =
+                  ports |> List.find (fun (name, _, _) -> name = "a fused multiply-add")
+
+              let underflowing =
+                  drawnSample.Value
+                  |> Array.mapi (fun at (index, _, c) -> at, index, c)
+                  |> Array.filter (fun (at, index, c) ->
+                      index >= 150
+                      && c.Op = "Motor.log"
+                      && (match answerUnder fusedPort c with
+                          | Some cell -> C.cellText cell <> drawnShipped.Value[at]
+                          | None -> false))
+
+              Expect.isNonEmpty
+                  underflowing
+                  "a drawn logarithm of a motor moves under a fused product where its one term underflows"
 
               Expect.equal
                   (red, notRead, listedUnable)
-                  (326, 2221, 63)
+                  (335, 2385, 64)
                   "red, unable for not reading the member, unable for a listed reason"
 
           testCase "no function of the objects reads a member of the versors"
@@ -1044,6 +1095,112 @@ let tests =
                   Rotor.applyToPoint (V.rotorOf (V.floats doubled "v")) (V.pointOf (V.floats doubled "x"))
 
               Expect.equal (bitsOf image.N0) (bitsOf 4.0) "the weight of the image is four, and nothing repaired it"
+
+          testCase "an exponential places its coefficients, and the summed form fails each of three properties"
+          <| fun () ->
+              // DECISIONS.md D88 item 3: the scalar and the bivector part of an exponential lie on
+              // different blades, so a coefficient is placed and a zero keeps its sign. Three things
+              // follow, held here over a drawn sample with zeros of both signs, and each fails where
+              // the parts are summed with a zero: the shipped function with the one member changed.
+              let _, _, summed =
+                  versorPorts
+                  |> List.find (fun (name, _, _) -> name = "an exponential's parts summed with a zero")
+
+              let mutable state = 729.0
+
+              let next () =
+                  state <- (state * 48271.0) % 2147483647.0
+                  state
+
+              let drawn () : float =
+                  match int (next () % 4.0) with
+                  | 0 -> 0.0
+                  | 1 -> -0.0
+                  | _ -> next () / 1073741824.0 - 1.0
+
+              let sample =
+                  [ for _ in 1..500 -> (drawn (), drawn (), drawn ()), (drawn (), drawn (), drawn ()) ]
+
+              let same (xs: float list) (ys: float list) = List.map bitsOf xs = List.map bitsOf ys
+
+              // (b) `exp (−B)` is the reverse of `exp B`, bit for bit.
+              let negatedIsTheReverse (r: Arithmetic) ((b12, b13, b23), _) : bool =
+                  match Motion.rotorExp r (b12, b13, b23), Motion.rotorExp r (-b12, -b13, -b23) with
+                  | Ok e, Ok n -> same [ n.Scalar; n.E1E2; n.E1E3; n.E2E3 ] [ e.Scalar; -e.E1E2; -e.E1E3; -e.E2E3 ]
+                  | _ -> false
+
+              // (c) the logarithm of the exponential of a vector alone is the vector, bit for bit.
+              let vectorComesBack (r: Arithmetic) (_, (v1, v2, v3)) : bool =
+                  match
+                      Motion.motorExp r (0.0, 0.0, 0.0) (v1, v2, v3)
+                      |> Result.bind (Motion.motorLog r)
+                  with
+                  | Ok(_, (w1, w2, w3)) -> same [ w1; w2; w3 ] [ v1; v2; v3 ]
+                  | _ -> false
+
+              // (d) about a coordinate axis, the exponential of `−½θ â I₃` has the zeros, signs included,
+              // of the rotor built from the axis and the angle.
+              let axes =
+                  [ 1.0, 0.0, 0.0
+                    0.0, 1.0, 0.0
+                    0.0, 0.0, 1.0
+                    -1.0, 0.0, 0.0
+                    0.0, -1.0, 0.0
+                    0.0, 0.0, -1.0 ]
+
+              let zerosAgree (r: Arithmetic) ((a1, a2, a3): float * float * float) (theta: float) : bool =
+                  let h = 0.5 * theta
+
+                  match
+                      Motion.rotorOfAxisAngle r (a1, a2, a3) theta, Motion.rotorExp r (-(h * a3), h * a2, -(h * a1))
+                  with
+                  | Ok built, Ok e ->
+                      List.zip [ built.E1E2; built.E1E3; built.E2E3 ] [ e.E1E2; e.E1E3; e.E2E3 ]
+                      |> List.forall (fun (x, y) -> x <> 0.0 || bitsOf x = bitsOf y)
+                  | _ -> false
+
+              let angles = [ for _ in 1..50 -> 8.0 * (next () / 1073741824.0 - 1.0) ]
+
+              let allAxes (r: Arithmetic) =
+                  axes |> List.forall (fun axis -> angles |> List.forall (zerosAgree r axis))
+
+              Expect.isTrue
+                  (sample |> List.forall (negatedIsTheReverse shipped))
+                  "exp (−B) is the reverse of exp B, bit for bit"
+
+              Expect.isTrue (sample |> List.forall (vectorComesBack shipped)) "log (exp (v ∧ n∞)) is v, bit for bit"
+              Expect.isTrue (allAxes shipped) "the zeros of an axis-aligned exponential are the constructor's"
+              Expect.isFalse (sample |> List.forall (negatedIsTheReverse summed)) "summed, exp (−B) is not the reverse"
+
+              Expect.isFalse
+                  (sample |> List.forall (vectorComesBack summed))
+                  "summed, a negative zero of v does not come back"
+
+              Expect.isFalse
+                  (allAxes summed)
+                  "summed, an axis-aligned exponential loses the constructor's negative zeros"
+
+              // And the committed pair: one bivector and its negative, reverses of each other.
+              let cellOf (id: string) = C.committed.Value[id]
+              let h = ElementaryVectors.hex
+
+              match Rotor.exp (0.5, -0.0, 0.0) with
+              | Ok e ->
+                  let list (xs: float list) =
+                      "[" + String.Join(", ", xs |> List.map (fun x -> "\"" + h x + "\"")) + "]"
+
+                  Expect.equal
+                      (cellOf "Rotor.exp-of-a-bivector-with-a-zero-of-each-sign")
+                      (list [ e.Scalar; e.E1E2; e.E1E3; e.E2E3 ])
+                      "the exponential"
+
+                  Expect.equal
+                      (cellOf "Rotor.exp-of-that-bivector-negated-is-the-reverse")
+                      (list [ e.Scalar; -e.E1E2; -e.E1E3; -e.E2E3 ])
+                      "its negative's exponential is its reverse"
+
+                  Expect.equal (bitsOf e.E1E3, bitsOf e.E2E3) (bitsOf -0.0, bitsOf 0.0) "each zero keeps its sign"
+              | Error refusal -> failtestf "refused: %A" refusal
 
           testCase "the vectors on exact inputs answer what was worked by hand"
           <| fun () ->
@@ -1208,7 +1365,7 @@ let tests =
               let cases =
                   [ for c in evidence.GetProperty("cases").EnumerateArray() -> c.GetString() ]
 
-              Expect.equal (List.length cases) 10 "the row lists its cases"
+              Expect.equal (List.length cases) 11 "the row lists its cases"
 
               let source =
                   File.ReadAllText(

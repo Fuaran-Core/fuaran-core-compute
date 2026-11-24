@@ -2088,7 +2088,11 @@ module GeometricAlgebraVectors =
     /// every length about `2^centre` across `spread` binary orders either way, every angle within
     /// `(−4, 4)`. `zeros` says what an operation takes of each versor: `0` its coefficients times a
     /// drawn weight; `1` two coefficients in three replaced by a zero of a drawn sign; `2` every
-    /// coefficient a zero of a drawn sign; `3` every coefficient but a drawn one such a zero.
+    /// coefficient a zero of a drawn sign; `3` every coefficient but a drawn one such a zero; `4`
+    /// one coefficient in three as drawn, one in three a zero of a drawn sign, and one in three a
+    /// power of two between `2^-650` and `2^-450` of a drawn sign, so that a product of two of those
+    /// can underflow to a zero of either sign where the square of one of them does not, beside terms
+    /// that are ordinary.
     type private Moves(seed: int, centre: int, spread: int, zeros: int) =
         let d = Draw seed
 
@@ -2127,6 +2131,13 @@ module GeometricAlgebraVectors =
                     | 2
                     | 3 -> 0.0
                     | _ -> -0.0
+                | 4 ->
+                    match d.Int 0 5 with
+                    | 0 -> pow2 (d.Int -650 -450)
+                    | 1 -> -(pow2 (d.Int -650 -450))
+                    | 2 -> 0.0
+                    | 3 -> -0.0
+                    | _ -> w * v
                 | _ ->
                     if at = kept then w * v
                     elif d.Int 0 1 = 0 then 0.0
@@ -2135,7 +2146,16 @@ module GeometricAlgebraVectors =
         /// An object's coefficients as an operation takes them: as they are, or, where every
         /// coefficient of a versor is a zero, zeros of drawn signs too.
         let object (values: float[]) : float[] =
-            if zeros >= 2 then
+            if zeros = 4 then
+                values
+                |> Array.map (fun v ->
+                    match d.Int 0 5 with
+                    | 0 -> pow2 (d.Int -650 -450)
+                    | 1 -> -(pow2 (d.Int -650 -450))
+                    | 2 -> 0.0
+                    | 3 -> -0.0
+                    | _ -> v)
+            elif zeros >= 2 then
                 values |> Array.map (fun _ -> if d.Int 0 1 = 0 then 0.0 else -0.0)
             else
                 values
@@ -2309,7 +2329,10 @@ module GeometricAlgebraVectors =
     /// The configuration a search draws at an index: a third of them at each of three scales. Below
     /// ninety, the even ones have zeros of both signs among the versors' coefficients; from ninety,
     /// every coefficient of every versor and of every object a versor is applied to is a zero of a
-    /// drawn sign, all of them at the even indices and all but one of each versor's at the odd ones.
+    /// drawn sign, all of them at the even indices and all but one of each versor's at the odd ones;
+    /// and from a hundred and fifty, a third of the coefficients of each versor and of each object
+    /// are zeros of drawn signs and a third are powers of two so small that a product of two of them
+    /// underflows to a zero of either sign.
     let versorSearched (index: int) : Case list =
         let centre, spread =
             match index % 3 with
@@ -2325,7 +2348,8 @@ module GeometricAlgebraVectors =
                 6000 + index,
                 centre,
                 spread,
-                (if index >= 90 then 2 + index % 2
+                (if index >= 150 then 4
+                 elif index >= 90 then 2 + index % 2
                  elif index % 2 = 0 then 1
                  else 0)
             ))
@@ -2414,6 +2438,10 @@ module GeometricAlgebraVectors =
           // ---- the exponential and the logarithm of a rotor
           yield h "Rotor.exp" "of-zero-is-one" [ "bivector", v3 0.0 0.0 0.0 ]
           yield h "Rotor.exp" "of-zeros-keeps-each-sign" [ "bivector", v3 -0.0 0.0 -0.0 ]
+          // A coefficient is placed and never added to a zero: the exponential of a negated bivector
+          // is the reverse of the exponential, the sign of each zero included.
+          yield h "Rotor.exp" "of-a-bivector-with-a-zero-of-each-sign" [ "bivector", v3 0.5 -0.0 0.0 ]
+          yield h "Rotor.exp" "of-that-bivector-negated-is-the-reverse" [ "bivector", v3 -0.5 0.0 -0.0 ]
           yield h "Rotor.exp" "of-the-least-bivector" [ "bivector", v3 least 0.0 0.0 ]
           yield h "Rotor.exp" "of-a-quarter-turn-about-e3" [ "bivector", v3 -0.7853981633974483 0.0 0.0 ]
           yield h "Rotor.exp" "of-three-four-five" [ "bivector", v3 0.375 0.0 0.5 ]
@@ -2826,6 +2854,14 @@ module GeometricAlgebraVectors =
                   "at-an-arc-tangent-a-unit-from-correctly-rounded"
                   [ "v", Coefficients [| x; y; 0.0; 1.0; 0.0; 2.0; 3.0; 0.5 |] ]
 
+          // A product that underflows to a negative zero: the fold answers `+0.0` at the first
+          // component of the vector, where a product fused into the fold's zero answers `-0.0`.
+          yield
+              h
+                  "Motor.log"
+                  "whose-one-product-underflows-to-a-negative-zero"
+                  [ "v", Coefficients [| -0.5; 1.0; 0.0; -0.0; 1e-300; -0.0; -0.0; -1e-100 |] ]
+
           yield
               h
                   "Motor.log"
@@ -3079,6 +3115,14 @@ module GeometricAlgebraVectors =
           yield h "Rotor.toMatrix" "of-the-zero-rotor" [ "v", Coefficients [| 0.0; 0.0; 0.0; 0.0 |] ]
           yield h "Rotor.toMatrix" "of-a-weight-that-overflows" [ "v", Coefficients [| max; 0.0; 0.0; 0.0 |] ]
           yield h "Rotor.toMatrix" "of-a-rotor-that-holds-no-number" [ "v", Coefficients [| 1.0; nan; 0.0; 0.0 |] ]
+          // A scalar part of `2^-500` and translation parts of `2^-600`: the weight, the scalar part's
+          // square, is a double, and each product of the two underflows to a zero of its own sign. The
+          // fold answers `+0.0` at each entry of the last column.
+          yield
+              h
+                  "Translator.toMatrix"
+                  "whose-translation-underflows-beside-a-weight-that-does-not"
+                  [ "v", Coefficients [| pow2 -500; -(pow2 -600); pow2 -600; 0.0 |] ]
 
           yield
               h
@@ -3174,6 +3218,24 @@ module GeometricAlgebraVectors =
                   "of-columns-whose-squares-overflow"
                   0.0
                   (similarity (pow2 600, 0.0, 0.0) (0.0, pow2 600, 0.0) (0.0, 0.0, pow2 600) (0.0, 0.0, 0.0))
+          // A rotation with every entry times a power of two. Its columns' squared lengths are plain
+          // sums of squares: at `2^-519` it is read; at `2^-530` the squares are subnormal, their
+          // rounding is the statistic, and the refusal's name does not describe the matrix; at
+          // `2^-537` a square is zero.
+          let turned = ok (Rotor.toMatrix (ok (Rotor.ofAxisAngle (1.0, 2.0, 2.0) 1.0)))
+
+          for name, power in
+              [ "of-a-rotation-at-the-smallest-scale-it-reads", -519
+                "of-a-rotation-whose-squares-are-subnormal", -530
+                "of-a-rotation-whose-squares-underflow", -537
+                "of-a-rotation-at-the-largest-scale-it-reads", 511
+                "of-a-rotation-whose-squares-overflow", 512 ] do
+              yield
+                  m
+                      name
+                      (pow2 -40)
+                      (turned
+                       |> Array.mapi (fun i x -> if i % 4 < 3 && i < 12 then x * pow2 power else x))
 
           yield
               m
@@ -3293,7 +3355,9 @@ module GeometricAlgebraVectors =
           0, "Rotor.ofAxisAngle-searched-1000"
           0, "Motor.normalise-searched-1000"
           0, "Motor.toMatrix-searched-1000"
-          0, "Translator.toMatrix-searched-1000" ]
+          0, "Translator.toMatrix-searched-1000"
+          0, "Motor.ofLine-searched-of-a-weighted-line-1000"
+          0, "Motor.ofScrew-searched-1000" ]
 
     let private versorWitnesses: Case list =
         [ for index, id in versorChosen -> versorSearched index |> List.find (fun c -> c.Id = id) ]
@@ -3724,6 +3788,17 @@ module GeometricAlgebraVectors =
         | "leftContraction" -> multivectorCell (Multivector.leftContraction (mv c "a") (mv c "b"))
         | "scalarProduct" -> floatCell (Multivector.scalarProduct (mv c "a") (mv c "b"))
         | "squaredNorm" -> floatCell (Multivector.squaredNorm (mv c "a"))
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
         | op when isVersorOp op -> versorAnswer c
         | op when isVersorOp op -> versorAnswer c
         | op when isVersorOp op -> versorAnswer c

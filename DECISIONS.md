@@ -1,6 +1,6 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-11-24 — D88: rotors, translators, motors, dilators and reflections ship as versors of `Fuaran.Compute.GeometricAlgebra`, written to D85 and choosing nothing D85 fixed — five typed wrappers and a module of each one's name, a union of refusals for a matrix read back, and eight more cases of `GeometryRefusal`; every function written once over Phase 728's arithmetic, which gains a member for each new rule, so every go-red witness is the shipped function with one member changed; the five expressions D85 left to this phase each chosen by measurement against an exact or high-precision reference; 520 more vectors, each replayed bit for bit by a second implementation; forty-five wrong ports held against fifty-eight functions, by a red vector, by a function that does not read the member, or by a drawn search with a stated reason; five bounded laws, each pinned to one stated sample whose maximum is its bound; and the package's first reference, to `Fuaran.Compute.Elementary`
+## 2026-11-24 — D88: rotors, translators, motors, dilators and reflections ship as versors of `Fuaran.Compute.GeometricAlgebra`, written to D85 and choosing nothing D85 fixed — five typed wrappers and a module of each one's name, a union of refusals for a matrix read back, and eight more cases of `GeometryRefusal`; every function written once over Phase 728's arithmetic, which gains a member for each new rule, so every go-red witness is the shipped function with one member changed; the five expressions D85 left to this phase each chosen by measurement against an exact or high-precision reference; 531 more vectors, each replayed bit for bit by a second implementation; forty-eight wrong ports held against fifty-eight functions, by a red vector, by a function that does not read the member, or by a drawn search with a stated reason; five bounded laws, each pinned to one stated sample whose maximum is its bound; and the package's first reference, to `Fuaran.Compute.Elementary`
 
 **Context.** Phase 729. D85 recorded how a versor is built, applied, composed, exponentiated and read from a matrix;
 D86 shipped the products and D87 the objects a versor is applied to. This entry ships the versors. It chooses no sign,
@@ -59,15 +59,40 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
    `NonFiniteEntry`, `NotAffine`, `ZeroDivisor`, `NonFiniteDivisor`, `NotOneLength of float`,
    `NotOrthogonal of float`, `ReversesOrientation of float` and `NotANumber`, tested in that order.
 
-3. **Where D85 was read, and what was read.** None of these is a sign, a scale or an order.
+3. **Where D85 was read, and what was read.** The second of these is the sign of a zero, and is recorded as a
+   reading that can be revisited. None of the others is a sign, a scale or an order.
    - *A logarithm at a scalar part of zero is refused.* D85 item 4 answers `B′` itself "where `|B′| = 0` and
      `c > 0`" and refuses "at `B′ = 0` with `c < 0`". At `c = 0`, of either sign, the rotor is the zero rotor, no
      plane is determined either, and the answer is the same refusal: the test is `c > 0`, which item 6 lists.
-   - *A motor's exponential at `φ = 0` is `1 + v ∧ n∞` and holds `+0.0` on the three bivector blades*, where a
-     rotor's is `1 + B` and keeps the sign of each zero of `B`. Both are item 4's formulas as written.
+   - **The sign of a zero in an exponential: a reading of a point D85's words leave open, and recorded as one.**
+     D85 item 4 writes `exp B = cos φ + (sin φ / φ) B`, `1 + B` at `φ = 0`, and `1 + v ∧ n∞`. *One reading* takes
+     item 3's "a sum … is one rounded operation for each coefficient" onto those formulas: each coefficient is a sum
+     with a zero, so a `-0.0` of `B` or of `v` comes back `+0.0`. *The other,* which ships, PLACES each coefficient
+     on its blade: the scalar and the bivector part lie on different blades, no coefficient of the answer is a sum of
+     two terms, and a `-0.0` stays. So `Rotor.exp` of zeros keeps the sign of each, and a motor's exponential at
+     `φ = 0` holds the three coefficients of `v` as they are given (and `+0.0` on the three bivector blades, which
+     `1 + v ∧ n∞` does not carry). Four grounds, each tested before it was written here. (a) D85's own coefficient
+     forms place and do not add a zero: a rotor's `s × â2` at index 11 and a translator's `−(0.5 × t_i)` stand
+     beside the formulas `cos ½θ − sin ½θ (â I₃)` and `1 − ½ t ∧ n∞`. (b) Placed, `exp (−B)` is the reverse of
+     `exp B` bit for bit, zeros included; summed, it is not. (c) Placed, the logarithm of `exp (v ∧ n∞)` returns `v`
+     bit for bit, a negative zero included; summed, it does not. (d) Placed, the zeros of `Rotor.exp` of
+     `−½θ â I₃` about a coordinate axis have the signs `Rotor.ofAxisAngle` gives; summed, they are all positive. A
+     case holds (b), (c) and (d) over a drawn sample with zeros of both signs, and shows each fail under the port
+     that sums. **This is the phase's reading and no ruling of D85's**, whose words are not changed. It can be
+     revisited before the version is tagged, at the cost of the vectors that pin it:
+     `Rotor.exp-of-zeros-keeps-each-sign`, `Rotor.exp-of-a-bivector-with-a-zero-of-each-sign` and its negation,
+     and `Motor.exp-of-a-vector-alone-is-one-and-the-vector`.
    - *A motor's logarithm at `|B′| = 0`, `c > 0` answers the three `e_i ∧ n∞` coefficients themselves*, as a rotor's
      answers `B′` itself: nothing is divided by the scalar part, so a translator that is no unit answers its vector
-     part as stored (item 5).
+     part as stored (item 5). **For a motor that is no unit the answer is therefore discontinuous there**: this
+     branch scales with the motor, and the general branch, whose quotients divide the scale out, does not. Dividing
+     by the scalar part in this branch alone would be a normalisation nobody asked for (item 5); a caller normalises
+     first.
+   - *A value D85 says is used as it is given is used once.* A screw's `R` is the rotor about `û` as it is, not
+     divided by its norm a second time, and `p` is not moved along the axis; a line's direction over its weight, an
+     axis and a reflection's normal are divided once. Each is a member (item 4), because a second normalisation
+     moves a unit in the last place and is a port a vector must fail. A dilator's centre enters only through
+     `−(0.5 × c_i)`, an exact halving: there is no norm and no division for a port to repeat, and none is added.
    - *A versor's matrix is read as a point is.* The image of `n0` under the sandwich has a weight, its index 1; the
      twelve entries are the images of `e1`, `e2`, `e3` and `n0`, their indices 2 to 4, each divided by that weight
      (item 4: "coordinates are read by dividing by the weight"). So a versor that is no unit names the same
@@ -78,13 +103,15 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
 
 4. **Every function is written once, and its arithmetic is an argument** (D87 item 6). `Motion` holds each function
    that computes, taking Phase 728's `Arithmetic` first, and a published function is that function under
-   `Arithmetic.shipped`. The record gains seventeen members, each one rule: `SinCos` and `Atan2` (the pinned pair
+   `Arithmetic.shipped`. The record gains twenty members, each one rule: `SinCos` and `Atan2` (the pinned pair
    and the pinned arc tangent); `VersorReverse`; `Compose` (`B A`); `Screw` (the order of a screw's four factors);
    `ByQuotient` (a quotient formed once and then multiplied in: `sin φ / φ` and `φ / |B′|`); `IsZeroAngle` and
    `IsZeroBivector` (the two exact tests of item 6); `DilatorParts`; `Between` (the versor an interpolation takes
    the logarithm of, as formed); `SplitAlong` and `MotorAcross` (items 6 and 7 below); `MatrixIndex` (column-major);
    `Dot` and `Orientation` (a column's dot product and the triple product, as folds); `RotorOfRotation` and
-   `Canonical` (item 8 below). Fifty-eight functions compute and have such a door. Thirteen have none: the ten
+   `Canonical` (item 8 below); `UnitAsGiven` and `PointAsGiven` (a direction already of length one, and a screw's
+   point, each used as it is); and `Placed` (a coefficient of an exponential, placed and never added to a zero).
+   Fifty-eight functions compute and have such a door. Thirteen have none: the ten
    widenings and copies back, `Motor.ofRotor` and `Motor.ofTranslator`, and `Translator.ofVector`, which is one
    exact halving and a negation for each component and has no rule a port could change. The expressions measured
    and not chosen stay in the package, internal, beside the chosen ones (`Forms`), because each is a wrong port the
@@ -169,8 +196,18 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
      `3·10⁻²⁵⁷` to `1.5·10²²⁵`. And at `τ = 0` they are exact wherever the products are: of 2,000 integer similarities
      (an integer quaternion's rotation times its squared norm times an integer, seed 729) all 2,000 are accepted,
      where columns divided by the factor first accept 169 and lengths compared through their norms 1,282. The
-     squared lengths are the fold's: a column whose squares underflow is `ZeroDivisor` and one whose squares
-     overflow `NonFiniteDivisor`, so the test reads entries from about `10⁻¹⁵⁴` to `10¹⁵⁴` and refuses by name beyond.
+     squared lengths are the fold's, plain sums of squares, and **no threshold is added to guard them** (D85 item 6
+     allows none). What that costs was measured on a rotation about `(1, 2, 2)` by one radian with every entry
+     times a power of two, at `τ = 2⁻⁴⁰`. *Large:* read up to `2⁵¹¹` (about `6.7·10¹⁵³`); from `2⁵¹²` a square
+     overflows and the answer is `NonFiniteDivisor`. *Small, three bands:* read down to `2⁻⁵¹⁹` (about
+     `5.8·10⁻¹⁵⁷`); from `2⁻⁵²⁰` to `2⁻⁵³⁶` (about `2.9·10⁻¹⁵⁷` to `4.5·10⁻¹⁶²`) the squares are subnormal, their
+     rounding is the statistic, and the matrix is refused `NotOrthogonal` or `NotOneLength`, **a name that does
+     not describe it**, with a measure that is rounding and no geometry, `−2⁻¹⁴` at `2⁻⁵³⁰` (and at two scales of the
+     seventeen, `2⁻⁵²²` and `2⁻⁵³⁵`, it is accepted by the accident of that rounding); from `2⁻⁵³⁷` (about
+     `2.2·10⁻¹⁶²`) a square is zero and the answer is `ZeroDivisor`. The edges are this rotation's and move by a
+     binary order or two with another. An earlier form of this item said entries were read "from about `10⁻¹⁵⁴`"
+     and "refused by name beyond"; the small side of that was wrong, and five vectors now hold one scale in each
+     band. A caller whose entries are that small scales the matrix first, and the function's documentation says so.
      A length statistic cannot underflow to a zero (a difference that is not zero is at least a unit in the last
      place of the divisor); a cosine can, and two vectors hold each sign of it refused at `τ = 0` and accepted at
      the least threshold above it. The orientation is the sign of `(c_0 × c_1) · c_2`, each component of the cross
@@ -215,19 +252,23 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
     interpolations' figures are large:* a coefficient near zero beside others near one carries an absolute error of
     a unit in the last place of one, which is many of its own; the same is true of a coordinate near zero in the
     last column. The reference of the first five is exact by construction: `1`, the bivector drawn, the versor given.
+    **The two interpolation figures are pins of one sample and no statement of accuracy**: each is measured at
+    `t = 1` against coefficients near zero, and at another seed it reaches tens of millions of units in the last
+    place (a reviewer measured 42,743,482 at seed 2026).
 
-11. **The vectors, and what a wrong port is held to.** The law file holds 1,527: the 1,007 of Phases 727 and 728,
-    whose lines are unchanged (the last of them gains the comma that separates it from the next), and 520 over the
+11. **The vectors, and what a wrong port is held to.** The law file holds 1,538: the 1,007 of Phases 727 and 728,
+    whose lines are unchanged (the last of them gains the comma that separates it from the next), and 531 over the
     seventy-one functions. Of those, 234 are three drawn configurations through every function, a versor an
-    operation takes being its coefficients times a drawn weight, so that it is no unit; 259 are authored: each
+    operation takes being its coefficients times a drawn weight, so that it is no unit; 268 are authored: each
     refusal and the order of refusal, each side of each boundary, the laws on exact inputs, the half turns, a
     statistic at, below and above its threshold, each sign of a cosine that underflows, and the arguments at which
     Phase 725's law file records the pinned sine, cosine and arc tangent a unit from the correctly rounded double (a
-    rotor's angle is twice one; an interpolation is steered to one); and 27 are cases a search found, kept because
+    rotor's angle is twice one; an interpolation is steered to one), a product that underflows to a negative zero,
+    and a rotation at five scales of entry; and 29 are cases a search found, kept because
     a wrong port fails them where it failed no earlier vector of that function.
 
-    **What the suite holds of the wrong ports is computed** (D87 item 10), over forty-five ports and the fifty-eight
-    functions that compute, 2,610 pairs. The ports are Phase 728's twenty and these twenty-five, each
+    **What the suite holds of the wrong ports is computed** (D87 item 10), over forty-eight ports and the fifty-eight
+    functions that compute, 2,784 pairs. The ports are Phase 728's twenty and these twenty-eight, each
     `Arithmetic.shipped` with one member changed:
 
     | a port that | member |
@@ -248,30 +289,53 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
     | fuses the cross product | `Orientation` |
     | reads a rotor from the scalar's sum always | `RotorOfRotation` |
     | has no rule at a half turn; takes the last in a tie | `Canonical` |
+    | divides a direction by its norm a second time | `UnitAsGiven` |
+    | moves a screw's point to the point of its axis nearest the origin | `PointAsGiven` |
+    | sums an exponential's parts with a zero | `Placed` |
 
     For each pair, one of three things, and the case holds which: **a committed vector of that function is red
-    under the port (326 pairs); or the function does not read the member the port changes (2,221), by a table of
-    the members each function reads; or the function reads it and the port is listed unable, with the reason (63).**
+    under the port (335 pairs); or the function does not read the member the port changes (2,385), by a table of
+    the members each function reads; or the function reads it and the port is listed unable, with the reason (64).**
     In the second and the third the port answers the function as the shipped arithmetic does on every element of a
     drawn sample, and a pair for which the table is wrong, or a port that changes a drawn answer and fails no
-    committed vector, fails the case. *The sample* is 150 configurations: ninety drawn at three scales of coordinate,
-    the even ones with two coefficients in three of each versor a zero of a drawn sign; and sixty in which every
+    committed vector, fails the case. *The sample* is 450 configurations: ninety drawn at three scales of coordinate,
+    the even ones with two coefficients in three of each versor a zero of a drawn sign; sixty in which every
     coefficient of every versor and of every object it is applied to is a zero of a drawn sign, or every one but
-    one. Each matrix is asked again at every threshold its own statistics name. 10,653 elements. **It is a search
-    and no proof.** The sixty-three listed pairs: fifty-three are the fold seeded from a negative zero, which
-    answers otherwise only where every signed term of a coefficient is a negative zero, and no element of the
-    sample has such a coefficient; **that is the weakest entry here and is not proved**: no argument is given that
-    no typed operand has one. The other ten are a translator's functions and the one product a motor's logarithm
-    reads, whose coefficients are one term, or two that round alike: a translator's squared norm is the square of
-    its scalar part; two translators commute. A case holds that no function of Phase 728 reads a member this phase
+    one; and three hundred in which a third of those coefficients are such zeros and a third are powers of two
+    between `2⁻⁶⁵⁰` and `2⁻⁴⁵⁰` of a drawn sign, so that a product of two of them underflows to a zero of either sign
+    where the square of one need not. Each matrix is asked again at every threshold its own statistics name. 32,001
+    elements. **It is a search and no proof.** The sixty-four listed pairs, and what each reason is. Fifty-three
+    are the fold seeded from a negative zero, which answers otherwise only where every signed term of a coefficient
+    is a negative zero, and no element of the sample has such a coefficient; **that is the weakest entry here and is
+    not proved**: no argument is given that no typed operand has one. Two are the port that sums an exponential's
+    parts, on the two interpolations: argued, since the exponential enters one more product and the sign of a zero
+    factor cannot move a bit of a fold (D85 item 3). Six are argued from the terms a translator's functions and a
+    motor's logarithm read: a squared norm with one term that is not a zero, or two; two translators' product; and
+    the order of the one product a motor's logarithm reads. **Three are a search and say so**: the other order of
+    summation, a fused product and the other grouping, on `Translator.toMatrix`, where the terms of each entry
+    were not counted, a term that underflows can leave a negative zero in a fused fold, and nothing is argued
+    about whether one survives to an entry. A case holds that no function of Phase 728 reads a member this phase
     added.
 
+    **This listing was wrong once, and it is recorded.** Its first form listed the fused product unable on
+    `Motor.log`, "one product fused into a zero is that product rounded". That is false where the one term
+    underflows to a negative zero: the fold answers `+0.0 + (−0.0) = +0.0` and the fused product `-0.0`. A review
+    found the input, which is now the vector `Motor.log-whose-one-product-underflows-to-a-negative-zero`, red
+    under the fused port; and the sample, which drew no operand whose products underflow, now draws three hundred
+    configurations of them, and a case holds that it reaches that very difference in a drawn logarithm. Run over
+    every pair still listed, the widened search moved none; every reason was read again, and each now either
+    argues or says it is a search. The same review found that a port which divides a screw's axis by its norm a
+    second time failed no vector of `Motor.ofScrew` or `Motor.ofLine`: that is now a member, a port and a vector
+    of each, and the same question was asked of a screw's point, a reflection's normal and a line's direction
+    (item 3).
+
     **Each function, the vectors it has, and up to four wrong ports with a vector of that function each fails**
-    (RULE ONE of this phase: every published function has a vector a wrong port fails). A name is the vector's id
+    (every published function that computes has a vector a wrong port fails). A name is the vector's id
     after the function's. The short names of this phase's ports, in the order of the table above: rounded-sine,
     sine-up, cosine-up; rounded-angle, angle-up, arc-cosine; inverse; other-order; screw-order; quotient-each;
     zero-angle, zero-bivector; exp-ln, root-reciprocal; shorter; split-contraction, split-both; log-projection;
-    row-major; fused-dot, dot-order; fused-cross; scalar-sum; no-half-turn-rule, last-in-tie. Phase 728's ports keep
+    row-major; fused-dot, dot-order; fused-cross; scalar-sum; no-half-turn-rule, last-in-tie; unit-twice;
+    point-moved; summed. Phase 728's ports keep
     D87's short names. A function that copies has no rule to change, and its vectors hold each index and the sign
     of each zero.
 
@@ -284,11 +348,11 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
     | `Rotor.applyToPointPair` | 3 | inverse `general-1`; grouping `general-1`; fused `general-1`; order `general-1` |
     | `Rotor.applyToSphere` | 3 | inverse `general-1`; grouping `general-1`; fused `general-1`; order `general-1` |
     | `Rotor.compose` | 6 | other-order `general-1`; fused `general-2`; order `general-1` |
-    | `Rotor.exp` | 16 | rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; sine-up `general-1`; quotient-each `general-1`; zero-angle `of-zero-is-one`; and 6 more |
+    | `Rotor.exp` | 18 | summed `of-zeros-keeps-each-sign`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; sine-up `general-1`; quotient-each `general-1`; and 7 more |
     | `Rotor.interpolate` | 17 | inverse `general-1`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; rounded-angle `at-an-arc-tangent-a-unit-from-correctly-rounded`; sine-up `general-3`; and 14 more |
     | `Rotor.log` | 23 | rounded-angle `at-an-arc-tangent-a-unit-from-correctly-rounded`; angle-up `general-1`; arc-cosine `general-1`; quotient-each `general-1`; and 6 more |
     | `Rotor.normalise` | 10 | fused `searched-1017`; order `general-1`; reciprocal `general-1`; divisor `of-the-zero-rotor` |
-    | `Rotor.ofAxisAngle` | 20 | rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; sine-up `general-1`; reciprocal `general-2`; direction `of-a-zero-axis`; and 5 more |
+    | `Rotor.ofAxisAngle` | 20 | unit-twice `general-2`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; sine-up `general-1`; reciprocal `general-2`; and 6 more |
     | `Rotor.toMatrix` | 8 | inverse `general-1`; row-major `general-1`; grouping `general-1`; fused `general-1`; and 3 more |
     | `Rotor.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |
     | `Rotor.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |
@@ -300,7 +364,7 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
     | `Translator.applyToSphere` | 3 | inverse `general-1`; grouping `general-2`; fused `general-1`; order `general-1` |
     | `Translator.compose` | 5 | fused `general-1` |
     | `Translator.normalise` | 5 | reciprocal `general-1`; divisor `of-a-zero-scalar-part` |
-    | `Translator.toMatrix` | 5 | inverse `general-1`; row-major `general-1`; reciprocal `general-1`; divisor `searched-1000` |
+    | `Translator.toMatrix` | 6 | inverse `general-1`; row-major `general-1`; reciprocal `general-1`; divisor `searched-1000` |
     | `Translator.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |
     | `Translator.ofVector` | 8 | a wrong index, or a zero whose sign is lost: `halves-and-negates` |
     | `Translator.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |
@@ -311,14 +375,14 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
     | `Motor.applyToPointPair` | 3 | inverse `general-1`; grouping `general-1`; fused `general-1`; order `general-1` |
     | `Motor.applyToSphere` | 3 | inverse `general-1`; grouping `general-1`; fused `general-1`; order `general-1` |
     | `Motor.compose` | 4 | other-order `general-1`; fused `general-1`; order `general-1` |
-    | `Motor.exp` | 17 | rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; sine-up `general-1`; quotient-each `general-1`; zero-angle `of-zero-is-one`; and 10 more |
+    | `Motor.exp` | 17 | summed `of-a-vector-alone-is-one-and-the-vector`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; sine-up `general-1`; quotient-each `general-1`; and 11 more |
     | `Motor.interpolate` | 15 | inverse `general-1`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; rounded-angle `at-an-arc-tangent-a-unit-from-correctly-rounded`; sine-up `general-1`; and 17 more |
-    | `Motor.log` | 21 | rounded-angle `at-an-arc-tangent-a-unit-from-correctly-rounded`; angle-up `general-1`; arc-cosine `of-a-screw-about-a-line-parallel-to-e3`; quotient-each `general-1`; and 7 more |
+    | `Motor.log` | 22 | rounded-angle `at-an-arc-tangent-a-unit-from-correctly-rounded`; angle-up `general-1`; arc-cosine `of-a-screw-about-a-line-parallel-to-e3`; quotient-each `general-1`; and 8 more |
     | `Motor.normalise` | 7 | fused `searched-1033`; order `searched-1003`; reciprocal `general-1`; divisor `searched-1000` |
-    | `Motor.ofLine` | 19 | screw-order `general-1`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; sine-up `general-1`; fused `general-1`; and 8 more |
-    | `Motor.ofMatrix` | 72 | other-order `general-1`; row-major `general-1`; scalar-sum `general-1`; no-half-turn-rule `of-a-half-turn-whose-largest-component-comes-out-negative`; and 18 more |
+    | `Motor.ofLine` | 20 | unit-twice `searched-of-a-weighted-line-1000`; point-moved `general-of-a-weighted-line-3`; screw-order `general-1`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; and 10 more |
+    | `Motor.ofMatrix` | 77 | other-order `general-1`; row-major `general-1`; scalar-sum `general-1`; no-half-turn-rule `of-a-half-turn-whose-largest-component-comes-out-negative`; and 18 more |
     | `Motor.ofRotorTranslator` | 4 | other-order `general-1`; fused `general-1`; order `general-1` |
-    | `Motor.ofScrew` | 18 | screw-order `general-1`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; sine-up `general-1`; fused `general-2`; and 8 more |
+    | `Motor.ofScrew` | 19 | unit-twice `searched-1000`; point-moved `general-1`; screw-order `general-1`; rounded-sine `at-a-sine-a-unit-from-correctly-rounded`; and 10 more |
     | `Motor.toMatrix` | 5 | inverse `general-1`; row-major `general-1`; grouping `general-1`; fused `general-1`; and 3 more |
     | `Motor.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |
     | `Motor.ofRotor` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |
@@ -345,7 +409,7 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
     | `Reflection.applyToSphere` | 3 | grouping `general-1`; fused `general-1`; order `general-1` |
     | `Reflection.compose` | 7 | other-order `general-1`; fused `general-1`; order `general-1` |
     | `Reflection.normalise` | 7 | fused `searched-1037`; order `searched-1017`; reciprocal `general-2`; divisor `of-a-plane-at-infinity` |
-    | `Reflection.ofNormalDistance` | 9 | reciprocal `general-2`; direction `of-a-zero-normal`; norm `general-2`; and 3 more |
+    | `Reflection.ofNormalDistance` | 9 | unit-twice `general-1`; reciprocal `general-2`; direction `of-a-zero-normal`; norm `general-2`; and 3 more |
     | `Reflection.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |
     | `Reflection.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |
 
@@ -362,7 +426,7 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
 12. **How the family was cross-checked.** By a route that shares no code with the package: Phase 727's and Phase
     728's scratch route for the algebra and the objects (the orthonormal basis, blades as bitmaps, the table derived
     and held to D85's digests), and every function of this phase written again from D85 item 4 and this entry, once,
-    over a number type. *In binary64* it replays all 520 vectors, refusals and measures included, **bit for bit,
+    over a number type. *In binary64* it replays all 531 vectors, refusals and measures included, **bit for bit,
     with no mismatch**; the pinned sine, cosine and arc tangent it is given are `Fuaran.Compute.Elementary`'s own,
     which is Phase 725's package and has its own law file. *In exact rationals* fourteen vectors answer another
     case, each authored to overflow or underflow. It is also the program that measured items 6, 7 and 8. The
@@ -384,7 +448,9 @@ D87, then D86, then D85. The tree declares `0.47.0` and no `v0.47.0` tag exists.
 
 **Choices for review, each with the alternative.** The names of item 1 (against `apply` on a union or on a
 multivector). Eight cases on `GeometryRefusal` and a second union for the matrix (against one union with payloads, or
-a third for the versors). The refusal at a scalar part of zero (against answering a zero bivector). The matrix read
+a third for the versors). The refusal at a scalar part of zero (against answering a zero bivector). The sign of a zero in an exponential,
+placed and kept (against summed with a zero and lost; item 3, a reading that can be revisited before the tag). The
+matrix read
 through the origin's weight (against refusing a versor that is no unit). The unit bivector in the split (against the
 bivector's inverse). The three measured forms that ship in items 6 to 8, and the two statistics (against statistics
 of the normalised columns, which are not exact on integer matrices). The order in which a matrix is tested (length,

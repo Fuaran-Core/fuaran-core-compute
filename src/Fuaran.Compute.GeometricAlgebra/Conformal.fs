@@ -122,6 +122,15 @@ type internal Arithmetic =
         /// The sign of a rotor read from a matrix (D85 item 4): its scalar part is not negative, and
         /// at a half turn its axis component of largest magnitude is positive, the first in a tie.
         Canonical: float[] -> float[]
+        /// A direction already divided by its norm (an axis, a normal, a line's direction over its
+        /// weight): used as it is, and never divided by its norm a second time (D85 item 4).
+        UnitAsGiven: float * float * float -> float * float * float
+        /// The point a screw's axis passes through, beside the axis's unit direction: used as it is
+        /// given, never moved along the axis (D85 item 4).
+        PointAsGiven: float * float * float -> float * float * float -> float * float * float
+        /// A coefficient of an exponential: placed on its blade and never added to a zero, so that it
+        /// keeps the sign of a zero (D88 item 3).
+        Placed: float -> float
     }
 
 /// The one 2-norm (DECISIONS.md D49 item 4), transcribed: this package cannot reference
@@ -368,7 +377,10 @@ module internal Arithmetic =
           Dot = Forms.dot
           Orientation = Forms.orientation
           RotorOfRotation = Forms.rotorByLargestSum
-          Canonical = Forms.canonical }
+          Canonical = Forms.canonical
+          UnitAsGiven = id
+          PointAsGiven = fun p _ -> p
+          Placed = id }
 
 /// The index sets of DECISIONS.md D85 item 8's table and the groups of item 6, read off the blades.
 module internal Indices =

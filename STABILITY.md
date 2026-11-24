@@ -221,12 +221,19 @@ and no other file under `api/` or `api/wire/` moves. No function that existed an
    `Matrix.toColumnMajor` the other. `Motor.ofMatrix tau m` answers a motor and a factor, the dilation about the
    origin first; `tau` is the threshold of the test that the three columns are of one length and orthogonal, in
    statistics that have no unit, and `0` is the exact comparison, which an integer similarity passes. A shear, a
-   scale that is not uniform and a mirror are refused by name with the measure that failed. The test reads entries
-   of magnitude from about `10⁻¹⁵⁴` to `10¹⁵⁴` and refuses beyond.
-6. **The sine, the cosine and the arc tangent are the pinned ones**, so a rotor from an angle is the same bits on
+   scale that is not uniform and a mirror are refused by name with the measure that failed. **Scale a matrix of
+   very small or very large entries first.** The test sums squares of the entries and guards them with no
+   threshold: a rotation is read with entries up to about `6·10¹⁵³` and refused `NonFiniteDivisor` beyond; it is
+   read down to about `6·10⁻¹⁵⁷`; between about `3·10⁻¹⁵⁷` and `4·10⁻¹⁶²` the squares are subnormal and a true
+   similarity is refused `NotOrthogonal` or `NotOneLength`, a name that does not describe it, with a measure that
+   is rounding; and below about `2·10⁻¹⁶²` it is refused `ZeroDivisor`. The edges are one measured rotation's.
+6. **An exponential keeps the sign of a zero.** `Rotor.exp (-0.0, 0.0, -0.0)` holds those three zeros as given, so
+   `exp (−B)` is the reverse of `exp B` bit for bit. This is the phase's reading of a point D85's words leave open
+   (D88 item 3) and can be revisited before `0.47.0` is tagged.
+7. **The sine, the cosine and the arc tangent are the pinned ones**, so a rotor from an angle is the same bits on
    every host and as accurate as D84 measured `sinCos`, which is not correct rounding. The dilator is a root and two
    divisions and is exact at a power of four.
-7. **An identity holds to rounding, and each stated bound is one sample's maximum.** Over the samples D88 records,
+8. **An identity holds to rounding, and each stated bound is one sample's maximum.** Over the samples D88 records,
    a rotor times its reverse is within 2.5 units in the last place of one, the logarithm of a rotor's exponential
    within 3 of the bivector, and a rotation, a translation and a uniform scale applied to a point through the
    matrix within 1,534 units in the last place of the same point through the versor. The larger figures are
