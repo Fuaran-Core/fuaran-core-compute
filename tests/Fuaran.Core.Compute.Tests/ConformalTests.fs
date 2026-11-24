@@ -1296,10 +1296,12 @@ let private floatLiterals (source: string) : string list =
           m.Value ]
 
 /// The ways a tolerance could be had without a float literal the census counts: a default for an
-/// argument, the least double by name, and a float made from an integer or a string literal.
+/// argument, the least double by name, a float made from an integer or a string literal by `float`,
+/// and the two tokens no operation module has a use for: `double`, the other name of that
+/// conversion, and anything named for parsing (`Double.Parse`, `TryParse`), whatever it is given.
 let private defaults =
     Regex
-        @"\bdefaultArg\b|\bOption\.defaultValue\b|\bdefaultWith\b|\bValueOption\.default\w*|\bEpsilon\b|\bfloat(?:32)?\s*\(?\s*(?:""""|-?\d)|(?<=[(,]\s*)\?\s*[A-Za-z_]\w*"
+        @"\bdefaultArg\b|\bOption\.defaultValue\b|\bdefaultWith\b|\bValueOption\.default\w*|\bEpsilon\b|\bfloat(?:32)?\s*\(?\s*(?:""""|-?\d)|\bdouble\b|\b\w*Parse\w*\b|(?<=[(,]\s*)\?\s*[A-Za-z_]\w*"
 
 /// The float literals the record accounts for, by module: the literal, how often it is written, and
 /// what it is there for. A literal that is not here, or is here another number of times, is a finding.
@@ -2003,6 +2005,11 @@ let tests =
                     "let least = System.Double.Epsilon"
                     "let parsed = float \"1e-9\""
                     "let ratio = float 1 / float 1_000_000_000"
+                    // The two forms the account omitted until Phase 729: the conversion under its other
+                    // name, and a parsed string, in a literal or in a variable.
+                    "let ratio = double 1 / double 1_000_000_000"
+                    "let parsed = Double.Parse \"1e-9\""
+                    "let parsed (text: string) = System.Double.TryParse text"
                     "let side tau = decide (Option.defaultWith (fun () -> one) tau)"
                     "let side tau = decide (ValueOption.defaultValue one tau)"
                     "let far = infinity"

@@ -443,13 +443,18 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
     reads a literal with a decimal point, an exponent, underscores, a suffix (`1.0f`, `1e-9M`) or as a hexadecimal
     double, and the names `infinity`, `nan`, `NaN`, `PositiveInfinity`, `NegativeInfinity`, `MaxValue` and
     `MinValue`; and it refuses `defaultArg`, `Option.defaultValue`, `defaultWith`, `ValueOption.default…`, `Epsilon`,
-    an optional parameter, and a `float` conversion of an integer or a string literal. It is shown red on
-    twenty-one shapes, among them a default argument, a constant with a neutral name, the literal `1.`, an operator
-    section, a comparison split over lines, a match on `0.0`, `0x…LF`, `1_000.0`, `Double.Epsilon`, `float "1e-9"`,
-    `float 1 / float 1_000_000_000` and `infinity`. **What it cannot see:** a float that reaches these modules
-    without a token of its own in them. A constant defined in another assembly, a value built from bits
+    an optional parameter, a `float` conversion of an integer or a string literal, and two tokens outright, since no
+    operation module has a use for either: `double`, the other name of that conversion, and any name that holds
+    `Parse` (`Double.Parse`, `TryParse`), whatever it is given. It is shown red on twenty-four shapes, among them a
+    default argument, a constant with a neutral name, the literal `1.`, an operator section, a comparison split over
+    lines, a match on `0.0`, `0x…LF`, `1_000.0`, `Double.Epsilon`, `float "1e-9"`, `float 1 / float 1_000_000_000`,
+    `double 1 / double 1_000_000_000`, `Double.Parse "1e-9"`, `System.Double.TryParse text` and `infinity`. _(The two
+    tokens and their three shapes were added in Phase 729: this list first said a `float` conversion was refused and
+    did not say that `double` and a parsed string literal were not.)_ **What it cannot see:** a float that reaches
+    these modules without a token of its own in them. A constant defined in another assembly, a value built from bits
     (`BitConverter.Int64BitsToDouble`), one computed from accounted literals alone (`0.5 * 0.5 * …` raises the count
-    of `0.5` and is seen; a loop that halves `1.0` is not), and one parsed from a string held in a variable are
+    of `0.5` and is seen; a loop that halves `1.0` is not), a `float` conversion of an integer held in a variable
+    (`float n`), and a conversion that is neither of the two names nor a parse (`Convert.ToDouble`, an `unbox`) are
     all outside it. It is a regular expression and not the compiler's lexer.
     Another holds the object modules to no host call but the root. `api/Fuaran.Compute.GeometricAlgebra.txt`
     is regenerated and no other baseline moves; every other law file is byte-identical; `gate-reads.json` does not
