@@ -231,13 +231,25 @@ let private moduleName (t: Type) : string =
     else
         n
 
+/// The modules whose public functions are the package's operations: the multivector's, and since
+/// Phase 728 the blade operations and one module for each object type.
+let private operationModules =
+    [ "Multivector"
+      "Blade"
+      "Point"
+      "PointPair"
+      "Line"
+      "Circle"
+      "Plane"
+      "Sphere" ]
+
 /// The public functions of the package's operation modules, spelled `<Module>.<function>` — the census
 /// `GeometricAlgebraOperations.exactness` is held to.
 let private publishedOperations () : Set<string> =
     algebraAssembly.GetExportedTypes()
     |> Array.filter (fun t -> t.IsAbstract && t.IsSealed && not t.IsNested)
     |> Array.collect (fun t ->
-        if List.contains (moduleName t) [ "Multivector" ] then
+        if List.contains (moduleName t) operationModules then
             t.GetMethods(BindingFlags.Public ||| BindingFlags.Static)
             |> Array.filter (fun m -> not m.IsSpecialName)
             |> Array.map (fun m -> moduleName t + "." + m.Name)
@@ -261,7 +273,7 @@ let tests =
                       | Error why -> Some(name + ": " + why))
 
               Expect.isEmpty failures "every law of the geometric algebra holds"
-              Expect.equal (GeometricAlgebraLaws.laws 590 1 |> List.length) 18 "eighteen laws are run"
+              Expect.equal (GeometricAlgebraLaws.laws 590 1 |> List.length) 27 "twenty-seven laws are run"
 
           testCase "the committed law vectors are the package's answers"
           <| fun () ->
@@ -885,7 +897,7 @@ let tests =
               // Every operation that computes has a vector in the committed file.
               let vectored =
                   GeometricAlgebraVectors.cases
-                  |> List.map (fun c -> "Multivector." + c.Op)
+                  |> List.map (fun c -> if c.Op.Contains "." then c.Op else "Multivector." + c.Op)
                   |> Set.ofList
 
               Expect.equal
@@ -946,7 +958,29 @@ let tests =
 
               Expect.equal
                   mine
-                  (set [ "Multivector"; "GeometricAlgebraOperations"; "GeometricAlgebraLaws" ])
+                  (set
+                      [ "Multivector"
+                        "GeometricAlgebraOperations"
+                        "GeometricAlgebraLaws"
+                        // Phase 728: the blade operations, the six objects of D85 item 8 with a module
+                        // of each one's name, the refusals and the kinds (D87).
+                        "Blade"
+                        "Point"
+                        "PointPair"
+                        "Line"
+                        "Circle"
+                        "Plane"
+                        "Sphere"
+                        "GeometryRefusal"
+                        "Reality"
+                        "PointPairKind"
+                        "CircleKind"
+                        "SphereKind"
+                        "FlatKind"
+                        "PairPoints"
+                        "LineMeet"
+                        "Side"
+                        "PlaneSide" ])
                   "the package's top-level names"
 
               // `open Fuaran.Compute.GeometricAlgebra` beside another package's namespace must not shadow
