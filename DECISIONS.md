@@ -200,8 +200,8 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
     non-finite ones among its draws) finds no case the port answers otherwise. A port that changes a drawn answer and
     fails no committed vector of that function fails the case; three such were found while the vectors were written:
     the two drawn cases that showed (f) and (m) changing `compact` are committed (`drawn-2-compact`,
-    `drawn-6-compact`), and an authored vector was added for (k) on `apply` (`apply-add-a-name-that-orders-first`). The reasons are of two
-    kinds, and the listing says which: **the function does not read the member** (an argument from the source: the
+    `drawn-6-compact`), and an authored vector was added for (k) on `apply`
+    (`apply-add-a-name-that-orders-first`). The reasons are of two kinds, and the listing says which: **the function does not read the member** (an argument from the source: the
     member is not on its path), and **the function answers a verdict or the ops it was given, never an object, and the
     port leaves every verdict as it was** (an argument for each port, stated beside it in the listing, which the search
     then fails to break). Neither is a proof, and the listing never says "cannot".
