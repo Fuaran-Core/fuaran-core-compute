@@ -25,8 +25,8 @@ moved by a factor of up to 2.34 on .NET and 2.09 under node, on a machine that w
 product is kept only where, on BOTH hosts, the GREATEST of its three run medians is below the LEAST of the general
 product's three run medians on the same operands divided by **2.5**: a pessimistic speed-up of at least two and a half
 times, which the general product's own spread in the baseline did not reach (the final tree's own spread did, on
-.NET: item 8). A product that does not clear it on either host is
-deleted in the change that measured it, and named below with its numbers.
+.NET: item 8). A product that does not clear it on either host is deleted in the change that measured it, and named
+below with its numbers.
 
 **The route, chosen before any specialisation was measured: a table filtered from the general one when the module is
 first read.** A specialisation is a pair of operand types, each a mask of the blades it carries, and the terms of
@@ -38,6 +38,11 @@ table, possibly faster, but a generator and a generated source the build and the
 for a gain this phase has not measured); and inlining (an inlined function still loops over its table, and this
 phase knows of no compiler on either host that turns a loop over a filtered array into straight-line code; it did
 not try one).
+
+**What was edited after measuring.** The two paragraphs above were committed in `42bb282`, before any specialisation
+was measured. After it, `42ff4d3` edited two passages in them: the parenthetical on the final tree's own spread in the
+margin paragraph, and the wording of the rejected inlining route. The rule's own sentence, from "a specialised product
+is kept only where" to "divided by **2.5**", is as `42bb282` committed it.
 
 **Ruled.**
 
@@ -125,7 +130,9 @@ not try one).
    `Multivector.geometricProduct` or from a typed function. *Rejected:* publishing.
 8. **The measurement after, and the verdict.** Taken on the final tree (`73f765d`), three runs on each host, by the
    procedure and commands of the baseline. Every figure here and in the results file is computed from the committed
-   captures by `benchmarks/results/2026-11-24-i7-8650u-phase-730/figures.py`.
+   captures by `benchmarks/results/2026-11-24-i7-8650u-phase-730/figures.py`, except the script-host figures of item 9
+   (4.5 to 4.6 µs, 2.0 to 2.4 µs and 4.6 µs), which are reported from runs that were not captured to files and cannot
+   be recomputed.
    - *The rule, as `42bb282` stated it before measuring, on its designated runs* (the three final runs on each host,
      the general product's medians from the same runs, on the same operands): the least general median over the
      greatest specialised one.
@@ -169,7 +176,7 @@ not try one).
      checksum is the baseline's.
    - *The typed functions*, by the middle of each three medians, base over final: the six served functions the
      benchmark measures are 6.33 to 8.73 times faster on .NET (`Motor.applyToPoint` from 5656 to 894 ns) and 6.69 to
-     11.72 times under node (`Motor.applyToPoint` from 220992 to 37504 ns). `Sphere.power`, which no pair serves, ran
+     11.72 times under node (`Motor.applyToPoint` from 251008 to 37504 ns). `Sphere.power`, which no pair serves, ran
      at 279, 265 and 453 ns on the final tree's designated runs against 266 to 289 on the base's, and at 266 to 283 in
      the four `pgo-final` runs; the 453 is one run, and its cause is not established.
 9. **What the .NET measurements found beside the verdict, and what was done.** Three things, in the order they were
@@ -232,14 +239,14 @@ to implement for (item 7); `STABILITY.md` records it under the `0.47.0` draft. T
 `GeometricAlgebraLaws.fs`, the package's project file, `ConformalTests.fs`, `VersorTests.fs`,
 `GeometricAlgebraTests.fs`, `SpecialisedProductTests.fs`, the test project file, `proofs.json`, the bench and the node
 leg's project and program, `README.md`, `STABILITY.md`, the results file with its captures and the script that
-computes its figures (`figures.py`, added so that no figure here is read by eye), and this file. *Moved, not copied:*
+computes its figures (`figures.py`, added so that no captured figure here is read by eye), and this file. *Moved, not copied:*
 the five versors' index sets left `Motion` for `Indices`, where the objects' already were, so that the specialised
 pairs read the one copy; `Motion` names them from there. *Made one:* the published geometric product and the fallback
 are one function (item 9) rather than two inlined copies. *Reused instead of minted:* the versors' suite's dispatch of
 a vector to its function, made `internal` (two words) rather than copied into the new suite. *Considered and kept:*
 `Multivector.zero` and `grade` now build through `Kernel.adopt`, which canonicalises a NaN their inputs never hold —
-kept, so that one function builds every untyped value; the three notes Phase 725's review left in the Elementary
-sources are not this change's files.
+kept, so that one function builds every untyped value; three earlier notes about the Elementary sources concern files
+this change does not touch.
 
 ## 2026-11-24 — D88: rotors, translators, motors, dilators and reflections ship as versors of `Fuaran.Compute.GeometricAlgebra`, written to D85 and choosing nothing D85 fixed — five typed wrappers and a module of each one's name, a union of refusals for a matrix read back, and eight more cases of `GeometryRefusal`; every function written once over Phase 728's arithmetic, which gains a member for each new rule, so every go-red witness is the shipped function with one member changed; the five expressions D85 left to this phase each chosen by measurement against an exact or high-precision reference; 533 more vectors, each replayed bit for bit by a second implementation; forty-nine wrong ports held against fifty-eight functions, by a red vector, by a function that does not read the member, or by a drawn search with a stated reason; five bounded laws, each pinned to one stated sample whose maximum is its bound; and the package's first reference, to `Fuaran.Compute.Elementary`
 
