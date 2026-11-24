@@ -1,13 +1,13 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-11-24 — D90: geometric transforms ride the op stream as a parametric op algebra in `Fuaran.Compute.GeometricAlgebraOps`, written to D85 item 9 and choosing nothing D85 fixed — a state of named objects ordered by the caller's comparison; D85 item 9's seven ops with its parameters and no coefficient; replay through the algebra's published constructors and `applyTo…`, computing nothing of its own; every refusal named and the state left the same value; a codec that writes every float as its bit pattern, D51 item 7's rule; the `Fuaran.Core.OpStream` witness; an inverse for six ops, exact only for `Add`; the compaction of a run of translations, or of rotations and screws about one axis, which nothing else calls; 209 vectors; twenty-one wrong ports held against nine functions; seven bounded laws, each pinned to one stated sample; and two points D85 leaves open, recorded with their options
+## 2026-11-24 — D90: geometric transforms ride the op stream as a parametric op algebra in `Fuaran.Compute.GeometricAlgebraOps`, written to D85 item 9 and choosing nothing D85 fixed — a state of named objects ordered by the caller's comparison; D85 item 9's seven ops with its parameters and no coefficient; replay through the algebra's published constructors and `applyTo…`, computing nothing of its own; every refusal named and the state left the same value, an object that would hold a NaN refused; a codec that writes every float as its bit pattern, D51 item 7's rule; the `Fuaran.Core.OpStream` witness; an inverse for six ops, exact only for `Add`, and answered only where the state after the op accepts it; the compaction of a run of translations, or of rotations and screws about one axis, which nothing else calls; 240 vectors; twenty-three wrong ports held against nine functions; seven bounded laws, each pinning one stated sample; and three points D85 leaves open, recorded with their options
 
 **Context.** Phase 731. D85 item 9 ruled this package's id, its references, its state ("a set of named objects,
 generic in the name: the caller supplies the identity and its encoding"), its first op list and its refusals; item 10
 keeps coefficients off a wire; items 4 to 7 fix the constructions, the sandwich, that nothing normalises, that no
 threshold is a constant, and the form of a bound. This entry records what D85 left to this phase: the names, the
-order of the state, the codec's spelling, each inverse and its bound, the compaction and its bounds, and how each is
-held. `Fuaran.Compute.ColumnOps` is the shape followed: an op union, a total `apply`, `canApply` as `apply` with its
+order of the state, the codec's spelling, each inverse and the compaction with the figures pinned on their samples,
+and how each is held. `Fuaran.Compute.ColumnOps` is the shape followed: an op union, a total `apply`, `canApply` as `apply` with its
 answer discarded, an `invert` guarded by `canApply` and partial, a canonical codec and a stream witness.
 
 **Premise check** (on `84532a5`, the tree this phase was cut from). Phases 727 to 730 are on it, and the algebra
@@ -32,8 +32,8 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
    and a radius). `GeometricObject`: the algebra's six typed blades, one case each. `GeometricOp<'N>`: `Add`, `Remove`,
    `Rotate`, `Translate`, `Scale`, `Reflect` and `Screw`, each with item 9's parameters in item 9's order.
    `GeometricOpRefusal<'N>`: `UnknownName`, `NameAlreadyPresent`, `Geometry` (the algebra's `GeometryRefusal`, carried
-   as its constructor gave it) and `NotInvertible`. `GeometricState<'N>` and its module (`empty`, `toList`, `tryFind`,
-   `count`); the module `GeometricOps` (`apply`, `canApply`, `applyAll`, `invert`, `encode`, `decode`,
+   as its constructor gave it), `NotANumber` (item 5), `NotInvertible` and `InverseRefused` (item 8).
+   `GeometricState<'N>` and its module (`empty`, `toList`, `tryFind`, `count`); the module `GeometricOps` (`apply`, `canApply`, `applyAll`, `invert`, `encode`, `decode`,
    `streamWitness`, `compact`); `GeometricAlgebraOpsOperations` and `GeometricAlgebraOpsLaws`, the names D85 item 7
    gave. Every union is `RequireQualifiedAccess`, so opening both namespaces brings no case named `Point` beside the
    algebra's type.
@@ -65,13 +65,27 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
    and angle, angle and distance, and centre and factor are each both at fault. A constructor's refusal is carried as
    `Geometry` with the algebra's own case, and never re-derived: a non-finite parameter (`NonFiniteCoordinate`,
    `NonFiniteAngle`, `NonFiniteDistance`, `NonFiniteTranslation`), a zero-length direction (`ZeroDirection`), a
-   factor that is not positive (`NonPositiveFactor`, `−0.0` included) and a negative radius (`NegativeRadius`). A
-   refused op answers its refusal and the caller keeps the state it had: `applyAll` hands back the same value, held by
-   a law over every refusal its drawn histories meet. `canApply` is `apply` with its state discarded, so the two agree
+   factor that is not positive (`NonPositiveFactor`, `−0.0` included), a negative radius (`NegativeRadius`), and
+   `NotANumber`, which `Motor.ofScrew` answers for a rotation or a screw whose motor holds a NaN (its products
+   overflowed: an axis's point of an overflowing scale, say). Where a motor overflows the constructor refuses rather
+   than answering an infinity, and this package carries what it answers; D85 does not rule on which a constructor
+   should do. **One refusal is this package's own, an addition to D85 item 9's list:** an op whose object would hold
+   a NaN in any coefficient is refused, `NotANumber` with the object's name, the state unchanged. Every op but
+   `Remove` can reach it: an object at an overflowing scale holds an infinity, which is a value (a point at
+   `(1e200, 0, 0)` holds `+∞` at `n∞`, and its `Add` is accepted), and a product that meets it can form
+   `∞ − ∞` or `0 × ∞`; the vectors hold one case of each of the six ops that reaches it, under `apply`,
+   `canApply` and `applyAll`. It follows the algebra's own record (D87, D88), that an `Ok` holds no NaN and an
+   infinity is a value. It is a test of the result, `Double.IsNaN` over the object's coefficients, and no
+   arithmetic, and `canApply` agrees because it is `apply` discarded. *Rejected:* an `Ok` that holds a NaN, which
+   would let a history carry a NaN silently into every later op and leave a state no comparison can hold, since a
+   NaN equals nothing. A law holds that no `Ok` state holds a NaN over drawn histories whose parameters overflow
+   and underflow, on .NET and under node. A refused op answers its refusal and the caller keeps the state it had:
+   `applyAll` hands back the same value, held by a law over every refusal its drawn histories meet. `canApply` is `apply` with its state discarded, so the two agree
    both ways by construction and by law. `applyAll` applies each op in turn, in the order given, and a refused op
    leaves the state as it was and is noted with its index; the next op is applied after it. *Rejected:* halting at the
    first refusal, as `ColumnOps.applyAll` does, which would make one bad op of a script cost every op after it. A
-   recorded stream holds no refused op: `OpStream.append` chains no record for one.
+   recorded stream holds no refused op: `OpStream.append` chains no record for one, and `OpStream.replay` halts at
+   one, so `applyAll` continuing past a refusal never touches a recorded history.
 
 6. **The codec, and the float rule.** An op is canonical JSON under `Rendering.CrossHost`: `$type` (`add`, `remove`,
    `rotate`, `translate`, `scale`, `reflect`, `screw`; a form's `point`, `pointPair`, `line`, `circle`, `plane`,
@@ -90,7 +104,8 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
    `members: expected …, found …` (the member set is closed), a member that is not its count of lowercase hex digits,
    and `name: …` with the caller's reason. The wire-surface baseline shows parametric members only, and a case reads
    every encoded op and form for that: each member is one of the names above, and each float member is sixteen or
-   forty-eight digits, never a coefficient list (D85 item 10).
+   forty-eight digits, never a coefficient list (D85 item 10). What the bit pattern costs, and that the rule is an
+   open point for the owner, is G3 below.
 
 7. **The stream witness, and undo.** `GeometricOps.streamWitness naming` is `{ Apply = apply; Encode = encode naming;
    Decode = decode naming }`, so `OpStream.append`, `verifyChain` and `replay` chain, verify and replay a history, and
@@ -98,26 +113,48 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
    bits and verifies (a law); undo is truncate and replay, and a stream truncated to `k` records replays to exactly
    the state its first `k` appends produced (a law, every `k` of every drawn history).
 
-8. **The inverse of each op.** `invert op s` is guarded by `canApply op s`, as `ColumnOps.invert` is since Phase 181:
-   an op `s` refuses has no inverse, and its refusal is the answer.
+8. **The inverse of each op.** `invert op s` is guarded twice. By `canApply op s`, as `ColumnOps.invert` is since
+   Phase 181: an op `s` refuses has no inverse, and its refusal is the answer. And by the state after the op, as the
+   compaction is guarded (item 9): an inverse that state would refuse is not answered, and the answer is
+   `InverseRefused` carrying the refusal `apply` would give it. Every transform can reach the second guard. A
+   `Scale` by a positive factor whose reciprocal overflows (below about `5.56e-309`: `1e-310` about the origin,
+   applied to the origin's point, is accepted, and its inverse would be the scale by `+∞`) is answered
+   `InverseRefused (Geometry NonFiniteFactor)`. And any transform whose state, undone, would hold a NaN is answered
+   `InverseRefused (NotANumber …)`: from the point `(1, 2, 3)`, a translation by `(1e300, 0, 0)`, a rotation about
+   an axis through `(1e300, 0, 0)`, a reflection in a plane at `1e300`, a screw `1e300` along its axis, and a
+   scale of `(1, 0, 0)` by `1e-308`, each accepted, each with an inverse the state after it refuses. The vectors
+   hold one of each (`invert-refused-inverse-…`), a wrong port with the guard removed is red on them, and a law
+   holds over drawn histories with parameters of an overflowing scale and subnormal ones that an inverse `invert`
+   answers is accepted by the state after the op, and that one it refuses is refused there as it says. The search
+   that found these is the suite's wide draw (item 12) and a larger one run outside the suite and not committed;
+   neither is a proof that no other input reaches the guard, and none needs to be: the guard reads the answer.
 
    | op | inverse | exact? |
    |---|---|---|
    | `Add (n, _)` | `Remove n` | yes: the remove deletes the one entry the add placed, and every other entry and its place are untouched. Held bit for bit by a law over drawn histories; the argument is the proof, the law a search that fails to break it |
    | `Remove n` | none: `NotInvertible "Remove"`, answered before the guard | — |
    | `Rotate (n, p, û, θ)` | `Rotate (n, p, û, −θ)` | no |
-   | `Translate (n, t)` | `Translate (n, −t)` | no |
+   | `Translate (n, t)` | `Translate (n, −t)` | not in general, and exact in value where every product and partial sum of the two sandwiches is a double (below) |
    | `Scale (n, c, s)` | `Scale (n, c, 1.0 / s)`, one rounded division | no |
    | `Reflect (n, n̂, δ)` | itself | no: the op is its own inverse, and the state does not come back bit for bit (105.5 units in the last place of the object's largest coefficient on the stated sample) |
    | `Screw (n, p, û, θ, d)` | `Screw (n, p, û, −θ, −d)` | no |
+
+   *A translation.* A translation of quarters, of a point, a point pair or a sphere of quarters, undone, is the object
+   it was in value: every product and partial sum of the two sandwiches is a double, so each is exact, and the
+   inverse of an exact operation on exact values is exact. It is not bit for bit: a coordinate of `-0.0` comes back
+   `+0.0`, since `-0.0 + t − t` is `+0.0` (`applyAll-a-translation-undone-on-a-point-of-quarters`). A law holds it
+   under the float identity on drawn objects of quarters. Outside such inputs it is not exact: the point
+   `(0.1, 0, 0)` translated by `(0.7, 0, 0)` and back has `x` `0.09999999999999998` (`3fb9999999999998`) for
+   `0.1` (`3fb999999999999a`) and the `n∞` coefficient `0.0049999999999999906` for `0.005000000000000001`
+   (`applyAll-a-translation-undone-on-a-point-of-tenths`).
 
    *Why `Remove` has none.* Its inverse needs the object, and the object a state holds after transforms is
    coefficients, which no op carries (D85 item 10); an `Add` from parameters read back from it would be a computed,
    rounded approximation, and a read-back is a computation this package does not make. Undo of a `Remove` is truncate
    and replay, which is exact. *Rejected:* negating the direction of a rotation or a screw in place of the angle and
    the distance (the same motion in exact arithmetic; the angle is the parameter the op names as its amount);
-   carrying the removed object in the inverse (a coefficient on an op). Each bound is stated in the API documentation
-   of `invert` and in item 10.
+   carrying the removed object in the inverse (a coefficient on an op). Each pinned figure is stated in the API
+   documentation of `invert`, as a pin and not a bound, and in item 10.
 
 9. **The compaction.** `GeometricOps.compact ops s` answers a list of ops in which each run of adjacent rigid ops of
    one object is one op of the list. Two translations merge into the translation by the sum of their vectors; two
@@ -131,9 +168,10 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
    name it, and a source-reading case holds that and that none of `apply`, `canApply`, `applyAll`, `encode`,
    `decode` or `streamWitness` mentions it.
 
-10. **The bounds, and what each rests on.** Each bounded law is an identity of exact arithmetic that binary64 holds
-    only to rounding, and states the largest error over ONE stated sample: seed 731, 1,200 objects (two hundred of each
-    kind, coordinates multiples of a quarter in `[−8, 8]` with zeros of both signs, directions of small integers,
+10. **The pinned figures, and what each rests on.** Each bounded law is an identity of exact arithmetic that binary64
+    holds only to rounding, and PINS the largest error over ONE stated sample, which is a measurement of that sample
+    and no bound on the function, since other samples exceed it (the second table): seed 731, 1,200 objects (two
+    hundred of each kind, coordinates multiples of a quarter in `[−8, 8]` with zeros of both signs, directions of small integers,
     angles of full precision in `(−3, 3)`, factors in `(0.5, 4.5)`), with no margin, because the answers are pinned
     bits and every host measures the same ones. Three figures, all held: **(i)** in units in the last place of the
     reference coefficient, D85 item 7's form; **(ii)** absolute, where the reference coefficient is zero; **(iii)** in
@@ -165,25 +203,31 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
     | rotations about one axis compacted | 72, 141, 64, 149, 76, 51, 345, 164 | 4096 .. 29243826285682932 | 0 .. 2.22e-16 |
 
     So a seed-731 figure is no bound on the function: a screw's sample at seed 1000 reaches 602.5 object ulps against
-    135.5. What each claim rests on: each bound is a measurement of its sample; `Add`'s exact inverse rests on the
+    135.5; the package's documentation and `STABILITY.md` call each figure a pin of its sample, not a bound on the
+    function.
+    What each claim rests on: each figure is a measurement of its sample; `Add`'s exact inverse rests on the
     argument in item 8 and a law; the exact laws (item 11) are tested on drawn inputs and not proved.
 
-11. **The law family.** `GeometricAlgebraOpsLaws.laws` runs fourteen laws: seven exact (a recorded stream replays to
+11. **The law family.** `GeometricAlgebraOpsLaws.laws` runs seventeen laws: ten exact (a recorded stream replays to
     the same bytes; a truncated stream replays to its prefix's state; `canApply` answers `Ok` exactly when `apply`
     does, with the same refusal; a refused op leaves the same value; each refusal is the one its op names, in order;
-    the codec's round trip, and malformed text refused by name; an `Add` undone by its inverse) and the seven bounded
-    laws of item 10, which draw nothing from the seed they are run at. The suite runs them at seed 590 and at eight
-    other seeds (1, 2, 3, 727, 729, 731, 1000, 4242), 200 iterations each, and the node leg at seed 590; before landing
+    the codec's round trip, and malformed text refused by name; an `Add` undone by its inverse; an `Ok` state holds
+    no NaN; an inverse is answered only where the state after the op accepts it; a translation of quarters undone,
+    under the float identity) and the seven bounded laws of item 10, which draw nothing from the seed they are run
+    at. The NaN law and the inverse law draw parameters of an overflowing scale (`1e150`, `1e200`, `−1e300`) and
+    subnormal ones (`5e-324`, `1e-310`), and factors whose reciprocal overflows. The suite runs them at seed 590 and
+    at eight other seeds (1, 2, 3, 727, 729, 731, 1000, 4242), 200 iterations each, and the node leg at seed 590; before landing
     they were run green at the nine seeds of the record's list with 2,000 iterations each, in one process outside the
     suite, and that run was not captured to a committed file.
 
 12. **The rules record and the wrong ports.** Every function is written once over `Rules<'N>`, an internal record of
-    sixteen members, one rule each: `Fold` (how `applyAll` runs a list), `Refused` (what a refusal answers), `Find`
+    eighteen members, one rule each: `Fold` (how `applyAll` runs a list), `Refused` (what a refusal answers), `Find`
     (where a name's object is), `Place` (where a new object goes), `After` (what follows a transform: nothing),
     `Angle` (radians, as given), the five versors' constructors, `Check` (`canApply`), `Inverse`, `Merge`
-    (the compaction's merge), `FloatText` (the codec's float) and `ChainText` (the bytes the chain hashes). A public
-    function passes `Rules.shipped`; each go-red witness is the shipped function with ONE member changed, never a
-    second implementation. Twenty-one wrong ports, against the nine functions that compute (`apply`, `canApply`,
+    (the compaction's merge), `FloatText` (the codec's float), `ChainText` (the bytes the chain hashes), `Holds`
+    (that an object holds no NaN) and `Undoes` (that the state after an op accepts its inverse). A public function
+    passes `Rules.shipped`; each go-red witness is the shipped function with ONE member changed, never a
+    second implementation. Twenty-three wrong ports, against the nine functions that compute (`apply`, `canApply`,
     `applyAll`, `invert`, `compact`, `encode`, `decode`, `streamWitness`, `GeometricState.tryFind`): (a) a replay in
     reverse order; (b) a refused op that empties the state, and a replay that halts at the first refusal; (c) the
     versor applied to the first object in order; (d) a normalisation after each transform; (e) a run of rigid ops of
@@ -193,24 +237,34 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
     with one component kept); (j) a float written by the shortest round-trip decimal formatter; (k) the state in the
     order of addition; (l) the chain hashed over the declared-order rendering; (m) an angle read as degrees; (n) a
     `canApply` that reads the name and no parameter; the correctly rounded sine and cosine in a rotation, and in a
-    screw; and a compaction that merges rotations about different axes. The table is computed: for every port and
+    screw; a compaction that merges rotations about different axes; a NaN admitted to a state; and an inverse
+    answered without asking whether the state after the op accepts it. The table is computed: for every port and
     every function, a committed vector of the function is red under the port, or the pair is listed unable with its
-    reason, and a drawn search of 3,600 cases (400 indices, one case of each function; zeros of both signs, coordinates
-    whose squares underflow to a zero, coordinates whose squares are subnormal, coordinates of full precision, and
-    non-finite ones among its draws) finds no case the port answers otherwise. A port that changes a drawn answer and
-    fails no committed vector of that function fails the case; three such were found while the vectors were written:
+    reason, and a drawn search of 7,200 cases finds no case the port answers otherwise: 400 indices drawn narrow and
+    400 wide, one case of each function at each (zeros of both signs, coordinates whose squares underflow to a zero,
+    coordinates whose squares are subnormal, coordinates of full precision and non-finite ones among the narrow
+    draws; the wide draws add coordinates of an overflowing scale and factors and radii that are subnormal or whose
+    reciprocal overflows). A port that changes a drawn answer and fails no committed vector of that function fails
+    the case; three such were found while the vectors were written:
     the two drawn cases that showed (f) and (m) changing `compact` are committed (`drawn-2-compact`,
     `drawn-6-compact`), and an authored vector was added for (k) on `apply`
-    (`apply-add-a-name-that-orders-first`). The reasons are of two kinds, and the listing says which: **the function does not read the member** (an argument from the source: the
-    member is not on its path), and **the function answers a verdict or the ops it was given, never an object, and the
-    port leaves every verdict as it was** (an argument for each port, stated beside it in the listing, which the search
-    then fails to break). Neither is a proof, and the listing never says "cannot".
+    (`apply-add-a-name-that-orders-first`). Five more were found by the wide draws once an object that would hold a
+    NaN was refused, and are committed: (c) changing `canApply`, `invert` and `compact` (`drawn-wide-13-…`), and
+    the NaN port changing `compact` and `streamWitness` (`drawn-wide-9-compact`, `drawn-wide-0-streamWitness`).
+    The reasons are of three kinds, and the listing says which: **the function does not read the member** (an
+    argument from the source: the member is not on its path); **the function answers a verdict or the ops it was
+    given, never an object, and the port moves no verdict** (an argument, now held for (k) alone: every name is found
+    wherever it is placed, and the object is the one placed); and **a search, not an argument** (for (d), (g), (h) and
+    the two correctly rounded ports on the functions that answer a verdict: since a NaN verdict reads the object a
+    transform builds, a port that changes that object could move a verdict, and no drawn case, narrow or wide, does).
+    None is a proof, and the listing never says "cannot".
 
     *The correctly rounded port.* `apply`, `applyAll` and `streamWitness` answer coefficients a rotation's or a
     screw's sine and cosine reach, and each has vectors at twice the arguments where Phase 725's law file records the
     pinned `sinCos` a unit from the correctly rounded value; each is red under the port. `canApply`, `invert` and
-    `compact` answer a verdict or ops, and a sine and a cosine make no constructor refuse; `encode`, `decode` and
-    `tryFind` read no versor. Those six are listed unable, with those reasons.
+    `compact` answer a verdict or ops, a sine and a cosine make no constructor refuse, and no drawn case moves a NaN
+    verdict (a search); `encode`, `decode` and `tryFind` read no versor (an argument). Those six are listed unable,
+    with those reasons.
 
 13. **No float literal in a comparison.** The package validates by the algebra's constructors and names no threshold.
     The census of float literals in `ConformalTests.fs` reads the algebra package's modules only, so the same rule is
@@ -227,10 +281,11 @@ by the caller's comparison (against the order of addition, which a state rebuilt
 share); `Rotate` as the screw of no distance (against composing three versors here); a constructor's refusal carried
 inside one case (against a case for each of the algebra's); `applyAll` that applies past a refusal (against halting);
 the bit-pattern float (against `JFloat`); a non-finite parameter carried on the wire and refused by `apply` (against a
-codec that refuses it); the member names; an inverse guarded by `canApply` (against an unguarded one); the angle and
-the distance negated (against the direction); `1.0 / factor` (no parametric alternative exists); `Remove` with no
+codec that refuses it); the member names; an object that would hold a NaN refused (against an `Ok` that holds one:
+item 5); an inverse guarded by `canApply` and by the state after the op (against an unguarded one, and against
+one guarded by `canApply` alone, which answered the scale by `+∞`); the angle and the distance negated (against the direction); `1.0 / factor` (no parametric alternative exists); `Remove` with no
 inverse (against an inverse carrying the object); the runs that compact and the bit-equality that makes two axes one
-(against a geometric test of coincidence, which would need a threshold); the third figure beside each bound (point
+(against a geometric test of coincidence, which would need a threshold); the third figure beside each pinned one (point
 G2); the sample and its seed.
 
 **What D85 does not settle, and what this phase did.**
@@ -243,6 +298,20 @@ G2); the sample and its seed.
 - **G2 — the unit of a bound on an object.** D85 item 7's "units in the last place of the reference value", read
   coefficient by coefficient, is dominated by rounding residues of zero (item 10). Options: that figure alone; the
   object's scale alone; both. **Shipped: both, beside the absolute figure.**
+- **G3 — which float rule "the repository's other codecs" means, and what it costs.** D85 item 9's sentence matches two
+  rules in this tree: the `JFloat` decimal spelling `ColumnOps` and the dataframe codecs write, and the bit pattern
+  `LinAlgWire` and `RegressionWire` write (D51 item 7). Item 6 takes the bit pattern, because it is the only rule in
+  the tree that carries a `-0.0` parameter to the same bits, and a point stores a `-0.0` coordinate as given, so a
+  decimal `-0` read as `0` would replay to another state. **What it costs:** the package exists so that a history
+  of transforms can be written and read, by a person or a model as well as by a program, and an encoded op is not
+  something anyone writes by hand: the rotation by `0.75` about the axis `(0, 1, 1)` through `(1, −2, 0.5)` is
+  `{"$type":"rotate","angle":"3fe8000000000000","direction":"00000000000000003ff00000000000003ff0000000000000","name":"b","point":"3ff0000000000000c0000000000000003fe0000000000000"}`.
+  **What a readable rule would have to guarantee** to replace it: every double to one text on every host, and that
+  text back to the same double, the shortest round-trip spelling being correct on every host's parser; `-0.0`
+  written and read as itself; and a NaN and both infinities carried, as distinct tokens no string can alias.
+  Options: (a) the bit pattern (shipped); (b) a readable rule meeting those three, which no codec of this
+  repository has yet; (c) both, a readable text beside the bits. **Shipped: (a), fixed with this package's first
+  wire baseline unless the owner revisits it before a `v0.47.0` tag.**
 
 **Ladder.** `proofs.json` gains `geometric-algebra-ops-pinned-by-recorded-rules` at `tested`, listing this family's
 cases, each held by `GeometricAlgebraOpsTests.fs`; the algebra's and the objects' rows, which said the op package did
@@ -267,7 +336,11 @@ original is internal to `LinAlgWire`, in a package this one may not reference); 
 family and in the vectors (the algebra's is private to its law module, and a published package cannot read test
 code); the list of malformed texts in the law family and in the vectors (one is a law the package runs, the other the
 vectors' inputs, and the vectors compile under Fable without the package's internals); the names of the algebra's
-refusal cases in the vectors (the algebra suite's mapping is private to a file this phase does not own).
+refusal cases in the vectors (the algebra suite's mapping is private to a file this phase does not own). *In the
+second round:* the boundary case's `contains` checks became one exact set, so nothing it named twice survives;
+`invert` reuses `apply` and the `Check` member for its second guard rather than a second test of the inverse's
+parameters; the vectors' drawn generator gained a wide mode rather than a second generator, its narrow stream
+unchanged, so no committed drawn vector moved.
 
 ## 2026-11-24 — D89: the geometric product is specialised to nine pairs of operand types where a measurement showed the gain — a rotor with a rotor, a motor with a motor, a translator with a rotor, and both products of the sandwich of a rotor, a translator and a motor with a point; each a filter of the one table in its order, taken only on finite operands that hold zeros off their types, and so the general product's bits on every input; every one kept by the margin of two and a half stated before measuring, on its designated runs, at 4.55 to 13.64 times the general product on .NET and 5.42 to 21.14 under node, with one pair below the margin on .NET when every committed run is pooled; one float literal in a comparison D85 item 6 does not list, admitted by name; the law family gains one law that reads internals; no signature, vector or API baseline line moved
 
