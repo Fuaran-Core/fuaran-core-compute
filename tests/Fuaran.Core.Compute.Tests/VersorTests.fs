@@ -347,7 +347,11 @@ let private versorPorts: (string * string list * Arithmetic) list =
       "an exponential's parts summed with a zero",
       [ "Placed" ],
       { shipped with
-          Placed = fun x -> 0.0 + x } ]
+          Placed = fun x -> 0.0 + x }
+      "a normalisation applied twice",
+      [ "NormaliseOnce" ],
+      { shipped with
+          NormaliseOnce = fun once values -> once values |> Result.bind once } ]
 
 /// The member each port of Phase 728 changes, by the port's name in `ConformalTests.wrongPorts`.
 let private objectPortMembers: (string * string list) list =
@@ -397,7 +401,7 @@ let private reads (op: string) : Set<string> =
                 [ "Geometric"; "Chain"; "VersorReverse" ]
         else
             match fn, op with
-            | "normalise", _ -> [ "Scalar"; "Divide"; "IsZeroDivisor" ]
+            | "normalise", _ -> [ "Scalar"; "Divide"; "IsZeroDivisor"; "NormaliseOnce" ]
             | "toMatrix", _ ->
                 [ "Geometric"
                   "Chain"
@@ -636,7 +640,9 @@ let private unable: (string * string * string list) list =
 /// The rules D85 states by name, each with a committed vector that is red under the one member that
 /// names it: the vector, and the port.
 let private named: (string * string) list =
-    [ "Motor.ofScrew-searched-1000", "a direction divided by its norm a second time"
+    [ "Rotor.normalise-of-a-rotor-a-second-division-would-move", "a normalisation applied twice"
+      "Translator.normalise-of-a-scalar-part-whose-square-is-subnormal", "a normalisation applied twice"
+      "Motor.ofScrew-searched-1000", "a direction divided by its norm a second time"
       "Motor.ofLine-searched-of-a-weighted-line-1000", "a direction divided by its norm a second time"
       "Rotor.ofAxisAngle-general-2", "a direction divided by its norm a second time"
       "Reflection.ofNormalDistance-general-1", "a direction divided by its norm a second time"
@@ -892,7 +898,7 @@ let tests =
 
           testCase "the versors' vectors are the shipped arithmetic's answers"
           <| fun () ->
-              Expect.equal (List.length versorVectors) 531 "the versors' vectors"
+              Expect.equal (List.length versorVectors) 533 "the versors' vectors"
 
               for c in versorVectors do
                   match answerUnder shipped c with
@@ -916,7 +922,7 @@ let tests =
               let computing =
                   Set.difference (versorVectors |> List.map (fun c -> c.Op) |> Set.ofList) copies
 
-              Expect.equal (List.length ports) 48 "forty-eight wrong ports"
+              Expect.equal (List.length ports) 49 "forty-nine wrong ports"
 
               Expect.equal
                   drawnSample.Value.Length
@@ -991,7 +997,7 @@ let tests =
                       (List.length findings)
                       (String.Join("\n", findings))
 
-              Expect.equal (red + notRead + listedUnable) (48 * 58) "every pair was read"
+              Expect.equal (red + notRead + listedUnable) (49 * 58) "every pair was read"
 
               // The search is not blind to an underflow. A motor's logarithm reads one product each of
               // whose coefficients is one term, so a fused product can move it only where that term
@@ -1015,24 +1021,66 @@ let tests =
 
               Expect.equal
                   (red, notRead, listedUnable)
-                  (335, 2385, 64)
+                  (340, 2438, 64)
                   "red, unable for not reading the member, unable for a listed reason"
 
-          testCase "no function of the objects reads a member of the versors"
+          testCase "the objects read one member this phase added, and each normalise is held to it"
           <| fun () ->
-              // The members Phase 729 added are read by no function of Phase 728: no committed vector
-              // of an object's function moves under a port of the versors, and no element of that
-              // phase's drawn sample.
+              // Of the members Phase 729 added, the functions of Phase 728 read one: a normalisation
+              // divides once (DECISIONS.md D85 item 5). Under every other port of the versors no
+              // committed vector of an object's function moves, and no element of that phase's drawn
+              // sample. Under the port that normalises twice, only the six `normalise` can move, and
+              // each of them is red on a committed vector or is immune for the reason stated, which
+              // the drawn sample holds.
+              let twice = "a normalisation applied twice"
+
+              // A point's weight and a sphere's are each one of the coefficients divided, so the
+              // first division leaves that coefficient exactly one (a finite double that is not zero,
+              // over itself, is one), and a second division, by one, is exact at every coefficient.
+              let immune = set [ "Point.normalise"; "Sphere.normalise" ]
+
+              let dividedByTheirNorm =
+                  set
+                      [ "PointPair.normalise"
+                        "Line.normalise"
+                        "Circle.normalise"
+                        "Plane.normalise" ]
+
+              // The two vectors this phase appends are the shipped arithmetic's answers.
+              for c in V.objectCasesAppended do
+                  Expect.equal
+                      (C.answerUnder shipped c |> Option.map C.cellText)
+                      (Some C.committed.Value[c.Id])
+                      (c.Id + " under the shipped arithmetic")
+
               for port, _, r in versorPorts do
                   let reds =
-                      C.conformal
+                      C.conformal @ V.objectCasesAppended
                       |> List.filter (fun c ->
                           match C.answerUnder r c with
                           | Some cell -> C.cellText cell <> C.committed.Value[c.Id]
                           | None -> false)
+                      |> List.map (fun c -> c.Op)
+                      |> Set.ofList
 
-                  Expect.isEmpty (reds |> List.map (fun c -> c.Id)) (port + " moves no vector of the objects")
-                  Expect.isEmpty (Map.toList (C.changedUnder r)) (port + " moves no drawn case of the objects")
+                  let changed = C.changedUnder r |> Map.toList |> List.map fst |> Set.ofList
+
+                  if port = twice then
+                      Expect.equal
+                          reds
+                          dividedByTheirNorm
+                          "each normalise that divides by a norm is red on a committed vector"
+
+                      Expect.isTrue
+                          (Set.isSubset changed dividedByTheirNorm)
+                          "no other function of the objects moves in the drawn sample"
+
+                      Expect.isEmpty
+                          (Set.intersect immune (Set.union reds changed))
+                          "a point's and a sphere's normalise are immune: their second divisor is exactly one"
+                  else
+                      Expect.isEmpty reds (port + " moves no vector of the objects")
+                      Expect.isEmpty changed (port + " moves no drawn case of the objects")
 
           testCase "each rule the record names has a vector that is red under the one member that names it"
           <| fun () ->
@@ -1179,6 +1227,16 @@ let tests =
               Expect.isFalse
                   (allAxes summed)
                   "summed, an axis-aligned exponential loses the constructor's negative zeros"
+
+              // What revisiting the reading would cost: every committed vector the summed form fails.
+              Expect.equal
+                  (redUnder summed |> Map.toList |> List.collect snd |> List.sort)
+                  [ "Motor.exp-of-a-vector-alone-is-one-and-the-vector"
+                    "Rotor.exp-at-a-cosine-a-unit-from-correctly-rounded"
+                    "Rotor.exp-of-a-bivector-with-a-zero-of-each-sign"
+                    "Rotor.exp-of-that-bivector-negated-is-the-reverse"
+                    "Rotor.exp-of-zeros-keeps-each-sign" ]
+                  "the vectors that pin the placed exponential"
 
               // And the committed pair: one bivector and its negative, reverses of each other.
               let cellOf (id: string) = C.committed.Value[id]

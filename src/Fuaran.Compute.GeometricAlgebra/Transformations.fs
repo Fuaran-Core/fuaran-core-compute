@@ -247,8 +247,8 @@ module Motor =
     /// orientation, is refused by name with the measure that failed. The squared lengths of the
     /// columns are plain sums of squares, so a caller whose entries are smaller than about `1e-150` or
     /// larger than about `1e150` scales the matrix first: below that a similarity can be refused
-    /// `NotOneLength`, a name that does not describe it, and then `ZeroDivisor`; above it,
-    /// `NonFiniteDivisor`.
+    /// `NotOrthogonal` or `NotOneLength`, a name that does not describe it, or accepted by an accident
+    /// of rounding, and smaller still it is refused `ZeroDivisor`; above it, `NonFiniteDivisor`.
     let ofMatrix (tau: float) (matrix: float[]) : Result<Motor * float, MatrixRefusal> =
         Motion.motorOfMatrix Arithmetic.shipped tau matrix
 

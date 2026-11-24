@@ -71,9 +71,16 @@ let internal committed: Lazy<Map<string, string>> =
                  None)
          |> Map.ofArray)
 
-/// The vectors of the object modules. The versors' vectors (Phase 729) are held by `VersorTests`.
+/// The vectors of the object modules as Phase 728 committed them. The versors' vectors, and the two
+/// vectors of the objects' normalisations that Phase 729 appended, are held by `VersorTests`.
 let internal conformal: V.Case list =
-    V.cases |> List.filter (fun c -> c.Op.Contains "." && not (V.isVersorOp c.Op))
+    let appended = V.objectCasesAppended |> List.map (fun c -> c.Id)
+
+    V.cases
+    |> List.filter (fun c ->
+        c.Op.Contains "."
+        && not (V.isVersorOp c.Op)
+        && not (List.contains c.Id appended))
 
 /// The published functions that perform no arithmetic: copies and exact reads. They have no witness
 /// because there is no rule of theirs to change.

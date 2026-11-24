@@ -281,15 +281,18 @@ module internal Motion =
 
     /// Every coefficient a versor carries divided by `√(V ∗ Ṽ)`, once.
     let normalise (r: Arithmetic) (indices: int[]) (values: float[]) : Result<float[], GeometryRefusal> =
-        let v = Conformal.widen indices values
+        let once (values: float[]) : Result<float[], GeometryRefusal> =
+            let v = Conformal.widen indices values
 
-        Conformal.divisor r (r.Scalar v (Multivector.reverse v))
-        |> Result.bind (fun q ->
-            if q > 0.0 then
-                let n = sqrt q
-                Conformal.numbers (values |> Array.map (fun x -> r.Divide x n))
-            else
-                Error GeometryRefusal.NegativeSquaredNorm)
+            Conformal.divisor r (r.Scalar v (Multivector.reverse v))
+            |> Result.bind (fun q ->
+                if q > 0.0 then
+                    let n = sqrt q
+                    Conformal.numbers (values |> Array.map (fun x -> r.Divide x n))
+                else
+                    Error GeometryRefusal.NegativeSquaredNorm)
+
+        r.NormaliseOnce once values
 
     // ---- the exponential and the logarithm (D85 item 4) ---------------------------------------------
 

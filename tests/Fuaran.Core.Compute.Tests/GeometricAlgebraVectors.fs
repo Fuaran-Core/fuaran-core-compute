@@ -3064,6 +3064,27 @@ module GeometricAlgebraVectors =
 
           // ---- normalisation
           yield h "Rotor.normalise" "three-four-five" [ "v", Coefficients [| 3.0; 0.0; 4.0; 0.0 |] ]
+          // A normalisation divides once: these coefficients, normalised a second time, each end one
+          // unit in the last place higher.
+          yield
+              h
+                  "Rotor.normalise"
+                  "of-a-rotor-a-second-division-would-move"
+                  [ "v",
+                    Coefficients
+                        [| 0.289994475309797
+                           0.25182595232670363
+                           0.10433806195987796
+                           0.21266119422814747 |] ]
+
+          // The square of this scalar part is subnormal and loses its last place, so its root is not
+          // the scalar part and the quotient is not one: a second division would answer another bit.
+          yield
+              h
+                  "Translator.normalise"
+                  "of-a-scalar-part-whose-square-is-subnormal"
+                  [ "v", Coefficients [| (1.0 + pow2 -52) * pow2 -520; pow2 -520; 0.0; 0.0 |] ]
+
           yield h "Rotor.normalise" "of-the-zero-rotor" [ "v", Coefficients [| 0.0; -0.0; 0.0; 0.0 |] ]
           yield h "Rotor.normalise" "of-a-squared-norm-that-overflows" [ "v", Coefficients [| max; max; 0.0; 0.0 |] ]
 
@@ -3362,8 +3383,40 @@ module GeometricAlgebraVectors =
     let private versorWitnesses: Case list =
         [ for index, id in versorChosen -> versorSearched index |> List.find (fun c -> c.Id = id) ]
 
-    /// The versors' cases, in document order.
-    let versorCases: Case list = versorGeneral @ versorHard @ versorWitnesses
+    /// Two vectors of Phase 728's objects that Phase 729 appends (DECISIONS.md D88 item 11): a point
+    /// pair and a line whose normalisation, applied a second time, would answer another bit. No earlier
+    /// vector of either function fails a port that normalises twice.
+    let objectCasesAppended: Case list =
+        [ case
+              "PointPair.normalise-of-a-pair-a-second-division-would-move"
+              "PointPair.normalise"
+              [ "x",
+                Coefficients
+                    [| 1.4615937732160091
+                       0.5930597633123398
+                       -4.41215181723237
+                       7.571844474417995
+                       -2.3019526424929087
+                       2.2106695274283705
+                       -7.495698132052895
+                       -6.0519588617268925
+                       8.883884615767856
+                       11.175001281512586 |] ]
+          case
+              "Line.normalise-of-a-line-a-second-division-would-move"
+              "Line.normalise"
+              [ "x",
+                Coefficients
+                    [| -1.3172310665249825
+                       -0.06084183603525162
+                       -0.8962686248123646
+                       -2.372059167667058
+                       3.6911205773358375
+                       1.784483239779819 |] ] ]
+
+    /// The versors' cases, in document order, and after them the two of the objects this phase appends.
+    let versorCases: Case list =
+        versorGeneral @ versorHard @ versorWitnesses @ objectCasesAppended
 
     /// Every case, in document order: Phase 727's, and then the ones appended since.
     let cases: Case list =
@@ -3788,6 +3841,8 @@ module GeometricAlgebraVectors =
         | "leftContraction" -> multivectorCell (Multivector.leftContraction (mv c "a") (mv c "b"))
         | "scalarProduct" -> floatCell (Multivector.scalarProduct (mv c "a") (mv c "b"))
         | "squaredNorm" -> floatCell (Multivector.squaredNorm (mv c "a"))
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
         | op when isVersorOp op -> versorAnswer c
         | op when isVersorOp op -> versorAnswer c
         | op when isVersorOp op -> versorAnswer c

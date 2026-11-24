@@ -131,6 +131,9 @@ type internal Arithmetic =
         /// A coefficient of an exponential: placed on its blade and never added to a zero, so that it
         /// keeps the sign of a zero (D88 item 3).
         Placed: float -> float
+        /// A normalisation (D85 item 5): the division of every coefficient by one scalar that it is
+        /// given, applied to the coefficients once.
+        NormaliseOnce: (float[] -> Result<float[], GeometryRefusal>) -> float[] -> Result<float[], GeometryRefusal>
     }
 
 /// The one 2-norm (DECISIONS.md D49 item 4), transcribed: this package cannot reference
@@ -380,7 +383,8 @@ module internal Arithmetic =
           Canonical = Forms.canonical
           UnitAsGiven = id
           PointAsGiven = fun p _ -> p
-          Placed = id }
+          Placed = id
+          NormaliseOnce = fun once values -> once values }
 
 /// The index sets of DECISIONS.md D85 item 8's table and the groups of item 6, read off the blades.
 module internal Indices =
@@ -1054,14 +1058,16 @@ module internal Conformal =
     let join (r: Arithmetic) (a: Multivector) (b: Multivector) : Multivector = r.Outer a b
 
     let pointNormalise (r: Arithmetic) (p: Point) : Result<Point, GeometryRefusal> =
-        normalise r p.N0 (pointValues p) |> Result.map pointOf
+        r.NormaliseOnce (fun v -> normalise r v[0] v) (pointValues p)
+        |> Result.map pointOf
 
     let pairThrough (r: Arithmetic) (p: Point) (q: Point) : PointPair = mvPair (through r [ p; q ] [])
 
     let pairWeight (r: Arithmetic) (x: PointPair) : float = roundWeight r Indices.pair (pairMv x)
 
     let pairNormalise (r: Arithmetic) (x: PointPair) : Result<PointPair, GeometryRefusal> =
-        normalise r (pairWeight r x) (pairValues x) |> Result.map pairOf
+        r.NormaliseOnce (fun v -> normalise r (pairWeight r (pairOf v)) v) (pairValues x)
+        |> Result.map pairOf
 
     let pairCentre (r: Arithmetic) (x: PointPair) : Result<float * float * float, GeometryRefusal> = centre r (pairMv x)
 
@@ -1073,7 +1079,8 @@ module internal Conformal =
     let lineWeight (r: Arithmetic) (x: Line) : float = flatWeight r Indices.line (lineMv x)
 
     let lineNormalise (r: Arithmetic) (x: Line) : Result<Line, GeometryRefusal> =
-        normalise r (lineWeight r x) (lineValues x) |> Result.map lineOf
+        r.NormaliseOnce (fun v -> normalise r (lineWeight r (lineOf v)) v) (lineValues x)
+        |> Result.map lineOf
 
     let lineNearestPoint (r: Arithmetic) (x: Line) : Result<float * float * float, GeometryRefusal> =
         nearestPoint r (lineMv x)
@@ -1093,7 +1100,8 @@ module internal Conformal =
         roundWeight r Indices.circle (circleMv x)
 
     let circleNormalise (r: Arithmetic) (x: Circle) : Result<Circle, GeometryRefusal> =
-        normalise r (circleWeight r x) (circleValues x) |> Result.map circleOf
+        r.NormaliseOnce (fun v -> normalise r (circleWeight r (circleOf v)) v) (circleValues x)
+        |> Result.map circleOf
 
     let circleCentre (r: Arithmetic) (x: Circle) : Result<float * float * float, GeometryRefusal> =
         centre r (circleMv x)
@@ -1108,7 +1116,8 @@ module internal Conformal =
     let planeWeight (r: Arithmetic) (x: Plane) : float = flatWeight r Indices.plane (planeMv x)
 
     let planeNormalise (r: Arithmetic) (x: Plane) : Result<Plane, GeometryRefusal> =
-        normalise r (planeWeight r x) (planeValues x) |> Result.map planeOf
+        r.NormaliseOnce (fun v -> normalise r (planeWeight r (planeOf v)) v) (planeValues x)
+        |> Result.map planeOf
 
     let planeNearestPoint (r: Arithmetic) (x: Plane) : Result<float * float * float, GeometryRefusal> =
         nearestPoint r (planeMv x)
@@ -1123,7 +1132,8 @@ module internal Conformal =
         mvSphere (through r [ p; q; s; t ] [])
 
     let sphereNormalise (r: Arithmetic) (x: Sphere) : Result<Sphere, GeometryRefusal> =
-        normalise r x.N0E1E2E3 (sphereValues x) |> Result.map sphereOf
+        r.NormaliseOnce (fun v -> normalise r v[0] v) (sphereValues x)
+        |> Result.map sphereOf
 
     let sphereCentre (r: Arithmetic) (x: Sphere) : Result<float * float * float, GeometryRefusal> =
         centre r (sphereMv x)
