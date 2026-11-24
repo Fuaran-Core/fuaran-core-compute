@@ -4,10 +4,89 @@
 # and stage the baselines you meant to move BY NAME — the switch rewrites them all.
 # One ordinal-sorted line per externally-visible type, member, record field and union case.
 # See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Compute.GeometricAlgebra.Circle..ctor(System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double)
+ctor Fuaran.Compute.GeometricAlgebra.Line..ctor(System.Double, System.Double, System.Double, System.Double, System.Double, System.Double)
+ctor Fuaran.Compute.GeometricAlgebra.Plane..ctor(System.Double, System.Double, System.Double, System.Double)
+ctor Fuaran.Compute.GeometricAlgebra.Point..ctor(System.Double, System.Double, System.Double, System.Double, System.Double)
+ctor Fuaran.Compute.GeometricAlgebra.PointPair..ctor(System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double)
+ctor Fuaran.Compute.GeometricAlgebra.Sphere..ctor(System.Double, System.Double, System.Double, System.Double, System.Double)
+field Fuaran.Compute.GeometricAlgebra.CircleKind+Tags.AtInfinity : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.CircleKind+Tags.Flat : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.CircleKind+Tags.NoObject : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.CircleKind+Tags.Round : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.CircleKind+Tags.Zero : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.FlatKind+Tags.AtInfinity : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.FlatKind+Tags.Flat : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.FlatKind+Tags.NoObject : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.FlatKind+Tags.Zero : System.Int32 (literal)
 field Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness+Tags.HostRounded : System.Int32 (literal)
 field Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness+Tags.Pinned : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.InvalidThreshold : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.NegativeRadius : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.NonFiniteCoordinate : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.NonFiniteDirection : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.NonFiniteDistance : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.NonFiniteDivisor : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.NonFiniteRadius : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.NotANumber : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.ZeroDirection : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags.ZeroDivisor : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.LineMeet+Tags.SameLine : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.LineMeet+Tags.Skew : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.LineMeet+Tags.Within : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PairPoints+Tags.Imaginary : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PairPoints+Tags.Real : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PairPoints+Tags.Tangent : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PlaneSide+Tags.Negative : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PlaneSide+Tags.On : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PlaneSide+Tags.Positive : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PointPairKind+Tags.AtInfinity : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PointPairKind+Tags.FlatPoint : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PointPairKind+Tags.NoObject : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PointPairKind+Tags.Round : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.PointPairKind+Tags.Zero : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.Reality+Tags.Imaginary : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.Reality+Tags.Real : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.Reality+Tags.Tangent : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.Side+Tags.Inside : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.Side+Tags.On : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.Side+Tags.Outside : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.SphereKind+Tags.AtInfinity : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.SphereKind+Tags.Flat : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.SphereKind+Tags.NoObject : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.SphereKind+Tags.Round : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.SphereKind+Tags.Zero : System.Int32 (literal)
+method Fuaran.Compute.GeometricAlgebra.Blade.inverse(Fuaran.Compute.GeometricAlgebra.Multivector) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.Blade.join(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.Blade.meet(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.Blade.meetWithin(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.CircleModule.centre(Fuaran.Compute.GeometricAlgebra.Circle) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`3<System.Double, System.Double, System.Double>, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.CircleModule.kind(System.Double, Fuaran.Compute.GeometricAlgebra.Circle) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.CircleKind, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.CircleModule.normalise(Fuaran.Compute.GeometricAlgebra.Circle) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Circle, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.CircleModule.ofCentreRadiusNormal(System.Double, System.Double, System.Double, System.Double, System.Double, System.Double, System.Double) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Circle, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.CircleModule.ofMultivector(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Circle
+method Fuaran.Compute.GeometricAlgebra.CircleModule.plane(Fuaran.Compute.GeometricAlgebra.Circle) : Fuaran.Compute.GeometricAlgebra.Plane
+method Fuaran.Compute.GeometricAlgebra.CircleModule.power(Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Circle) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.CircleModule.side(System.Double, Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Circle) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Side, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.CircleModule.squaredRadius(Fuaran.Compute.GeometricAlgebra.Circle) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.CircleModule.through(Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point) : Fuaran.Compute.GeometricAlgebra.Circle
+method Fuaran.Compute.GeometricAlgebra.CircleModule.toMultivector(Fuaran.Compute.GeometricAlgebra.Circle) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.CircleModule.weight(Fuaran.Compute.GeometricAlgebra.Circle) : System.Double
 method Fuaran.Compute.GeometricAlgebra.GeometricAlgebraLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
 method Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness>
+method Fuaran.Compute.GeometricAlgebra.LineModule.direction(Fuaran.Compute.GeometricAlgebra.Line) : System.Tuple`3<System.Double, System.Double, System.Double>
+method Fuaran.Compute.GeometricAlgebra.LineModule.kind(System.Double, Fuaran.Compute.GeometricAlgebra.Line) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.FlatKind, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.LineModule.meet(System.Double, Fuaran.Compute.GeometricAlgebra.Line, Fuaran.Compute.GeometricAlgebra.Line) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.LineMeet, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.LineModule.meetPlane(Fuaran.Compute.GeometricAlgebra.Line, Fuaran.Compute.GeometricAlgebra.Plane) : Fuaran.Compute.GeometricAlgebra.PointPair
+method Fuaran.Compute.GeometricAlgebra.LineModule.meetSphere(Fuaran.Compute.GeometricAlgebra.Line, Fuaran.Compute.GeometricAlgebra.Sphere) : Fuaran.Compute.GeometricAlgebra.PointPair
+method Fuaran.Compute.GeometricAlgebra.LineModule.moment(Fuaran.Compute.GeometricAlgebra.Line) : System.Tuple`3<System.Double, System.Double, System.Double>
+method Fuaran.Compute.GeometricAlgebra.LineModule.nearestPoint(Fuaran.Compute.GeometricAlgebra.Line) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`3<System.Double, System.Double, System.Double>, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.LineModule.normalise(Fuaran.Compute.GeometricAlgebra.Line) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Line, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.LineModule.ofMultivector(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Line
+method Fuaran.Compute.GeometricAlgebra.LineModule.ofPointDirection(System.Double, System.Double, System.Double, System.Double, System.Double, System.Double) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Line, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.LineModule.through(Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point) : Fuaran.Compute.GeometricAlgebra.Line
+method Fuaran.Compute.GeometricAlgebra.LineModule.toMultivector(Fuaran.Compute.GeometricAlgebra.Line) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.LineModule.weight(Fuaran.Compute.GeometricAlgebra.Line) : System.Double
 method Fuaran.Compute.GeometricAlgebra.Multivector.Equals(System.Object) : System.Boolean
 method Fuaran.Compute.GeometricAlgebra.Multivector.GetHashCode() : System.Int32
 method Fuaran.Compute.GeometricAlgebra.MultivectorModule.add(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
@@ -29,13 +108,182 @@ method Fuaran.Compute.GeometricAlgebra.MultivectorModule.squaredNorm(Fuaran.Comp
 method Fuaran.Compute.GeometricAlgebra.MultivectorModule.subtract(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
 method Fuaran.Compute.GeometricAlgebra.MultivectorModule.toArray(Fuaran.Compute.GeometricAlgebra.Multivector) : System.Double[]
 method Fuaran.Compute.GeometricAlgebra.MultivectorModule.undual(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.distance(Fuaran.Compute.GeometricAlgebra.Plane) : System.Double
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.kind(System.Double, Fuaran.Compute.GeometricAlgebra.Plane) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.FlatKind, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.meet(Fuaran.Compute.GeometricAlgebra.Plane, Fuaran.Compute.GeometricAlgebra.Plane) : Fuaran.Compute.GeometricAlgebra.Line
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.nearestPoint(Fuaran.Compute.GeometricAlgebra.Plane) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`3<System.Double, System.Double, System.Double>, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.normal(Fuaran.Compute.GeometricAlgebra.Plane) : System.Tuple`3<System.Double, System.Double, System.Double>
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.normalise(Fuaran.Compute.GeometricAlgebra.Plane) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Plane, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.ofMultivector(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Plane
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.ofNormalDistance(System.Double, System.Double, System.Double, System.Double) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Plane, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.side(System.Double, Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Plane) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.PlaneSide, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.signedDistance(Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Plane) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.through(Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point) : Fuaran.Compute.GeometricAlgebra.Plane
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.toMultivector(Fuaran.Compute.GeometricAlgebra.Plane) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.PlaneModule.weight(Fuaran.Compute.GeometricAlgebra.Plane) : System.Double
+method Fuaran.Compute.GeometricAlgebra.PointModule.coordinates(Fuaran.Compute.GeometricAlgebra.Point) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`3<System.Double, System.Double, System.Double>, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PointModule.normalise(Fuaran.Compute.GeometricAlgebra.Point) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PointModule.ofMultivector(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Point
+method Fuaran.Compute.GeometricAlgebra.PointModule.toMultivector(Fuaran.Compute.GeometricAlgebra.Point) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.PointModule.up(System.Double, System.Double, System.Double) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PointModule.weight(Fuaran.Compute.GeometricAlgebra.Point) : System.Double
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.centre(Fuaran.Compute.GeometricAlgebra.PointPair) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`3<System.Double, System.Double, System.Double>, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.kind(System.Double, Fuaran.Compute.GeometricAlgebra.PointPair) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.PointPairKind, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.normalise(Fuaran.Compute.GeometricAlgebra.PointPair) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.PointPair, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.ofMultivector(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.PointPair
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.points(System.Double, Fuaran.Compute.GeometricAlgebra.PointPair) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.PairPoints, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.squaredRadius(Fuaran.Compute.GeometricAlgebra.PointPair) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.through(Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point) : Fuaran.Compute.GeometricAlgebra.PointPair
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.toMultivector(Fuaran.Compute.GeometricAlgebra.PointPair) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.PointPairModule.weight(Fuaran.Compute.GeometricAlgebra.PointPair) : System.Double
+method Fuaran.Compute.GeometricAlgebra.SphereModule.centre(Fuaran.Compute.GeometricAlgebra.Sphere) : Microsoft.FSharp.Core.FSharpResult`2<System.Tuple`3<System.Double, System.Double, System.Double>, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.SphereModule.kind(System.Double, Fuaran.Compute.GeometricAlgebra.Sphere) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.SphereKind, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.SphereModule.meet(Fuaran.Compute.GeometricAlgebra.Sphere, Fuaran.Compute.GeometricAlgebra.Sphere) : Fuaran.Compute.GeometricAlgebra.Circle
+method Fuaran.Compute.GeometricAlgebra.SphereModule.meetPlane(Fuaran.Compute.GeometricAlgebra.Sphere, Fuaran.Compute.GeometricAlgebra.Plane) : Fuaran.Compute.GeometricAlgebra.Circle
+method Fuaran.Compute.GeometricAlgebra.SphereModule.normalise(Fuaran.Compute.GeometricAlgebra.Sphere) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Sphere, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.SphereModule.ofCentreRadius(System.Double, System.Double, System.Double, System.Double) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Sphere, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.SphereModule.ofMultivector(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Sphere
+method Fuaran.Compute.GeometricAlgebra.SphereModule.power(Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Sphere) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.SphereModule.side(System.Double, Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Sphere) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebra.Side, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.SphereModule.squaredRadius(Fuaran.Compute.GeometricAlgebra.Sphere) : Microsoft.FSharp.Core.FSharpResult`2<System.Double, Fuaran.Compute.GeometricAlgebra.GeometryRefusal>
+method Fuaran.Compute.GeometricAlgebra.SphereModule.through(Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point, Fuaran.Compute.GeometricAlgebra.Point) : Fuaran.Compute.GeometricAlgebra.Sphere
+method Fuaran.Compute.GeometricAlgebra.SphereModule.toMultivector(Fuaran.Compute.GeometricAlgebra.Sphere) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.SphereModule.weight(Fuaran.Compute.GeometricAlgebra.Sphere) : System.Double
 property Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness>> { get }
 property Fuaran.Compute.GeometricAlgebra.MultivectorModule.zero : Fuaran.Compute.GeometricAlgebra.Multivector { get }
+record-field Fuaran.Compute.GeometricAlgebra.Circle.E1E2E3 #6 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.E1E2NInf #7 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.E1E3NInf #8 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.E2E3NInf #9 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.N0E1E2 #0 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.N0E1E3 #1 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.N0E1NInf #2 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.N0E2E3 #3 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.N0E2NInf #4 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Circle.N0E3NInf #5 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Line.E1E2NInf #3 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Line.E1E3NInf #4 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Line.E2E3NInf #5 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Line.N0E1NInf #0 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Line.N0E2NInf #1 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Line.N0E3NInf #2 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Plane.E1E2E3NInf #3 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Plane.N0E1E2NInf #0 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Plane.N0E1E3NInf #1 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Plane.N0E2E3NInf #2 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Point.E1 #1 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Point.E2 #2 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Point.E3 #3 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Point.N0 #0 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Point.NInf #4 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.E1E2 #4 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.E1E3 #5 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.E1NInf #6 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.E2E3 #7 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.E2NInf #8 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.E3NInf #9 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.N0E1 #0 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.N0E2 #1 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.N0E3 #2 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.PointPair.N0NInf #3 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Sphere.E1E2E3NInf #4 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Sphere.N0E1E2E3 #0 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Sphere.N0E1E2NInf #1 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Sphere.N0E1E3NInf #2 : System.Double
+record-field Fuaran.Compute.GeometricAlgebra.Sphere.N0E2E3NInf #3 : System.Double
+type Fuaran.Compute.GeometricAlgebra.Blade (module)
+type Fuaran.Compute.GeometricAlgebra.Circle (record)
+type Fuaran.Compute.GeometricAlgebra.CircleKind (union)
+type Fuaran.Compute.GeometricAlgebra.CircleKind+Flat (type)
+type Fuaran.Compute.GeometricAlgebra.CircleKind+Round (type)
+type Fuaran.Compute.GeometricAlgebra.CircleKind+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.CircleModule (module)
+type Fuaran.Compute.GeometricAlgebra.FlatKind (union)
+type Fuaran.Compute.GeometricAlgebra.FlatKind+Tags (type)
 type Fuaran.Compute.GeometricAlgebra.GeometricAlgebraLaws (module)
 type Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations (module)
 type Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness (union)
 type Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.GeometryRefusal (union)
+type Fuaran.Compute.GeometricAlgebra.GeometryRefusal+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.Line (record)
+type Fuaran.Compute.GeometricAlgebra.LineMeet (union)
+type Fuaran.Compute.GeometricAlgebra.LineMeet+Skew (type)
+type Fuaran.Compute.GeometricAlgebra.LineMeet+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.LineMeet+Within (type)
+type Fuaran.Compute.GeometricAlgebra.LineModule (module)
 type Fuaran.Compute.GeometricAlgebra.Multivector (type)
 type Fuaran.Compute.GeometricAlgebra.MultivectorModule (module)
+type Fuaran.Compute.GeometricAlgebra.PairPoints (union)
+type Fuaran.Compute.GeometricAlgebra.PairPoints+Imaginary (type)
+type Fuaran.Compute.GeometricAlgebra.PairPoints+Real (type)
+type Fuaran.Compute.GeometricAlgebra.PairPoints+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.PairPoints+Tangent (type)
+type Fuaran.Compute.GeometricAlgebra.Plane (record)
+type Fuaran.Compute.GeometricAlgebra.PlaneModule (module)
+type Fuaran.Compute.GeometricAlgebra.PlaneSide (union)
+type Fuaran.Compute.GeometricAlgebra.PlaneSide+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.Point (record)
+type Fuaran.Compute.GeometricAlgebra.PointModule (module)
+type Fuaran.Compute.GeometricAlgebra.PointPair (record)
+type Fuaran.Compute.GeometricAlgebra.PointPairKind (union)
+type Fuaran.Compute.GeometricAlgebra.PointPairKind+FlatPoint (type)
+type Fuaran.Compute.GeometricAlgebra.PointPairKind+Round (type)
+type Fuaran.Compute.GeometricAlgebra.PointPairKind+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.PointPairModule (module)
+type Fuaran.Compute.GeometricAlgebra.Reality (union)
+type Fuaran.Compute.GeometricAlgebra.Reality+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.Side (union)
+type Fuaran.Compute.GeometricAlgebra.Side+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.Sphere (record)
+type Fuaran.Compute.GeometricAlgebra.SphereKind (union)
+type Fuaran.Compute.GeometricAlgebra.SphereKind+Flat (type)
+type Fuaran.Compute.GeometricAlgebra.SphereKind+Round (type)
+type Fuaran.Compute.GeometricAlgebra.SphereKind+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.SphereModule (module)
+union-case Fuaran.Compute.GeometricAlgebra.CircleKind.AtInfinity #2()
+union-case Fuaran.Compute.GeometricAlgebra.CircleKind.NewFlat #1(Item: Fuaran.Compute.GeometricAlgebra.Line)
+union-case Fuaran.Compute.GeometricAlgebra.CircleKind.NewRound #0(Item: Fuaran.Compute.GeometricAlgebra.Reality)
+union-case Fuaran.Compute.GeometricAlgebra.CircleKind.NoObject #4()
+union-case Fuaran.Compute.GeometricAlgebra.CircleKind.Zero #3()
+union-case Fuaran.Compute.GeometricAlgebra.FlatKind.AtInfinity #1()
+union-case Fuaran.Compute.GeometricAlgebra.FlatKind.Flat #0()
+union-case Fuaran.Compute.GeometricAlgebra.FlatKind.NoObject #3()
+union-case Fuaran.Compute.GeometricAlgebra.FlatKind.Zero #2()
 union-case Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness.HostRounded #1()
 union-case Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness.Pinned #0()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.InvalidThreshold #8()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.NegativeRadius #3()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.NonFiniteCoordinate #0()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.NonFiniteDirection #2()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.NonFiniteDistance #5()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.NonFiniteDivisor #7()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.NonFiniteRadius #4()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.NotANumber #9()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.ZeroDirection #1()
+union-case Fuaran.Compute.GeometricAlgebra.GeometryRefusal.ZeroDivisor #6()
+union-case Fuaran.Compute.GeometricAlgebra.LineMeet.NewSkew #2(Item: Fuaran.Compute.GeometricAlgebra.Point)
+union-case Fuaran.Compute.GeometricAlgebra.LineMeet.NewWithin #0(Item: Fuaran.Compute.GeometricAlgebra.PointPair)
+union-case Fuaran.Compute.GeometricAlgebra.LineMeet.SameLine #1()
+union-case Fuaran.Compute.GeometricAlgebra.PairPoints.NewImaginary #2(Item1: System.Tuple`3<System.Double, System.Double, System.Double>, Item2: System.Double)
+union-case Fuaran.Compute.GeometricAlgebra.PairPoints.NewReal #0(Item1: Fuaran.Compute.GeometricAlgebra.Point, Item2: Fuaran.Compute.GeometricAlgebra.Point)
+union-case Fuaran.Compute.GeometricAlgebra.PairPoints.NewTangent #1(Item1: System.Double, Item2: System.Double, Item3: System.Double)
+union-case Fuaran.Compute.GeometricAlgebra.PlaneSide.Negative #0()
+union-case Fuaran.Compute.GeometricAlgebra.PlaneSide.On #1()
+union-case Fuaran.Compute.GeometricAlgebra.PlaneSide.Positive #2()
+union-case Fuaran.Compute.GeometricAlgebra.PointPairKind.AtInfinity #2()
+union-case Fuaran.Compute.GeometricAlgebra.PointPairKind.NewFlatPoint #1(Item1: System.Double, Item2: System.Double, Item3: System.Double)
+union-case Fuaran.Compute.GeometricAlgebra.PointPairKind.NewRound #0(Item: Fuaran.Compute.GeometricAlgebra.Reality)
+union-case Fuaran.Compute.GeometricAlgebra.PointPairKind.NoObject #4()
+union-case Fuaran.Compute.GeometricAlgebra.PointPairKind.Zero #3()
+union-case Fuaran.Compute.GeometricAlgebra.Reality.Imaginary #2()
+union-case Fuaran.Compute.GeometricAlgebra.Reality.Real #0()
+union-case Fuaran.Compute.GeometricAlgebra.Reality.Tangent #1()
+union-case Fuaran.Compute.GeometricAlgebra.Side.Inside #0()
+union-case Fuaran.Compute.GeometricAlgebra.Side.On #1()
+union-case Fuaran.Compute.GeometricAlgebra.Side.Outside #2()
+union-case Fuaran.Compute.GeometricAlgebra.SphereKind.AtInfinity #2()
+union-case Fuaran.Compute.GeometricAlgebra.SphereKind.NewFlat #1(Item: Fuaran.Compute.GeometricAlgebra.Plane)
+union-case Fuaran.Compute.GeometricAlgebra.SphereKind.NewRound #0(Item: Fuaran.Compute.GeometricAlgebra.Reality)
+union-case Fuaran.Compute.GeometricAlgebra.SphereKind.NoObject #4()
+union-case Fuaran.Compute.GeometricAlgebra.SphereKind.Zero #3()

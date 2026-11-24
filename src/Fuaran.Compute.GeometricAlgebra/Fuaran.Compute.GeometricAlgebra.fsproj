@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>true</IsPackable>
     <PackageId>Fuaran.Compute.GeometricAlgebra</PackageId>
-    <Description>Fuaran.Compute.GeometricAlgebra — a pinned conformal geometric algebra, Cl(4,1): the multivector over the null basis n0 e1 e2 e3 n∞, thirty-two coefficients in one published blade order, and the products every operation is written in — geometric, outer, left contraction and scalar, each one fold from +0.0 over one table of 1,024 signed terms in one order, a rounded product and then a rounded sum — with the reverse, the grade involution, grade projection, and the dual and its inverse as copies and exact negation. No fused multiply-add and no host mathematics call on any host, so every answer is the same bits on .NET, under Fable and in every host that transcribes it. FSharp.Core only, nothing of Fuaran.Compute; Fable-clean.</Description>
+    <Description>Fuaran.Compute.GeometricAlgebra — a pinned conformal geometric algebra, Cl(4,1): the multivector over the null basis n0 e1 e2 e3 n∞, thirty-two coefficients in one published blade order, and the products every operation is written in — geometric, outer, left contraction and scalar, each one fold from +0.0 over one table of 1,024 signed terms in one order, a rounded product and then a rounded sum — with the reverse, the grade involution, grade projection, and the dual and its inverse as copies and exact negation; and the objects of Euclidean space as blades: the point, the point pair, the line, the circle, the plane and the sphere, each built from its parameters and through its points, with the join, the meet, read-back, the kind of a blade, and incidence as a value and as a test under a threshold the caller passes on every call. No fused multiply-add and no host mathematics call but the correctly rounded root on any host, so every answer is the same bits on .NET, under Fable and in every host that transcribes it. FSharp.Core only, nothing of Fuaran.Compute; Fable-clean.</Description>
   </PropertyGroup>
   <ItemGroup>
     <!-- The blades in their recorded order, the 1,024 signed terms and the dual's signed permutation,
@@ -13,6 +13,12 @@
     <Compile Include="Basis.fs" />
     <!-- The multivector, the fold and the products. -->
     <Compile Include="Multivector.fs" />
+    <!-- The objects of Euclidean space as blades (Phase 728, DECISIONS.md D85 items 4 to 6 and 8,
+         D87): the six typed wrappers, the refusals and the kinds; the objects written once, with
+         the arithmetic they are written in as an argument; and the published modules. -->
+    <Compile Include="Objects.fs" />
+    <Compile Include="Conformal.fs" />
+    <Compile Include="Geometry.fs" />
     <!-- Every public operation's exactness class, as data. -->
     <Compile Include="GeometricAlgebraOperations.fs" />
     <!-- The law family over the operations above. LAST: it reads all of them. -->

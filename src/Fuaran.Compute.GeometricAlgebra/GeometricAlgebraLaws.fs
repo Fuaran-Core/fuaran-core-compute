@@ -2,7 +2,8 @@ namespace Fuaran.Compute.GeometricAlgebra
 
 open System
 
-/// `geometricAlgebraLaws` (Phase 727): the laws the multivector and its products are held to, on
+/// `geometricAlgebraLaws` (Phase 727; Phase 728 adds the conformal objects' laws, the last nine):
+/// the laws the multivector, its products and the objects built on them are held to, on
 /// whichever host runs them (DECISIONS.md D85 item 7). Each law says which of two comparisons it holds
 /// under. BIT FOR BIT compares the sixty-four bits of each coefficient, which tells the two zeros
 /// apart. UNDER THE FLOAT IDENTITY is `Multivector`'s own equality, in which the two zeros are one
@@ -393,6 +394,365 @@ module GeometricAlgebraLaws =
                   "two multivectors of the same coefficients are not equal")
               check (not (a.Equals(box values))) (fun () -> "a multivector equals something that is not one") ]
 
+
+    // ---- Phase 728: the conformal objects (DECISIONS.md D85 item 7, D87) --------------------------
+    //
+    // The inputs of these laws are small integers, so that a product of five points' coefficients
+    // and every partial sum of it is a double.
+
+    /// An integer in `−4 .. 4`.
+    let private small (d: Draw) : float = float (d.Int -4 4)
+
+    let private smallTriple (d: Draw) : float * float * float =
+        let a = small d
+        let b = small d
+        let c = small d
+        a, b, c
+
+    let private succeeded (r: Result<'a, GeometryRefusal>) (onOk: 'a -> Result<unit, string>) : Result<unit, string> =
+        match r with
+        | Ok x -> onOk x
+        | Error _ -> Error "a construction on exact inputs was refused"
+
+    let private isPositiveZero (a: Multivector) : bool = sameBits a Multivector.zero
+
+    /// `(a − x)² + (b − y)² + (c − z)²`, exact on small integers.
+    let private squaredDistance (a: float, b: float, c: float) (x: float, y: float, z: float) : float =
+        ((a - x) * (a - x) + (b - y) * (b - y)) + (c - z) * (c - z)
+
+    /// `−1`, `0` or `+1`.
+    let private signOf (x: float) : int =
+        if x > 0.0 then 1
+        elif x < 0.0 then -1
+        else 0
+
+    let private embedding (d: Draw) =
+        let x = smallTriple d
+        let y = smallTriple d
+
+        succeeded (Point.up x) (fun p ->
+            succeeded (Point.up y) (fun q ->
+                let pm = Point.toMultivector p
+                let qm = Point.toMultivector q
+                let half = -0.5 * squaredDistance x y
+
+                all
+                    [ check (bits (Multivector.scalarProduct pm pm) = bits 0.0) (fun () -> "up x * up x is not +0.0")
+                      check (x = y || bits (Multivector.scalarProduct pm qm) = bits half) (fun () ->
+                          "up x * up y is not -1/2 |x - y|^2, bit for bit")
+                      check (bits (Multivector.scalarProduct pm (Multivector.basis 5)) = bits -1.0) (fun () ->
+                          "up x * n_inf is not -1") ]))
+
+    let private embeddingOfOnePoint (d: Draw) =
+        let x = smallTriple d
+
+        succeeded (Point.up x) (fun p ->
+            let pm = Point.toMultivector p
+            let left = Multivector.scalarProduct pm pm
+            let right = -0.5 * squaredDistance x x
+
+            all
+                [ check (left = right) (fun () -> "up x * up x and -1/2 |x - x|^2 are not one number")
+                  check (bits left <> bits right && bits right = bits -0.0) (fun () ->
+                      "the right side is not the negative zero that keeps this law from holding bit for bit") ])
+
+    let private pointOnItsRound (d: Draw) =
+        let p = Point.up (smallTriple d)
+        let q = Point.up (smallTriple d)
+        let r = Point.up (smallTriple d)
+        let s = Point.up (smallTriple d)
+
+        succeeded p (fun p ->
+            succeeded q (fun q ->
+                succeeded r (fun r ->
+                    succeeded s (fun s ->
+                        let circle = Circle.toMultivector (Circle.through p q r)
+                        let sphere = Sphere.toMultivector (Sphere.through p q r s)
+
+                        all
+                            [ for name, point in [ "first", p; "second", q; "third", r ] ->
+                                  check
+                                      (isPositiveZero (Multivector.outerProduct (Point.toMultivector point) circle))
+                                      (fun () -> sprintf "the %s point is not on the circle through it" name)
+                              for name, point in [ "first", p; "second", q; "third", r; "fourth", s ] ->
+                                  check
+                                      (isPositiveZero (Multivector.outerProduct (Point.toMultivector point) sphere))
+                                      (fun () -> sprintf "the %s point is not on the sphere through it" name) ]))))
+
+    let private threePoints (d: Draw) : Result<Point * Point * Point, GeometryRefusal> =
+        Point.up (smallTriple d)
+        |> Result.bind (fun p ->
+            Point.up (smallTriple d)
+            |> Result.bind (fun q -> Point.up (smallTriple d) |> Result.map (fun r -> p, q, r)))
+
+    let private meetOfTwoPlanesIsInBoth (d: Draw) =
+        succeeded (threePoints d) (fun (p, q, r) ->
+            succeeded (threePoints d) (fun (s, t, u) ->
+                let first = Plane.through p q r
+                let second = Plane.through s t u
+                let line = Line.toMultivector (Plane.meet first second)
+
+                all
+                    [ for name, plane in [ "first", first; "second", second ] ->
+                          check (isPositiveZero (Blade.meet line (Plane.toMultivector plane))) (fun () ->
+                              sprintf "the meet of two planes is not in the %s" name) ]))
+
+    let private meetWithinTheWholeSpace (d: Draw) =
+        let a = exact d
+        let b = exact d
+
+        match Blade.meetWithin pseudoscalar a b with
+        | Ok within ->
+            check (sameBits within (Blade.meet a b)) (fun () -> "the meet within the whole space is not the meet")
+        | Error _ -> Error "the meet within the whole space was refused"
+
+    let private meetAgainstTheOuterProductOfDuals (d: Draw) =
+        let a = exact d
+        let b = exact d
+
+        let undualled =
+            Multivector.undual (Multivector.outerProduct (Multivector.dual b) (Multivector.dual a))
+
+        check (Blade.meet a b = undualled) (fun () -> "meet A B is not the undual of B* ^ A*")
+
+    /// The sign of each statistic is the sign exact arithmetic gives: integer coordinates, a point and a
+    /// sphere of any integer weight, and the same sign from the value, from the test at `0` and from the
+    /// test's own reading of the other two.
+    let private signsOfTheStatistics (d: Draw) =
+        let x = smallTriple d
+        let c = smallTriple d
+        let radius = float (d.Int 0 6)
+        let pointWeight = float (2 * d.Int 0 1 - 1) * float (d.Int 1 3)
+        let sphereWeight = float (2 * d.Int 0 1 - 1) * float (d.Int 1 3)
+
+        let weighted (w: float) (p: Point) : Point =
+            { N0 = w * p.N0
+              E1 = w * p.E1
+              E2 = w * p.E2
+              E3 = w * p.E3
+              NInf = w * p.NInf }
+
+        succeeded (Point.up x) (fun unitPoint ->
+            succeeded (Sphere.ofCentreRadius c radius) (fun unitSphere ->
+                succeeded (threePoints d) (fun (p, q, r) ->
+                    let point = weighted pointWeight unitPoint
+
+                    let sphere: Sphere =
+                        { N0E1E2E3 = sphereWeight * unitSphere.N0E1E2E3
+                          N0E1E2NInf = sphereWeight * unitSphere.N0E1E2NInf
+                          N0E1E3NInf = sphereWeight * unitSphere.N0E1E3NInf
+                          N0E2E3NInf = sphereWeight * unitSphere.N0E2E3NInf
+                          E1E2E3NInf = sphereWeight * unitSphere.E1E2E3NInf }
+
+                    let truePower = signOf (squaredDistance x c - radius * radius)
+
+                    let ofSide (side: Side) : int =
+                        match side with
+                        | Side.Inside -> -1
+                        | Side.On -> 0
+                        | Side.Outside -> 1
+
+                    let plane = Plane.through p q r
+                    let (px, py, pz) = (p.E1, p.E2, p.E3)
+                    let (qx, qy, qz) = (q.E1 - px, q.E2 - py, q.E3 - pz)
+                    let (rx, ry, rz) = (r.E1 - px, r.E2 - py, r.E3 - pz)
+                    let (x1, x2, x3) = x
+                    let (dx, dy, dz) = (x1 - px, x2 - py, x3 - pz)
+
+                    // The triple product `[q − p, r − p, x − p]`: the side of the plane's normal `x` is on.
+                    let trueSide =
+                        signOf ((dx * (qy * rz - qz * ry) + dy * (qz * rx - qx * rz)) + dz * (qx * ry - qy * rx))
+
+                    all
+                        [ match Sphere.power point sphere, Sphere.side 0.0 point sphere with
+                          | Ok power, Ok side ->
+                              check (signOf power = truePower && ofSide side = truePower) (fun () ->
+                                  "the power against a sphere has another sign than |x - c|^2 - r^2")
+                          | _ -> Error "a statistic on exact inputs was refused"
+                          match Plane.signedDistance point plane, Plane.side 0.0 point plane with
+                          | Ok distance, Ok side ->
+                              let ofPlaneSide =
+                                  match side with
+                                  | PlaneSide.Negative -> -1
+                                  | PlaneSide.On -> 0
+                                  | PlaneSide.Positive -> 1
+
+                              check (signOf distance = trueSide && ofPlaneSide = trueSide) (fun () ->
+                                  "the signed distance from a plane has another sign than the triple product")
+                          | Error GeometryRefusal.ZeroDivisor, Error GeometryRefusal.ZeroDivisor ->
+                              // Three collinear points: no plane, and both say so.
+                              check (Plane.weight plane = 0.0) (fun () ->
+                                  "a plane of weight was refused as one of none")
+                          | _ -> Error "the value and the test of a signed distance disagree on a refusal" ])))
+
+    /// The in-circle statistic against the determinant predicate, on the integer grid of the plane
+    /// `x3 = 0`. The power is negative inside whatever the order of the circle's points, where the
+    /// determinant changes sign with their orientation, so the two agree through the orientation.
+    let private inCircleAgreesWithTheDeterminant (d: Draw) =
+        let grid () : float * float =
+            let x = float (d.Int -8 8)
+            let y = float (d.Int -8 8)
+            x, y
+
+        let (ax, ay) = grid ()
+        let (bx, by) = grid ()
+        let (cx, cy) = grid ()
+        let (px, py) = grid ()
+        let orientation = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+        let row (x: float) (y: float) =
+            x - px, y - py, (x - px) * (x - px) + (y - py) * (y - py)
+
+        let (a1, a2, a3) = row ax ay
+        let (b1, b2, b3) = row bx by
+        let (c1, c2, c3) = row cx cy
+
+        let determinant =
+            (a1 * (b2 * c3 - b3 * c2) - a2 * (b1 * c3 - b3 * c1)) + a3 * (b1 * c2 - b2 * c1)
+
+        let flat (x: float) (y: float) = Point.up (x, y, 0.0)
+
+        succeeded (flat ax ay) (fun a ->
+            succeeded (flat bx by) (fun b ->
+                succeeded (flat cx cy) (fun c ->
+                    succeeded (flat px py) (fun p ->
+                        let circle = Circle.through a b c
+
+                        match Circle.power p circle, Circle.side 0.0 p circle with
+                        | Ok power, Ok side ->
+                            let expected = -(signOf determinant * signOf orientation)
+
+                            let ofSide =
+                                match side with
+                                | Side.Inside -> -1
+                                | Side.On -> 0
+                                | Side.Outside -> 1
+
+                            check (orientation <> 0.0 && signOf power = expected && ofSide = expected) (fun () ->
+                                "the in-circle statistic disagrees with the determinant predicate")
+                        | Error GeometryRefusal.ZeroDivisor, Error GeometryRefusal.ZeroDivisor ->
+                            check (orientation = 0.0) (fun () -> "three points that are not collinear were refused")
+                        | _ -> Error "the value and the test of the in-circle statistic disagree on a refusal"))))
+
+    // ---- agreement with a closed form, within a stated bound ----------------------------------------
+
+    /// The lattice points of the spheres of radius 3, 7 and 9 about the origin that these laws draw
+    /// from: each row a radius and a point at exactly that distance.
+    let private latticePoints: (float * (float * float * float)) list =
+        [ for radius, (a, b, c) in
+              [ 3.0, (1.0, 2.0, 2.0)
+                7.0, (2.0, 3.0, 6.0)
+                9.0, (1.0, 4.0, 8.0)
+                9.0, (4.0, 4.0, 7.0) ] do
+              for (x, y, z) in [ a, b, c; b, c, a; c, a, b; a, c, b; c, b, a; b, a, c ] do
+                  for sx in [ 1.0; -1.0 ] do
+                      for sy in [ 1.0; -1.0 ] do
+                          for sz in [ 1.0; -1.0 ] -> radius, (sx * x, sy * y, sz * z) ]
+
+    /// The last place of a non-zero double: the power of two `2^(e − 52)` with `2^e ≤ |x| < 2^(e + 1)`,
+    /// found by exact doubling and halving.
+    let private lastPlace (x: float) : float =
+        let magnitude = if x < 0.0 then -x else x
+        let mutable power = 1.0
+
+        while power > magnitude do
+            power <- power / 2.0
+
+        while power * 2.0 <= magnitude do
+            power <- power * 2.0
+
+        power / 4503599627370496.0
+
+    /// The seeded sample (seed 728, 2,000 configurations) and what was measured over it: a line and a
+    /// sphere built from parameters, whose two points of intersection are lattice points known exactly
+    /// by construction, against the points the package reads back through `Line.ofPointDirection`,
+    /// `Sphere.ofCentreRadius`, `Line.meetSphere`, `PointPair.points` at `tau = 0` and
+    /// `Point.coordinates`. Answers the largest error of a coordinate in units in the last place of its
+    /// reference, and the largest absolute error of a coordinate whose reference is zero; or the first
+    /// configuration that did not answer two real points in the line's order.
+    let internal closedFormSample () : Result<float * float, string> =
+        let d = Draw 728
+        let mutable worstUlps = 0.0
+        let mutable worstAbsolute = 0.0
+        let mutable failure = None
+        let mutable i = 0
+
+        while Option.isNone failure && i < 2000 do
+            let radius = List.item (d.Int 0 2) [ 3.0; 7.0; 9.0 ]
+
+            let onSphere =
+                latticePoints |> List.filter (fun (r, _) -> r = radius) |> List.map snd
+
+            let (ux, uy, uz) = List.item (d.Int 0 (onSphere.Length - 1)) onSphere
+            let (vx, vy, vz) = List.item (d.Int 0 (onSphere.Length - 1)) onSphere
+            let cx = float (d.Int -20 20)
+            let cy = float (d.Int -20 20)
+            let cz = float (d.Int -20 20)
+            let k = float (d.Int -3 3)
+            let scale = float (d.Int 1 5)
+
+            if not (ux = vx && uy = vy && uz = vz) then
+                let direction = (scale * (vx - ux), scale * (vy - uy), scale * (vz - uz))
+                let first = (cx + ux, cy + uy, cz + uz)
+                let second = (cx + vx, cy + vy, cz + vz)
+
+                let through =
+                    (cx + ux + k * (vx - ux), cy + uy + k * (vy - uy), cz + uz + k * (vz - uz))
+
+                let read =
+                    Line.ofPointDirection through direction
+                    |> Result.bind (fun line ->
+                        Sphere.ofCentreRadius (cx, cy, cz) radius
+                        |> Result.bind (fun sphere -> PointPair.points 0.0 (Line.meetSphere line sphere)))
+
+                match read with
+                | Ok(PairPoints.Real(p, q)) ->
+                    match Point.coordinates p, Point.coordinates q with
+                    | Ok(p1, p2, p3), Ok(q1, q2, q3) ->
+                        let (f1, f2, f3) = first
+                        let (s1, s2, s3) = second
+
+                        for got, reference in [ p1, f1; p2, f2; p3, f3; q1, s1; q2, s2; q3, s3 ] do
+                            let error = if got < reference then reference - got else got - reference
+
+                            if reference = 0.0 then
+                                if error > worstAbsolute then
+                                    worstAbsolute <- error
+                            else
+                                let ulps = error / lastPlace reference
+
+                                if ulps > worstUlps then
+                                    worstUlps <- ulps
+                    | _ -> failure <- Some(sprintf "configuration %d: a point's coordinates were refused" i)
+                | _ ->
+                    failure <-
+                        Some(sprintf "configuration %d: the line and the sphere did not meet in two real points" i)
+
+            i <- i + 1
+
+        match failure with
+        | Some why -> Error why
+        | None -> Ok(worstUlps, worstAbsolute)
+
+    /// The bound of the closed-form law: the largest errors measured over `closedFormSample`, with no
+    /// margin, because the answers are pinned bits and every host measures the same ones.
+    let internal closedFormBoundUlps = 292.0
+
+    let internal closedFormBoundAbsolute = 104.0 / 4503599627370496.0
+
+    let private closedFormVerdict: Lazy<Result<unit, string>> =
+        lazy
+            (match closedFormSample () with
+             | Error why -> Error why
+             | Ok(ulps, absolute) ->
+                 check (ulps <= closedFormBoundUlps && absolute <= closedFormBoundAbsolute) (fun () ->
+                     sprintf
+                         "the largest errors are %g units in the last place and %g absolute, past the stated bound"
+                         ulps
+                         absolute))
+
+    let private lineAndSphereAgainstTheClosedForm (_: Draw) = closedFormVerdict.Value
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "the term table has the recorded shape", tableShape
@@ -417,5 +777,17 @@ module GeometricAlgebraLaws =
           productsAreGradeSelections
           "no product returns a negative zero", noProductReturnsANegativeZero
           "a NaN leaves as Double.NaN's bits", canonicalNaN
-          "equality is the float identity, and equal multivectors hash alike", equalityIsTheFloatIdentity ]
+          "equality is the float identity, and equal multivectors hash alike", equalityIsTheFloatIdentity
+          "up x * up x is zero and up x * up y is minus half the squared distance, bit for bit", embedding
+          "up x * up x is minus half of |x - x|^2, under the float identity", embeddingOfOnePoint
+          "a point is on the circle and on the sphere built through it, bit for bit", pointOnItsRound
+          "the meet of two planes is in both, bit for bit", meetOfTwoPlanesIsInBoth
+          "the meet within the whole space is the meet, bit for bit", meetWithinTheWholeSpace
+          "the meet is the undual of the outer product of the duals, under the float identity",
+          meetAgainstTheOuterProductOfDuals
+          "the sign of each incidence statistic is the sign exact arithmetic gives", signsOfTheStatistics
+          "the in-circle statistic agrees with the determinant predicate on the integer grid, in sign",
+          inCircleAgreesWithTheDeterminant
+          "a line and a sphere meet where the closed form says, within the stated bound",
+          lineAndSphereAgainstTheClosedForm ]
         |> List.map (fun (name, body) -> name, law seed count body)

@@ -113,6 +113,8 @@
     <Compile Include="DistributionsTests.fs" />
     <!-- Phase 727: the suite over Fuaran.Compute.GeometricAlgebra. -->
     <Compile Include="GeometricAlgebraTests.fs" />
+    <!-- Phase 728: the conformal objects of the same package, and their go-red witnesses. -->
+    <Compile Include="ConformalTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
