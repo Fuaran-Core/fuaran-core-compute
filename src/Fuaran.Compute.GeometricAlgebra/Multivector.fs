@@ -171,22 +171,17 @@ module internal Kernel =
 
         r
 
-    /// Where a signed permutation sends a type's blades: a value of no type stays one.
+    /// The type of a signed permutation's answer: the reverse, the grade involution and negation, which
+    /// keep every blade where it is, keep the value's type; the dual and the undual, which move blades,
+    /// answer a value of no type, since no specialised product reads one (D89).
     let permutedMask (target: int[]) (carried: int) : int =
-        if carried = every then
-            every
+        if obj.ReferenceEquals(target, Basis.identity) then
+            carried
         else
-            let mutable mask = 0
-
-            for index in 0 .. Basis.count - 1 do
-                if carries carried index then
-                    mask <- mask ||| (1 <<< target[index])
-
-            mask
+            every
 
     /// A multivector's signed permutation, its NaNs canonical on the way out: negating a NaN moves
-    /// its sign bit. A type's blades go where their coefficients go, so the reverse of a typed value
-    /// is a value of the same type.
+    /// its sign bit. The reverse of a typed value is a value of the same type.
     let inline permutedWith
         ([<InlineIfLambda>] negate: float -> float)
         (target: int[])

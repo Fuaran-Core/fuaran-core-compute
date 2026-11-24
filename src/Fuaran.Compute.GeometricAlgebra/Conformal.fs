@@ -477,11 +477,13 @@ module internal Conformal =
     /// whose blades are `indices`.
     let widen (indices: int[]) (values: float[]) : Multivector =
         let xs = Array.zeroCreate<float> Basis.count
+        let mutable mask = 0
 
         for k in 0 .. indices.Length - 1 do
             xs[indices[k]] <- values[k]
+            mask <- mask ||| (1 <<< indices[k])
 
-        Kernel.adoptAs (Kernel.maskOf indices) xs
+        Kernel.adoptAs mask xs
 
     /// The coefficients of `m` at `indices`: the copy that discards the rest without a test.
     let copy (indices: int[]) (m: Multivector) : float[] =
