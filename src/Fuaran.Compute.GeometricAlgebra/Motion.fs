@@ -27,11 +27,11 @@ module internal Motion =
 
     // ---- the index sets of D85 item 8's table, and the copies --------------------------------------
 
-    let rotorIndices = [| 0; 10; 11; 13 |]
-    let translatorIndices = [| 0; 12; 14; 15 |]
-    let motorIndices = [| 0; 10; 11; 12; 13; 14; 15; 30 |]
-    let dilatorIndices = [| 0; 9; 12; 14; 15 |]
-    let reflectionIndices = [| 2; 3; 4; 5 |]
+    let rotorIndices = Indices.rotor
+    let translatorIndices = Indices.translator
+    let motorIndices = Indices.motor
+    let dilatorIndices = Indices.dilator
+    let reflectionIndices = Indices.reflection
 
     let rotorValues (x: Rotor) : float[] = [| x.Scalar; x.E1E2; x.E1E3; x.E2E3 |]
 

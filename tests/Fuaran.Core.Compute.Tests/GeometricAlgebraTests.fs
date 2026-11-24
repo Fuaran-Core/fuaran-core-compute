@@ -279,7 +279,7 @@ let tests =
                       | Error why -> Some(name + ": " + why))
 
               Expect.isEmpty failures "every law of the geometric algebra holds"
-              Expect.equal (GeometricAlgebraLaws.laws 590 1 |> List.length) 36 "thirty-six laws are run"
+              Expect.equal (GeometricAlgebraLaws.laws 590 1 |> List.length) 37 "thirty-seven laws are run"
 
           testCase "the committed law vectors are the package's answers"
           <| fun () ->

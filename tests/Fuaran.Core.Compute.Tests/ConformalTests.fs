@@ -1318,13 +1318,13 @@ let private defaults =
 let internal accountedLiterals: (string * string * int * string) list =
     [ "Multivector.fs",
       "0.0",
-      9,
-      "the zero test inside the hash, once (item 8); the `+0.0` a fold starts from, five times (item 3); and the `+0.0` of a coefficient a scalar, a basis blade and a grade projection do not hold, three times (items 2 and 4)"
+      11,
+      "the zero test inside the hash, once (item 8); the `+0.0` a fold starts from, five times, and since Phase 730 once more, in the general product the specialised products fall back to (item 3, D89); the zero test of the specialised products' guard, which sends an operand that holds a number off its type's blades to the general product, once (D89); and the `+0.0` of a coefficient a scalar, a basis blade and a grade projection do not hold, three times (items 2 and 4)"
       "Multivector.fs", "1.0", 1, "a basis blade's one coefficient (item 2); in no comparison"
       "Conformal.fs",
       "0.0",
-      26,
-      "in a comparison, thirteen times: a divisor against zero, the norm of a direction against zero, a threshold of zero, a threshold that is not negative, a radius that is not negative, a numerator that is zero, and the signs of a numerator and of a denominator at a threshold of zero; and since Phase 729 the exponential's `φ = 0`, the logarithm's `|B′| = 0`, and for a rotor read from a matrix the sign of its scalar part, twice, and of its largest axis component at a half turn (item 6); inside the norm, four times: its `m = 0`, the zero it answers, and the `+0.0` its largest magnitude and its sum start from (D49 item 4, outside the rule); the `+0.0` of a coefficient a vector built from parameters does not hold, eight times (item 4); and the `+0.0` a dot product of two columns starts from, once (item 3's fold)"
+      27,
+      "the `+0.0` the specialised products' fold starts from, once (item 3's fold, D89); in a comparison, thirteen times: a divisor against zero, the norm of a direction against zero, a threshold of zero, a threshold that is not negative, a radius that is not negative, a numerator that is zero, and the signs of a numerator and of a denominator at a threshold of zero; and since Phase 729 the exponential's `φ = 0`, the logarithm's `|B′| = 0`, and for a rotor read from a matrix the sign of its scalar part, twice, and of its largest axis component at a half turn (item 6); inside the norm, four times: its `m = 0`, the zero it answers, and the `+0.0` its largest magnitude and its sum start from (D49 item 4, outside the rule); the `+0.0` of a coefficient a vector built from parameters does not hold, eight times (item 4); and the `+0.0` a dot product of two columns starts from, once (item 3's fold)"
       "Conformal.fs",
       "0.5",
       3,

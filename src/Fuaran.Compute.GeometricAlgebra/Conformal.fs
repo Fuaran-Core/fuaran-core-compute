@@ -20,9 +20,11 @@ open System
 //  A typed operation is the general operation on thirty-two coefficients, the
 //  ones a type does not carry being `+0.0`, followed by a copy of the result
 //  type's coefficients (D85 item 4). The products are Phase 727's general
-//  ones: nothing here is specialised. Nothing normalises an operand or a
-//  result (D85 item 5). `sqrt` is the one host function called, twice: in the
-//  norm, and for a real point pair's `√(X ∗ X)`.
+//  ones, but for the geometric product of a pair of types D89 keeps, which is
+//  specialised to those types and answers the general product's bits (Phase
+//  730). Nothing normalises an operand or a result (D85 item 5). `sqrt` is
+//  the one host function called, twice: in the norm, and for a real point
+//  pair's `√(X ∗ X)`.
 //
 //  FSharp.Core only; Fable-clean.
 // ============================================================================
@@ -342,12 +344,84 @@ module internal Forms =
 
         euclidean (r.Geometric (r.Contraction vector u) uReversed)
 
+/// The index sets of DECISIONS.md D85 item 8's table and the groups of item 6, read off the blades.
+module internal Indices =
+
+    let private holds (vector: int) (index: int) : bool =
+        List.contains vector Basis.blades[index]
+
+    let private origin = 0
+
+    let private infinity = 4
+
+    let private ofGrade (g: int) : int[] =
+        [| for index in 0 .. Basis.count - 1 do
+               if Basis.grade[index] = g then
+                   yield index |]
+
+    let point = ofGrade 1
+    let pair = ofGrade 2
+    let circle = ofGrade 3
+    let sphere = ofGrade 4
+    let line = circle |> Array.filter (holds infinity)
+    let plane = sphere |> Array.filter (holds infinity)
+
+    /// The versors' (D88), here since Phase 730 so that the specialised products can read them.
+    let rotor = [| 0; 10; 11; 13 |]
+    let translator = [| 0; 12; 14; 15 |]
+    let motor = [| 0; 10; 11; 12; 13; 14; 15; 30 |]
+    let dilator = [| 0; 9; 12; 14; 15 |]
+    let reflection = [| 2; 3; 4; 5 |]
+
+    /// A type's blades that hold `n0` and not `n∞`; neither; both; `n∞` and not `n0` (item 6).
+    let groups (indices: int[]) : int[] * int[] * int[] * int[] =
+        let group (withOrigin: bool) (withInfinity: bool) =
+            indices
+            |> Array.filter (fun index -> holds origin index = withOrigin && holds infinity index = withInfinity)
+
+        group true false, group false false, group true true, group false true
+
+/// The specialised products this package keeps (Phase 730, DECISIONS.md D89): pairs of operand types
+/// whose geometric product the typed functions form, each kept because the committed benchmark shows
+/// it faster than the general product by D89's margin on .NET and under node. A product of any other
+/// pair of types, or of a value of no type, is the general product.
+module internal Specialised =
+
+    let private point = Kernel.maskOf Indices.point
+
+    let private rotor = Kernel.maskOf Indices.rotor
+
+    let private translator = Kernel.maskOf Indices.translator
+
+    let private motor = Kernel.maskOf Indices.motor
+
+    /// The two products of the sandwich `(V X) Ṽ`: the versor's type with the object's, and the type
+    /// of that answer with the versor's, which is its reverse's.
+    let private sandwich (v: int) (x: int) : Kernel.Specialisation list =
+        let first = Kernel.specialise v x
+        [ first; Kernel.specialise first.Reached v ]
+
+    /// The pairs, each with its terms.
+    let shapes: Kernel.Specialisation[] =
+        [| yield Kernel.specialise rotor rotor
+           yield Kernel.specialise motor motor
+           yield Kernel.specialise translator rotor
+           yield! sandwich rotor point
+           yield! sandwich translator point
+           yield! sandwich motor point |]
+
+    /// The geometric product as the typed functions form it: specialised where `shapes` holds the
+    /// operands' types and both are admitted, and the general product otherwise. Every answer is the
+    /// general product's, bit for bit.
+    let geometric (a: Multivector) (b: Multivector) : Multivector =
+        Kernel.specialisedWith 0.0 Kernel.twoRoundings id true shapes a b
+
 module internal Arithmetic =
 
     /// The arithmetic DECISIONS.md D85 records. Every comparison of this package's objects with a
     /// float literal is here, in `Conformal.threshold`, `Conformal.radius` and `Conformal.against`.
     let shipped: Arithmetic =
-        { Geometric = Multivector.geometricProduct
+        { Geometric = Specialised.geometric
           Outer = Multivector.outerProduct
           Contraction = Multivector.leftContraction
           Scalar = Multivector.scalarProduct
@@ -386,36 +460,6 @@ module internal Arithmetic =
           Placed = id
           NormaliseOnce = fun once values -> once values }
 
-/// The index sets of DECISIONS.md D85 item 8's table and the groups of item 6, read off the blades.
-module internal Indices =
-
-    let private holds (vector: int) (index: int) : bool =
-        List.contains vector Basis.blades[index]
-
-    let private origin = 0
-
-    let private infinity = 4
-
-    let private ofGrade (g: int) : int[] =
-        [| for index in 0 .. Basis.count - 1 do
-               if Basis.grade[index] = g then
-                   yield index |]
-
-    let point = ofGrade 1
-    let pair = ofGrade 2
-    let circle = ofGrade 3
-    let sphere = ofGrade 4
-    let line = circle |> Array.filter (holds infinity)
-    let plane = sphere |> Array.filter (holds infinity)
-
-    /// A type's blades that hold `n0` and not `n∞`; neither; both; `n∞` and not `n0` (item 6).
-    let groups (indices: int[]) : int[] * int[] * int[] * int[] =
-        let group (withOrigin: bool) (withInfinity: bool) =
-            indices
-            |> Array.filter (fun index -> holds origin index = withOrigin && holds infinity index = withInfinity)
-
-        group true false, group false false, group true true, group false true
-
 /// What a typed blade is by the norms of its groups, before a round's squared radius is read.
 [<RequireQualifiedAccess>]
 type internal Shape =
@@ -429,14 +473,15 @@ module internal Conformal =
 
     // ---- widening and the copy back (D85 item 4) -------------------------------------------------
 
-    /// The multivector that holds `values` at `indices` and `+0.0` elsewhere.
+    /// The multivector that holds `values` at `indices` and `+0.0` elsewhere, a value of the type
+    /// whose blades are `indices`.
     let widen (indices: int[]) (values: float[]) : Multivector =
         let xs = Array.zeroCreate<float> Basis.count
 
         for k in 0 .. indices.Length - 1 do
             xs[indices[k]] <- values[k]
 
-        Kernel.adopt xs
+        Kernel.adoptAs (Kernel.maskOf indices) xs
 
     /// The coefficients of `m` at `indices`: the copy that discards the rest without a test.
     let copy (indices: int[]) (m: Multivector) : float[] =

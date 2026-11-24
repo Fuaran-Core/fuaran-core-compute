@@ -13,7 +13,11 @@ open System
 //  bits (item 3); and the float identity as `Equals` (item 8).
 //
 //  The general product is the reference a specialised one is held to, so it is
-//  written to be read: one loop over one table.
+//  written to be read: one loop over one table. Phase 730 adds the specialised
+//  products (DECISIONS.md D89): the same fold over the terms of that table whose
+//  blades two operand types carry, in the order they have there, taken only
+//  where both operands are finite and hold a zero wherever their type carries
+//  no blade, so that each answers the general product's bits on every input.
 //
 //  FSharp.Core only; Fable-clean. No host mathematics function is called.
 // ============================================================================
@@ -28,10 +32,15 @@ open System
 /// coefficients are both NaN or are equal as numbers, so every NaN is one value and `-0.0` equals
 /// `0.0`. A comparison of bits is a law's, over `Multivector.toArray`, never `=`.
 [<Sealed>]
-type Multivector internal (coefficients: float[]) =
+type Multivector internal (coefficients: float[], carried: int) =
 
     /// The thirty-two coefficients, in index order; never written after construction.
     member internal _.Coefficients: float[] = coefficients
+
+    /// The blades the value's type carries, one bit for each index, and every bit for a value of no
+    /// type (DECISIONS.md D89). A specialised product reads it to choose its terms, and then reads the
+    /// coefficients before it trusts it. Neither equality nor the hash reads it.
+    member internal _.Carried: int = carried
 
     override _.Equals(other: obj) : bool =
         match other with
@@ -78,12 +87,26 @@ module internal Kernel =
     let canonical (x: float) : float =
         if Double.IsNaN x then Double.NaN else x
 
-    /// Canonicalise a fresh array in place, on the way out and never per step, and adopt it.
-    let adopt (coefficients: float[]) : Multivector =
+    /// The mask of a value of no type: every blade (DECISIONS.md D89).
+    let every: int = -1
+
+    /// Whether a mask holds the blade of this index.
+    let carries (mask: int) (index: int) : bool = (mask >>> index) &&& 1 = 1
+
+    /// The mask of a type that carries the blades of these indices.
+    let maskOf (indices: int[]) : int =
+        indices |> Array.fold (fun mask index -> mask ||| (1 <<< index)) 0
+
+    /// Canonicalise a fresh array in place, on the way out and never per step, and adopt it as a value
+    /// whose type carries the blades of `carried`.
+    let adoptAs (carried: int) (coefficients: float[]) : Multivector =
         for index in 0 .. coefficients.Length - 1 do
             coefficients[index] <- canonical coefficients[index]
 
-        Multivector coefficients
+        Multivector(coefficients, carried)
+
+    /// `adoptAs` for a value of no type.
+    let adopt (coefficients: float[]) : Multivector = adoptAs every coefficients
 
     /// How a term enters its accumulator (D85 item 3): `p = x × y`, one rounded product with the left
     /// coefficient first, and then `r + p` or `r − p`, one rounded sum. Two roundings and never one:
@@ -148,18 +171,126 @@ module internal Kernel =
 
         r
 
+    /// Where a signed permutation sends a type's blades: a value of no type stays one.
+    let permutedMask (target: int[]) (carried: int) : int =
+        if carried = every then
+            every
+        else
+            let mutable mask = 0
+
+            for index in 0 .. Basis.count - 1 do
+                if carries carried index then
+                    mask <- mask ||| (1 <<< target[index])
+
+            mask
+
     /// A multivector's signed permutation, its NaNs canonical on the way out: negating a NaN moves
-    /// its sign bit.
+    /// its sign bit. A type's blades go where their coefficients go, so the reverse of a typed value
+    /// is a value of the same type.
     let inline permutedWith
         ([<InlineIfLambda>] negate: float -> float)
         (target: int[])
         (negative: bool[])
         (a: Multivector)
         : Multivector =
-        adopt (signedPermutationWith negate target negative a.Coefficients)
+        adoptAs (permutedMask target a.Carried) (signedPermutationWith negate target negative a.Coefficients)
 
     /// Every blade negated: negation's mask.
     let everyBlade: bool[] = Array.create Basis.count true
+
+    // ---- the specialised products (Phase 730, DECISIONS.md D89) --------------------------------------
+
+    /// The general geometric product, as one compiled function: the path a specialised product takes
+    /// where it does not specialise.
+    let general (a: Multivector) (b: Multivector) : Multivector =
+        productWith 0.0 twoRoundings Basis.geometric a b
+
+    /// A specialised product: the masks of its two operand types, the terms of the geometric product's
+    /// table whose left blade the left type carries and whose right blade the right type carries, in
+    /// the order they have in that table, and the mask of the blades those terms reach, which is the
+    /// type of its answer.
+    type Specialisation =
+        { Left: int
+          Right: int
+          Terms: Term[]
+          Reached: int }
+
+    /// The specialisation of the geometric product to two types. Its terms are the general table
+    /// filtered, so they are visited in the general order by construction. A term it drops has a factor
+    /// on a blade its operand's type does not carry.
+    let specialise (left: int) (right: int) : Specialisation =
+        let terms =
+            Basis.geometric
+            |> Array.filter (fun term -> carries left term.Left && carries right term.Right)
+
+        { Left = left
+          Right = right
+          Terms = terms
+          Reached = terms |> Array.fold (fun mask term -> mask ||| (1 <<< term.Out)) 0 }
+
+    /// Whether a value's coefficients are what a specialised product may drop terms of: finite on
+    /// every blade its type carries, and a zero of either sign on every other. Where this fails the
+    /// general product answers (D89: a dropped term is a zero only between finite factors).
+    let admits (carried: int) (xs: float[]) : bool =
+        let mutable held = true
+        let mutable index = 0
+
+        while held && index < Basis.count do
+            let x = xs[index]
+
+            held <-
+                if carries carried index then
+                    not (Double.IsNaN x || Double.IsInfinity x)
+                else
+                    x = 0.0
+
+            index <- index + 1
+
+        held
+
+    /// The geometric product, specialised where the two operands' types are a pair in `shapes` and
+    /// both operands are admitted, and the general product otherwise. The specialised fold is item 3's
+    /// under the rule given (its start, its entry, the order of its terms, and whether it reads the
+    /// guard); the general product it falls back to is always the recorded one.
+    let inline specialisedWith
+        (start: float)
+        ([<InlineIfLambda>] enter: bool -> float -> float -> float -> float)
+        ([<InlineIfLambda>] order: Term[] -> Term[])
+        (guarded: bool)
+        (shapes: Specialisation[])
+        (a: Multivector)
+        (b: Multivector)
+        : Multivector =
+        let mutable found = -1
+        let mutable k = 0
+
+        while found < 0 && k < shapes.Length do
+            if shapes[k].Left = a.Carried && shapes[k].Right = b.Carried then
+                found <- k
+
+            k <- k + 1
+
+        if
+            found >= 0
+            && (not guarded
+                || (admits a.Carried a.Coefficients && admits b.Carried b.Coefficients))
+        then
+            let shape = shapes[found]
+            adoptAs shape.Reached (foldWith start enter (order shape.Terms) a.Coefficients b.Coefficients)
+        else
+            general a b
+
+    /// `specialisedWith` under a rule the caller passes: the suite's door to the specialised fold.
+    let specialisedUnder
+        (start: float)
+        (enter: bool -> float -> float -> float -> float)
+        (order: Term[] -> Term[])
+        (guarded: bool)
+        (shapes: Specialisation[])
+        (a: Multivector)
+        (b: Multivector)
+        : Multivector =
+        specialisedWith start enter order guarded shapes a b
 
     /// `productWith` under a rule the caller passes: the suite's door to the fold.
     let productUnder
@@ -199,7 +330,7 @@ module Multivector =
     // ---- construction and read-back ----------------------------------------------------------------
 
     /// The zero multivector: `+0.0` at every index.
-    let zero: Multivector = Multivector(Array.zeroCreate<float> Basis.count)
+    let zero: Multivector = Kernel.adopt (Array.zeroCreate<float> Basis.count)
 
     /// The multivector whose coefficient at index `i` is `f i`, called once for each index, ascending.
     let init (f: int -> float) : Multivector = Kernel.adopt (Array.init Basis.count f)
@@ -228,7 +359,7 @@ module Multivector =
     /// the zero multivector.
     let grade (g: int) (a: Multivector) : Multivector =
         let xs = a.Coefficients
-        Multivector(Array.init Basis.count (fun index -> if Basis.grade[index] = g then xs[index] else 0.0))
+        Kernel.adopt (Array.init Basis.count (fun index -> if Basis.grade[index] = g then xs[index] else 0.0))
 
     // ---- one rounded operation for each coefficient -----------------------------------------------
 

@@ -2,8 +2,8 @@ namespace Fuaran.Compute.GeometricAlgebra
 
 open System
 
-/// `geometricAlgebraLaws` (Phase 727; Phase 728 adds the conformal objects' nine laws, and Phase 729
-/// the versors' nine, the last):
+/// `geometricAlgebraLaws` (Phase 727; Phase 728 adds the conformal objects' nine laws, Phase 729
+/// the versors' nine, and Phase 730 one, that each specialised product is the general product):
 /// the laws the multivector, its products and the objects built on them are held to, on
 /// whichever host runs them (DECISIONS.md D85 item 7). Each law says which of two comparisons it holds
 /// under. BIT FOR BIT compares the sixty-four bits of each coefficient, which tells the two zeros
@@ -1075,6 +1075,113 @@ module GeometricAlgebraLaws =
     let private versorBounded (name: string) (_: Draw) : Result<unit, string> =
         versorVerdicts.Value |> List.find (fun (n, _) -> n = name) |> snd
 
+    // ---- the specialised products (Phase 730, DECISIONS.md D89) ---------------------------------------
+
+    /// `2^k` for `k ≤ 0`, by exact halving.
+    let private twoToMinus (k: int) : float =
+        let mutable p = 1.0
+
+        for _ in 1..k do
+            p <- p * 0.5
+
+        p
+
+    /// A coefficient a specialised product's operand may hold on a blade its type carries, in one of
+    /// seven regimes: a drawn double; a zero of either sign half the time; a double so small that a
+    /// product of two underflows to a zero of either sign; a subnormal; the largest finite double of
+    /// either sign; and, on the one blade `special` names, an infinity of either sign or a NaN.
+    let private carriedValue (d: Draw) (regime: int) (isSpecial: bool) : float =
+        let sign (x: float) = if d.Int 0 1 = 0 then x else -x
+
+        match regime with
+        | 1 -> if d.Int 0 1 = 0 then d.Zero() else d.General()
+        | 2 -> sign ((1.0 + float (d.Int 0 1023) / 1024.0) * twoToMinus 540)
+        | 3 -> sign (float (d.Int 1 4095) * twoToMinus 1074)
+        | 4 -> if d.Int 0 1 = 0 then sign Double.MaxValue else d.General()
+        | 5 when isSpecial -> sign Double.PositiveInfinity
+        | 6 when isSpecial -> Double.NaN
+        | _ -> d.General()
+
+    /// An operand of the type `carried`: a coefficient of the regime on every blade it carries, and a
+    /// zero of a drawn sign on every other — or, in regime 7, one blade it does not carry holding a
+    /// number that is not a zero, which no typed value holds and which the guard must send to the
+    /// general product.
+    let private operandOf (d: Draw) (regime: int) (carried: int) : Multivector =
+        let carriedBlades =
+            [| for index in 0 .. Basis.count - 1 do
+                   if Kernel.carries carried index then
+                       yield index |]
+
+        let special = carriedBlades[d.Int 0 (carriedBlades.Length - 1)]
+
+        let outside =
+            [| for index in 0 .. Basis.count - 1 do
+                   if not (Kernel.carries carried index) then
+                       yield index |]
+
+        let stray =
+            if regime = 7 then
+                outside[d.Int 0 (outside.Length - 1)]
+            else
+                -1
+
+        Kernel.adoptAs
+            carried
+            (Array.init Basis.count (fun index ->
+                if Kernel.carries carried index then
+                    carriedValue d regime (index = special)
+                elif index = stray then
+                    (if d.Int 0 1 = 0 then 1.0 else -1.0) * float (d.Int 1 8)
+                else
+                    d.Zero()))
+
+    /// `product` against the general product on operands of each specialised pair's two types, in
+    /// every regime: the general product's bits, the sign of every zero included. With `path`, also
+    /// that the specialised fold answered, with its answer's type, wherever both operands are finite
+    /// and hold zeros off their types, so that the general product never meets the law for it.
+    let private againstTheGeneralProduct
+        (product: Multivector -> Multivector -> Multivector)
+        (path: bool)
+        (d: Draw)
+        : Result<unit, string> =
+        all
+            [ for shape in Specialised.shapes do
+                  for regime in 0..7 do
+                      let a = operandOf d regime shape.Left
+                      let b = operandOf d regime shape.Right
+                      let answer = product a b
+                      let finite = regime <= 4
+
+                      check (sameBits answer (Multivector.geometricProduct a b)) (fun () ->
+                          sprintf
+                              "the product of types %x and %x in regime %d is not the general product's bits"
+                              shape.Left
+                              shape.Right
+                              regime)
+
+                      if path then
+                          check (answer.Carried = (if finite then shape.Reached else Kernel.every)) (fun () ->
+                              sprintf
+                                  "the product of types %x and %x in regime %d was answered by the %s path"
+                                  shape.Left
+                                  shape.Right
+                                  regime
+                                  (if finite then "general" else "specialised")) ]
+
+    /// Every specialised product answers the general product's bits on every input of its two types
+    /// (DECISIONS.md D89).
+    let private specialisedIsTheGeneralProduct (d: Draw) =
+        againstTheGeneralProduct Specialised.geometric true d
+
+    /// A product in place of the specialised one, held to the general product's bits alone, at `count`
+    /// iterations drawn from `seed`: the suite's door, through which each go-red witness is shown red.
+    let internal againstTheGeneralProductAt
+        (product: Multivector -> Multivector -> Multivector)
+        (seed: int)
+        (count: int)
+        : Result<unit, string> =
+        law seed count (againstTheGeneralProduct product false)
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "the term table has the recorded shape", tableShape
@@ -1116,6 +1223,8 @@ module GeometricAlgebraLaws =
           "two reflections in perpendicular planes are a half turn, bit for bit", twoReflectionsAreAHalfTurn
           "two reflections in perpendicular planes are the rotor's formulas at a half turn, under the float identity",
           twoReflectionsAgainstTheRotorFormulas
-          "a dilation by a power of four gives the point it should, bit for bit", dilationByAPowerOfFour ]
+          "a dilation by a power of four gives the point it should, bit for bit", dilationByAPowerOfFour
+          "a specialised product is the general product, bit for bit, on every input of its operand types",
+          specialisedIsTheGeneralProduct ]
         @ [ for name, _, _, _ in versorBounds -> name, versorBounded name ]
         |> List.map (fun (name, body) -> name, law seed count body)

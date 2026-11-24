@@ -39,7 +39,7 @@ module C = ConformalTests
 let private shipped = Arithmetic.shipped
 
 /// The committed versor vectors.
-let private versorVectors: V.Case list =
+let internal versorVectors: V.Case list =
     V.cases |> List.filter (fun c -> V.isVersorOp c.Op)
 
 /// The published functions that perform no arithmetic a rule could change: the widening and the copy
@@ -68,7 +68,7 @@ let private indicesOf (kind: string) : int[] =
 
 /// A versor case's answer under an arithmetic: the shipped function, called as the published one calls
 /// it, with `r` where that one passes `Arithmetic.shipped`. `None` for a copy.
-let private answerUnder (r: Arithmetic) (c: V.Case) : CorpusCell option =
+let internal answerUnder (r: Arithmetic) (c: V.Case) : CorpusCell option =
     let floats = V.floats c
     let number = V.number c
     let triple = V.triple c

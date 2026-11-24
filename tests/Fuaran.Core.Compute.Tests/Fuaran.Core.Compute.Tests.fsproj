@@ -117,6 +117,10 @@
     <Compile Include="ConformalTests.fs" />
     <!-- Phase 729: the suite over the versors of Fuaran.Compute.GeometricAlgebra. -->
     <Compile Include="VersorTests.fs" />
+    <!-- Phase 730: the specialised products of Fuaran.Compute.GeometricAlgebra, held to the general
+         product's bits, and the functions that reach them (DECISIONS.md D89). After VersorTests.fs,
+         whose dispatch it reads. -->
+    <Compile Include="SpecialisedProductTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the

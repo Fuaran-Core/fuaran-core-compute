@@ -43,5 +43,8 @@
     <!-- The suite renders the term tables to the digests the record pins, and runs the shipped fold
          with one rule changed to show a law vector fail. -->
     <InternalsVisibleTo Include="Fuaran.Core.Compute.Tests" />
+    <!-- Phase 730: the node leg's timing program measures the specialised products against the
+         general one (DECISIONS.md D89). It ships nothing. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Benchmarks.Node" />
   </ItemGroup>
 </Project>
