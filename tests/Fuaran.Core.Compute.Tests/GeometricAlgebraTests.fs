@@ -104,6 +104,22 @@ let private scalarRedOn (id: string) (what: string) (perturbed: float[] -> float
     let shipped = Kernel.scalarUnder 0.0 Kernel.twoRoundings Basis.scalar xs ys
     redOn id what (expectedFloat shipped) (expectedFloat (perturbed xs ys))
 
+/// The same for the squared norm, `A ∗ Ã`: the scalar product's fold over the operand and its reverse.
+let private squaredNormRedOn (id: string) (what: string) (perturbed: float[] -> float[] -> float) =
+    let a = operand id
+    let xs = Multivector.toArray a
+    let ys = Multivector.toArray (Multivector.reverse a)
+    let shipped = Kernel.scalarUnder 0.0 Kernel.twoRoundings Basis.scalar xs ys
+    redOn id what (expectedFloat shipped) (expectedFloat (perturbed xs ys))
+
+/// The squared-norm vectors, each with its operand and that operand reversed.
+let private squaredNormOperands () : (string * float[] * float[]) list =
+    GeometricAlgebraVectors.cases
+    |> List.filter (fun c -> c.Op = "squaredNorm")
+    |> List.map (fun c ->
+        let a = operand c.Id
+        c.Id, Multivector.toArray a, Multivector.toArray (Multivector.reverse a))
+
 /// A fused multiply-add where the record asks for two roundings.
 let private fused (negative: bool) (r: float) (x: float) (y: float) : float =
     if negative then
@@ -446,6 +462,42 @@ let tests =
               scalarRedOn "scalar-general-2" "the terms descending" (fun xs ys ->
                   Kernel.scalarUnder 0.0 Kernel.twoRoundings (Array.rev Basis.scalar) xs ys)
 
+              // Phase 728, carried from Phase 727: a second scalar-product vector that the right
+              // operand's index outermost fails, and the squared norm's own vector, which the descending
+              // order fails.
+              let rightOutermost = Basis.scalar |> Array.sortBy (fun t -> t.Right, t.Left, t.Out)
+              Expect.notEqual rightOutermost Basis.scalar "the right operand's index outermost is another order"
+
+              for id in [ "scalar-absorbed-then-cancelled"; "scalar-right-index-outermost" ] do
+                  scalarRedOn id "the right operand's index outermost" (fun xs ys ->
+                      Kernel.scalarUnder 0.0 Kernel.twoRoundings rightOutermost xs ys)
+
+              squaredNormRedOn "squaredNorm-absorbed-then-cancelled" "the terms descending" (fun xs ys ->
+                  Kernel.scalarUnder 0.0 Kernel.twoRoundings (Array.rev Basis.scalar) xs ys)
+
+              // What the squared norm CANNOT show, and why no vector of it fails the right operand's index
+              // outermost. The scalar coefficient pairs each blade with one partner, of its own grade, and
+              // the two terms of a pair carry one sign. Against its own reverse the term at a blade and
+              // the term at its partner are therefore one product, so the two orders visit one sequence
+              // of values: every squared-norm vector, drawn ones included, answers the same bits.
+              let partner (index: int) =
+                  (Basis.scalar |> Array.find (fun t -> t.Left = index)).Right
+
+              for t in Basis.scalar do
+                  let back = Basis.scalar |> Array.find (fun u -> u.Left = t.Right)
+                  Expect.equal back.Right t.Left "a blade's partner's partner is the blade"
+                  Expect.equal back.Negative t.Negative "the two terms of a pair carry one sign"
+                  Expect.equal Basis.grade[partner t.Left] Basis.grade[t.Left] "a partner has its blade's grade"
+
+              let squaredNorms = squaredNormOperands ()
+              Expect.isGreaterThanOrEqual (List.length squaredNorms) 8 "the squared-norm vectors"
+
+              for id, xs, ys in squaredNorms do
+                  Expect.equal
+                      (h (Kernel.scalarUnder 0.0 Kernel.twoRoundings rightOutermost xs ys))
+                      (h (Kernel.scalarUnder 0.0 Kernel.twoRoundings Basis.scalar xs ys))
+                      (sprintf "%s: the right operand's index outermost answers the same bits" id)
+
               // What is NOT observable (D85 item 3): gathering one output at a time. For one output the
               // terms arrive in the same order either way, so every vector answers the same bits.
               let gathered (terms: Term[]) =
@@ -481,6 +533,25 @@ let tests =
               scalarRedOn "scalar-fma-witness" "a fused multiply-add" (fun xs ys ->
                   Kernel.scalarUnder 0.0 fused Basis.scalar xs ys)
 
+              // Phase 728, carried: the squared norm's own witness, `2^-60` fused where two roundings
+              // answer `+0.0`.
+              squaredNormRedOn "squaredNorm-fma-witness" "a fused multiply-add" (fun xs ys ->
+                  Kernel.scalarUnder 0.0 fused Basis.scalar xs ys)
+
+              let fusedNorm = operand "squaredNorm-fma-witness"
+
+              Expect.equal
+                  (h (
+                      Kernel.scalarUnder
+                          0.0
+                          fused
+                          Basis.scalar
+                          (Multivector.toArray fusedNorm)
+                          (Multivector.toArray (Multivector.reverse fusedNorm))
+                  ))
+                  (h (List.fold (fun p _ -> p / 2.0) 1.0 [ 1..60 ]))
+                  "the fused squared norm is 2^-60"
+
               // The fused answer is the one worked by hand: −2^-60 where two roundings answer +0.0.
               let a, b = operands "scalar-fma-witness"
 
@@ -515,6 +586,41 @@ let tests =
                   ))
                   (h -0.0)
                   "the seeded fold answers the negative zero the record rules out"
+
+              // Phase 728, carried: what the squared norm CANNOT show. Its first term is `a0 × a0`, a
+              // square, which is never a negative zero, so a fold seeded from its first term answers the
+              // squared norm's bits on every input, and no vector of it can fail that port. The vector
+              // whose every term that can be a negative zero is one answers `+0.0` either way: twenty-four
+              // negative zeros, and the eight squares that are not.
+              let zeros = operand "squaredNorm-every-term-that-can-be-a-negative-zero"
+              let zs = Multivector.toArray zeros
+              let rs = Multivector.toArray (Multivector.reverse zeros)
+
+              let signedTerms =
+                  Basis.scalar
+                  |> Array.map (fun t ->
+                      let p = zs[t.Left] * rs[t.Right]
+                      h (if t.Negative then -p else p))
+
+              Expect.equal
+                  (signedTerms |> Array.filter (fun x -> x = h -0.0) |> Array.length)
+                  24
+                  "twenty-four negative zeros"
+
+              Expect.equal (signedTerms |> Array.filter (fun x -> x = h 0.0) |> Array.length) 8 "and eight squares"
+
+              Expect.equal
+                  (Basis.scalar
+                   |> Array.filter (fun t -> t.Left = t.Right && not (signedTerms[t.Left] = h -0.0))
+                   |> Array.length)
+                  8
+                  "the eight are a blade against itself"
+
+              for id, xs, ys in squaredNormOperands () do
+                  Expect.equal
+                      (h (Kernel.scalarUnder -0.0 Kernel.twoRoundings Basis.scalar xs ys))
+                      (h (Kernel.scalarUnder 0.0 Kernel.twoRoundings Basis.scalar xs ys))
+                      (sprintf "%s: a fold seeded from its first term answers the same bits" id)
 
           testCase "a term skipped on a zero coefficient fails a vector, and over finite operands moves no bit"
           <| fun () ->
