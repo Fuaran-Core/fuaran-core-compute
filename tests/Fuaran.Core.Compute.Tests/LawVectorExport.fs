@@ -591,14 +591,14 @@ module LawVectorExport =
 
     /// Every law set this repository emits, as (path under `corpusDir`, rendered bytes) — the one
     /// list `write` walks, so a family added here cannot be rendered and then forgotten by the
-    /// writer. Nine sets: the transform-parity family's drawn reference answers, the
+    /// writer. Ten sets: the transform-parity family's drawn reference answers, the
     /// dataframeParity family's answers over its authored cases, the linear-algebra package's
     /// answers over its authored hard inputs (Phase 590), the elementary package's over its own
     /// (Phase 593; their own file since Phase 630), and the regression package's (Phase 591; their own
     /// file since Phase 632), the solvers package's over its authored functions (Phase 633), and the
     /// distributions package's over its authored hard inputs (Phase 618), the pipeline tree's over its
-    /// authored edits (Phase 603), and the geometric algebra package's over its authored inputs
-    /// (Phase 727). (The substrate's own
+    /// authored edits (Phase 603), the geometric algebra package's over its authored inputs
+    /// (Phase 727), and its op algebra's over its authored ops (Phase 731). (The substrate's own
     /// `capabilityLaws` vectors are emitted by the substrate, beside the law they certify.)
     let emitted (corpusDir: string) : (string * string) list =
         [ transformPath corpusDir, renderTransformVectors ()
@@ -617,7 +617,9 @@ module LawVectorExport =
           // Phase 603: the pipeline-tree vectors.
           Path.Combine(familyDir corpusDir, PipelineTreeVectors.fileName), PipelineTreeVectors.render ()
           // Phase 727: the geometric algebra vectors.
-          Path.Combine(familyDir corpusDir, GeometricAlgebraVectors.fileName), GeometricAlgebraVectors.render () ]
+          Path.Combine(familyDir corpusDir, GeometricAlgebraVectors.fileName), GeometricAlgebraVectors.render ()
+          // Phase 731: the geometric algebra op vectors.
+          Path.Combine(familyDir corpusDir, GeometricAlgebraOpsVectors.fileName), GeometricAlgebraOpsVectors.render () ]
 
     /// Write the vectors with LF endings, whatever the host platform — the corpus is byte-compared
     /// by several hosts on three operating systems.

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Compute.GeometricAlgebraOps</PackageId>
+    <Description>Fuaran.Compute.GeometricAlgebraOps — geometric transforms as a parametric op algebra over Fuaran.Compute.GeometricAlgebra: a state of named objects, generic in the name, whose comparison and spelling the caller supplies; seven ops — Add an object from its parameters (a point; two points; a point and a direction; a centre, a radius and a normal; a normal and a distance; a centre and a radius), Remove, Rotate about an axis through a point, Translate, Scale about a centre, Reflect in a plane, and Screw, the general rigid motion — each carrying parameters and never a coefficient; a total apply and canApply that refuse by name and leave the state as it was; an inverse for six of the seven; the compaction of a run of rigid transforms of one object into one op; a canonical wire codec that writes every float as its IEEE-754 bit pattern; and a Fuaran.Core.OpStream StreamWitness, so a history of transforms is an append-only, hash-chained, replayable stream. Replay builds every object and every versor through the algebra's published constructors and applies it by their published sandwich, and computes nothing of its own: the same bits on .NET, under Fable and in every host that transcribes it. Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The ops, the state, apply, the inverse, the compaction, the codec and the stream witness,
+         each written once over an internal record of its rules (Phase 731, DECISIONS.md D85 item 9,
+         D90). -->
+    <Compile Include="GeometricOps.fs" />
+    <!-- Every public operation's exactness class, as data. -->
+    <Compile Include="GeometricAlgebraOpsOperations.fs" />
+    <!-- The law family over the operations above. LAST: it reads all of them. -->
+    <Compile Include="GeometricAlgebraOpsLaws.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The algebra, whose published constructors and sandwich replay calls; the op-stream, whose
+         witness this package supplies; the wire, whose canonical writer and reader the codec uses
+         (DECISIONS.md D85 item 9). This is the only geometric package that references the op-stream. -->
+    <ProjectReference Include="..\Fuaran.Compute.GeometricAlgebra\Fuaran.Compute.GeometricAlgebra.fsproj" />
+    <PackageReference Include="Fuaran.Core.Wire" />
+    <PackageReference Include="Fuaran.Core.OpStream" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The suite runs the shipped functions with one rule changed to show a law vector fail. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Tests" />
+  </ItemGroup>
+</Project>

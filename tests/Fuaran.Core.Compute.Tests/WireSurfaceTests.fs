@@ -476,6 +476,22 @@ let internal roots: WireRoot list =
                 Fuaran.Compute.Regression.RegressionWire.encodeAccumulator (
                     Fuaran.Compute.Regression.QRAccumulator.empty 0
                 ) ]
+      )
+      // Phase 731 — the geometric op algebra's codec (DECISIONS.md D90): every op, every form, and the
+      // float spellings a bit-pattern codec must keep (the two zeros, a subnormal, the largest double,
+      // the infinities, a NaN), as the law vectors' authored `encode` cases write them. Every member is
+      // a parameter; no coefficient travels (D85 item 10).
+      Specimens(
+          "Fuaran.Compute.GeometricAlgebraOps",
+          "geometricOp",
+          fun () ->
+              [ for c in GeometricAlgebraOpsVectors.authored do
+                    match c.Op, c.Input with
+                    | "GeometricOps.encode", [ _, GeometricAlgebraOpsVectors.OneOp op ] ->
+                        yield
+                            "geometricOp / " + c.Id.Substring("encode-".Length),
+                            Fuaran.Compute.GeometricAlgebraOps.GeometricOps.encode GeometricAlgebraOpsVectors.naming op
+                    | _ -> () ]
       ) ]
 
 /// Packable packages that emit no wire document of their own, each with the reason. A package

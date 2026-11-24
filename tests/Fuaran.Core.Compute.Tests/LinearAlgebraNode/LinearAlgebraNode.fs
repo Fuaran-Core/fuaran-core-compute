@@ -5,7 +5,8 @@
 /// the regression package's: `RegressionLaws.laws` and `regression-laws.json`; and since Phase 633 the
 /// solvers package's: `SolversLaws.laws` and `solvers-laws.json`; and since Phase 618 the
 /// distributions package's: `DistributionsLaws.laws` and `distributions-laws.json`; and since Phase 727
-/// the geometric algebra package's: `GeometricAlgebraLaws.laws` and `geometric-algebra-laws.json`.
+/// the geometric algebra package's: `GeometricAlgebraLaws.laws` and `geometric-algebra-laws.json`; and since
+/// Phase 731 its op algebra's: `GeometricAlgebraOpsLaws.laws` and `geometric-algebra-ops-laws.json`.
 ///
 ///   dotnet fable LinearAlgebraNode.fsproj -o <out>; node <out>/LinearAlgebraNode.js
 ///
@@ -22,6 +23,7 @@ open Fuaran.Compute.Regression
 open Fuaran.Compute.Solvers
 open Fuaran.Compute.Distributions
 open Fuaran.Compute.GeometricAlgebra
+open Fuaran.Compute.GeometricAlgebraOps
 open Fuaran.Compute.Tests
 
 /// Sets the exit code and lets node exit once stdout drains. `process.exit` would end the process at once,
@@ -37,6 +39,7 @@ let private failures =
     @ SolversLaws.laws 590 200
     @ DistributionsLaws.laws 590 200
     @ GeometricAlgebraLaws.laws 590 200
+    @ GeometricAlgebraOpsLaws.laws 590 200
     |> List.choose (fun (name, verdict) ->
         match verdict with
         | Ok() -> None
@@ -68,6 +71,10 @@ printfn "END %s" DistributionsVectors.fileName
 printfn "BEGIN %s" GeometricAlgebraVectors.fileName
 printfn "%s" (GeometricAlgebraVectors.render ())
 printfn "END %s" GeometricAlgebraVectors.fileName
+
+printfn "BEGIN %s" GeometricAlgebraOpsVectors.fileName
+printfn "%s" (GeometricAlgebraOpsVectors.render ())
+printfn "END %s" GeometricAlgebraOpsVectors.fileName
 
 printfn "linear algebra laws under node: %s" (if List.isEmpty failures then "held" else "FAILED")
 exit (if List.isEmpty failures then 0 else 1)

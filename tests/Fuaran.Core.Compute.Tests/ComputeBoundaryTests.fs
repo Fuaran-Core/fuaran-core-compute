@@ -60,7 +60,10 @@ let compute: Set<string> =
           "Fuaran.Compute.PipelineTree"
           // Phase 727: the conformal geometric algebra, beside the graph and not in it; it takes
           // FSharp.Core alone (`below`).
-          "Fuaran.Compute.GeometricAlgebra" ]
+          "Fuaran.Compute.GeometricAlgebra"
+          // Phase 731: the geometric op algebra, above the algebra; it takes the op-stream and the wire,
+          // and is the only geometric package that takes the op-stream.
+          "Fuaran.Compute.GeometricAlgebraOps" ]
 
 /// The packages at the bottom of the graph (DECISIONS.md D77 item 10): each takes FSharp.Core and
 /// nothing else — no substrate package, and no package of this repository, so anything in Compute can
@@ -374,6 +377,7 @@ let tests =
               for name, below in
                   [ "Fuaran.Compute.DataFrame", "Fuaran.Core.Column"
                     "Fuaran.Compute.ColumnOps", "Fuaran.Core.OpStream"
+                    "Fuaran.Compute.GeometricAlgebraOps", "Fuaran.Core.OpStream"
                     "Fuaran.Compute.Conformance", "Fuaran.Core.Conformance"
                     "Fuaran.Compute.PipelineQuery", "Fuaran.Core.Query" ] do
                   Expect.contains refs[name] below (sprintf "%s references %s" name below)
@@ -606,4 +610,54 @@ let tests =
               Expect.equal
                   (belowAssemblyViolations (Map.ofList [ algebra, [ "FSharp.Core"; "Fuaran.Core.Column" ] ]))
                   [ algebra, "Fuaran.Core.Column" ]
-                  "a Fuaran assembly referenced by the algebra is a violation" ]
+                  "a Fuaran assembly referenced by the algebra is a violation"
+
+          // Phase 731 (DECISIONS.md D85 item 9, D90): the op package references the algebra, the
+          // op-stream, the wire and FSharp.Core, and it is the only geometric package that references the
+          // op-stream — by project file and by built assembly. The algebra's own rule is the case above.
+          testCase
+              "the geometric op package takes the algebra, the op-stream and the wire, and only it takes the op-stream"
+          <| fun _ ->
+              let ops = "Fuaran.Compute.GeometricAlgebraOps"
+              let algebra = "Fuaran.Compute.GeometricAlgebra"
+              let projects = projectReferences ()
+
+              Expect.equal
+                  (Map.tryFind ops projects
+                   |> Option.map (fun (packages, refs) -> List.sort packages, refs))
+                  (Some([ "FSharp.Core"; "Fuaran.Core.OpStream"; "Fuaran.Core.Wire" ], [ algebra ]))
+                  "the op package's project names the algebra, the op-stream, the wire and FSharp.Core"
+
+              Expect.isEmpty (violations (Map.ofList [ ops, projects[ops] ])) "the project rule admits it"
+
+              let geometric =
+                  projects
+                  |> Map.filter (fun name _ -> name.StartsWith "Fuaran.Compute.Geometric")
+
+              Expect.equal (Map.count geometric) 2 "two geometric packages: the algebra and the op package"
+
+              Expect.equal
+                  (geometric
+                   |> Map.filter (fun _ (packages, _) -> List.contains "Fuaran.Core.OpStream" packages)
+                   |> Map.toList
+                   |> List.map fst)
+                  [ ops ]
+                  "by project, only the op package takes the op-stream"
+
+              let refs name =
+                  match builtAssembly name with
+                  | Ok dll -> referencedAssemblies dll
+                  | Error e -> failtestf "%s" e
+
+              let opsRefs = refs ops
+
+              for r in [ algebra; "Fuaran.Core.OpStream"; "Fuaran.Core.Wire"; "FSharp.Core" ] do
+                  Expect.contains opsRefs r (sprintf "the op package's assembly references %s" r)
+
+              Expect.isEmpty (assemblyViolations (Map.ofList [ ops, opsRefs ])) "the assembly rule admits it"
+
+              Expect.isFalse
+                  (List.contains "Fuaran.Core.OpStream" (refs algebra))
+                  "by assembly, the algebra does not take the op-stream"
+
+              Expect.isFalse (List.contains ops (refs algebra)) "by assembly, the algebra does not take the op package" ]

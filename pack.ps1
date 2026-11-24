@@ -1,9 +1,9 @@
-# Pack the eleven packages this repository produces into a local folder feed:
+# Pack the twelve packages this repository produces into a local folder feed:
 # Fuaran.Compute.Solvers, Fuaran.Compute.Elementary, Fuaran.Compute.Distributions,
-# Fuaran.Compute.GeometricAlgebra, Fuaran.Compute.LinearAlgebra, Fuaran.Compute.Regression,
-# Fuaran.Compute.DataFrame, Fuaran.Compute.ColumnOps, Fuaran.Compute.PipelineQuery,
-# Fuaran.Compute.PipelineTree and Fuaran.Compute.Conformance, at the standing <Version> in
-# Directory.Build.props, in dependency order.
+# Fuaran.Compute.GeometricAlgebra, Fuaran.Compute.GeometricAlgebraOps, Fuaran.Compute.LinearAlgebra,
+# Fuaran.Compute.Regression, Fuaran.Compute.DataFrame, Fuaran.Compute.ColumnOps,
+# Fuaran.Compute.PipelineQuery, Fuaran.Compute.PipelineTree and Fuaran.Compute.Conformance, at the
+# standing <Version> in Directory.Build.props, in dependency order.
 #
 #   pwsh ./pack.ps1                 pack into ../../local-nuget-feed (the development loop's feed)
 #   pwsh ./pack.ps1 -Feed <path>    pack elsewhere
@@ -28,6 +28,7 @@ $projects = @(
     'src/Fuaran.Compute.Elementary/Fuaran.Compute.Elementary.fsproj'
     'src/Fuaran.Compute.Distributions/Fuaran.Compute.Distributions.fsproj'
     'src/Fuaran.Compute.GeometricAlgebra/Fuaran.Compute.GeometricAlgebra.fsproj'
+    'src/Fuaran.Compute.GeometricAlgebraOps/Fuaran.Compute.GeometricAlgebraOps.fsproj'
     'src/Fuaran.Compute.LinearAlgebra/Fuaran.Compute.LinearAlgebra.fsproj'
     'src/Fuaran.Compute.Regression/Fuaran.Compute.Regression.fsproj'
     'src/Fuaran.Compute.DataFrame/Fuaran.Compute.DataFrame.fsproj'

@@ -103,6 +103,10 @@
          ElementaryVectors.fs, whose float cell they render through; before LinearAlgebraTests.fs, whose
          node leg compares their document. -->
     <Compile Include="GeometricAlgebraVectors.fs" />
+    <!-- Phase 731: the op algebra's vectors (Fable-clean; the same node leg compiles them). After
+         GeometricAlgebraVectors.fs, whose cells they render through; before LinearAlgebraTests.fs, whose
+         node leg compares their document. -->
+    <Compile Include="GeometricAlgebraOpsVectors.fs" />
     <Compile Include="LinearAlgebraTests.fs" />
     <Compile Include="RegressionTests.fs" />
     <!-- Phase 633: the suite over Fuaran.Compute.Solvers. -->
@@ -121,6 +125,9 @@
          product's bits, and the functions that reach them (DECISIONS.md D89). After VersorTests.fs,
          whose dispatch it reads. -->
     <Compile Include="SpecialisedProductTests.fs" />
+    <!-- Phase 731: the suite over Fuaran.Compute.GeometricAlgebraOps. After ConformalTests.fs, whose
+         source census and cell text it reads. -->
+    <Compile Include="GeometricAlgebraOpsTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
@@ -166,6 +173,7 @@
     <ProjectReference Include="..\..\src\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Distributions\Fuaran.Compute.Distributions.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.GeometricAlgebra\Fuaran.Compute.GeometricAlgebra.fsproj" />
+    <ProjectReference Include="..\..\src\Fuaran.Compute.GeometricAlgebraOps\Fuaran.Compute.GeometricAlgebraOps.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />

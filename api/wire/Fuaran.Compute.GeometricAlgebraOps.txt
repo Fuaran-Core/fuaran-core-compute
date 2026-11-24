@@ -1,0 +1,23 @@
+# Wire-surface baseline for Fuaran.Compute.GeometricAlgebraOps (Phase 214) — GENERATED, do not edit.
+# The canonical bytes of a document set reaching every member and discriminator this package emits:
+# one line per document — name, sha256 of the emitted bytes, the document rendered canonically.
+# Regenerate with:
+#   CORE_APPROVE_WIRE=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# class since v0.46.0: first snapshot
+doc	geometricOp / a-name-to-escape	sha256:30e24de70af1bf1c9b91b396eb1e8ee00ae47ed888faed1ab8b20518fabc7853	{"$type":"remove","name":"quote \" and tab \u0009"}
+doc	geometricOp / a-nan	sha256:ad61077c4707b22cd82c6fbfb59a9d7cbb391de9628d496fc84c4097041f2731	{"$type":"translate","name":"b","vector":"7ff800000000000000000000000000000000000000000000"}
+doc	geometricOp / a-subnormal-and-the-largest	sha256:843b7c952e240b89fa2c0e98032f7aadbe293a44816169c0c9e1105960631929	{"$type":"screw","angle":"ffefffffffffffff","direction":"000000000000000000000000000000003ff0000000000000","distance":"000012688b70e62b","name":"b","point":"000000000000000180000000000000017fefffffffffffff"}
+doc	geometricOp / add-circle	sha256:efb16b487b6442ba6bb9e54d37d531bcdce272d0514fe62ae2b25f66615fce93	{"$type":"add","form":{"$type":"circle","centre":"00000000000000003ff00000000000004000000000000000","normal":"3ff00000000000003ff00000000000003ff0000000000000","radius":"3ff8000000000000"},"name":"b"}
+doc	geometricOp / add-line	sha256:e72ecd0d1ff6ba3cbf3780f8f47461ee4aa3ec3a7384a8170661841f933d5918	{"$type":"add","form":{"$type":"line","direction":"3ff0000000000000bff00000000000004000000000000000","point":"3ff000000000000040000000000000004008000000000000"},"name":"b"}
+doc	geometricOp / add-pair	sha256:771284eaa17119bb1289d75644a8569ee07f413c4f44506b33be95434246e436	{"$type":"add","form":{"$type":"pointPair","first":"3ff000000000000000000000000000000000000000000000","second":"00000000000000004000000000000000bff0000000000000"},"name":"b"}
+doc	geometricOp / add-plane	sha256:243eeecdcb70fade1f300bb5811f70ff0142bb15e22b5d0ce131e8232a1f6c49	{"$type":"add","form":{"$type":"plane","distance":"4000000000000000","normal":"000000000000000040080000000000004010000000000000"},"name":"b"}
+doc	geometricOp / add-point	sha256:8336b329824676a56dfe2555887b7d8f3186749453ad26e9b6c58b065071865b	{"$type":"add","form":{"$type":"point","point":"3ff000000000000040000000000000004008000000000000"},"name":"b"}
+doc	geometricOp / add-sphere	sha256:2aadc1b6bbcc8909e4adfffd16ab7042457dc7b4dbfc697c7ba29a4ca35aa143	{"$type":"add","form":{"$type":"sphere","centre":"3ff0000000000000bff00000000000004000000000000000","radius":"4004000000000000"},"name":"b"}
+doc	geometricOp / negative-zeros	sha256:0ede8b149be3bf9394d74e48fad0ef57dbf0db878090afc46e944dee316e6cdc	{"$type":"rotate","angle":"8000000000000000","direction":"000000000000000080000000000000003ff0000000000000","name":"b","point":"800000000000000000000000000000008000000000000000"}
+doc	geometricOp / reflect	sha256:49855f8a71e2ccdda2c04420ea0164da659071f59dfb19e6bc2ebe75e4661484	{"$type":"reflect","distance":"3fe0000000000000","name":"b","normal":"3ff000000000000040000000000000004000000000000000"}
+doc	geometricOp / remove	sha256:5dbee8d06a743553db58c50e9a90a015edb7481be17b74f0f43115f50c76cb7b	{"$type":"remove","name":"b"}
+doc	geometricOp / rotate	sha256:aa1e3cf6b84fdd3fc30b0c72d9bb5dfde542da95cbfc02b2582dde71b492643f	{"$type":"rotate","angle":"3fe8000000000000","direction":"00000000000000003ff00000000000003ff0000000000000","name":"b","point":"3ff0000000000000c0000000000000003fe0000000000000"}
+doc	geometricOp / scale	sha256:f6607115e82d493f38106cac4cf3806e2214b9adf24b6af7a66c46b23eb135fa	{"$type":"scale","centre":"3ff00000000000003ff0000000000000bff0000000000000","factor":"4004000000000000","name":"b"}
+doc	geometricOp / screw	sha256:78068c636abac22bbb9439340759107c6345561d9db852e41204c06d1c166f9a	{"$type":"screw","angle":"bff4000000000000","direction":"3ff00000000000003ff00000000000000000000000000000","distance":"3fe8000000000000","name":"b","point":"3ff00000000000000000000000000000bff0000000000000"}
+doc	geometricOp / the-infinities	sha256:4ec41f4d7f2931bf9bc2756768e88859845ad666a5d54ace7f09fc9223f9d0f1	{"$type":"reflect","distance":"fff0000000000000","name":"b","normal":"7ff000000000000000000000000000000000000000000000"}
+doc	geometricOp / translate	sha256:4049b52403086aac7de3f65ab7af994640527e9177eb17155e1e90ce985a9d4d	{"$type":"translate","name":"b","vector":"3fe0000000000000bff40000000000004000000000000000"}

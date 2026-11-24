@@ -1,0 +1,114 @@
+# Fuaran.Compute.GeometricAlgebraOps — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+ctor Fuaran.Compute.GeometricAlgebraOps.Naming`1..ctor(Microsoft.FSharp.Core.FSharpFunc`2<!0, Microsoft.FSharp.Core.FSharpFunc`2<!0, System.Int32>>, Microsoft.FSharp.Core.FSharpFunc`2<!0, System.String>, Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<!0, System.String>>)
+field Fuaran.Compute.GeometricAlgebraOps.Form+Tags.Circle : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.Form+Tags.Line : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.Form+Tags.Plane : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.Form+Tags.Point : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.Form+Tags.PointPair : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.Form+Tags.Sphere : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations+Exactness+Tags.HostRounded : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations+Exactness+Tags.Pinned : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Tags.Circle : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Tags.Line : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Tags.Plane : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Tags.Point : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Tags.PointPair : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Tags.Sphere : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+Tags.Geometry : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+Tags.NameAlreadyPresent : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+Tags.NotInvertible : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+Tags.UnknownName : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Tags.Add : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Tags.Reflect : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Tags.Remove : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Tags.Rotate : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Tags.Scale : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Tags.Screw : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Tags.Translate : System.Int32 (literal)
+method Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations+Exactness>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricOps.applyAll`1(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>>, Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>) : System.Tuple`2<Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>, Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.Int32, Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1<!!0>>>>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricOps.apply`1(Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>, Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>, Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1<!!0>>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricOps.canApply`1(Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>, Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>) : Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1<!!0>>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricOps.compact`1(Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>>, Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>) : Microsoft.FSharp.Collections.FSharpList`1<Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricOps.decode`1(Fuaran.Compute.GeometricAlgebraOps.Naming`1<!!0>, System.String) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>, System.String>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricOps.encode`1(Fuaran.Compute.GeometricAlgebraOps.Naming`1<!!0>, Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>) : System.String
+method Fuaran.Compute.GeometricAlgebraOps.GeometricOps.invert`1(Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>, Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>) : Microsoft.FSharp.Core.FSharpResult`2<Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>, Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1<!!0>>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricOps.streamWitness`1(Fuaran.Compute.GeometricAlgebraOps.Naming`1<!!0>) : Fuaran.Core.StreamWitness`3<Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1<!!0>, Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>, Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1<!!0>>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricStateModule.count`1(Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>) : System.Int32
+method Fuaran.Compute.GeometricAlgebraOps.GeometricStateModule.empty`1(Fuaran.Compute.GeometricAlgebraOps.Naming`1<!!0>) : Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricStateModule.toList`1(Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<!!0, Fuaran.Compute.GeometricAlgebraOps.GeometricObject>>
+method Fuaran.Compute.GeometricAlgebraOps.GeometricStateModule.tryFind`1(!!0, Fuaran.Compute.GeometricAlgebraOps.GeometricState`1<!!0>) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.GeometricAlgebraOps.GeometricObject>
+property Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations+Exactness>> { get }
+record-field Fuaran.Compute.GeometricAlgebraOps.Naming`1.Compare #0 : Microsoft.FSharp.Core.FSharpFunc`2<!0, Microsoft.FSharp.Core.FSharpFunc`2<!0, System.Int32>>
+record-field Fuaran.Compute.GeometricAlgebraOps.Naming`1.Decode #2 : Microsoft.FSharp.Core.FSharpFunc`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<!0, System.String>>
+record-field Fuaran.Compute.GeometricAlgebraOps.Naming`1.Encode #1 : Microsoft.FSharp.Core.FSharpFunc`2<!0, System.String>
+type Fuaran.Compute.GeometricAlgebraOps.Form (union)
+type Fuaran.Compute.GeometricAlgebraOps.Form+Circle (type)
+type Fuaran.Compute.GeometricAlgebraOps.Form+Line (type)
+type Fuaran.Compute.GeometricAlgebraOps.Form+Plane (type)
+type Fuaran.Compute.GeometricAlgebraOps.Form+Point (type)
+type Fuaran.Compute.GeometricAlgebraOps.Form+PointPair (type)
+type Fuaran.Compute.GeometricAlgebraOps.Form+Sphere (type)
+type Fuaran.Compute.GeometricAlgebraOps.Form+Tags (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsLaws (module)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations (module)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations+Exactness (union)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations+Exactness+Tags (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricObject (union)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Circle (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Line (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Plane (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Point (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricObject+PointPair (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Sphere (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricObject+Tags (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1 (union)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+Geometry (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+NameAlreadyPresent (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+NotInvertible (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+Tags (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1+UnknownName (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1 (union)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Add (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Reflect (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Remove (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Rotate (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Scale (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Screw (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Tags (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1+Translate (type)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricOps (module)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricStateModule (module)
+type Fuaran.Compute.GeometricAlgebraOps.GeometricState`1 (type)
+type Fuaran.Compute.GeometricAlgebraOps.Naming`1 (record)
+union-case Fuaran.Compute.GeometricAlgebraOps.Form.NewCircle #3(centre: System.Tuple`3<System.Double, System.Double, System.Double>, radius: System.Double, normal: System.Tuple`3<System.Double, System.Double, System.Double>)
+union-case Fuaran.Compute.GeometricAlgebraOps.Form.NewLine #2(point: System.Tuple`3<System.Double, System.Double, System.Double>, direction: System.Tuple`3<System.Double, System.Double, System.Double>)
+union-case Fuaran.Compute.GeometricAlgebraOps.Form.NewPlane #4(normal: System.Tuple`3<System.Double, System.Double, System.Double>, distance: System.Double)
+union-case Fuaran.Compute.GeometricAlgebraOps.Form.NewPoint #0(point: System.Tuple`3<System.Double, System.Double, System.Double>)
+union-case Fuaran.Compute.GeometricAlgebraOps.Form.NewPointPair #1(first: System.Tuple`3<System.Double, System.Double, System.Double>, second: System.Tuple`3<System.Double, System.Double, System.Double>)
+union-case Fuaran.Compute.GeometricAlgebraOps.Form.NewSphere #5(centre: System.Tuple`3<System.Double, System.Double, System.Double>, radius: System.Double)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations+Exactness.HostRounded #1()
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricAlgebraOpsOperations+Exactness.Pinned #0()
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricObject.NewCircle #3(Item: Fuaran.Compute.GeometricAlgebra.Circle)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricObject.NewLine #2(Item: Fuaran.Compute.GeometricAlgebra.Line)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricObject.NewPlane #4(Item: Fuaran.Compute.GeometricAlgebra.Plane)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricObject.NewPoint #0(Item: Fuaran.Compute.GeometricAlgebra.Point)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricObject.NewPointPair #1(Item: Fuaran.Compute.GeometricAlgebra.PointPair)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricObject.NewSphere #5(Item: Fuaran.Compute.GeometricAlgebra.Sphere)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1.NewGeometry #2(refusal: Fuaran.Compute.GeometricAlgebra.GeometryRefusal)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1.NewNameAlreadyPresent #1(name: !0)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1.NewNotInvertible #3(op: System.String)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOpRefusal`1.NewUnknownName #0(name: !0)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1.NewAdd #0(name: !0, form: Fuaran.Compute.GeometricAlgebraOps.Form)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1.NewReflect #5(name: !0, normal: System.Tuple`3<System.Double, System.Double, System.Double>, distance: System.Double)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1.NewRemove #1(name: !0)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1.NewRotate #2(name: !0, point: System.Tuple`3<System.Double, System.Double, System.Double>, direction: System.Tuple`3<System.Double, System.Double, System.Double>, angle: System.Double)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1.NewScale #4(name: !0, centre: System.Tuple`3<System.Double, System.Double, System.Double>, factor: System.Double)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1.NewScrew #6(name: !0, point: System.Tuple`3<System.Double, System.Double, System.Double>, direction: System.Tuple`3<System.Double, System.Double, System.Double>, angle: System.Double, distance: System.Double)
+union-case Fuaran.Compute.GeometricAlgebraOps.GeometricOp`1.NewTranslate #3(name: !0, vector: System.Tuple`3<System.Double, System.Double, System.Double>)
