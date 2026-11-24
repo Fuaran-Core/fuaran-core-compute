@@ -1,0 +1,24 @@
+## Geometric algebra: the general product and the typed functions that call it
+
+1000 operands of each type drawn at seed 730; the median, least and greatest of 5 samples
+
+| case | median ns per call | least | greatest | checksum |
+|---|---:|---:|---:|---:|
+| product: point * sphere (geometric) | 1776.4 | 1757.1 | 1826.9 | 40f720b51ad062af |
+| product: point ^ sphere (outer) | 487.8 | 484.6 | 503.3 | 40f720b51ad062af |
+| product: point * undual sphere (scalar) | 92.5 | 92.0 | 93.3 | c0f720b51ad062af |
+| product: rotor * rotor (geometric) | 2099.6 | 1769.8 | 2406.0 | 407df044621512d1 |
+| product: motor * motor (geometric) | 1910.6 | 1768.3 | 1932.1 | 407df044621512d1 |
+| product: translator * rotor (geometric) | 1868.2 | 1830.3 | 1922.4 | 40853fd2740f7a96 |
+| product: rotor * point (sandwich, first) | 1786.4 | 1755.9 | 1900.6 | 4067191040528c6f |
+| product: (rotor point) * reverse rotor (sandwich, second) | 2060.8 | 1742.4 | 2291.7 | 406c0ebc81272e5b |
+| product: motor * point (sandwich, first) | 1769.0 | 1753.4 | 1935.5 | 4080193535976494 |
+| product: (motor point) * reverse motor (sandwich, second) | 1760.0 | 1736.8 | 1878.7 | 4079bb06971bc655 |
+| function: Rotor.compose | 1888.4 | 1863.5 | 2055.7 | 407df044621512d1 |
+| function: Motor.compose | 1900.9 | 1871.6 | 1945.3 | 407df044621512d1 |
+| function: Motor.ofRotorTranslator | 1915.3 | 1868.9 | 2025.1 | 40853fd2740f7a96 |
+| function: Rotor.applyToPoint | 4208.0 | 3911.6 | 4578.6 | 406c0ebc81272e5b |
+| function: Translator.applyToPoint | 4374.5 | 3983.9 | 4439.9 | 4075b74cb07f6e9f |
+| function: Motor.applyToPoint | 4226.1 | 4000.5 | 4391.6 | 4079bb06971bc655 |
+| function: Motor.applyToSphere | 4376.0 | 4264.6 | 4545.4 | 408f400000000000 |
+| function: Sphere.power | 266.7 | 263.8 | 278.7 | 410720b51ad062af |

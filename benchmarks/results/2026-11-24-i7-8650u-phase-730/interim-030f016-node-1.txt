@@ -1,0 +1,36 @@
+node v22.20.0, 11 measured runs per case
+## Geometric algebra: the general product and the typed functions that call it
+
+1000 operands of each type drawn at seed 730; the median, least and greatest of 11 samples
+
+| case | median ns per call | least | greatest | checksum |
+|---|---:|---:|---:|---:|
+| product: point * sphere (geometric) | 108007.8 | 100007.8 | 120000.0 | 40f720b51ad062af |
+| product: point ^ sphere (outer) | 27000.0 | 24000.0 | 34503.9 | 40f720b51ad062af |
+| product: point * undual sphere (scalar) | 4188.0 | 4000.0 | 6000.0 | c0f720b51ad062af |
+| product: rotor * rotor (geometric) | 104000.0 | 103000.0 | 110000.0 | 407df044621512d1 |
+| specialised: rotor * rotor | 5000.0 | 4812.5 | 6687.5 | 407df044621512d1 |
+| product: motor * motor (geometric) | 105000.0 | 102000.0 | 116000.0 | 407df044621512d1 |
+| specialised: motor * motor | 8000.0 | 7875.0 | 8125.0 | 407df044621512d1 |
+| product: translator * rotor (geometric) | 103000.0 | 102000.0 | 109007.8 | 40853fd2740f7a96 |
+| specialised: translator * rotor | 4937.5 | 4749.5 | 5125.5 | 40853fd2740f7a96 |
+| product: rotor * point (sandwich, first) | 103007.8 | 101984.4 | 124992.2 | 4067191040528c6f |
+| specialised: rotor * point (sandwich, first) | 5437.5 | 5187.0 | 5875.5 | 4067191040528c6f |
+| product: (rotor point) * reverse rotor (sandwich, second) | 108000.0 | 101992.2 | 111000.0 | 406c0ebc81272e5b |
+| specialised: (rotor point) * reverse rotor (sandwich, second) | 8125.0 | 8000.0 | 8250.0 | 406c0ebc81272e5b |
+| product: translator * point (sandwich, first) | 103007.8 | 101992.2 | 106000.0 | 4071d4cd0d17a9a1 |
+| specialised: translator * point (sandwich, first) | 5375.5 | 5312.0 | 5562.5 | 4071d4cd0d17a9a1 |
+| product: (translator point) * reverse translator (sandwich, second) | 104000.0 | 102000.0 | 105000.0 | 4075b74cb07f6e9f |
+| specialised: (translator point) * reverse translator (sandwich, second) | 6875.0 | 6626.0 | 7000.0 | 4075b74cb07f6e9f |
+| product: motor * point (sandwich, first) | 104000.0 | 101984.4 | 123007.8 | 4080193535976494 |
+| specialised: motor * point (sandwich, first) | 7624.0 | 7125.0 | 9000.0 | 4080193535976494 |
+| product: (motor point) * reverse motor (sandwich, second) | 104000.0 | 102000.0 | 110007.8 | 4079bb06971bc655 |
+| specialised: (motor point) * reverse motor (sandwich, second) | 16000.0 | 15750.0 | 16250.0 | 4079bb06971bc655 |
+| function: Rotor.compose | 11625.0 | 9249.0 | 17501.0 | 407df044621512d1 |
+| function: Motor.compose | 14752.0 | 13002.0 | 22998.0 | 407df044621512d1 |
+| function: Motor.ofRotorTranslator | 9002.0 | 8749.0 | 9251.0 | 40853fd2740f7a96 |
+| function: Rotor.applyToPoint | 26003.9 | 25000.0 | 30496.1 | 406c0ebc81272e5b |
+| function: Translator.applyToPoint | 26003.9 | 23003.9 | 29503.9 | 4075b74cb07f6e9f |
+| function: Motor.applyToPoint | 36996.1 | 33000.0 | 41000.0 | 4079bb06971bc655 |
+| function: Motor.applyToSphere | 217000.0 | 216000.0 | 227007.8 | 408f400000000000 |
+| function: Sphere.power | 11746.1 | 11248.0 | 12000.0 | 410720b51ad062af |
