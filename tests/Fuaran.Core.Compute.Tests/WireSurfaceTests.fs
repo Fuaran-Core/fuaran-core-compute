@@ -491,7 +491,10 @@ let internal notWire: (string * string) list =
       "solvers over a caller's functions; a stopping rule and an answer are values of one process, no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)"
       // Phase 618: distribution functions over floats; nothing it publishes is encoded.
       "Fuaran.Compute.Distributions",
-      "scalar functions of floats; no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)" ]
+      "scalar functions of floats; no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)"
+      // Phase 727: a multivector and its products; no coefficient is encoded (DECISIONS.md D85 item 10).
+      "Fuaran.Compute.GeometricAlgebra",
+      "a multivector and its products; a coefficient codec is ruled out, so no type it publishes travels on a wire, and its law vectors are pinned by their own emission test (`--emit-laws`)" ]
 
 /// Build every document of one root: `(name, emitted bytes)`, plus the construction logs for the
 /// per-case documents so the suite can prove each reached its case.
