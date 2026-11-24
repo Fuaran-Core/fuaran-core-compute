@@ -252,13 +252,19 @@ let private wrongPorts: (string * Arithmetic) list =
           OverBoth = fun divide numerator first second -> divide (divide numerator first) second }
       "an unscaled norm",
       { shipped with
-          Norm = fun xs -> sqrt (xs |> Array.fold (fun acc v -> acc + v * v) 0.0) }
+          Scaled = fun _ xs -> sqrt (xs |> Array.fold (fun acc v -> acc + v * v) 0.0) }
       "a fused multiply-add in the norm's sum",
       { shipped with
-          Norm = Norm.scaledWith fusedSquares }
+          SumOfSquares = fusedSquares }
       "a correctly rounded sum in the norm",
       { shipped with
-          Norm = Norm.scaledWith exactSquares }
+          SumOfSquares = exactSquares }
+      "the norm's squares summed in another order",
+      { shipped with
+          SumOfSquares = Array.rev >> Norm.foldedSquares }
+      "a product of three factors formed from the right",
+      { shipped with
+          Chain = fun product factors -> List.reduceBack product factors }
       "half a squared length summed from the right",
       { shipped with
           HalfSquaredLength = fun x1 x2 x3 -> 0.5 * (x1 * x1 + (x2 * x2 + x3 * x3)) }
@@ -354,14 +360,18 @@ let private thresholdsOf (c: V.Case) : float list =
     |> List.filter (fun t -> t > 0.0 && not (Double.IsInfinity t))
     |> List.distinct
 
-/// The drawn sample: `V.drawn 0 .. 164`, which is fifty-five configurations drawn at each of three
-/// scales of coordinate (the generator's seeds 9000 to 9164), every published function over each;
-/// and each function that takes a threshold asked again at every threshold of `thresholdsOf`. Each element is the configuration, the case as drawn, the threshold it is asked at
-/// when that is not the drawn one, and the case asked.
+/// The drawn sample: `V.searched 0 .. 164`. That is fifty-five configurations drawn at each of three
+/// scales of coordinate (the generator's seeds 9000 to 9164), every published function over each; the
+/// same configurations with two coefficients in three of every operand replaced by a zero of a drawn
+/// sign (seeds 7000 to 7164); and the blade operations over untyped multivectors that are zeros of both
+/// signs, alone, around one coefficient and around a third of them (seeds 8000 to 8164). Each function
+/// that takes a threshold is asked again at every threshold of `thresholdsOf`. Each element is the
+/// number drawn at, the case as drawn, the threshold it is asked at when that is not the drawn one, and
+/// the case asked.
 let private drawnSample: Lazy<(int * V.Case * float option * V.Case)[]> =
     lazy
         ([| for index in 0..164 do
-                for c in V.drawn index do
+                for c in V.searched index do
                     if not (copies.Contains c.Op) then
                         yield index, c, None, c
 
@@ -427,7 +437,7 @@ let private unable: (string * string * string list) list =
         "Sphere.ofCentreRadius"
         "Sphere.normalise" ]
       "another order of summation",
-      "on the blades its operands carry it sums at most two non-zero terms into each coefficient it answers or reads, and two terms round alike in either order",
+      "on the blades its operands carry, each coefficient it answers or reads is a sum of at most two terms of its table, and two terms round alike in either order",
       [ "PointPair.through"
         "Line.through"
         "Line.ofPointDirection"
@@ -455,8 +465,11 @@ let private unable: (string * string * string list) list =
         "Sphere.ofCentreRadius"
         "Sphere.normalise" ]
       "a fused multiply-add",
-      "each coefficient it answers or reads is one non-zero term, and one product fused into a zero is that product rounded",
-      [ "Circle.plane"; "Sphere.centre" ]
+      "each coefficient it answers is one term of its table, and one product fused into a zero is that product rounded",
+      [ "Circle.plane" ]
+      "a fused multiply-add",
+      "each coefficient it reads is a sum of two equal terms, and a product fused into its own rounded value rounds to twice that value, as the two roundings do",
+      [ "Sphere.centre" ]
       "a fold seeded from its first term",
       "it calls no product",
       [ "Point.up"
@@ -476,9 +489,8 @@ let private unable: (string * string * string list) list =
         "Sphere.ofCentreRadius"
         "Sphere.normalise" ]
       "a fold seeded from its first term",
-      "a fold from `-0.0` answers otherwise only where every term of a coefficient is a negative zero; the coefficients a typed operand does not carry are `+0.0`, and the drawn operands give no such coefficient",
-      [ "Blade.join"
-        "Blade.inverse"
+      "a fold from `-0.0` answers otherwise only where every term of a coefficient is a negative zero; the search draws typed operands heavy in zeros of both signs, and untyped ones that are nothing else, and finds no such coefficient in an answer of this function",
+      [ "Blade.inverse"
         "PointPair.through"
         "PointPair.centre"
         "PointPair.squaredRadius"
@@ -491,7 +503,6 @@ let private unable: (string * string * string list) list =
         "Line.meetPlane"
         "Line.meetSphere"
         "Circle.through"
-        "Circle.ofCentreRadiusNormal"
         "Circle.centre"
         "Circle.squaredRadius"
         "Circle.kind"
@@ -687,6 +698,94 @@ let private unable: (string * string * string list) list =
         "Sphere.meetPlane"
         "Sphere.power"
         "Sphere.side" ]
+      "the norm's squares summed in another order",
+      "it reads no norm",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "PointPair.points"
+        "Line.through"
+        "Line.nearestPoint"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.through"
+        "Plane.nearestPoint"
+        "Plane.meet"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power"
+        "Sphere.side" ]
+      "a product of three factors formed from the right",
+      "it forms no product of more than two factors",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.squaredRadius"
+        "PointPair.kind"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.kind"
+        "Line.meet"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.squaredRadius"
+        "Circle.kind"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.kind"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Plane.side"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.squaredRadius"
+        "Sphere.kind"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power"
+        "Sphere.side" ]
+      "a product of three factors formed from the right",
+      "its product has two factors, which have one grouping",
+      [ "PointPair.through" ]
+      "a product of three factors formed from the right",
+      "its last factor is `n∞`, which either grouping meets with one term for each coefficient, so both form the same two products into each coefficient",
+      [ "Line.through"; "Line.ofPointDirection" ]
+      "a product of three factors formed from the right",
+      "its middle factor is `n∞`, which only copies and negates a sphere's coefficients on either side, so both groupings form the same products into the coefficients the centre reads",
+      [ "Sphere.centre" ]
       "half a squared length summed from the right",
       "it embeds no point",
       [ "Blade.join"
@@ -1160,7 +1259,7 @@ let private operationModules =
       "Geometry.fs"
       "GeometricAlgebraOperations.fs" ]
 
-/// A source with its comments and its string literals removed.
+/// A source with its comments removed and each string literal emptied to `""`.
 let private codeOf (source: string) : string =
     let q = "\""
 
@@ -1170,17 +1269,37 @@ let private codeOf (source: string) : string =
         + ("|@" + q + "(?:[^" + q + "]|" + q + q + ")*" + q)
         + ("|" + q + @"(?:\\.|[^" + q + @"\\])*" + q)
 
-    Regex(pattern, RegexOptions.Singleline).Replace(source, " ")
+    Regex(pattern, RegexOptions.Singleline)
+        .Replace(
+            source,
+            MatchEvaluator(fun m ->
+                if m.Value.StartsWith "//" || m.Value.StartsWith "(*" then
+                    " "
+                else
+                    q + q)
+        )
 
-/// Every float literal token of a source: digits with a decimal point (`0.5`, `1.`, `2.0e-3`) or with
-/// an exponent (`1e-9`). A sign is not part of the token.
+/// Every float literal token of a source, and every float it names. A literal is digits, underscores
+/// allowed, with a decimal point (`0.5`, `1.`, `1_000.0`), an exponent (`1e-9`) or a suffix that makes
+/// a number of another floating or decimal type (`1.0f`, `1e-9M`), or a hexadecimal double
+/// (`0x3FF0000000000000LF`). A sign is not part of the token. A named float is `infinity`, `nan`,
+/// `NaN`, `PositiveInfinity`, `NegativeInfinity`, `MaxValue` or `MinValue`, whatever it is bound to.
 let private floatLiterals (source: string) : string list =
-    [ for m in Regex.Matches(codeOf source, @"(?<![\w.])(?:\d+\.\d*(?:[eE][-+]?\d+)?|\d+[eE][-+]?\d+)(?![\w.])") ->
+    let code = codeOf source
+
+    [ for m in
+          Regex.Matches(
+              code,
+              @"(?<![\w.])(?:0[xX][0-9a-fA-F_]+(?:LF|lf)|\d[\d_]*\.[\d_]*(?:[eE][-+]?\d+)?[fFmM]?|\d[\d_]*[eE][-+]?\d+[fFmM]?|\d[\d_]*[fFmM])(?![\w.])"
+          ) -> m.Value
+      for m in Regex.Matches(code, @"\b(?:infinity|nan|NaN|PositiveInfinity|NegativeInfinity|MaxValue|MinValue)\b") ->
           m.Value ]
 
-/// The ways a default could be given to a threshold without a literal in a comparison.
+/// The ways a tolerance could be had without a float literal the census counts: a default for an
+/// argument, the least double by name, and a float made from an integer or a string literal.
 let private defaults =
-    Regex @"\bdefaultArg\b|\bOption\.defaultValue\b|(?<=[(,]\s*)\?\s*[A-Za-z_]\w*"
+    Regex
+        @"\bdefaultArg\b|\bOption\.defaultValue\b|\bdefaultWith\b|\bValueOption\.default\w*|\bEpsilon\b|\bfloat(?:32)?\s*\(?\s*(?:""""|-?\d)|(?<=[(,]\s*)\?\s*[A-Za-z_]\w*"
 
 /// The float literals the record accounts for, by module: the literal, how often it is written, and
 /// what it is there for. A literal that is not here, or is here another number of times, is a finding.
@@ -1196,7 +1315,20 @@ let private accountedLiterals: (string * string * int * string) list =
       "in a comparison, eight times: a divisor against zero, the norm of a direction against zero, a threshold of zero, a threshold that is not negative, a radius that is not negative, a numerator that is zero, and the signs of a numerator and of a denominator at a threshold of zero (item 6); inside the norm, four times: its `m = 0`, the zero it answers, and the `+0.0` its largest magnitude and its sum start from (D49 item 4, outside the rule); and the `+0.0` of a coefficient a vector built from parameters does not hold, seven times (item 4)"
       "Conformal.fs", "0.5", 2, "the half of `½ x²` and of `½ r²` (item 4); in no comparison"
       "Conformal.fs", "2.0", 1, "the `−2.0` of a power (item 6); in no comparison"
-      "Conformal.fs", "1.0", 1, "the weight of `up x` (item 4); in no comparison" ]
+      "Conformal.fs", "1.0", 1, "the weight of `up x` (item 4); in no comparison"
+      // The floats that are named and not written.
+      "Basis.fs",
+      "infinity",
+      6,
+      "the position of `n∞` among the basis vectors: an integer that shadows the float of that name, in no comparison of floats"
+      "Conformal.fs", "infinity", 4, "the same position, where the groups of item 6 are read off the blades"
+      "Multivector.fs", "NaN", 1, "the one NaN a float leaves a public function with (item 3)"
+      "Conformal.fs", "NaN", 1, "the norm's answer where an element is a NaN (D49 item 4)"
+      "Conformal.fs", "PositiveInfinity", 1, "the norm's answer where its largest magnitude is infinite (D49 item 4)"
+      "Conformal.fs",
+      "nan",
+      3,
+      "a flag inside the norm, raised where an element is a NaN: a boolean that shadows the float of that name" ]
 
 /// One finding for each way some sources depart from the account: a literal written more or fewer
 /// times than accounted for, and each way of giving a default.
@@ -1230,7 +1362,7 @@ let tests =
 
           testCase "the arithmetic a witness perturbs is the shipped arithmetic"
           <| fun () ->
-              Expect.equal (List.length conformal) 826 "the object modules' vectors"
+              Expect.equal (List.length conformal) 836 "the object modules' vectors"
 
               for name, r in
                   [ "Arithmetic.shipped", shipped
@@ -1576,6 +1708,23 @@ let tests =
                   (Error GeometryRefusal.ZeroDivisor)
                   "a null blade has no inverse"
 
+              // A line whose nearest point overflows: the read answers the infinity, which is a value, and
+              // the two-line rule, which embeds that point, is refused as `up` refuses it.
+              let far: Line =
+                  { N0E1NInf = 0.0
+                    N0E2NInf = -1.0
+                    N0E3NInf = 0.07918293826789391
+                    E1E2NInf = -Double.MaxValue
+                    E1E3NInf = Double.MaxValue
+                    E2E3NInf = 0.0 }
+
+              Expect.equal (Line.nearestPoint far) (Ok(infinity, 0.0, 0.0)) "a nearest point past the largest double"
+
+              Expect.equal
+                  (Line.meet Double.MaxValue xAxis far)
+                  (Error GeometryRefusal.NonFiniteCoordinate)
+                  "and the two-line rule cannot embed it"
+
           testCase "each named case goes red where the rule that names it is changed"
           <| fun () ->
               let port (name: string) : Arithmetic =
@@ -1585,6 +1734,9 @@ let tests =
               let always = "a threshold always met"
               let strict = "a strict threshold"
               let undivided = "no test of a zero divisor"
+              let seeded = "a fold seeded from its first term"
+              let regrouped = "a product of three factors formed from the right"
+              let reordered = "the norm's squares summed in another order"
               let undirected = "no test of a zero direction"
               let fromAbove = "a threshold met from above"
               let quotient = "a quotient formed at a threshold of zero"
@@ -1645,6 +1797,12 @@ let tests =
                     "Plane.side-decided-by-signs-where-the-quotient-underflows", quotient
                     "Circle.side-decided-by-signs-where-the-quotient-underflows", quotient
                     "Sphere.power-on", signless
+                    // Every term a negative zero, over untyped operands; a centre formed in the other
+                    // grouping, in a pair's points; a norm summed from the right.
+                    "Blade.join-whose-every-term-is-a-negative-zero", seeded
+                    "PointPair.points-general-1000-at-a-further-threshold", regrouped
+                    "Line.weight-general-1002", reordered
+                    "PointPair.weight-general-1002", reordered
                     // The other side of each threshold: "above" is a member of its own.
                     "PointPair.points-tangent-at-the-threshold", fromAbove
                     "PointPair.kind-no-round-at-the-threshold", fromAbove
@@ -1836,6 +1994,18 @@ let tests =
                     "let small (x: float) =\n    x <\n        1e-9"
                     "let isZero (x: float) =\n    match x with\n    | 0.0 -> true\n    | _ -> false"
                     "member _.Side(p: Point, ?tau: float) = p"
+                    // Spellings and routes a first census did not see.
+                    "let tiny = 0x3E112E0BE826D695LF"
+                    "let step = 1_000.0"
+                    "let single = 1.0f"
+                    "let money = 1e-9M"
+                    "let least = Double.Epsilon"
+                    "let least = System.Double.Epsilon"
+                    "let parsed = float \"1e-9\""
+                    "let ratio = float 1 / float 1_000_000_000"
+                    "let side tau = decide (Option.defaultWith (fun () -> one) tau)"
+                    "let side tau = decide (ValueOption.defaultValue one tau)"
+                    "let far = infinity"
                     "let isZero (x: float) = x = 0.0" ] do
                   Expect.isNonEmpty
                       (literalFindings [ "Conformal.fs", conformalSource + "\n" + shape ])
@@ -1851,6 +2021,11 @@ let tests =
                   (floatLiterals "x = 1. || y < -2.5E-3 || z > 1e9")
                   [ "1."; "2.5E-3"; "1e9" ]
                   "the three spellings"
+
+              Expect.equal
+                  (floatLiterals "0x3FF0000000000000LF + 1_000.0 + 1.0f + 1e-9M + 0x7FC00000 + xs[1_000] + nan")
+                  [ "0x3FF0000000000000LF"; "1_000.0"; "1.0f"; "1e-9M"; "nan" ]
+                  "a hexadecimal double, an underscore, two suffixes and a name; and no integer"
 
               // Every published function that tests a zero takes `tau`, and takes it first.
               let thresholded =

@@ -7,8 +7,8 @@ open System
 //  are written in as an argument (DECISIONS.md D85 items 4, 5 and 6; D87).
 //
 //  Every function here takes an `Arithmetic` first: the four products, how a
-//  quotient is formed and how a statistic's is, the norm, the two halved
-//  squares, the `−2` of a power, what a zero divisor and a zero direction are,
+//  quotient is formed and how a statistic's is, the norm's scaling and its
+//  sum, how a product of three factors is grouped, the two halved squares, the `−2` of a power, what a zero divisor and a zero direction are,
 //  what "above `τ`" and "within `τ`" are, and when the signs decide. Each
 //  member is one rule and no member is two. A public function passes
 //  `Arithmetic.shipped`, which is the record as D85 writes it. The suite calls
@@ -42,8 +42,14 @@ type internal Arithmetic =
         /// divisor's two factors, the product first and then one division, by the division it is
         /// given.
         OverBoth: (float -> float -> float) -> float -> float -> float -> float
-        /// The norm of a group of coefficients (D49 item 4).
-        Norm: float[] -> float
+        /// The norm of a group of coefficients (D49 item 4), scaled: the largest magnitude, the
+        /// quotients by it, and that magnitude times the root of the sum it is given of their squares.
+        Scaled: (float[] -> float) -> float[] -> float
+        /// The sum of the norm's squared quotients (D49 item 4): folded in index order from `+0.0`, a
+        /// rounded square and then a rounded sum.
+        SumOfSquares: float[] -> float
+        /// A product of more than two factors (D85 item 3): two at a time, left to right.
+        Chain: (Multivector -> Multivector -> Multivector) -> Multivector list -> Multivector
         /// `½ x²` for a point's coordinates: `0.5 × ((x1·x1 + x2·x2) + x3·x3)` (D85 item 4).
         HalfSquaredLength: float -> float -> float -> float
         /// `½ r²` for a radius: `0.5 × (r × r)`, the square first (D85 item 4).
@@ -117,7 +123,9 @@ module internal Arithmetic =
           Scalar = Multivector.scalarProduct
           Divide = fun x y -> x / y
           OverBoth = fun divide numerator first second -> divide numerator (first * second)
-          Norm = Norm.scaled
+          Scaled = Norm.scaledWith
+          SumOfSquares = Norm.foldedSquares
+          Chain = fun product factors -> List.reduce product factors
           HalfSquaredLength = fun x1 x2 x3 -> 0.5 * ((x1 * x1 + x2 * x2) + x3 * x3)
           HalfSquare = fun r -> 0.5 * (r * r)
           MinusTwice = fun s -> -2.0 * s
@@ -346,7 +354,7 @@ module internal Conformal =
         (r: Arithmetic)
         (d1: float, d2: float, d3: float)
         : Result<float * float * float, GeometryRefusal> =
-        let n = r.Norm [| d1; d2; d3 |]
+        let n = r.Scaled r.SumOfSquares [| d1; d2; d3 |]
 
         if r.IsZeroNorm n then
             Error GeometryRefusal.ZeroDirection
@@ -414,7 +422,8 @@ module internal Conformal =
     // ---- read-back (D85 item 4) ---------------------------------------------------------------------
 
     /// The weight of a blade with these blades: the norm of one group of its coefficients.
-    let private groupNorm (r: Arithmetic) (group: int[]) (m: Multivector) : float = r.Norm(copy group m)
+    let private groupNorm (r: Arithmetic) (group: int[]) (m: Multivector) : float =
+        r.Scaled r.SumOfSquares (copy group m)
 
     /// The weight of a point pair or a circle: the norm on the blades that hold `n0` and not `n∞`.
     let roundWeight (r: Arithmetic) (indices: int[]) (m: Multivector) : float =
@@ -428,7 +437,7 @@ module internal Conformal =
 
     /// The centre of a round: the point `⟨(X n∞) X⟩₁`, read as a point is.
     let centre (r: Arithmetic) (x: Multivector) : Result<float * float * float, GeometryRefusal> =
-        readAsPoint r (r.Geometric (r.Geometric x nInf) x)
+        readAsPoint r (r.Chain r.Geometric [ x; nInf; x ])
 
     /// The numerator `−(X ∗ X̃)` and the divisor `W ∗ W̃`, `W = n∞ ⌋ X`, of a round's squared radius.
     /// Refused where the divisor is zero or not finite, or the numerator a NaN.
@@ -624,7 +633,7 @@ module internal Conformal =
         |> Result.bind (fun point ->
             unit r direction
             |> Result.bind (fun (d1, d2, d3) ->
-                let through = r.Outer (r.Outer (pointMv point) (vector 0.0 d1 d2 d3 0.0)) nInf
+                let through = r.Chain r.Outer [ pointMv point; vector 0.0 d1 d2 d3 0.0; nInf ]
                 numbers (copy Indices.line through) |> Result.map lineOf))
 
     /// `meet (sphere c r) (plane n̂ (n̂ · c))`: the circle runs counter-clockwise about its normal.
@@ -649,8 +658,8 @@ module internal Conformal =
 
     let through (r: Arithmetic) (points: Point list) (closing: Multivector list) : Multivector =
         match (points |> List.map pointMv) @ closing with
-        | first :: rest -> rest |> List.fold r.Outer first
         | [] -> Multivector.zero
+        | factors -> r.Chain r.Outer factors
 
     let closedAtInfinity: Multivector list = [ nInf ]
 

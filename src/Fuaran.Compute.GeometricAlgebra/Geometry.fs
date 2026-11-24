@@ -147,7 +147,8 @@ module Line =
     /// The moment `p ∧ d`: the coefficients of `e1∧e2∧n∞`, `e1∧e3∧n∞` and `e2∧e3∧n∞`, read.
     let moment (x: Line) : float * float * float = x.E1E2NInf, x.E1E3NInf, x.E2E3NInf
 
-    /// The point of the line nearest the origin: the coordinates of the vector `⟨(n0 ⌋ X) X⁻¹⟩₁`.
+    /// The point of the line nearest the origin: the coordinates of the vector `⟨(n0 ⌋ X) X⁻¹⟩₁`. A
+    /// coordinate that overflows is an infinity, and is answered.
     let nearestPoint (x: Line) : Result<float * float * float, GeometryRefusal> =
         Conformal.lineNearestPoint Arithmetic.shipped x
 
@@ -157,7 +158,8 @@ module Line =
 
     /// What two lines meet in. Their meet in the whole space is the zero blade unless they are skew,
     /// so two lines of one plane are met within it: the span is the join of the first line with a
-    /// point of the second. Each "is the zero blade" is the test of a kind, with `tau`.
+    /// point of the second. Each "is the zero blade" is the test of a kind, with `tau`. Refused as its
+    /// parts are: where that point's coordinate overflows, as `Point.up` refuses it.
     let meet (tau: float) (first: Line) (second: Line) : Result<LineMeet, GeometryRefusal> =
         Conformal.lineMeet Arithmetic.shipped tau first second
 

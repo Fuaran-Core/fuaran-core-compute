@@ -141,11 +141,11 @@ function that existed answers another bit. It still references FSharp.Core alone
 
 **The wire.** None, as before.
 
-**The law vectors.** `conformance/laws/geometric-algebra-laws.json` grows from 167 vectors to 997. The 167 are
+**The law vectors.** `conformance/laws/geometric-algebra-laws.json` grows from 167 vectors to 1,007. The 167 are
 unchanged in content; the last of them gains the comma that now separates it from the next, and the document's
 `description` says how the new shapes are written. Four of the new ones are over `squaredNorm` and `scalarProduct`.
-The other 826 are over the seventy functions: three drawn configurations through each; each named case, each
-refusal and each side of each threshold by hand; and fifty-nine drawn cases chosen because a wrong port fails them. A typed operand is the list of its coefficients; an answer that can
+The other 836 are over the seventy functions: three drawn configurations through each; each named case, each
+refusal and each side of each threshold by hand; and sixty-six drawn cases chosen because a wrong port fails them. A typed operand is the list of its coefficients; an answer that can
 be refused is its own cell or `{ "refused": … }`; an answer that has kinds is `{ "kind": … }` with what the case
 carries. Every other file under `conformance/laws/` is byte-identical.
 

@@ -23,7 +23,8 @@ namespace Fuaran.Compute.GeometricAlgebra
 /// Nothing throws on bad data: a refusal is a case, and an `Ok` never holds a NaN.
 [<RequireQualifiedAccess>]
 type GeometryRefusal =
-    /// A coordinate of a point parameter is a NaN or an infinity.
+    /// A coordinate of a point parameter is a NaN or an infinity: one a caller passes, or the nearest
+    /// point of a line that `Line.meet` embeds, where that point's coordinate overflows.
     | NonFiniteCoordinate
     /// A direction parameter (a line's direction, a normal) has norm zero.
     | ZeroDirection

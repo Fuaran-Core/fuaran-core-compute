@@ -1888,6 +1888,134 @@ module GeometricAlgebraVectors =
                           [ c.Input |> List.find (fun (name, _) -> name = "tau")
                             "x", Coefficients(Array.append [| 0.0 |] plane) ] ]
 
+    // ---- appended after the 997: zeros of both signs, a nearest point that overflows, and the cases a
+    // ---- search over zero-heavy and untyped operands found (DECISIONS.md D87 items 4 and 10)
+
+    /// The outer product of `e1` with a multivector that is `-0.0` at every index but `e1`'s: every term
+    /// of the eight coefficients it reaches is a negative zero, and the fold from `+0.0` answers `+0.0`.
+    let private signedZeros: Case list =
+        [ case
+              "Blade.join-whose-every-term-is-a-negative-zero"
+              "Blade.join"
+              [ "a", Blade 2
+                "b", Coefficients(Array.init count (fun index -> if index = 2 then 0.0 else -0.0)) ] ]
+
+    /// A line whose point nearest the origin has a first coordinate past the largest double. The read
+    /// answers the infinity; the two-line rule embeds that point, and `up` refuses it by name.
+    let private nearestOverflows: Case list =
+        let line =
+            [| 0.0; -1.0; 0.07918293826789391; -Double.MaxValue; Double.MaxValue; 0.0 |]
+
+        [ case "Line.nearestPoint-whose-coordinate-overflows" "Line.nearestPoint" [ "x", Coefficients line ]
+          case
+              "Line.meet-whose-nearest-point-overflows"
+              "Line.meet"
+              [ "tau", N Double.MaxValue; "x", L xAxis; "y", Coefficients line ] ]
+
+    /// The drawn configuration of this number with two coefficients in three of every operand replaced
+    /// by a zero of a drawn sign: typed operands that are heavy in zeros of both signs.
+    let zeroed (index: int) : Case list =
+        let d = Draw(7000 + index)
+
+        drawn index
+        |> List.map (fun c ->
+            { c with
+                Id = c.Id + "-with-zeros"
+                Input =
+                    c.Input
+                    |> List.map (fun (name, o) ->
+                        match o with
+                        | Coefficients xs ->
+                            name,
+                            Coefficients(
+                                xs
+                                |> Array.map (fun x ->
+                                    match d.Int 0 5 with
+                                    | 0
+                                    | 1 -> x
+                                    | 2
+                                    | 3 -> 0.0
+                                    | _ -> -0.0)
+                            )
+                        | other -> name, other) })
+
+    /// The blade operations over untyped multivectors that are zeros of both signs, alone, around one
+    /// drawn coefficient, and around a third of them: operands no typed object gives.
+    let untyped (index: int) : Case list =
+        let d = Draw(8000 + index)
+
+        let zeros () : float[] =
+            Array.init count (fun _ -> if d.Int 0 1 = 0 then 0.0 else -0.0)
+
+        let oneAmongZeros () : float[] =
+            let xs = zeros ()
+            let at = d.Int 0 (count - 1)
+            withOne at (d.Scaled 0 2) xs
+
+        let mostlyZeros () : float[] =
+            Array.init count (fun _ ->
+                match d.Int 0 5 with
+                | 0
+                | 1 -> d.Scaled 0 4
+                | 2
+                | 3 -> 0.0
+                | _ -> -0.0)
+
+        [ for what, make in
+              [ "zeros", zeros
+                "one-among-zeros", oneAmongZeros
+                "mostly-zeros", mostlyZeros ] do
+              let named (op: string) =
+                  sprintf "%s-untyped-%s-%d" op what (1000 + index)
+
+              let a = make ()
+              let b = make ()
+              let j = make ()
+              yield case (named "Blade.join") "Blade.join" [ "a", Coefficients a; "b", Coefficients b ]
+              yield case (named "Blade.meet") "Blade.meet" [ "a", Coefficients a; "b", Coefficients b ]
+              yield case (named "Blade.inverse") "Blade.inverse" [ "a", Coefficients a ]
+
+              yield
+                  case
+                      (named "Blade.meetWithin")
+                      "Blade.meetWithin"
+                      [ "j", Coefficients j; "a", Coefficients a; "b", Coefficients b ]
+
+              yield
+                  case
+                      (named "Blade.meetWithin" + "-within-the-whole-space")
+                      "Blade.meetWithin"
+                      [ "j", Blade 31; "a", Coefficients a; "b", Coefficients b ] ]
+
+    /// Everything a search for a wrong port's reach draws at one number: the configuration, the same
+    /// with zeros, and the untyped operands.
+    let searched (index: int) : Case list =
+        drawn index @ zeroed index @ untyped index
+
+    /// The cases of `searched` chosen as witnesses after the 997, as `chosen` is read.
+    let private chosenLater: (int * string * (string * float) option) list =
+        [ 0, "PointPair.points-general-1000", Some("at-a-further-threshold", 0.14820163862845376)
+          2, "Circle.ofCentreRadiusNormal-general-1002-with-zeros", None
+          2, "Line.normalise-general-1002", None
+          2, "Line.weight-general-1002", None
+          2, "PointPair.normalise-general-1002", None
+          2, "PointPair.weight-general-1002", None
+          31, "Plane.side-general-from-parameters-1031", Some("at-a-further-threshold", 192.56395506780785) ]
+
+    let private laterWitnesses: Case list =
+        [ for index, id, threshold in chosenLater do
+              let c = searched index |> List.find (fun c -> c.Id = id)
+
+              match threshold with
+              | None -> yield c
+              | Some(word, tau) ->
+                  yield
+                      { c with
+                          Id = c.Id + "-" + word
+                          Input =
+                              c.Input
+                              |> List.map (fun (name, o) -> if name = "tau" then name, Number tau else name, o) } ]
+
     /// Every case, in document order: Phase 727's, and then the ones appended since.
     let cases: Case list =
         tableRows
@@ -1901,6 +2029,9 @@ module GeometricAlgebraVectors =
         @ undivided
         @ drawnWitnesses
         @ flatSpheres
+        @ signedZeros
+        @ nearestOverflows
+        @ laterWitnesses
 
     /// The case with this id.
     let find (id: string) : Case = cases |> List.find (fun c -> c.Id = id)
