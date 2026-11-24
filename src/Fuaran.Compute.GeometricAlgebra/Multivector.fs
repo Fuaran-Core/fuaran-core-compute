@@ -200,8 +200,10 @@ module internal Kernel =
 
     // ---- the specialised products (Phase 730, DECISIONS.md D89) --------------------------------------
 
-    /// The general geometric product, as one compiled function: the path a specialised product takes
-    /// where it does not specialise.
+    /// The general geometric product, item 3's fold over all 1,024 terms, as one compiled function: the
+    /// published `Multivector.geometricProduct` is this function, and so is the path a specialised
+    /// product takes where it does not specialise. Two inlined copies of the one loop were measured to
+    /// run at different speeds in one process on .NET (D89), so there is one.
     let general (a: Multivector) (b: Multivector) : Multivector =
         productWith 0.0 twoRoundings Basis.geometric a b
 
@@ -408,8 +410,7 @@ module Multivector =
 
     /// The geometric product `A B`: every output from `+0.0`, the 1,024 terms ascending in the left
     /// index, the right index and the output. No coefficient it returns is `-0.0`.
-    let geometricProduct (a: Multivector) (b: Multivector) : Multivector =
-        Kernel.productWith 0.0 Kernel.twoRoundings Basis.geometric a b
+    let geometricProduct (a: Multivector) (b: Multivector) : Multivector = Kernel.general a b
 
     /// The outer product `A ∧ B`: the terms of the geometric product that raise the grade by the left
     /// operand's, in the order they have there.

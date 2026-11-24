@@ -6,9 +6,11 @@
 /// The shapes are the ones the library's typed functions form: a point with a sphere (the geometric
 /// product, the join's outer product and the power's scalar product against the sphere's undual), a
 /// rotor with a rotor and a motor with a motor (`compose`), a translator with a rotor
-/// (`Motor.ofRotorTranslator`), and each product of the sandwich `(V X) Ṽ` of a rotor and of a motor
-/// with a point (`applyToPoint`). Every operand is a typed value widened by its own `toMultivector`,
-/// so its uncarried coefficients are `+0.0`, as a typed function's are.
+/// (`Motor.ofRotorTranslator`), and each product of the sandwich `(V X) Ṽ` of a rotor, a translator
+/// and a motor with a point (`applyToPoint`). Every operand is a typed value widened by its own
+/// `toMultivector`, so its uncarried coefficients are `+0.0`, as a typed function's are. Beside each
+/// geometric product of a pair D89 specialises, the specialised product on the same operands: its
+/// checksum is the general product's, so the two answered the same bits over the sample.
 ///
 /// Each case is timed by Phase 593's procedure (`ElementaryBench.perValue`): at least half a second of
 /// warm-up, then passes doubled until one sample spans fifty milliseconds, then `runs` samples, with
