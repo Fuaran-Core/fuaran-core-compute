@@ -670,8 +670,8 @@ module GeometricAlgebraLaws =
     /// `Point.coordinates`. Answers the largest error of a coordinate in units in the last place of its
     /// reference, and the largest absolute error of a coordinate whose reference is zero; or the first
     /// configuration that did not answer two real points in the line's order.
-    let internal closedFormSample () : Result<float * float, string> =
-        let d = Draw 728
+    let internal closedFormSampleAt (seed: int) : Result<float * float, string> =
+        let d = Draw seed
         let mutable worstUlps = 0.0
         let mutable worstAbsolute = 0.0
         let mutable failure = None
@@ -734,6 +734,9 @@ module GeometricAlgebraLaws =
         | Some why -> Error why
         | None -> Ok(worstUlps, worstAbsolute)
 
+    /// The stated sample: seed 728.
+    let internal closedFormSample () : Result<float * float, string> = closedFormSampleAt 728
+
     /// The bound of the closed-form law: the largest errors measured over `closedFormSample`, with no
     /// margin, because the answers are pinned bits and every host measures the same ones.
     let internal closedFormBoundUlps = 292.0
@@ -751,6 +754,8 @@ module GeometricAlgebraLaws =
                          ulps
                          absolute))
 
+    /// The law is pinned to the stated sample: it draws nothing from the seed it is run at, because its
+    /// bound is one sample's maximum and another sample has another (DECISIONS.md D87 item 11).
     let private lineAndSphereAgainstTheClosedForm (_: Draw) = closedFormVerdict.Value
 
     /// The laws, by name, each run at `count` iterations drawn from `seed`.

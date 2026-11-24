@@ -30,6 +30,7 @@ module Fuaran.Compute.Tests.ConformalTests
 
 open System
 open System.IO
+open System.Numerics
 open System.Reflection
 open System.Text.RegularExpressions
 open Expecto
@@ -193,6 +194,52 @@ let private fused (negative: bool) (r: float) (x: float) (y: float) : float =
     else
         Math.FusedMultiplyAdd(x, y, r)
 
+/// The norm's sum of squared quotients with each square fused into the sum.
+let private fusedSquares (quotients: float[]) : float =
+    quotients |> Array.fold (fun acc q -> Math.FusedMultiplyAdd(q, q, acc)) 0.0
+
+/// The norm's sum of squared quotients, correctly rounded: the exact sum in integers, rounded once to
+/// the nearest double, ties to even. Each quotient is a double of magnitude at most one.
+let private exactSquares (quotients: float[]) : float =
+    let scale = 2200
+
+    let total =
+        quotients
+        |> Array.fold
+            (fun (acc: BigInteger) q ->
+                let bits = BitConverter.DoubleToInt64Bits q
+                let exponent = int ((bits >>> 52) &&& 0x7FFL)
+                let fraction = bits &&& 0xFFFFFFFFFFFFFL
+
+                let mantissa, e =
+                    if exponent = 0 then
+                        BigInteger fraction, -1074
+                    else
+                        BigInteger(fraction ||| (1L <<< 52)), exponent - 1075
+
+                acc + ((mantissa * mantissa) <<< (2 * e + scale)))
+            BigInteger.Zero
+
+    if total.IsZero then
+        0.0
+    else
+        let shift = int (total.GetBitLength()) - 53
+
+        let rounded =
+            if shift <= 0 then
+                total
+            else
+                let kept = total >>> shift
+                let remainder = total - (kept <<< shift)
+                let half = BigInteger.One <<< (shift - 1)
+
+                if remainder > half || (remainder = half && not kept.IsEven) then
+                    kept + BigInteger.One
+                else
+                    kept
+
+        Math.ScaleB(float rounded, (max shift 0) - scale)
+
 let private wrongPorts: (string * Arithmetic) list =
     [ "another order of summation", products Kernel.twoRoundings 0.0 Array.rev
       "a fused multiply-add", products fused 0.0 id
@@ -200,9 +247,18 @@ let private wrongPorts: (string * Arithmetic) list =
       "a product with a reciprocal",
       { shipped with
           Divide = fun x y -> x * (1.0 / y) }
+      "a statistic divided twice",
+      { shipped with
+          OverBoth = fun divide numerator first second -> divide (divide numerator first) second }
       "an unscaled norm",
       { shipped with
           Norm = fun xs -> sqrt (xs |> Array.fold (fun acc v -> acc + v * v) 0.0) }
+      "a fused multiply-add in the norm's sum",
+      { shipped with
+          Norm = Norm.scaledWith fusedSquares }
+      "a correctly rounded sum in the norm",
+      { shipped with
+          Norm = Norm.scaledWith exactSquares }
       "half a squared length summed from the right",
       { shipped with
           HalfSquaredLength = fun x1 x2 x3 -> 0.5 * (x1 * x1 + (x2 * x2 + x3 * x3)) }
@@ -212,7 +268,15 @@ let private wrongPorts: (string * Arithmetic) list =
       "a power formed as zero less twice the product",
       { shipped with
           MinusTwice = fun s -> 0.0 - 2.0 * s }
-      "no test of a zero divisor", { shipped with IsZero = fun _ -> false }
+      "no test of a zero divisor",
+      { shipped with
+          IsZeroDivisor = fun _ -> false }
+      "no test of a zero direction",
+      { shipped with
+          IsZeroNorm = fun _ -> false }
+      "a threshold met from above",
+      { shipped with
+          Above = fun s tau -> s >= tau }
       "a strict threshold",
       { shipped with
           Within = fun s tau -> s < tau && -s < tau }
@@ -224,7 +288,7 @@ let private wrongPorts: (string * Arithmetic) list =
           Within = fun _ _ -> true }
       "a quotient formed at a threshold of zero",
       { shipped with
-          SignsDecideAtZero = false } ]
+          SignsDecide = fun _ -> false } ]
 
 /// The committed vectors an arithmetic answers otherwise, by function: where the list of a function is
 /// not empty, the wrong port is shown red on a vector of that function.
@@ -238,167 +302,925 @@ let private redUnder (r: Arithmetic) : (string * string list) list =
     |> List.map (fun (op, reds) -> op, reds |> List.map snd)
     |> List.sortBy fst
 
-/// Every wrong port with the vectors it fails, by function: the listing DECISIONS.md D87's table is
-/// written from.
-let witnessListing () : (string * (string * string list) list) list =
-    wrongPorts |> List.map (fun (name, r) -> name, redUnder r)
+// ---- the drawn search: what a wrong port CAN change -------------------------------------------------
 
-/// The functions each wrong port turns red. Held both ways: a function listed has a vector that fails
-/// that port, and a function not listed has none, so nothing here is asserted of a vector that does
-/// not exist.
-let private redFunctions: (string * string list) list =
+/// The thresholds a function's own statistics name on one case: the norms of its blade's groups, the
+/// magnitude of its squared radius or of its statistic, and for two lines the norms the two-line rule
+/// tests. A wrong port that moves a statistic moves the answer at exactly such a threshold.
+let private thresholdsOf (c: V.Case) : float list =
+    let norms (indices: int[]) (m: Multivector) : float list =
+        let o, n, b, i = Indices.groups indices
+        [ for group in [ o; n; b; i ] -> Norm.scaled (Conformal.copy group m) ]
+
+    let magnitude (r: Result<float, GeometryRefusal>) : float list =
+        match r with
+        | Ok x -> [ (if x < 0.0 then -x else x) ]
+        | Error _ -> []
+
+    let x () = V.floats c "x"
+    let point () = V.pointOf (V.floats c "p")
+
+    let named =
+        match c.Op with
+        | "PointPair.kind" ->
+            let m = Conformal.pairMv (V.pairOf (x ()))
+            norms Indices.pair m @ magnitude (Conformal.squaredRadius shipped m)
+        | "Circle.kind" ->
+            let m = Conformal.circleMv (V.circleOf (x ()))
+            norms Indices.circle m @ magnitude (Conformal.squaredRadius shipped m)
+        | "Sphere.kind" ->
+            let m = Conformal.sphereMv (V.sphereOf (x ()))
+            norms Indices.sphere m @ magnitude (Conformal.squaredRadius shipped m)
+        | "Line.kind" -> norms Indices.line (Conformal.lineMv (V.lineOf (x ())))
+        | "Plane.kind" -> norms Indices.plane (Conformal.planeMv (V.planeOf (x ())))
+        | "PointPair.points" -> magnitude (Conformal.pairSquaredRadius shipped (V.pairOf (x ())))
+        | "Sphere.side" -> magnitude (Conformal.spherePower shipped (point ()) (V.sphereOf (x ())))
+        | "Circle.side" -> magnitude (Conformal.circlePower shipped (point ()) (V.circleOf (x ())))
+        | "Plane.side" -> magnitude (Conformal.planeSignedDistance shipped (point ()) (V.planeOf (x ())))
+        | "Line.meet" ->
+            let a = Conformal.lineMv (V.lineOf (x ()))
+            let b = Conformal.lineMv (V.lineOf (V.floats c "y"))
+
+            let typed (indices: int[]) (m: Multivector) =
+                Conformal.widen indices (Conformal.copy indices m)
+
+            norms Indices.point (typed Indices.point (Conformal.meet shipped a b))
+            @ (match Conformal.nearestPoint shipped b |> Result.bind (Conformal.up shipped) with
+               | Ok q -> norms Indices.plane (typed Indices.plane (shipped.Outer a (Conformal.pointMv q)))
+               | Error _ -> [])
+        | _ -> []
+
+    named
+    |> List.filter (fun t -> t > 0.0 && not (Double.IsInfinity t))
+    |> List.distinct
+
+/// The drawn sample: `V.drawn 0 .. 164`, which is fifty-five configurations drawn at each of three
+/// scales of coordinate (the generator's seeds 9000 to 9164), every published function over each;
+/// and each function that takes a threshold asked again at every threshold of `thresholdsOf`. Each element is the configuration, the case as drawn, the threshold it is asked at
+/// when that is not the drawn one, and the case asked.
+let private drawnSample: Lazy<(int * V.Case * float option * V.Case)[]> =
+    lazy
+        ([| for index in 0..164 do
+                for c in V.drawn index do
+                    if not (copies.Contains c.Op) then
+                        yield index, c, None, c
+
+                        for tau in thresholdsOf c do
+                            yield
+                                index,
+                                c,
+                                Some tau,
+                                { c with
+                                    Input =
+                                        c.Input
+                                        |> List.map (fun (name, o) ->
+                                            if name = "tau" then name, V.Number tau else name, o) } |])
+
+/// The shipped answer of each element of the sample.
+let private drawnShipped: Lazy<string[]> =
+    lazy
+        (drawnSample.Value
+         |> Array.Parallel.map (fun (_, _, _, c) ->
+             match answerUnder shipped c with
+             | Some cell -> cellText cell
+             | None -> ""))
+
+/// The functions an arithmetic answers otherwise somewhere in the drawn sample, each with the first
+/// element where it does.
+let private changedUnder (r: Arithmetic) : Map<string, int * string * float option> =
+    let shippedAnswers = drawnShipped.Value
+
+    drawnSample.Value
+    |> Array.Parallel.mapi (fun at (index, drawnCase, tau, c) ->
+        match answerUnder r c with
+        | Some cell when cellText cell <> shippedAnswers[at] -> Some(c.Op, (index, drawnCase.Id, tau))
+        | _ -> None)
+    |> Array.choose id
+    |> Array.fold
+        (fun found (op, witness) ->
+            if Map.containsKey op found then
+                found
+            else
+                Map.add op witness found)
+        Map.empty
+
+/// Why a wrong port is UNABLE to change a function: the port, the reason, and the functions. Held both
+/// ways by the case below. A function is listed here exactly when no committed vector of it fails the
+/// port, and no function listed is answered otherwise by that port anywhere in the drawn sample.
+let private unable: (string * string * string list) list =
     [ "another order of summation",
-      [ "Blade.inverse"
-        "Blade.join"
-        "Blade.meet"
-        "Blade.meetWithin"
-        "Circle.centre"
-        "Circle.ofCentreRadiusNormal"
-        "Circle.power"
-        "Circle.squaredRadius"
-        "Circle.through"
-        "Line.meet"
-        "Line.meetPlane"
-        "Line.meetSphere"
-        "Plane.nearestPoint"
-        "Plane.signedDistance"
-        "Plane.through"
-        "PointPair.centre"
-        "PointPair.points"
-        "PointPair.squaredRadius"
-        "Sphere.power"
-        "Sphere.squaredRadius"
-        "Sphere.through" ]
-      "a fused multiply-add",
-      [ "Blade.inverse"
-        "Blade.join"
-        "Blade.meet"
-        "Blade.meetWithin"
-        "Circle.centre"
-        "Circle.ofCentreRadiusNormal"
-        "Circle.power"
-        "Circle.squaredRadius"
-        "Circle.through"
-        "Line.meet"
-        "Line.meetPlane"
-        "Line.meetSphere"
-        "Line.nearestPoint"
-        "Line.ofPointDirection"
+      "it calls no product",
+      [ "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "Line.weight"
+        "Line.normalise"
+        "Line.kind"
+        "Circle.weight"
+        "Circle.normalise"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.kind"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise" ]
+      "another order of summation",
+      "on the blades its operands carry it sums at most two non-zero terms into each coefficient it answers or reads, and two terms round alike in either order",
+      [ "PointPair.through"
         "Line.through"
+        "Line.ofPointDirection"
+        "Circle.plane"
+        "Plane.meet"
+        "Sphere.centre"
+        "Sphere.meet"
+        "Sphere.meetPlane" ]
+      "a fused multiply-add",
+      "it calls no product",
+      [ "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "Line.weight"
+        "Line.normalise"
+        "Line.kind"
+        "Circle.weight"
+        "Circle.normalise"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.kind"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise" ]
+      "a fused multiply-add",
+      "each coefficient it answers or reads is one non-zero term, and one product fused into a zero is that product rounded",
+      [ "Circle.plane"; "Sphere.centre" ]
+      "a fold seeded from its first term",
+      "it calls no product",
+      [ "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "Line.weight"
+        "Line.normalise"
+        "Line.kind"
+        "Circle.weight"
+        "Circle.normalise"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.kind"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise" ]
+      "a fold seeded from its first term",
+      "a fold from `-0.0` answers otherwise only where every term of a coefficient is a negative zero; the coefficients a typed operand does not carry are `+0.0`, and the drawn operands give no such coefficient",
+      [ "Blade.join"
+        "Blade.inverse"
+        "PointPair.through"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "PointPair.points"
+        "PointPair.kind"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.nearestPoint"
+        "Line.meet"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.kind"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.through"
+        "Plane.nearestPoint"
         "Plane.meet"
         "Plane.signedDistance"
-        "Plane.through"
-        "PointPair.centre"
-        "PointPair.points"
-        "PointPair.squaredRadius"
-        "PointPair.through"
+        "Plane.side"
+        "Sphere.through"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.kind"
         "Sphere.meet"
         "Sphere.meetPlane"
         "Sphere.power"
-        "Sphere.squaredRadius"
-        "Sphere.through" ]
-      "a fold seeded from its first term", [ "Blade.meet"; "Blade.meetWithin" ]
+        "Sphere.side" ]
       "a product with a reciprocal",
-      [ "Blade.inverse"
-        "Circle.centre"
-        "Circle.normalise"
-        "Circle.ofCentreRadiusNormal"
-        "Circle.power"
-        "Circle.squaredRadius"
-        "Line.meet"
-        "Line.nearestPoint"
-        "Line.normalise"
-        "Line.ofPointDirection"
-        "Plane.nearestPoint"
-        "Plane.normalise"
-        "Plane.ofNormalDistance"
+      "it forms no quotient",
+      [ "Blade.join"
+        "Blade.meet"
+        "Point.up"
+        "PointPair.through"
+        "PointPair.weight"
+        "Line.through"
+        "Line.weight"
+        "Line.kind"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.weight"
+        "Circle.plane"
+        "Plane.through"
+        "Plane.weight"
+        "Plane.kind"
+        "Plane.meet"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane" ]
+      "a statistic divided twice",
+      "it is no incidence statistic",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
         "Point.coordinates"
         "Point.normalise"
-        "PointPair.centre"
-        "PointPair.kind"
+        "PointPair.through"
+        "PointPair.weight"
         "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
         "PointPair.points"
-        "Sphere.centre"
-        "Sphere.normalise"
-        "Sphere.power"
-        "Sphere.squaredRadius" ]
-      "an unscaled norm",
-      [ "Circle.normalise"
-        "Circle.ofCentreRadiusNormal"
-        "Circle.weight"
-        "Line.normalise"
+        "PointPair.kind"
+        "Line.through"
         "Line.ofPointDirection"
         "Line.weight"
-        "Plane.normalise"
-        "Plane.ofNormalDistance"
-        "Plane.signedDistance"
-        "Plane.weight"
-        "PointPair.normalise"
-        "PointPair.weight" ]
-      "half a squared length summed from the right",
-      [ "Circle.ofCentreRadiusNormal"; "Point.up"; "Sphere.ofCentreRadius" ]
-      "a radius halved before it is squared", [ "Circle.ofCentreRadiusNormal"; "Sphere.ofCentreRadius" ]
-      "a power formed as zero less twice the product", [ "Circle.power"; "Sphere.power" ]
-      "no test of a zero divisor",
-      [ "Blade.inverse"
-        "Blade.meetWithin"
-        "Circle.centre"
-        "Circle.normalise"
-        "Circle.ofCentreRadiusNormal"
-        "Circle.power"
-        "Circle.side"
-        "Circle.squaredRadius"
-        "Line.meet"
-        "Line.nearestPoint"
         "Line.normalise"
-        "Line.ofPointDirection"
-        "Plane.nearestPoint"
-        "Plane.normalise"
+        "Line.nearestPoint"
+        "Line.kind"
+        "Line.meet"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.kind"
+        "Circle.plane"
+        "Plane.through"
         "Plane.ofNormalDistance"
-        "Plane.side"
-        "Plane.signedDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.kind"
+        "Plane.meet"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.kind"
+        "Sphere.meet"
+        "Sphere.meetPlane" ]
+      "an unscaled norm",
+      "it reads no norm",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
         "Point.coordinates"
         "Point.normalise"
+        "PointPair.through"
         "PointPair.centre"
-        "PointPair.normalise"
-        "PointPair.points"
         "PointPair.squaredRadius"
-        "Sphere.centre"
+        "PointPair.points"
+        "Line.through"
+        "Line.nearestPoint"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.through"
+        "Plane.nearestPoint"
+        "Plane.meet"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
         "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
         "Sphere.power"
-        "Sphere.side"
-        "Sphere.squaredRadius" ]
+        "Sphere.side" ]
+      "a fused multiply-add in the norm's sum",
+      "it reads no norm",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "PointPair.points"
+        "Line.through"
+        "Line.nearestPoint"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.through"
+        "Plane.nearestPoint"
+        "Plane.meet"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power"
+        "Sphere.side" ]
+      "a correctly rounded sum in the norm",
+      "it reads no norm",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "PointPair.points"
+        "Line.through"
+        "Line.nearestPoint"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.through"
+        "Plane.nearestPoint"
+        "Plane.meet"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power"
+        "Sphere.side" ]
+      "half a squared length summed from the right",
+      "it embeds no point",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "PointPair.points"
+        "PointPair.kind"
+        "Line.through"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.kind"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.kind"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.kind"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Plane.side"
+        "Sphere.through"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.kind"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power"
+        "Sphere.side" ]
+      "half a squared length summed from the right",
+      "the point's `n∞` coefficient, which is all this member forms, is annihilated by the outer product with `n∞`: it reaches no coefficient of a line or of a span through the point",
+      [ "Line.ofPointDirection"; "Line.meet" ]
+      "a radius halved before it is squared",
+      "it takes no radius",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "PointPair.points"
+        "PointPair.kind"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.kind"
+        "Line.meet"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.kind"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.kind"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Plane.side"
+        "Sphere.through"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.kind"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power"
+        "Sphere.side" ]
+      "a power formed as zero less twice the product",
+      "it forms no power",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "PointPair.points"
+        "PointPair.kind"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.kind"
+        "Line.meet"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.kind"
+        "Circle.plane"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.kind"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Plane.side"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.kind"
+        "Sphere.meet"
+        "Sphere.meetPlane" ]
+      "a power formed as zero less twice the product",
+      "a test compares a magnitude with its threshold and does not read the sign of a zero (D85 item 6)",
+      [ "Circle.side"; "Sphere.side" ]
+      "no test of a zero divisor",
+      "it tests no divisor against zero (a direction's norm is another member's)",
+      [ "Blade.join"
+        "Blade.meet"
+        "Point.up"
+        "PointPair.through"
+        "PointPair.weight"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.weight"
+        "Line.kind"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.plane"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.kind"
+        "Plane.meet"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane" ]
+      "no test of a zero direction",
+      "it takes no direction",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "PointPair.points"
+        "PointPair.kind"
+        "Line.through"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.kind"
+        "Line.meet"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.kind"
+        "Circle.plane"
+        "Circle.power"
+        "Circle.side"
+        "Plane.through"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.kind"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Plane.side"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.kind"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power"
+        "Sphere.side" ]
+      "a threshold met from above",
+      "it takes no threshold",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power" ]
       "a strict threshold",
-      [ "Circle.kind"
-        "Circle.side"
-        "Line.kind"
-        "Line.meet"
-        "Plane.kind"
-        "Plane.side"
-        "PointPair.kind"
-        "PointPair.points"
-        "Sphere.kind"
-        "Sphere.side" ]
+      "it takes no threshold",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power" ]
       "a threshold never met",
-      [ "Circle.kind"
-        "Circle.side"
+      "it takes no threshold",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power" ]
+      "a threshold always met",
+      "it takes no threshold",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power" ]
+      "a threshold always met",
+      "a line's and a plane's blades all hold `n∞`, and the meet of two lines in the whole space is a multiple of `n∞` whatever their coefficients, so the only norms it asks `within` about that `above` has not settled are of groups that hold nothing",
+      [ "Line.kind"; "Line.meet"; "Plane.kind" ]
+      "a quotient formed at a threshold of zero",
+      "it tests no quotient against a threshold",
+      [ "Blade.join"
+        "Blade.meet"
+        "Blade.inverse"
+        "Blade.meetWithin"
+        "Point.up"
+        "Point.coordinates"
+        "Point.normalise"
+        "PointPair.through"
+        "PointPair.weight"
+        "PointPair.normalise"
+        "PointPair.centre"
+        "PointPair.squaredRadius"
+        "Line.through"
+        "Line.ofPointDirection"
+        "Line.weight"
+        "Line.normalise"
+        "Line.nearestPoint"
         "Line.kind"
         "Line.meet"
+        "Line.meetPlane"
+        "Line.meetSphere"
+        "Circle.through"
+        "Circle.ofCentreRadiusNormal"
+        "Circle.weight"
+        "Circle.normalise"
+        "Circle.centre"
+        "Circle.squaredRadius"
+        "Circle.plane"
+        "Circle.power"
+        "Plane.through"
+        "Plane.ofNormalDistance"
+        "Plane.weight"
+        "Plane.normalise"
+        "Plane.nearestPoint"
         "Plane.kind"
-        "Plane.side"
-        "PointPair.kind"
-        "PointPair.points"
-        "Sphere.kind"
-        "Sphere.side" ]
-      "a threshold always met",
-      [ "Circle.kind"
-        "Circle.side"
-        "Plane.side"
-        "PointPair.kind"
-        "PointPair.points"
-        "Sphere.kind"
-        "Sphere.side" ]
-      "a quotient formed at a threshold of zero", [ "Circle.side"; "Plane.side"; "Sphere.side" ] ]
+        "Plane.meet"
+        "Plane.signedDistance"
+        "Sphere.through"
+        "Sphere.ofCentreRadius"
+        "Sphere.normalise"
+        "Sphere.centre"
+        "Sphere.squaredRadius"
+        "Sphere.meet"
+        "Sphere.meetPlane"
+        "Sphere.power" ] ]
+
+// ---- the float literals of the operation modules (DECISIONS.md D85 item 6) ---------------------------
+
+/// The operation modules: every source of the package but the law family, which compares bits against
+/// float literals as a law must.
+let private operationModules =
+    [ "Basis.fs"
+      "Multivector.fs"
+      "Objects.fs"
+      "Conformal.fs"
+      "Geometry.fs"
+      "GeometricAlgebraOperations.fs" ]
+
+/// A source with its comments and its string literals removed.
+let private codeOf (source: string) : string =
+    let q = "\""
+
+    let pattern =
+        @"\(\*.*?\*\)|//[^\n]*|"
+        + (q + q + q + @"[\s\S]*?" + q + q + q)
+        + ("|@" + q + "(?:[^" + q + "]|" + q + q + ")*" + q)
+        + ("|" + q + @"(?:\\.|[^" + q + @"\\])*" + q)
+
+    Regex(pattern, RegexOptions.Singleline).Replace(source, " ")
+
+/// Every float literal token of a source: digits with a decimal point (`0.5`, `1.`, `2.0e-3`) or with
+/// an exponent (`1e-9`). A sign is not part of the token.
+let private floatLiterals (source: string) : string list =
+    [ for m in Regex.Matches(codeOf source, @"(?<![\w.])(?:\d+\.\d*(?:[eE][-+]?\d+)?|\d+[eE][-+]?\d+)(?![\w.])") ->
+          m.Value ]
+
+/// The ways a default could be given to a threshold without a literal in a comparison.
+let private defaults =
+    Regex @"\bdefaultArg\b|\bOption\.defaultValue\b|(?<=[(,]\s*)\?\s*[A-Za-z_]\w*"
+
+/// The float literals the record accounts for, by module: the literal, how often it is written, and
+/// what it is there for. A literal that is not here, or is here another number of times, is a finding.
+let private accountedLiterals: (string * string * int * string) list =
+    [ "Multivector.fs",
+      "0.0",
+      9,
+      "the zero test inside the hash, once (item 8); the `+0.0` a fold starts from, five times (item 3); and the `+0.0` of a coefficient a scalar, a basis blade and a grade projection do not hold, three times (items 2 and 4)"
+      "Multivector.fs", "1.0", 1, "a basis blade's one coefficient (item 2); in no comparison"
+      "Conformal.fs",
+      "0.0",
+      19,
+      "in a comparison, eight times: a divisor against zero, the norm of a direction against zero, a threshold of zero, a threshold that is not negative, a radius that is not negative, a numerator that is zero, and the signs of a numerator and of a denominator at a threshold of zero (item 6); inside the norm, four times: its `m = 0`, the zero it answers, and the `+0.0` its largest magnitude and its sum start from (D49 item 4, outside the rule); and the `+0.0` of a coefficient a vector built from parameters does not hold, seven times (item 4)"
+      "Conformal.fs", "0.5", 2, "the half of `½ x²` and of `½ r²` (item 4); in no comparison"
+      "Conformal.fs", "2.0", 1, "the `−2.0` of a power (item 6); in no comparison"
+      "Conformal.fs", "1.0", 1, "the weight of `up x` (item 4); in no comparison" ]
+
+/// One finding for each way some sources depart from the account: a literal written more or fewer
+/// times than accounted for, and each way of giving a default.
+let private literalFindings (sources: (string * string) list) : string list =
+    let found =
+        [ for file, source in sources do
+              for literal, uses in floatLiterals source |> List.countBy id -> (file, literal), uses ]
+        |> Map.ofList
+
+    let accounted =
+        accountedLiterals
+        |> List.map (fun (file, literal, uses, _) -> (file, literal), uses)
+        |> Map.ofList
+
+    [ for KeyValue((file, literal), uses) in found do
+          match Map.tryFind (file, literal) accounted with
+          | Some n when n = uses -> ()
+          | Some n -> yield sprintf "%s writes `%s` %d times, and %d are accounted for" file literal uses n
+          | None -> yield sprintf "%s writes `%s` %d times, and none is accounted for" file literal uses
+      for KeyValue((file, literal), n) in accounted do
+          if not (Map.containsKey (file, literal) found) then
+              yield sprintf "%s no longer writes `%s`, accounted for %d times" file literal n
+      for file, source in sources do
+          for m in defaults.Matches(codeOf source) -> sprintf "%s gives a default: `%s`" file m.Value ]
 
 [<Tests>]
 let tests =
@@ -408,7 +1230,7 @@ let tests =
 
           testCase "the arithmetic a witness perturbs is the shipped arithmetic"
           <| fun () ->
-              Expect.equal (List.length conformal) 747 "the object modules' vectors"
+              Expect.equal (List.length conformal) 826 "the object modules' vectors"
 
               for name, r in
                   [ "Arithmetic.shipped", shipped
@@ -443,43 +1265,60 @@ let tests =
               Expect.equal (Set.count copies) 18 "eighteen copy"
               Expect.isTrue (Set.isEmpty (Set.intersect doored copies)) "no function is both"
 
-          testCase "each wrong port fails a vector of every function it could change, and of no other"
+          testCase "each wrong port fails a vector of a function, or a drawn search finds it unable to change it"
           <| fun () ->
-              let actual =
-                  witnessListing ()
-                  |> List.map (fun (name, byFunction) -> name, byFunction |> List.map fst)
-
-              if actual <> redFunctions then
-                  let source =
-                      actual
-                      |> List.map (fun (name, functions) ->
-                          sprintf
-                              "      \"%s\",\n      [ %s ]"
-                              name
-                              (functions |> List.map (sprintf "\"%s\"") |> String.concat "; "))
-                      |> String.concat "\n"
-
-                  failtestf "the functions each wrong port turns red have moved. As measured:\n%s" source
-
-              // No port is vacuous, and none is the shipped arithmetic under another name.
-              for name, functions in redFunctions do
-                  Expect.isNonEmpty functions (sprintf "%s fails a vector" name)
-
-              // Every function that computes is failed by at least one wrong port.
-              let failed = redFunctions |> List.collect snd |> Set.ofList
-
+              // What this holds, for every wrong port and every function that computes, is ONE of two
+              // things. Either a committed vector of that function is red under the port; or the port is
+              // listed as unable to change that function, with the reason, and it answers that function
+              // as the shipped arithmetic does on every element of the drawn sample. A port that changes
+              // an answer in the sample and fails no committed vector of that function fails this case.
+              // It does not hold that a port fails a vector of every function it COULD change: a search
+              // over a sample is not a proof that a port cannot.
               let computing =
                   conformal
                   |> List.map (fun c -> c.Op)
                   |> List.filter (fun op -> not (copies.Contains op))
                   |> Set.ofList
 
-              // `Circle.plane` is `X ∧ n∞`: each coefficient it answers has one term, so it is a signed
-              // copy and no arithmetic can move it. What fails it is a normalisation (the next case).
-              Expect.equal
-                  (Set.difference computing failed)
-                  (set [ "Circle.plane" ])
-                  "a wrong port fails every function that computes but the one that only copies"
+              Expect.equal (Set.count computing) 52 "the functions that compute"
+              Expect.isGreaterThan drawnSample.Value.Length 15000 "the drawn sample"
+
+              let findings =
+                  [ for name, port in wrongPorts do
+                        let red = redUnder port |> List.map fst |> Set.ofList
+
+                        let declared =
+                            unable
+                            |> List.filter (fun (p, _, _) -> p = name)
+                            |> List.collect (fun (_, _, functions) -> functions)
+
+                        if List.distinct declared <> declared then
+                            yield sprintf "REPEATED\t%s: a function is listed unable twice" name
+
+                        if Set.isEmpty red then
+                            yield sprintf "VACUOUS\t%s fails no committed vector at all" name
+
+                        for f in Set.difference (Set.difference computing red) (Set.ofList declared) do
+                            yield sprintf "UNLISTED\t%s\t%s" name f
+
+                        for f in Set.intersect red (Set.ofList declared) do
+                            yield sprintf "LISTED-BUT-RED\t%s\t%s" name f
+
+                        for KeyValue(f, (index, id, tau)) in changedUnder port do
+                            if not (red.Contains f) then
+                                yield
+                                    sprintf
+                                        "MISSING\t%s\t%s\t%d\t%s\t%s"
+                                        name
+                                        f
+                                        index
+                                        id
+                                        (match tau with
+                                         | Some t -> t.ToString "R"
+                                         | None -> "-") ]
+
+              if not (List.isEmpty findings) then
+                  failtestf "the wrong ports and the vectors disagree:\n%s" (String.concat "\n" findings)
 
           testCase "a normalisation the record does not apply fails a vector"
           <| fun () ->
@@ -746,16 +1585,18 @@ let tests =
               let always = "a threshold always met"
               let strict = "a strict threshold"
               let undivided = "no test of a zero divisor"
+              let undirected = "no test of a zero direction"
+              let fromAbove = "a threshold met from above"
               let quotient = "a quotient formed at a threshold of zero"
               let signless = "a power formed as zero less twice the product"
 
               for id, name in
-                  [ "PointPair.points-of-a-tangent-pair", never
-                    "PointPair.points-of-an-imaginary-pair", always
+                  [ "PointPair.points-tangent-at-the-threshold", never
+                    "PointPair.points-imaginary-just-below-the-threshold", always
                     "PointPair.points-tangent-at-the-threshold", strict
                     "PointPair.points-tangent-at-the-negative-threshold", strict
                     "PointPair.points-of-a-flat-point", undivided
-                    "PointPair.kind-of-a-tangent-pair", never
+                    "PointPair.kind-tangent-at-the-threshold", never
                     "PointPair.kind-of-a-flat-point", never
                     "PointPair.kind-at-infinity", never
                     "PointPair.kind-of-the-zero-blade", never
@@ -764,11 +1605,14 @@ let tests =
                     "PointPair.kind-no-flat-at-the-threshold", strict
                     "PointPair.kind-zero-at-the-threshold", strict
                     "Circle.kind-of-three-collinear-points", never
-                    "Circle.kind-of-two-spheres-apart", always
-                    "Circle.kind-of-a-point", never
+                    "Circle.kind-imaginary-just-below-the-threshold", always
+                    "Circle.kind-tangent-at-the-negative-threshold", never
                     "Circle.kind-of-the-zero-blade", never
                     "Circle.kind-tangent-at-the-negative-threshold", strict
                     "Circle.squaredRadius-of-three-collinear-points", undivided
+                    "PointPair.kind-of-a-round-whose-divisor-underflows", undivided
+                    "Circle.kind-of-a-round-whose-divisor-underflows", undivided
+                    "Sphere.kind-of-a-round-whose-divisor-underflows", undivided
                     "Sphere.kind-of-four-coplanar-points", never
                     "Sphere.kind-of-four-points-of-one-circle", never
                     "Sphere.kind-no-round-at-the-threshold", strict
@@ -784,9 +1628,9 @@ let tests =
                     "Line.meet-not-skew-at-the-threshold", strict
                     "Line.meet-one-line-at-the-threshold", strict
                     "Line.nearestPoint-of-a-line-at-infinity", undivided
-                    "Line.ofPointDirection-of-a-zero-direction", undivided
-                    "Plane.ofNormalDistance-of-a-zero-normal", undivided
-                    "Circle.ofCentreRadiusNormal-of-a-zero-normal", undivided
+                    "Line.ofPointDirection-of-a-zero-direction", undirected
+                    "Plane.ofNormalDistance-of-a-zero-normal", undirected
+                    "Circle.ofCentreRadiusNormal-of-a-zero-normal", undirected
                     "Point.coordinates-of-a-zero-weight", undivided
                     "PointPair.normalise-of-a-flat-point", undivided
                     "Blade.inverse-of-a-null-vector", undivided
@@ -801,6 +1645,27 @@ let tests =
                     "Plane.side-decided-by-signs-where-the-quotient-underflows", quotient
                     "Circle.side-decided-by-signs-where-the-quotient-underflows", quotient
                     "Sphere.power-on", signless
+                    // The other side of each threshold: "above" is a member of its own.
+                    "PointPair.points-tangent-at-the-threshold", fromAbove
+                    "PointPair.kind-no-round-at-the-threshold", fromAbove
+                    "PointPair.kind-no-flat-at-the-threshold", fromAbove
+                    "Line.kind-at-infinity-at-the-threshold", fromAbove
+                    "Plane.kind-zero-at-the-threshold", fromAbove
+                    "Sphere.kind-no-round-at-the-threshold", fromAbove
+                    "Line.meet-not-skew-at-the-threshold", fromAbove
+                    "Sphere.side-on-at-the-threshold", fromAbove
+                    "Plane.side-on-at-the-threshold", fromAbove
+                    "Circle.side-on-at-the-threshold", fromAbove
+                    // A round whose squared radius underflows: at a threshold of zero its reality is
+                    // read from the signs, and a port that forms the quotient reads a tangent.
+                    "PointPair.kind-imaginary-by-signs-where-the-quotient-underflows", quotient
+                    "PointPair.kind-real-by-signs-where-the-quotient-underflows", quotient
+                    "PointPair.points-imaginary-by-signs-where-the-quotient-underflows", quotient
+                    "PointPair.points-real-by-signs-where-the-quotient-underflows", quotient
+                    "Circle.kind-imaginary-by-signs-where-the-quotient-underflows", quotient
+                    "Circle.kind-real-by-signs-where-the-quotient-underflows", quotient
+                    "Sphere.kind-imaginary-by-signs-where-the-quotient-underflows", quotient
+                    "Sphere.kind-real-by-signs-where-the-quotient-underflows", quotient
                     "Circle.power-on", signless ] do
                   let c = V.find id
 
@@ -931,104 +1796,61 @@ let tests =
 
               Expect.equal (List.length drawn) 4000 "the sample"
 
-          testCase "the operation modules name no float literal in a comparison but the ones the record lists"
+          testCase "the operation modules hold exactly the float literals the record accounts for, and give no default"
           <| fun () ->
-              // DECISIONS.md D85 item 6, read against the sources. Its scope is the OPERATION modules:
-              // the law family is not one, and compares bits against float literals as a law must.
-              let literal = @"-?\d+\.\d+(?:[eE][-+]?\d+)?|-?\d+[eE][-+]?\d+"
-              let comparator = @"(?<![-<>=!:|])(?:<=|>=|<>|=|<|>)(?![-<>=|])"
+              // DECISIONS.md D85 item 6: no tolerance is a constant, and `0.0` and `1.0` are named only
+              // where the record says. A hunt for comparisons misses a default argument, a constant
+              // with a neutral name, an operator section, a comparison split over lines, a match on a
+              // literal. So this is a census: EVERY float literal token of the operation modules, held
+              // equal to a stated account. Its scope is the operation modules, not the law family.
+              let sources =
+                  [ for file in operationModules ->
+                        file,
+                        File.ReadAllText(
+                            Snapshots.repoFile (Path.Combine("src", "Fuaran.Compute.GeometricAlgebra", file))
+                        ) ]
 
-              let comparison =
-                  Regex(
-                      sprintf
-                          @"(?<op>%s)\s*(?:%s)(?![\w.])|(?<![\w.])(?:%s)\s*(?:%s)"
-                          comparator
-                          literal
-                          literal
-                          comparator
-                  )
+              let wholeAccount =
+                  [ for file, source in sources do
+                        for literal, uses in floatLiterals source |> List.countBy id ->
+                            sprintf "\"%s\", \"%s\", %d" file literal uses ]
 
-              let binding =
-                  Regex
-                      @"^\s*let\s+(?:mutable\s+|private\s+|internal\s+|inline\s+)*[\w`]+(?:\s*:\s*[\w\[\]<>. ]+)?\s*=\s*"
+              Expect.isEmpty (literalFindings sources) (sprintf "the literals as written: %A" wholeAccount)
 
-              let read (file: string) : (string * string * string) list =
-                  File
-                      .ReadAllText(Snapshots.repoFile (Path.Combine("src", "Fuaran.Compute.GeometricAlgebra", file)))
-                      .Split('\n')
-                  |> Array.filter (fun line -> not (line.TrimStart().StartsWith "//"))
-                  |> Array.collect (fun line ->
-                      [| for m in comparison.Matches(binding.Replace(line, "")) ->
-                             file, Regex.Replace(m.Value, @"\s+", " "), line.Trim() |])
-                  |> List.ofArray
+              Expect.isGreaterThan
+                  (sources |> List.sumBy (fun (_, source) -> (codeOf source).Length))
+                  20000
+                  "the sources were read"
 
-              let found =
-                  [ "Basis.fs"
-                    "Multivector.fs"
-                    "Objects.fs"
-                    "Conformal.fs"
-                    "Geometry.fs"
-                    "GeometricAlgebraOperations.fs" ]
-                  |> List.collect read
+              // The census is not vacuous: each of these, written into a module, is a finding.
+              let conformalSource =
+                  sources |> List.find (fun (file, _) -> file = "Conformal.fs") |> snd
 
-              // Each comparison, and the phrase of item 6 that states it.
-              let listed =
-                  [ "Multivector.fs", "= 0.0", "elif x", "the zero test inside the hash (item 8)"
-                    "Conformal.fs", "= 0.0", "elif m", "inside the norm itself (D49 item 4), outside the rule"
-                    "Conformal.fs", "= 0.0", "IsZero", "a divisor, a direction's norm and a threshold against zero"
-                    "Conformal.fs", ">= 0.0", "tau", "a threshold that is not negative"
-                    "Conformal.fs", "< 0.0", "rho", "a radius that is not negative"
-                    "Conformal.fs", "< 0.0", "numerator", "the sign of a numerator at a threshold of zero"
-                    "Conformal.fs", "< 0.0", "(d <", "the sign of a denominator at a threshold of zero" ]
+              for shape in
+                  [ "let side (tau: float option) = decide (defaultArg tau 1e-9)"
+                    "let side (tau: float option) = decide (Option.defaultValue 1e-9 tau)"
+                    "let side (tau: float) = decide (max tau 1e-12)"
+                    "let smallest = 1e-9"
+                    "let isOne (x: float) = x = 1."
+                    "let small = List.filter ((>) 1e-9)"
+                    "let small (x: float) =\n    x <\n        1e-9"
+                    "let isZero (x: float) =\n    match x with\n    | 0.0 -> true\n    | _ -> false"
+                    "member _.Side(p: Point, ?tau: float) = p"
+                    "let isZero (x: float) = x = 0.0" ] do
+                  Expect.isNonEmpty
+                      (literalFindings [ "Conformal.fs", conformalSource + "\n" + shape ])
+                      (sprintf "the census reads: %s" shape)
 
-              Expect.equal (List.length found) (List.length listed) (sprintf "the comparisons found: %A" found)
-
-              for file, text, word, phrase in listed do
-                  Expect.isTrue
-                      (found
-                       |> List.exists (fun (f, t, line) -> f = file && t = text && line.Contains word))
-                      (sprintf "%s names `%s` for %s" file text phrase)
-
-              // The rule is not vacuous: it reads a literal on either side, an exponent, and `1.0`.
+              // And it reads through what is not code: a literal in a comment or in a string is none.
               Expect.equal
-                  ([ "if abs d <= 1e-9 then"
-                     "elif 0.0 = x then"
-                     "if s <> 1.0 then"
-                     "x < -2.5E-3" ]
-                   |> List.filter comparison.IsMatch
-                   |> List.length)
-                  4
-                  "the rule reads each form of comparison"
+                  (floatLiterals "let a = 1 // 0.5\nlet b = \"2.0\" (* 3.0 *)\nlet c = xs[0].Length + 1..5")
+                  []
+                  "a comment, a string, an index and a range hold no float literal"
 
-              Expect.isFalse
-                  (comparison.IsMatch(binding.Replace("        let mutable m = 0.0", "")))
-                  "a binding is no comparison"
-
-              // No tolerance is a constant: no optional argument, and no named one.
-              let named = Regex @"\?\s*tau|[eE]psilon|[tT]olerance|\beps\b|\bulp\b"
-
-              let code =
-                  [ "Basis.fs"
-                    "Multivector.fs"
-                    "Objects.fs"
-                    "Conformal.fs"
-                    "Geometry.fs"
-                    "GeometricAlgebraOperations.fs" ]
-                  |> List.collect (fun file ->
-                      File
-                          .ReadAllText(
-                              Snapshots.repoFile (Path.Combine("src", "Fuaran.Compute.GeometricAlgebra", file))
-                          )
-                          .Split('\n')
-                      |> Array.filter (fun line -> not (line.TrimStart().StartsWith "//"))
-                      |> List.ofArray)
-
-              Expect.isGreaterThan (List.length code) 600 "the sources were read"
-              Expect.isEmpty (code |> List.filter named.IsMatch) "no default threshold and no named tolerance"
-
-              Expect.isTrue
-                  (named.IsMatch "let kind (?tau: float)" && named.IsMatch "let epsilon = 1e-9")
-                  "the rule reads one"
+              Expect.equal
+                  (floatLiterals "x = 1. || y < -2.5E-3 || z > 1e9")
+                  [ "1."; "2.5E-3"; "1e9" ]
+                  "the three spellings"
 
               // Every published function that tests a zero takes `tau`, and takes it first.
               let thresholded =
@@ -1084,6 +1906,35 @@ let tests =
                   GeometricAlgebraLaws.closedFormBoundUlps
                   0.0
                   "the agreement is to rounding, and not exact"
+
+
+              // The bound is ONE sample's maximum. Other samples of the same kind measure other maxima,
+              // and here they are: the largest error in units in the last place, and the largest
+              // absolute error where the reference is zero, in units of `2^-53`. The absolute figure of
+              // seed 4242 is more than twice the stated sample's. So the law does not take its sample
+              // from the seed it is run at, and no law of the family goes red at another seed.
+              for seed, ulps, absolute in
+                  [ 728, 292.0, 208.0
+                    1, 162.0, 304.0
+                    2, 192.0, 384.0
+                    3, 224.0, 272.0
+                    590, 264.0, 272.0
+                    727, 160.0, 320.0
+                    729, 192.0, 231.0
+                    1000, 196.0, 304.0
+                    4242, 256.0, 512.0 ] do
+                  Expect.equal
+                      (GeometricAlgebraLaws.closedFormSampleAt seed)
+                      (Ok(ulps, absolute / 9007199254740992.0))
+                      (sprintf "the sample of seed %d" seed)
+
+              for seed in [ 1; 4242 ] do
+                  let closedForm =
+                      GeometricAlgebraLaws.laws seed 3
+                      |> List.find (fun (name, _) ->
+                          name.StartsWith "a line and a sphere meet where the closed form says")
+
+                  Expect.equal (snd closedForm) (Ok()) (sprintf "the law holds when the family is run at seed %d" seed)
 
           testCase "the claims ladder's row names this family's cases, word for word"
           <| fun () ->

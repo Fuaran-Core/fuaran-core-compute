@@ -522,142 +522,156 @@ module GeometricAlgebraVectors =
           2, Scene(7282, 7, 5), pow2 -20
           3, Scene(7283, -6, 3), pow2 -60 ]
 
+    /// Every published function over one drawn configuration. `k` is the configuration's number in a
+    /// vector's id, and `coplanarWithin` the threshold under which its two lines through one drawn point
+    /// read as lines of one plane.
+    let private sceneCases (k: int) (s: Scene) (coplanarWithin: float) : Case list =
+        [ let g (op: string) (what: string) (input: (string * Operand) list) : Case =
+              case (sprintf "%s-general-%s%d" op what k) op input
+
+          let zero = N 0.0
+          let pairM = Line.meetSphere s.LineC s.SphereP
+          let lineR = Line.through s.P s.R
+          let any = Coefficients(dense (7300 + k) 0 4)
+          let other = Coefficients(dense (7310 + k) 0 4)
+
+          yield g "Blade.join" "" [ "a", any; "b", other ]
+          yield g "Blade.meet" "" [ "a", any; "b", other ]
+
+          yield
+              g
+                  "Blade.meet"
+                  "of-two-spheres-"
+                  [ "a", M(Sphere.toMultivector s.SphereP)
+                    "b", M(Sphere.toMultivector s.SphereT) ]
+
+          yield g "Blade.inverse" "of-a-sphere-" [ "a", M(Sphere.toMultivector s.SphereT) ]
+          yield g "Blade.inverse" "of-a-line-" [ "a", M(Line.toMultivector s.LineP) ]
+
+          yield
+              g
+                  "Blade.meetWithin"
+                  "the-whole-space-"
+                  [ "j", Blade 31
+                    "a", M(Sphere.toMultivector s.SphereP)
+                    "b", M(Plane.toMultivector s.PlaneP) ]
+
+          yield
+              g
+                  "Blade.meetWithin"
+                  "a-plane-"
+                  [ "j", M(Plane.toMultivector s.PlaneT)
+                    "a", M(Line.toMultivector s.LineT)
+                    "b", M(Line.toMultivector lineR) ]
+
+          yield g "Point.up" "" [ "x", T s.C1 ]
+          yield g "Point.coordinates" "" [ "x", P s.P ]
+          yield g "Point.weight" "" [ "x", P s.P ]
+          yield g "Point.normalise" "" [ "x", P s.Q ]
+          yield g "Point.toMultivector" "" [ "x", P s.R ]
+          yield g "Point.ofMultivector" "" [ "a", any ]
+
+          yield g "PointPair.through" "" [ "p", P s.P; "q", P s.Q ]
+          yield g "PointPair.weight" "" [ "x", PP s.PairT ]
+          yield g "PointPair.normalise" "" [ "x", PP s.PairT ]
+          yield g "PointPair.centre" "" [ "x", PP s.PairT ]
+          yield g "PointPair.centre" "of-a-meet-" [ "x", PP pairM ]
+          yield g "PointPair.squaredRadius" "" [ "x", PP s.PairT ]
+          yield g "PointPair.squaredRadius" "of-a-meet-" [ "x", PP pairM ]
+          yield g "PointPair.points" "" [ "tau", zero; "x", PP s.PairT ]
+          yield g "PointPair.points" "of-a-meet-" [ "tau", zero; "x", PP pairM ]
+          yield g "PointPair.kind" "" [ "tau", zero; "x", PP s.PairT ]
+
+          yield g "PointPair.kind" "of-a-line-and-a-plane-" [ "tau", zero; "x", PP(Line.meetPlane s.LineP s.PlaneP) ]
+
+          yield g "PointPair.toMultivector" "" [ "x", PP s.PairT ]
+          yield g "PointPair.ofMultivector" "" [ "a", any ]
+
+          yield g "Line.through" "" [ "p", P s.P; "q", P s.Q ]
+          yield g "Line.ofPointDirection" "" [ "p", T s.A1; "d", T s.D1 ]
+          yield g "Line.weight" "" [ "x", L s.LineT ]
+          yield g "Line.normalise" "" [ "x", L s.LineT ]
+          yield g "Line.direction" "" [ "x", L s.LineT ]
+          yield g "Line.moment" "" [ "x", L s.LineT ]
+          yield g "Line.nearestPoint" "" [ "x", L s.LineT ]
+          yield g "Line.nearestPoint" "of-a-unit-line-" [ "x", L s.LineP ]
+          yield g "Line.kind" "" [ "tau", zero; "x", L s.LineT ]
+          // Two lines through one drawn point: in exact arithmetic they cross, and in binary64 their
+          // meet in the whole space is rounding residue, which `tau = 0` reads as skew.
+          yield g "Line.meet" "at-tau-zero-" [ "tau", zero; "x", L s.LineT; "y", L lineR ]
+          yield g "Line.meet" "within-a-threshold-" [ "tau", N coplanarWithin; "x", L s.LineT; "y", L lineR ]
+          yield g "Line.meet" "of-two-skew-lines-" [ "tau", zero; "x", L s.LineT; "y", L s.LineP ]
+          yield g "Line.meetPlane" "" [ "x", L s.LineT; "y", PL s.PlaneP ]
+          yield g "Line.meetSphere" "" [ "x", L s.LineC; "y", S s.SphereP ]
+          yield g "Line.meetSphere" "through-points-" [ "x", L s.LineT; "y", S s.SphereT ]
+          yield g "Line.toMultivector" "" [ "x", L s.LineT ]
+          yield g "Line.ofMultivector" "" [ "a", any ]
+
+          yield g "Circle.through" "" [ "p", P s.P; "q", P s.Q; "r", P s.R ]
+          yield g "Circle.ofCentreRadiusNormal" "" [ "centre", T s.C1; "radius", N s.Rho1; "normal", T s.N1 ]
+
+          for what, circle in [ "", s.CircleT; "from-parameters-", s.CircleP ] do
+              yield g "Circle.weight" what [ "x", C circle ]
+              yield g "Circle.normalise" what [ "x", C circle ]
+              yield g "Circle.centre" what [ "x", C circle ]
+              yield g "Circle.squaredRadius" what [ "x", C circle ]
+              yield g "Circle.kind" what [ "tau", zero; "x", C circle ]
+              yield g "Circle.plane" what [ "x", C circle ]
+              yield g "Circle.power" what [ "p", P s.S; "x", C circle ]
+              yield g "Circle.side" what [ "tau", zero; "p", P s.T; "x", C circle ]
+
+          yield g "Circle.toMultivector" "" [ "x", C s.CircleT ]
+          yield g "Circle.ofMultivector" "" [ "a", any ]
+
+          yield g "Plane.through" "" [ "p", P s.P; "q", P s.Q; "r", P s.R ]
+          yield g "Plane.ofNormalDistance" "" [ "normal", T s.N1; "distance", N s.Delta1 ]
+
+          for what, plane in [ "", s.PlaneT; "from-parameters-", s.PlaneP ] do
+              yield g "Plane.weight" what [ "x", PL plane ]
+              yield g "Plane.normalise" what [ "x", PL plane ]
+              yield g "Plane.normal" what [ "x", PL plane ]
+              yield g "Plane.distance" what [ "x", PL plane ]
+              yield g "Plane.nearestPoint" what [ "x", PL plane ]
+              yield g "Plane.kind" what [ "tau", zero; "x", PL plane ]
+              yield g "Plane.signedDistance" what [ "p", P s.S; "x", PL plane ]
+              yield g "Plane.side" what [ "tau", zero; "p", P s.T; "x", PL plane ]
+
+          yield g "Plane.meet" "" [ "x", PL s.PlaneP; "y", PL s.PlaneQ ]
+          yield g "Plane.meet" "through-points-" [ "x", PL s.PlaneT; "y", PL s.PlaneP ]
+          yield g "Plane.toMultivector" "" [ "x", PL s.PlaneT ]
+          yield g "Plane.ofMultivector" "" [ "a", any ]
+
+          yield g "Sphere.through" "" [ "p", P s.P; "q", P s.Q; "r", P s.R; "s", P s.S ]
+          yield g "Sphere.ofCentreRadius" "" [ "centre", T s.C1; "radius", N s.Rho1 ]
+
+          for what, sphere in [ "", s.SphereT; "from-parameters-", s.SphereP ] do
+              yield g "Sphere.weight" what [ "x", S sphere ]
+              yield g "Sphere.normalise" what [ "x", S sphere ]
+              yield g "Sphere.centre" what [ "x", S sphere ]
+              yield g "Sphere.squaredRadius" what [ "x", S sphere ]
+              yield g "Sphere.kind" what [ "tau", zero; "x", S sphere ]
+              yield g "Sphere.power" what [ "p", P s.T; "x", S sphere ]
+              yield g "Sphere.side" what [ "tau", zero; "p", P s.T; "x", S sphere ]
+
+          yield g "Sphere.meet" "" [ "x", S s.SphereP; "y", S s.SphereQ ]
+          yield g "Sphere.meet" "through-points-" [ "x", S s.SphereT; "y", S s.SphereP ]
+          yield g "Sphere.meetPlane" "" [ "x", S s.SphereP; "y", PL s.PlaneP ]
+          yield g "Sphere.meetPlane" "through-points-" [ "x", S s.SphereT; "y", PL s.PlaneT ]
+          yield g "Sphere.toMultivector" "" [ "x", S s.SphereT ]
+          yield g "Sphere.ofMultivector" "" [ "a", any ] ]
+
     let private conformalGeneral: Case list =
         [ for k, s, coplanarWithin in scenes do
-              let g (op: string) (what: string) (input: (string * Operand) list) : Case =
-                  case (sprintf "%s-general-%s%d" op what k) op input
+              yield! sceneCases k s coplanarWithin ]
 
-              let zero = N 0.0
-              let pairM = Line.meetSphere s.LineC s.SphereP
-              let lineR = Line.through s.P s.R
-              let any = Coefficients(dense (7300 + k) 0 4)
-              let other = Coefficients(dense (7310 + k) 0 4)
+    /// The drawn configuration of this number, at one of three scales of coordinate in turn: the sample a
+    /// search for a wrong port's reach draws from (the suite states it), and where the vectors of
+    /// `drawnWitnesses` come from.
+    let drawn (index: int) : Case list =
+        let centre, spread, coplanarWithin =
+            List.item (index % 3) [ 0, 1, pow2 -30; 7, 5, pow2 -20; -6, 3, pow2 -60 ]
 
-              yield g "Blade.join" "" [ "a", any; "b", other ]
-              yield g "Blade.meet" "" [ "a", any; "b", other ]
-
-              yield
-                  g
-                      "Blade.meet"
-                      "of-two-spheres-"
-                      [ "a", M(Sphere.toMultivector s.SphereP)
-                        "b", M(Sphere.toMultivector s.SphereT) ]
-
-              yield g "Blade.inverse" "of-a-sphere-" [ "a", M(Sphere.toMultivector s.SphereT) ]
-              yield g "Blade.inverse" "of-a-line-" [ "a", M(Line.toMultivector s.LineP) ]
-
-              yield
-                  g
-                      "Blade.meetWithin"
-                      "the-whole-space-"
-                      [ "j", Blade 31
-                        "a", M(Sphere.toMultivector s.SphereP)
-                        "b", M(Plane.toMultivector s.PlaneP) ]
-
-              yield
-                  g
-                      "Blade.meetWithin"
-                      "a-plane-"
-                      [ "j", M(Plane.toMultivector s.PlaneT)
-                        "a", M(Line.toMultivector s.LineT)
-                        "b", M(Line.toMultivector lineR) ]
-
-              yield g "Point.up" "" [ "x", T s.C1 ]
-              yield g "Point.coordinates" "" [ "x", P s.P ]
-              yield g "Point.weight" "" [ "x", P s.P ]
-              yield g "Point.normalise" "" [ "x", P s.Q ]
-              yield g "Point.toMultivector" "" [ "x", P s.R ]
-              yield g "Point.ofMultivector" "" [ "a", any ]
-
-              yield g "PointPair.through" "" [ "p", P s.P; "q", P s.Q ]
-              yield g "PointPair.weight" "" [ "x", PP s.PairT ]
-              yield g "PointPair.normalise" "" [ "x", PP s.PairT ]
-              yield g "PointPair.centre" "" [ "x", PP s.PairT ]
-              yield g "PointPair.centre" "of-a-meet-" [ "x", PP pairM ]
-              yield g "PointPair.squaredRadius" "" [ "x", PP s.PairT ]
-              yield g "PointPair.squaredRadius" "of-a-meet-" [ "x", PP pairM ]
-              yield g "PointPair.points" "" [ "tau", zero; "x", PP s.PairT ]
-              yield g "PointPair.points" "of-a-meet-" [ "tau", zero; "x", PP pairM ]
-              yield g "PointPair.kind" "" [ "tau", zero; "x", PP s.PairT ]
-
-              yield
-                  g "PointPair.kind" "of-a-line-and-a-plane-" [ "tau", zero; "x", PP(Line.meetPlane s.LineP s.PlaneP) ]
-
-              yield g "PointPair.toMultivector" "" [ "x", PP s.PairT ]
-              yield g "PointPair.ofMultivector" "" [ "a", any ]
-
-              yield g "Line.through" "" [ "p", P s.P; "q", P s.Q ]
-              yield g "Line.ofPointDirection" "" [ "p", T s.A1; "d", T s.D1 ]
-              yield g "Line.weight" "" [ "x", L s.LineT ]
-              yield g "Line.normalise" "" [ "x", L s.LineT ]
-              yield g "Line.direction" "" [ "x", L s.LineT ]
-              yield g "Line.moment" "" [ "x", L s.LineT ]
-              yield g "Line.nearestPoint" "" [ "x", L s.LineT ]
-              yield g "Line.nearestPoint" "of-a-unit-line-" [ "x", L s.LineP ]
-              yield g "Line.kind" "" [ "tau", zero; "x", L s.LineT ]
-              // Two lines through one drawn point: in exact arithmetic they cross, and in binary64 their
-              // meet in the whole space is rounding residue, which `tau = 0` reads as skew.
-              yield g "Line.meet" "at-tau-zero-" [ "tau", zero; "x", L s.LineT; "y", L lineR ]
-              yield g "Line.meet" "within-a-threshold-" [ "tau", N coplanarWithin; "x", L s.LineT; "y", L lineR ]
-              yield g "Line.meet" "of-two-skew-lines-" [ "tau", zero; "x", L s.LineT; "y", L s.LineP ]
-              yield g "Line.meetPlane" "" [ "x", L s.LineT; "y", PL s.PlaneP ]
-              yield g "Line.meetSphere" "" [ "x", L s.LineC; "y", S s.SphereP ]
-              yield g "Line.meetSphere" "through-points-" [ "x", L s.LineT; "y", S s.SphereT ]
-              yield g "Line.toMultivector" "" [ "x", L s.LineT ]
-              yield g "Line.ofMultivector" "" [ "a", any ]
-
-              yield g "Circle.through" "" [ "p", P s.P; "q", P s.Q; "r", P s.R ]
-              yield g "Circle.ofCentreRadiusNormal" "" [ "centre", T s.C1; "radius", N s.Rho1; "normal", T s.N1 ]
-
-              for what, circle in [ "", s.CircleT; "from-parameters-", s.CircleP ] do
-                  yield g "Circle.weight" what [ "x", C circle ]
-                  yield g "Circle.normalise" what [ "x", C circle ]
-                  yield g "Circle.centre" what [ "x", C circle ]
-                  yield g "Circle.squaredRadius" what [ "x", C circle ]
-                  yield g "Circle.kind" what [ "tau", zero; "x", C circle ]
-                  yield g "Circle.plane" what [ "x", C circle ]
-                  yield g "Circle.power" what [ "p", P s.S; "x", C circle ]
-                  yield g "Circle.side" what [ "tau", zero; "p", P s.T; "x", C circle ]
-
-              yield g "Circle.toMultivector" "" [ "x", C s.CircleT ]
-              yield g "Circle.ofMultivector" "" [ "a", any ]
-
-              yield g "Plane.through" "" [ "p", P s.P; "q", P s.Q; "r", P s.R ]
-              yield g "Plane.ofNormalDistance" "" [ "normal", T s.N1; "distance", N s.Delta1 ]
-
-              for what, plane in [ "", s.PlaneT; "from-parameters-", s.PlaneP ] do
-                  yield g "Plane.weight" what [ "x", PL plane ]
-                  yield g "Plane.normalise" what [ "x", PL plane ]
-                  yield g "Plane.normal" what [ "x", PL plane ]
-                  yield g "Plane.distance" what [ "x", PL plane ]
-                  yield g "Plane.nearestPoint" what [ "x", PL plane ]
-                  yield g "Plane.kind" what [ "tau", zero; "x", PL plane ]
-                  yield g "Plane.signedDistance" what [ "p", P s.S; "x", PL plane ]
-                  yield g "Plane.side" what [ "tau", zero; "p", P s.T; "x", PL plane ]
-
-              yield g "Plane.meet" "" [ "x", PL s.PlaneP; "y", PL s.PlaneQ ]
-              yield g "Plane.meet" "through-points-" [ "x", PL s.PlaneT; "y", PL s.PlaneP ]
-              yield g "Plane.toMultivector" "" [ "x", PL s.PlaneT ]
-              yield g "Plane.ofMultivector" "" [ "a", any ]
-
-              yield g "Sphere.through" "" [ "p", P s.P; "q", P s.Q; "r", P s.R; "s", P s.S ]
-              yield g "Sphere.ofCentreRadius" "" [ "centre", T s.C1; "radius", N s.Rho1 ]
-
-              for what, sphere in [ "", s.SphereT; "from-parameters-", s.SphereP ] do
-                  yield g "Sphere.weight" what [ "x", S sphere ]
-                  yield g "Sphere.normalise" what [ "x", S sphere ]
-                  yield g "Sphere.centre" what [ "x", S sphere ]
-                  yield g "Sphere.squaredRadius" what [ "x", S sphere ]
-                  yield g "Sphere.kind" what [ "tau", zero; "x", S sphere ]
-                  yield g "Sphere.power" what [ "p", P s.T; "x", S sphere ]
-                  yield g "Sphere.side" what [ "tau", zero; "p", P s.T; "x", S sphere ]
-
-              yield g "Sphere.meet" "" [ "x", S s.SphereP; "y", S s.SphereQ ]
-              yield g "Sphere.meet" "through-points-" [ "x", S s.SphereT; "y", S s.SphereP ]
-              yield g "Sphere.meetPlane" "" [ "x", S s.SphereP; "y", PL s.PlaneP ]
-              yield g "Sphere.meetPlane" "through-points-" [ "x", S s.SphereT; "y", PL s.PlaneT ]
-              yield g "Sphere.toMultivector" "" [ "x", S s.SphereT ]
-              yield g "Sphere.ofMultivector" "" [ "a", any ] ]
+        sceneCases (1000 + index) (Scene(9000 + index, centre, spread)) coplanarWithin
 
     // ---- the hard inputs: each case, each refusal and each boundary by name ----------------------
 
@@ -1695,6 +1709,185 @@ module GeometricAlgebraVectors =
         @ sphereHard
         @ bladeHard
 
+    // ---- appended after the 918: a round's reality at a threshold of zero, the order of refusal, and
+    // ---- the drawn cases a wrong port fails where no vector above does (DECISIONS.md D87 items 2, 7, 10)
+
+    /// A round of weight `2^500` whose squared radius has a numerator of about `2^-573` and a divisor of
+    /// `2^1000`: the quotient underflows to a zero of the numerator's sign, and at `tau = 0` the signs
+    /// decide. The second holds the other sign.
+    let private underflowing: Case list =
+        let big = pow2 500
+
+        [ for sign, what in [ 1.0, "imaginary"; -1.0, "real" ] do
+              let pair =
+                  Array.init 10 (fun k ->
+                      if k = 0 then big
+                      elif k = 6 then sign * least
+                      else 0.0)
+
+              let circle =
+                  Array.init 10 (fun k ->
+                      if k = 0 then big
+                      elif k = 7 then -sign * least
+                      else 0.0)
+
+              let sphere =
+                  Array.init 5 (fun k ->
+                      if k = 0 then big
+                      elif k = 4 then sign * least
+                      else 0.0)
+
+              let named (op: string) =
+                  sprintf "%s-%s-by-signs-where-the-quotient-underflows" op what
+
+              yield case (named "PointPair.kind") "PointPair.kind" [ "tau", N 0.0; "x", Coefficients pair ]
+              yield case (named "PointPair.points") "PointPair.points" [ "tau", N 0.0; "x", Coefficients pair ]
+              yield case (named "PointPair.squaredRadius") "PointPair.squaredRadius" [ "x", Coefficients pair ]
+              yield case (named "Circle.kind") "Circle.kind" [ "tau", N 0.0; "x", Coefficients circle ]
+              yield case (named "Sphere.kind") "Sphere.kind" [ "tau", N 0.0; "x", Coefficients sphere ]
+              // At a threshold above zero the quotient is formed, and a zero is within it.
+              yield
+                  case
+                      (sprintf "PointPair.kind-%s-read-as-tangent-above-a-threshold-of-zero" what)
+                      "PointPair.kind"
+                      [ "tau", N least; "x", Coefficients pair ] ]
+
+    /// A round by its weight whose squared radius has a divisor that underflows to zero: the kind is
+    /// refused, as the squared radius is.
+    let private undivided: Case list =
+        [ case
+              "PointPair.kind-of-a-round-whose-divisor-underflows"
+              "PointPair.kind"
+              [ "tau", N 0.0; "x", Coefficients(only 10 0 1e-200) ]
+          case
+              "Circle.kind-of-a-round-whose-divisor-underflows"
+              "Circle.kind"
+              [ "tau", N 0.0; "x", Coefficients(only 10 0 1e-200) ]
+          case
+              "Sphere.kind-of-a-round-whose-divisor-underflows"
+              "Sphere.kind"
+              [ "tau", N 0.0; "x", Coefficients(only 5 0 1e-200) ] ]
+
+    /// Every parameter is refused in the order it is passed, before anything is computed: a centre and
+    /// a radius whose arithmetic would overflow into a NaN, and a normal or a direction that is zero.
+    let private refusedInOrder: Case list =
+        let op = "Circle.ofCentreRadiusNormal"
+        let zero = T(0.0, 0.0, 0.0)
+
+        [ case
+              (op + "-refuses-a-zero-normal-before-it-computes")
+              op
+              [ "centre", T(1e300, 0.0, 0.0); "radius", N 1e300; "normal", zero ]
+          case
+              (op + "-refuses-a-nan-normal-before-it-computes")
+              op
+              [ "centre", T(1e300, 0.0, 0.0); "radius", N 1e300; "normal", T(0.0, nan, 1.0) ]
+          case
+              (op + "-refuses-the-centre-before-the-normal")
+              op
+              [ "centre", T(inf, 0.0, 0.0); "radius", N 1.0; "normal", zero ]
+          case
+              "Line.ofPointDirection-refuses-a-zero-direction-of-a-far-point"
+              "Line.ofPointDirection"
+              [ "p", T(1e300, 1e300, 0.0); "d", zero ]
+          case
+              "Sphere.ofCentreRadius-refuses-the-radius-of-a-far-centre"
+              "Sphere.ofCentreRadius"
+              [ "centre", T(1e300, 0.0, 0.0); "radius", N -1.0 ] ]
+
+    /// The drawn cases chosen as witnesses: the configuration's number, the case's id there, and, for a
+    /// function that takes one, the threshold it is asked at with the word its id gains. Each is a case
+    /// some wrong port answers otherwise where it answered every earlier vector of that function.
+    let private chosen: (int * string * (string * float) option) list =
+        [ 0, "Circle.kind-general-from-parameters-1000", Some("at-a-threshold-it-names", 0.8359553183532337)
+          0, "Circle.side-general-from-parameters-1000", Some("at-a-threshold-it-names", 0.4622722622854725)
+          0, "Line.meet-general-at-tau-zero-1000", Some("at-a-threshold-it-names", 0.08277625368451899)
+          0, "Plane.nearestPoint-general-1000", None
+          0, "Plane.side-general-1000", Some("at-a-threshold-it-names", 0.35415855107180055)
+          0, "Sphere.kind-general-from-parameters-1000", Some("at-a-threshold-it-names", 0.8359553183532336)
+          1, "Blade.meetWithin-general-a-plane-1001", None
+          1, "Circle.side-general-1001", Some("at-a-threshold-it-names", 26298.091753688364)
+          1, "Line.kind-general-1001", Some("at-a-threshold-it-names", 15.34265041165795)
+          1, "Line.nearestPoint-general-1001", None
+          1, "Plane.side-general-1001", Some("at-a-threshold-it-names", 22.67911464878033)
+          1, "PointPair.kind-general-1001", Some("at-a-threshold-it-names", 621.1161015918115)
+          1, "PointPair.kind-general-1001", Some("at-a-threshold-it-names-2", 15.34265041165795)
+          1, "Sphere.kind-general-1001", Some("at-a-threshold-it-names", 16517776.314716326)
+          1, "Sphere.side-general-1001", Some("at-a-threshold-it-names", 178593.3473601453)
+          2, "Plane.signedDistance-general-from-parameters-1002", None
+          2, "PointPair.squaredRadius-general-1002", None
+          2, "Sphere.power-general-1002", None
+          3, "Circle.kind-general-1003", Some("at-a-threshold-it-names", 0.007109267023052834)
+          3, "Line.ofPointDirection-general-1003", None
+          3, "Plane.kind-general-1003", Some("at-a-threshold-it-names", 0.007109267023052834)
+          5, "Circle.power-general-1005", None
+          6, "Circle.kind-general-from-parameters-1006", Some("at-a-threshold-it-names", 0.012740901889207238)
+          6, "Circle.ofCentreRadiusNormal-general-1006", None
+          6, "Plane.ofNormalDistance-general-1006", None
+          6, "Plane.side-general-1006", Some("at-a-threshold-it-names", 0.21762764549648791)
+          7, "Circle.side-general-1007", Some("at-a-threshold-it-names", 8328.365015034862)
+          8, "Circle.kind-general-from-parameters-1008", Some("at-a-threshold-it-names", 1.4485834005322929e-05)
+          9, "Plane.side-general-1009", Some("at-a-threshold-it-names", 0.23557410895303643)
+          10, "Circle.ofCentreRadiusNormal-general-1010", None
+          10, "Plane.ofNormalDistance-general-1010", None
+          10, "PointPair.kind-general-of-a-line-and-a-plane-1010", Some("at-a-threshold-it-names", 315.7451780195358)
+          12, "Line.normalise-general-1012", None
+          12, "Line.weight-general-1012", None
+          12, "PointPair.normalise-general-1012", None
+          12, "PointPair.weight-general-1012", None
+          12, "Sphere.side-general-1012", Some("at-a-threshold-it-names", 0.01569940232372319)
+          13, "Sphere.kind-general-from-parameters-1013", Some("at-a-threshold-it-names", 175.8870228535389)
+          14, "Line.kind-general-1014", Some("at-a-threshold-it-names", 0.07229763043860672)
+          14, "Sphere.side-general-from-parameters-1014", Some("at-a-threshold-it-names", 0.0014643461390965928)
+          26, "Line.kind-general-1026", Some("at-a-threshold-it-names", 0.010525242673356434)
+          26, "Line.normalise-general-1026", None
+          26, "Line.weight-general-1026", None
+          26, "PointPair.kind-general-1026", Some("at-a-threshold-it-names", 0.010525242673356434)
+          26, "PointPair.normalise-general-1026", None
+          26, "PointPair.weight-general-1026", None
+          33, "Circle.kind-general-1033", Some("at-a-threshold-it-names", 0.03840522867906613)
+          33, "Circle.normalise-general-1033", None
+          33, "Circle.weight-general-1033", None
+          33, "Plane.kind-general-1033", Some("at-a-threshold-it-names", 0.03840522867906613)
+          33, "Plane.normalise-general-1033", None
+          33, "Plane.signedDistance-general-1033", None
+          33, "Plane.weight-general-1033", None
+          59, "Plane.side-general-1059", Some("at-a-threshold-it-names", 0.002221685343600184)
+          63, "Line.ofPointDirection-general-1063", None
+          108, "Line.meet-general-of-two-skew-lines-1108", Some("at-a-threshold-it-names", 0.0029454291267690994)
+          148, "Sphere.kind-general-1148", Some("at-a-threshold-it-names", 2148118.4004810504) ]
+
+    let private drawnWitnesses: Case list =
+        [ for index, id, threshold in chosen do
+              let c = drawn index |> List.find (fun c -> c.Id = id)
+
+              match threshold with
+              | None -> yield c
+              | Some(word, tau) ->
+                  yield
+                      { c with
+                          Id = c.Id + "-" + word
+                          Input =
+                              c.Input
+                              |> List.map (fun (name, o) -> if name = "tau" then name, Number tau else name, o) } ]
+
+    /// A sphere of no weight is its plane. The two planes a wrong norm fails at a threshold they name,
+    /// asked as spheres at the same threshold.
+    let private flatSpheres: Case list =
+        [ for c in drawnWitnesses do
+              if c.Op = "Plane.kind" && c.Id.Contains "at-a-threshold-it-names" then
+                  let plane =
+                      match c.Input |> List.find (fun (name, _) -> name = "x") |> snd with
+                      | Coefficients xs -> xs
+                      | _ -> failwith "a plane is a list of coefficients"
+
+                  yield
+                      case
+                          (c.Id.Replace("Plane.kind", "Sphere.kind-of-the-plane-of"))
+                          "Sphere.kind"
+                          [ c.Input |> List.find (fun (name, _) -> name = "tau")
+                            "x", Coefficients(Array.append [| 0.0 |] plane) ] ]
+
     /// Every case, in document order: Phase 727's, and then the ones appended since.
     let cases: Case list =
         tableRows
@@ -1703,6 +1896,11 @@ module GeometricAlgebraVectors =
         @ carried
         @ conformalGeneral
         @ conformalHard
+        @ underflowing
+        @ refusedInOrder
+        @ undivided
+        @ drawnWitnesses
+        @ flatSpheres
 
     /// The case with this id.
     let find (id: string) : Case = cases |> List.find (fun c -> c.Id = id)

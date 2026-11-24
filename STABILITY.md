@@ -141,18 +141,20 @@ function that existed answers another bit. It still references FSharp.Core alone
 
 **The wire.** None, as before.
 
-**The law vectors.** `conformance/laws/geometric-algebra-laws.json` grows from 167 vectors to 918. The 167 are
+**The law vectors.** `conformance/laws/geometric-algebra-laws.json` grows from 167 vectors to 997. The 167 are
 unchanged in content; the last of them gains the comma that now separates it from the next, and the document's
 `description` says how the new shapes are written. Four of the new ones are over `squaredNorm` and `scalarProduct`.
-The other 747 are over the seventy functions: three drawn configurations through each, and each named case, each
-refusal and each side of each threshold by hand. A typed operand is the list of its coefficients; an answer that can
+The other 826 are over the seventy functions: three drawn configurations through each; each named case, each
+refusal and each side of each threshold by hand; and fifty-nine drawn cases chosen because a wrong port fails them. A typed operand is the list of its coefficients; an answer that can
 be refused is its own cell or `{ "refused": … }`; an answer that has kinds is `{ "kind": … }` with what the case
 carries. Every other file under `conformance/laws/` is byte-identical.
 
 **What a consumer must do.** Nothing. A caller that wants the geometry should know five things before relying on it.
 
 1. **A zero test takes its threshold on every call.** `kind`, `side`, `PointPair.points` and `Line.meet` take `tau`
-   first: a finite number that is not negative. There is no default, and `0` is the exact comparison. The unit is the
+   first: a finite number that is not negative. There is no default, and `0` is the exact comparison: there a
+   statistic that is a quotient (a power, a signed distance, a round's squared radius) is decided from the signs of
+   its numerator and its divisor, so a quotient that underflows to zero is not read as zero. The unit is the
    statistic's own, and each function's documentation states it; `kind` compares coefficient norms and, for a round,
    a squared radius, against the one `tau`.
 2. **Nothing normalises.** An object built through points or by a meet has the weight its product gives, which is a
@@ -168,7 +170,8 @@ carries. Every other file under `conformance/laws/` is byte-identical.
    through two points of weight one. Read them with `Point.coordinates`.
 5. **The identities hold exactly only where the arithmetic is exact.** On general inputs an answer is the fold's
    rounding, the same bits on every host, and agrees with a closed form to rounding: over the sample D87 records, a
-   line and a sphere meet within 292 units in the last place of where the quadratic formula puts them.
+   line and a sphere meet within 292 units in the last place of where the quadratic formula puts them. That is one
+   sample's maximum and no bound on the function.
 
 A host that ports the package certifies against the vectors. The versors, any specialised product and the op algebra
 are later phases and are not in this package yet.

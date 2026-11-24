@@ -1,6 +1,6 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-11-24 — D87: points, lines, planes, circles and spheres ship as blades of `Fuaran.Compute.GeometricAlgebra`, written to D85 and choosing nothing D85 fixed — six typed wrappers and a module of each one's name, the blade operations in `Blade`, one union of refusals and a union of kinds for each type; every function Phase 727's general product, written once with its arithmetic as an argument, so every go-red witness is the shipped function with one member changed; a zero test that takes its threshold on every call; 751 more vectors, each replayed bit for bit by a second implementation; the closed-form bound measured, 292 units in the last place over 1,948 lines and spheres; and two things Phase 727 was asked to add for the squared norm that no vector can show
+## 2026-11-24 — D87: points, lines, planes, circles and spheres ship as blades of `Fuaran.Compute.GeometricAlgebra`, written to D85 and choosing nothing D85 fixed — six typed wrappers and a module of each one's name, the blade operations in `Blade`, one union of refusals and a union of kinds for each type; every function Phase 727's general product, written once with its arithmetic as an argument, so every go-red witness is the shipped function with one member changed; a zero test that takes its threshold on every call, and at a threshold of zero reads signs and forms no quotient; 830 more vectors, each replayed bit for bit by a second implementation; a wrong port held against every function, by a red vector or by a drawn search that finds it unable; the closed-form bound measured on one stated sample, 292 units in the last place over 1,948 lines and spheres; and two things Phase 727 was asked to add for the squared norm that no vector can show
 
 **Context.** Phase 728. D85 recorded how the objects of three-dimensional Euclidean space are held in `Cl(4,1)`, and D86
 shipped the multivector and the products they are written in. This entry ships the objects: the embedding, the six
@@ -52,7 +52,8 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
    says is refused by name: `NonFiniteCoordinate`, `ZeroDirection`, `NonFiniteDirection`, `NegativeRadius`,
    `NonFiniteRadius`, `NonFiniteDistance` (construction from parameters, item 4), `ZeroDivisor`, `NonFiniteDivisor`
    (a weight, `X ∗ X̃`, `W ∗ W̃`, `J ∗ J̃`, or the product of two weights; items 4 and 5), `InvalidThreshold` (a `τ` that
-   is negative or not finite, item 6) and `NotANumber`. Parameters are checked in the order they are passed, and a
+   is negative or not finite, item 6) and `NotANumber`. **Every parameter is checked in the order it is passed, before anything is computed**: a centre and a radius whose
+   arithmetic would overflow into a NaN are not reached when the normal passed after them is zero. A
    non-finite radius is `NonFiniteRadius` whatever its sign. A direction whose norm overflows is `NonFiniteDirection`:
    dividing by an infinite norm would answer a zero direction and say nothing. **An `Ok` never holds a NaN:** where an
    answer would hold one, because an operand did or because finite arithmetic overflowed into one, the function
@@ -84,7 +85,9 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
      negative for a point pair, so a centre coordinate that is zero is `-0.0` there. The vectors pin it.
    - *A real pair's two points are the vectors D85 writes,* `⟨(X ∓ s) W⁻¹⟩₁`, copied into `Point` and not normalised
      (item 5). For `up p ∧ up q` they are `−up p` and `−up q`: the points, in order, of weight `−1`.
-     `Point.coordinates` reads them. A tangent and an imaginary pair answer the centre, which is coordinates.
+     `Point.coordinates` reads them. A tangent and an imaginary pair answer the centre, which is coordinates. D85 item 4
+     says of a real pair "for `P ∧ Q` they are `P` then `Q`": that names the points and their order, and its formula,
+     which governs, gives each with weight `−1`. An independent derivation gives the same weight.
    - *A plane's normal and distance are exact reads of its vector* (item 4: "are its vector's"), so they are `n̂` and
      `δ` times the weight, as a line's direction is read and not computed. `normalise` first, for the unit ones.
    - *A flat point is answered by the nearest-point formula.* Item 6 says a flat of grade two "is answered as the
@@ -98,7 +101,12 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
      is the zero blade too, `SameLine`; else `Within` carrying the meet within the span, which `PointPair.kind` reads
      as a flat point or as at infinity. Each "is the zero blade" is the test of a kind on the typed copy, with the
      caller's `τ`. Testing for skew first is this entry's: item 4 gives the span "for those" whose meet in the whole
-     space is zero, and a span through a point of a skew line contains only one of the two.
+     space is zero, and a span through a point of a skew line contains only one of the two. The rule goes through
+     `up`, which refuses a coordinate that is not finite; whether `Line.meet` can therefore answer
+     `NonFiniteCoordinate` was looked for and not found: over 48,000 pairs of lines at scales from `2^-1070` to
+     `2^1020` it answered `NonFiniteDivisor`, `ZeroDivisor` or `NotANumber` wherever its arithmetic left the doubles,
+     and never that. A nearest point is `moment / direction` by way of an inverse that holds `moment / direction²`,
+     which overflows first. Were it reached, it would be D85's own refusal by name.
    - *A typed operation is the general one and a copy* (item 4). The products are `Multivector`'s. Nothing is
      specialised, and no speed is claimed.
 
@@ -114,26 +122,45 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
    `W ∗ W̃` is a sum of squares, so a squared radius above a threshold that is not negative has a positive numerator.
 
 6. **Every function is written once, and its arithmetic is an argument.** `Conformal` holds each function that
-   computes, taking an `Arithmetic` first: the four products, how a quotient is formed, the norm, the two halved
-   squares (`0.5 × ((x1·x1 + x2·x2) + x3·x3)` and `0.5 × (r × r)`), the `−2.0 ×` of a power, what a zero divisor is,
-   what "within `τ`" is, and whether signs decide at `τ = 0`. A published function is that function under
-   `Arithmetic.shipped`, in one line, and passes nothing else. D86 item 4 ruled the same for the fold and for the same
-   reason: a go-red witness must be the shipped code. A wrong port is `Arithmetic.shipped` with one member changed,
-   and the suite calls the same function under it. Fifty-two functions compute and have such a door. Eighteen are
-   copies and exact reads (`toMultivector`, `ofMultivector`, a point's and a sphere's weight, a line's direction and
-   moment, a plane's normal and distance) and have none: there is no rule of theirs to change. All of it is internal.
+   computes, taking an `Arithmetic` first. It has fifteen members, **and each is one rule**: the four products; how a
+   quotient is formed (`Divide`); how a statistic's is, the product of the divisor's two factors and then one division
+   (`OverBoth`); the norm; the two halved squares (`0.5 × ((x1·x1 + x2·x2) + x3·x3)` and `0.5 × (r × r)`); the `−2.0 ×`
+   of a power; whether a divisor is zero; whether a direction's norm is zero; what "above `τ`" is; what "within `τ`"
+   is; and whether a threshold is the exact comparison, at which signs decide. A published function is that function
+   under `Arithmetic.shipped`, in one line, and passes nothing else. D86 item 4 ruled the same for the fold and for the
+   same reason: a go-red witness must be the shipped code. A wrong port is `Arithmetic.shipped` with one member
+   changed, and the suite calls the same function under it. The norm takes its sum of squared quotients as an
+   argument for the same reason (`Norm.scaledWith`), so a norm with another sum is the shipped norm. Fifty-two
+   functions compute and have such a door. Eighteen are copies and exact reads (`toMultivector`, `ofMultivector`, a
+   point's and a sphere's weight, a line's direction and moment, a plane's normal and distance) and have none: there is
+   no rule of theirs to change. All of it is internal. **Two things are not members and are said so.** Reading the
+   signs of a numerator and a divisor at `τ = 0` (a zero numerator is within; equal signs are above) is written once,
+   in `Conformal.against`, and no witness changes it. And "below `−τ`" is whatever is neither above nor within.
    *Rejected:* a witness written as a second implementation in the suite (it can agree with itself); a mutable
-   arithmetic the suite swaps (a pinned library with a global, and a suite that runs in parallel).
+   arithmetic the suite swaps (a pinned library with a global, and a suite that runs in parallel); one member for
+   every zero test (a witness for a zero divisor then also moved the branch taken at `τ = 0`, and showed nothing of
+   either).
 
-7. **A zero test takes `τ` on every call.** Ten functions test a zero (`kind` on five types, `side` on three,
-   `PointPair.points`, `Line.meet`), each takes `tau` first, and none has a default, an optional argument or a named
-   tolerance. `τ = 0` is the exact comparison. Each statistic is published twice, as D85 item 6 says: `Sphere.power`,
-   `Circle.power` and `Plane.signedDistance` answer the value, formed in item 6's order (the scalar product, `−2.0`
-   times it for a power, the product of the divisor's two factors, one division), and `side` answers the kind. At
-   `τ = 0` `side` reads the signs of the numerator and the denominator and forms no quotient, so a power of
-   `3·2^-1080` is `Outside` where its quotient is `+0.0`. A power that is zero is `-0.0` over a positive divisor; a
-   circle's divisor, `w_P × (Y ∗ Ỹ)`, is negative for a point of positive weight, so a point on a circle answers
-   `+0.0`.
+7. **A zero test takes `τ` on every call, and at `τ = 0` it forms no quotient.** Ten functions test a zero (`kind` on
+   five types, `side` on three, `PointPair.points`, `Line.meet`), each takes `tau` first, and none has a default, an
+   optional argument or a named tolerance. `τ = 0` is the exact comparison. Each statistic is published twice, as D85
+   item 6 says: `Sphere.power`, `Circle.power` and `Plane.signedDistance` answer the value, formed in item 6's order
+   (the scalar product, `−2.0` times it for a power, the product of the divisor's two factors, one division), and
+   `side` answers the kind. **At `τ = 0` every statistic that is a quotient is decided from the signs of its numerator
+   and its divisor, and the quotient is not formed.** That is `side`, and it is also a round's reality: D85 item 4
+   says a point pair's points are "decided by item 6's test of the squared radius", and the squared radius
+   `−(X ∗ X̃) / (W ∗ W̃)` is that statistic. So `PointPair.kind`, `Circle.kind`, `Sphere.kind` and
+   `PointPair.points` read the two signs at `τ = 0`, through the one function `side` uses. A power of `3·2^-1080` is
+   `Outside` where its quotient is `+0.0`; and a point pair of weight `2^500` whose squared radius has the numerator
+   `−2^-573` is `Imaginary` where its quotient is `-0.0`. **What an answer carries is unchanged:** an imaginary pair
+   carries its squared radius, D85 item 4's quotient, so that pair is `Imaginary` carrying `-0.0`, and
+   `PointPair.squaredRadius` answers `-0.0` for it. That is D85's two rules composed, the kind by item 6 and the value
+   by item 4, and no new convention. Its mirror, with the numerator positive, is `Real`, and its two points are formed
+   by the root as any real pair's are. Above `τ = 0` nothing changes: at `τ = 5e-324` both are `Tangent`, because there
+   the quotient is the statistic and a zero is within any threshold. Twelve vectors hold this, on each of the four
+   functions and on `PointPair.squaredRadius`, and the port that forms the quotient at `τ = 0` fails each of the
+   eight that are asked at zero. A power that is zero is `-0.0` over a positive divisor; a circle's divisor,
+   `w_P × (Y ∗ Ỹ)`, is negative for a point of positive weight, so a point on a circle answers `+0.0`.
 
 8. **Carried from Phase 727, and what could not be done.** Phase 727 left the squared norm without a vector that a
    separately written fold fails under a fused multiply-add, under the right operand's index outermost, or under a
@@ -171,55 +198,84 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
      Three collinear points are refused by both, as `ZeroDivisor`.
    - *Within a bound:* item 11.
 
-10. **The vectors, and the wrong port each exists to catch.** The law file holds 918: Phase 727's 167, whose
-    content is unchanged (the last of them gains the comma that separates it from the next); the four of item 8; and
-    747 over the seventy functions. Of those, 321 are three drawn configurations (five weighted points and the
-    parameters of two spheres, two planes, a line and a circle, at three scales of coordinate) through every function,
-    and 426 are authored: each named case, each refusal, and each side of each threshold. A typed operand is the list
-    of its coefficients, so a port reads operands and reproduces only answers. An answer that can be refused is its
-    cell or `{ refused }`, and one that has kinds is `{ kind }` with what the case carries.
+10. **The vectors, and what a wrong port is held to.** The law file holds 997: Phase 727's 167, whose content is
+    unchanged (the last of them gains the comma that separates it from the next); the four of item 8; and 826 over
+    the seventy functions. Of those, 321 are three drawn configurations (five weighted points and the parameters of
+    two spheres, two planes, a line and a circle, at three scales of coordinate) through every function; 446 are
+    authored: each named case, each refusal, each side of each threshold, the rounds of item 7, a refusal of each
+    constructor before it computes, and a round whose divisor underflows; and 59 are drawn cases chosen because a
+    wrong port fails them where it failed no earlier vector of that function. A typed operand is the list of its
+    coefficients, so a port reads operands and reproduces only answers. An answer that can be refused is its cell or
+    `{ refused }`, and one that has kinds is `{ kind }` with what the case carries.
 
-    The wrong ports, as `Arithmetic.shipped` with one member changed, and the short name the table below uses:
+    The wrong ports, each `Arithmetic.shipped` with one member changed, the short name the table below uses, and how
+    many of the fifty-two computing functions have a committed vector the port fails:
 
-    | short | a port that | functions it turns red |
+    | short | a port that | functions with a red vector |
     |---|---|---:|
-    | order | sums the terms of each product descending | 21 |
-    | fused | fuses a multiply-add | 27 |
+    | order | sums the terms of each product descending | 28 |
+    | fused | fuses a multiply-add in a product | 34 |
     | seeded | starts each fold at `-0.0`, which is a fold seeded from its first term | 2 |
-    | reciprocal | forms a quotient as a product with a reciprocal | 23 |
-    | norm | takes `√(Σ x²)` unscaled | 12 |
+    | reciprocal | forms a quotient as a product with a reciprocal | 31 |
+    | twice | divides a statistic by each factor of its divisor in turn, `(n / a) / b` | 6 |
+    | norm | takes `√(Σ x²)` unscaled | 19 |
+    | fused-norm | fuses each square into the norm's sum | 19 |
+    | rounded-norm | rounds the norm's sum of squares correctly, once | 19 |
     | half-square | sums a point's three squares from the right | 3 |
     | radius | halves a radius before squaring it | 2 |
     | zero-sign | forms a power as `0 − 2s`, so a zero power has the other sign | 2 |
     | divisor | does not test a divisor against zero | 28 |
-    | strict | compares a threshold with `<` | 10 |
+    | direction | does not test a direction's norm against zero | 3 |
+    | above | finds a statistic above its threshold where it equals it (`≥`) | 10 |
+    | strict | finds a statistic within its threshold only where it is below it (`<`) | 10 |
     | never, always | never, or always, finds a statistic within its threshold | 10, 7 |
-    | quotient | forms the quotient at `τ = 0` | 3 |
+    | quotient | forms the quotient at `τ = 0` | 7 |
 
-    The suite holds, both ways, which functions each one turns red: a function listed has a committed vector that
-    port fails, and one not listed has none. Fifty-one of the fifty-two functions that compute are failed by at least
-    one. The fifty-second, `Circle.plane`, is `X ∧ n∞`, one term for each coefficient: a signed copy. **A
-    normalisation nobody asked for** is the last wrong port and is not a member: it is the published function
+    **What the suite holds of them is computed, and it is this and no more.** For every wrong port and every function
+    that computes, one of two things: a committed vector of that function is red under the port; or the port is listed
+    as unable to change that function, with the reason, and it answers that function as the shipped arithmetic does on
+    every element of a drawn sample. A port that changes an answer in the sample and fails no committed vector of that
+    function fails the case. *The sample:* 165 drawn configurations, fifty-five at each of three scales of coordinate
+    (the generator's seeds 9000 to 9164), every function over each; and each function that takes a threshold asked
+    again at every threshold its own statistics name there: the norms of its blade's groups, the magnitude of its
+    squared radius or of its statistic, and for two lines the norms the two-line rule tests. A wrong port that moves a
+    statistic moves the answer at exactly such a threshold, which is why the sample holds them. It is about 14,700
+    cases as drawn and some thousands more at thresholds. **It is a search and not a proof**: an entry listed unable says that no
+    element of this sample differs, and gives the reason it is believed that none would. The 936 pairs of a port and
+    a function divide into 240 with a red vector and 696 listed unable. Of the unable, most are a function that does
+    not use the member at all (it calls no product, forms no quotient, reads no norm, takes no threshold). The rest
+    use it and are not moved by it: a product whose every coefficient is a sum of at most two non-zero terms, which
+    round alike in either order, or of one, which a fusion does not change; a fold from `-0.0`, which differs only
+    where every term of a coefficient is a negative zero; a point's `n∞` coefficient, which the outer product with
+    `n∞` annihilates before it reaches a line; the sign of a zero power, which a test does not read; and a line's and
+    a plane's kind under a threshold always met, whose only unsettled norms are of groups those types do not carry.
+    The first form of this claim, in the first form of this entry, said a port was shown red "on a committed vector
+    of every function it could change". It was not true: a quotient formed with a reciprocal in a point pair's
+    squared radius, a statistic divided twice, a fusion inside the norm and others changed bits on drawn inputs and
+    passed every vector of the function. The fifty-nine chosen cases are what the search found, and the three
+    members `OverBoth`, `IsZeroNorm` and `Above` and the norm's own argument are what the ports needed to be said.
+
+    **A normalisation nobody asked for** is the last wrong port and is not a member: it is the published function
     followed by the published `normalise`, and it fails a vector of each of the nine functions that build an object
     through points or by a meet and can be normalised, and of `Circle.plane` (`Line.meetPlane` answers a flat point,
-    whose normalisation as a round is refused); normalising the operands of a statistic
-    first fails a vector of each of the three statistics. Thresholds, radii and non-finite values are refused by
-    comparisons that are not members; they are held by a vector on each side (`-5e-324` refused and `-0.0` accepted
-    as a radius; `-1` refused and `-0.0` accepted as a threshold; a direction of norm zero refused and the least
-    subnormal accepted; a norm that overflows refused).
+    whose normalisation as a round is refused); normalising the operands of a statistic first fails a vector of each
+    of the three statistics. Thresholds, radii and non-finite values are refused by comparisons that are not members;
+    they are held by a vector on each side (`-5e-324` refused and `-0.0` accepted as a radius; `-1` refused and `-0.0`
+    accepted as a threshold; a direction of norm zero refused and the least subnormal accepted; a norm that overflows
+    refused).
 
-    Each function, the vectors it has, wrong ports with the vector of that function each fails (a name is the
-    vector's id after the function's), and a vector whose pinned answer is **not** the correctly rounded value of its
-    own formula, found by the exact reference of item 12. That column is empty where a function copies or answers a
-    case, and for a point's `coordinates` and the `normalise` of a point and of a sphere, which are one division for
+    Each function, the vectors it has, up to four wrong ports with a vector of that function each fails (a name is
+    the vector's id after the function's), and a vector whose pinned answer is **not** the correctly rounded value of
+    its own formula, found by the exact reference of item 12. That column is empty where a function copies or answers
+    a case, and for a point's `coordinates` and the `normalise` of a point and of a sphere, which are one division for
     each coefficient and so are correctly rounded (D85 item 7).
 
-    | function | vectors | a wrong port, and the vector of this function it fails | not correctly rounded at |
+    | function | vectors | wrong ports, each with a vector of this function it fails | not correctly rounded at |
     |---|---:|---|---|
     | `Blade.join` | 5 | order `general-1`; fused `general-1` | `general-1` |
     | `Blade.meet` | 9 | order `general-1`; fused `general-1`; seeded `of-a-sphere-and-a-plane` | `general-1` |
     | `Blade.inverse` | 13 | reciprocal `general-of-a-sphere-1`; order `general-of-a-sphere-1`; fused `general-of-a-sphere-1`; divisor `of-a-null-vector` | `general-of-a-line-1` |
-    | `Blade.meetWithin` | 11 | order `general-a-plane-1`; fused `general-a-plane-1`; divisor `a-null-span`; seeded `the-whole-space` | `general-the-whole-space-1` |
+    | `Blade.meetWithin` | 12 | reciprocal `general-a-plane-1001`; order `general-a-plane-1`; fused `general-a-plane-1`; divisor `a-null-span`; and 1 more | `general-the-whole-space-1` |
     | `Point.up` | 11 | half-square `sums-left-to-right` | `general-1` |
     | `Point.coordinates` | 11 | reciprocal `divides-and-never-multiplies-by-a-reciprocal`; divisor `of-a-zero-weight` |  |
     | `Point.weight` | 5 | a wrong index, or a zero whose sign is lost: `is-signed` |  |
@@ -227,98 +283,119 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
     | `Point.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |  |
     | `Point.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |  |
     | `PointPair.through` | 5 | fused `general-1` | `general-2` |
-    | `PointPair.weight` | 9 | norm `whose-squares-overflow` | `general-2` |
-    | `PointPair.normalise` | 7 | reciprocal `three-four-five`; norm `general-2`; divisor `of-a-flat-point` | `general-1` |
+    | `PointPair.weight` | 11 | norm `whose-squares-overflow`; fused-norm `general-1026`; rounded-norm `general-1012` | `general-2` |
+    | `PointPair.normalise` | 9 | reciprocal `three-four-five`; norm `general-2`; fused-norm `general-1026`; rounded-norm `general-1012`; and 1 more | `general-1` |
     | `PointPair.centre` | 11 | reciprocal `general-of-a-meet-1`; order `general-of-a-meet-1`; fused `general-1`; divisor `of-a-flat-point` | `general-of-a-meet-1` |
-    | `PointPair.squaredRadius` | 11 | order `general-of-a-meet-1`; fused `general-of-a-meet-2`; divisor `of-a-flat-point` | `general-of-a-meet-1` |
-    | `PointPair.points` | 22 | reciprocal `general-of-a-meet-1`; order `of-a-weighted-pair`; fused `of-a-weighted-pair`; strict `of-a-tangent-pair`; and 3 more | `general-1` |
-    | `PointPair.kind` | 26 | reciprocal `general-of-a-line-and-a-plane-1`; strict `of-a-tangent-pair`; never `of-a-tangent-pair`; always `of-an-imaginary-pair` | `general-of-a-line-and-a-plane-1` |
+    | `PointPair.squaredRadius` | 14 | reciprocal `general-1002`; order `general-of-a-meet-1`; fused `general-of-a-meet-2`; divisor `of-a-flat-point` | `general-of-a-meet-1` |
+    | `PointPair.points` | 24 | reciprocal `general-of-a-meet-1`; order `of-a-weighted-pair`; fused `of-a-weighted-pair`; quotient `imaginary-by-signs-where-the-quotient-underflows`; and 5 more | `general-1` |
+    | `PointPair.kind` | 35 | reciprocal `general-of-a-line-and-a-plane-1`; order `general-1001-at-a-threshold-it-names`; fused `general-1001-at-a-threshold-it-names`; norm `of-a-round-whose-divisor-underflows`; and 8 more | `general-of-a-line-and-a-plane-1` |
     | `PointPair.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |  |
     | `PointPair.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |  |
     | `Line.through` | 5 | fused `general-1` | `general-2` |
-    | `Line.ofPointDirection` | 14 | reciprocal `divides-and-never-multiplies-by-a-reciprocal`; fused `general-1`; norm `divides-and-never-multiplies-by-a-reciprocal`; divisor `of-a-zero-direction` | `general-1` |
-    | `Line.weight` | 6 | norm `whose-squares-overflow` | `general-2` |
-    | `Line.normalise` | 6 | reciprocal `three-four-five`; norm `general-2`; divisor `of-a-line-at-infinity` | `general-1` |
+    | `Line.ofPointDirection` | 17 | reciprocal `divides-and-never-multiplies-by-a-reciprocal`; fused `general-1`; norm `divides-and-never-multiplies-by-a-reciprocal`; fused-norm `general-1063`; and 2 more | `general-1` |
+    | `Line.weight` | 8 | norm `whose-squares-overflow`; fused-norm `general-1026`; rounded-norm `general-1012` | `general-2` |
+    | `Line.normalise` | 8 | reciprocal `three-four-five`; norm `general-2`; fused-norm `general-1026`; rounded-norm `general-1012`; and 1 more | `general-1` |
     | `Line.direction` | 4 | a wrong index, or a zero whose sign is lost: `is-read` |  |
     | `Line.moment` | 4 | a wrong index, or a zero whose sign is lost: `is-read` |  |
-    | `Line.nearestPoint` | 11 | reciprocal `general-of-a-unit-line-1`; fused `general-3`; divisor `of-the-zero-blade` | `general-1` |
-    | `Line.kind` | 14 | strict `of-a-line`; never `of-a-line` |  |
-    | `Line.meet` | 25 | reciprocal `general-within-a-threshold-2`; order `general-within-a-threshold-1`; fused `general-at-tau-zero-1`; strict `of-two-lines-that-cross`; and 2 more | `general-at-tau-zero-1` |
+    | `Line.nearestPoint` | 12 | reciprocal `general-of-a-unit-line-1`; order `general-1001`; fused `general-3`; divisor `of-the-zero-blade` | `general-1` |
+    | `Line.kind` | 17 | norm `general-1001-at-a-threshold-it-names`; fused-norm `general-1026-at-a-threshold-it-names`; rounded-norm `general-1014-at-a-threshold-it-names`; above `of-a-line`; and 2 more |  |
+    | `Line.meet` | 27 | reciprocal `general-within-a-threshold-2`; order `general-within-a-threshold-1`; fused `general-at-tau-zero-1`; norm `general-at-tau-zero-1000-at-a-threshold-it-names`; and 6 more | `general-at-tau-zero-1` |
     | `Line.meetPlane` | 6 | order `general-2`; fused `general-2` | `general-1` |
     | `Line.meetSphere` | 9 | order `general-1`; fused `general-1` | `general-1` |
     | `Line.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |  |
     | `Line.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |  |
     | `Circle.through` | 6 | order `general-1`; fused `general-1` | `general-1` |
-    | `Circle.ofCentreRadiusNormal` | 16 | reciprocal `general-2`; order `general-3`; fused `general-1`; norm `general-3`; and 3 more | `general-1` |
-    | `Circle.weight` | 12 | norm `general-3` | `general-from-parameters-1` |
-    | `Circle.normalise` | 12 | reciprocal `general-1`; norm `general-3`; divisor `of-three-collinear-points` | `general-from-parameters-1` |
+    | `Circle.ofCentreRadiusNormal` | 21 | reciprocal `general-2`; order `general-3`; fused `general-1`; norm `general-3`; and 5 more | `general-1` |
+    | `Circle.weight` | 13 | norm `general-3`; fused-norm `general-1033`; rounded-norm `general-1` | `general-from-parameters-1` |
+    | `Circle.normalise` | 13 | reciprocal `general-1`; norm `general-3`; fused-norm `general-1033`; rounded-norm `general-1`; and 1 more | `general-from-parameters-1` |
     | `Circle.centre` | 12 | reciprocal `general-from-parameters-1`; order `general-1`; fused `general-from-parameters-1`; divisor `of-three-collinear-points` | `general-1` |
     | `Circle.squaredRadius` | 12 | reciprocal `general-2`; order `general-1`; fused `general-1`; divisor `of-three-collinear-points` | `general-1` |
-    | `Circle.kind` | 25 | strict `of-a-point`; never `of-a-point`; always `of-two-spheres-apart` |  |
+    | `Circle.kind` | 33 | reciprocal `general-from-parameters-1008-at-a-threshold-it-names`; order `general-from-parameters-1000-at-a-threshold-it-names`; fused `general-from-parameters-1006-at-a-threshold-it-names`; norm `of-a-round-whose-divisor-underflows`; and 8 more |  |
     | `Circle.plane` | 12 | a normalised answer `general-1`; a wrong index or sign `of-the-unit-circle` |  |
-    | `Circle.power` | 18 | reciprocal `general-2`; order `general-1`; fused `general-1`; zero-sign `on`; and 1 more | `general-1` |
-    | `Circle.side` | 25 | quotient `decided-by-signs-where-the-quotient-underflows`; strict `on-at-the-negative-threshold`; divisor `decided-by-signs-where-the-quotient-underflows`; never `on-at-the-negative-threshold`; and 1 more |  |
+    | `Circle.power` | 19 | reciprocal `general-2`; twice `general-1005`; order `general-1`; fused `general-1`; and 2 more | `general-1` |
+    | `Circle.side` | 28 | reciprocal `general-from-parameters-1000-at-a-threshold-it-names`; twice `general-1007-at-a-threshold-it-names`; order `general-1001-at-a-threshold-it-names`; fused `general-1001-at-a-threshold-it-names`; and 6 more |  |
     | `Circle.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |  |
     | `Circle.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |  |
     | `Plane.through` | 5 | order `general-1`; fused `general-1` | `general-1` |
-    | `Plane.ofNormalDistance` | 12 | reciprocal `divides-and-never-multiplies-by-a-reciprocal`; norm `divides-and-never-multiplies-by-a-reciprocal`; divisor `of-a-zero-normal` | `general-2` |
-    | `Plane.weight` | 8 | norm `general-3` | `general-from-parameters-1` |
-    | `Plane.normalise` | 9 | reciprocal `three-four-five`; norm `general-3`; divisor `of-a-plane-at-infinity` | `general-from-parameters-1` |
+    | `Plane.ofNormalDistance` | 14 | reciprocal `divides-and-never-multiplies-by-a-reciprocal`; norm `divides-and-never-multiplies-by-a-reciprocal`; fused-norm `general-1006`; rounded-norm `general-1010`; and 1 more | `general-2` |
+    | `Plane.weight` | 9 | norm `general-3`; fused-norm `general-1033`; rounded-norm `general-1` | `general-from-parameters-1` |
+    | `Plane.normalise` | 10 | reciprocal `three-four-five`; norm `general-3`; fused-norm `general-1033`; rounded-norm `general-1`; and 1 more | `general-from-parameters-1` |
     | `Plane.normal` | 7 | a wrong index, or a zero whose sign is lost: `is-read` |  |
     | `Plane.distance` | 7 | a wrong index, or a zero whose sign is lost: `is-read` |  |
-    | `Plane.nearestPoint` | 10 | reciprocal `general-from-parameters-1`; order `general-1`; divisor `of-a-plane-at-infinity` | `general-1` |
-    | `Plane.kind` | 17 | strict `of-a-plane`; never `of-a-plane` |  |
-    | `Plane.signedDistance` | 17 | order `general-3`; fused `general-from-parameters-1`; norm `general-3`; divisor `of-a-zero-weight-point` | `general-1` |
-    | `Plane.side` | 23 | quotient `decided-by-signs-where-the-quotient-underflows`; strict `on-at-the-threshold`; divisor `decided-by-signs-where-the-quotient-underflows`; never `on-at-the-threshold`; and 1 more |  |
+    | `Plane.nearestPoint` | 11 | reciprocal `general-from-parameters-1`; order `general-1`; fused `general-1000`; divisor `of-a-plane-at-infinity` | `general-1` |
+    | `Plane.kind` | 19 | norm `general-1003-at-a-threshold-it-names`; fused-norm `general-1033-at-a-threshold-it-names`; rounded-norm `general-1033-at-a-threshold-it-names`; above `of-a-plane`; and 2 more |  |
+    | `Plane.signedDistance` | 19 | reciprocal `general-from-parameters-1002`; twice `general-1`; order `general-3`; fused `general-from-parameters-1`; and 4 more | `general-1` |
+    | `Plane.side` | 28 | reciprocal `general-1006-at-a-threshold-it-names`; twice `general-1000-at-a-threshold-it-names`; order `general-1001-at-a-threshold-it-names`; fused `general-1001-at-a-threshold-it-names`; and 9 more |  |
     | `Plane.meet` | 9 | fused `general-1` | `general-1` |
     | `Plane.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |  |
     | `Plane.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |  |
     | `Sphere.through` | 6 | order `general-2`; fused `general-1` | `general-1` |
-    | `Sphere.ofCentreRadius` | 17 | half-square `general-2`; radius `squares-the-radius-first` | `general-1` |
+    | `Sphere.ofCentreRadius` | 18 | half-square `general-2`; radius `squares-the-radius-first` | `general-1` |
     | `Sphere.weight` | 11 | a wrong index, or a zero whose sign is lost: `of-the-unit-sphere` |  |
     | `Sphere.normalise` | 13 | reciprocal `divides-and-never-multiplies-by-a-reciprocal`; divisor `of-four-coplanar-points` |  |
     | `Sphere.centre` | 11 | reciprocal `general-2`; divisor `of-four-coplanar-points` | `general-1` |
     | `Sphere.squaredRadius` | 12 | reciprocal `general-3`; order `general-1`; fused `general-1`; divisor `of-four-coplanar-points` | `general-from-parameters-2` |
-    | `Sphere.kind` | 24 | strict `of-a-point`; never `of-a-point`; always `of-an-imaginary-sphere` |  |
-    | `Sphere.power` | 18 | reciprocal `general-from-parameters-2`; order `general-1`; fused `general-from-parameters-1`; zero-sign `on`; and 1 more | `general-1` |
-    | `Sphere.side` | 24 | quotient `decided-by-signs-where-the-quotient-underflows`; strict `on-at-the-negative-threshold`; divisor `decided-by-signs-where-the-quotient-underflows`; never `on-at-the-negative-threshold`; and 1 more |  |
+    | `Sphere.kind` | 33 | reciprocal `general-1148-at-a-threshold-it-names`; order `general-from-parameters-1000-at-a-threshold-it-names`; fused `general-from-parameters-1000-at-a-threshold-it-names`; norm `of-a-round-whose-divisor-underflows`; and 8 more |  |
+    | `Sphere.power` | 19 | reciprocal `general-from-parameters-2`; twice `general-1002`; order `general-1`; fused `general-from-parameters-1`; and 2 more | `general-1` |
+    | `Sphere.side` | 27 | reciprocal `general-from-parameters-1014-at-a-threshold-it-names`; twice `general-1012-at-a-threshold-it-names`; order `general-1001-at-a-threshold-it-names`; fused `general-1001-at-a-threshold-it-names`; and 6 more |  |
     | `Sphere.meet` | 10 | fused `general-1` | `general-1` |
     | `Sphere.meetPlane` | 9 | fused `general-through-points-1` | `general-1` |
     | `Sphere.toMultivector` | 4 | a wrong index, or a zero whose sign is lost: `keeps-each-zero` |  |
     | `Sphere.ofMultivector` | 4 | a wrong index, or a zero whose sign is lost: `of-the-powers-of-two` |  |
 
-    **One go-red for each degenerate result.** Fifty-two committed vectors, each a named case or a refusal, are
-    shown red under the one member that names it: a tangent pair and the imaginary one (`never`, `always`); the flat
-    point, the pair at infinity and the zero blade; three collinear points and their line; two spheres apart; four
-    coplanar points and four of one circle; a line and a plane at infinity; two lines that cross, that are parallel,
-    that are one line, and the skew pair at its threshold; each side of each threshold (`strict`); each zero divisor
-    and each zero direction (`divisor`); a sign decided where the quotient underflows (`quotient`); a zero power
-    (`zero-sign`). A separate case answers each degenerate configuration through the published functions and holds
-    the named case, with what it carries.
+    **One go-red for each degenerate result.** Seventy-three committed vectors, each a named case, a refusal or a
+    side of a threshold, are shown red under the one member that names it: a tangent pair and an imaginary one at
+    their thresholds (`never`, `always`); the flat point, the pair at infinity and the zero blade; three collinear
+    points and their line; four coplanar points and four of one circle; a line and a plane at infinity; two lines
+    that cross, that are parallel, that are one line, and the skew pair at its threshold; each threshold from within
+    (`strict`) and from above (`above`); each zero divisor (`divisor`) and each zero direction (`direction`); a sign
+    decided where the quotient underflows, in a test and in a round's reality (`quotient`); a zero power
+    (`zero-sign`). A tangent and an imaginary round at `τ = 0` are decided by the signs, which is not a member, so
+    their witnesses are the same rounds at a threshold above zero. A separate case answers each degenerate
+    configuration through the published functions and holds the named case, with what it carries.
 
-11. **The closed form, and the bound.** D85 item 7 fixes the form of a bound and no number. *The sample:* seed 728,
-    2,000 configurations drawn by the law family's generator; in each, two lattice points of the sphere of radius 3, 7
-    or 9 about the origin, a centre with integer coordinates up to twenty, a line through the two points given by
-    another of its points and an integer multiple of their difference; 1,948 of them have two different points.
-    *The reference:* the two points, which are exact by construction; item 12's script solves each line against each
-    sphere by the quadratic formula in rationals and holds that the roots are those points, in the line's order.
-    *The route:* `Line.ofPointDirection`, `Sphere.ofCentreRadius`, `Line.meetSphere`, `PointPair.points` at `τ = 0`,
+11. **The closed form, and the bound, which is one sample's maximum.** D85 item 7 fixes the form of a bound and no
+    number, and allows the largest error over a stated sample. *The sample:* seed 728, 2,000 configurations drawn by
+    the law family's generator; in each, two lattice points of the sphere of radius 3, 7 or 9 about the origin, a
+    centre with integer coordinates up to twenty, a line through the two points given by another of its points and an
+    integer multiple of their difference; 1,948 of them have two different points. *The reference:* the two points,
+    which are exact by construction; item 12's script solves each line against each sphere by the quadratic formula
+    in rationals and holds that the roots are those points, in the line's order. *The route:*
+    `Line.ofPointDirection`, `Sphere.ofCentreRadius`, `Line.meetSphere`, `PointPair.points` at `τ = 0`,
     `Point.coordinates`. *The measurement:* every configuration answers two real points in the line's order; the
     largest error of a coordinate is **292 units in the last place of its reference**, and where the reference is
-    zero **`104 × 2^-52`, absolute, in length**. *The margin:* none. The answers are pinned bits, so every host
-    measures the same two numbers; the law holds the bound, and a case holds the bound to the measurement. The error
-    is rounding in a coordinate that is small beside the others it is computed from: 292 units in the last place of a
-    coordinate near `1` beside a centre near `20` is about `6·10^-14`. This is the part of "an answer beside its closed
-    form" that this phase ships.
+    zero **`104 × 2^-52`, absolute, in length**. *The margin:* none, and so **the figure is this sample's and no
+    other's.** It is not a bound on the function. The same sample drawn at other seeds measures:
+
+    | seed | largest error, units in the last place | largest absolute error at a zero reference, `× 2^-52` |
+    |---:|---:|---:|
+    | 728 (the stated sample) | 292 | 104 |
+    | 1 | 162 | 152 |
+    | 2 | 192 | 192 |
+    | 3 | 224 | 136 |
+    | 590 | 264 | 136 |
+    | 727 | 160 | 160 |
+    | 729 | 192 | 115.5 |
+    | 1000 | 196 | 152 |
+    | 4242 | 256 | 256 |
+
+    The relative figure stays within the stated sample's at these eight; the absolute one does not, and at seed 4242
+    it is more than twice it. A case holds all nine rows. **So the law does not take its sample from the seed it is
+    run at**: `GeometricAlgebraLaws.laws seed n` runs the closed-form law on the stated sample whatever `seed` is,
+    and no law of the family goes red at another seed. All twenty-seven were run at seeds 1, 2, 3, 590, 727, 729, 1000
+    and 4242 with 2,000 iterations each and held. The answers are pinned bits, so every host measures these numbers.
+    The error is rounding in a coordinate that is small beside the others it is computed from: 292 units in the last
+    place of a coordinate near `1` beside a centre near `20` is about `6·10^-14`. This is the part of "an answer beside
+    its closed form" that this phase ships.
 
 12. **How each family was cross-checked.** By a route that shares no code with the package. A script that is scratch
     work and not part of this change takes Phase 727's route for the algebra (the orthonormal basis, blades as
     bitmaps, exact rationals, the table derived from it and held to D85's three digests) and writes each of the
     seventy functions again from D85 items 4 to 6, once, over a number type. *In binary64,* in the record's order, it
-    replays the four vectors of item 8 and all 747 others, refusals and kinds included, **bit for bit, with no
+    replays the four vectors of item 8 and all 826 others, refusals and kinds included, **bit for bit, with no
     mismatch**. *In exact rationals* (a root to 400 binary places by integer square root) it evaluates the same
-    formula on the same operands: thirteen vectors answer another case there, each one authored to overflow or
-    underflow, and the rest give each function's largest distance from its exact value and the last column of the
+    formula on the same operands: forty-four vectors answer another case there, each one authored to overflow or
+    underflow or asked at a threshold a rounded statistic names, and the rest give each function's largest distance from its exact value and the last column of the
     table. It replicates the sample of item 11 and measures the same two numbers. It does not prove an identity.
 
 13. **Where the suite and the registrations moved.** `ConformalTests.fs` is new, the family "Conformal objects".
@@ -326,11 +403,16 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
     the operation census reads, the package's top-level names, and how a vector's `op` names its function; and it
     gains the witnesses of item 8. `GeometricAlgebraOperations.exactness` has a `Pinned` row for each of the seventy
     functions, eighty-nine in all, held to the surface both ways and each function to a vector. A source-reading
-    case holds the **operation modules** (everything but the law family) to no float literal in a comparison but the
-    seven it lists, each with the phrase of D85 item 6 that states it: the hash's zero test, the norm's `m = 0`, one
-    `d = 0.0` (a divisor, a direction's norm and a threshold), `τ ≥ 0`, a radius below zero, and the signs of a
-    numerator and a denominator. It is shown to read a literal on either side of a comparison and to pass over a
-    binding. Another holds the object modules to no host call but the root. `api/Fuaran.Compute.GeometricAlgebra.txt`
+    case holds the **operation modules** (everything but the law family) to a census: every float literal token they
+    write, comments and strings stripped, equal to a stated account of each literal, how often it is written and what
+    it is there for. `Multivector.fs` writes `0.0` nine times and `1.0` once; `Conformal.fs` writes `0.0` nineteen
+    times, eight of them in a comparison D85 item 6 states (a divisor, a direction's norm and a threshold against
+    zero, `τ ≥ 0`, a radius below zero, a zero numerator and the two signs at `τ = 0`), four inside the norm, and
+    seven as a coefficient a vector does not hold; and `0.5` twice, `2.0` once and `1.0` once, none in a comparison.
+    No other module writes one. The case also refuses `defaultArg`, `Option.defaultValue` and an optional parameter,
+    and is shown red on ten shapes a hunt for comparisons would miss: a default argument, a default value, a
+    clamp, a constant with a neutral name, the literal `1.`, an operator section, a comparison split over lines, a
+    match on `0.0`, an optional parameter, and one more `0.0`. Another holds the object modules to no host call but the root. `api/Fuaran.Compute.GeometricAlgebra.txt`
     is regenerated and no other baseline moves; every other law file is byte-identical; `gate-reads.json` does not
     move.
 
@@ -339,14 +421,17 @@ vectors Phase 727 carried forward, two ask for something no vector can show (ite
     reads it inside). The right contraction, a general inverse, and everything D85 item 10 keeps out.
 
 **Ladder.** `proofs.json` gains `conformal-objects-pinned-by-recorded-rules` at `tested`, listing this family's cases,
-each held to a test of that name. It says what guarantees the bits, that the identities are tested on exact inputs and
+each held to a test of that name. It says what guarantees the bits, what the suite holds of a wrong port in the
+words of the case that holds it (a red vector, or a drawn search that finds the port unable, and not that a port
+fails every function it could change), that the identities are tested on exact inputs and
 not proved, and that the closed-form agreement is a measurement and no theorem. Phase 727's row loses the sentence
 that said the conformal objects did not exist. `ProofsLadderTests` is not edited.
 
 **What a consumer does.** Nothing: no existing function's answer moves, and the version stays `0.47.0`, a draft this
 addition rides. `STABILITY.md` says what a caller should know first.
 
-**Tidy.** Reviewed every file this change touches. *Removed:* nothing was made dead. *Reused instead of minted:* the
+**Tidy.** Reviewed every file this change touches. *Removed:* the suite's listing of red vectors by port, which no
+case read once the claim was computed, and the pattern hunt for comparisons, which the census replaces. *Reused instead of minted:* the
 suite's go-red helpers stay in Phase 727's file, and the carried witnesses were added there and not beside a copy of
 them. *Considered and kept:* the six pairs of functions that turn a typed object into its list of coefficients and
 back, which exist in the package (internal) and again in the suite's vector file, because that file compiles under

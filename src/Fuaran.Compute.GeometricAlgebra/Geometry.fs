@@ -101,7 +101,9 @@ module PointPair =
 
     /// The two points, decided by the squared radius `ρ` against `tau` (a squared length) before any
     /// root is taken. `ρ > τ`: `⟨(X − s) W⁻¹⟩₁` and `⟨(X + s) W⁻¹⟩₁` with `s = +√(X ∗ X)`, in that
-    /// order. `|ρ| ≤ τ`: the centre. `ρ < −τ`: the centre and `ρ`.
+    /// order. `|ρ| ≤ τ`: the centre. `ρ < −τ`: the centre and `ρ`. At `tau = 0` the signs of the squared
+    /// radius's numerator and divisor decide, and no quotient is formed; what an imaginary pair carries is
+    /// still the quotient, which can then be a zero.
     let points (tau: float) (x: PointPair) : Result<PairPoints, GeometryRefusal> =
         Conformal.pairPoints Arithmetic.shipped tau x
 
@@ -187,7 +189,7 @@ module Circle =
     /// The circle with this centre and radius in the plane with this normal:
     /// `meet (sphere c r) (plane n̂ (n̂ · c))`, counter-clockwise about the normal. Refuses a coordinate
     /// that is not finite, a radius that is negative or not finite, and a normal that is zero or not
-    /// finite.
+    /// finite: each parameter in the order it is passed, before anything is computed.
     let ofCentreRadiusNormal
         (centre: float * float * float)
         (radius: float)

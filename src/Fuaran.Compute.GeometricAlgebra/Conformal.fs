@@ -7,13 +7,15 @@ open System
 //  are written in as an argument (DECISIONS.md D85 items 4, 5 and 6; D87).
 //
 //  Every function here takes an `Arithmetic` first: the four products, how a
-//  quotient is formed, the norm, the two halved squares, the `−2` of a power,
-//  what a zero divisor is, what "within `τ`" is, and whether signs decide at
-//  `τ = 0`. A public function passes `Arithmetic.shipped`, which is the record
-//  as D85 writes it. The suite calls the same function with ONE member changed
-//  and shows a committed law vector fail, so a go-red witness is this code and
-//  never a copy of it (D86 item 4 ruled the same for the fold). That is the
-//  only reason the arithmetic is an argument.
+//  quotient is formed and how a statistic's is, the norm, the two halved
+//  squares, the `−2` of a power, what a zero divisor and a zero direction are,
+//  what "above `τ`" and "within `τ`" are, and when the signs decide. Each
+//  member is one rule and no member is two. A public function passes
+//  `Arithmetic.shipped`, which is the record as D85 writes it. The suite calls
+//  the same function with ONE member changed and shows a committed law vector
+//  fail, so a go-red witness is this code and never a copy of it (D86 item 4
+//  ruled the same for the fold). That is the only reason the arithmetic is an
+//  argument.
 //
 //  A typed operation is the general operation on thirty-two coefficients, the
 //  ones a type does not carry being `+0.0`, followed by a copy of the result
@@ -36,6 +38,10 @@ type internal Arithmetic =
         Scalar: Multivector -> Multivector -> float
         /// A quotient: one rounded division, never a product with a reciprocal.
         Divide: float -> float -> float
+        /// An incidence statistic's quotient (D85 item 6): the numerator over the product of the
+        /// divisor's two factors, the product first and then one division, by the division it is
+        /// given.
+        OverBoth: (float -> float -> float) -> float -> float -> float -> float
         /// The norm of a group of coefficients (D49 item 4).
         Norm: float[] -> float
         /// `½ x²` for a point's coordinates: `0.5 × ((x1·x1 + x2·x2) + x3·x3)` (D85 item 4).
@@ -44,13 +50,18 @@ type internal Arithmetic =
         HalfSquare: float -> float
         /// `−2.0` times a scalar product, which is exact: a power's numerator (D85 item 6).
         MinusTwice: float -> float
-        /// Whether a divisor, the norm of a direction parameter or a threshold is zero.
-        IsZero: float -> bool
+        /// Whether a divisor is zero: a weight, `X ∗ X̃`, `W ∗ W̃`, `J ∗ J̃`, the product of two weights.
+        IsZeroDivisor: float -> bool
+        /// Whether the norm of a direction parameter is zero.
+        IsZeroNorm: float -> bool
+        /// `s > τ`: above the threshold (D85 item 6).
+        Above: float -> float -> bool
         /// `|s| ≤ τ`: the zero test (D85 item 6).
         Within: float -> float -> bool
-        /// At `τ = 0` a quotient statistic is decided from the signs of its numerator and its
-        /// denominator, and no quotient is formed (D85 item 6).
-        SignsDecideAtZero: bool
+        /// Whether a threshold is the exact comparison, `τ = 0`. There a statistic that is a quotient
+        /// is decided from the signs of its numerator and its divisor, and no quotient is formed
+        /// (D85 item 6).
+        SignsDecide: float -> bool
     }
 
 /// The one 2-norm (DECISIONS.md D49 item 4), transcribed: this package cannot reference
@@ -60,7 +71,9 @@ type internal Arithmetic =
 /// `v > m` and `−v > m`, which is the same `m` and calls nothing.
 module internal Norm =
 
-    let scaled (x: float[]) : float =
+    /// The norm with the sum of the squared quotients as an argument, so that a witness is this
+    /// routine with that one sum changed.
+    let scaledWith (sumOfSquares: float[] -> float) (x: float[]) : float =
         let mutable m = 0.0
         let mutable nan = false
 
@@ -79,32 +92,40 @@ module internal Norm =
         elif m = 0.0 then
             0.0
         else
-            let mutable acc = 0.0
+            m * sqrt (sumOfSquares (x |> Array.map (fun v -> v / m)))
 
-            for v in x do
-                let q = v / m
-                let sq = q * q
-                acc <- acc + sq
+    /// The squared quotients folded in index order from `+0.0`: a rounded square, then a rounded sum.
+    let foldedSquares (quotients: float[]) : float =
+        let mutable acc = 0.0
 
-            m * sqrt acc
+        for q in quotients do
+            let sq = q * q
+            acc <- acc + sq
+
+        acc
+
+    let scaled (x: float[]) : float = scaledWith foldedSquares x
 
 module internal Arithmetic =
 
     /// The arithmetic DECISIONS.md D85 records. Every comparison of this package's objects with a
-    /// float literal is here, in `Conformal.threshold`, `Conformal.radius` and `Conformal.decide`.
+    /// float literal is here, in `Conformal.threshold`, `Conformal.radius` and `Conformal.against`.
     let shipped: Arithmetic =
         { Geometric = Multivector.geometricProduct
           Outer = Multivector.outerProduct
           Contraction = Multivector.leftContraction
           Scalar = Multivector.scalarProduct
           Divide = fun x y -> x / y
+          OverBoth = fun divide numerator first second -> divide numerator (first * second)
           Norm = Norm.scaled
           HalfSquaredLength = fun x1 x2 x3 -> 0.5 * ((x1 * x1 + x2 * x2) + x3 * x3)
           HalfSquare = fun r -> 0.5 * (r * r)
           MinusTwice = fun s -> -2.0 * s
-          IsZero = fun d -> d = 0.0
+          IsZeroDivisor = fun d -> d = 0.0
+          IsZeroNorm = fun n -> n = 0.0
+          Above = fun s tau -> s > tau
           Within = fun s tau -> s <= tau && -s <= tau
-          SignsDecideAtZero = true }
+          SignsDecide = fun tau -> tau = 0.0 }
 
 /// The index sets of DECISIONS.md D85 item 8's table and the groups of item 6, read off the blades.
 module internal Indices =
@@ -297,7 +318,7 @@ module internal Conformal =
 
     /// A divisor is refused when it is zero or not finite: exact comparisons, no threshold.
     let private divisor (r: Arithmetic) (d: float) : Result<float, GeometryRefusal> =
-        if r.IsZero d then
+        if r.IsZeroDivisor d then
             Error GeometryRefusal.ZeroDivisor
         elif not (finite d) then
             Error GeometryRefusal.NonFiniteDivisor
@@ -327,7 +348,7 @@ module internal Conformal =
         : Result<float * float * float, GeometryRefusal> =
         let n = r.Norm [| d1; d2; d3 |]
 
-        if r.IsZero n then
+        if r.IsZeroNorm n then
             Error GeometryRefusal.ZeroDirection
         elif not (finite n) then
             Error GeometryRefusal.NonFiniteDirection
@@ -409,13 +430,38 @@ module internal Conformal =
     let centre (r: Arithmetic) (x: Multivector) : Result<float * float * float, GeometryRefusal> =
         readAsPoint r (r.Geometric (r.Geometric x nInf) x)
 
-    /// The squared radius of a round: `−(X ∗ X̃) / (W ∗ W̃)` with `W = n∞ ⌋ X`.
-    let squaredRadius (r: Arithmetic) (x: Multivector) : Result<float, GeometryRefusal> =
+    /// The numerator `−(X ∗ X̃)` and the divisor `W ∗ W̃`, `W = n∞ ⌋ X`, of a round's squared radius.
+    /// Refused where the divisor is zero or not finite, or the numerator a NaN.
+    let private squaredRadiusParts (r: Arithmetic) (x: Multivector) : Result<float * float, GeometryRefusal> =
         let numerator = -(r.Scalar x (Multivector.reverse x))
         let w = r.Contraction nInf x
 
         divisor r (r.Scalar w (Multivector.reverse w))
-        |> Result.bind (fun d -> number (r.Divide numerator d))
+        |> Result.bind (fun d ->
+            if Double.IsNaN numerator then
+                Error GeometryRefusal.NotANumber
+            else
+                Ok(numerator, d))
+
+    /// A statistic that is a quotient, against `τ` (D85 item 6): `+1` above it, `0` within it, `−1`
+    /// below `−τ`. At `τ = 0` the signs of the numerator and the divisor decide, and the quotient is
+    /// not formed: a quotient that underflows to a zero is not a zero statistic.
+    let private against (r: Arithmetic) (tau: float) (numerator: float) (d: float) (quotient: unit -> float) : int =
+        if r.SignsDecide tau then
+            if numerator = 0.0 then 0
+            elif (numerator < 0.0) = (d < 0.0) then 1
+            else -1
+        else
+            let q = quotient ()
+
+            if r.Above q tau then 1
+            elif r.Within q tau then 0
+            else -1
+
+    /// The squared radius of a round: `−(X ∗ X̃) / (W ∗ W̃)` with `W = n∞ ⌋ X`.
+    let squaredRadius (r: Arithmetic) (x: Multivector) : Result<float, GeometryRefusal> =
+        squaredRadiusParts r x
+        |> Result.bind (fun (numerator, d) -> number (r.Divide numerator d))
 
     /// The point of a flat nearest the origin: the coordinates of the vector `⟨(n0 ⌋ X) X⁻¹⟩₁`.
     let nearestPoint (r: Arithmetic) (x: Multivector) : Result<float * float * float, GeometryRefusal> =
@@ -428,9 +474,11 @@ module internal Conformal =
 
         threshold tau
         |> Result.bind (fun tau ->
-            squaredRadius r x
-            |> Result.bind (fun rho ->
-                if rho > tau then
+            squaredRadiusParts r x
+            |> Result.bind (fun (numerator, d) ->
+                let verdict = against r tau numerator d (fun () -> r.Divide numerator d)
+
+                if verdict > 0 then
                     inverse r (r.Contraction nInf x)
                     |> Result.bind (fun inverted ->
                         let s = Multivector.ofScalar (sqrt (r.Scalar x x))
@@ -439,10 +487,15 @@ module internal Conformal =
 
                         numbers (Array.append first second)
                         |> Result.map (fun _ -> PairPoints.Real(pointOf first, pointOf second)))
-                elif r.Within rho tau then
+                elif verdict = 0 then
                     centre r x |> Result.map PairPoints.Tangent
                 else
-                    centre r x |> Result.map (fun c -> PairPoints.Imaginary(c, rho))))
+                    // What an imaginary pair carries is its squared radius, the quotient (D85 item 4),
+                    // whatever decided that it is imaginary.
+                    centre r x
+                    |> Result.bind (fun c ->
+                        number (r.Divide numerator d)
+                        |> Result.map (fun rho -> PairPoints.Imaginary(c, rho)))))
 
     // ---- what kind of blade an answer is (D85 item 6) ----------------------------------------------
 
@@ -458,11 +511,11 @@ module internal Conformal =
 
         if Array.exists Double.IsNaN (copy indices m) then
             Shape.NoObject
-        elif onOrigin > tau then
+        elif r.Above onOrigin tau then
             Shape.Round
-        elif none onOrigin && none onNeither && onBoth > tau then
+        elif none onOrigin && none onNeither && r.Above onBoth tau then
             Shape.Flat
-        elif none onOrigin && none onNeither && none onBoth && onInfinity > tau then
+        elif none onOrigin && none onNeither && none onBoth && r.Above onInfinity tau then
             Shape.AtInfinity
         elif none onOrigin && none onNeither && none onBoth && none onInfinity then
             Shape.Zero
@@ -471,10 +524,12 @@ module internal Conformal =
 
     /// A round by its squared radius against `τ`.
     let private reality (r: Arithmetic) (tau: float) (x: Multivector) : Result<Reality, GeometryRefusal> =
-        squaredRadius r x
-        |> Result.map (fun rho ->
-            if rho > tau then Reality.Real
-            elif r.Within rho tau then Reality.Tangent
+        squaredRadiusParts r x
+        |> Result.map (fun (numerator, d) ->
+            let verdict = against r tau numerator d (fun () -> r.Divide numerator d)
+
+            if verdict > 0 then Reality.Real
+            elif verdict = 0 then Reality.Tangent
             else Reality.Imaginary)
 
     let pairKind (r: Arithmetic) (tau: float) (pair: PointPair) : Result<PointPairKind, GeometryRefusal> =
@@ -579,10 +634,12 @@ module internal Conformal =
         (rho: float)
         (normal: float * float * float)
         : Result<Circle, GeometryRefusal> =
-        sphereMvOf r c rho
-        |> Result.bind (fun sphere ->
-            unit r normal
-            |> Result.bind (fun (n1, n2, n3) ->
+        up r c
+        |> Result.bind (fun _ -> radius rho)
+        |> Result.bind (fun _ -> unit r normal)
+        |> Result.bind (fun (n1, n2, n3) ->
+            sphereMvOf r c rho
+            |> Result.bind (fun sphere ->
                 let c1, c2, c3 = c
                 let delta = r.Scalar (vector 0.0 n1 n2 n3 0.0) (vector 0.0 c1 c2 c3 0.0)
                 let through = meet r sphere (planeOfUnit (n1, n2, n3) delta)
@@ -665,7 +722,7 @@ module internal Conformal =
         (second: float)
         : Result<float, GeometryRefusal> =
         divisor r (first * second)
-        |> Result.bind (fun d -> number (r.Divide numerator d))
+        |> Result.bind (fun _ -> number (r.OverBoth r.Divide numerator first second))
 
     /// A statistic's kind: `−1` below `−τ`, `0` within `τ`, `+1` above it. At `τ = 0` the signs of the
     /// numerator and the denominator decide and no quotient is formed.
@@ -682,16 +739,8 @@ module internal Conformal =
             |> Result.bind (fun d ->
                 if Double.IsNaN numerator then
                     Error GeometryRefusal.NotANumber
-                elif r.SignsDecideAtZero && r.IsZero tau then
-                    if r.IsZero numerator then Ok 0
-                    elif (numerator < 0.0) = (d < 0.0) then Ok 1
-                    else Ok -1
                 else
-                    let q = r.Divide numerator d
-
-                    if q > tau then Ok 1
-                    elif r.Within q tau then Ok 0
-                    else Ok -1))
+                    Ok(against r tau numerator d (fun () -> r.OverBoth r.Divide numerator first second))))
 
     /// A point against a sphere: the numerator `−2.0 × (P ∗ σ)` and the two weights.
     let private spherePowerParts (r: Arithmetic) (p: Point) (sphere: Sphere) : float * float * float =

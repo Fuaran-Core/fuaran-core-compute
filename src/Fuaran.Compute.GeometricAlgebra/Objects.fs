@@ -105,7 +105,9 @@ type Plane =
       E1E2E3NInf: float }
 
 /// What a round is by its squared radius `ρ` against the caller's `τ`: `Real` when `ρ > τ`, `Tangent`
-/// when `|ρ| ≤ τ`, `Imaginary` when `ρ < −τ` (DECISIONS.md D85 item 6).
+/// when `|ρ| ≤ τ`, `Imaginary` when `ρ < −τ` (DECISIONS.md D85 item 6). At `τ = 0` it is read from the signs of
+/// the squared radius's numerator and divisor, and the quotient is not formed: a squared radius that
+/// underflows to a zero is not a tangent.
 [<RequireQualifiedAccess>]
 type Reality =
     | Real
