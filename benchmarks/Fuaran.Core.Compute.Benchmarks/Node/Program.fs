@@ -507,6 +507,13 @@ let main argv =
     if onlyBoundary then
         BoundaryBench.run runs
 
+    // `geometric-algebra` times the general product of the geometric algebra on the shapes its typed
+    // functions form, and those functions (Phase 730).
+    let onlyGeometricAlgebra = argv.Length > 1 && argv.[1] = "geometric-algebra"
+
+    if onlyGeometricAlgebra then
+        GeometricAlgebraBench.run runs
+
     // `typed` as the second argument times the typed family alone (Phase 280).
     let onlyTyped = argv.Length > 1 && argv.[1] = "typed"
     // `state` measures the incremental state's wire form alone (Phase 355).
@@ -530,6 +537,7 @@ let main argv =
         && not onlyBetaCorner
         && not onlyGlm
         && not onlyBoundary
+        && not onlyGeometricAlgebra
     then
         table
             "Sheet"
@@ -589,6 +597,7 @@ let main argv =
         || onlyBetaCorner
         || onlyGlm
         || onlyBoundary
+        || onlyGeometricAlgebra
     then
         ()
     elif onlyState then

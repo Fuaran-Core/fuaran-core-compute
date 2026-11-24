@@ -49,6 +49,10 @@
     <!-- Phase 637: what Regression pays to call the matrix kernels across the package boundary
          (`node Program.js 15 boundary`). -->
     <Compile Include="..\BoundaryBench.fs" Link="BoundaryBench.fs" />
+    <!-- Phase 730: the general product of the geometric algebra on the shapes its typed functions
+         form, and those functions (`node Program.js 11 geometric-algebra`). After ElementaryBench.fs,
+         whose generator it reads. -->
+    <Compile Include="..\GeometricAlgebraBench.fs" Link="GeometricAlgebraBench.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
@@ -61,6 +65,8 @@
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Distributions\Fuaran.Compute.Distributions.fsproj" />
     <!-- Phase 355: the state-codec laws, run on this host before the state's wire form is measured. -->
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Conformance\Fuaran.Compute.Conformance.fsproj" />
+    <!-- Phase 730: the geometric algebra whose products the geometric-algebra family times. -->
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.GeometricAlgebra\Fuaran.Compute.GeometricAlgebra.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
