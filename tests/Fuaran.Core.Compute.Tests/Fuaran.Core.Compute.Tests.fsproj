@@ -99,6 +99,10 @@
          ElementaryVectors.fs, whose float cell they render through; before LinearAlgebraTests.fs, whose
          node leg compares their document. -->
     <Compile Include="DistributionsVectors.fs" />
+    <!-- Phase 727: the geometric algebra vectors (Fable-clean; the same node leg compiles them). After
+         ElementaryVectors.fs, whose float cell they render through; before LinearAlgebraTests.fs, whose
+         node leg compares their document. -->
+    <Compile Include="GeometricAlgebraVectors.fs" />
     <Compile Include="LinearAlgebraTests.fs" />
     <Compile Include="RegressionTests.fs" />
     <!-- Phase 633: the suite over Fuaran.Compute.Solvers. -->
@@ -107,6 +111,8 @@
     <Compile Include="GlmSolversTests.fs" />
     <!-- Phase 618: the suite over Fuaran.Compute.Distributions. -->
     <Compile Include="DistributionsTests.fs" />
+    <!-- Phase 727: the suite over Fuaran.Compute.GeometricAlgebra. -->
+    <Compile Include="GeometricAlgebraTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
     <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
@@ -151,6 +157,7 @@
     <ProjectReference Include="..\..\src\Fuaran.Compute.Solvers\Fuaran.Compute.Solvers.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Distributions\Fuaran.Compute.Distributions.fsproj" />
+    <ProjectReference Include="..\..\src\Fuaran.Compute.GeometricAlgebra\Fuaran.Compute.GeometricAlgebra.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />
     <ProjectReference Include="..\..\src\Fuaran.Compute.DataFrame\Fuaran.Compute.DataFrame.fsproj" />

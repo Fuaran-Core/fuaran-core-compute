@@ -1,0 +1,41 @@
+# Fuaran.Compute.GeometricAlgebra — public contract surface (Phase 183).
+# GENERATED from the built assembly's IL metadata. Do not hand-edit: regenerate with
+#   CORE_APPROVE_API=1 dotnet run --project tests/Fuaran.Core.Compute.Tests
+# and stage the baselines you meant to move BY NAME — the switch rewrites them all.
+# One ordinal-sorted line per externally-visible type, member, record field and union case.
+# See STABILITY.md "Public-surface baselines" for what each move class means.
+field Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness+Tags.HostRounded : System.Int32 (literal)
+field Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness+Tags.Pinned : System.Int32 (literal)
+method Fuaran.Compute.GeometricAlgebra.GeometricAlgebraLaws.laws(System.Int32, System.Int32) : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Microsoft.FSharp.Core.FSharpResult`2<Microsoft.FSharp.Core.Unit, System.String>>>
+method Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations.exactnessOf(System.String) : Microsoft.FSharp.Core.FSharpOption`1<Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness>
+method Fuaran.Compute.GeometricAlgebra.Multivector.Equals(System.Object) : System.Boolean
+method Fuaran.Compute.GeometricAlgebra.Multivector.GetHashCode() : System.Int32
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.add(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.basis(System.Int32) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.coefficient(System.Int32, Fuaran.Compute.GeometricAlgebra.Multivector) : System.Double
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.dual(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.geometricProduct(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.grade(System.Int32, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.gradeInvolution(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.init(Microsoft.FSharp.Core.FSharpFunc`2<System.Int32, System.Double>) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.leftContraction(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.negate(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.ofScalar(System.Double) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.outerProduct(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.reverse(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.scalarProduct(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : System.Double
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.scale(System.Double, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.squaredNorm(Fuaran.Compute.GeometricAlgebra.Multivector) : System.Double
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.subtract(Fuaran.Compute.GeometricAlgebra.Multivector, Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.toArray(Fuaran.Compute.GeometricAlgebra.Multivector) : System.Double[]
+method Fuaran.Compute.GeometricAlgebra.MultivectorModule.undual(Fuaran.Compute.GeometricAlgebra.Multivector) : Fuaran.Compute.GeometricAlgebra.Multivector
+property Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations.exactness : Microsoft.FSharp.Collections.FSharpList`1<System.Tuple`2<System.String, Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness>> { get }
+property Fuaran.Compute.GeometricAlgebra.MultivectorModule.zero : Fuaran.Compute.GeometricAlgebra.Multivector { get }
+type Fuaran.Compute.GeometricAlgebra.GeometricAlgebraLaws (module)
+type Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations (module)
+type Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness (union)
+type Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness+Tags (type)
+type Fuaran.Compute.GeometricAlgebra.Multivector (type)
+type Fuaran.Compute.GeometricAlgebra.MultivectorModule (module)
+union-case Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness.HostRounded #1()
+union-case Fuaran.Compute.GeometricAlgebra.GeometricAlgebraOperations+Exactness.Pinned #0()

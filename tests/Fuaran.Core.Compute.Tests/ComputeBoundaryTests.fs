@@ -57,7 +57,10 @@ let compute: Set<string> =
           // they take FSharp.Core and those two alone.
           "Fuaran.Compute.Distributions"
           // Phase 603: a pipeline as a Core tree, above DataFrame; it takes Tree and Ops (`allowedFor`).
-          "Fuaran.Compute.PipelineTree" ]
+          "Fuaran.Compute.PipelineTree"
+          // Phase 727: the conformal geometric algebra, beside the graph and not in it; it takes
+          // FSharp.Core alone (`below`).
+          "Fuaran.Compute.GeometricAlgebra" ]
 
 /// The packages at the bottom of the graph (DECISIONS.md D77 item 10): each takes FSharp.Core and
 /// nothing else — no substrate package, and no package of this repository, so anything in Compute can
@@ -66,9 +69,14 @@ let bottom: Set<string> = set [ "Fuaran.Compute.Solvers" ]
 
 /// The packages held to a stated set of this repository's own below them, and to nothing of the
 /// substrate (DECISIONS.md D79 item 1): the distributions take Elementary and the solvers, so that
-/// every package above (regression, the dataframe) can read a distribution without a cycle.
+/// every package above (regression, the dataframe) can read a distribution without a cycle. The
+/// geometric algebra (DECISIONS.md D85 item 9) takes nothing of this repository yet: it never takes a
+/// `Fuaran.Core.*` package, LinearAlgebra, the dataframe or its own op package, and the phase that
+/// gives it Elementary's sine and arc tangent states that here.
 let below: Map<string, Set<string>> =
-    Map.ofList [ "Fuaran.Compute.Distributions", set [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Solvers" ] ]
+    Map.ofList
+        [ "Fuaran.Compute.Distributions", set [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Solvers" ]
+          "Fuaran.Compute.GeometricAlgebra", Set.empty ]
 
 /// The substrate packages the compute strand stands on — and nothing above them. `Fuaran.Core.Unit`
 /// is BELOW the four, not above: since Core `1.0.0` a schema field carries a unit of measure, so
@@ -528,4 +536,60 @@ let tests =
               Expect.contains
                   (snd projects["Fuaran.Compute.DataFrame"])
                   "Fuaran.Compute.Distributions"
-                  "the dataframe's project references the distributions" ]
+                  "the dataframe's project references the distributions"
+
+          // Phase 727 (DECISIONS.md D85 item 9): the algebra package references FSharp.Core alone. It
+          // never takes a substrate package, so no tree, op-stream, ops, validator, column or wire
+          // package, and never LinearAlgebra, the dataframe or the op package.
+          testCase "the geometric algebra references FSharp.Core alone, by project and by assembly"
+          <| fun _ ->
+              let algebra = "Fuaran.Compute.GeometricAlgebra"
+              let projects = projectReferences ()
+              Expect.equal (Map.tryFind algebra below) (Some Set.empty) "the algebra is held to nothing below it"
+
+              Expect.equal
+                  (Map.tryFind algebra projects)
+                  (Some([ "FSharp.Core" ], []))
+                  "the algebra's project names FSharp.Core and nothing else"
+
+              let refs =
+                  match builtAssembly algebra with
+                  | Ok dll -> referencedAssemblies dll
+                  | Error e -> failtestf "%s" e
+
+              Expect.contains refs "FSharp.Core" "the algebra's assembly references FSharp.Core"
+
+              Expect.isEmpty
+                  (refs |> List.filter (fun r -> r.StartsWith("Fuaran.", StringComparison.Ordinal)))
+                  "the algebra's assembly references no Fuaran assembly"
+
+              // The rule reads the algebra: each reference the record rules out is a violation.
+              let withProject (packages: string list) (projectRefs: string list) =
+                  belowViolations (Map.ofList [ algebra, (packages, projectRefs) ])
+
+              Expect.isEmpty (withProject [ "FSharp.Core" ] []) "FSharp.Core alone breaks nothing"
+
+              for package in
+                  [ "Fuaran.Core.Column"
+                    "Fuaran.Core.Wire"
+                    "Fuaran.Core.OpStream"
+                    "Fuaran.Core.Tree" ] do
+                  Expect.equal
+                      (withProject [ "FSharp.Core"; package ] [])
+                      [ algebra, "package " + package ]
+                      "a substrate package under the algebra is a violation"
+
+              for project in
+                  [ "Fuaran.Compute.LinearAlgebra"
+                    "Fuaran.Compute.DataFrame"
+                    "Fuaran.Compute.GeometricAlgebraOps"
+                    "Fuaran.Compute.Elementary" ] do
+                  Expect.equal
+                      (withProject [ "FSharp.Core" ] [ project ])
+                      [ algebra, "project " + project ]
+                      "a Compute project under the algebra is a violation"
+
+              Expect.equal
+                  (belowAssemblyViolations (Map.ofList [ algebra, [ "FSharp.Core"; "Fuaran.Core.Column" ] ]))
+                  [ algebra, "Fuaran.Core.Column" ]
+                  "a Fuaran assembly referenced by the algebra is a violation" ]

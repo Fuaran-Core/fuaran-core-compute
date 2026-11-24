@@ -1,5 +1,230 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-24 — D86: the multivector and its products ship as `Fuaran.Compute.GeometricAlgebra`, written to D85 and choosing nothing D85 fixed — the names D85 left; the table built by D85 item 3's rule and held to its three digests; one fold kernel that takes its rule as an argument, so every go-red witness is the shipped fold with one rule changed; a law family that says which comparison each law holds under; 167 vectors, ninety-six of which spell out every signed term; the ladder's row moves from rules recorded to tested
+
+**Context.** Phase 727. D85 recorded every convention of the geometric algebra before any kernel. This is the first
+kernel: the multivector over `Cl(4,1)` and the products every later phase is written in. It implements D85 items 2, 3,
+7 and 8 and the part of item 4 that is the products, the involutions and the dual. It chooses no sign, scale, order,
+orientation or zero rule: where a choice below looks like one, the item of D85 that makes it is cited. What D85 left to
+this entry is names, the layout of the modules, and how the suite shows that a wrong port fails.
+
+**Premise check** (on `dfbdd30`, the tree this phase was cut from). `DECISIONS.md` opens with D85 and `src/` holds no
+geometric algebra directory. D85 item 9 records the package id; items 2 and 3 fix the basis, the blade order and the
+fold. `proofs.json` holds `geometric-algebra-pinned-by-recorded-rules` at `policy` and `ProofsLadderTests` reads it
+against the project file. The tree declares `0.47.0` and no `v0.47.0` tag exists, so the slot is a draft and this
+addition rides it. Phase 623 (method cards) and Phase 666 (step vectors) have not shipped, so this phase adds neither a
+card nor a step vector: those phases' rosters gain these functions. All five held. One thing the phase's own list of
+registrations did not name was found: the suite holds two more rosters a new packable package must be on, the coverage
+declaration and the wire roster, and the node leg's list of documents is in the linear-algebra suite. Each gained its
+one entry (item 11).
+
+**Ruled.**
+
+1. **The surface, and the names.** One type and one module of functions, in the namespace of the package id (D85 item
+   9). `Multivector` is the sealed class of D85 item 8. The module `Multivector` holds:
+
+   | function | what it is | D85 |
+   |---|---|---|
+   | `zero` | the zero multivector, a value | item 2 |
+   | `init f` | the coefficient at index `i` is `f i`, called once for each index, ascending | item 2 |
+   | `ofScalar s`, `basis i` | `s` at index 0; `1.0` at index `i`; `+0.0` elsewhere | item 2 |
+   | `coefficient i a`, `toArray a` | one coefficient; all thirty-two, as a fresh array | item 8 |
+   | `grade g a` | the grade projection: a copy of one grade's run, `+0.0` elsewhere | item 4 |
+   | `add`, `subtract`, `scale s a` | one rounded `+`, `−` or `×` for each coefficient, the scalar first | item 3 |
+   | `negate`, `reverse`, `gradeInvolution` | exact negation of every blade, of grades 2 and 3, of the odd grades | items 2, 4 |
+   | `dual`, `undual` | the signed permutation of item 2's last column, and its inverse | item 4 |
+   | `geometricProduct`, `outerProduct`, `leftContraction` | item 3's fold over the table, and over its two selections | items 3, 4 |
+   | `scalarProduct`, `squaredNorm` | the scalar coefficient of `A B`; `A ∗ Ã` | item 4 |
+
+   A product is named in full. *Rejected:* `geometric`, `outer`, `inner` and `dot` (D85 item 4 publishes one inner
+   product and names it the left contraction, and a function called `inner` or `dot` would invite the reading it
+   rules out); `wedge` and `lc` (a twin author reads the record's words, not a library's abbreviations); operators
+   (item 8). The sum, the difference, the scalar multiple and negation are in this phase although the phase's own
+   list of what ships does not name them: D85 item 7 classifies them among the published operations, distributivity
+   and the signature laws cannot be stated without them, and an algebra with no addition is not one. No named values
+   for `n0`, `e1`, `e2`, `e3`, `n∞` or the pseudoscalar are published: `basis 1` to `basis 5` and `basis 31` are
+   those, the index is the record's, and a second name for each is surface with no reader yet. No function publishes
+   a blade's name, grade or signs: the order is D85 item 2's table, which a port transcribes, and the law file's
+   head carries the thirty-two names in order.
+
+2. **Nothing refuses, and one thing raises.** No function of this phase returns `Result`. Construction is `init`,
+   which is total: there is no array whose length could be wrong. *Rejected:* `ofArray : float[] -> Result<_, _>`,
+   a refusal and a union case for a mistake `init` makes impossible; `Matrix.init` is the precedent. A blade index is
+   an argument and not data, so `basis` and `coefficient` raise `IndexOutOfRangeException` outside `0 .. 31`, as an
+   array's read would: D50 item 8 ruled the same for a matrix's shape and its reads. *Rejected:* `Result<float, _>`
+   from a coefficient read, which makes every loop over a multivector a match on a case that cannot occur. A grade
+   is an argument too, but its projection is total: a grade the algebra does not have holds no blade, so `grade g`
+   below zero or above five answers the zero multivector, which is what `⟨A⟩_g` is. So the names of refusal cases
+   that D85 leaves to the phases begin in Phase 728, which has the first refusal.
+
+3. **The table is built, not written.** `Basis` enumerates the blades by D85 item 2's rule (the subsets of
+   `n0 e1 e2 e3 n∞`, by size and then lexicographically) and builds the 1,024 terms by item 3's rule: each blade's
+   Euclidean factor and null factor, `λ`, `κ`, the parity of the sort, and the four-by-four table of the null
+   factors, written once as sixteen cases. No table of terms, signs or indices is a literal anywhere in the package.
+   The suite renders the three tables as item 3 says (a line feed after each line whatever the platform) and holds
+   their term counts, byte counts and SHA-256 to the record's. The outer product's and the contraction's terms are
+   selected from the geometric product's by the grades, in the order they have there, and the scalar product's are
+   those whose output is the scalar. **The dual's permutation is read off the table:** a blade's one term against the
+   pseudoscalar, with the opposite sign because `I⁻¹ = −I`; item 4 says the dual is that product. It is not a second
+   transcription. The suite holds it, the blades, the grades and the two involutions' signs to item 2's table,
+   transcribed once in the suite as the record writes it, and holds the scalar coefficient's thirty-two terms to the
+   line item 3 writes out. *Rejected:* a literal table generated by a script (a second artefact to keep equal to the
+   rule, and nothing a reader can check against the record but its digest); deriving the dual from the contraction's
+   terms (the same thing through a selection that keeps exactly those terms).
+
+4. **One kernel, and its rule is an argument.** Every product is `Kernel.foldWith start enter terms a b`: an array
+   of thirty-two accumulators created at `start`, then one loop over `terms` in order, each term entering its
+   output's accumulator through `enter`. The shipped products pass `+0.0`, `Kernel.twoRoundings` (`p = x × y`, then
+   `r + p` or `r − p`) and one of the four term arrays. The involutions, negation and the duals are
+   `Kernel.signedPermutationWith negate target negative a`, and pass `Kernel.exactNegation` (`−x`). Nothing is
+   specialised: the geometric product visits all 1,024 terms on every call, and that loop is the reference Phase 730
+   holds a specialised product to. **The rule is an argument for one reason: a go-red witness must be this code.**
+   The suite calls the same kernels with one argument changed (item 9). A witness written as a second fold in the
+   suite can agree with itself and omit a step the shipped path applies; one that calls the shipped kernel cannot.
+   The kernels are `inline` so that a product pays no closure call for it: the reference a later measurement is taken
+   against is the plain loop. An inline member cannot be used from another assembly when it reads internal ones, so
+   `Kernel.productUnder`, `scalarUnder` and `permutedUnder` are the same kernels compiled in the package with the
+   rule left open, internal, and the suite reaches them through `InternalsVisibleTo`. Nothing of this is public.
+   *Rejected:* a kernel with a closure argument and no `inline` (a virtual call for each of 1,024 terms in the
+   reference); a test-only copy of the fold (the defect the rule above exists to prevent); compile-time switches.
+
+5. **No fused multiply-add: what was read.** `twoRoundings` binds the product before it adds. On .NET the JIT does
+   not contract the two (D49 item 2). Under Fable 5.0.0 the emitted JavaScript for the geometric product is a `for`
+   loop from index 0 over the term array, whose body stores `Kernel_twoRoundings(term.Negative, r[term.Out],
+   a[term.Left], b[term.Right])` through Fable's checked array reads, and that function is `const p = x * y; if (negative) return r - p; else return
+   r + p;`. JavaScript has no contraction, the loop is the table's order, and the accumulators are a `Float64Array`
+   filled with `0`. The node leg renders the law file byte for byte (item 9).
+
+6. **A NaN is canonical where a value leaves.** `Kernel.adopt` rewrites each NaN of a fresh array to `Double.NaN`
+   and wraps it; every function that computes or negates ends in it, and the two that return a float end in
+   `Kernel.canonical`. `init` ends in it too, so storage never holds another NaN, and the functions that only copy
+   (`grade`, `coefficient`, `toArray`) need no pass. It is applied once, on the way out, never inside the fold
+   (D85 item 3).
+
+7. **`Equals` and the hash are D85 item 8's, and item 6 gains one phrase.** `Equals` walks the thirty-two pairs and
+   holds when each is equal as numbers or both are NaN. The hash is item 8's as written, so it tests a coefficient
+   against zero: `x = 0.0`. D85 item 6 lists every comparison that may name `0.0`, and Phase 728's suite reads the
+   sources against that list; the list omitted this one, which item 8 requires. **This phase adds the phrase "the
+   zero test inside `Multivector`'s hash (item 8)" to item 6's list**, and changes nothing else in D85. The package's
+   sources name `0.0` in no other comparison. Under Fable the class's `Equals` is called by `=` and its
+   `GetHashCode` by `hash`; the law family holds both on each host (item 8 here).
+
+8. **The law family, and which comparison each law holds under.** `GeometricAlgebraLaws.laws seed count` runs
+   eighteen laws on whichever host calls it; the suite runs them on .NET and the node leg under JavaScript, at seed
+   590 and 200 iterations. Each law's name says its comparison (D85 item 7).
+
+   - *Bit for bit, on exact inputs* (multiples of a quarter no larger than eight, a zero of either sign among them):
+     the signature (`e_i² = 1`, `n0² = n∞² = 0`, `n0 ∗ n∞ = −1`, `½ n∞ − n0` and `½ n∞ + n0` squaring to `+1` and
+     `−1`, `I² = −1`); associativity; distributivity on both sides; `a ∧ a = 0` for a vector;
+     `(A ∧ B) ∗ C = A ∗ (B ⌋ C)`.
+   - *Under the float identity, on exact inputs:* `rev (A B) = rev B rev A`, with `rev (e1 e2)` holding nineteen
+     negative zeros and `rev e2 rev e1` none; `(A ∧ B)* = A ⌋ B*`, with sixteen against none at `e1`, `e2`; the dual
+     against `A ⌋ I⁻¹` written as a fold, and against `A I⁻¹` and `I⁻¹ A`; the undual against `A ⌋ I`. The counts
+     are the ones D85 item 7 gives, and they are asserted: they are why these laws are not bit for bit.
+   - *Bit for bit, on general inputs, because exact by construction:* the undual of a dual and the dual of an undual
+     (infinities and the least subnormals among the coefficients); each involution applied twice; a grade projection
+     as a copy; a sum, a difference and a scalar multiple as one rounded operation each; the scalar product as the
+     scalar coefficient of the geometric product and the squared norm as `A ∗ Ã`; and, for `A` of one grade and `B`
+     of one grade, `A ∧ B` and `A ⌋ B` as the grade parts of `A B`.
+   - *Structural:* the table's shape (1,024 terms, thirty-two for each output, 128 pairs with two, 243 and 243 and
+     32 selected); no product returns a negative zero, over operands that are mostly zeros of both signs; a NaN
+     leaves as `Double.NaN`'s bits, whether it was given, made by a zero against an infinity, or had its sign moved
+     by a negation; and equality is the float identity with equal multivectors hashing alike.
+
+   The laws of D85 item 7 that are not here concern operations that do not exist yet: `up`, the objects, the meet
+   and the versors (Phases 728 and 729). **The identities are tested and not proved.** On general inputs they hold
+   only to rounding and this phase states no bound, because it ships no operation whose contract is one: what is
+   pinned on general inputs is the bits, by the vectors.
+
+9. **The vectors, and the wrong port each exists to catch.** `conformance/laws/geometric-algebra-laws.json` holds 167
+   vectors over the published functions, rendered through the one corpus writer, each float its bit pattern. Every
+   expected value is the shipped .NET path's answer. Three kinds.
+
+   - **Ninety-six table rows** (`table-geometric-NN`, `table-outer-NN`, `table-contraction-NN`): the basis blade of
+     index `NN` times the multivector whose coefficient at index `j` is `2^j`. An output coefficient is then the
+     signed sum of the `2^j` whose term reaches it, at most two of them, exactly. So the thirty-two rows of a product
+     are its whole table: each term and its sign is one bit of one answer.
+   - **Twenty-six hard inputs**, each authored for one rule.
+   - **Forty-five general inputs**, drawn by a pinned generator (Park and Miller's, every step exact) and written
+     into the file, so a port reads the operands and reproduces only the answers: dense operands at one scale and
+     across sixteen, forty and eighty binary orders of magnitude; operands that are two-thirds zeros of both signs;
+     one with a NaN, one with an infinity; products that underflow into the subnormals and past them; products that
+     overflow, where an infinity of each sign in one sum is a NaN in this order; and the copies over one operand
+     holding both zeros, an infinity and a NaN.
+
+   `init` and `toArray` have no vector of their own: every vector is read through them.
+
+   Each wrong port, the vector that catches it, and how the suite shows it. Every witness runs the shipped kernel
+   with exactly the one argument named, renders it as the shipped answer is rendered, and asserts two things on the
+   committed file's line for that vector: the shipped rule's answer is on it, and the witness's is not.
+
+   | a port that | is caught by | the witness: the shipped kernel with |
+   |---|---|---|
+   | (a) sums in another order | `geometric-absorbed-then-cancelled` (the scalar is `((2^60 + 1) − 2^60) + 1 = 1`; with the right index outermost it is `2`, and descending `0`), `scalar-absorbed-then-cancelled`, `geometric-general-3`, `geometric-general-4`, `scalar-general-2` | the term array sorted by `(j, i, k)`, and reversed |
+   | (b) fuses a multiply-add | `geometric-fma-witness` and `scalar-fma-witness` (`−1 + (1 + 2^-30)(1 − 2^-30)`: `+0.0` in two roundings, `−2^-60` fused), `geometric-general-1`, `outer-general-1`, `contraction-general-1` | `enter` replaced by the host's fused multiply-add |
+   | (c) seeds a fold from its first term | `geometric-every-scalar-term-a-negative-zero`, `scalar-every-term-a-negative-zero` (every one of the thirty-two signed terms is `−0.0`; the fold answers `+0.0`) | `start` at `−0.0`, which is a fold seeded from its first term exactly wherever an output has a term: `−0.0 + p = p` and `−0.0 − p = −p` for every `p` |
+   | (d) skips a zero's term | `geometric-`, `outer-`, `contraction-` and `scalar-zero-against-infinity` (a NaN wherever a zero meets the infinity) | `enter` returning the accumulator when a factor is zero |
+   | (e) has one wrong table sign | the table row of the term's left blade | the term array with that one sign flipped: all 1,510 terms of the three tables, one at a time; and with each term left out; and, for the two selections, with each of the 781 terms they do not keep, kept |
+   | (f) returns `−0.0` where the fold gives `+0.0` | the vectors of (c) | as (c) |
+   | (f) returns `+0.0` where an involution gives `−0.0` | `negate-zeros`, `reverse-zeros`, `reverse-positive-zeros`, `gradeInvolution-zeros`, `dual-zeros`, `dual-positive-zeros`, `undual-zeros` | `negate` replaced by `0.0 − x`, which is `−x` everywhere but at `+0.0` |
+
+   Two things the same tests hold the other way, because D85 item 3 states them and a later phase stands on them.
+   Gathering one output at a time, the term array sorted by `(k, i, j)`, answers every product vector's bits: it is
+   another loop and not another order. And over finite operands a fold that skips a zero's term answers the same
+   bits, on every finite product vector of the file: that is the statement a specialised product relies on.
+
+   **How each family was cross-checked.** By a route that shares no code with the package: the algebra over the
+   orthonormal basis `e1 e2 e3 e+ e−`, blades as bitmaps, in exact rational arithmetic, in a script that is scratch
+   work and not part of this change. It builds the thirty-two stored blades as outer products of `n0 = ½ (e− − e+)`
+   and `n∞ = e− + e+`, expresses every product of two of them back in stored blades by solving exactly, and so
+   derives the table without item 3's rule. *The table:* 1,024 terms, every coefficient `±1`, and the three
+   renderings hash to the three digests of D85 item 3. *The selections:* each equals the grade part of the product
+   taken in the orthonormal basis, pair by pair. *The dual:* `A I⁻¹` and `I⁻¹ A` agree and equal item 2's last
+   column. *Every vector:* replayed in binary64 with that table in item 3's fold, all 167 answer the committed bits.
+   *The exact answers:* for the 123 product vectors with finite operands, the exact rational product through the
+   orthonormal basis: the ninety-six table rows equal it exactly, and the largest distance of any other answer from
+   it is 4.98 units of `2^-53` of the sum of the magnitudes of that output's terms (`geometric-general-2`), with the
+   two underflowing vectors inside thirty-two half least subnormals more. The script fails when one hex digit of one
+   expected value is changed. The node leg renders the same 180,861 bytes as .NET.
+
+10. **The operation table and the source rule.** `GeometricAlgebraOperations.exactness` has a `Pinned` row for each
+    of the nineteen functions of item 1 (`zero` is a value), and the suite holds it equal to the module's public
+    functions both ways, and holds every one of them but `init` and `toArray` to a vector. A source-reading test
+    holds the four source files to no host mathematics call, and is shown to read a fused multiply-add, a root, a
+    power and an absolute value where there is one. The package publishes no operator, and no top-level name
+    another Compute package declares (D74 item 2).
+
+11. **Where the package is registered.** The solution, `pack.ps1`, the publish workflow's header (it packs the
+    solution), the README's derived roster, `STABILITY.md` under the `0.47.0` draft, and
+    `api/Fuaran.Compute.GeometricAlgebra.txt`. The boundary suite holds it to FSharp.Core alone, by project and by
+    built assembly, through the rule D79 item 1 added (`below`, with an empty set): a `Fuaran.Core.*` package, and
+    LinearAlgebra, the dataframe, the op package or, for now, Elementary as a project, are each shown to be a
+    violation. Phase 729 states Elementary there when it takes `sinCos` and `atan2` (D85 item 9). The coverage
+    declaration gains the package as `pinned-order-law-tested`, as the other pinned packages are, and the wire
+    roster as a package that encodes nothing (D85 item 10). `gate-reads.json` does not move: the solution builds the
+    project. No other baseline under `api/` moves, and every other law file is byte-identical.
+
+12. **Not here.** The conformal objects, `up`, the meet and the join, a blade's inverse and the three normalisations
+    (Phase 728); the versors, the exponential and the matrix (Phase 729); any specialised product, and any timing
+    (Phase 730): no speed is claimed for the general product, which is written to be read; the op algebra (Phase
+    731).
+
+**Ladder.** `geometric-algebra-pinned-by-recorded-rules` moves from `policy` to `tested` in the change that adds the
+project file, with no edit to `ProofsLadderTests`. It says that the pin guarantees the bits, that the identities are
+tested on exact inputs and not proved, and that it asserts nothing of the packages and phases that do not exist yet.
+It lists the cases that test it, and the suite holds each to a test of that name.
+
+**What a consumer does.** Nothing, unless it wants the algebra: no existing package's surface or answers move, and
+the version stays `0.47.0`, a draft this addition rides. `STABILITY.md` says what a caller should know first.
+
+**Tidy.** Reviewed every file this change touches. Removed nothing: the change adds a package and one entry to each
+roster, and makes no existing code dead, duplicate or obsolete. Considered and kept: the three private Park and
+Miller generators that now exist in this package's law family, in the suite's vector file and in each sibling
+package's law family, because a law family must run with FSharp.Core alone and the packages share no code by D85 item
+9, and the vector file's draws are written into the document it renders; `ComputeBoundaryTests`' older `below` case,
+whose message names the distributions, because the algebra has a case of its own beside it; and the sentence of
+`gate-reads.json` that lists the node leg's packages, because that file moves only when what the gate builds does.
+
 ## 2026-11-23 — D85: the geometric algebra rules, recorded before any kernel lands — `Cl(4,1)` with `n0 · n∞ = −1`; thirty-two coefficients held over the null basis `n0 e1 e2 e3 n∞`, grade then lexicographic, every blade an ascending outer product; every product one fold from `+0.0` over one table of 1,024 signed terms, with no fused multiply-add and no term skipped on a coefficient's value; the dual is `A ⌋ I⁻¹`; an object is a direct blade and a versor is applied by its reverse; nothing is normalised unasked; a zero test is a threshold the caller passes; the package ids `Fuaran.Compute.GeometricAlgebra` and `Fuaran.Compute.GeometricAlgebraOps` are recorded as ruled
 
 **Context.** Phase 726. The geometric algebra library is built as packages of this repository and held to its
@@ -373,7 +598,8 @@ that Phase 727 can re-derive each fact, and the digests let it show that it did.
    parameter against zero; `V ∗ Ṽ > 0`; a factor `s > 0`; a radius or a `τ` that is not negative; the
    exponential's `φ = 0` and the logarithm's `|B′| = 0`; the sign of a scalar part (the logarithm's `c`, and the
    rotor read from a matrix, with the sign of its largest axis component at a half turn); the sign of whatever
-   says that a matrix reverses orientation; each of the first three entries of a matrix's last row; and the signs
+   says that a matrix reverses orientation; each of the first three entries of a matrix's last row; the zero test
+   inside `Multivector`'s hash (item 8); and the signs
    of a numerator and a denominator at `τ = 0`. `1.0` may be named in exactly one comparison: the fourth entry of a
    matrix's last row. A test for a NaN or an infinity names no tolerance and is outside the rule, and so are the
    two tests inside the norm itself, `m = 0` and `m = +∞` (D49 item 4). The suite of Phase 728 reads the sources to

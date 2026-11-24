@@ -11,7 +11,8 @@
     (../RegressionVectors.fs), held to conformance/laws/regression-laws.json, and since Phase 633 the
     solvers package's (../SolversVectors.fs), held to conformance/laws/solvers-laws.json, and since
     Phase 618 the distributions package's (../DistributionsVectors.fs), held to
-    conformance/laws/distributions-laws.json.
+    conformance/laws/distributions-laws.json, and since Phase 727 the geometric algebra package's
+    (../GeometricAlgebraVectors.fs), held to conformance/laws/geometric-algebra-laws.json.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -27,12 +28,14 @@
     <Compile Include="..\RegressionVectors.fs" Link="RegressionVectors.fs" />
     <Compile Include="..\SolversVectors.fs" Link="SolversVectors.fs" />
     <Compile Include="..\DistributionsVectors.fs" Link="DistributionsVectors.fs" />
+    <Compile Include="..\GeometricAlgebraVectors.fs" Link="GeometricAlgebraVectors.fs" />
     <Compile Include="LinearAlgebraNode.fs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Solvers\Fuaran.Compute.Solvers.fsproj" />
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Distributions\Fuaran.Compute.Distributions.fsproj" />
+    <ProjectReference Include="..\..\..\src\Fuaran.Compute.GeometricAlgebra\Fuaran.Compute.GeometricAlgebra.fsproj" />
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.LinearAlgebra\Fuaran.Compute.LinearAlgebra.fsproj" />
     <ProjectReference Include="..\..\..\src\Fuaran.Compute.Regression\Fuaran.Compute.Regression.fsproj" />
   </ItemGroup>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fuaran.Compute.GeometricAlgebra</PackageId>
+    <Description>Fuaran.Compute.GeometricAlgebra — a pinned conformal geometric algebra, Cl(4,1): the multivector over the null basis n0 e1 e2 e3 n∞, thirty-two coefficients in one published blade order, and the products every operation is written in — geometric, outer, left contraction and scalar, each one fold from +0.0 over one table of 1,024 signed terms in one order, a rounded product and then a rounded sum — with the reverse, the grade involution, grade projection, and the dual and its inverse as copies and exact negation. No fused multiply-add and no host mathematics call on any host, so every answer is the same bits on .NET, under Fable and in every host that transcribes it. FSharp.Core only, nothing of Fuaran.Compute; Fable-clean.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The blades in their recorded order, the 1,024 signed terms and the dual's signed permutation,
+         each built by its rule (Phase 727, DECISIONS.md D85 items 2 and 3). FIRST: everything reads
+         it. -->
+    <Compile Include="Basis.fs" />
+    <!-- The multivector, the fold and the products. -->
+    <Compile Include="Multivector.fs" />
+    <!-- Every public operation's exactness class, as data. -->
+    <Compile Include="GeometricAlgebraOperations.fs" />
+    <!-- The law family over the operations above. LAST: it reads all of them. -->
+    <Compile Include="GeometricAlgebraLaws.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- FSharp.Core only: nothing of the substrate, nothing of Compute (DECISIONS.md D85 item 9). -->
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The suite renders the term tables to the digests the record pins, and runs the shipped fold
+         with one rule changed to show a law vector fail. -->
+    <InternalsVisibleTo Include="Fuaran.Core.Compute.Tests" />
+  </ItemGroup>
+</Project>
