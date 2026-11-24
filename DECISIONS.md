@@ -1,12 +1,14 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-11-24 — D89: the geometric product is specialised to nine pairs of operand types where a measurement showed the gain — a rotor with a rotor, a motor with a motor, a translator with a rotor, and both products of the sandwich of a rotor, a translator and a motor with a point; each a filter of the one table in its order, taken only on finite operands that hold zeros off their types, and so the general product's bits on every input; every one kept, between four and a half and twenty-one times as fast as the general product on .NET and under node, against a margin of two and a half stated first; nothing published, no vector moved
+## 2026-11-24 — D89: the geometric product is specialised to nine pairs of operand types where a measurement showed the gain — a rotor with a rotor, a motor with a motor, a translator with a rotor, and both products of the sandwich of a rotor, a translator and a motor with a point; each a filter of the one table in its order, taken only on finite operands that hold zeros off their types, and so the general product's bits on every input; every one kept by the margin of two and a half stated before measuring, on its designated runs, at 4.55 to 13.64 times the general product on .NET and 5.42 to 21.14 under node, with one pair below the margin on .NET when every committed run is pooled; one float literal in a comparison D85 item 6 does not list, admitted by name; the law family gains one law that reads internals; no signature, vector or API baseline line moved
 
 **Context.** Phase 730. The general product of `Fuaran.Compute.GeometricAlgebra` (D86) folds all 1,024 signed terms of
 D85 item 3's table whatever its operands hold; the objects (D87) and the versors (D88) fill few coefficients. This
 entry asks whether a product over only the coefficients two operand types carry is worth having, and holds any it
-keeps to the general product's bits. It moves nothing D85 fixed: every fold still starts at `+0.0`, visits its terms
-in the table's order, enters each as a rounded product and a rounded sum, and skips no term on a coefficient's value.
+keeps to the general product's bits. It moves nothing D85 fixed but one addition, named in item 11: the guard's
+comparison of a coefficient with `0.0`, which D85 item 6's list of such comparisons does not hold. Every fold still
+starts at `+0.0`, visits its terms in the table's order, enters each as a rounded product and a rounded sum, and
+skips no term on a coefficient's value.
 
 **Premise check** (on `f8a358f`, the tree this phase was cut from). `main` holds Phases 727, 728 and 729: the general
 product and its 1,542 vectors, the six object types and the five versor types. This file opened with D88, then D87,
@@ -14,15 +16,16 @@ D86 and D85. Every typed function reaches the general product through the `Geome
 `Arithmetic.shipped` bound to `Multivector.geometricProduct`, on operands it widened from their records. The
 benchmarks directory holds the node leg's timing program, through which every Compute kernel since Phase 593 has been
 measured on both hosts, and committed results. The tree declares `0.47.0` and no `v0.47.0` tag exists. All five held.
-One was sharpened: the wrong ports of the objects' and the versors' suites replace the four products of the
-arithmetic wholesale, so a specialisation behind `Arithmetic.shipped.Geometric` leaves their tables as they are (item 6).
+One was sharpened: the wrong ports of the objects' and the versors' suites replace the four products of the arithmetic
+wholesale, so a specialisation behind `Arithmetic.shipped.Geometric` leaves their tables as they are (item 6).
 
 **The margin, stated before any specialisation was measured.** The general product was measured first and committed
 (`benchmarks/results/2026-11-24-i7-8650u-phase-730.md`, three runs on each host). Across those runs one case's median
 moved by a factor of up to 2.34 on .NET and 2.09 under node, on a machine that was not quiet. So a specialised
 product is kept only where, on BOTH hosts, the GREATEST of its three run medians is below the LEAST of the general
 product's three run medians on the same operands divided by **2.5**: a pessimistic speed-up of at least two and a half
-times, which the general product's own spread did not reach. A product that does not clear it on either host is
+times, which the general product's own spread in the baseline did not reach (the final tree's own spread did, on
+.NET: item 8). A product that does not clear it on either host is
 deleted in the change that measured it, and named below with its numbers.
 
 **The route, chosen before any specialisation was measured: a table filtered from the general one when the module is
@@ -32,8 +35,9 @@ order, so the specialised fold visits its terms in the general order by construc
 *Rejected:* hand-written products (some hundred terms each, the order and every sign a reviewer's to check against a
 table that already exists, and a second copy of it); products generated at build time (straight-line code with no
 table, possibly faster, but a generator and a generated source the build and the Fable leg would both have to carry,
-for a gain this phase has not measured); and inlining (the compiler does not fold a loop over a filtered array into
-straight-line code, on either host, so there is no inlined route to take).
+for a gain this phase has not measured); and inlining (an inlined function still loops over its table, and this
+phase knows of no compiler on either host that turns a loop over a filtered array into straight-line code; it did
+not try one).
 
 **Ruled.**
 
@@ -41,16 +45,16 @@ straight-line code, on either host, so there is no inlined route to take).
    products the typed functions form most and the ones the measurement covered: a rotor with a rotor (`Rotor.compose`,
    `Rotor.interpolate`), a motor with a motor (`Motor.compose`, `Motor.interpolate`), a translator with a rotor
    (`Motor.ofRotorTranslator`; `Motor.ofScrew`, `Motor.ofLine` and `Motor.ofMatrix` build their motors through these
-   pairs),
-   and both products of the sandwich `(V X) Ṽ` of a rotor, a translator and a motor with a point (`applyToPoint`). The
-   second product of a sandwich is specialised to the type the first one's answer has, the blades its terms reach,
-   with the versor's type, which is its reverse's. *Measured and not written:* the products of a point with a sphere.
-   No typed function forms their geometric product; the power against a sphere forms their scalar product, which
-   folds 32 terms and costs about a twentieth of the geometric product already (95 ns on .NET, 4 µs under node), and
-   the join forms their outer product, 243 terms. A specialisation of either would serve no measured cost worth the
-   code, so none was written. *Not measured, and so not specialised:* the sandwiches of a dilator and a reflection, the
-   sandwiches of a versor with a point pair, a line, a circle, a plane or a sphere, and the outer product and the left
-   contraction anywhere. Each is a pair a later phase can measure and add to the list by the same rule.
+   pairs), and both products of the sandwich `(V X) Ṽ` of a rotor, a translator and a motor with a point
+   (`applyToPoint`). The second product of a sandwich is specialised to the type the first one's answer has, the
+   blades its terms reach, with the versor's type, which is its reverse's. *Measured and not written:* the products of
+   a point with a sphere. No typed function forms their geometric product; the power against a sphere forms their
+   scalar product, which folds 32 terms and costs about a twentieth of the geometric product already (96 to 108 ns on
+   .NET, 4.1 to 4.7 µs under node), and the join forms their outer product, 243 terms. A specialisation of either
+   would serve no measured cost worth the code, so none was written. *Not measured, and so not specialised:* the
+   sandwiches of a dilator and a reflection, the sandwiches of a versor with a point pair, a line, a circle, a plane
+   or a sphere, and the outer product and the left contraction anywhere. Each is a pair a later phase can measure and
+   add to the list by the same rule.
 2. **How a typed operand says its type.** `Multivector` carries, internally, the mask of the blades its type carries:
    `Conformal.widen` gives a value widened from a record its type's mask, set in the loop that writes it; the reverse,
    the grade involution and negation keep it, so a typed value's reverse has its type; a specialised product's answer
@@ -108,89 +112,134 @@ straight-line code, on either host, so there is no inlined route to take).
    the four products of the arithmetic with the general fold under a wrong rule, so under it no function reaches a
    specialised product, which is still the shipped arithmetic with one member changed; and under every other port the
    specialised product answers the general product's bits.
-7. **Not published.** The typed functions call the specialised product internally and answer the bits they answered
-   before, so no consumer can tell it is there but by the clock: no vector moved, no row of
-   `GeometricAlgebraOperations` was added, and the API baseline is unchanged. Publishing it would have meant a function
-   taking two masks or nine named functions, law vectors of its own and a surface to keep, for a caller who can already
-   have the same bits from `Multivector.geometricProduct` or from a typed function. *Rejected:* publishing.
-8. **The measurement after, and the verdict.** Taken on the final tree, three runs on each host, by the procedure and
-   commands of the baseline (the results file has every run). The general product's medians are from the same runs,
-   on the same operands; the ratio is the margin's: the least general median over the greatest specialised one.
+7. **Not published, and what moved.** The typed functions call the specialised product internally and answer the
+   bits they answered before: no signature moved, no law vector moved, no row of `GeometricAlgebraOperations` was
+   added, and the API baseline did not move. One published thing did move: `GeometricAlgebraLaws.laws`, which is
+   public, answers thirty-seven laws where it answered thirty-six. The thirty-seventh reads the package's internals
+   (the specialised pairs, their masks and the specialised product, none of them published), so a host that ports
+   the package has nothing to implement for it and certifies against the vectors as before. It is in the published
+   family because that is how the node leg runs it: the leg runs `GeometricAlgebraLaws.laws` under node, and a law
+   outside the family would run on .NET alone. `STABILITY.md` records the change under the `0.47.0` draft.
+   Publishing the specialised product itself would have meant a function taking two masks or nine named functions,
+   law vectors of its own and a surface to keep, for a caller who can already have the same bits from
+   `Multivector.geometricProduct` or from a typed function. *Rejected:* publishing.
+8. **The measurement after, and the verdict.** Taken on the final tree (`73f765d`), three runs on each host, by the
+   procedure and commands of the baseline. Every figure here and in the results file is computed from the committed
+   captures by `benchmarks/results/2026-11-24-i7-8650u-phase-730/figures.py`.
+   - *The rule, as `42bb282` stated it before measuring, on its designated runs* (the three final runs on each host,
+     the general product's medians from the same runs, on the same operands): the least general median over the
+     greatest specialised one.
 
-   | pair | .NET general (ns) | .NET specialised (ns) | ratio | node general (ns) | node specialised (ns) | ratio | verdict |
-   |---|---:|---:|---:|---:|---:|---:|---|
-   | `rotor * rotor` | 2422, 4494, 4644 | 178, 167, 166 | 13.6 | 103000, 105992, 103008 | 5125, 5125, 5064 | 20.1 | kept |
-   | `motor * motor` | 2189, 4493, 7471 | 261, 229, 248 | 8.4 | 103000, 105992, 103000 | 8499, 8251, 8249 | 12.1 | kept |
-   | `translator * rotor` | 2276, 4513, 4458 | 171, 164, 166 | 13.3 | 108992, 107000, 194992 | 5062, 5062, 4938 | 21.1 | kept |
-   | `rotor * point` | 2253, 4409, 4532 | 189, 178, 174 | 11.9 | 103000, 106000, 106016 | 5564, 5500, 5312 | 18.5 | kept |
-   | `(rotor point) * reverse rotor` | 2160, 6326, 4490 | 264, 474, 229 | 4.6 | 104000, 106000, 103000 | 8499, 8252, 8251 | 12.1 | kept |
-   | `translator * point` | 2142, 7032, 4525 | 181, 337, 177 | 6.3 | 104000, 104000, 103984 | 5562, 5375, 5376 | 18.7 | kept |
-   | `(translator point) * reverse translator` | 2407, 4461, 5100 | 219, 210, 236 | 10.2 | 104000, 103000, 103000 | 7125, 6875, 6876 | 14.5 | kept |
-   | `motor * point` | 2407, 4608, 5030 | 242, 220, 248 | 9.7 | 104000, 103000, 110000 | 7626, 8375, 7752 | 12.3 | kept |
-   | `(motor point) * reverse motor` | 2207, 4430, 5049 | 436, 412, 442 | 5.0 | 136000, 104000, 103008 | 19000, 16500, 16498 | 5.4 | kept |
+     | pair | .NET general (ns) | .NET specialised (ns) | ratio | node general (ns) | node specialised (ns) | ratio |
+     |---|---:|---:|---:|---:|---:|---:|
+     | `rotor * rotor` | 2422, 4494, 4644 | 178, 167, 166 | 13.64 | 103000, 105992, 103008 | 5125, 5125, 5064 | 20.10 |
+     | `motor * motor` | 2189, 4493, 7471 | 261, 229, 248 | 8.39 | 103000, 105992, 103000 | 8499, 8251, 8249 | 12.12 |
+     | `translator * rotor` | 2276, 4513, 4458 | 171, 164, 166 | 13.29 | 108992, 107000, 194992 | 5062, 5062, 4938 | 21.14 |
+     | `rotor * point` | 2253, 4409, 4532 | 189, 178, 174 | 11.89 | 103000, 106000, 106016 | 5564, 5500, 5312 | 18.51 |
+     | `(rotor point) * reverse rotor` | 2160, 6326, 4490 | 264, 474, 229 | 4.55 | 104000, 106000, 103000 | 8499, 8252, 8251 | 12.12 |
+     | `translator * point` | 2142, 7032, 4525 | 181, 337, 177 | 6.35 | 104000, 104000, 103984 | 5562, 5375, 5376 | 18.69 |
+     | `(translator point) * reverse translator` | 2407, 4461, 5100 | 219, 210, 236 | 10.18 | 104000, 103000, 103000 | 7125, 6875, 6876 | 14.46 |
+     | `motor * point` | 2407, 4608, 5030 | 242, 220, 248 | 9.69 | 104000, 103000, 110000 | 7626, 8375, 7752 | 12.30 |
+     | `(motor point) * reverse motor` | 2207, 4430, 5049 | 436, 412, 442 | 4.99 | 136000, 104000, 103008 | 19000, 16500, 16498 | 5.42 |
 
-   Every one clears 2.5 on both hosts, so every one is kept and none is deleted: the least ratio is 4.6 on .NET and
-   5.4 under node, and 4.2 on .NET against the baseline runs' general medians instead. In each run, on each host, the
-   specialised arm's checksum is the general arm's bit for bit, and every checksum is the baseline's. By the middle of
-   each three medians the served functions are about six to eight and a half times faster on .NET
-   (`Motor.applyToPoint` from 5.2 to 6.0 µs to 0.8 to 0.9 µs) and seven to twelve times under node (from 221 to 292 µs
-   to 37 to 41 µs); a function no pair serves costs what it cost before under node, and on .NET what the general
-   product costs in that process (item 9).
+     **The verdict:** every pair clears 2.5 on both hosts on the designated runs, the least being 4.55 on .NET
+     (`(rotor point) * reverse rotor`) and 5.42 under node (`(motor point) * reverse motor`), so by the rule as stated
+     every pair is kept and none is deleted. The rule is not changed after the fact.
+   - *Against the baseline runs' general medians instead*, the least ratio is 3.85 on .NET (`(rotor point) * reverse
+     rotor`, 1826 over 474) and 5.32 under node. The baseline did not measure the two translator-sandwich pairs; their
+     general figures come only from the final tree's own runs.
+   - *Pooled over every committed default-configuration run of the final tree* (on .NET the three designated runs and
+     the four `pgo-final` runs, seven in all; under node the three designated runs): eight pairs clear 2.5 on both
+     hosts, and **one does not: `(motor point) * reverse motor` on .NET, 2.08** (the least general median 2207 over
+     the greatest specialised median 1059, in `pgo-final-1`). Under node it pools at 5.42.
+   - *In one process*, the general median over the specialised median of the same run, least over those runs: 4.35 on
+     .NET (`(motor point) * reverse motor`, `pgo-final-1`) and 6.24 under node (the same pair, `specialised-node-3`);
+     every other pair's least is 8.17 or more on .NET and 12.12 or more under node.
+   - *The specialised fold has a slow mode of its own on .NET.* `(motor point) * reverse motor` ran at 412 to 466 ns
+     in six of the seven pooled runs and at 1059 ns in `pgo-final-1`, and at 814 ns in one run of the intermediate tree
+     (`interim-cfe5cdb-dotnet-3`); `(rotor point) * reverse rotor` at 228 to 264 ns in five and 474 and 484 ns in two;
+     `translator * point` at 177 to 189 ns in six and 337 ns in one. The cause is not established.
+   - *The general product's own spread on the final tree exceeds the margin.* On .NET its median for `motor * motor`
+     moved from 2189 to 7471 ns across the three designated runs, a factor of 3.41, and pooled over seven runs another
+     pair's moved by 3.53; under node the largest factor is 1.82. So a ratio taken ACROSS runs, as the rule takes it,
+     can move by more than the margin with the machine alone on .NET: the rule's ratio is pessimistic where the general
+     side ran fast and generous where it ran slow, and the same-process ratios above are the figures that do not mix
+     two processes.
+   - *Bits.* In every pooled run on both hosts each specialised arm's checksum is its general arm's, and every row's
+     checksum is the baseline's.
+   - *The typed functions*, by the middle of each three medians, base over final: the six served functions the
+     benchmark measures are 6.33 to 8.73 times faster on .NET (`Motor.applyToPoint` from 5656 to 894 ns) and 6.69 to
+     11.72 times under node (`Motor.applyToPoint` from 220992 to 37504 ns). `Sphere.power`, which no pair serves, ran
+     at 279, 265 and 453 ns on the final tree's designated runs against 266 to 289 on the base's, and at 266 to 283 in
+     the four `pgo-final` runs; the 453 is one run, and its cause is not established.
 9. **What the .NET measurements found beside the verdict, and what was done.** Three things, in the order they were
    found; the captures of each intermediate tree are kept beside the results file, named for their commits.
    - *An inlined second copy of the general fold.* The first build of the dispatch inlined the general fold into it as
-     its fallback (`030f016`). `Motor.applyToSphere`, which no pair serves, then ran at 9.5 µs in one run of three
-     where the base ran it at 5. The fallback and the published `Multivector.geometricProduct` are now one compiled
-     function, `Kernel.general` (`cfe5cdb`), so a typed function no pair serves runs the code the published product
-     runs; that tree ran it at 5.1 to 5.3 µs in three of three.
-   - *Bookkeeping on paths no pair serves.* `Sphere.power`, which no pair serves, then ran about a tenth slower than on
-     the base: each widening folded its indices into a mask in a second pass, and each signed permutation walked
-     thirty-two blades to move one. The widening now sets the mask in the loop that writes the coefficients, and the
-     dual and the undual answer a value of no type (`73f765d`). The final runs are of that tree.
-   - *The general product's two speeds.* On .NET the general fold, unchanged since Phase 727, runs at about 2 µs or
-     about 4.5 µs a call, fixed for the life of a process. In the harness the base tree got the faster speed in seven
-     runs of seven and the final tree the slower in six of seven, `Motor.applyToSphere` with it (4.7 to 12 µs against
-     the base's 4.3 to 5.3). In a script host the base got the SLOWER speed in three processes of three and this
-     phase's trees the faster in two of three. With dynamic profile-guided optimisation off, or tiered compilation off,
-     the final tree got the faster every time (2.0 to 2.2 µs, and `Motor.applyToSphere` 4.4 to 4.6 µs). Marking the
-     fold `AggressiveOptimization` changed nothing and was not kept. So the speed a process gets depends on the host
-     program and the runtime's tiering, and these measurements do not show this change moving it in either direction;
-     it is recorded as measured and NOT explained. The verdict does not rest on it: every pair clears the margin
-     against the faster speed too (the least, `(motor point) * reverse motor`, 4.2 against the baseline's 1838 ns).
-     Whether a function no pair serves pays the slower speed more often under this tree than under the base, in some
-     host, is not settled here, and is reported beside this phase for a successor to measure.
+     its fallback (`030f016`). `Motor.applyToSphere`, which no pair serves, then ran at 9488 ns in one run of three
+     where the base ran it at 5053 to 5236. The fallback and the published `Multivector.geometricProduct` were made
+     one compiled function, `Kernel.general` (`cfe5cdb`); that tree ran it at 5110 to 5250 ns in three runs of three.
+   - *Bookkeeping on paths no pair serves.* `Sphere.power`, which no pair serves, ran at 308 to 329 ns on the second
+     intermediate tree against the base's 266 to 289: each widening folded its indices into a mask in a second pass,
+     and each signed permutation walked thirty-two blades to move one. The widening now sets the mask in the loop that
+     writes the coefficients, and the dual and the undual answer a value of no type (`73f765d`). The final runs are of
+     that tree.
+   - *A function no pair serves measured slower on the final tree on .NET, and the cause is not established.* In this
+     harness, `Motor.applyToSphere` ran at 4338 to 5323 ns in all seven committed runs of the base tree, and at 9388
+     to 12045 ns in five of the seven committed runs of the final tree (4664 and 4880 in the other two). The general
+     product on `point * sphere` ran at 1754 to 2586 ns in all seven base runs and at 4361 to 4747 ns in six of the
+     seven final runs (2537 in the other). With dynamic profile-guided optimisation off (`DOTNET_TieredPGO=0`, two
+     runs) or tiered compilation off (`DOTNET_TieredCompilation=0`, one run), the final tree ran the general product
+     at 2043 to 2240 ns and `Motor.applyToSphere` at 4403 to 4626 ns; the base tree was not measured in those
+     configurations. Marking the general fold `AggressiveOptimization` left it at 4374 to 7190 ns in three runs and
+     was not kept. Outside the harness, in a script host timing the general product alone, the base tree ran it at 4.5
+     to 4.6 µs in three processes of three and this phase's trees at 2.0 to 2.4 µs in two of three (4.6 in the third);
+     those runs were not captured to files. So in this harness the base ran it at its faster cost in seven runs of
+     seven and the final tree at the slower in five of seven, and this phase has not established why, nor whether the
+     same holds elsewhere. *Withdrawn:* the first version of this entry said every pair clears the margin against the
+     general product's faster speed; `pgo-final-1` refutes it for `(motor point) * reverse motor`: 1059 ns against
+     that pair's general medians in the base tree's seven runs, 1760 to 2667 ns, is 1.66 to 2.52.
 10. **What was NOT measured.** One machine (an Intel Core i7-8650U laptop, Windows 11, not quiet); one .NET runtime
     (10.0.15) and one node (v22.20.0, Fable 5.0.0); time per call only, not allocation, which the specialised fold does
     not change (one array of thirty-two for the answer); warm code only, not a cold start or the cost of building the
-    nine tables when the module is first read; no other host the package's answers are transcribed to; and the general
-    product's own cost under node, about fifty times .NET's, which is not this phase's to explain and is recorded as
-    measured.
+    nine tables when the module is first read; no other host the package's answers are transcribed to; the base tree
+    with profile-guided optimisation or tiering off; the cause of either slow mode; and the general product's own cost
+    under node, about fifty times .NET's, which is not this phase's to explain and is recorded as measured.
+11. **The one float literal this entry adds to a comparison.** The specialised product's guard, `Kernel.admits` in
+    `Multivector.fs`, compares each coefficient its operand's type does not carry with zero, `x = 0.0`, and sends an
+    operand for which it fails to the general product. D85 item 6 lists every comparison in which `0.0` may be named,
+    and its list does not hold this one. It is admitted here, as written, for three reasons: it is exact (true for
+    `+0.0` and `−0.0` and nothing else); it is no threshold and no tolerance, since it compares a coefficient with zero
+    and with nothing a caller passes; and it decides no answer, since it chooses between two paths that answer the same
+    bits (item 3), so a wrong verdict could cost time and never a bit. The census of float literals counts it, and its
+    account cites this item. D85 is not reworded.
 
 **The choices this entry makes, each with the alternative.** The margin (against a smaller one the general product's
 own spread could have produced); the route (against hand-written, generated and inlined products); the
 geometric product on nine pairs (against every product on every pair, unmeasured); a mask on the multivector (against
 a new member of `Arithmetic`, which would have moved every wrong-port table, and against telling a type from the
-values, which is skipping a term on a coefficient's value); the guard on every operand (against trusting the masks);
-and not publishing (item 7).
+values, which is skipping a term on a coefficient's value); the guard on every operand (against trusting the masks),
+and its one comparison with `0.0` (item 11); and not publishing (item 7).
 
 **Ladder.** `proofs.json` gains `specialised-products-are-the-general-product` at `tested`, listing this family's
 cases, each held by `SpecialisedProductTests.fs`; the objects' row now names it where it said the specialised products
 did not exist. Nothing is proved: item 3's argument is an argument, and the law tests it on drawn operands.
 
-**What a consumer does.** Nothing: no surface moves and no answer moves, so `STABILITY.md` has no entry and the API
-baseline is unchanged. The version stays `0.47.0`, a draft.
+**What a consumer does.** Nothing: no signature, answer, vector or API baseline line moves. The one published change
+is that `GeometricAlgebraLaws.laws` answers thirty-seven laws, the new one reading internals that a port has nothing
+to implement for (item 7); `STABILITY.md` records it under the `0.47.0` draft. The version stays `0.47.0`.
 
 **Tidy.** Reviewed every file this change touches: `Multivector.fs`, `Conformal.fs`, `Motion.fs`,
 `GeometricAlgebraLaws.fs`, the package's project file, `ConformalTests.fs`, `VersorTests.fs`,
 `GeometricAlgebraTests.fs`, `SpecialisedProductTests.fs`, the test project file, `proofs.json`, the bench and the node
-leg's project and program, `README.md` and this file. *Moved, not copied:* the five versors' index sets left `Motion`
-for `Indices`, where the objects' already were, so that the specialised pairs read the one copy; `Motion` names them
-from there. *Made one:* the published geometric product and the fallback are one function (item 9) rather than two
-inlined copies. *Reused instead of minted:* the versors' suite's dispatch of a vector to its function, made
-`internal` (two words) rather than copied into the new suite. *Considered and kept:* `Multivector.zero` and `grade`
-now build through `Kernel.adopt`, which canonicalises a NaN their inputs never hold — kept, so that one function
-builds every untyped value; the three notes Phase 725's review left in the Elementary sources are not this change's
-files.
+leg's project and program, `README.md`, `STABILITY.md`, the results file with its captures and the script that
+computes its figures (`figures.py`, added so that no figure here is read by eye), and this file. *Moved, not copied:*
+the five versors' index sets left `Motion` for `Indices`, where the objects' already were, so that the specialised
+pairs read the one copy; `Motion` names them from there. *Made one:* the published geometric product and the fallback
+are one function (item 9) rather than two inlined copies. *Reused instead of minted:* the versors' suite's dispatch of
+a vector to its function, made `internal` (two words) rather than copied into the new suite. *Considered and kept:*
+`Multivector.zero` and `grade` now build through `Kernel.adopt`, which canonicalises a NaN their inputs never hold —
+kept, so that one function builds every untyped value; the three notes Phase 725's review left in the Elementary
+sources are not this change's files.
 
 ## 2026-11-24 — D88: rotors, translators, motors, dilators and reflections ship as versors of `Fuaran.Compute.GeometricAlgebra`, written to D85 and choosing nothing D85 fixed — five typed wrappers and a module of each one's name, a union of refusals for a matrix read back, and eight more cases of `GeometryRefusal`; every function written once over Phase 728's arithmetic, which gains a member for each new rule, so every go-red witness is the shipped function with one member changed; the five expressions D85 left to this phase each chosen by measurement against an exact or high-precision reference; 533 more vectors, each replayed bit for bit by a second implementation; forty-nine wrong ports held against fifty-eight functions, by a red vector, by a function that does not read the member, or by a drawn search with a stated reason; five bounded laws, each pinned to one stated sample whose maximum is its bound; and the package's first reference, to `Fuaran.Compute.Elementary`
 

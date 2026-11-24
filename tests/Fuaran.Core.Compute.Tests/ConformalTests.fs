@@ -1319,7 +1319,7 @@ let internal accountedLiterals: (string * string * int * string) list =
     [ "Multivector.fs",
       "0.0",
       10,
-      "the zero test inside the hash, once (item 8); the `+0.0` a fold starts from, five times (item 3), the geometric product's since Phase 730 in its one compiled function, which the published product and the specialised products' fallback both are (D89); the zero test of the specialised products' guard, which sends an operand that holds a number off its type's blades to the general product, once (D89); and the `+0.0` of a coefficient a scalar, a basis blade and a grade projection do not hold, three times (items 2 and 4)"
+      "the zero test inside the hash, once (item 8); the `+0.0` a fold starts from, five times (item 3), the geometric product's since Phase 730 in its one compiled function, which the published product and the specialised products' fallback both are (D89); the zero test of the specialised products' guard, which sends an operand that holds a number off its type's blades to the general product, once (D89 item 11, which admits it beside item 6's list); and the `+0.0` of a coefficient a scalar, a basis blade and a grade projection do not hold, three times (items 2 and 4)"
       "Multivector.fs", "1.0", 1, "a basis blade's one coefficient (item 2); in no comparison"
       "Conformal.fs",
       "0.0",
