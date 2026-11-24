@@ -651,8 +651,36 @@ let tests =
 
               let opsRefs = refs ops
 
-              for r in [ algebra; "Fuaran.Core.OpStream"; "Fuaran.Core.Wire"; "FSharp.Core" ] do
-                  Expect.contains opsRefs r (sprintf "the op package's assembly references %s" r)
+              // EXACT, not "at least": the built assembly references these and nothing else. The four the
+              // project names; `Fuaran.Core.Text`, the kernel the wire and the op-stream stand on, which the
+              // compiler writes because a type the codec and the witness use is defined there; and
+              // `System.Runtime` and `netstandard`, the framework and FSharp.Core's own target, which every
+              // assembly here references.
+              let expected =
+                  set
+                      [ "FSharp.Core"
+                        algebra
+                        "Fuaran.Core.OpStream"
+                        "Fuaran.Core.Text"
+                        "Fuaran.Core.Wire"
+                        "System.Runtime"
+                        "netstandard" ]
+
+              let mismatch (actual: string list) =
+                  let found = Set.ofList actual
+
+                  Set.toList (Set.difference found expected)
+                  @ Set.toList (Set.difference expected found)
+
+              Expect.isEmpty (mismatch opsRefs) "the op package's assembly references exactly the stated set"
+
+              // The rule reads the assembly: one more reference, or one fewer, is a mismatch.
+              Expect.equal (mismatch ("Fuaran.Core.Column" :: opsRefs)) [ "Fuaran.Core.Column" ] "one more is red"
+
+              Expect.equal
+                  (mismatch (opsRefs |> List.filter (fun r -> r <> "Fuaran.Core.Wire")))
+                  [ "Fuaran.Core.Wire" ]
+                  "one fewer is red"
 
               Expect.isEmpty (assemblyViolations (Map.ofList [ ops, opsRefs ])) "the assembly rule admits it"
 

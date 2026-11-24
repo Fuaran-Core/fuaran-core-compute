@@ -5,20 +5,25 @@ open Fuaran.Core
 open Fuaran.Compute.GeometricAlgebra
 
 /// `GeometricAlgebraOpsLaws` (Phase 731, DECISIONS.md D90): the laws the op algebra is held to, on
-/// whichever host runs them. A state is compared BIT FOR BIT: the same names in the same order, the
-/// same kind of object under each, and the sixty-four bits of each of its coefficients. No law compares
+/// whichever host runs them. A state is compared BIT FOR BIT (the same names in the same order, the
+/// same kind of object under each, and the sixty-four bits of each of its coefficients) unless a law
+/// says it compares under the float identity, in which the two zeros are one value. No law compares
 /// floats with `=`.
 ///
 /// The exact laws: a recorded stream replays to the same bytes; a truncated stream replays to exactly
 /// the state its prefix produced; `canApply` answers `Ok` exactly when `apply` does; a refused op
 /// leaves the state the same value; each refusal is the one its op names; the codec's round trip is
 /// the op bit for bit and malformed text is refused by name; an `Add` undone by its inverse is the
-/// state it was. The bounded laws, each an identity of exact arithmetic that binary64 holds to
-/// rounding: each transform undone by its inverse, and each compaction against the ops it replaced.
-/// A bound is the largest error over ONE stated sample, drawn from `boundSampleSeed`, in units in the
-/// last place of the reference coefficient and absolute where the reference is zero (DECISIONS.md D85
-/// item 7), with no margin, because the answers are pinned bits and every host measures the same ones.
-/// A bounded law draws nothing from the seed it is run at.
+/// state it was; an `Ok` state holds no NaN, over histories whose parameters overflow and underflow;
+/// an inverse is answered only where the state after the op accepts it; and a translation of quarters
+/// undone is the object of quarters it was, under the float identity. The bounded laws, each an
+/// identity of exact arithmetic that binary64 holds to rounding: each transform undone by its inverse,
+/// and each compaction against the ops it replaced. Each PINS the largest error over ONE stated
+/// sample, drawn from `boundSampleSeed`, in units in the last place of the reference coefficient,
+/// absolute where the reference is zero (DECISIONS.md D85 item 7), and in units in the last place of
+/// the object's largest coefficient, with no margin: a measurement of that sample and no bound on the
+/// function, which other samples exceed (DECISIONS.md D90 item 10). A bounded law draws nothing from
+/// the seed it is run at.
 ///
 /// Every input is drawn by a pinned generator whose every step is an exact float operation (Park and
 /// Miller's minimal standard), so a seed draws the same ops on every host and the laws run under Fable
@@ -50,6 +55,21 @@ module GeometricAlgebraOpsLaws =
         |> List.map (fun (n, o) -> n, kindOf o, Ops.values o |> Array.map bits)
 
     let internal sameState (a: GeometricState<string>) (b: GeometricState<string>) : bool = stateBits a = stateBits b
+
+    /// Two states under the float identity (`Multivector`'s equality, DECISIONS.md D85 item 8): the same
+    /// names in the same order, the same kinds, and each coefficient equal as a number or both a NaN, the
+    /// two zeros one value.
+    let internal sameUnderTheFloatIdentity (a: GeometricState<string>) (b: GeometricState<string>) : bool =
+        let entries (s: GeometricState<string>) =
+            GeometricState.toList s
+            |> List.map (fun (n, o) ->
+                let v = Ops.values o
+                n, kindOf o, Multivector.init (fun i -> v[i]))
+
+        let x, y = entries a, entries b
+
+        List.length x = List.length y
+        && List.forall2 (fun (n1, k1, m1: Multivector) (n2, k2, m2) -> n1 = n2 && k1 = k2 && m1.Equals m2) x y
 
     type private Draw(seed: int) =
         let mutable state =
@@ -294,7 +314,9 @@ module GeometricAlgebraOpsLaws =
           GeometricOp.Screw("a", origin, origin, Double.NaN, Double.NaN),
           GeometricOpRefusal.Geometry GeometryRefusal.ZeroDirection
           GeometricOp.Scale("a", (0.0, Double.NaN, 0.0), -1.0),
-          GeometricOpRefusal.Geometry GeometryRefusal.NonFiniteCoordinate ]
+          GeometricOpRefusal.Geometry GeometryRefusal.NonFiniteCoordinate
+          // An object that would hold a NaN: the outer product of a point whose squared length overflowed.
+          GeometricOp.Add("c", Form.PointPair((1e200, 0.0, 0.0), (0.0, 1.0, 0.0))), GeometricOpRefusal.NotANumber "c" ]
 
     let private eachRefusalByName (_: Draw) =
         match GeometricOps.apply (GeometricOp.Add("a", Form.Point(1.0, 2.0, 3.0))) empty with
@@ -382,6 +404,115 @@ module GeometricAlgebraOpsLaws =
             | Error _ -> Error "the inverse of an Add was refused"
         | Error _, Error _ -> Ok()
         | _ -> Error "invert and apply disagree on an Add"
+
+    // ---- Phase 731's second round: no NaN in a state, an inverse only where it applies --------------
+
+    /// A coordinate of an overflowing scale, a subnormal one, or a multiple of a quarter.
+    let private wide (d: Draw) : float =
+        match d.Int 0 5 with
+        | 0 -> 1e200
+        | 1 -> -1e300
+        | 2 -> 1e150
+        | 3 -> 5e-324
+        | 4 -> 1e-310
+        | _ -> d.Quarter()
+
+    let private wideTriple (d: Draw) : float * float * float = wide d, wide d, wide d
+
+    /// An op over wide parameters, whose results overflow and underflow.
+    let private wideOp (d: Draw) : GeometricOp<string> =
+        let name = names[d.Int 0 2]
+
+        match d.Int 0 6 with
+        | 0 ->
+            GeometricOp.Add(
+                name,
+                match d.Int 0 2 with
+                | 0 -> Form.Point(wideTriple d)
+                | 1 -> Form.PointPair(wideTriple d, wideTriple d)
+                | _ -> Form.Sphere(wideTriple d, d.Radius())
+            )
+        | 1 -> GeometricOp.Rotate(name, wideTriple d, d.Direction(), d.Angle())
+        | 2 -> GeometricOp.Translate(name, wideTriple d)
+        | 3 ->
+            GeometricOp.Scale(
+                name,
+                wideTriple d,
+                (match d.Int 0 3 with
+                 | 0 -> 1e-310
+                 | 1 -> 1e-308
+                 | 2 -> 1e300
+                 | _ -> d.Factor())
+            )
+        | 4 -> GeometricOp.Reflect(name, d.Direction(), wide d)
+        | 5 -> GeometricOp.Screw(name, wideTriple d, d.Direction(), d.Angle(), wide d)
+        | _ -> GeometricOp.Remove name
+
+    let private wideHistory (d: Draw) : GeometricOp<string> list =
+        List.init (d.Int 1 12) (fun _ -> wideOp d)
+
+    let private holdsNoNaN (s: GeometricState<string>) : bool =
+        GeometricState.toList s
+        |> List.forall (fun (_, o) -> Ops.values o |> Array.forall (fun x -> not (Double.IsNaN x)))
+
+    let private noNaNInAState (d: Draw) =
+        wideHistory d
+        |> List.fold
+            (fun (state, verdict) op ->
+                match verdict, GeometricOps.apply op state with
+                | Error _, _ -> state, verdict
+                | Ok(), Ok next ->
+                    next, check (holdsNoNaN next) (fun () -> sprintf "%A leaves a NaN in an Ok state" op)
+                | Ok(), Error _ -> state, Ok())
+            (empty, Ok())
+        |> snd
+
+    let private inverseOnlyWhereItApplies (d: Draw) =
+        let state, _ = GeometricOps.applyAll (wideHistory d) empty
+        let op = wideOp d
+
+        match GeometricOps.apply op state, GeometricOps.invert op state with
+        | Ok after, Ok inverse ->
+            check (Result.isOk (GeometricOps.apply inverse after)) (fun () ->
+                sprintf "the inverse of %A is answered and refused" op)
+        | Ok after, Error(GeometricOpRefusal.InverseRefused e) ->
+            match Ops.inverse op with
+            | Some inverse ->
+                check (GeometricOps.apply inverse after = Error e) (fun () ->
+                    sprintf "the inverse of %A is refused as %A, which is not apply's refusal" op e)
+            | None -> Error "an op with no inverse was refused as an inverse"
+        | Ok _, Error(GeometricOpRefusal.NotInvertible _) ->
+            check (Ops.inverse op).IsNone (fun () -> "an invertible op was answered NotInvertible")
+        | Error a, Error b ->
+            check (a = b || b = GeometricOpRefusal.NotInvertible "Remove") (fun () ->
+                sprintf "invert and apply refuse %A differently" op)
+        | _ -> Error(sprintf "invert and apply disagree on %A" op)
+
+    /// A translation by a vector of quarters, of a point, a point pair or a sphere of quarters, undone by
+    /// its inverse: every product and partial sum of the two sandwiches is a double, so the value is
+    /// exact; a coordinate of `-0.0` comes back `+0.0` (`-0.0 + t - t`), so it holds under the float
+    /// identity and not bit for bit.
+    let private dyadicTranslationUndone (d: Draw) =
+        let form =
+            match d.Int 0 2 with
+            | 0 -> Form.Point(d.Triple())
+            | 1 -> Form.PointPair(d.Triple(), d.Triple())
+            | _ -> Form.Sphere(d.Triple(), d.Radius())
+
+        let op = GeometricOp.Translate("a", d.Triple())
+
+        match GeometricOps.apply (GeometricOp.Add("a", form)) empty with
+        | Error _ -> Error "a dyadic object was refused"
+        | Ok s0 ->
+            match GeometricOps.apply op s0, GeometricOps.invert op s0 with
+            | Ok s1, Ok inverse ->
+                match GeometricOps.apply inverse s1 with
+                | Ok s2 ->
+                    check (sameUnderTheFloatIdentity s2 s0) (fun () ->
+                        sprintf "%A by %A undone is not the state it was" form op)
+                | Error _ -> Error "an inverse was refused"
+            | _ -> Error "a dyadic translation was refused"
+
 
     // ---- the bounded laws -----------------------------------------------------------------------
 
@@ -582,6 +713,10 @@ module GeometricAlgebraOpsLaws =
           "a refused op leaves the state the same value", refusedLeavesTheSameValue
           "each refusal is the one its op names, the name first and then the parameters in order", eachRefusalByName
           "the codec's round trip is the op bit for bit, and malformed text is refused by name", roundTrip
-          "an Add undone by its inverse is the state it was, bit for bit", addUndoneByItsInverse ]
+          "an Add undone by its inverse is the state it was, bit for bit", addUndoneByItsInverse
+          "an Ok state holds no NaN, over histories whose parameters overflow and underflow", noNaNInAState
+          "an inverse is answered only where the state after the op accepts it", inverseOnlyWhereItApplies
+          "a translation of quarters undone is a point, a pair or a sphere of quarters, under the float identity",
+          dyadicTranslationUndone ]
         @ [ for name, _, _ in bounds -> name, bounded name ]
         |> List.map (fun (name, body) -> name, law seed count body)

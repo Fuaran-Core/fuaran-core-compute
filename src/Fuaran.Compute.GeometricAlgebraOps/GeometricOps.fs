@@ -112,8 +112,15 @@ type GeometricOpRefusal<'N> =
     /// non-finite parameter, a zero-length direction, a factor that is not positive, a negative
     /// radius, each by its own case.
     | Geometry of refusal: GeometryRefusal
+    /// The object the op would leave under this name holds a NaN in a coefficient: an overflow inside
+    /// the algebra's product (an infinity times a zero, or two infinities of opposite sign summed).
+    /// A state never holds a NaN; an infinity is a value and stays (DECISIONS.md D90 item 5).
+    | NotANumber of name: 'N
     /// The op has no inverse (`Remove`: the object it removed is not a parameter of it).
     | NotInvertible of op: string
+    /// The op's inverse is the refused op this carries: the state after the op would refuse it (a scale
+    /// by a factor whose reciprocal overflows, say), so no inverse is answered (DECISIONS.md D90 item 8).
+    | InverseRefused of refusal: GeometricOpRefusal<'N>
 
 /// A set of named objects, in ascending order of name under the caller's `Naming.Compare`. Immutable:
 /// every op answers a new state or the one it was given.
@@ -170,6 +177,15 @@ type internal Rules<'N> =
         FloatText: float -> string
         /// The bytes the op-stream chains an op by: its canonical text.
         ChainText: Rules<'N> -> Naming<'N> -> GeometricOp<'N> -> string
+        /// Whether an object may stand in a state: no coefficient is a NaN.
+        Holds: GeometricObject -> bool
+        /// Whether an inverse is answered: the state after the op accepts it, as `canApply` says.
+        Undoes:
+            Rules<'N>
+                -> GeometricOp<'N>
+                -> GeometricState<'N>
+                -> GeometricOp<'N>
+                -> Result<unit, GeometricOpRefusal<'N>>
     }
 
 /// The op algebra, written once over `Rules`.
@@ -291,8 +307,13 @@ module internal Ops =
 
     // ---- apply ----------------------------------------------------------------------------------
 
+    /// Whether an object may stand in a state: no coefficient is a NaN. An infinity is a value.
+    let holds (o: GeometricObject) : bool =
+        values o |> Array.forall (fun x -> not (Double.IsNaN x))
+
     /// One op applied to a state: the name first, then the parameters through the algebra's
-    /// constructor in the order the op lists them; any refusal through `Refused`.
+    /// constructor in the order the op lists them, then the object it leaves, which holds no NaN; any
+    /// refusal through `Refused`.
     let applyWith
         (r: Rules<'N>)
         (op: GeometricOp<'N>)
@@ -302,12 +323,19 @@ module internal Ops =
         let entries = s.Entries
         let name = nameOf op
 
+        // The state with `o` under the name, or the refusal of an object that holds a NaN.
+        let leaving (o: GeometricObject) (into: GeometricObject -> ('N * GeometricObject) list) =
+            if r.Holds o then
+                Ok(GeometricState(naming, into o))
+            else
+                r.Refused s (GeometricOpRefusal.NotANumber name)
+
         match op, r.Find naming name entries with
         | GeometricOp.Add _, Some _ -> r.Refused s (GeometricOpRefusal.NameAlreadyPresent name)
         | GeometricOp.Add(_, form), None ->
             match build form with
             | Error g -> r.Refused s (GeometricOpRefusal.Geometry g)
-            | Ok o -> Ok(GeometricState(naming, r.Place naming name o entries))
+            | Ok o -> leaving o (fun o -> r.Place naming name o entries)
         | _, None -> r.Refused s (GeometricOpRefusal.UnknownName name)
         | GeometricOp.Remove _, Some index -> Ok(GeometricState(naming, removeAt index entries))
         | _, Some index ->
@@ -316,7 +344,7 @@ module internal Ops =
             | Some(Error g) -> r.Refused s (GeometricOpRefusal.Geometry g)
             | Some(Ok v) ->
                 let _, o = List.item index entries
-                Ok(GeometricState(naming, replaceAt index (r.After(transform v o)) entries))
+                leaving (r.After(transform v o)) (fun o -> replaceAt index o entries)
 
     let tryFindWith (r: Rules<'N>) (name: 'N) (s: GeometricState<'N>) : GeometricObject option =
         r.Find s.Naming name s.Entries
@@ -368,8 +396,20 @@ module internal Ops =
         | GeometricOp.Scale(n, c, factor) -> Some(GeometricOp.Scale(n, c, 1.0 / factor))
         | GeometricOp.Reflect _ -> Some op
 
-    /// The inverse of an op applied to the PRE-state, guarded by `canApply`: an op the state would refuse
-    /// has no inverse, and its refusal is the answer.
+    /// Whether the state after `op` accepts its inverse: `canApply` over that state. An op that does not
+    /// apply has no state after it, and its own refusal is the answer.
+    let undoes
+        (r: Rules<'N>)
+        (op: GeometricOp<'N>)
+        (s: GeometricState<'N>)
+        (inv: GeometricOp<'N>)
+        : Result<unit, GeometricOpRefusal<'N>> =
+        applyWith r op s
+        |> Result.bind (fun after -> r.Check r inv after |> Result.mapError GeometricOpRefusal.InverseRefused)
+
+    /// The inverse of an op applied to the PRE-state, guarded twice: an op the state would refuse has no
+    /// inverse, and its refusal is the answer; and an inverse the state after the op would refuse is not
+    /// answered, its refusal carried in `InverseRefused`.
     let invertWith
         (r: Rules<'N>)
         (op: GeometricOp<'N>)
@@ -383,7 +423,7 @@ module internal Ops =
             | Error e -> Error e
             | Ok() ->
                 match r.Inverse op with
-                | Some inv -> Ok inv
+                | Some inv -> r.Undoes r op s inv |> Result.map (fun () -> inv)
                 | None -> Error(GeometricOpRefusal.NotInvertible(tagOf op))
 
     // ---- the codec ------------------------------------------------------------------------------
@@ -706,7 +746,9 @@ module internal Rules =
           Inverse = Ops.inverse
           Merge = Ops.merge
           FloatText = Ops.bitsText
-          ChainText = Ops.encodeWith }
+          ChainText = Ops.encodeWith
+          Holds = Ops.holds
+          Undoes = Ops.undoes }
 
 /// A state of named objects (DECISIONS.md D90).
 [<RequireQualifiedAccess>]
@@ -734,7 +776,9 @@ module GeometricOps =
     /// The state after `op`, or its refusal by name; total, and never a throw. The name is read first,
     /// then the parameters, through the algebra's constructor, in the order the op lists them; the
     /// object and the versor are the constructor's, applied by the algebra's `applyTo…`, and nothing
-    /// is normalised. A refused op leaves the state the caller holds as it was.
+    /// is normalised. An object that would hold a NaN is refused, `NotANumber` with its name: a state
+    /// never holds a NaN, and an infinity is a value (DECISIONS.md D90 item 5). A refused op leaves the
+    /// state the caller holds as it was.
     let apply (op: GeometricOp<'N>) (s: GeometricState<'N>) : Result<GeometricState<'N>, GeometricOpRefusal<'N>> =
         Ops.applyWith Rules.shipped op s
 
@@ -750,19 +794,23 @@ module GeometricOps =
         : GeometricState<'N> * (int * GeometricOpRefusal<'N>) list =
         Ops.applyAllWith Rules.shipped ops s
 
-    /// The op that undoes `op` applied to the PRE-state `s`, guarded by `canApply`: an op `s` refuses
-    /// has no inverse, and its refusal is the answer. `Add`'s is the `Remove` of its name, exact. A
+    /// The op that undoes `op` applied to the PRE-state `s`, guarded twice: an op `s` refuses has no
+    /// inverse, and its refusal is the answer; and an inverse the state after `op` would refuse is not
+    /// answered, `InverseRefused` carrying that refusal (a scale whose reciprocal overflows, or any
+    /// transform whose result, undone, would hold a NaN: DECISIONS.md D90 item 8). `Add`'s is the `Remove` of its name, exact. A
     /// `Rotate`'s negates the angle and a `Screw`'s the angle and the distance; a `Translate`'s negates
     /// the vector; a `Scale`'s is the scale about the same centre by `1.0 / factor`, one rounded
     /// division; a `Reflect` is its own. `Remove` is `NotInvertible`: the object it removed is not
     /// one of its parameters, and undo of a `Remove` is truncate and replay. No transform's inverse is
-    /// exact: each undoes its op in exact arithmetic, and in binary64 the state comes back within the
-    /// bound `GeometricAlgebraOpsLaws` states, the largest error over one stated sample of 1,200
-    /// objects with no margin (DECISIONS.md D90). At the object's scale, in units in the last place of
-    /// its largest coefficient: `Rotate` 65.5, `Translate` 58.0625, `Scale` 50, `Reflect` 105.5,
-    /// `Screw` 135.5. Coefficient by coefficient, D85 item 7's form, the figure reaches 3.2e16 units in
-    /// the last place where the original coefficient is a rounding residue of a zero, and 2.9e-14
-    /// absolute where it is zero: no statement of accuracy near zero.
+    /// exact in general: each undoes its op in exact arithmetic, and in binary64 the state comes back to
+    /// rounding (a translation of quarters is exact in value, a `-0.0` coming back `+0.0`). There is
+    /// no bound on the error. `GeometricAlgebraOpsLaws` PINS the largest error over one stated sample of
+    /// 1,200 objects at seed 731, with no margin, and other samples exceed it (DECISIONS.md D90 item 10
+    /// records nine seeds). On that sample, at the object's scale, in units in the last place of its
+    /// largest coefficient: `Rotate` 65.5, `Translate` 58.0625, `Scale` 50, `Reflect` 105.5, `Screw`
+    /// 135.5; another seed's rotation sample reaches 284 and a screw's 602.5. Coefficient by coefficient,
+    /// D85 item 7's form, the figure reaches 3.2e16 units in the last place where the original
+    /// coefficient is a rounding residue of a zero: no statement of accuracy near zero.
     let invert (op: GeometricOp<'N>) (s: GeometricState<'N>) : Result<GeometricOp<'N>, GeometricOpRefusal<'N>> =
         Ops.invertWith Rules.shipped op s
 
@@ -791,11 +839,12 @@ module GeometricOps =
     /// scale, a reflection, an `Add`, a `Remove`, an op on another object, a refused op, and a rigid op
     /// that does not merge each end a run; a run of rotations about different axes is not merged (the
     /// screw's parameters read back from a composed motor are not ruled: DECISIONS.md D90). Nothing in
-    /// `apply`, the codec or the witness calls this. Applying the answer reaches the state the ops
-    /// reach to rounding, within the bound `GeometricAlgebraOpsLaws` states, the largest error over one
-    /// stated sample of 1,200 runs with no margin (DECISIONS.md D90): at the object's scale, in units in
-    /// the last place of its largest coefficient, translations 32 and rotations and screws about one
-    /// axis 71; coefficient by coefficient, D85 item 7's form, 6.8e15 and 7808 where a coefficient is a
-    /// rounding residue of a zero, and no error where a coefficient is zero.
+    /// `apply`, the codec or the witness calls this. Applying the answer reaches the state the ops reach
+    /// to rounding, and there is no bound on the error. `GeometricAlgebraOpsLaws` PINS the largest error
+    /// over one stated sample of 1,200 runs at seed 731, with no margin, and other samples exceed it
+    /// (DECISIONS.md D90 item 10 records nine seeds): on that sample, at the object's scale, in units in
+    /// the last place of its largest coefficient, translations 32 and rotations and screws about one axis
+    /// 71, which another seed's sample reaches 345 for; coefficient by coefficient, D85 item 7's form,
+    /// 6.8e15 and 7808 where a coefficient is a rounding residue of a zero.
     let compact (ops: GeometricOp<'N> list) (s: GeometricState<'N>) : GeometricOp<'N> list =
         Ops.compactWith Rules.shipped ops s

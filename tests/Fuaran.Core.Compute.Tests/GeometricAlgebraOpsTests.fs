@@ -251,24 +251,37 @@ let internal wrongPorts: (string * Rules<string>) list =
                       n.Compare name other = 0
                       ->
                       Some(GeometricOp.Rotate(name, p, d, a1 + a2))
-                  | _ -> Ops.merge n a b } ]
+                  | _ -> Ops.merge n a b }
+      "a NaN admitted to a state", { shipped with Holds = fun _ -> true }
+      "an inverse answered without asking whether the state after the op accepts it",
+      { shipped with
+          Undoes = fun _ _ _ _ -> Ok() } ]
 
 /// Why a wrong port is UNABLE to change a function: the port, the reason, and the functions. Held both
 /// ways by the drawn search: a function listed here answers the shipped answer on every drawn case, and
 /// a function not listed fails a committed vector.
 let private unable: (string * string * string list) list =
-    // Which member each function reads, from the source: `apply` reads Refused, Find, Place, After, Angle
-    // and the five versors; `canApply` reads Check, which reads `apply`; `applyAll` reads Fold, which
-    // reads `apply`; `invert` reads Check and Inverse; `compact` reads `apply` and Merge; `encode` reads
-    // FloatText; `decode` reads no member; `streamWitness` reads `apply` and ChainText, which reads
-    // FloatText; `GeometricState.tryFind` reads Find. A function that does not read a member cannot be
-    // changed by it: that is an argument from the source, and the drawn search confirms it on its sample.
+    // Which member each function reads, from the source: `apply` reads Refused, Find, Place, After, Angle,
+    // the five versors and Holds; `canApply` reads Check, which reads `apply`; `applyAll` reads Fold, which
+    // reads `apply`; `invert` reads Check, Inverse and Undoes, which reads `apply` and Check; `compact`
+    // reads `apply` and Merge; `encode` reads FloatText; `decode` reads no member; `streamWitness` reads
+    // `apply` and ChainText, which reads FloatText; `GeometricState.tryFind` reads Find. A function that
+    // does not read a member cannot be changed by it: that is an argument from the source, and the drawn
+    // search confirms it on its sample.
     let notReading (what: string) = sprintf "does not read %s" what
 
-    /// A function that answers whether `apply` refused, and not what it built, cannot see a port that
-    /// changes what `apply` builds and leaves every verdict as it was.
+    /// A function that answers a verdict or the ops it was given, never an object: an argument where the
+    /// port cannot move a verdict, stated by `why`.
     let verdictOnly (why: string) =
         "answers apply's verdict or the ops it was given, never an object, and " + why
+
+    /// The same kind of function, for a port that changes the object a transform builds. Since an object
+    /// that holds a NaN is refused (DECISIONS.md D90 item 5), such a port COULD move a verdict; this
+    /// rests on the drawn search alone, which found no case.
+    let searchOnly (why: string) =
+        "answers apply's verdict or the ops it was given, never an object; a search, not an argument: the port changes the object a transform builds, which could move a NaN verdict, and no drawn case, narrow or wide, does so ("
+        + why
+        + ")"
 
     let allBut (functions: string list) =
         [ "GeometricOps.apply"
@@ -295,19 +308,13 @@ let private unable: (string * string * string list) list =
 
       yield
           "(c) a versor applied to the first object in order, not to the named one",
-          verdictOnly
-              "the port finds an object exactly where the shipped Find does, so every verdict is the shipped one",
-          [ "GeometricOps.canApply"; "GeometricOps.invert"; "GeometricOps.compact" ]
-
-      yield
-          "(c) a versor applied to the first object in order, not to the named one",
           notReading "Find",
           [ "GeometricOps.encode"; "GeometricOps.decode" ]
 
       yield
           "(d) a normalisation after each transform",
-          verdictOnly "a normalisation changes no verdict: it follows a transform that was accepted",
-          [ "GeometricOps.canApply"; "GeometricOps.invert"; "GeometricOps.compact" ]
+          searchOnly "a normalisation divides by a weight once",
+          [ "GeometricOps.canApply"; "GeometricOps.compact" ]
 
       yield
           "(d) a normalisation after each transform",
@@ -319,12 +326,12 @@ let private unable: (string * string * string list) list =
             "the correctly rounded sine and cosine in a screw" ] do
           yield
               port,
-              verdictOnly "a sine and a cosine refuse nothing: the constructor's verdict is the shipped one",
+              searchOnly "a sine and a cosine refuse nothing, and move a coefficient by a unit in the last place",
               [ "GeometricOps.canApply"; "GeometricOps.invert"; "GeometricOps.compact" ]
 
       yield
           "(g) a screw with the translation first and the rotation after",
-          verdictOnly
+          searchOnly
               "its two constructors refuse the point, the direction, the angle and the distance by the cases the shipped one does, in the same order",
           [ "GeometricOps.canApply"; "GeometricOps.invert"; "GeometricOps.compact" ]
 
@@ -338,7 +345,7 @@ let private unable: (string * string * string list) list =
 
       yield
           "(h) a scale about the origin, not about its centre",
-          verdictOnly "a scale is never merged, so refused or not, the compaction answers it as it was given",
+          searchOnly "a scale is never merged, so the compaction answers it as it was given",
           [ "GeometricOps.compact" ]
 
       for port in
@@ -384,7 +391,17 @@ let private unable: (string * string * string list) list =
       yield
           "a compaction that merges rotations of one object about different axes",
           notReading "Merge: only compact does",
-          allBut [ "GeometricOps.compact" ] ]
+          allBut [ "GeometricOps.compact" ]
+
+      yield
+          "a NaN admitted to a state",
+          notReading "Holds",
+          [ "GeometricOps.encode"; "GeometricOps.decode"; "GeometricState.tryFind" ]
+
+      yield
+          "an inverse answered without asking whether the state after the op accepts it",
+          notReading "Undoes: only invert does",
+          allBut [ "GeometricOps.invert" ] ]
 
 // ---- the functions and the search -----------------------------------------------------------------
 
@@ -424,7 +441,8 @@ let private searchSize = 400
 let private drawnSample: Lazy<V.Case[]> =
     lazy
         ([| for index in 0 .. searchSize - 1 do
-                yield! V.searched index |])
+                yield! V.searched index
+                yield! V.searchedWide index |])
 
 let private drawnShipped: Lazy<string[]> =
     lazy (drawnSample.Value |> Array.Parallel.map (answer shipped))
@@ -545,7 +563,7 @@ let tests =
                       | Error why -> Some(name + ": " + why))
 
               Expect.isEmpty failures "every law of the op algebra holds"
-              Expect.equal (GeometricAlgebraOpsLaws.laws 590 1 |> List.length) 14 "fourteen laws are run"
+              Expect.equal (GeometricAlgebraOpsLaws.laws 590 1 |> List.length) 17 "seventeen laws are run"
 
           testCase "every law of the family holds at eight other seeds"
           <| fun () ->
@@ -655,10 +673,14 @@ let tests =
           testCase "each wrong port fails a vector of a function, or a drawn search finds it unable to change it"
           <| fun () ->
               // The counts DECISIONS.md D90 states, read from the tree.
-              Expect.equal drawnSample.Value.Length 3600 "the drawn sample: 400 indices, one case of each function"
-              Expect.equal (List.length wrongPorts) 21 "twenty-one wrong ports"
+              Expect.equal
+                  drawnSample.Value.Length
+                  7200
+                  "the drawn sample: 400 indices, narrow and wide, one case of each function"
+
+              Expect.equal (List.length wrongPorts) 23 "twenty-three wrong ports"
               Expect.equal (List.length published) 9 "nine functions that compute"
-              Expect.equal (List.length V.cases) 209 "209 committed vectors"
+              Expect.equal (List.length V.cases) 240 "240 committed vectors"
 
               let findings =
                   [ for name, port in wrongPorts do

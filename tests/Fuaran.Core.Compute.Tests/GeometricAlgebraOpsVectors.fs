@@ -197,6 +197,14 @@ module GeometricAlgebraOpsVectors =
     /// The drawn cases the suite's search chose as witnesses: the index it drew each at, and its id.
     let chosen: (int * string) list = [ 2, "drawn-2-compact"; 6, "drawn-6-compact" ]
 
+    /// The wide drawn cases the suite's search chose as witnesses (Phase 731's second round).
+    let chosenWide: (int * string) list =
+        [ 0, "drawn-wide-0-streamWitness"
+          9, "drawn-wide-9-compact"
+          13, "drawn-wide-13-canApply"
+          13, "drawn-wide-13-invert"
+          13, "drawn-wide-13-compact" ]
+
     let private geometryName (g: GeometryRefusal) : string =
         match g with
         | GeometryRefusal.NonFiniteCoordinate -> "NonFiniteCoordinate"
@@ -478,8 +486,10 @@ module GeometricAlgebraOpsVectors =
     // ---- the drawn cases: what the suite's search draws -------------------------------------------
 
     /// A pinned generator (Park and Miller's minimal standard, every step exact), so an index draws the
-    /// same cases on every host.
-    type private Draw(seed: int) =
+    /// same cases on every host. A WIDE draw (Phase 731's second round) also draws coordinates of an
+    /// overflowing scale and factors and radii that are subnormal or whose reciprocal overflows; a narrow
+    /// draw is the stream it always was.
+    type private Draw(seed: int, wide: bool) =
         let mutable state =
             ((float seed % 2147483646.0) + 2147483646.0) % 2147483646.0 + 1.0
 
@@ -499,6 +509,7 @@ module GeometricAlgebraOpsVectors =
             | 1 -> -0.0
             | 2 -> (if this.Int 0 1 = 0 then 1e-170 else -3e-200)
             | 3 -> (if this.Int 0 1 = 0 then 1e-160 else -2e-155)
+            | 4 when wide -> [| 1e150; -1e200; 1e300; -Double.MaxValue |][this.Int 0 3]
             | 4
             | 5 -> (this.Next() / 1073741824.0 - 1.0) * 4.0
             | _ -> float (this.Int -32 32) / 4.0
@@ -520,7 +531,11 @@ module GeometricAlgebraOpsVectors =
             | 2 -> cosineAngle
             | _ -> (this.Next() / 1073741824.0 - 1.0) * 3.0
 
-        member this.Positive() : float = 0.25 + this.Next() / 536870912.0
+        member this.Positive() : float =
+            if wide && this.Int 0 3 = 0 then
+                [| 1e-310; 5e-324; 1e-308; 1e300 |][this.Int 0 3]
+            else
+                0.25 + this.Next() / 536870912.0
 
     let private drawnForm (d: Draw) : Form =
         match d.Int 0 5 with
@@ -544,9 +559,8 @@ module GeometricAlgebraOpsVectors =
         | 6 -> GeometricOp.Reflect(name, d.Direction(), d.Number())
         | _ -> GeometricOp.Screw(name, d.Triple(), d.Direction(), d.Angle(), d.Number())
 
-    /// The cases the suite's search draws at `index`: one of each published function that computes.
-    let searched (index: int) : Case list =
-        let d = Draw(731 * 1000 + index)
+    let private searchedIn (wide: bool) (index: int) : Case list =
+        let d = Draw(731 * 1000 + index, wide)
         let start = [ GeometricOp.Add("a", drawnForm d); GeometricOp.Add("b", drawnForm d) ]
         let op = drawnOp d
         let ops = List.init (d.Int 1 6) (fun _ -> drawnOp d)
@@ -559,7 +573,8 @@ module GeometricAlgebraOpsVectors =
                 | 1 -> GeometricOp.Rotate("b", p, u, d.Angle())
                 | _ -> GeometricOp.Screw("b", p, u, d.Angle(), d.Number()))
 
-        let id (f: string) = sprintf "drawn-%d-%s" index f
+        let id (f: string) =
+            sprintf "drawn-%s%d-%s" (if wide then "wide-" else "") index f
 
         [ case (id "apply") "GeometricOps.apply" start [ "op", OneOp op ]
           case (id "canApply") "GeometricOps.canApply" start [ "op", OneOp op ]
@@ -570,6 +585,12 @@ module GeometricAlgebraOpsVectors =
           case (id "decode") "GeometricOps.decode" [] [ "text", Text(GeometricOps.encode naming op) ]
           case (id "streamWitness") "GeometricOps.streamWitness" start [ "ops", OpList ops ]
           case (id "tryFind") "GeometricState.tryFind" start [ "name", Name(nameOf op) ] ]
+
+    /// The cases the suite's search draws at `index`: one of each published function that computes.
+    let searched (index: int) : Case list = searchedIn false index
+
+    /// The wide cases the suite's search draws at `index`, the same shape over wide draws.
+    let searchedWide (index: int) : Case list = searchedIn true index
 
     // ---- the answers and the document -------------------------------------------------------------
 
@@ -592,12 +613,14 @@ module GeometricAlgebraOpsVectors =
             [ for n, o in GeometricState.toList s -> CorpusCell.Row [ "name", CorpusFile.str n; "object", objectCell o ] ]
 
     /// A refusal's name: its case, and the algebra's case it carries.
-    let refusalName (r: Refusal) : string =
+    let rec refusalName (r: Refusal) : string =
         match r with
         | GeometricOpRefusal.UnknownName n -> "UnknownName " + n
         | GeometricOpRefusal.NameAlreadyPresent n -> "NameAlreadyPresent " + n
         | GeometricOpRefusal.Geometry g -> "Geometry " + geometryName g
+        | GeometricOpRefusal.NotANumber n -> "NotANumber " + n
         | GeometricOpRefusal.NotInvertible op -> "NotInvertible " + op
+        | GeometricOpRefusal.InverseRefused inner -> "InverseRefused " + refusalName inner
 
     let private refusedCell (r: Refusal) : CorpusCell =
         CorpusCell.Row [ "refused", CorpusFile.str (refusalName r) ]
@@ -700,11 +723,72 @@ module GeometricAlgebraOpsVectors =
               "input", CorpusCell.Row [ for name, a in c.Input -> name, argumentCell a ]
               "expected", answerWith published c ]
 
+    /// Phase 731's second round (DECISIONS.md D90 items 5 and 8): an op whose object would hold a NaN is
+    /// refused, one for each op that reaches it, from a point whose squared length has overflowed (an
+    /// infinity, which is a value); and an inverse the state after the op would refuse is not answered,
+    /// one for each op whose inverse reaches it.
+    let secondRound: Case list =
+        let farPoint = [ GeometricOp.Add("b", Form.Point(1e200, 0.0, 0.0)) ]
+        let near = [ GeometricOp.Add("b", Form.Point(1.0, 2.0, 3.0)) ]
+        let originPoint = [ GeometricOp.Add("b", Form.Point(0.0, 0.0, 0.0)) ]
+        let up = 0.0, 0.0, 1.0
+
+        let nan =
+            [ "add-a-pair-through-a-far-point",
+              [],
+              GeometricOp.Add("b", Form.PointPair((1e200, 0.0, 0.0), (0.0, 1.0, 0.0)))
+              "translate-a-far-point", farPoint, GeometricOp.Translate("b", (1.0, 0.0, 0.0))
+              "rotate-a-far-point", farPoint, GeometricOp.Rotate("b", origin, up, 1.0)
+              "scale-a-far-point", farPoint, GeometricOp.Scale("b", (1.0, 0.0, 0.0), 2.0)
+              "reflect-a-far-point", farPoint, GeometricOp.Reflect("b", (1.0, 0.0, 0.0), 0.0)
+              "screw-a-far-point", farPoint, GeometricOp.Screw("b", origin, up, 1.0, 1.0) ]
+
+        let inverses =
+            [ "scale-whose-reciprocal-overflows", originPoint, GeometricOp.Scale("b", origin, 1e-310)
+              "scale-whose-inverse-holds-a-nan",
+              [ GeometricOp.Add("b", Form.Point(1.0, 0.0, 0.0)) ],
+              GeometricOp.Scale("b", origin, 1e-308)
+              "translate-far", near, GeometricOp.Translate("b", (1e300, 0.0, 0.0))
+              "rotate-about-a-far-axis", near, GeometricOp.Rotate("b", (1e300, 0.0, 0.0), up, 1.0)
+              "reflect-in-a-far-plane", near, GeometricOp.Reflect("b", (1.0, 0.0, 0.0), 1e300)
+              "screw-far-along-its-axis", near, GeometricOp.Screw("b", origin, up, 1.0, 1e300) ]
+
+        [ for id, start, op in nan do
+              yield case ("apply-not-a-number-" + id) "GeometricOps.apply" start [ "op", OneOp op ]
+              yield case ("canApply-not-a-number-" + id) "GeometricOps.canApply" start [ "op", OneOp op ]
+              yield case ("applyAll-not-a-number-" + id) "GeometricOps.applyAll" start [ "ops", OpList [ op ] ]
+
+          for id, start, op in inverses do
+              yield case ("invert-refused-inverse-" + id) "GeometricOps.invert" start [ "op", OneOp op ]
+
+          // A translation undone by its inverse: not exact on a point of tenths, where `0.1 + 0.7 − 0.7` is
+          // not `0.1`; exact in value on a point of quarters, where a `-0.0` coordinate comes back `+0.0`.
+          yield
+              case
+                  "applyAll-a-translation-undone-on-a-point-of-tenths"
+                  "GeometricOps.applyAll"
+                  [ GeometricOp.Add("b", Form.Point(0.1, 0.0, 0.0)) ]
+                  [ "ops",
+                    OpList
+                        [ GeometricOp.Translate("b", (0.7, 0.0, 0.0))
+                          GeometricOp.Translate("b", (-0.7, -0.0, -0.0)) ] ]
+          yield
+              case
+                  "applyAll-a-translation-undone-on-a-point-of-quarters"
+                  "GeometricOps.applyAll"
+                  [ GeometricOp.Add("b", Form.Point(-0.0, 2.5, 5.25)) ]
+                  [ "ops",
+                    OpList
+                        [ GeometricOp.Translate("b", (4.25, -0.0, -0.5))
+                          GeometricOp.Translate("b", (-4.25, 0.0, 0.5)) ] ] ]
+
     /// Every case, in document order: the authored ones, and the drawn ones the suite's search chose as
     /// witnesses.
     let cases: Case list =
         authored
         @ [ for index, id in chosen -> searched index |> List.find (fun c -> c.Id = id) ]
+        @ secondRound
+        @ [ for index, id in chosenWide -> searchedWide index |> List.find (fun c -> c.Id = id) ]
 
     let private description =
         "The reference answers for Fuaran.Compute.GeometricAlgebraOps over AUTHORED inputs (Phase 731, "
