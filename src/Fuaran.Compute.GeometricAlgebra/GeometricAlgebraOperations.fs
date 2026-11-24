@@ -22,6 +22,15 @@ namespace Fuaran.Compute.GeometricAlgebra
 ///     item 4 or 6 writes one. The other weights, the other normalisations, an object built from a
 ///     direction or a normal, a point pair's `points`, the `kind` of a blade and `Line.meet` are
 ///     those and `√`, which is correctly rounded.
+///   * Of the versors' functions (Phase 729, D88): `toMultivector`, `ofMultivector`, `Motor.ofRotor`
+///     and `Motor.ofTranslator` are copies. `Translator.ofVector` is one exact halving and a negation
+///     for each component. Every `applyTo…`, every `compose` and `Motor.ofRotorTranslator` are item
+///     3's folds. Every `toMatrix` is those and `÷`. Every `normalise`, the two dilators and
+///     `Motor.ofMatrix` are those and `√`. `Rotor.ofAxisAngle`, `Motor.ofScrew`, `Motor.ofLine`, the
+///     two `exp` and the two `interpolate` are those and `Fuaran.Compute.Elementary`'s pinned
+///     `sinCos`, asked once; the two `log` and the two `interpolate` are those and its pinned `atan2`,
+///     asked once. They answer the same bits on every host and are as accurate as D84 measured the
+///     two pinned functions, which is not correct rounding.
 ///
 /// The suite holds the table to the package's public surface both ways. The module is named for its
 /// package, because two opened modules named `Operations` shadow each other member by member
@@ -127,7 +136,78 @@ module GeometricAlgebraOperations =
           "Sphere.power", Exactness.Pinned
           "Sphere.side", Exactness.Pinned
           "Sphere.toMultivector", Exactness.Pinned
-          "Sphere.ofMultivector", Exactness.Pinned ]
+          "Sphere.ofMultivector", Exactness.Pinned
+          "Rotor.ofAxisAngle", Exactness.Pinned
+          "Rotor.exp", Exactness.Pinned
+          "Rotor.log", Exactness.Pinned
+          "Rotor.interpolate", Exactness.Pinned
+          "Rotor.compose", Exactness.Pinned
+          "Rotor.applyToPoint", Exactness.Pinned
+          "Rotor.applyToPointPair", Exactness.Pinned
+          "Rotor.applyToLine", Exactness.Pinned
+          "Rotor.applyToCircle", Exactness.Pinned
+          "Rotor.applyToPlane", Exactness.Pinned
+          "Rotor.applyToSphere", Exactness.Pinned
+          "Rotor.toMatrix", Exactness.Pinned
+          "Rotor.normalise", Exactness.Pinned
+          "Rotor.toMultivector", Exactness.Pinned
+          "Rotor.ofMultivector", Exactness.Pinned
+          "Translator.ofVector", Exactness.Pinned
+          "Translator.compose", Exactness.Pinned
+          "Translator.applyToPoint", Exactness.Pinned
+          "Translator.applyToPointPair", Exactness.Pinned
+          "Translator.applyToLine", Exactness.Pinned
+          "Translator.applyToCircle", Exactness.Pinned
+          "Translator.applyToPlane", Exactness.Pinned
+          "Translator.applyToSphere", Exactness.Pinned
+          "Translator.toMatrix", Exactness.Pinned
+          "Translator.normalise", Exactness.Pinned
+          "Translator.toMultivector", Exactness.Pinned
+          "Translator.ofMultivector", Exactness.Pinned
+          "Motor.ofRotorTranslator", Exactness.Pinned
+          "Motor.ofRotor", Exactness.Pinned
+          "Motor.ofTranslator", Exactness.Pinned
+          "Motor.ofScrew", Exactness.Pinned
+          "Motor.ofLine", Exactness.Pinned
+          "Motor.exp", Exactness.Pinned
+          "Motor.log", Exactness.Pinned
+          "Motor.interpolate", Exactness.Pinned
+          "Motor.compose", Exactness.Pinned
+          "Motor.applyToPoint", Exactness.Pinned
+          "Motor.applyToPointPair", Exactness.Pinned
+          "Motor.applyToLine", Exactness.Pinned
+          "Motor.applyToCircle", Exactness.Pinned
+          "Motor.applyToPlane", Exactness.Pinned
+          "Motor.applyToSphere", Exactness.Pinned
+          "Motor.toMatrix", Exactness.Pinned
+          "Motor.ofMatrix", Exactness.Pinned
+          "Motor.normalise", Exactness.Pinned
+          "Motor.toMultivector", Exactness.Pinned
+          "Motor.ofMultivector", Exactness.Pinned
+          "Dilator.ofFactor", Exactness.Pinned
+          "Dilator.ofCentreFactor", Exactness.Pinned
+          "Dilator.compose", Exactness.Pinned
+          "Dilator.applyToPoint", Exactness.Pinned
+          "Dilator.applyToPointPair", Exactness.Pinned
+          "Dilator.applyToLine", Exactness.Pinned
+          "Dilator.applyToCircle", Exactness.Pinned
+          "Dilator.applyToPlane", Exactness.Pinned
+          "Dilator.applyToSphere", Exactness.Pinned
+          "Dilator.toMatrix", Exactness.Pinned
+          "Dilator.normalise", Exactness.Pinned
+          "Dilator.toMultivector", Exactness.Pinned
+          "Dilator.ofMultivector", Exactness.Pinned
+          "Reflection.ofNormalDistance", Exactness.Pinned
+          "Reflection.compose", Exactness.Pinned
+          "Reflection.applyToPoint", Exactness.Pinned
+          "Reflection.applyToPointPair", Exactness.Pinned
+          "Reflection.applyToLine", Exactness.Pinned
+          "Reflection.applyToCircle", Exactness.Pinned
+          "Reflection.applyToPlane", Exactness.Pinned
+          "Reflection.applyToSphere", Exactness.Pinned
+          "Reflection.normalise", Exactness.Pinned
+          "Reflection.toMultivector", Exactness.Pinned
+          "Reflection.ofMultivector", Exactness.Pinned ]
 
     /// The class of one operation, or `None` for a name this package does not publish.
     let exactnessOf (operation: string) : Exactness option =

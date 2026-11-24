@@ -115,14 +115,15 @@ know before relying on it. The identities of the algebra hold exactly only where
 product is the fold's rounding, the same bits on every host, and a law that needs an identity states a bound. No
 function normalises and none takes a tolerance. And `=` on two multivectors is the float identity, so it does not tell
 a `-0.0` from a `0.0`; a comparison of bits reads `Multivector.toArray`. A host that ports the package certifies
-against the vectors and against the three table digests D85 item 3 pins. The conformal objects are the next entry; the
-versors and the op algebra are later phases and are not in this package yet.
+against the vectors and against the three table digests D85 item 3 pins. The conformal objects are the next entry and
+the versors the one after; the op algebra is a later phase and is not in this package yet.
 
 ### The conformal objects: points, lines, planes, circles and spheres as blades, with meet, join, read-back and incidence, in `Fuaran.Compute.GeometricAlgebra` (Phase 728, `DECISIONS.md` D85, D87) — additive
 
 **What changed.** The package gains six record types, seven modules, one union of refusals and nine unions of kinds;
 its baseline, `api/Fuaran.Compute.GeometricAlgebra.txt`, grows and no other file under `api/` or `api/wire/` moves. No
-function that existed answers another bit. It still references FSharp.Core alone.
+function that existed answers another bit. It still referenced FSharp.Core alone; Phase 729, below, gives it its
+first reference.
 
 - `Point`, `PointPair`, `Circle`, `Line`, `Sphere` and `Plane`: plain immutable records, one `float` field for each
   coefficient the type carries, in index order, named for its blade. Each has a module of its own name with
@@ -173,8 +174,66 @@ carries. Every other file under `conformance/laws/` is byte-identical.
    line and a sphere meet within 292 units in the last place of where the quadratic formula puts them. That is one
    sample's maximum and no bound on the function.
 
-A host that ports the package certifies against the vectors. The versors, any specialised product and the op algebra
-are later phases and are not in this package yet.
+A host that ports the package certifies against the vectors. The versors are the next entry; any specialised product
+and the op algebra are later phases and are not in this package yet.
+
+### The versors: rotors, translators, motors, dilators and reflections, with the exponential, the logarithm, interpolation and the matrix, in `Fuaran.Compute.GeometricAlgebra` (Phase 729, `DECISIONS.md` D85, D88)
+
+**What changed.** The package gains five record types, five modules of functions and one union, and **its first
+reference beside FSharp.Core: `Fuaran.Compute.Elementary`**, for the pinned `sinCos` and `atan2` (which brings
+`Fuaran.Compute.Solvers`, Elementary's own reference). Its baseline, `api/Fuaran.Compute.GeometricAlgebra.txt`, grows
+and no other file under `api/` or `api/wire/` moves. No function that existed answers another bit.
+
+- `Rotor`, `Translator`, `Motor`, `Dilator` and `Reflection`: plain records of the coefficients D85 item 8 gives
+  each, in index order, `Scalar` first where the type carries it.
+- A module of each one's name: `Rotor.ofAxisAngle`, `Translator.ofVector`, `Motor.ofRotorTranslator`,
+  `Motor.ofScrew`, `Motor.ofLine`, `Dilator.ofFactor`, `Dilator.ofCentreFactor`, `Reflection.ofNormalDistance`; on
+  every one `applyToPoint`, `applyToPointPair`, `applyToLine`, `applyToCircle`, `applyToPlane`, `applyToSphere`,
+  `compose`, `normalise`, `toMultivector` and `ofMultivector`; `exp`, `log` and `interpolate` on `Rotor` and `Motor`;
+  `toMatrix` on the four even versors; and `Motor.ofMatrix`. Seventy-one functions.
+- `MatrixRefusal`, the union a matrix that is no similarity is refused with, three of whose cases carry the measure
+  that failed.
+- **`GeometryRefusal` gains eight cases** (`NonFiniteAngle`, `NonFiniteTranslation`, `NonFiniteFactor`,
+  `NonPositiveFactor`, `NonFiniteBivector`, `NonFiniteParameter`, `NegativeSquaredNorm`, `NoRotationPlane`). A closed
+  union gaining a case is breaking for a caller that matches it exhaustively; the union is new in this draft and no
+  released version carries it.
+- `GeometricAlgebraOperations.exactness` has a `Pinned` row for each new function, 160 in all, and
+  `GeometricAlgebraLaws.laws` runs nine more laws, thirty-six in all.
+
+**What a caller should know first.**
+
+1. **A versor is applied by its reverse, and nothing is normalised.** `applyTo…` is `(V X) Ṽ`, the left product
+   first, copied into the object's type. A versor built by a constructor is a unit because of what it computes. One
+   that is not, a product of many compositions that has drifted, or one a caller scaled, scales what it is applied
+   to: a rotor twice a unit takes a point's weight to four. `normalise` is the one division by `√(V ∗ Ṽ)`, and a
+   caller asks for it by name.
+2. **`compose b a` is the product `B A`, which applies `a` first.** `Motor.ofRotorTranslator rotor translator` is the
+   rotation and then the translation.
+3. **A dilation divides a point's weight by its factor.** `Point.coordinates` divides by the weight, so coordinates
+   read back are right; a caller who reads `E1` directly reads the coordinate over the factor.
+4. **The logarithm does not take the shorter way, and neither does interpolation.** `log` answers an angle `φ` in
+   `[0, π]`, so the rotation it names lies in `[0, 2π]`, and `interpolate` follows it. A caller who wants the shorter
+   way negates the second versor where the scalar coefficient of `Ṽ₁ V₂` is negative: the negated versor is the same
+   motion. Where the bivector part is zero and the scalar part is not positive the logarithm is refused,
+   `NoRotationPlane`.
+5. **A matrix is sixteen doubles, column-major, and this package references no matrix type.** A caller holding
+   `Fuaran.Compute.LinearAlgebra` writes `Matrix.init 4 4 (fun i j -> m[4 * j + i])` one way and
+   `Matrix.toColumnMajor` the other. `Motor.ofMatrix tau m` answers a motor and a factor, the dilation about the
+   origin first; `tau` is the threshold of the test that the three columns are of one length and orthogonal, in
+   statistics that have no unit, and `0` is the exact comparison, which an integer similarity passes. A shear, a
+   scale that is not uniform and a mirror are refused by name with the measure that failed. The test reads entries
+   of magnitude from about `10⁻¹⁵⁴` to `10¹⁵⁴` and refuses beyond.
+6. **The sine, the cosine and the arc tangent are the pinned ones**, so a rotor from an angle is the same bits on
+   every host and as accurate as D84 measured `sinCos`, which is not correct rounding. The dilator is a root and two
+   divisions and is exact at a power of four.
+7. **An identity holds to rounding, and each stated bound is one sample's maximum.** Over the samples D88 records,
+   a rotor times its reverse is within 2.5 units in the last place of one, the logarithm of a rotor's exponential
+   within 3 of the bivector, and a rotation, a translation and a uniform scale applied to a point through the
+   matrix within 1,534 units in the last place of the same point through the versor. The larger figures are
+   coordinates near zero, and none is a bound on the function.
+
+A host that ports the package certifies against the vectors. Any specialised product and the op algebra are later
+phases and are not in this package yet.
 
 ## 0.46.0 — released 2026-11-22 as `v0.46.0`
 

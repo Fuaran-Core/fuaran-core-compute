@@ -68,6 +68,60 @@ type internal Arithmetic =
         /// is decided from the signs of its numerator and its divisor, and no quotient is formed
         /// (D85 item 6).
         SignsDecide: float -> bool
+        // ---- the versors (Phase 729, DECISIONS.md D85 items 4 and 5; D88) ----------------------------
+        /// `(sin x, cos x)`: the pinned pair of `Fuaran.Compute.Elementary`, asked once.
+        SinCos: float -> struct (float * float)
+        /// The pinned arc tangent of `y / x` by quadrant, `y` first.
+        Atan2: float -> float -> float
+        /// What a versor is applied by: its reverse, never its inverse (D85 item 4).
+        VersorReverse: Multivector -> Multivector
+        /// The composition `B A`, which applies `A` first: by the product it is given, `B` then `A`.
+        Compose: (Multivector -> Multivector -> Multivector) -> Multivector -> Multivector -> Multivector
+        /// A screw, `T_(d û) ((T_p R) T̃_p)`, formed in that order by the product it is given: the
+        /// translator along the axis, the translator to the axis, the rotor, and that translator's
+        /// reverse.
+        Screw:
+            (Multivector -> Multivector -> Multivector)
+                -> Multivector
+                -> Multivector
+                -> Multivector
+                -> Multivector
+                -> Multivector
+        /// Coefficients times a quotient, the quotient formed once by the division it is given:
+        /// `sin φ / φ` in an exponential and `φ / |B′|` in a logarithm.
+        ByQuotient: (float -> float -> float) -> float -> float -> float[] -> float[]
+        /// Whether an exponential's `φ` is zero, where `exp B` is `1 + B`.
+        IsZeroAngle: float -> bool
+        /// Whether a logarithm's `|B′|` is zero, where no quotient is formed.
+        IsZeroBivector: float -> bool
+        /// A dilator's two coefficients from its factor `s`: `r = √s`, `q = 2 × r`, then `(s + 1) / q`
+        /// and `(s − 1) / q`, by the division it is given.
+        DilatorParts: (float -> float -> float) -> float -> struct (float * float)
+        /// The versor whose logarithm an interpolation takes: `Ṽ₁ V₂` as it was formed, never its
+        /// negative.
+        Between: Multivector -> Multivector
+        /// How a motor's exponential forms the two parts of `v`, along the axis of `B` and across it,
+        /// from `v`, the unit bivector of `B` and that bivector's reverse (D88).
+        SplitAlong: Arithmetic -> Multivector -> Multivector -> Multivector -> float[] * float[]
+        /// How a motor's logarithm forms `(sin φ / φ) v⊥` from the motor's scalar, its three
+        /// coefficients on the blades `e_i ∧ n∞`, the part of `v` along the axis, and the unit
+        /// bivector of the rotation with its reverse (D88).
+        MotorAcross: Arithmetic -> float -> float[] -> float[] -> Multivector -> Multivector -> float[]
+        /// Where the entry of a row and a column is among a matrix's sixteen doubles: column-major.
+        MatrixIndex: int -> int -> int
+        /// The dot product of two columns: folded in index order from `+0.0`, a rounded product and
+        /// then a rounded sum.
+        Dot: float[] -> float[] -> float
+        /// The triple product `(a × b) · c`, whose sign says whether three columns reverse
+        /// orientation: each component of the cross product two rounded products and their rounded
+        /// difference, then the dot product it is given.
+        Orientation: (float[] -> float[] -> float) -> float[] -> float[] -> float[] -> float
+        /// The rotor of a rotation, as `(cos ½θ, sin ½θ â)`, from its nine entries by row and column
+        /// and the division it is given (D88).
+        RotorOfRotation: (float -> float -> float) -> (int -> int -> float) -> float[]
+        /// The sign of a rotor read from a matrix (D85 item 4): its scalar part is not negative, and
+        /// at a half turn its axis component of largest magnitude is positive, the first in a tie.
+        Canonical: float[] -> float[]
     }
 
 /// The one 2-norm (DECISIONS.md D49 item 4), transcribed: this package cannot reference
@@ -112,6 +166,170 @@ module internal Norm =
 
     let scaled (x: float[]) : float = scaledWith foldedSquares x
 
+/// The expressions DECISIONS.md D85 leaves to the phase that ships them, each written once (D88). A
+/// member of `Arithmetic.shipped` is one of these; the forms that were measured and not chosen stay
+/// beside the chosen one, because the suite shows each of them red on a committed vector.
+module internal Forms =
+
+    let dilatorParts (divide: float -> float -> float) (s: float) : struct (float * float) =
+        let root = sqrt s
+        let q = 2.0 * root
+        struct (divide (s + 1.0) q, divide (s - 1.0) q)
+
+    let byQuotient (divide: float -> float -> float) (numerator: float) (denominator: float) (xs: float[]) : float[] =
+        let k = divide numerator denominator
+        xs |> Array.map (fun x -> k * x)
+
+    let screw
+        (product: Multivector -> Multivector -> Multivector)
+        (along: Multivector)
+        (toAxis: Multivector)
+        (rotor: Multivector)
+        (back: Multivector)
+        : Multivector =
+        product along (product (product toAxis rotor) back)
+
+    let dot (a: float[]) (b: float[]) : float =
+        let mutable acc = 0.0
+
+        for i in 0 .. a.Length - 1 do
+            let p = a[i] * b[i]
+            acc <- acc + p
+
+        acc
+
+    let orientation (dot: float[] -> float[] -> float) (a: float[]) (b: float[]) (c: float[]) : float =
+        let minor (x: float) (y: float) (z: float) (w: float) : float =
+            let first = x * y
+            let second = z * w
+            first - second
+
+        dot
+            [| minor a[1] b[2] a[2] b[1]
+               minor a[2] b[0] a[0] b[2]
+               minor a[0] b[1] a[1] b[0] |]
+            c
+
+    /// The four sums `4w²`, `4x²`, `4y²`, `4z²` of a rotation's diagonal, each from `1.0` left to right.
+    let private diagonalSums (e: int -> int -> float) : float[] =
+        [| ((1.0 + e 0 0) + e 1 1) + e 2 2
+           ((1.0 + e 0 0) - e 1 1) - e 2 2
+           ((1.0 - e 0 0) + e 1 1) - e 2 2
+           ((1.0 - e 0 0) - e 1 1) + e 2 2 |]
+
+    /// `(w, x, y, z)` from the component `pivot`, whose sum is `u`: half its root, and each other
+    /// component a sum or a difference of two entries over twice that root.
+    let private rotorFrom (divide: float -> float -> float) (e: int -> int -> float) (pivot: int) (u: float) : float[] =
+        let h = sqrt u
+        let half = 0.5 * h
+        let d = h + h
+
+        match pivot with
+        | 0 ->
+            [| half
+               divide (e 2 1 - e 1 2) d
+               divide (e 0 2 - e 2 0) d
+               divide (e 1 0 - e 0 1) d |]
+        | 1 ->
+            [| divide (e 2 1 - e 1 2) d
+               half
+               divide (e 1 0 + e 0 1) d
+               divide (e 0 2 + e 2 0) d |]
+        | 2 ->
+            [| divide (e 0 2 - e 2 0) d
+               divide (e 1 0 + e 0 1) d
+               half
+               divide (e 2 1 + e 1 2) d |]
+        | _ ->
+            [| divide (e 1 0 - e 0 1) d
+               divide (e 0 2 + e 2 0) d
+               divide (e 2 1 + e 1 2) d
+               half |]
+
+    /// The rotor of a rotation from the largest of the four sums, the first in a tie.
+    let rotorByLargestSum (divide: float -> float -> float) (e: int -> int -> float) : float[] =
+        let u = diagonalSums e
+        let mutable pivot = 0
+
+        for k in 1..3 do
+            if u[k] > u[pivot] then
+                pivot <- k
+
+        rotorFrom divide e pivot u[pivot]
+
+    /// The rotor of a rotation from the scalar's sum always: measured, and not shipped (D88).
+    let rotorByScalarSum (divide: float -> float -> float) (e: int -> int -> float) : float[] =
+        let u = diagonalSums e
+        rotorFrom divide e 0 u[0]
+
+    let canonical (q: float[]) : float[] =
+        let magnitude (x: float) : float = if x > -x then x else -x
+        let mutable largest = 1
+
+        for k in 2..3 do
+            if magnitude q[k] > magnitude q[largest] then
+                largest <- k
+
+        if q[0] < 0.0 || (q[0] = 0.0 && q[largest] < 0.0) then
+            q |> Array.map (fun x -> -x)
+        else
+            q
+
+    let private euclidean (m: Multivector) : float[] =
+        [| m.Coefficients[2]; m.Coefficients[3]; m.Coefficients[4] |]
+
+    let private less (a: float[]) (b: float[]) : float[] = Array.map2 (fun x y -> x - y) a b
+
+    /// `v∥ = (v ∧ Û) Ũ`, and `v⊥ = v − v∥`.
+    let splitByOuter (r: Arithmetic) (v: Multivector) (u: Multivector) (uReversed: Multivector) : float[] * float[] =
+        let along = euclidean (r.Geometric (r.Outer v u) uReversed)
+        along, less (euclidean v) along
+
+    /// `v⊥ = (v ⌋ Û) Ũ`, and `v∥ = v − v⊥`.
+    let splitByContraction
+        (r: Arithmetic)
+        (v: Multivector)
+        (u: Multivector)
+        (uReversed: Multivector)
+        : float[] * float[] =
+        let across = euclidean (r.Geometric (r.Contraction v u) uReversed)
+        less (euclidean v) across, across
+
+    /// `v∥ = (v ∧ Û) Ũ` and `v⊥ = (v ⌋ Û) Ũ`, each by its own projection.
+    let splitByBoth (r: Arithmetic) (v: Multivector) (u: Multivector) (uReversed: Multivector) : float[] * float[] =
+        euclidean (r.Geometric (r.Outer v u) uReversed), euclidean (r.Geometric (r.Contraction v u) uReversed)
+
+    /// `(sin φ / φ) v⊥` as what is left of the motor's `e_i ∧ n∞` coefficients: `m_i − c × v∥_i`.
+    let acrossBySubtraction
+        (_: Arithmetic)
+        (c: float)
+        (m: float[])
+        (along: float[])
+        (_: Multivector)
+        (_: Multivector)
+        : float[] =
+        Array.map2
+            (fun x a ->
+                let p = c * a
+                x - p)
+            m
+            along
+
+    /// `(sin φ / φ) v⊥` as the projection of those coefficients onto the rotation's plane,
+    /// `(m ⌋ Û) Ũ`.
+    let acrossByProjection
+        (r: Arithmetic)
+        (_: float)
+        (m: float[])
+        (_: float[])
+        (u: Multivector)
+        (uReversed: Multivector)
+        : float[] =
+        let vector =
+            Kernel.adopt (Array.init Basis.count (fun index -> if index >= 2 && index <= 4 then m[index - 2] else 0.0))
+
+        euclidean (r.Geometric (r.Contraction vector u) uReversed)
+
 module internal Arithmetic =
 
     /// The arithmetic DECISIONS.md D85 records. Every comparison of this package's objects with a
@@ -133,7 +351,24 @@ module internal Arithmetic =
           IsZeroNorm = fun n -> n = 0.0
           Above = fun s tau -> s > tau
           Within = fun s tau -> s <= tau && -s <= tau
-          SignsDecide = fun tau -> tau = 0.0 }
+          SignsDecide = fun tau -> tau = 0.0
+          SinCos = Fuaran.Compute.Elementary.Elementary.sinCos
+          Atan2 = Fuaran.Compute.Elementary.Elementary.atan2
+          VersorReverse = Multivector.reverse
+          Compose = fun product b a -> product b a
+          Screw = Forms.screw
+          ByQuotient = Forms.byQuotient
+          IsZeroAngle = fun phi -> phi = 0.0
+          IsZeroBivector = fun n -> n = 0.0
+          DilatorParts = Forms.dilatorParts
+          Between = id
+          SplitAlong = Forms.splitByOuter
+          MotorAcross = Forms.acrossBySubtraction
+          MatrixIndex = fun row column -> 4 * column + row
+          Dot = Forms.dot
+          Orientation = Forms.orientation
+          RotorOfRotation = Forms.rotorByLargestSum
+          Canonical = Forms.canonical }
 
 /// The index sets of DECISIONS.md D85 item 8's table and the groups of item 6, read off the blades.
 module internal Indices =
@@ -292,17 +527,17 @@ module internal Conformal =
     let mvSphere (m: Multivector) : Sphere = sphereOf (copy Indices.sphere m)
     let mvPlane (m: Multivector) : Plane = planeOf (copy Indices.plane m)
 
-    let private n0 = Multivector.basis 1
+    let n0 = Multivector.basis 1
 
     let private nInf = Multivector.basis 5
 
     /// The vector `w n0 + a e1 + b e2 + c e3 + d n∞`.
-    let private vector (w: float) (a: float) (b: float) (c: float) (d: float) : Multivector =
+    let vector (w: float) (a: float) (b: float) (c: float) (d: float) : Multivector =
         widen Indices.point [| w; a; b; c; d |]
 
     // ---- what is refused (D85 items 4, 5 and 6) ---------------------------------------------------
 
-    let private finite (x: float) : bool =
+    let finite (x: float) : bool =
         not (Double.IsNaN x || Double.IsInfinity x)
 
     /// An `Ok` never holds a NaN.
@@ -312,7 +547,7 @@ module internal Conformal =
         else
             Ok x
 
-    let private numbers (values: float[]) : Result<float[], GeometryRefusal> =
+    let numbers (values: float[]) : Result<float[], GeometryRefusal> =
         if Array.exists Double.IsNaN values then
             Error GeometryRefusal.NotANumber
         else
@@ -325,7 +560,7 @@ module internal Conformal =
             Ok(x1, x2, x3)
 
     /// A divisor is refused when it is zero or not finite: exact comparisons, no threshold.
-    let private divisor (r: Arithmetic) (d: float) : Result<float, GeometryRefusal> =
+    let divisor (r: Arithmetic) (d: float) : Result<float, GeometryRefusal> =
         if r.IsZeroDivisor d then
             Error GeometryRefusal.ZeroDivisor
         elif not (finite d) then
@@ -350,10 +585,7 @@ module internal Conformal =
             Ok rho
 
     /// A direction parameter divided by its norm, one division for each component.
-    let private unit
-        (r: Arithmetic)
-        (d1: float, d2: float, d3: float)
-        : Result<float * float * float, GeometryRefusal> =
+    let unit (r: Arithmetic) (d1: float, d2: float, d3: float) : Result<float * float * float, GeometryRefusal> =
         let n = r.Scaled r.SumOfSquares [| d1; d2; d3 |]
 
         if r.IsZeroNorm n then
@@ -455,7 +687,7 @@ module internal Conformal =
     /// A statistic that is a quotient, against `τ` (D85 item 6): `+1` above it, `0` within it, `−1`
     /// below `−τ`. At `τ = 0` the signs of the numerator and the divisor decide, and the quotient is
     /// not formed: a quotient that underflows to a zero is not a zero statistic.
-    let private against (r: Arithmetic) (tau: float) (numerator: float) (d: float) (quotient: unit -> float) : int =
+    let against (r: Arithmetic) (tau: float) (numerator: float) (d: float) (quotient: unit -> float) : int =
         if r.SignsDecide tau then
             if numerator = 0.0 then 0
             elif (numerator < 0.0) = (d < 0.0) then 1

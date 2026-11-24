@@ -19,13 +19,24 @@
     <Compile Include="Objects.fs" />
     <Compile Include="Conformal.fs" />
     <Compile Include="Geometry.fs" />
+    <!-- The versors (Phase 729, DECISIONS.md D85 items 4, 5 and 8, D88): the five typed wrappers
+         and the matrix's refusals; the versors written once, with the arithmetic they are written
+         in as an argument; and the published modules. -->
+    <Compile Include="Versors.fs" />
+    <Compile Include="Motion.fs" />
+    <Compile Include="Transformations.fs" />
     <!-- Every public operation's exactness class, as data. -->
     <Compile Include="GeometricAlgebraOperations.fs" />
     <!-- The law family over the operations above. LAST: it reads all of them. -->
     <Compile Include="GeometricAlgebraLaws.fs" />
   </ItemGroup>
   <ItemGroup>
-    <!-- FSharp.Core only: nothing of the substrate, nothing of Compute (DECISIONS.md D85 item 9). -->
+    <!-- Fuaran.Compute.Elementary, for the pinned `sinCos` and `atan2` a rotor and a logarithm are
+         built from (Phase 729; DECISIONS.md D85 items 7 and 9), which brings its own reference,
+         Fuaran.Compute.Solvers. Nothing of the substrate, and nothing else of Compute. -->
+    <ProjectReference Include="..\Fuaran.Compute.Elementary\Fuaran.Compute.Elementary.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="FSharp.Core" />
   </ItemGroup>
   <ItemGroup>

@@ -2,7 +2,8 @@ namespace Fuaran.Compute.GeometricAlgebra
 
 open System
 
-/// `geometricAlgebraLaws` (Phase 727; Phase 728 adds the conformal objects' laws, the last nine):
+/// `geometricAlgebraLaws` (Phase 727; Phase 728 adds the conformal objects' nine laws, and Phase 729
+/// the versors' nine, the last):
 /// the laws the multivector, its products and the objects built on them are held to, on
 /// whichever host runs them (DECISIONS.md D85 item 7). Each law says which of two comparisons it holds
 /// under. BIT FOR BIT compares the sixty-four bits of each coefficient, which tells the two zeros
@@ -758,6 +759,322 @@ module GeometricAlgebraLaws =
     /// bound is one sample's maximum and another sample has another (DECISIONS.md D87 item 11).
     let private lineAndSphereAgainstTheClosedForm (_: Draw) = closedFormVerdict.Value
 
+    // ---- the versors (Phase 729; DECISIONS.md D85 item 7, D88) --------------------------------------
+
+    let private sameBitsEach (xs: float[]) (ys: float[]) : bool =
+        Array.forall2 (fun x y -> bits x = bits y) xs ys
+
+    let private exactTriple (d: Draw) : float * float * float =
+        let x1 = d.Exact()
+        let x2 = d.Exact()
+        let x3 = d.Exact()
+        x1, x2, x3
+
+    /// `T_t` and then `T_(−t)` is the identity: `1` at index 0 and `+0.0` at its three other indices.
+    let private translatorWithItsOpposite (d: Draw) =
+        let (t1, t2, t3) = exactTriple d
+
+        match Translator.ofVector (t1, t2, t3), Translator.ofVector (-t1, -t2, -t3) with
+        | Ok there, Ok back ->
+            let composed = Translator.compose back there
+
+            check
+                (sameBitsEach
+                    [| composed.Scalar; composed.E1NInf; composed.E2NInf; composed.E3NInf |]
+                    [| 1.0; 0.0; 0.0; 0.0 |])
+                (fun () -> sprintf "the translator by (%g, %g, %g) and its opposite are not the identity" t1 t2 t3)
+        | _ -> Error "a translator of exact components was refused"
+
+    /// The three pairs of perpendicular coordinate planes: the normal of the second reflection, of the
+    /// first, the axis of the half turn their product is, and the one index it holds with its value.
+    /// `e2 e1` is `−1.0` at index 10, `e3 e2` is `−1.0` at index 13, and `e1 e3` is `+1.0` at index 11.
+    let private halfTurns =
+        [ (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 10, -1.0
+          (0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), 13, -1.0
+          (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0), 11, 1.0 ]
+
+    let private productOfTwoReflections
+        (second: float * float * float)
+        (first: float * float * float)
+        : Result<Multivector, string> =
+        match Reflection.ofNormalDistance second 0.0, Reflection.ofNormalDistance first 0.0 with
+        | Ok b, Ok a -> Ok(Motor.toMultivector (Reflection.compose b a))
+        | _ -> Error "a reflection in a coordinate plane was refused"
+
+    let private twoReflectionsAreAHalfTurn (_: Draw) =
+        all
+            [ for second, first, _, index, value in halfTurns ->
+                  productOfTwoReflections second first
+                  |> Result.bind (fun product ->
+                      check
+                          (sameBits product (Multivector.init (fun i -> if i = index then value else 0.0)))
+                          (fun () -> sprintf "the product of two reflections is not %g at index %d alone" value index)) ]
+
+    /// The same products against the rotor's coefficient formulas at `c = 0`, `s = 1`, which hold
+    /// `−(1 × 0) = −0.0` where a product holds `+0.0`: equal under the float identity, and not bit for
+    /// bit, which is asserted. No constructor returns this rotor, because no double is `π`.
+    let private twoReflectionsAgainstTheRotorFormulas (_: Draw) =
+        all
+            [ for second, first, (a1, a2, a3), _, _ in halfTurns ->
+                  productOfTwoReflections second first
+                  |> Result.bind (fun product ->
+                      let c = 0.0
+                      let s = 1.0
+
+                      let formulas =
+                          Rotor.toMultivector
+                              { Scalar = c
+                                E1E2 = -(s * a3)
+                                E1E3 = s * a2
+                                E2E3 = -(s * a1) }
+
+                      check
+                          (product.Equals formulas
+                           && negativeZeros product = 0
+                           && negativeZeros formulas > 0)
+                          (fun () -> "the product of two reflections is not the rotor's formulas at a half turn")) ]
+
+    /// A dilation by a power of four about a centre: the image of `up x` is `up (c + s (x − c))` with
+    /// every coefficient divided by `s`, bit for bit. The root of a power of four is exact.
+    let private dilationByAPowerOfFour (d: Draw) =
+        let k = d.Int -3 3
+        let mutable s = 1.0
+
+        for _ in 1 .. (if k > 0 then k else -k) do
+            s <- if k > 0 then s * 4.0 else s / 4.0
+
+        let (c1, c2, c3) = exactTriple d
+        let (x1, x2, x3) = exactTriple d
+
+        match
+            Dilator.ofCentreFactor (c1, c2, c3) s,
+            Point.up (x1, x2, x3),
+            Point.up (c1 + s * (x1 - c1), c2 + s * (x2 - c2), c3 + s * (x3 - c3))
+        with
+        | Ok dilator, Ok p, Ok q ->
+            let image = Dilator.applyToPoint dilator p
+
+            check
+                (sameBitsEach
+                    [| image.N0; image.E1; image.E2; image.E3; image.NInf |]
+                    [| q.N0 / s; q.E1 / s; q.E2 / s; q.E3 / s; q.NInf / s |])
+                (fun () ->
+                    sprintf
+                        "the dilation by %g about (%g, %g, %g) of (%g, %g, %g) is not the point it should be"
+                        s
+                        c1
+                        c2
+                        c3
+                        x1
+                        x2
+                        x3)
+        | _ -> Error "a dilator or a point of exact parameters was refused"
+
+    /// The largest error over the pairs given so far: in units in the last place of the reference, and
+    /// absolute where the reference is zero (D85 item 7). A NaN is an error past any bound.
+    type private Worst() =
+        let mutable ulps = 0.0
+        let mutable absolute = 0.0
+
+        member _.Add(got: float, reference: float) : unit =
+            let error = if got < reference then reference - got else got - reference
+
+            if Double.IsNaN error then
+                ulps <- Double.PositiveInfinity
+            elif reference = 0.0 then
+                (if error > absolute then
+                     absolute <- error)
+            else
+                let u = error / lastPlace reference
+
+                if u > ulps then
+                    ulps <- u
+
+        member this.AddEach(got: float[], reference: float[]) : unit =
+            Array.iter2 (fun g r -> this.Add(g, r)) got reference
+
+        member _.Answer: float * float = ulps, absolute
+
+    /// A double in `(−1, 1)`.
+    let private within1 (d: Draw) : float = d.Next() / 1073741824.0 - 1.0
+
+    let private pow2 (n: int) : float =
+        let mutable x = 1.0
+
+        for _ in 1 .. (if n > 0 then n else -n) do
+            x <- if n > 0 then x * 2.0 else x / 2.0
+
+        x
+
+    let private triple (d: Draw) (scale: float) : float * float * float =
+        let x1 = scale * within1 d
+        let x2 = scale * within1 d
+        let x3 = scale * within1 d
+        x1, x2, x3
+
+    /// The samples of the four bounded laws, 2,000 draws each from `seed`, and what was measured over
+    /// each: the largest error in units in the last place of its reference, and the largest absolute
+    /// error where the reference is zero; or the first draw that was refused.
+    let private sampleAt (seed: int) (body: Draw -> Worst -> Result<unit, string>) : Result<float * float, string> =
+        let d = Draw seed
+        let worst = Worst()
+        let mutable failure = None
+        let mutable i = 0
+
+        while Option.isNone failure && i < 2000 do
+            match body d worst with
+            | Ok() -> ()
+            | Error why -> failure <- Some(sprintf "draw %d: %s" i why)
+
+            i <- i + 1
+
+        match failure with
+        | Some why -> Error why
+        | None -> Ok worst.Answer
+
+    let private refusedAs (what: string) (r: Result<'a, GeometryRefusal>) : Result<'a, string> =
+        r |> Result.mapError (fun refusal -> sprintf "%s was refused: %A" what refusal)
+
+    let private drawnRotor (d: Draw) : Result<Rotor, string> =
+        let axis = triple d 1.0
+        Rotor.ofAxisAngle axis (8.0 * within1 d) |> refusedAs "a rotor"
+
+    let private drawnScrew (d: Draw) : Result<Motor, string> =
+        let p = triple d 8.0
+        let direction = triple d 1.0
+        let angle = 8.0 * within1 d
+        Motor.ofScrew p direction angle (8.0 * within1 d) |> refusedAs "a screw"
+
+    /// A rotor times its reverse against one: an axis with components in `(−1, 1)` and an angle in
+    /// `(−8, 8)`; the scalar against `1` and every other coefficient against zero.
+    let internal rotorTimesItsReverseSampleAt (seed: int) : Result<float * float, string> =
+        sampleAt seed (fun d worst ->
+            drawnRotor d
+            |> Result.map (fun rotor ->
+                let v = Rotor.toMultivector rotor
+
+                let product =
+                    Multivector.toArray (Multivector.geometricProduct v (Multivector.reverse v))
+
+                worst.AddEach(product, Array.init 32 (fun index -> if index = 0 then 1.0 else 0.0))))
+
+    /// The logarithm of a rotor's exponential against the bivector: three coefficients in `(−1, 1)`
+    /// times one power of two from `2^-30` to `1`, so `φ` is below `π`.
+    let internal rotorLogOfExpSampleAt (seed: int) : Result<float * float, string> =
+        sampleAt seed (fun d worst ->
+            let (b12, b13, b23) = triple d (pow2 (d.Int -30 0))
+
+            Rotor.exp (b12, b13, b23)
+            |> Result.bind Rotor.log
+            |> refusedAs "a rotor's exponential or logarithm"
+            |> Result.map (fun (l12, l13, l23) -> worst.AddEach([| l12; l13; l23 |], [| b12; b13; b23 |])))
+
+    /// The logarithm of a motor's exponential against its bivector and its vector: the bivector as
+    /// above, and a vector with components in `(−1, 1)` times one power of two from `2^-10` to `2^10`.
+    let internal motorLogOfExpSampleAt (seed: int) : Result<float * float, string> =
+        sampleAt seed (fun d worst ->
+            let (b12, b13, b23) = triple d (pow2 (d.Int -30 0))
+            let (v1, v2, v3) = triple d (pow2 (d.Int -10 10))
+
+            Motor.exp (b12, b13, b23) (v1, v2, v3)
+            |> Result.bind Motor.log
+            |> refusedAs "a motor's exponential or logarithm"
+            |> Result.map (fun ((l12, l13, l23), (w1, w2, w3)) ->
+                worst.AddEach([| l12; l13; l23; w1; w2; w3 |], [| b12; b13; b23; v1; v2; v3 |])))
+
+    /// A rotor's interpolation at `0` against the first rotor and at `1` against the second: two
+    /// rotors drawn as `rotorTimesItsReverseSampleAt` draws one.
+    let internal rotorInterpolationEndsSampleAt (seed: int) : Result<float * float, string> =
+        sampleAt seed (fun d worst ->
+            drawnRotor d
+            |> Result.bind (fun first ->
+                drawnRotor d
+                |> Result.bind (fun second ->
+                    let values (x: Rotor) = [| x.Scalar; x.E1E2; x.E1E3; x.E2E3 |]
+
+                    Rotor.interpolate 0.0 first second
+                    |> Result.bind (fun atZero ->
+                        Rotor.interpolate 1.0 first second
+                        |> Result.map (fun atOne ->
+                            worst.AddEach(values atZero, values first)
+                            worst.AddEach(values atOne, values second)))
+                    |> refusedAs "a rotor's interpolation")))
+
+    /// A motor's interpolation at `0` and at `1` against its ends: two screws, each about an axis
+    /// through a point with coordinates in `(−8, 8)`, by an angle and a distance in `(−8, 8)`.
+    let internal motorInterpolationEndsSampleAt (seed: int) : Result<float * float, string> =
+        sampleAt seed (fun d worst ->
+            drawnScrew d
+            |> Result.bind (fun first ->
+                drawnScrew d
+                |> Result.bind (fun second ->
+                    let values (x: Motor) =
+                        [| x.Scalar
+                           x.E1E2
+                           x.E1E3
+                           x.E1NInf
+                           x.E2E3
+                           x.E2NInf
+                           x.E3NInf
+                           x.E1E2E3NInf |]
+
+                    Motor.interpolate 0.0 first second
+                    |> Result.bind (fun atZero ->
+                        Motor.interpolate 1.0 first second
+                        |> Result.map (fun atOne ->
+                            worst.AddEach(values atZero, values first)
+                            worst.AddEach(values atOne, values second)))
+                    |> refusedAs "a motor's interpolation")))
+
+    /// The seed of the stated sample of each bounded law of the versors.
+    let internal versorSampleSeed = 729
+
+    /// The bounds of the versors' bounded laws: for each, the largest errors measured over its stated
+    /// sample, in units in the last place of the reference and absolute where the reference is zero,
+    /// with no margin, because the answers are pinned bits and every host measures the same ones
+    /// (DECISIONS.md D88). Each figure is that sample's and no other's.
+    let internal versorBounds: (string * (int -> Result<float * float, string>) * float * float) list =
+        [ "a rotor times its reverse is one, within the stated bound",
+          rotorTimesItsReverseSampleAt,
+          2.5,
+          0.25 / 4503599627370496.0
+          "the logarithm of a rotor's exponential is its bivector, within the stated bound",
+          rotorLogOfExpSampleAt,
+          3.0,
+          0.0 / 4503599627370496.0
+          "the logarithm of a motor's exponential is its bivector and its vector, within the stated bound",
+          motorLogOfExpSampleAt,
+          512.0,
+          0.0 / 4503599627370496.0
+          "a rotor's interpolation returns its ends at 0 and at 1, within the stated bound",
+          rotorInterpolationEndsSampleAt,
+          39755.0,
+          0.0 / 4503599627370496.0
+          "a motor's interpolation returns its ends at 0 and at 1, within the stated bound",
+          motorInterpolationEndsSampleAt,
+          49763.0,
+          0.0 / 4503599627370496.0 ]
+
+    /// Each bounded law's verdict on its stated sample. A law is pinned to that sample and draws
+    /// nothing from the seed it is run at: its bound is one sample's maximum, and another sample has
+    /// another (DECISIONS.md D87 item 11 ruled the same for the closed form).
+    let private versorVerdicts: Lazy<(string * Result<unit, string>) list> =
+        lazy
+            (versorBounds
+             |> List.map (fun (name, sample, boundUlps, boundAbsolute) ->
+                 name,
+                 match sample versorSampleSeed with
+                 | Error why -> Error why
+                 | Ok(ulps, absolute) ->
+                     check (ulps <= boundUlps && absolute <= boundAbsolute) (fun () ->
+                         sprintf
+                             "the largest errors are %g units in the last place and %g absolute, past the stated bound"
+                             ulps
+                             absolute)))
+
+    let private versorBounded (name: string) (_: Draw) : Result<unit, string> =
+        versorVerdicts.Value |> List.find (fun (n, _) -> n = name) |> snd
+
     /// The laws, by name, each run at `count` iterations drawn from `seed`.
     let laws (seed: int) (count: int) : (string * Result<unit, string>) list =
         [ "the term table has the recorded shape", tableShape
@@ -794,5 +1111,11 @@ module GeometricAlgebraLaws =
           "the in-circle statistic agrees with the determinant predicate on the integer grid, in sign",
           inCircleAgreesWithTheDeterminant
           "a line and a sphere meet where the closed form says, within the stated bound",
-          lineAndSphereAgainstTheClosedForm ]
+          lineAndSphereAgainstTheClosedForm
+          "a translator composed with its opposite is the identity, bit for bit", translatorWithItsOpposite
+          "two reflections in perpendicular planes are a half turn, bit for bit", twoReflectionsAreAHalfTurn
+          "two reflections in perpendicular planes are the rotor's formulas at a half turn, under the float identity",
+          twoReflectionsAgainstTheRotorFormulas
+          "a dilation by a power of four gives the point it should, bit for bit", dilationByAPowerOfFour ]
+        @ [ for name, _, _, _ in versorBounds -> name, versorBounded name ]
         |> List.map (fun (name, body) -> name, law seed count body)

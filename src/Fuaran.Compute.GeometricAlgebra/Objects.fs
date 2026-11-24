@@ -44,6 +44,24 @@ type GeometryRefusal =
     | InvalidThreshold
     /// An answer would hold a NaN: the operands held one, or their arithmetic overflowed into one.
     | NotANumber
+    /// An angle is a NaN or an infinity (Phase 729, D88).
+    | NonFiniteAngle
+    /// A component of a translation is a NaN or an infinity.
+    | NonFiniteTranslation
+    /// A dilation's factor is a NaN or an infinity.
+    | NonFiniteFactor
+    /// A dilation's factor is zero or negative.
+    | NonPositiveFactor
+    /// A coefficient of a bivector passed to an exponential is a NaN or an infinity, or the
+    /// bivector's norm overflows.
+    | NonFiniteBivector
+    /// An interpolation's parameter is a NaN or an infinity.
+    | NonFiniteParameter
+    /// `V ∗ Ṽ` is negative: a versor's normalisation divides by its root.
+    | NegativeSquaredNorm
+    /// A logarithm was asked of a rotor, or of a motor's rotation, whose bivector part is zero and
+    /// whose scalar part is not positive: no plane is determined.
+    | NoRotationPlane
 
 /// A point: a vector, the coefficients of indices 1 to 5. `Point.up` builds
 /// `n0 + x + ½ x² n∞`, of weight one.

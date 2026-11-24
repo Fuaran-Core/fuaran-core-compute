@@ -70,13 +70,14 @@ let bottom: Set<string> = set [ "Fuaran.Compute.Solvers" ]
 /// The packages held to a stated set of this repository's own below them, and to nothing of the
 /// substrate (DECISIONS.md D79 item 1): the distributions take Elementary and the solvers, so that
 /// every package above (regression, the dataframe) can read a distribution without a cycle. The
-/// geometric algebra (DECISIONS.md D85 item 9) takes nothing of this repository yet: it never takes a
-/// `Fuaran.Core.*` package, LinearAlgebra, the dataframe or its own op package, and the phase that
-/// gives it Elementary's sine and arc tangent states that here.
+/// geometric algebra (DECISIONS.md D85 item 9) takes Elementary since Phase 729, for the pinned sine,
+/// cosine and arc tangent its versors are built from, and with it the solvers, Elementary's own
+/// reference: it never takes a `Fuaran.Core.*` package, LinearAlgebra, the dataframe or its own op
+/// package.
 let below: Map<string, Set<string>> =
     Map.ofList
         [ "Fuaran.Compute.Distributions", set [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Solvers" ]
-          "Fuaran.Compute.GeometricAlgebra", Set.empty ]
+          "Fuaran.Compute.GeometricAlgebra", set [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Solvers" ] ]
 
 /// The substrate packages the compute strand stands on — and nothing above them. `Fuaran.Core.Unit`
 /// is BELOW the four, not above: since Core `1.0.0` a schema field carries a unit of measure, so
@@ -538,19 +539,25 @@ let tests =
                   "Fuaran.Compute.Distributions"
                   "the dataframe's project references the distributions"
 
-          // Phase 727 (DECISIONS.md D85 item 9): the algebra package references FSharp.Core alone. It
-          // never takes a substrate package, so no tree, op-stream, ops, validator, column or wire
-          // package, and never LinearAlgebra, the dataframe or the op package.
-          testCase "the geometric algebra references FSharp.Core alone, by project and by assembly"
+          // Phase 727 (DECISIONS.md D85 item 9): the algebra package referenced FSharp.Core alone.
+          // Since Phase 729 it references Elementary beside it, for `sinCos` and `atan2`, which brings
+          // the solvers, Elementary's own reference. It never takes a substrate package, so no tree,
+          // op-stream, ops, validator, column or wire package, and never LinearAlgebra, the dataframe,
+          // the regression, the distributions or the op package.
+          testCase "the geometric algebra references Elementary and the solvers alone, by project and by assembly"
           <| fun _ ->
               let algebra = "Fuaran.Compute.GeometricAlgebra"
               let projects = projectReferences ()
-              Expect.equal (Map.tryFind algebra below) (Some Set.empty) "the algebra is held to nothing below it"
+
+              Expect.equal
+                  (Map.tryFind algebra below)
+                  (Some(set [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Solvers" ]))
+                  "the algebra is held to Elementary and the solvers below it"
 
               Expect.equal
                   (Map.tryFind algebra projects)
-                  (Some([ "FSharp.Core" ], []))
-                  "the algebra's project names FSharp.Core and nothing else"
+                  (Some([ "FSharp.Core" ], [ "Fuaran.Compute.Elementary" ]))
+                  "the algebra's project names FSharp.Core and Elementary, and nothing else"
 
               let refs =
                   match builtAssembly algebra with
@@ -559,15 +566,21 @@ let tests =
 
               Expect.contains refs "FSharp.Core" "the algebra's assembly references FSharp.Core"
 
+              Expect.contains refs "Fuaran.Compute.Elementary" "the algebra's assembly references Elementary"
+
               Expect.isEmpty
-                  (refs |> List.filter (fun r -> r.StartsWith("Fuaran.", StringComparison.Ordinal)))
-                  "the algebra's assembly references no Fuaran assembly"
+                  (belowAssemblyViolations (Map.ofList [ algebra, refs ]))
+                  "the algebra's assembly references no Fuaran assembly but Elementary and the solvers"
 
               // The rule reads the algebra: each reference the record rules out is a violation.
               let withProject (packages: string list) (projectRefs: string list) =
                   belowViolations (Map.ofList [ algebra, (packages, projectRefs) ])
 
               Expect.isEmpty (withProject [ "FSharp.Core" ] []) "FSharp.Core alone breaks nothing"
+
+              Expect.isEmpty
+                  (withProject [ "FSharp.Core" ] [ "Fuaran.Compute.Elementary"; "Fuaran.Compute.Solvers" ])
+                  "Elementary and the solvers break nothing"
 
               for package in
                   [ "Fuaran.Core.Column"
@@ -583,7 +596,8 @@ let tests =
                   [ "Fuaran.Compute.LinearAlgebra"
                     "Fuaran.Compute.DataFrame"
                     "Fuaran.Compute.GeometricAlgebraOps"
-                    "Fuaran.Compute.Elementary" ] do
+                    "Fuaran.Compute.Regression"
+                    "Fuaran.Compute.Distributions" ] do
                   Expect.equal
                       (withProject [ "FSharp.Core" ] [ project ])
                       [ algebra, "project " + project ]

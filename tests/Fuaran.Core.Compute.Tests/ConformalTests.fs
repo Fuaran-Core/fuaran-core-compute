@@ -40,7 +40,7 @@ open Fuaran.Compute.GeometricAlgebra
 module V = GeometricAlgebraVectors
 
 /// One cell as the one corpus writer writes it: the text of an `expected` member.
-let private cellText (cell: CorpusCell) : string =
+let internal cellText (cell: CorpusCell) : string =
     let text =
         CorpusFile.render
             { Head = []
@@ -50,7 +50,7 @@ let private cellText (cell: CorpusCell) : string =
     (text.Split('\n') |> Array.find (fun line -> line.StartsWith "    ")).Trim()
 
 /// The committed document's `expected` text for each vector, by id.
-let private committed: Lazy<Map<string, string>> =
+let internal committed: Lazy<Map<string, string>> =
     lazy
         (File.ReadAllText(Snapshots.repoFile (Path.Combine("conformance", "laws", V.fileName))).Split('\n')
          |> Array.choose (fun line ->
@@ -71,13 +71,13 @@ let private committed: Lazy<Map<string, string>> =
                  None)
          |> Map.ofArray)
 
-/// The vectors of the object modules.
-let private conformal: V.Case list =
-    V.cases |> List.filter (fun c -> c.Op.Contains ".")
+/// The vectors of the object modules. The versors' vectors (Phase 729) are held by `VersorTests`.
+let internal conformal: V.Case list =
+    V.cases |> List.filter (fun c -> c.Op.Contains "." && not (V.isVersorOp c.Op))
 
 /// The published functions that perform no arithmetic: copies and exact reads. They have no witness
 /// because there is no rule of theirs to change.
-let private copies: Set<string> =
+let internal copies: Set<string> =
     set
         [ for m in [ "Point"; "PointPair"; "Line"; "Circle"; "Plane"; "Sphere" ] do
               yield m + ".toMultivector"
@@ -92,7 +92,7 @@ let private copies: Set<string> =
 
 /// A conformal case's answer under an arithmetic: the shipped function, called as the published one
 /// calls it, with `r` where that one passes `Arithmetic.shipped`. `None` for a copy.
-let private answerUnder (r: Arithmetic) (c: V.Case) : CorpusCell option =
+let internal answerUnder (r: Arithmetic) (c: V.Case) : CorpusCell option =
     let point (name: string) = V.pointOf (V.floats c name)
     let pair () = V.pairOf (V.floats c "x")
     let line (name: string) = V.lineOf (V.floats c name)
@@ -171,11 +171,11 @@ let private answerUnder (r: Arithmetic) (c: V.Case) : CorpusCell option =
 
 // ---- the wrong ports: `Arithmetic.shipped` with one member changed ----------------------------------
 
-let private shipped = Arithmetic.shipped
+let internal shipped = Arithmetic.shipped
 
 /// The four products through the fold kernel's door, under a rule of entry, a start and an order of
 /// the terms. With the recorded three it is the shipped arithmetic, which the first case holds.
-let private products
+let internal products
     (enter: bool -> float -> float -> float -> float)
     (start: float)
     (order: Term[] -> Term[])
@@ -188,19 +188,19 @@ let private products
             fun a b ->
                 Kernel.scalarUnder start enter (order Basis.scalar) (Multivector.toArray a) (Multivector.toArray b) }
 
-let private fused (negative: bool) (r: float) (x: float) (y: float) : float =
+let internal fused (negative: bool) (r: float) (x: float) (y: float) : float =
     if negative then
         Math.FusedMultiplyAdd(-x, y, r)
     else
         Math.FusedMultiplyAdd(x, y, r)
 
 /// The norm's sum of squared quotients with each square fused into the sum.
-let private fusedSquares (quotients: float[]) : float =
+let internal fusedSquares (quotients: float[]) : float =
     quotients |> Array.fold (fun acc q -> Math.FusedMultiplyAdd(q, q, acc)) 0.0
 
 /// The norm's sum of squared quotients, correctly rounded: the exact sum in integers, rounded once to
 /// the nearest double, ties to even. Each quotient is a double of magnitude at most one.
-let private exactSquares (quotients: float[]) : float =
+let internal exactSquares (quotients: float[]) : float =
     let scale = 2200
 
     let total =
@@ -240,7 +240,7 @@ let private exactSquares (quotients: float[]) : float =
 
         Math.ScaleB(float rounded, (max shift 0) - scale)
 
-let private wrongPorts: (string * Arithmetic) list =
+let internal wrongPorts: (string * Arithmetic) list =
     [ "another order of summation", products Kernel.twoRoundings 0.0 Array.rev
       "a fused multiply-add", products fused 0.0 id
       "a fold seeded from its first term", products Kernel.twoRoundings -0.0 id
@@ -368,7 +368,7 @@ let private thresholdsOf (c: V.Case) : float list =
 /// that takes a threshold is asked again at every threshold of `thresholdsOf`. Each element is the
 /// number drawn at, the case as drawn, the threshold it is asked at when that is not the drawn one, and
 /// the case asked.
-let private drawnSample: Lazy<(int * V.Case * float option * V.Case)[]> =
+let internal drawnSample: Lazy<(int * V.Case * float option * V.Case)[]> =
     lazy
         ([| for index in 0..164 do
                 for c in V.searched index do
@@ -387,7 +387,7 @@ let private drawnSample: Lazy<(int * V.Case * float option * V.Case)[]> =
                                             if name = "tau" then name, V.Number tau else name, o) } |])
 
 /// The shipped answer of each element of the sample.
-let private drawnShipped: Lazy<string[]> =
+let internal drawnShipped: Lazy<string[]> =
     lazy
         (drawnSample.Value
          |> Array.Parallel.map (fun (_, _, _, c) ->
@@ -397,7 +397,7 @@ let private drawnShipped: Lazy<string[]> =
 
 /// The functions an arithmetic answers otherwise somewhere in the drawn sample, each with the first
 /// element where it does.
-let private changedUnder (r: Arithmetic) : Map<string, int * string * float option> =
+let internal changedUnder (r: Arithmetic) : Map<string, int * string * float option> =
     let shippedAnswers = drawnShipped.Value
 
     drawnSample.Value
@@ -1251,16 +1251,19 @@ let private unable: (string * string * string list) list =
 
 /// The operation modules: every source of the package but the law family, which compares bits against
 /// float literals as a law must.
-let private operationModules =
+let internal operationModules =
     [ "Basis.fs"
       "Multivector.fs"
       "Objects.fs"
       "Conformal.fs"
       "Geometry.fs"
+      "Versors.fs"
+      "Motion.fs"
+      "Transformations.fs"
       "GeometricAlgebraOperations.fs" ]
 
 /// A source with its comments removed and each string literal emptied to `""`.
-let private codeOf (source: string) : string =
+let internal codeOf (source: string) : string =
     let q = "\""
 
     let pattern =
@@ -1284,7 +1287,7 @@ let private codeOf (source: string) : string =
 /// a number of another floating or decimal type (`1.0f`, `1e-9M`), or a hexadecimal double
 /// (`0x3FF0000000000000LF`). A sign is not part of the token. A named float is `infinity`, `nan`,
 /// `NaN`, `PositiveInfinity`, `NegativeInfinity`, `MaxValue` or `MinValue`, whatever it is bound to.
-let private floatLiterals (source: string) : string list =
+let internal floatLiterals (source: string) : string list =
     let code = codeOf source
 
     [ for m in
@@ -1305,7 +1308,7 @@ let private defaults =
 
 /// The float literals the record accounts for, by module: the literal, how often it is written, and
 /// what it is there for. A literal that is not here, or is here another number of times, is a finding.
-let private accountedLiterals: (string * string * int * string) list =
+let internal accountedLiterals: (string * string * int * string) list =
     [ "Multivector.fs",
       "0.0",
       9,
@@ -1313,11 +1316,32 @@ let private accountedLiterals: (string * string * int * string) list =
       "Multivector.fs", "1.0", 1, "a basis blade's one coefficient (item 2); in no comparison"
       "Conformal.fs",
       "0.0",
-      19,
-      "in a comparison, eight times: a divisor against zero, the norm of a direction against zero, a threshold of zero, a threshold that is not negative, a radius that is not negative, a numerator that is zero, and the signs of a numerator and of a denominator at a threshold of zero (item 6); inside the norm, four times: its `m = 0`, the zero it answers, and the `+0.0` its largest magnitude and its sum start from (D49 item 4, outside the rule); and the `+0.0` of a coefficient a vector built from parameters does not hold, seven times (item 4)"
-      "Conformal.fs", "0.5", 2, "the half of `½ x²` and of `½ r²` (item 4); in no comparison"
-      "Conformal.fs", "2.0", 1, "the `−2.0` of a power (item 6); in no comparison"
-      "Conformal.fs", "1.0", 1, "the weight of `up x` (item 4); in no comparison"
+      26,
+      "in a comparison, thirteen times: a divisor against zero, the norm of a direction against zero, a threshold of zero, a threshold that is not negative, a radius that is not negative, a numerator that is zero, and the signs of a numerator and of a denominator at a threshold of zero; and since Phase 729 the exponential's `φ = 0`, the logarithm's `|B′| = 0`, and for a rotor read from a matrix the sign of its scalar part, twice, and of its largest axis component at a half turn (item 6); inside the norm, four times: its `m = 0`, the zero it answers, and the `+0.0` its largest magnitude and its sum start from (D49 item 4, outside the rule); the `+0.0` of a coefficient a vector built from parameters does not hold, eight times (item 4); and the `+0.0` a dot product of two columns starts from, once (item 3's fold)"
+      "Conformal.fs",
+      "0.5",
+      3,
+      "the half of `½ x²` and of `½ r²` (item 4), and the half of a root in a rotor read from a rotation (D88); in no comparison"
+      "Conformal.fs",
+      "2.0",
+      2,
+      "the `−2.0` of a power (item 6) and the `2 × r` of a dilator's `q` (item 4); in no comparison"
+      "Conformal.fs",
+      "1.0",
+      7,
+      "the weight of `up x` (item 4); the `s + 1` and the `s − 1` of a dilator (item 4); and the `1` each of the four sums of a rotation's diagonal starts from (D88); in no comparison"
+      "Motion.fs",
+      "0.0",
+      18,
+      "in a comparison, nine times: a factor `s > 0`, `V ∗ Ṽ > 0`, the sign of the logarithm's `c` for a rotor and for a motor, a threshold that is not negative, each of the first three entries of a matrix's last row, and the sign of the triple product that says a matrix reverses orientation (item 6); and the `+0.0` of a coefficient a versor built from parameters does not hold, nine times (item 4)"
+      "Motion.fs",
+      "0.5",
+      4,
+      "the half of a rotor's angle and of each component of a translation (item 4); in no comparison"
+      "Motion.fs",
+      "1.0",
+      6,
+      "in a comparison, once: the fourth entry of a matrix's last row (item 6, the one comparison that may name it); and the scalar `1` of a translator, of `1 + B`, of `1 + v ∧ n∞` twice, and the last entry of a versor's matrix (item 4)"
       // The floats that are named and not written.
       "Basis.fs",
       "infinity",
@@ -1334,7 +1358,7 @@ let private accountedLiterals: (string * string * int * string) list =
 
 /// One finding for each way some sources depart from the account: a literal written more or fewer
 /// times than accounted for, and each way of giving a default.
-let private literalFindings (sources: (string * string) list) : string list =
+let internal literalFindings (sources: (string * string) list) : string list =
     let found =
         [ for file, source in sources do
               for literal, uses in floatLiterals source |> List.countBy id -> (file, literal), uses ]
@@ -2056,10 +2080,16 @@ let tests =
           <| fun () ->
               let hostCall =
                   Regex
-                      @"Math\.\w+|(?<![\w.])(sqrt|exp|log|log10|log2|pown|floor|ceil|round|truncate|abs|sin|cos|tan|sinh|cosh|tanh|atan|atan2|asin|acos)\s+[\w(]|\*\*"
+                      @"Math\.\w+|(?<![\w.]|\blet\s+)(sqrt|exp|log|log10|log2|pown|floor|ceil|round|truncate|abs|sin|cos|tan|sinh|cosh|tanh|atan|atan2|asin|acos)\s+[\w(]|\*\*"
 
               let hits =
-                  [ for file in [ "Objects.fs"; "Conformal.fs"; "Geometry.fs" ] do
+                  [ for file in
+                        [ "Objects.fs"
+                          "Conformal.fs"
+                          "Geometry.fs"
+                          "Versors.fs"
+                          "Motion.fs"
+                          "Transformations.fs" ] do
                         for line in
                             File
                                 .ReadAllText(
@@ -2069,9 +2099,32 @@ let tests =
                             if not (line.TrimStart().StartsWith "//") then
                                 for m in hostCall.Matches line -> file, m.Groups[1].Value ]
 
-              // The root is correctly rounded on every host (D49's premise): in the norm, and for a real
-              // point pair's `√(X ∗ X)`. No absolute value, no power, no fused multiply-add.
-              Expect.equal hits [ "Conformal.fs", "sqrt"; "Conformal.fs", "sqrt" ] "two roots and nothing else"
+              // The root is correctly rounded on every host (D49's premise): in the norm, for a real
+              // point pair's `√(X ∗ X)`, and since Phase 729 for a dilator's `√s`, for a rotor read from a
+              // rotation and for a versor's `√(V ∗ Ṽ)`. No absolute value, no power, no fused
+              // multiply-add; and the sine, the cosine and the arc tangent are the pinned ones of
+              // `Fuaran.Compute.Elementary`, which this rule would read if they were the host's.
+              Expect.equal
+                  hits
+                  [ "Conformal.fs", "sqrt"
+                    "Conformal.fs", "sqrt"
+                    "Conformal.fs", "sqrt"
+                    "Conformal.fs", "sqrt"
+                    "Motion.fs", "sqrt" ]
+                  "five roots and nothing else"
+
+              // A function of the package named for the exponential or the logarithm is a definition,
+              // and no call of the host's; a call of either is read.
+              Expect.equal
+                  ([ "let exp (bivector: float * float * float) = 1"
+                     "let k = exp x"
+                     "let k = log (x)"
+                     "let s = sin x"
+                     "atan2 y x" ]
+                   |> List.filter hostCall.IsMatch
+                   |> List.length)
+                  4
+                  "the rule reads a call, and not a definition"
 
           testCase "the closed-form bound is the largest error over the stated sample"
           <| fun () ->

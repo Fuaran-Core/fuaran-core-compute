@@ -231,8 +231,9 @@ let private moduleName (t: Type) : string =
     else
         n
 
-/// The modules whose public functions are the package's operations: the multivector's, and since
-/// Phase 728 the blade operations and one module for each object type.
+/// The modules whose public functions are the package's operations: the multivector's, since
+/// Phase 728 the blade operations and one module for each object type, and since Phase 729 one for
+/// each versor type.
 let private operationModules =
     [ "Multivector"
       "Blade"
@@ -241,7 +242,12 @@ let private operationModules =
       "Line"
       "Circle"
       "Plane"
-      "Sphere" ]
+      "Sphere"
+      "Rotor"
+      "Translator"
+      "Motor"
+      "Dilator"
+      "Reflection" ]
 
 /// The public functions of the package's operation modules, spelled `<Module>.<function>` — the census
 /// `GeometricAlgebraOperations.exactness` is held to.
@@ -273,7 +279,7 @@ let tests =
                       | Error why -> Some(name + ": " + why))
 
               Expect.isEmpty failures "every law of the geometric algebra holds"
-              Expect.equal (GeometricAlgebraLaws.laws 590 1 |> List.length) 27 "twenty-seven laws are run"
+              Expect.equal (GeometricAlgebraLaws.laws 590 1 |> List.length) 36 "thirty-six laws are run"
 
           testCase "the committed law vectors are the package's answers"
           <| fun () ->
@@ -980,7 +986,15 @@ let tests =
                         "PairPoints"
                         "LineMeet"
                         "Side"
-                        "PlaneSide" ])
+                        "PlaneSide"
+                        // Phase 729: the five versors of D85 item 8 with a module of each one's name,
+                        // and the refusals of a matrix read back (D88).
+                        "Rotor"
+                        "Translator"
+                        "Motor"
+                        "Dilator"
+                        "Reflection"
+                        "MatrixRefusal" ])
                   "the package's top-level names"
 
               // `open Fuaran.Compute.GeometricAlgebra` beside another package's namespace must not shadow

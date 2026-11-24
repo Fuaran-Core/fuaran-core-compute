@@ -2016,6 +2016,1291 @@ module GeometricAlgebraVectors =
                               c.Input
                               |> List.map (fun (name, o) -> if name = "tau" then name, Number tau else name, o) } ]
 
+    // ---- the versors (Phase 729, DECISIONS.md D88): appended after the 1,007 -----------------------
+
+    let rotorOf (v: float[]) : Rotor =
+        { Scalar = v[0]
+          E1E2 = v[1]
+          E1E3 = v[2]
+          E2E3 = v[3] }
+
+    let rotorValues (x: Rotor) : float[] = [| x.Scalar; x.E1E2; x.E1E3; x.E2E3 |]
+
+    let translatorOf (v: float[]) : Translator =
+        { Scalar = v[0]
+          E1NInf = v[1]
+          E2NInf = v[2]
+          E3NInf = v[3] }
+
+    let translatorValues (x: Translator) : float[] =
+        [| x.Scalar; x.E1NInf; x.E2NInf; x.E3NInf |]
+
+    let motorOf (v: float[]) : Motor =
+        { Scalar = v[0]
+          E1E2 = v[1]
+          E1E3 = v[2]
+          E1NInf = v[3]
+          E2E3 = v[4]
+          E2NInf = v[5]
+          E3NInf = v[6]
+          E1E2E3NInf = v[7] }
+
+    let motorValues (x: Motor) : float[] =
+        [| x.Scalar
+           x.E1E2
+           x.E1E3
+           x.E1NInf
+           x.E2E3
+           x.E2NInf
+           x.E3NInf
+           x.E1E2E3NInf |]
+
+    let dilatorOf (v: float[]) : Dilator =
+        { Scalar = v[0]
+          N0NInf = v[1]
+          E1NInf = v[2]
+          E2NInf = v[3]
+          E3NInf = v[4] }
+
+    let dilatorValues (x: Dilator) : float[] =
+        [| x.Scalar; x.N0NInf; x.E1NInf; x.E2NInf; x.E3NInf |]
+
+    let reflectionOf (v: float[]) : Reflection =
+        { E1 = v[0]
+          E2 = v[1]
+          E3 = v[2]
+          NInf = v[3] }
+
+    let reflectionValues (x: Reflection) : float[] = [| x.E1; x.E2; x.E3; x.NInf |]
+
+    let private RO (x: Rotor) : Operand = Coefficients(rotorValues x)
+    let private TR (x: Translator) : Operand = Coefficients(translatorValues x)
+    let private MO (x: Motor) : Operand = Coefficients(motorValues x)
+    let private DI (x: Dilator) : Operand = Coefficients(dilatorValues x)
+    let private RE (x: Reflection) : Operand = Coefficients(reflectionValues x)
+
+    /// The versor types, each with the functions every one of them has.
+    let versorTypes: string list =
+        [ "Rotor"; "Translator"; "Motor"; "Dilator"; "Reflection" ]
+
+    /// One drawn configuration of versors: the parameters of a rotor, a translator, a screw, a dilator
+    /// and a reflection, a second of each, a bivector and a vector, and an interpolation's parameter;
+    /// every length about `2^centre` across `spread` binary orders either way, every angle within
+    /// `(−4, 4)`. `zeros` says what an operation takes of each versor: `0` its coefficients times a
+    /// drawn weight; `1` two coefficients in three replaced by a zero of a drawn sign; `2` every
+    /// coefficient a zero of a drawn sign; `3` every coefficient but a drawn one such a zero.
+    type private Moves(seed: int, centre: int, spread: int, zeros: int) =
+        let d = Draw seed
+
+        let triple () : float * float * float =
+            let a = d.Scaled centre spread
+            let b = d.Scaled centre spread
+            let c = d.Scaled centre spread
+            a, b, c
+
+        let direction () : float * float * float =
+            let a = d.Scaled 0 2
+            let b = d.Scaled 0 2
+            let c = d.Scaled 0 2
+            a, b, c
+
+        let angle () : float = d.Scaled 3 0
+
+        let positive () : float =
+            let x = d.Scaled 1 3
+            if x < 0.0 then -x else x
+
+        /// A versor's coefficients as an operation takes them: times a drawn weight, so that it is no
+        /// unit, and with zeros of both signs where the configuration asks for them.
+        let taken (values: float[]) : float[] =
+            let w = d.Scaled 1 1
+            let kept = if zeros = 3 then d.Int 0 (values.Length - 1) else -1
+
+            values
+            |> Array.mapi (fun at v ->
+                match zeros with
+                | 0 -> w * v
+                | 1 ->
+                    match d.Int 0 5 with
+                    | 0
+                    | 1 -> w * v
+                    | 2
+                    | 3 -> 0.0
+                    | _ -> -0.0
+                | _ ->
+                    if at = kept then w * v
+                    elif d.Int 0 1 = 0 then 0.0
+                    else -0.0)
+
+        /// An object's coefficients as an operation takes them: as they are, or, where every
+        /// coefficient of a versor is a zero, zeros of drawn signs too.
+        let object (values: float[]) : float[] =
+            if zeros >= 2 then
+                values |> Array.map (fun _ -> if d.Int 0 1 = 0 then 0.0 else -0.0)
+            else
+                values
+
+        let axis1 = direction ()
+        let angle1 = angle ()
+        let axis2 = direction ()
+        let angle2 = angle ()
+        let t1 = triple ()
+        let t2 = triple ()
+        let point1 = triple ()
+        let direction1 = direction ()
+        let screwAngle1 = angle ()
+        let distance1 = d.Scaled centre spread
+        let point2 = triple ()
+        let direction2 = direction ()
+        let screwAngle2 = angle ()
+        let distance2 = d.Scaled centre spread
+        let centre1 = triple ()
+        let factor1 = positive ()
+        let centre2 = triple ()
+        let factor2 = positive ()
+        let normal1 = direction ()
+        let delta1 = d.Scaled centre spread
+        let normal2 = direction ()
+        let delta2 = d.Scaled centre spread
+        let bivector = (d.Scaled -1 2, d.Scaled -1 2, d.Scaled -1 2)
+        let vector = triple ()
+        let parameter = d.Scaled -1 1
+        let rotor1 = ok (Rotor.ofAxisAngle axis1 angle1)
+        let rotor2 = ok (Rotor.ofAxisAngle axis2 angle2)
+        let translator1 = ok (Translator.ofVector t1)
+        let translator2 = ok (Translator.ofVector t2)
+        let motor1 = ok (Motor.ofScrew point1 direction1 screwAngle1 distance1)
+        let motor2 = ok (Motor.ofScrew point2 direction2 screwAngle2 distance2)
+        let dilator1 = ok (Dilator.ofCentreFactor centre1 factor1)
+        let dilator2 = ok (Dilator.ofCentreFactor centre2 factor2)
+        let reflection1 = ok (Reflection.ofNormalDistance normal1 delta1)
+        let reflection2 = ok (Reflection.ofNormalDistance normal2 delta2)
+        let rotorA = taken (rotorValues rotor1)
+        let rotorB = taken (rotorValues rotor2)
+        let translatorA = taken (translatorValues translator1)
+        let translatorB = taken (translatorValues translator2)
+        let motorA = taken (motorValues motor1)
+        let motorB = taken (motorValues motor2)
+        let dilatorA = taken (dilatorValues dilator1)
+        let dilatorB = taken (dilatorValues dilator2)
+        let reflectionA = taken (reflectionValues reflection1)
+        let reflectionB = taken (reflectionValues reflection2)
+
+        member _.Axis = axis1
+        member _.Angle = angle1
+        member _.T = t1
+        member _.Point = point1
+        member _.Direction = direction1
+        member _.ScrewAngle = screwAngle1
+        member _.Distance = distance1
+        member _.Centre = centre1
+        member _.Factor = factor1
+        member _.Normal = normal1
+        member _.Delta = delta1
+        member _.Bivector = bivector
+        member _.Vector = vector
+        member _.Parameter = parameter
+        member _.Rotor1 = rotor1
+        member _.Rotor2 = rotor2
+        member _.Translator1 = translator1
+        member _.Motor1 = motor1
+        member _.Motor2 = motor2
+        member _.Dilator1 = dilator1
+        member _.Object(values: float[]) : float[] = object values
+
+        /// The two versors of a type as an operation takes them, by the type's name.
+        member _.Taken(versor: string) : float[] * float[] =
+            match versor with
+            | "Rotor" -> rotorA, rotorB
+            | "Translator" -> translatorA, translatorB
+            | "Motor" -> motorA, motorB
+            | "Dilator" -> dilatorA, dilatorB
+            | _ -> reflectionA, reflectionB
+
+    /// Every published function of the versors over one drawn configuration and the objects of a
+    /// scene. `tag` is what a vector's id says after its function, before the configuration's number.
+    let private movesCases (tag: string) (k: int) (s: Scene) (m: Moves) : Case list =
+        [ let g (op: string) (what: string) (input: (string * Operand) list) : Case =
+              case (sprintf "%s-%s-%s%d" op tag what k) op input
+
+          let objects =
+              [ "Point", Coefficients(m.Object(pointValues s.P))
+                "PointPair", Coefficients(m.Object(pairValues s.PairT))
+                "Line", Coefficients(m.Object(lineValues s.LineP))
+                "Circle", Coefficients(m.Object(circleValues s.CircleT))
+                "Plane", Coefficients(m.Object(planeValues s.PlaneP))
+                "Sphere", Coefficients(m.Object(sphereValues s.SphereT)) ]
+
+          yield g "Rotor.ofAxisAngle" "" [ "axis", T m.Axis; "angle", N m.Angle ]
+          yield g "Rotor.exp" "" [ "bivector", T m.Bivector ]
+          yield g "Rotor.log" "" [ "v", RO m.Rotor1 ]
+          yield g "Rotor.log" "of-a-scaled-rotor-" [ "v", Coefficients(fst (m.Taken "Rotor")) ]
+          yield g "Rotor.interpolate" "" [ "t", N m.Parameter; "first", RO m.Rotor1; "second", RO m.Rotor2 ]
+          yield g "Translator.ofVector" "" [ "t", T m.T ]
+          yield g "Motor.ofRotorTranslator" "" [ "rotor", RO m.Rotor1; "translator", TR m.Translator1 ]
+          yield g "Motor.ofRotor" "" [ "rotor", RO m.Rotor1 ]
+          yield g "Motor.ofTranslator" "" [ "translator", TR m.Translator1 ]
+
+          yield
+              g
+                  "Motor.ofScrew"
+                  ""
+                  [ "point", T m.Point
+                    "direction", T m.Direction
+                    "angle", N m.ScrewAngle
+                    "distance", N m.Distance ]
+
+          yield g "Motor.ofLine" "" [ "line", L s.LineP; "angle", N m.ScrewAngle; "distance", N m.Distance ]
+          yield g "Motor.ofLine" "of-a-weighted-line-" [ "line", L s.LineT; "angle", N m.Angle; "distance", N m.Delta ]
+          yield g "Motor.exp" "" [ "bivector", T m.Bivector; "vector", T m.Vector ]
+          yield g "Motor.log" "" [ "v", MO m.Motor1 ]
+          yield g "Motor.log" "of-a-scaled-motor-" [ "v", Coefficients(fst (m.Taken "Motor")) ]
+          yield g "Motor.interpolate" "" [ "t", N m.Parameter; "first", MO m.Motor1; "second", MO m.Motor2 ]
+          yield g "Motor.ofMatrix" "" [ "tau", N(pow2 -40); "matrix", Coefficients(ok (Motor.toMatrix m.Motor1)) ]
+
+          yield
+              g
+                  "Motor.ofMatrix"
+                  "of-a-dilation-"
+                  [ "tau", N(pow2 -40); "matrix", Coefficients(ok (Dilator.toMatrix m.Dilator1)) ]
+
+          // The same motion's matrix made no similarity three ways, each refused with a measure a
+          // drawn matrix gives general bits: its first column negated; its second slanted towards its
+          // first by `2^-25` of it, which keeps its length within the threshold; its third stretched.
+          let drawnMatrix = ok (Motor.toMatrix m.Motor1)
+
+          let remade (what: string) (f: int -> float -> float) : Case =
+              g "Motor.ofMatrix" what [ "tau", N(pow2 -40); "matrix", Coefficients(Array.mapi f drawnMatrix) ]
+
+          yield remade "of-a-mirrored-" (fun i x -> if i < 3 then -x else x)
+
+          yield
+              remade "of-a-slanted-" (fun i x ->
+                  if i >= 4 && i < 7 then
+                      x + pow2 -25 * drawnMatrix[i - 4]
+                  else
+                      x)
+
+          yield remade "of-a-stretched-" (fun i x -> if i >= 8 && i < 11 then (1.0 + pow2 -8) * x else x)
+          yield g "Dilator.ofFactor" "" [ "factor", N m.Factor ]
+          yield g "Dilator.ofCentreFactor" "" [ "centre", T m.Centre; "factor", N m.Factor ]
+          yield g "Reflection.ofNormalDistance" "" [ "normal", T m.Normal; "distance", N m.Delta ]
+
+          for versor in versorTypes do
+              let a, b = m.Taken versor
+              yield g (versor + ".compose") "" [ "b", Coefficients b; "a", Coefficients a ]
+
+              for name, x in objects do
+                  yield g (sprintf "%s.applyTo%s" versor name) "" [ "v", Coefficients a; "x", x ]
+
+              if versor <> "Reflection" then
+                  yield g (versor + ".toMatrix") "" [ "v", Coefficients a ]
+
+              yield g (versor + ".normalise") "" [ "v", Coefficients a ]
+              yield g (versor + ".toMultivector") "" [ "v", Coefficients a ]
+              yield g (versor + ".ofMultivector") "" [ "a", Coefficients(dense (7290 + k) 0 4) ] ]
+
+    /// The drawn configurations of the committed general vectors.
+    let private versorGeneral: Case list =
+        [ yield! movesCases "general" 1 (Scene(7281, 0, 1)) (Moves(7291, 0, 1, 0))
+          yield! movesCases "general" 2 (Scene(7282, 7, 5)) (Moves(7292, 5, 3, 0))
+          yield! movesCases "general" 3 (Scene(7283, -6, 3)) (Moves(7293, -6, 3, 0)) ]
+
+    /// The configuration a search draws at an index: a third of them at each of three scales. Below
+    /// ninety, the even ones have zeros of both signs among the versors' coefficients; from ninety,
+    /// every coefficient of every versor and of every object a versor is applied to is a zero of a
+    /// drawn sign, all of them at the even indices and all but one of each versor's at the odd ones.
+    let versorSearched (index: int) : Case list =
+        let centre, spread =
+            match index % 3 with
+            | 0 -> 0, 1
+            | 1 -> 5, 3
+            | _ -> -6, 3
+
+        movesCases
+            "searched"
+            (1000 + index)
+            (Scene(9000 + index, centre, spread))
+            (Moves(
+                6000 + index,
+                centre,
+                spread,
+                (if index >= 90 then 2 + index % 2
+                 elif index % 2 = 0 then 1
+                 else 0)
+            ))
+
+    // The hard inputs of the versors: each refusal, each boundary and each rule by name.
+
+    let private v3 (a: float) (b: float) (c: float) : Operand = Coefficients [| a; b; c |]
+
+    let private identityMatrix: float[] =
+        [| 1.0
+           0.0
+           0.0
+           0.0
+           0.0
+           1.0
+           0.0
+           0.0
+           0.0
+           0.0
+           1.0
+           0.0
+           0.0
+           0.0
+           0.0
+           1.0 |]
+
+    /// A matrix from its three columns and its translation: column-major, the last row `0 0 0 1`.
+    let private similarity
+        (a: float * float * float)
+        (b: float * float * float)
+        (c: float * float * float)
+        (t: float * float * float)
+        : float[] =
+        let (a1, a2, a3), (b1, b2, b3), (c1, c2, c3), (t1, t2, t3) = a, b, c, t
+        [| a1; a2; a3; 0.0; b1; b2; b3; 0.0; c1; c2; c3; 0.0; t1; t2; t3; 1.0 |]
+
+    let private withEntry (index: int) (value: float) (m: float[]) : float[] =
+        Array.mapi (fun i x -> if i = index then value else x) m
+
+    /// The arguments at which Phase 725's law file records the pinned sine, the pinned cosine and the
+    /// pinned arc tangent a unit in the last place from the correctly rounded value: `x` for the
+    /// sine, `x` for the cosine, and `y` and `x` for the arc tangent.
+    let sineOffByOne = 0.5796341513095583
+    let cosineOffByOne = 35.22326444351266
+    let arcTangentOffByOne = 0.2996283596892042, 1.0252480688622445
+
+    let private versorHard: Case list =
+        let max = Double.MaxValue
+        let h (op: string) (what: string) (input: (string * Operand) list) : Case = case (op + "-" + what) op input
+        let unitRotor = ok (Rotor.ofAxisAngle (0.0, 0.0, 1.0) 1.0)
+        let quarter = ok (Rotor.ofAxisAngle (0.0, 0.0, 1.0) (pow2 -2))
+        let identityRotor = [| 1.0; 0.0; 0.0; 0.0 |]
+        let identityMotor = [| 1.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0 |]
+        let y, x = arcTangentOffByOne
+        let p = u 1.0 2.0 3.0
+
+        [ // ---- a rotor from an axis and an angle
+          yield h "Rotor.ofAxisAngle" "about-e3-takes-e1-towards-e2" [ "axis", v3 0.0 0.0 1.0; "angle", N 1.0 ]
+          yield h "Rotor.ofAxisAngle" "divides-the-axis-by-its-norm" [ "axis", v3 3.0 0.0 4.0; "angle", N 1.0 ]
+          yield h "Rotor.ofAxisAngle" "of-a-zero-angle" [ "axis", v3 1.0 2.0 2.0; "angle", N 0.0 ]
+          yield h "Rotor.ofAxisAngle" "of-a-negative-zero-angle" [ "axis", v3 1.0 2.0 2.0; "angle", N -0.0 ]
+          yield
+              h "Rotor.ofAxisAngle" "of-the-double-nearest-pi" [ "axis", v3 0.0 0.0 1.0; "angle", N 3.141592653589793 ]
+          yield h "Rotor.ofAxisAngle" "of-the-largest-angle" [ "axis", v3 0.0 1.0 0.0; "angle", N max ]
+
+          yield
+              h
+                  "Rotor.ofAxisAngle"
+                  "at-a-sine-a-unit-from-correctly-rounded"
+                  [ "axis", v3 0.0 0.0 1.0; "angle", N(2.0 * sineOffByOne) ]
+
+          yield
+              h
+                  "Rotor.ofAxisAngle"
+                  "at-a-cosine-a-unit-from-correctly-rounded"
+                  [ "axis", v3 0.0 0.0 1.0; "angle", N(2.0 * cosineOffByOne) ]
+
+          yield h "Rotor.ofAxisAngle" "of-a-zero-axis" [ "axis", v3 0.0 -0.0 0.0; "angle", N 1.0 ]
+          yield h "Rotor.ofAxisAngle" "of-the-least-axis" [ "axis", v3 0.0 least 0.0; "angle", N 1.0 ]
+          yield h "Rotor.ofAxisAngle" "of-an-axis-whose-norm-overflows" [ "axis", v3 max max 0.0; "angle", N 1.0 ]
+          yield h "Rotor.ofAxisAngle" "of-an-infinite-axis" [ "axis", v3 inf 0.0 0.0; "angle", N 1.0 ]
+          yield h "Rotor.ofAxisAngle" "of-an-infinite-angle" [ "axis", v3 0.0 0.0 1.0; "angle", N inf ]
+          yield h "Rotor.ofAxisAngle" "of-an-angle-that-is-no-number" [ "axis", v3 0.0 0.0 1.0; "angle", N nan ]
+          yield h "Rotor.ofAxisAngle" "refuses-the-axis-before-the-angle" [ "axis", v3 0.0 0.0 0.0; "angle", N nan ]
+
+          // ---- the exponential and the logarithm of a rotor
+          yield h "Rotor.exp" "of-zero-is-one" [ "bivector", v3 0.0 0.0 0.0 ]
+          yield h "Rotor.exp" "of-zeros-keeps-each-sign" [ "bivector", v3 -0.0 0.0 -0.0 ]
+          yield h "Rotor.exp" "of-the-least-bivector" [ "bivector", v3 least 0.0 0.0 ]
+          yield h "Rotor.exp" "of-a-quarter-turn-about-e3" [ "bivector", v3 -0.7853981633974483 0.0 0.0 ]
+          yield h "Rotor.exp" "of-three-four-five" [ "bivector", v3 0.375 0.0 0.5 ]
+          yield h "Rotor.exp" "at-a-sine-a-unit-from-correctly-rounded" [ "bivector", v3 sineOffByOne 0.0 0.0 ]
+          yield h "Rotor.exp" "at-a-cosine-a-unit-from-correctly-rounded" [ "bivector", v3 0.0 cosineOffByOne 0.0 ]
+          yield h "Rotor.exp" "of-a-bivector-whose-norm-overflows" [ "bivector", v3 max max max ]
+          yield h "Rotor.exp" "of-the-largest-bivector" [ "bivector", v3 0.0 max 0.0 ]
+          yield h "Rotor.exp" "of-an-infinite-bivector" [ "bivector", v3 0.0 inf 0.0 ]
+          yield h "Rotor.exp" "of-a-bivector-that-is-no-number" [ "bivector", v3 nan 0.0 0.0 ]
+          yield h "Rotor.log" "of-one-is-zero" [ "v", Coefficients identityRotor ]
+          yield h "Rotor.log" "of-a-positive-scalar-keeps-each-zero" [ "v", Coefficients [| 2.0; -0.0; 0.0; -0.0 |] ]
+          yield h "Rotor.log" "of-minus-one-has-no-plane" [ "v", Coefficients [| -1.0; 0.0; 0.0; 0.0 |] ]
+          yield h "Rotor.log" "of-the-zero-rotor-has-no-plane" [ "v", Coefficients [| 0.0; 0.0; 0.0; 0.0 |] ]
+          yield h "Rotor.log" "of-a-negative-zero-scalar-has-no-plane" [ "v", Coefficients [| -0.0; 0.0; 0.0; 0.0 |] ]
+          yield h "Rotor.log" "of-the-least-positive-scalar" [ "v", Coefficients [| least; 0.0; 0.0; 0.0 |] ]
+          yield h "Rotor.log" "of-the-least-bivector-part" [ "v", Coefficients [| -1.0; 0.0; least; 0.0 |] ]
+          yield h "Rotor.log" "of-a-half-turn-is-half-pi" [ "v", Coefficients [| 0.0; -1.0; 0.0; 0.0 |] ]
+          yield h "Rotor.log" "of-a-negative-scalar-goes-the-long-way" [ "v", Coefficients [| -0.6; 0.0; 0.8; 0.0 |] ]
+          yield h "Rotor.log" "of-its-negative-goes-the-short-way" [ "v", Coefficients [| 0.6; 0.0; -0.8; 0.0 |] ]
+          yield h "Rotor.log" "of-a-rotor-that-is-no-unit" [ "v", Coefficients [| 3.0; 0.0; 0.0; 4.0 |] ]
+          yield
+              h "Rotor.log" "at-an-arc-tangent-a-unit-from-correctly-rounded" [ "v", Coefficients [| x; y; 0.0; 0.0 |] ]
+          yield h "Rotor.log" "of-an-infinite-bivector-part" [ "v", Coefficients [| 1.0; inf; 0.0; 0.0 |] ]
+          yield h "Rotor.log" "of-an-infinite-scalar" [ "v", Coefficients [| inf; 1.0; 0.0; 0.0 |] ]
+          yield h "Rotor.log" "of-a-rotor-that-holds-no-number" [ "v", Coefficients [| 1.0; 0.0; nan; 0.0 |] ]
+
+          // ---- a rotor's interpolation
+          for name, t in
+              [ "at-zero", 0.0
+                "at-one", 1.0
+                "at-a-half", 0.5
+                "past-one", 1.5
+                "before-zero", -0.25 ] do
+              yield
+                  h
+                      "Rotor.interpolate"
+                      name
+                      [ "t", N t
+                        "first", RO quarter
+                        "second", RO(ok (Rotor.ofAxisAngle (1.0, 2.0, 2.0) 2.0)) ]
+
+          yield
+              h
+                  "Rotor.interpolate"
+                  "at-zero-returns-a-negative-zero-positive"
+                  [ "t", N 0.0
+                    "first", Coefficients [| 1.0; -0.0; 0.0; -0.0 |]
+                    "second", RO unitRotor ]
+
+          yield
+              h
+                  "Rotor.interpolate"
+                  "goes-the-long-way-round"
+                  [ "t", N 0.5
+                    "first", Coefficients identityRotor
+                    "second", Coefficients [| -0.6; 0.0; 0.8; 0.0 |] ]
+
+          yield
+              h
+                  "Rotor.interpolate"
+                  "to-the-negated-rotor-goes-the-short-way"
+                  [ "t", N 0.5
+                    "first", Coefficients identityRotor
+                    "second", Coefficients [| 0.6; 0.0; -0.8; 0.0 |] ]
+
+          yield
+              h
+                  "Rotor.interpolate"
+                  "at-an-arc-tangent-a-unit-from-correctly-rounded"
+                  [ "t", N 0.5
+                    "first", Coefficients identityRotor
+                    "second", Coefficients [| x; y; 0.0; 0.0 |] ]
+
+          // An interpolation steered so that its exponential asks the sine at the argument above:
+          // from one to `exp (a e1∧e2)`, by the `t` for which `t` times the logarithm is that argument
+          // exactly.
+          let steeredBy, steeredTo =
+              Seq.init 4096 (fun k -> float (k + 1) / 4096.0)
+              |> Seq.pick (fun a ->
+                  let second = ok (Rotor.exp (a, 0.0, 0.0))
+
+                  match Rotor.log second with
+                  | Ok(b, _, _) when b > 0.0 ->
+                      let t = sineOffByOne / b
+                      if t * b = sineOffByOne then Some(t, second) else None
+                  | _ -> None)
+
+          yield
+              h
+                  "Rotor.interpolate"
+                  "at-a-sine-a-unit-from-correctly-rounded"
+                  [ "t", N steeredBy
+                    "first", Coefficients identityRotor
+                    "second", RO steeredTo ]
+
+          yield
+              h
+                  "Motor.interpolate"
+                  "at-a-sine-a-unit-from-correctly-rounded"
+                  [ "t", N steeredBy
+                    "first", Coefficients identityMotor
+                    "second", MO(Motor.ofRotor steeredTo) ]
+
+          // From one to the rotor of a drawn case whose bivector part's norm a fused sum moves.
+          yield
+              h
+                  "Rotor.interpolate"
+                  "from-one-to-a-rotor-whose-norm-a-fused-sum-moves"
+                  [ "t", N 0.5
+                    "first", Coefficients identityRotor
+                    "second",
+                    (versorSearched 68
+                     |> List.find (fun c -> c.Id = "Rotor.log-searched-1068")
+                     |> fun c -> c.Input |> List.find (fun (name, _) -> name = "v") |> snd) ]
+
+          yield
+              h
+                  "Rotor.interpolate"
+                  "to-the-opposite-rotor-has-no-plane"
+                  [ "t", N 0.5
+                    "first", Coefficients identityRotor
+                    "second", Coefficients [| -1.0; 0.0; 0.0; 0.0 |] ]
+
+          yield
+              h
+                  "Rotor.interpolate"
+                  "of-an-infinite-parameter"
+                  [ "t", N inf; "first", RO quarter; "second", RO unitRotor ]
+
+          yield
+              h
+                  "Rotor.interpolate"
+                  "refuses-the-parameter-before-the-rotors"
+                  [ "t", N nan
+                    "first", Coefficients identityRotor
+                    "second", Coefficients [| -1.0; 0.0; 0.0; 0.0 |] ]
+
+          // ---- composition, and the laws on exact inputs
+          yield
+              h
+                  "Rotor.compose"
+                  "applies-the-second-operand-first"
+                  [ "b", RO quarter; "a", RO(ok (Rotor.ofAxisAngle (1.0, 0.0, 0.0) 1.0)) ]
+
+          yield
+              h
+                  "Rotor.compose"
+                  "in-the-other-order"
+                  [ "b", RO(ok (Rotor.ofAxisAngle (1.0, 0.0, 0.0) 1.0)); "a", RO quarter ]
+
+          yield
+              h
+                  "Rotor.compose"
+                  "of-a-rotor-with-its-reverse"
+                  [ "b", RO unitRotor; "a", RO(ok (Rotor.ofAxisAngle (0.0, 0.0, 1.0) -1.0)) ]
+
+          yield
+              h
+                  "Translator.compose"
+                  "with-its-opposite-is-the-identity"
+                  [ "b", TR(ok (Translator.ofVector (-1.5, 2.0, -0.25)))
+                    "a", TR(ok (Translator.ofVector (1.5, -2.0, 0.25))) ]
+
+          yield
+              h
+                  "Translator.compose"
+                  "adds-the-two-vectors"
+                  [ "b", TR(ok (Translator.ofVector (1.0, 2.0, 3.0)))
+                    "a", TR(ok (Translator.ofVector (0.5, -4.0, 8.0))) ]
+
+          for name, second, first in
+              [ "of-x1-then-x2-is-minus-one-at-index-10", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)
+                "of-x2-then-x3-is-minus-one-at-index-13", (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)
+                "of-x3-then-x1-is-one-at-index-11", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0) ] do
+              yield
+                  h
+                      "Reflection.compose"
+                      name
+                      [ "b", RE(ok (Reflection.ofNormalDistance second 0.0))
+                        "a", RE(ok (Reflection.ofNormalDistance first 0.0)) ]
+
+          yield
+              h
+                  "Reflection.compose"
+                  "of-two-parallel-planes-is-a-translation"
+                  [ "b", RE(ok (Reflection.ofNormalDistance (0.0, 0.0, 1.0) 3.0))
+                    "a", RE(ok (Reflection.ofNormalDistance (0.0, 0.0, 1.0) 1.0)) ]
+
+          yield
+              h
+                  "Motor.compose"
+                  "of-a-translator-and-a-rotor-is-the-rotation-first"
+                  [ "b", MO(Motor.ofTranslator (ok (Translator.ofVector (1.0, 2.0, 3.0))))
+                    "a", MO(Motor.ofRotor quarter) ]
+
+          yield
+              h
+                  "Motor.ofRotorTranslator"
+                  "is-the-rotation-and-then-the-translation"
+                  [ "rotor", RO quarter
+                    "translator", TR(ok (Translator.ofVector (1.0, 2.0, 3.0))) ]
+
+          yield
+              h
+                  "Dilator.compose"
+                  "of-two-about-one-centre-multiplies-the-factors"
+                  [ "b", DI(ok (Dilator.ofCentreFactor (1.0, 0.0, 0.0) 4.0))
+                    "a", DI(ok (Dilator.ofCentreFactor (1.0, 0.0, 0.0) 0.25)) ]
+
+          // ---- a translator
+          yield h "Translator.ofVector" "halves-and-negates" [ "t", v3 1.0 -2.0 0.5 ]
+          yield h "Translator.ofVector" "of-zeros-of-both-signs" [ "t", v3 0.0 -0.0 0.0 ]
+          yield h "Translator.ofVector" "of-the-least-and-the-largest" [ "t", v3 least max -max ]
+          yield h "Translator.ofVector" "of-an-infinite-component" [ "t", v3 0.0 0.0 inf ]
+          yield h "Translator.ofVector" "of-a-component-that-is-no-number" [ "t", v3 nan 0.0 0.0 ]
+
+          // ---- a screw
+          yield
+              h
+                  "Motor.ofScrew"
+                  "about-a-line-parallel-to-e3"
+                  [ "point", v3 1.0 0.0 0.0
+                    "direction", v3 0.0 0.0 2.0
+                    "angle", N 1.0
+                    "distance", N 5.0 ]
+
+          yield
+              h
+                  "Motor.ofScrew"
+                  "with-no-turn-is-a-translation"
+                  [ "point", v3 1.0 2.0 3.0
+                    "direction", v3 0.0 3.0 4.0
+                    "angle", N 0.0
+                    "distance", N 5.0 ]
+
+          yield
+              h
+                  "Motor.ofScrew"
+                  "with-no-distance-is-a-rotation-about-the-line"
+                  [ "point", v3 1.0 2.0 3.0
+                    "direction", v3 0.0 3.0 4.0
+                    "angle", N 1.0
+                    "distance", N 0.0 ]
+
+          yield
+              h
+                  "Motor.ofScrew"
+                  "at-a-sine-a-unit-from-correctly-rounded"
+                  [ "point", v3 1.0 2.0 3.0
+                    "direction", v3 0.0 0.0 1.0
+                    "angle", N(2.0 * sineOffByOne)
+                    "distance", N 1.0 ]
+
+          for name, point, direction, angle, distance in
+              [ "of-an-infinite-point", (inf, 0.0, 0.0), (0.0, 0.0, 1.0), 1.0, 1.0
+                "of-a-zero-direction", (1.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0, 1.0
+                "of-a-direction-whose-norm-overflows", (1.0, 0.0, 0.0), (max, max, max), 1.0, 1.0
+                "of-an-infinite-angle", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), inf, 1.0
+                "of-an-infinite-distance", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 1.0, inf
+                "refuses-the-point-before-the-direction", (nan, 0.0, 0.0), (0.0, 0.0, 0.0), inf, nan
+                "refuses-the-direction-before-the-angle", (1.0, 0.0, 0.0), (0.0, 0.0, 0.0), inf, nan
+                "refuses-the-angle-before-the-distance", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), nan, inf
+                "refuses-the-distance-before-it-computes", (max, max, max), (0.0, 0.0, 1.0), 1.0, nan
+                "whose-arithmetic-overflows-into-no-number", (max, max, max), (1.0, 1.0, 1.0), 1.0, max ] do
+              let (p1, p2, p3), (d1, d2, d3) = point, direction
+
+              yield
+                  h
+                      "Motor.ofScrew"
+                      name
+                      [ "point", v3 p1 p2 p3
+                        "direction", v3 d1 d2 d3
+                        "angle", N angle
+                        "distance", N distance ]
+
+          yield h "Motor.ofLine" "about-the-first-axis" [ "line", L xAxis; "angle", N 1.0; "distance", N 2.0 ]
+
+          yield
+              h
+                  "Motor.ofLine"
+                  "divides-the-direction-by-the-weight"
+                  [ "line", L(Line.through (u 1.0 0.0 0.0) (u 1.0 0.0 4.0))
+                    "angle", N 1.0
+                    "distance", N 5.0 ]
+
+          yield
+              h
+                  "Motor.ofLine"
+                  "at-a-sine-a-unit-from-correctly-rounded"
+                  [ "line", L yAxis; "angle", N(2.0 * sineOffByOne); "distance", N 1.0 ]
+
+          yield h "Motor.ofLine" "of-the-zero-line" [ "line", L zeroLine; "angle", N 1.0; "distance", N 1.0 ]
+          yield h "Motor.ofLine" "of-a-line-at-infinity" [ "line", L parallelPlanes; "angle", N 1.0; "distance", N 1.0 ]
+
+          yield
+              h
+                  "Motor.ofLine"
+                  "of-a-line-that-holds-no-number"
+                  [ "line", Coefficients [| nan; 0.0; 1.0; 0.0; 0.0; 0.0 |]
+                    "angle", N 1.0
+                    "distance", N 1.0 ]
+
+          yield h "Motor.ofLine" "of-an-infinite-angle" [ "line", L xAxis; "angle", N inf; "distance", N 1.0 ]
+          yield h "Motor.ofLine" "of-an-infinite-distance" [ "line", L xAxis; "angle", N 1.0; "distance", N -inf ]
+
+          yield
+              h
+                  "Motor.ofLine"
+                  "refuses-the-line-before-the-angle"
+                  [ "line", L zeroLine; "angle", N nan; "distance", N nan ]
+
+          yield
+              h
+                  "Motor.ofLine"
+                  "refuses-the-angle-before-the-distance"
+                  [ "line", L xAxis; "angle", N nan; "distance", N inf ]
+
+          yield
+              h
+                  "Motor.ofLine"
+                  "of-a-line-whose-nearest-point-overflows"
+                  [ "line", Coefficients [| 0.0; -1.0; 0.07918293826789391; -max; max; 0.0 |]
+                    "angle", N 1.0
+                    "distance", N 1.0 ]
+
+          // ---- the exponential and the logarithm of a motor
+          yield h "Motor.exp" "of-zero-is-one" [ "bivector", v3 0.0 0.0 0.0; "vector", v3 0.0 0.0 0.0 ]
+
+          yield
+              h
+                  "Motor.exp"
+                  "of-a-vector-alone-is-one-and-the-vector"
+                  [ "bivector", v3 -0.0 0.0 -0.0; "vector", v3 1.5 -0.0 -2.0 ]
+
+          yield h "Motor.exp" "along-its-axis" [ "bivector", v3 0.5 0.0 0.0; "vector", v3 0.0 0.0 3.0 ]
+          yield h "Motor.exp" "across-its-axis" [ "bivector", v3 0.5 0.0 0.0; "vector", v3 1.0 -2.0 0.0 ]
+          yield h "Motor.exp" "of-the-least-bivector" [ "bivector", v3 0.0 least 0.0; "vector", v3 1.0 2.0 3.0 ]
+
+          yield
+              h
+                  "Motor.exp"
+                  "of-a-bivector-whose-square-underflows"
+                  [ "bivector", v3 3e-170 -4e-170 1e-171; "vector", v3 1.0 2.0 3.0 ]
+
+          yield
+              h
+                  "Motor.exp"
+                  "at-a-sine-a-unit-from-correctly-rounded"
+                  [ "bivector", v3 0.0 0.0 sineOffByOne; "vector", v3 1.0 2.0 3.0 ]
+
+          yield h "Motor.exp" "of-an-infinite-bivector" [ "bivector", v3 inf 0.0 0.0; "vector", v3 1.0 2.0 3.0 ]
+
+          yield
+              h
+                  "Motor.exp"
+                  "of-a-bivector-whose-norm-overflows"
+                  [ "bivector", v3 max max 0.0; "vector", v3 1.0 2.0 3.0 ]
+
+          yield h "Motor.exp" "of-an-infinite-vector" [ "bivector", v3 0.5 0.0 0.0; "vector", v3 1.0 -inf 3.0 ]
+
+          yield
+              h
+                  "Motor.exp"
+                  "refuses-the-bivector-before-the-vector"
+                  [ "bivector", v3 nan 0.0 0.0; "vector", v3 nan 0.0 0.0 ]
+
+          yield h "Motor.exp" "of-the-largest-vector" [ "bivector", v3 0.5 0.25 0.125; "vector", v3 max max max ]
+          yield h "Motor.log" "of-one-is-zero" [ "v", Coefficients identityMotor ]
+
+          yield
+              h
+                  "Motor.log"
+                  "of-a-translator-is-its-vector-part-itself"
+                  [ "v", MO(Motor.ofTranslator (ok (Translator.ofVector (2.0, -4.0, 6.0)))) ]
+
+          yield
+              h
+                  "Motor.log"
+                  "of-a-scaled-translator-divides-nothing"
+                  [ "v", Coefficients [| 2.0; -0.0; 0.0; 3.0; 0.0; -0.0; 5.0; 7.0 |] ]
+
+          yield
+              h
+                  "Motor.log"
+                  "of-minus-one-has-no-plane"
+                  [ "v", Coefficients [| -1.0; 0.0; 0.0; 1.0; 0.0; 2.0; 3.0; 0.0 |] ]
+
+          yield h "Motor.log" "of-the-zero-motor-has-no-plane" [ "v", Coefficients(Array.zeroCreate<float> 8) ]
+
+          yield
+              h
+                  "Motor.log"
+                  "of-a-screw-about-a-line-parallel-to-e3"
+                  [ "v", MO(ok (Motor.ofScrew (1.0, 0.0, 0.0) (0.0, 0.0, 1.0) 1.0 5.0)) ]
+
+          yield h "Motor.log" "of-a-rotor-has-no-vector" [ "v", MO(Motor.ofRotor quarter) ]
+
+          yield
+              h "Motor.log" "of-a-half-turn-screw" [ "v", Coefficients [| 0.0; -1.0; 0.0; 0.0; 0.0; 0.5; -1.0; 1.0 |] ]
+
+          yield
+              h
+                  "Motor.log"
+                  "of-a-negative-scalar-goes-the-long-way"
+                  [ "v", Coefficients [| -0.6; 0.0; 0.8; 1.0; 0.0; 2.0; 3.0; 0.5 |] ]
+
+          yield
+              h
+                  "Motor.log"
+                  "at-an-arc-tangent-a-unit-from-correctly-rounded"
+                  [ "v", Coefficients [| x; y; 0.0; 1.0; 0.0; 2.0; 3.0; 0.5 |] ]
+
+          yield
+              h
+                  "Motor.log"
+                  "of-the-least-bivector-part"
+                  [ "v", Coefficients [| 1.0; least; 0.0; 1.0; 0.0; 2.0; 3.0; least |] ]
+
+          yield
+              h
+                  "Motor.log"
+                  "of-a-motor-that-holds-no-number"
+                  [ "v", Coefficients [| 1.0; 0.5; 0.0; 0.0; 0.0; 0.0; 0.0; nan |] ]
+
+          yield
+              h
+                  "Motor.log"
+                  "of-an-infinite-vector-part"
+                  [ "v", Coefficients [| 1.0; 0.5; 0.0; inf; 0.0; 0.0; 0.0; 0.0 |] ]
+
+          for name, t in [ "at-zero", 0.0; "at-one", 1.0; "at-a-half", 0.5; "past-one", 2.0 ] do
+              yield
+                  h
+                      "Motor.interpolate"
+                      name
+                      [ "t", N t
+                        "first", MO(ok (Motor.ofScrew (1.0, 0.0, 0.0) (0.0, 0.0, 1.0) 1.0 5.0))
+                        "second", MO(ok (Motor.ofScrew (0.0, 2.0, 0.0) (1.0, 2.0, 2.0) -2.0 1.0)) ]
+
+          yield
+              h
+                  "Motor.interpolate"
+                  "between-two-translators-is-a-translator"
+                  [ "t", N 0.25
+                    "first", MO(Motor.ofTranslator (ok (Translator.ofVector (1.0, 2.0, 3.0))))
+                    "second", MO(Motor.ofTranslator (ok (Translator.ofVector (5.0, -2.0, 7.0)))) ]
+
+          yield
+              h
+                  "Motor.interpolate"
+                  "goes-the-long-way-round"
+                  [ "t", N 0.5
+                    "first", Coefficients identityMotor
+                    "second", Coefficients [| -0.6; 0.0; 0.8; 0.0; 0.0; 0.0; 0.0; 0.0 |] ]
+
+          yield
+              h
+                  "Motor.interpolate"
+                  "at-an-arc-tangent-a-unit-from-correctly-rounded"
+                  [ "t", N 0.5
+                    "first", Coefficients identityMotor
+                    "second", Coefficients [| x; y; 0.0; 1.0; 0.0; 2.0; 3.0; 0.5 |] ]
+
+          yield
+              h
+                  "Motor.interpolate"
+                  "to-the-opposite-motor-has-no-plane"
+                  [ "t", N 0.5
+                    "first", Coefficients identityMotor
+                    "second", Coefficients [| -1.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0 |] ]
+
+          yield
+              h
+                  "Motor.interpolate"
+                  "of-a-parameter-that-is-no-number"
+                  [ "t", N nan
+                    "first", Coefficients identityMotor
+                    "second", Coefficients identityMotor ]
+
+          // ---- a dilator
+          for name, s in
+              [ "by-four-is-exact", 4.0
+                "by-a-quarter-is-exact", 0.25
+                "by-one-is-the-identity", 1.0
+                "by-sixteen-is-exact", 16.0
+                "by-two-takes-a-root", 2.0
+                "by-three", 3.0
+                "by-the-least-factor", least
+                "by-the-largest-factor", max ] do
+              yield h "Dilator.ofFactor" name [ "factor", N s ]
+
+          yield h "Dilator.ofFactor" "of-a-zero-factor" [ "factor", N 0.0 ]
+          yield h "Dilator.ofFactor" "of-a-negative-zero-factor" [ "factor", N -0.0 ]
+          yield h "Dilator.ofFactor" "of-a-negative-factor" [ "factor", N -4.0 ]
+          yield h "Dilator.ofFactor" "of-an-infinite-factor" [ "factor", N inf ]
+          yield h "Dilator.ofFactor" "of-a-factor-that-is-no-number" [ "factor", N nan ]
+          yield h "Dilator.ofCentreFactor" "by-four-about-a-point" [ "centre", v3 1.0 1.0 1.0; "factor", N 4.0 ]
+
+          yield
+              h
+                  "Dilator.ofCentreFactor"
+                  "about-the-origin-is-the-dilator-of-the-factor"
+                  [ "centre", v3 0.0 0.0 0.0; "factor", N 3.0 ]
+
+          yield h "Dilator.ofCentreFactor" "of-an-infinite-centre" [ "centre", v3 0.0 inf 0.0; "factor", N 4.0 ]
+
+          yield
+              h
+                  "Dilator.ofCentreFactor"
+                  "refuses-the-centre-before-the-factor"
+                  [ "centre", v3 nan 0.0 0.0; "factor", N -1.0 ]
+
+          yield
+              h
+                  "Dilator.ofCentreFactor"
+                  "refuses-the-factor-before-it-computes"
+                  [ "centre", v3 max max max; "factor", N 0.0 ]
+
+          yield h "Dilator.ofCentreFactor" "whose-arithmetic-overflows" [ "centre", v3 max max max; "factor", N 4.0 ]
+
+          yield
+              h
+                  "Dilator.applyToPoint"
+                  "by-four-divides-the-weight-by-four"
+                  [ "v", DI(ok (Dilator.ofCentreFactor (1.0, 1.0, 1.0) 4.0))
+                    "x", P(u 2.0 1.0 0.0) ]
+
+          yield
+              h
+                  "Dilator.applyToSphere"
+                  "by-four-scales-the-radius"
+                  [ "v", DI(ok (Dilator.ofFactor 4.0))
+                    "x", S(ok (Sphere.ofCentreRadius (1.0, 0.0, 0.0) 1.0)) ]
+
+          // ---- a reflection
+          yield
+              h
+                  "Reflection.ofNormalDistance"
+                  "divides-the-normal-by-its-norm"
+                  [ "normal", v3 0.0 3.0 4.0; "distance", N 2.0 ]
+
+          yield h "Reflection.ofNormalDistance" "of-a-zero-normal" [ "normal", v3 0.0 0.0 0.0; "distance", N 1.0 ]
+          yield h "Reflection.ofNormalDistance" "of-an-infinite-normal" [ "normal", v3 0.0 0.0 -inf; "distance", N 1.0 ]
+
+          yield
+              h "Reflection.ofNormalDistance" "of-an-infinite-distance" [ "normal", v3 0.0 0.0 1.0; "distance", N inf ]
+
+          yield
+              h
+                  "Reflection.ofNormalDistance"
+                  "refuses-the-normal-before-the-distance"
+                  [ "normal", v3 0.0 0.0 0.0; "distance", N nan ]
+
+          yield
+              h
+                  "Reflection.applyToPoint"
+                  "in-the-plane-x3-equals-one"
+                  [ "v", RE(ok (Reflection.ofNormalDistance (0.0, 0.0, 1.0) 1.0)); "x", P p ]
+
+          yield
+              h
+                  "Reflection.applyToLine"
+                  "reverses-the-first-axis-in-the-plane-x1-equals-zero"
+                  [ "v", RE(ok (Reflection.ofNormalDistance (1.0, 0.0, 0.0) 0.0)); "x", L xAxis ]
+
+          // ---- applying: the reverse and never the inverse, and nothing normalised
+          yield h "Rotor.applyToPoint" "about-e3-takes-e1-towards-e2" [ "v", RO unitRotor; "x", P(u 1.0 0.0 0.0) ]
+
+          yield
+              h
+                  "Rotor.applyToPoint"
+                  "of-a-rotor-twice-a-unit-scales-the-weight-by-four"
+                  [ "v", Coefficients(times 2.0 (rotorValues unitRotor)); "x", P p ]
+
+          yield
+              h
+                  "Translator.applyToPoint"
+                  "moves-a-point-by-the-vector"
+                  [ "v", TR(ok (Translator.ofVector (1.0, 2.0, 3.0))); "x", P(u 1.0 1.0 1.0) ]
+
+          yield
+              h
+                  "Translator.applyToPoint"
+                  "of-a-translator-that-is-no-unit"
+                  [ "v", Coefficients [| 3.0; -1.5; 0.0; 0.75 |]; "x", P p ]
+
+          yield
+              h
+                  "Motor.applyToPoint"
+                  "is-the-rotation-and-then-the-translation"
+                  [ "v", MO(Motor.ofRotorTranslator quarter (ok (Translator.ofVector (1.0, 2.0, 3.0))))
+                    "x", P(u 1.0 0.0 0.0) ]
+
+          yield
+              h
+                  "Motor.applyToLine"
+                  "of-a-screw-keeps-its-own-axis"
+                  [ "v", MO(ok (Motor.ofScrew (1.0, 0.0, 0.0) (0.0, 0.0, 1.0) 1.0 5.0))
+                    "x", L(ok (Line.ofPointDirection (1.0, 0.0, 0.0) (0.0, 0.0, 1.0))) ]
+
+          yield
+              h
+                  "Rotor.applyToPoint"
+                  "of-a-point-of-zeros-of-both-signs"
+                  [ "v", RO unitRotor; "x", Coefficients [| -0.0; 0.0; -0.0; 0.0; -0.0 |] ]
+
+          yield
+              h
+                  "Rotor.applyToPoint"
+                  "of-an-infinite-coefficient"
+                  [ "v", Coefficients [| 1.0; inf; 0.0; 0.0 |]; "x", P p ]
+
+          // ---- normalisation
+          yield h "Rotor.normalise" "three-four-five" [ "v", Coefficients [| 3.0; 0.0; 4.0; 0.0 |] ]
+          yield h "Rotor.normalise" "of-the-zero-rotor" [ "v", Coefficients [| 0.0; -0.0; 0.0; 0.0 |] ]
+          yield h "Rotor.normalise" "of-a-squared-norm-that-overflows" [ "v", Coefficients [| max; max; 0.0; 0.0 |] ]
+
+          yield
+              h
+                  "Rotor.normalise"
+                  "of-a-squared-norm-that-underflows-to-zero"
+                  [ "v", Coefficients [| pow2 -600; 0.0; 0.0; 0.0 |] ]
+
+          yield h "Rotor.normalise" "of-the-least-squared-norm" [ "v", Coefficients [| pow2 -537; 0.0; 0.0; 0.0 |] ]
+          yield h "Rotor.normalise" "of-a-rotor-that-holds-no-number" [ "v", Coefficients [| 1.0; nan; 0.0; 0.0 |] ]
+          yield h "Translator.normalise" "divides-by-the-scalar-part" [ "v", Coefficients [| -4.0; 2.0; 0.0; -6.0 |] ]
+          yield h "Translator.normalise" "of-a-zero-scalar-part" [ "v", Coefficients [| 0.0; 2.0; 0.0; -6.0 |] ]
+
+          yield
+              h
+                  "Motor.normalise"
+                  "ignores-the-parts-that-square-to-zero"
+                  [ "v", Coefficients [| 3.0; 0.0; 4.0; 7.0; 0.0; 8.0; 9.0; 10.0 |] ]
+
+          yield h "Dilator.normalise" "five-four-three" [ "v", Coefficients [| 5.0; 4.0; 1.0; 2.0; 3.0 |] ]
+          yield h "Dilator.normalise" "of-a-negative-squared-norm" [ "v", Coefficients [| 4.0; 5.0; 0.0; 0.0; 0.0 |] ]
+          yield h "Dilator.normalise" "of-a-zero-squared-norm" [ "v", Coefficients [| 4.0; -4.0; 1.0; 0.0; 0.0 |] ]
+          yield h "Reflection.normalise" "three-four-five" [ "v", Coefficients [| 0.0; 3.0; 4.0; 10.0 |] ]
+          yield h "Reflection.normalise" "of-a-plane-at-infinity" [ "v", Coefficients [| 0.0; 0.0; 0.0; 1.0 |] ]
+
+          // ---- the copies
+          for versor, size in [ "Rotor", 4; "Translator", 4; "Motor", 8; "Dilator", 5; "Reflection", 4 ] do
+              yield
+                  h
+                      (versor + ".toMultivector")
+                      "keeps-each-zero"
+                      [ "v", Coefficients(Array.init size (fun i -> if i % 2 = 0 then -0.0 else 0.0)) ]
+
+              yield h (versor + ".ofMultivector") "of-the-powers-of-two" [ "a", PowersOfTwo ]
+
+          yield h "Motor.ofRotor" "keeps-each-zero" [ "rotor", Coefficients [| -0.0; 0.0; -0.0; 1.0 |] ]
+          yield h "Motor.ofTranslator" "keeps-each-zero" [ "translator", Coefficients [| 1.0; -0.0; 0.0; -0.0 |] ]
+
+          // ---- the matrix of a versor
+          yield h "Rotor.toMatrix" "about-e3-is-column-major" [ "v", RO unitRotor ]
+
+          yield
+              h
+                  "Rotor.toMatrix"
+                  "of-a-rotor-twice-a-unit-is-the-same-rotation"
+                  [ "v", Coefficients(times 2.0 (rotorValues unitRotor)) ]
+
+          yield h "Rotor.toMatrix" "of-the-zero-rotor" [ "v", Coefficients [| 0.0; 0.0; 0.0; 0.0 |] ]
+          yield h "Rotor.toMatrix" "of-a-weight-that-overflows" [ "v", Coefficients [| max; 0.0; 0.0; 0.0 |] ]
+          yield h "Rotor.toMatrix" "of-a-rotor-that-holds-no-number" [ "v", Coefficients [| 1.0; nan; 0.0; 0.0 |] ]
+
+          yield
+              h
+                  "Translator.toMatrix"
+                  "holds-the-vector-in-its-last-column"
+                  [ "v", TR(ok (Translator.ofVector (1.0, 2.0, 3.0))) ]
+
+          yield
+              h
+                  "Motor.toMatrix"
+                  "of-a-screw-about-a-line-parallel-to-e3"
+                  [ "v", MO(ok (Motor.ofScrew (1.0, 0.0, 0.0) (0.0, 0.0, 1.0) 1.0 5.0)) ]
+
+          yield
+              h "Dilator.toMatrix" "by-four-about-a-point" [ "v", DI(ok (Dilator.ofCentreFactor (1.0, 1.0, 1.0) 4.0)) ]
+
+          yield h "Dilator.toMatrix" "of-a-zero-weight" [ "v", Coefficients [| 1.0; 1.0; 0.0; 0.0; 0.0 |] ]
+
+          // ---- a matrix read as a motor and a factor
+          let m (name: string) (tau: float) (matrix: float[]) : Case =
+              h "Motor.ofMatrix" name [ "tau", N tau; "matrix", Coefficients matrix ]
+
+          yield m "of-the-identity" 0.0 identityMatrix
+
+          yield
+              m
+                  "of-a-quarter-turn-about-e3"
+                  0.0
+                  (similarity (0.0, 1.0, 0.0) (-1.0, 0.0, 0.0) (0.0, 0.0, 1.0) (1.0, 2.0, 3.0))
+
+          yield
+              m
+                  "of-an-integer-similarity"
+                  0.0
+                  (similarity (6.0, 9.0, 18.0) (9.0, -18.0, 6.0) (18.0, 6.0, -9.0) (1.0, 2.0, 3.0))
+
+          yield
+              m
+                  "of-a-uniform-scale-by-four"
+                  0.0
+                  (similarity (4.0, 0.0, 0.0) (0.0, 4.0, 0.0) (0.0, 0.0, 4.0) (-3.0, -3.0, -3.0))
+
+          for name, a, b, c in
+              [ "of-a-half-turn-about-e1", (1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, -1.0)
+                "of-a-half-turn-about-e2", (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0)
+                "of-a-half-turn-about-e3", (-1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0)
+                "of-a-half-turn-about-e1-plus-e2", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)
+                "of-a-half-turn-about-e1-less-e2", (0.0, -1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, -1.0)
+                "of-a-half-turn-about-e2-less-e3", (-1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, -1.0, 0.0)
+                "of-a-half-turn-about-e1-less-e3", (0.0, 0.0, -1.0), (0.0, -1.0, 0.0), (-1.0, 0.0, 0.0)
+                "of-a-third-of-a-turn-about-the-diagonal", (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)
+                "of-a-quarter-turn-about-e1", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)
+                "of-a-quarter-turn-about-e2", (0.0, 0.0, -1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0) ] do
+              yield m name 0.0 (similarity a b c (0.0, 0.0, 0.0))
+
+          yield m "of-a-mirror" 0.0 (similarity (-1.0, 0.0, 0.0) (0.0, 1.0, 0.0) (0.0, 0.0, 1.0) (0.0, 0.0, 0.0))
+          yield m "of-a-shear" 0.0 (similarity (1.0, 0.0, 0.0) (1.0, 1.0, 0.0) (0.0, 0.0, 1.0) (0.0, 0.0, 0.0))
+
+          yield
+              m
+                  "of-a-scale-that-is-not-uniform"
+                  0.0
+                  (similarity (2.0, 0.0, 0.0) (0.0, 3.0, 0.0) (0.0, 0.0, 2.0) (0.0, 0.0, 0.0))
+
+          yield
+              m
+                  "of-a-third-column-of-another-length"
+                  0.0
+                  (similarity (2.0, 0.0, 0.0) (0.0, 2.0, 0.0) (0.0, 0.0, 3.0) (0.0, 0.0, 0.0))
+
+          yield
+              m
+                  "of-columns-that-are-not-orthogonal"
+                  0.0
+                  (similarity (3.0, 4.0, 0.0) (4.0, 3.0, 0.0) (0.0, 0.0, 5.0) (0.0, 0.0, 0.0))
+
+          yield m "of-a-zero-column" 0.0 (similarity (0.0, 0.0, 0.0) (0.0, 1.0, 0.0) (0.0, 0.0, 1.0) (0.0, 0.0, 0.0))
+
+          yield
+              m
+                  "of-a-zero-third-column-under-a-large-threshold"
+                  2.0
+                  (similarity (1.0, 0.0, 0.0) (0.0, 1.0, 0.0) (0.0, 0.0, 0.0) (0.0, 0.0, 0.0))
+
+          yield
+              m
+                  "of-columns-whose-squares-underflow"
+                  0.0
+                  (similarity (pow2 -600, 0.0, 0.0) (0.0, pow2 -600, 0.0) (0.0, 0.0, pow2 -600) (0.0, 0.0, 0.0))
+
+          yield
+              m
+                  "of-columns-whose-squares-overflow"
+                  0.0
+                  (similarity (pow2 600, 0.0, 0.0) (0.0, pow2 600, 0.0) (0.0, 0.0, pow2 600) (0.0, 0.0, 0.0))
+
+          yield
+              m
+                  "of-the-largest-columns-it-reads"
+                  0.0
+                  (similarity (pow2 511, 0.0, 0.0) (0.0, pow2 511, 0.0) (0.0, 0.0, pow2 511) (max, -max, 0.0))
+
+          yield m "of-a-last-row-that-is-not-affine" 0.0 (withEntry 3 (pow2 -1074) identityMatrix)
+          yield m "of-a-last-entry-that-is-not-one" 0.0 (withEntry 15 (1.0 + pow2 -52) identityMatrix)
+
+          yield
+              m
+                  "of-a-last-row-of-negative-zeros"
+                  0.0
+                  (identityMatrix |> withEntry 3 -0.0 |> withEntry 7 -0.0 |> withEntry 11 -0.0)
+
+          yield m "of-an-infinite-entry" 0.0 (withEntry 12 inf identityMatrix)
+          yield m "of-an-entry-that-is-no-number" 0.0 (withEntry 5 nan identityMatrix)
+          yield m "of-fifteen-entries" 0.0 (Array.sub identityMatrix 0 15)
+          yield m "of-seventeen-entries" 0.0 (Array.append identityMatrix [| 0.0 |])
+          yield m "of-no-entry" 0.0 [||]
+          yield m "of-a-negative-threshold" -1.0 identityMatrix
+          yield m "of-a-negative-zero-threshold" -0.0 identityMatrix
+          yield m "of-an-infinite-threshold" inf identityMatrix
+          yield m "of-a-threshold-that-is-no-number" nan identityMatrix
+          yield m "refuses-the-threshold-before-the-matrix" -1.0 [||]
+          yield m "refuses-the-length-before-an-entry" 0.0 [| nan |]
+          yield m "refuses-an-entry-before-the-last-row" 0.0 (identityMatrix |> withEntry 3 1.0 |> withEntry 0 inf)
+
+          // A statistic at its threshold, from within and from above.
+          let slanted =
+              similarity (1.0, 0.0, 0.0) (pow2 -10, 1.0, 0.0) (0.0, 0.0, 1.0) (0.0, 0.0, 0.0)
+
+          let longer =
+              similarity (1.0, 0.0, 0.0) (0.0, 1.0, 0.0) (0.0, 0.0, 1.0 + pow2 -10) (0.0, 0.0, 0.0)
+
+          yield m "of-a-slanted-column-at-a-threshold-of-zero" 0.0 slanted
+          yield m "of-a-slanted-column-below-its-threshold" (pow2 -11) slanted
+          yield m "of-a-slanted-column-within-a-wide-threshold" (pow2 -9) slanted
+          yield m "of-a-longer-column-at-a-threshold-of-zero" 0.0 longer
+          yield m "of-a-longer-column-below-its-threshold" (pow2 -10) longer
+          yield m "of-a-longer-column-within-a-wide-threshold" (pow2 -8) longer
+
+          let shorter =
+              similarity (1.0, 0.0, 0.0) (0.0, 1.0 - pow2 -10, 0.0) (0.0, 0.0, 1.0) (0.0, 0.0, 0.0)
+
+          // A statistic that equals its threshold is within it.
+          let ownThreshold (matrix: float[]) : float =
+              match Motor.ofMatrix 0.0 matrix with
+              | Error(MatrixRefusal.NotOneLength q)
+              | Error(MatrixRefusal.NotOrthogonal q) -> if q < 0.0 then -q else q
+              | _ -> failwith "an authored matrix was not refused for a statistic"
+
+          yield m "of-a-slanted-column-at-its-own-threshold" (ownThreshold slanted) slanted
+          yield m "of-a-longer-column-at-its-own-threshold" (ownThreshold longer) longer
+          yield m "of-a-shorter-column-at-a-threshold-of-zero" 0.0 shorter
+          yield m "of-a-shorter-column-at-its-own-threshold" (ownThreshold shorter) shorter
+          yield m "of-a-shorter-column-below-its-threshold" (pow2 -12) shorter
+
+          // Half turns about an axis with integer components, `2 a aᵀ / |a|² − 1` formed in doubles,
+          // at which the rule for the rotor's sign decides: the axis component of largest magnitude
+          // comes out negative at the first, and two components tie at the second.
+          for name, (a1, a2, a3) in
+              [ "of-a-half-turn-whose-largest-component-comes-out-negative", (-5.0, -3.0, 5.0)
+                "of-a-half-turn-whose-two-largest-components-tie", (-6.0, -3.0, 6.0) ] do
+              let a = [| a1; a2; a3 |]
+              let n2 = a1 * a1 + a2 * a2 + a3 * a3
+
+              let entry (i: int) (j: int) : float =
+                  2.0 * a[i] * a[j] / n2 - (if i = j then 1.0 else 0.0)
+
+              yield
+                  m
+                      name
+                      (pow2 -40)
+                      (similarity
+                          (entry 0 0, entry 1 0, entry 2 0)
+                          (entry 0 1, entry 1 1, entry 2 1)
+                          (entry 0 2, entry 1 2, entry 2 2)
+                          (0.0, 0.0, 0.0))
+
+          // At a threshold of zero the signs decide: a quotient that underflows to a zero is no zero
+          // statistic.
+          for name, sign in [ "positive", 1.0; "negative", -1.0 ] do
+              let underflowing =
+                  similarity (pow2 500, 0.0, 0.0) (sign * pow2 -600, pow2 500, 0.0) (0.0, 0.0, pow2 500) (0.0, 0.0, 0.0)
+
+              yield m (sprintf "of-a-%s-cosine-that-underflows-at-a-threshold-of-zero" name) 0.0 underflowing
+              yield m (sprintf "of-a-%s-cosine-that-underflows-at-the-least-threshold" name) least underflowing ]
+
+    /// The cases a search found: a drawn configuration's case of one function, kept because a wrong
+    /// port fails it where it failed no earlier vector of that function (DECISIONS.md D88).
+    let private versorChosen: (int * string) list =
+        [ 3, "Motor.normalise-searched-1003"
+          17, "Reflection.normalise-searched-1017"
+          7, "Dilator.normalise-searched-1007"
+          33, "Motor.normalise-searched-1033"
+          37, "Reflection.normalise-searched-1037"
+          17, "Rotor.normalise-searched-1017"
+          2, "Translator.applyToPlane-searched-1002"
+          7, "Motor.ofMatrix-searched-of-a-slanted-1007"
+          36, "Motor.exp-searched-1036"
+          5, "Motor.interpolate-searched-1005"
+          23, "Motor.log-searched-1023"
+          26, "Motor.ofLine-searched-of-a-weighted-line-1026"
+          5, "Reflection.ofNormalDistance-searched-1005"
+          76, "Rotor.exp-searched-1076"
+          68, "Rotor.log-searched-1068"
+          9, "Motor.exp-searched-1009"
+          8, "Motor.interpolate-searched-1008"
+          3, "Motor.ofLine-searched-1003"
+          9, "Rotor.exp-searched-1009"
+          0, "Rotor.log-searched-1000"
+          4, "Rotor.ofAxisAngle-searched-1004"
+          27, "Motor.log-searched-1027"
+          27, "Motor.ofScrew-searched-1027"
+          0, "Rotor.ofAxisAngle-searched-1000"
+          0, "Motor.normalise-searched-1000"
+          0, "Motor.toMatrix-searched-1000"
+          0, "Translator.toMatrix-searched-1000" ]
+
+    let private versorWitnesses: Case list =
+        [ for index, id in versorChosen -> versorSearched index |> List.find (fun c -> c.Id = id) ]
+
+    /// The versors' cases, in document order.
+    let versorCases: Case list = versorGeneral @ versorHard @ versorWitnesses
+
     /// Every case, in document order: Phase 727's, and then the ones appended since.
     let cases: Case list =
         tableRows
@@ -2032,6 +3317,7 @@ module GeometricAlgebraVectors =
         @ signedZeros
         @ nearestOverflows
         @ laterWitnesses
+        @ versorCases
 
     /// The case with this id.
     let find (id: string) : Case = cases |> List.find (fun c -> c.Id = id)
@@ -2100,6 +3386,14 @@ module GeometricAlgebraVectors =
         | GeometryRefusal.NonFiniteDivisor -> "NonFiniteDivisor"
         | GeometryRefusal.InvalidThreshold -> "InvalidThreshold"
         | GeometryRefusal.NotANumber -> "NotANumber"
+        | GeometryRefusal.NonFiniteAngle -> "NonFiniteAngle"
+        | GeometryRefusal.NonFiniteTranslation -> "NonFiniteTranslation"
+        | GeometryRefusal.NonFiniteFactor -> "NonFiniteFactor"
+        | GeometryRefusal.NonPositiveFactor -> "NonPositiveFactor"
+        | GeometryRefusal.NonFiniteBivector -> "NonFiniteBivector"
+        | GeometryRefusal.NonFiniteParameter -> "NonFiniteParameter"
+        | GeometryRefusal.NegativeSquaredNorm -> "NegativeSquaredNorm"
+        | GeometryRefusal.NoRotationPlane -> "NoRotationPlane"
 
     /// An answer that can be refused: the answer's own cell, or `{ refused: <the case> }`.
     let resultCell (ok: 'a -> CorpusCell) (r: Result<'a, GeometryRefusal>) : CorpusCell =
@@ -2264,6 +3558,152 @@ module GeometricAlgebraVectors =
         | "Sphere.ofMultivector" -> sphereCell (Sphere.ofMultivector (mv c "a"))
         | other -> failwithf "%s: no such operation as %s" c.Id other
 
+    // ---- the versors' answers (Phase 729) ------------------------------------------------------------
+
+    let rotorCell (x: Rotor) : CorpusCell = floatsCell (rotorValues x)
+    let translatorCell (x: Translator) : CorpusCell = floatsCell (translatorValues x)
+    let motorCell (x: Motor) : CorpusCell = floatsCell (motorValues x)
+    let dilatorCell (x: Dilator) : CorpusCell = floatsCell (dilatorValues x)
+    let reflectionCell (x: Reflection) : CorpusCell = floatsCell (reflectionValues x)
+
+    /// A motor's logarithm: `{ bivector, vector }`, three coefficients each.
+    let bivectorAndVectorCell (b: float * float * float, v: float * float * float) : CorpusCell =
+        CorpusCell.Row [ "bivector", tripleCell b; "vector", tripleCell v ]
+
+    /// A matrix read back: `{ motor, factor }`, or `{ refused: <the case> }` with the measure that
+    /// failed where the case carries one.
+    let motorAndFactorCell (r: Result<Motor * float, MatrixRefusal>) : CorpusCell =
+        let refused (name: string) (measure: float option) : CorpusCell =
+            CorpusCell.Row(
+                ("refused", CorpusFile.str name)
+                :: (match measure with
+                    | Some x -> [ "measure", floatCell x ]
+                    | None -> [])
+            )
+
+        match r with
+        | Ok(motor, factor) -> CorpusCell.Row [ "motor", motorCell motor; "factor", floatCell factor ]
+        | Error MatrixRefusal.InvalidThreshold -> refused "InvalidThreshold" None
+        | Error MatrixRefusal.NotSixteenEntries -> refused "NotSixteenEntries" None
+        | Error MatrixRefusal.NonFiniteEntry -> refused "NonFiniteEntry" None
+        | Error MatrixRefusal.NotAffine -> refused "NotAffine" None
+        | Error MatrixRefusal.ZeroDivisor -> refused "ZeroDivisor" None
+        | Error MatrixRefusal.NonFiniteDivisor -> refused "NonFiniteDivisor" None
+        | Error(MatrixRefusal.NotOneLength x) -> refused "NotOneLength" (Some x)
+        | Error(MatrixRefusal.NotOrthogonal x) -> refused "NotOrthogonal" (Some x)
+        | Error(MatrixRefusal.ReversesOrientation x) -> refused "ReversesOrientation" (Some x)
+        | Error MatrixRefusal.NotANumber -> refused "NotANumber" None
+
+    /// Whether an `op` names a function of a versor's module.
+    let isVersorOp (op: string) : bool =
+        versorTypes |> List.exists (fun versor -> op.StartsWith(versor + "."))
+
+    /// A versor case's answer, by calling the package's published function.
+    let private versorAnswer (c: Case) : CorpusCell =
+        match c.Op with
+        | "Rotor.ofAxisAngle" -> resultCell rotorCell (Rotor.ofAxisAngle (triple c "axis") (number c "angle"))
+        | "Rotor.exp" -> resultCell rotorCell (Rotor.exp (triple c "bivector"))
+        | "Rotor.log" -> resultCell tripleCell (Rotor.log (rotorOf (floats c "v")))
+        | "Rotor.interpolate" ->
+            resultCell
+                rotorCell
+                (Rotor.interpolate (number c "t") (rotorOf (floats c "first")) (rotorOf (floats c "second")))
+        | "Translator.ofVector" -> resultCell translatorCell (Translator.ofVector (triple c "t"))
+        | "Motor.ofRotorTranslator" ->
+            motorCell (Motor.ofRotorTranslator (rotorOf (floats c "rotor")) (translatorOf (floats c "translator")))
+        | "Motor.ofRotor" -> motorCell (Motor.ofRotor (rotorOf (floats c "rotor")))
+        | "Motor.ofTranslator" -> motorCell (Motor.ofTranslator (translatorOf (floats c "translator")))
+        | "Motor.ofScrew" ->
+            resultCell
+                motorCell
+                (Motor.ofScrew (triple c "point") (triple c "direction") (number c "angle") (number c "distance"))
+        | "Motor.ofLine" ->
+            resultCell motorCell (Motor.ofLine (lineOf (floats c "line")) (number c "angle") (number c "distance"))
+        | "Motor.exp" -> resultCell motorCell (Motor.exp (triple c "bivector") (triple c "vector"))
+        | "Motor.log" -> resultCell bivectorAndVectorCell (Motor.log (motorOf (floats c "v")))
+        | "Motor.interpolate" ->
+            resultCell
+                motorCell
+                (Motor.interpolate (number c "t") (motorOf (floats c "first")) (motorOf (floats c "second")))
+        | "Motor.ofMatrix" -> motorAndFactorCell (Motor.ofMatrix (number c "tau") (floats c "matrix"))
+        | "Dilator.ofFactor" -> resultCell dilatorCell (Dilator.ofFactor (number c "factor"))
+        | "Dilator.ofCentreFactor" ->
+            resultCell dilatorCell (Dilator.ofCentreFactor (triple c "centre") (number c "factor"))
+        | "Reflection.ofNormalDistance" ->
+            resultCell reflectionCell (Reflection.ofNormalDistance (triple c "normal") (number c "distance"))
+        | "Rotor.applyToPoint" -> pointCell (Rotor.applyToPoint (rotorOf (floats c "v")) (pointOf (floats c "x")))
+        | "Rotor.applyToPointPair" -> pairCell (Rotor.applyToPointPair (rotorOf (floats c "v")) (pairOf (floats c "x")))
+        | "Rotor.applyToLine" -> lineCell (Rotor.applyToLine (rotorOf (floats c "v")) (lineOf (floats c "x")))
+        | "Rotor.applyToCircle" -> circleCell (Rotor.applyToCircle (rotorOf (floats c "v")) (circleOf (floats c "x")))
+        | "Rotor.applyToPlane" -> planeCell (Rotor.applyToPlane (rotorOf (floats c "v")) (planeOf (floats c "x")))
+        | "Rotor.applyToSphere" -> sphereCell (Rotor.applyToSphere (rotorOf (floats c "v")) (sphereOf (floats c "x")))
+        | "Rotor.normalise" -> resultCell rotorCell (Rotor.normalise (rotorOf (floats c "v")))
+        | "Rotor.toMultivector" -> multivectorCell (Rotor.toMultivector (rotorOf (floats c "v")))
+        | "Rotor.ofMultivector" -> rotorCell (Rotor.ofMultivector (mv c "a"))
+        | "Rotor.toMatrix" -> resultCell floatsCell (Rotor.toMatrix (rotorOf (floats c "v")))
+        | "Rotor.compose" -> rotorCell (Rotor.compose (rotorOf (floats c "b")) (rotorOf (floats c "a")))
+        | "Translator.applyToPoint" ->
+            pointCell (Translator.applyToPoint (translatorOf (floats c "v")) (pointOf (floats c "x")))
+        | "Translator.applyToPointPair" ->
+            pairCell (Translator.applyToPointPair (translatorOf (floats c "v")) (pairOf (floats c "x")))
+        | "Translator.applyToLine" ->
+            lineCell (Translator.applyToLine (translatorOf (floats c "v")) (lineOf (floats c "x")))
+        | "Translator.applyToCircle" ->
+            circleCell (Translator.applyToCircle (translatorOf (floats c "v")) (circleOf (floats c "x")))
+        | "Translator.applyToPlane" ->
+            planeCell (Translator.applyToPlane (translatorOf (floats c "v")) (planeOf (floats c "x")))
+        | "Translator.applyToSphere" ->
+            sphereCell (Translator.applyToSphere (translatorOf (floats c "v")) (sphereOf (floats c "x")))
+        | "Translator.normalise" -> resultCell translatorCell (Translator.normalise (translatorOf (floats c "v")))
+        | "Translator.toMultivector" -> multivectorCell (Translator.toMultivector (translatorOf (floats c "v")))
+        | "Translator.ofMultivector" -> translatorCell (Translator.ofMultivector (mv c "a"))
+        | "Translator.toMatrix" -> resultCell floatsCell (Translator.toMatrix (translatorOf (floats c "v")))
+        | "Translator.compose" ->
+            translatorCell (Translator.compose (translatorOf (floats c "b")) (translatorOf (floats c "a")))
+        | "Motor.applyToPoint" -> pointCell (Motor.applyToPoint (motorOf (floats c "v")) (pointOf (floats c "x")))
+        | "Motor.applyToPointPair" -> pairCell (Motor.applyToPointPair (motorOf (floats c "v")) (pairOf (floats c "x")))
+        | "Motor.applyToLine" -> lineCell (Motor.applyToLine (motorOf (floats c "v")) (lineOf (floats c "x")))
+        | "Motor.applyToCircle" -> circleCell (Motor.applyToCircle (motorOf (floats c "v")) (circleOf (floats c "x")))
+        | "Motor.applyToPlane" -> planeCell (Motor.applyToPlane (motorOf (floats c "v")) (planeOf (floats c "x")))
+        | "Motor.applyToSphere" -> sphereCell (Motor.applyToSphere (motorOf (floats c "v")) (sphereOf (floats c "x")))
+        | "Motor.normalise" -> resultCell motorCell (Motor.normalise (motorOf (floats c "v")))
+        | "Motor.toMultivector" -> multivectorCell (Motor.toMultivector (motorOf (floats c "v")))
+        | "Motor.ofMultivector" -> motorCell (Motor.ofMultivector (mv c "a"))
+        | "Motor.toMatrix" -> resultCell floatsCell (Motor.toMatrix (motorOf (floats c "v")))
+        | "Motor.compose" -> motorCell (Motor.compose (motorOf (floats c "b")) (motorOf (floats c "a")))
+        | "Dilator.applyToPoint" -> pointCell (Dilator.applyToPoint (dilatorOf (floats c "v")) (pointOf (floats c "x")))
+        | "Dilator.applyToPointPair" ->
+            pairCell (Dilator.applyToPointPair (dilatorOf (floats c "v")) (pairOf (floats c "x")))
+        | "Dilator.applyToLine" -> lineCell (Dilator.applyToLine (dilatorOf (floats c "v")) (lineOf (floats c "x")))
+        | "Dilator.applyToCircle" ->
+            circleCell (Dilator.applyToCircle (dilatorOf (floats c "v")) (circleOf (floats c "x")))
+        | "Dilator.applyToPlane" -> planeCell (Dilator.applyToPlane (dilatorOf (floats c "v")) (planeOf (floats c "x")))
+        | "Dilator.applyToSphere" ->
+            sphereCell (Dilator.applyToSphere (dilatorOf (floats c "v")) (sphereOf (floats c "x")))
+        | "Dilator.normalise" -> resultCell dilatorCell (Dilator.normalise (dilatorOf (floats c "v")))
+        | "Dilator.toMultivector" -> multivectorCell (Dilator.toMultivector (dilatorOf (floats c "v")))
+        | "Dilator.ofMultivector" -> dilatorCell (Dilator.ofMultivector (mv c "a"))
+        | "Dilator.toMatrix" -> resultCell floatsCell (Dilator.toMatrix (dilatorOf (floats c "v")))
+        | "Dilator.compose" -> dilatorCell (Dilator.compose (dilatorOf (floats c "b")) (dilatorOf (floats c "a")))
+        | "Reflection.applyToPoint" ->
+            pointCell (Reflection.applyToPoint (reflectionOf (floats c "v")) (pointOf (floats c "x")))
+        | "Reflection.applyToPointPair" ->
+            pairCell (Reflection.applyToPointPair (reflectionOf (floats c "v")) (pairOf (floats c "x")))
+        | "Reflection.applyToLine" ->
+            lineCell (Reflection.applyToLine (reflectionOf (floats c "v")) (lineOf (floats c "x")))
+        | "Reflection.applyToCircle" ->
+            circleCell (Reflection.applyToCircle (reflectionOf (floats c "v")) (circleOf (floats c "x")))
+        | "Reflection.applyToPlane" ->
+            planeCell (Reflection.applyToPlane (reflectionOf (floats c "v")) (planeOf (floats c "x")))
+        | "Reflection.applyToSphere" ->
+            sphereCell (Reflection.applyToSphere (reflectionOf (floats c "v")) (sphereOf (floats c "x")))
+        | "Reflection.normalise" -> resultCell reflectionCell (Reflection.normalise (reflectionOf (floats c "v")))
+        | "Reflection.toMultivector" -> multivectorCell (Reflection.toMultivector (reflectionOf (floats c "v")))
+        | "Reflection.ofMultivector" -> reflectionCell (Reflection.ofMultivector (mv c "a"))
+        | "Reflection.compose" ->
+            motorCell (Reflection.compose (reflectionOf (floats c "b")) (reflectionOf (floats c "a")))
+        | other -> failwithf "%s: no such operation as %s" c.Id other
+
     /// A case's answer, by calling the package's published function.
     let private answer (c: Case) : CorpusCell =
         match c.Op with
@@ -2284,6 +3724,16 @@ module GeometricAlgebraVectors =
         | "leftContraction" -> multivectorCell (Multivector.leftContraction (mv c "a") (mv c "b"))
         | "scalarProduct" -> floatCell (Multivector.scalarProduct (mv c "a") (mv c "b"))
         | "squaredNorm" -> floatCell (Multivector.squaredNorm (mv c "a"))
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
+        | op when isVersorOp op -> versorAnswer c
         | _ -> conformalAnswer c
 
     let private operandCell (operand: Operand) : CorpusCell =
@@ -2332,7 +3782,20 @@ module GeometricAlgebraVectors =
         + "carries. Nothing is normalised unasked: an object built through points or by a meet has the "
         + "weight its product gives. A quotient is one division, never a product with a reciprocal; a "
         + "norm is `m × sqrt(sum((x_i / m)^2))` with `m` the largest magnitude; and at `tau = 0` the kind "
-        + "of a quotient is decided by the signs of its numerator and denominator, the quotient unformed."
+        + "of a quotient is decided by the signs of its numerator and denominator, the quotient unformed. "
+        + "Since Phase 729 (DECISIONS.md D88) an `op` also names a published function of the module "
+        + "`Rotor`, `Translator`, `Motor`, `Dilator` or `Reflection`. A versor is the list of the "
+        + "coefficients its type carries, in index order: a rotor the blades of indices 0, 10, 11 and 13, "
+        + "a translator 0, 12, 14 and 15, a motor 0, 10 to 15 and 30, a dilator 0, 9, 12, 14 and 15, and a "
+        + "reflection 2 to 5. A bivector is the list of its coefficients on `e1^e2`, `e1^e3` and `e2^e3`; "
+        + "a motor's logarithm answers `{ bivector, vector }`. A matrix is its sixteen entries in "
+        + "column-major order, and one read back answers `{ motor, factor }`, or `{ refused }` with the "
+        + "`measure` that failed where the case carries one. A versor is applied by `(V X) rev(V)`, the "
+        + "left product first, with its reverse and never its inverse, and nothing is normalised: a "
+        + "versor that is no unit scales what it is applied to. `compose` answers the product `b a`. The "
+        + "sine and the cosine of an angle and the arc tangent of a logarithm are the pinned "
+        + "`Elementary.sinCos` and `Elementary.atan2`, each asked once; a vector whose id says `a unit from "
+        + "correctly rounded` asks one at an argument where its answer is not the correctly rounded double."
 
     /// The blades, in index order: the position of a coefficient in every list of this document.
     let blades: string list =
