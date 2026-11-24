@@ -197,6 +197,12 @@ module GeometricAlgebraOpsVectors =
     /// The drawn cases the suite's search chose as witnesses: the index it drew each at, and its id.
     let chosen: (int * string) list = [ 2, "drawn-2-compact"; 6, "drawn-6-compact" ]
 
+    /// The deep drawn cases the suite's search chose as witnesses (Phase 731's third round).
+    let chosenDeep: (int * string) list =
+        [ 38, "drawn-deep-38-compact"
+          220, "drawn-deep-220-canApply"
+          220, "drawn-deep-220-compact" ]
+
     /// The wide drawn cases the suite's search chose as witnesses (Phase 731's second round).
     let chosenWide: (int * string) list =
         [ 0, "drawn-wide-0-streamWitness"
@@ -537,6 +543,26 @@ module GeometricAlgebraOpsVectors =
             else
                 0.25 + this.Next() / 536870912.0
 
+        /// A coordinate of up to about `4e160`: a draw in `(−4, 4)` times ten, a drawn number of times
+        /// from zero to 160, each a rounded product (Phase 731's third round).
+        member this.Big() : float =
+            let mutable x = (this.Next() / 1073741824.0 - 1.0) * 4.0
+
+            for _ in 1 .. this.Int 0 160 do
+                x <- x * 10.0
+
+            x
+
+        /// `10^k` for a drawn `k` in `[−30, 30]`, by rounded products or quotients of ten.
+        member this.PowerOfTen() : float =
+            let k = this.Int -30 30
+            let mutable x = 1.0
+
+            for _ in 1 .. (if k < 0 then -k else k) do
+                x <- if k > 0 then x * 10.0 else x / 10.0
+
+            x
+
     let private drawnForm (d: Draw) : Form =
         match d.Int 0 5 with
         | 0 -> Form.Point(d.Triple())
@@ -592,6 +618,51 @@ module GeometricAlgebraOpsVectors =
     /// The wide cases the suite's search draws at `index`, the same shape over wide draws.
     let searchedWide (index: int) : Case list = searchedIn true index
 
+    /// The deep cases the suite's search draws at `index` (Phase 731's third round): one object at an
+    /// overflowing scale, a HISTORY of a transform of it drawn at that scale (a scale by `10^k`, a rotation,
+    /// a translation, a reflection or a screw), then two or more small translations and a rotation about
+    /// one axis. A port that changes the object the first transform builds can tip whether a later op is
+    /// refused `NotANumber`, and so what a later function answers: `compact`, `applyAll` and
+    /// `streamWitness` over the whole list, and `canApply` and `invert` of the next op over the state the
+    /// history reaches through the functions under test.
+    let searchedDeep (index: int) : Case list =
+        let d = Draw(733 * 1000 + index, false)
+        let big () = d.Big(), d.Big(), d.Big()
+        let small () = d.Number(), d.Number(), d.Number()
+
+        let start =
+            [ GeometricOp.Add(
+                  "b",
+                  match d.Int 0 2 with
+                  | 0 -> Form.Point(big ())
+                  | 1 -> Form.PointPair(big (), big ())
+                  | _ -> Form.Sphere(big (), d.Positive())
+              ) ]
+
+        let first =
+            match d.Int 0 4 with
+            | 0 -> GeometricOp.Scale("b", big (), d.PowerOfTen())
+            | 1 -> GeometricOp.Rotate("b", big (), d.Direction(), d.Angle())
+            | 2 -> GeometricOp.Translate("b", big ())
+            | 3 -> GeometricOp.Reflect("b", d.Direction(), d.Big())
+            | _ -> GeometricOp.Screw("b", big (), d.Direction(), d.Angle(), d.Big())
+
+        let p, u = small (), d.Direction()
+
+        let later =
+            [ for _ in 1 .. d.Int 2 3 -> GeometricOp.Translate("b", small ()) ]
+            @ [ GeometricOp.Rotate("b", p, u, d.Angle())
+                GeometricOp.Rotate("b", p, u, d.Angle()) ]
+
+        let ops = first :: later
+        let id (f: string) = sprintf "drawn-deep-%d-%s" index f
+
+        [ case (id "compact") "GeometricOps.compact" start [ "ops", OpList ops ]
+          case (id "applyAll") "GeometricOps.applyAll" start [ "ops", OpList ops ]
+          case (id "streamWitness") "GeometricOps.streamWitness" start [ "ops", OpList ops ]
+          case (id "canApply") "GeometricOps.canApply" start [ "history", OpList [ first ]; "op", OneOp later.Head ]
+          case (id "invert") "GeometricOps.invert" start [ "history", OpList [ first ]; "op", OneOp later.Head ] ]
+
     // ---- the answers and the document -------------------------------------------------------------
 
     let private floatCell = GeometricAlgebraVectors.floatCell
@@ -641,9 +712,23 @@ module GeometricAlgebraOpsVectors =
         | OpList xs -> xs
         | _ -> failwithf "%s: no ops" c.Id
 
-    /// A case's answer through the functions `f`, from the start state the published `applyAll` builds.
+    /// A case's answer through the functions `f`, from the start state the published `applyAll` builds,
+    /// and then, where the case has a `history`, each of its ops applied in turn by `f.Apply`, a refused one
+    /// leaving the state as it was.
     let answerWith (f: Functions) (c: Case) : CorpusCell =
-        let start = fst (published.ApplyAll c.Start (GeometricState.empty naming))
+        let initial = fst (published.ApplyAll c.Start (GeometricState.empty naming))
+
+        let start =
+            match c.Input |> List.tryFind (fun (n, _) -> n = "history") with
+            | Some(_, OpList history) ->
+                history
+                |> List.fold
+                    (fun s op ->
+                        match f.Apply op s with
+                        | Ok next -> next
+                        | Error _ -> s)
+                    initial
+            | _ -> initial
 
         match c.Op with
         | "GeometricOps.apply" ->
@@ -780,7 +865,22 @@ module GeometricAlgebraOpsVectors =
                   [ "ops",
                     OpList
                         [ GeometricOp.Translate("b", (4.25, -0.0, -0.5))
-                          GeometricOp.Translate("b", (-4.25, 0.0, 0.5)) ] ] ]
+                          GeometricOp.Translate("b", (-4.25, 0.0, 0.5)) ] ]
+
+          // Phase 731's third round: quarters too large for every product of the sandwich to be a double.
+          // A point pair of quarters near 1e5, translated and back, is not the pair it was in value.
+          yield
+              case
+                  "applyAll-a-translation-undone-on-a-pair-of-large-quarters"
+                  "GeometricOps.applyAll"
+                  [ GeometricOp.Add(
+                        "b",
+                        Form.PointPair((-76508.0, 95112.0, -25822.75), (-69405.75, 92833.25, -80931.25))
+                    ) ]
+                  [ "ops",
+                    OpList
+                        [ GeometricOp.Translate("b", (-86017.25, -85842.5, -3598.0))
+                          GeometricOp.Translate("b", (86017.25, 85842.5, 3598.0)) ] ] ]
 
     /// Every case, in document order: the authored ones, and the drawn ones the suite's search chose as
     /// witnesses.
@@ -789,6 +889,7 @@ module GeometricAlgebraOpsVectors =
         @ [ for index, id in chosen -> searched index |> List.find (fun c -> c.Id = id) ]
         @ secondRound
         @ [ for index, id in chosenWide -> searchedWide index |> List.find (fun c -> c.Id = id) ]
+        @ [ for index, id in chosenDeep -> searchedDeep index |> List.find (fun c -> c.Id = id) ]
 
     let private description =
         "The reference answers for Fuaran.Compute.GeometricAlgebraOps over AUTHORED inputs (Phase 731, "

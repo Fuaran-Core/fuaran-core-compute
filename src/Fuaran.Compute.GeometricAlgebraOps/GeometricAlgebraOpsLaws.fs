@@ -659,31 +659,31 @@ module GeometricAlgebraOpsLaws =
 
             compacted run s0)
 
-    /// The bounds of the bounded laws: for each, the largest errors measured over its stated sample —
+    /// The pinned figures of the bounded laws: for each, the largest errors measured over its stated sample —
     /// in units in the last place of the reference coefficient, absolute where the reference is zero,
     /// and in units in the last place of the reference object's largest coefficient — with no margin,
     /// because the answers are pinned bits and every host measures the same ones (DECISIONS.md D90).
     /// Each figure is that sample's and no other's.
     let internal bounds: (string * (int -> Result<float * float * float, string>) * (float * float * float)) list =
-        [ "a rotation undone by its inverse is the state it was, within the stated bound",
+        [ "a rotation undone by its inverse is the state it was, within the pinned figures of its sample",
           inverseSampleAt 0,
           (31525197391593470.0, 7.216449660063518e-15, 65.5)
-          "a translation undone by its inverse is the state it was, within the stated bound",
+          "a translation undone by its inverse is the state it was, within the pinned figures of its sample",
           inverseSampleAt 1,
           (13510798882111488.0, 4.440892098500626e-16, 58.0625)
-          "a scale undone by its inverse is the state it was, within the stated bound",
+          "a scale undone by its inverse is the state it was, within the pinned figures of its sample",
           inverseSampleAt 2,
           (640.0, 2.842170943040401e-14, 50.0)
-          "a reflection undone by itself is the state it was, within the stated bound",
+          "a reflection undone by itself is the state it was, within the pinned figures of its sample",
           inverseSampleAt 3,
           (4503599627370496.0, 7.105427357601002e-15, 105.5)
-          "a screw undone by its inverse is the state it was, within the stated bound",
+          "a screw undone by its inverse is the state it was, within the pinned figures of its sample",
           inverseSampleAt 4,
           (1280.0, 1.2434497875801753e-14, 135.5)
-          "a run of translations compacts to one op that reaches its state, within the stated bound",
+          "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample",
           translationRunSampleAt,
           (6755399441055744.0, 0.0, 32.0)
-          "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound",
+          "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample",
           axisRunSampleAt,
           (7808.0, 0.0, 71.0) ]
 
@@ -697,7 +697,7 @@ module GeometricAlgebraOpsLaws =
                  | Ok(ulps, absolute, scaled) ->
                      check (ulps <= boundUlps && absolute <= boundAbsolute && scaled <= boundScaled) (fun () ->
                          sprintf
-                             "the largest errors are %g units in the last place, %g absolute and %g at the object's scale, past the stated bound"
+                             "the largest errors are %g units in the last place, %g absolute and %g at the object's scale, past the pinned figures of its sample"
                              ulps
                              absolute
                              scaled)))
@@ -716,7 +716,7 @@ module GeometricAlgebraOpsLaws =
           "an Add undone by its inverse is the state it was, bit for bit", addUndoneByItsInverse
           "an Ok state holds no NaN, over histories whose parameters overflow and underflow", noNaNInAState
           "an inverse is answered only where the state after the op accepts it", inverseOnlyWhereItApplies
-          "a translation of quarters undone is a point, a pair or a sphere of quarters, under the float identity",
+          "a translation of quarters in [-8, 8] undone is a point, a pair or a sphere of quarters, under the float identity",
           dyadicTranslationUndone ]
         @ [ for name, _, _ in bounds -> name, bounded name ]
         |> List.map (fun (name, body) -> name, law seed count body)

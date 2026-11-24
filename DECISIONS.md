@@ -1,6 +1,6 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
-## 2026-11-24 — D90: geometric transforms ride the op stream as a parametric op algebra in `Fuaran.Compute.GeometricAlgebraOps`, written to D85 item 9 and choosing nothing D85 fixed — a state of named objects ordered by the caller's comparison; D85 item 9's seven ops with its parameters and no coefficient; replay through the algebra's published constructors and `applyTo…`, computing nothing of its own; every refusal named and the state left the same value, an object that would hold a NaN refused; a codec that writes every float as its bit pattern, D51 item 7's rule; the `Fuaran.Core.OpStream` witness; an inverse for six ops, exact only for `Add`, and answered only where the state after the op accepts it; the compaction of a run of translations, or of rotations and screws about one axis, which nothing else calls; 240 vectors; twenty-three wrong ports held against nine functions; seven bounded laws, each pinning one stated sample; and three points D85 leaves open, recorded with their options
+## 2026-11-24 — D90: geometric transforms ride the op stream as a parametric op algebra in `Fuaran.Compute.GeometricAlgebraOps`, written to D85 item 9 and choosing nothing D85 fixed — a state of named objects ordered by the caller's comparison; D85 item 9's seven ops with its parameters and no coefficient; replay through the algebra's published constructors and `applyTo…`, computing nothing of its own; every refusal named and the state left the same value, an object that would hold a NaN refused; a codec that writes every float as its bit pattern, D51 item 7's rule; the `Fuaran.Core.OpStream` witness; an inverse for six ops, exact only for `Add`, and answered only where the state after the op accepts it; the compaction of a run of translations, or of rotations and screws about one axis, which nothing else calls; 244 vectors; twenty-three wrong ports held against nine functions; seven bounded laws, each pinning one stated sample; and three points D85 leaves open, recorded with their options
 
 **Context.** Phase 731. D85 item 9 ruled this package's id, its references, its state ("a set of named objects,
 generic in the name: the caller supplies the identity and its encoding"), its first op list and its refusals; item 10
@@ -139,11 +139,16 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
    | `Reflect (n, n̂, δ)` | itself | no: the op is its own inverse, and the state does not come back bit for bit (105.5 units in the last place of the object's largest coefficient on the stated sample) |
    | `Screw (n, p, û, θ, d)` | `Screw (n, p, û, −θ, −d)` | no |
 
-   *A translation.* A translation of quarters, of a point, a point pair or a sphere of quarters, undone, is the object
-   it was in value: every product and partial sum of the two sandwiches is a double, so each is exact, and the
-   inverse of an exact operation on exact values is exact. It is not bit for bit: a coordinate of `-0.0` comes back
-   `+0.0`, since `-0.0 + t − t` is `+0.0` (`applyAll-a-translation-undone-on-a-point-of-quarters`). A law holds it
-   under the float identity on drawn objects of quarters. Outside such inputs it is not exact: the point
+   *A translation.* A translation undone is the object it was in value WHERE every product and partial sum of the
+   two sandwiches is a double: then each is exact, and the inverse of an exact operation on exact values is exact.
+   Being quarters is not enough; their size matters. For quarters in `[−8, 8]` (a point, a point pair or a sphere of
+   them, translated by a vector of them) every such product and sum has few enough significant bits, and a law
+   holds the round trip under the float identity on drawn objects in that range and no other. It is not bit for
+   bit: a coordinate of `-0.0` comes back `+0.0`, since `-0.0 + t − t` is `+0.0`
+   (`applyAll-a-translation-undone-on-a-point-of-quarters`). Quarters near `1e5` are not enough: a point pair of
+   them, translated and back, is not the pair it was in value
+   (`applyAll-a-translation-undone-on-a-pair-of-large-quarters`): somewhere in its sandwiches a product or a partial
+   sum is no longer a double. Outside quarters it is not exact either: the point
    `(0.1, 0, 0)` translated by `(0.7, 0, 0)` and back has `x` `0.09999999999999998` (`3fb9999999999998`) for
    `0.1` (`3fb999999999999a`) and the `n∞` coefficient `0.0049999999999999906` for `0.005000000000000001`
    (`applyAll-a-translation-undone-on-a-point-of-tenths`).
@@ -212,8 +217,8 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
     the same bytes; a truncated stream replays to its prefix's state; `canApply` answers `Ok` exactly when `apply`
     does, with the same refusal; a refused op leaves the same value; each refusal is the one its op names, in order;
     the codec's round trip, and malformed text refused by name; an `Add` undone by its inverse; an `Ok` state holds
-    no NaN; an inverse is answered only where the state after the op accepts it; a translation of quarters undone,
-    under the float identity) and the seven bounded laws of item 10, which draw nothing from the seed they are run
+    no NaN; an inverse is answered only where the state after the op accepts it; a translation of quarters in
+    `[−8, 8]` undone, under the float identity) and the seven bounded laws of item 10, which draw nothing from the seed they are run
     at. The NaN law and the inverse law draw parameters of an overflowing scale (`1e150`, `1e200`, `−1e300`) and
     subnormal ones (`5e-324`, `1e-310`), and factors whose reciprocal overflows. The suite runs them at seed 590 and
     at eight other seeds (1, 2, 3, 727, 729, 731, 1000, 4242), 200 iterations each, and the node leg at seed 590; before landing
@@ -240,23 +245,46 @@ sharpened: the repository writes a float two ways (item 6), and only one gives t
     screw; a compaction that merges rotations about different axes; a NaN admitted to a state; and an inverse
     answered without asking whether the state after the op accepts it. The table is computed: for every port and
     every function, a committed vector of the function is red under the port, or the pair is listed unable with its
-    reason, and a drawn search of 7,200 cases finds no case the port answers otherwise: 400 indices drawn narrow and
-    400 wide, one case of each function at each (zeros of both signs, coordinates whose squares underflow to a zero,
-    coordinates whose squares are subnormal, coordinates of full precision and non-finite ones among the narrow
-    draws; the wide draws add coordinates of an overflowing scale and factors and radii that are subnormal or whose
-    reciprocal overflows). A port that changes a drawn answer and fails no committed vector of that function fails
+    reason, and a drawn search of 9,200 cases finds no case the port answers otherwise: 400 indices drawn narrow and
+    400 wide, one case of each function at each, and 400 deep, five cases each (the deep search, below). The narrow
+    draws hold zeros of both signs, coordinates whose squares underflow to a zero, coordinates whose squares are
+    subnormal, coordinates of full precision and non-finite ones; the wide draws add coordinates of an overflowing
+    scale and factors and radii that are subnormal or whose reciprocal overflows. A port that changes a drawn answer and fails no committed vector of that function fails
     the case; three such were found while the vectors were written:
     the two drawn cases that showed (f) and (m) changing `compact` are committed (`drawn-2-compact`,
     `drawn-6-compact`), and an authored vector was added for (k) on `apply`
     (`apply-add-a-name-that-orders-first`). Five more were found by the wide draws once an object that would hold a
     NaN was refused, and are committed: (c) changing `canApply`, `invert` and `compact` (`drawn-wide-13-…`), and
     the NaN port changing `compact` and `streamWitness` (`drawn-wide-9-compact`, `drawn-wide-0-streamWitness`).
+
+    *The deep search.* A port that changes an object's bits changes whether a LATER op is refused `NotANumber`, and so
+    what `compact`, `applyAll`, `streamWitness`, and `canApply` and `invert` over a history answer. The narrow and wide
+    draws, one op over a fresh object, did not reach that, and the listing said (h) could not move `compact` because a
+    scale is never merged; that was false (a scale is kept as given, but the object it leaves decides whether the next
+    translations are refused, and a refused op ends a run). The deep draws reach it: at each of 400 indices, one object
+    with coordinates up to about `4e160`, a first transform drawn at that scale (a scale by `10^k` with `k` in
+    `[−30, 30]`, a rotation, a translation, a reflection or a screw), then two or three small translations and two
+    rotations about one axis; `compact`, `applyAll` and `streamWitness` over that list, and `canApply` and `invert` of
+    the second op over the state the first reaches through the functions under test (the case's `history`). All
+    twenty-three ports were run over all five deep functions. What moved, by deep cases changed of 400: (a) `applyAll`
+    290; (b) the emptying port `compact`, `applyAll` and `streamWitness` 317 each, `canApply` and `invert` 230 each;
+    (b) the halting port `applyAll` 316; (d) `applyAll` and `streamWitness` 173 each, `compact`, `canApply` and
+    `invert` 1 each; (e) `applyAll` 225; (f) `applyAll` 102, `streamWitness` 77, `compact` 64, `canApply` and `invert`
+    5 each; (h) `applyAll` and `streamWitness` 39 each, `compact` 10, `canApply` and `invert` 9 each; (i) the
+    translation's inverse `invert` 170; (j) `streamWitness` 253; (l) `streamWitness` 234; (m) `applyAll` 208,
+    `streamWitness` 187, `compact` 40, `canApply` and `invert` 4 each; (n) `canApply` 174; the correctly rounded
+    rotation `applyAll` and `streamWitness` 89 each, and screw 11 each; the NaN port `compact` 118, `applyAll` and
+    `streamWitness` 137 each, `canApply` and `invert` 101 each; and nothing for (c), (g), the other three (i) ports,
+    (k), the compaction's merge and the inverse guard. Three of those were pairs the listing still called unable, and
+    each now has a committed deep vector and left the listing: (h) on `compact` (`drawn-deep-38-compact`) and (d) on
+    `canApply` and `compact` (`drawn-deep-220-canApply`, `drawn-deep-220-compact`).
+
     The reasons are of three kinds, and the listing says which: **the function does not read the member** (an
     argument from the source: the member is not on its path); **the function answers a verdict or the ops it was
-    given, never an object, and the port moves no verdict** (an argument, now held for (k) alone: every name is found
-    wherever it is placed, and the object is the one placed); and **a search, not an argument** (for (d), (g), (h) and
-    the two correctly rounded ports on the functions that answer a verdict: since a NaN verdict reads the object a
-    transform builds, a port that changes that object could move a verdict, and no drawn case, narrow or wide, does).
+    given, never an object, and the port moves no verdict** (an argument, held for (k) alone: every name is found
+    wherever it is placed, and the object is the one placed); and **a search, not an argument** (for (g) and the two
+    correctly rounded ports on `canApply`, `invert` and `compact`: since a NaN verdict reads the object a transform
+    builds, a port that changes that object could move a verdict, and no drawn case, narrow, wide or deep, does).
     None is a proof, and the listing never says "cannot".
 
     *The correctly rounded port.* `apply`, `applyAll` and `streamWitness` answer coefficients a rotation's or a
@@ -340,7 +368,11 @@ refusal cases in the vectors (the algebra suite's mapping is private to a file t
 second round:* the boundary case's `contains` checks became one exact set, so nothing it named twice survives;
 `invert` reuses `apply` and the `Check` member for its second guard rather than a second test of the inverse's
 parameters; the vectors' drawn generator gained a wide mode rather than a second generator, its narrow stream
-unchanged, so no committed drawn vector moved.
+unchanged, so no committed drawn vector moved. *In the third round:* the deep search is a third entry over the same
+generator (two members added to it, its other streams unchanged), and a case's `history` is applied by the function
+record's own `apply`, so no second replay was written; the seven bounded laws are renamed "within the pinned
+figures of its sample", their failure "past the pinned figures of its sample", which moves the law names the suite
+records beside the other seeds' figures and no committed vector.
 
 ## 2026-11-24 — D89: the geometric product is specialised to nine pairs of operand types where a measurement showed the gain — a rotor with a rotor, a motor with a motor, a translator with a rotor, and both products of the sandwich of a rotor, a translator and a motor with a point; each a filter of the one table in its order, taken only on finite operands that hold zeros off their types, and so the general product's bits on every input; every one kept by the margin of two and a half stated before measuring, on its designated runs, at 4.55 to 13.64 times the general product on .NET and 5.42 to 21.14 under node, with one pair below the margin on .NET when every committed run is pooled; one float literal in a comparison D85 item 6 does not list, admitted by name; the law family gains one law that reads internals; no signature, vector or API baseline line moved
 

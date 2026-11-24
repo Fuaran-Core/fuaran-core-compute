@@ -303,7 +303,7 @@ coefficient travels (D85 item 10). A float on this wire is its bit pattern, not 
 only spelling in the repository that replays a `-0.0` parameter to the same bits; it is not written by hand, and
 D90 records that cost as an open point (G3).
 
-**The law vectors.** `conformance/laws/geometric-algebra-ops-laws.json` is new: 240 vectors over the nine published
+**The law vectors.** `conformance/laws/geometric-algebra-ops-laws.json` is new: 244 vectors over the nine published
 functions that compute, among them rotations and screws at the angles where the pinned sine and cosine are not
 correctly rounded. A vector's expected state holds coefficients, as evidence: no stream carries one. Every other file
 under `conformance/laws/` is byte-identical.

@@ -279,7 +279,7 @@ let private unable: (string * string * string list) list =
     /// that holds a NaN is refused (DECISIONS.md D90 item 5), such a port COULD move a verdict; this
     /// rests on the drawn search alone, which found no case.
     let searchOnly (why: string) =
-        "answers apply's verdict or the ops it was given, never an object; a search, not an argument: the port changes the object a transform builds, which could move a NaN verdict, and no drawn case, narrow or wide, does so ("
+        "answers apply's verdict or the ops it was given, never an object; a search, not an argument: the port changes the object a transform builds, which could move a NaN verdict, and no drawn case, narrow, wide or deep (a history at an overflowing scale), does so ("
         + why
         + ")"
 
@@ -313,11 +313,6 @@ let private unable: (string * string * string list) list =
 
       yield
           "(d) a normalisation after each transform",
-          searchOnly "a normalisation divides by a weight once",
-          [ "GeometricOps.canApply"; "GeometricOps.compact" ]
-
-      yield
-          "(d) a normalisation after each transform",
           notReading "After",
           [ "GeometricOps.encode"; "GeometricOps.decode"; "GeometricState.tryFind" ]
 
@@ -342,11 +337,6 @@ let private unable: (string * string * string list) list =
             "the correctly rounded sine and cosine in a rotation"
             "the correctly rounded sine and cosine in a screw" ] do
           yield port, notReading "a versor", [ "GeometricOps.encode"; "GeometricOps.decode"; "GeometricState.tryFind" ]
-
-      yield
-          "(h) a scale about the origin, not about its centre",
-          searchOnly "a scale is never merged, so the compaction answers it as it was given",
-          [ "GeometricOps.compact" ]
 
       for port in
           [ "(i) a rotation's inverse that negates the direction, not the angle"
@@ -442,7 +432,8 @@ let private drawnSample: Lazy<V.Case[]> =
     lazy
         ([| for index in 0 .. searchSize - 1 do
                 yield! V.searched index
-                yield! V.searchedWide index |])
+                yield! V.searchedWide index
+                yield! V.searchedDeep index |])
 
 let private drawnShipped: Lazy<string[]> =
     lazy (drawnSample.Value |> Array.Parallel.map (answer shipped))
@@ -490,62 +481,62 @@ let private publishedOperations () : Set<string> =
 
 /// The eight other seeds' maxima of each bounded law (DECISIONS.md D90), as `a bounded law's other seeds` measures them.
 let private recordedOtherSeeds: string list =
-    [ "a rotation undone by its inverse is the state it was, within the stated bound\t1\t11776\t2.1871393585115584E-14\t100"
-      "a rotation undone by its inverse is the state it was, within the stated bound\t2\t2048\t1.7763568394002505E-14\t154"
-      "a rotation undone by its inverse is the state it was, within the stated bound\t3\t22517998136852480\t1.5987211554602254E-14\t98"
-      "a rotation undone by its inverse is the state it was, within the stated bound\t590\t768\t2.4868995751603507E-14\t122"
-      "a rotation undone by its inverse is the state it was, within the stated bound\t727\t15762598695796736\t3.885780586188048E-15\t284"
-      "a rotation undone by its inverse is the state it was, within the stated bound\t729\t7104\t3.1780134079895106E-15\t94"
-      "a rotation undone by its inverse is the state it was, within the stated bound\t1000\t4096\t8.881784197001252E-15\t176"
-      "a rotation undone by its inverse is the state it was, within the stated bound\t4242\t14336\t8.881784197001252E-15\t114"
-      "a translation undone by its inverse is the state it was, within the stated bound\t1\t4503599627370496\t8.881784197001252E-16\t26.5"
-      "a translation undone by its inverse is the state it was, within the stated bound\t2\t49539595901075460\t8.881784197001252E-16\t36"
-      "a translation undone by its inverse is the state it was, within the stated bound\t3\t1024\t8.881784197001252E-16\t19.75"
-      "a translation undone by its inverse is the state it was, within the stated bound\t590\t2144\t1.9984014443252818E-15\t89"
-      "a translation undone by its inverse is the state it was, within the stated bound\t727\t13510798882111488\t2.220446049250313E-16\t21"
-      "a translation undone by its inverse is the state it was, within the stated bound\t729\t6755399441055744\t1.0658141036401503E-14\t16"
-      "a translation undone by its inverse is the state it was, within the stated bound\t1000\t4503599627370496\t2.220446049250313E-16\t29"
-      "a translation undone by its inverse is the state it was, within the stated bound\t4242\t4503599627370496\t4.440892098500626E-16\t20"
-      "a scale undone by its inverse is the state it was, within the stated bound\t1\t4503599627370496\t7.105427357601002E-15\t26"
-      "a scale undone by its inverse is the state it was, within the stated bound\t2\t10240\t1.3766765505351941E-14\t36"
-      "a scale undone by its inverse is the state it was, within the stated bound\t3\t40532396646334460\t6.217248937900877E-15\t29"
-      "a scale undone by its inverse is the state it was, within the stated bound\t590\t4503599627370496\t2.6645352591003757E-15\t44"
-      "a scale undone by its inverse is the state it was, within the stated bound\t727\t3553621580972032\t3.552713678800501E-15\t40"
-      "a scale undone by its inverse is the state it was, within the stated bound\t729\t9570149208162304\t4.218847493575595E-14\t53.5"
-      "a scale undone by its inverse is the state it was, within the stated bound\t1000\t2462906046218240\t6.217248937900877E-15\t59"
-      "a scale undone by its inverse is the state it was, within the stated bound\t4242\t1.125899906842624E+17\t4.440892098500626E-15\t44"
-      "a reflection undone by itself is the state it was, within the stated bound\t1\t752\t3.552713678800501E-15\t51"
-      "a reflection undone by itself is the state it was, within the stated bound\t2\t512\t1.0658141036401503E-14\t49"
-      "a reflection undone by itself is the state it was, within the stated bound\t3\t562949953421312\t1.7763568394002505E-15\t64"
-      "a reflection undone by itself is the state it was, within the stated bound\t590\t29273397577908224\t3.552713678800501E-15\t80"
-      "a reflection undone by itself is the state it was, within the stated bound\t727\t1024\t1.7763568394002505E-15\t96"
-      "a reflection undone by itself is the state it was, within the stated bound\t729\t9728\t1.4210854715202004E-14\t48"
-      "a reflection undone by itself is the state it was, within the stated bound\t1000\t22517998136852480\t7.105427357601002E-15\t63"
-      "a reflection undone by itself is the state it was, within the stated bound\t4242\t3072\t7.105427357601002E-15\t71"
-      "a screw undone by its inverse is the state it was, within the stated bound\t1\t1340\t2.4868995751603507E-14\t134"
-      "a screw undone by its inverse is the state it was, within the stated bound\t2\t4503599627370496\t2.4868995751603507E-14\t64"
-      "a screw undone by its inverse is the state it was, within the stated bound\t3\t20266198323167230\t9.769962616701378E-15\t64"
-      "a screw undone by its inverse is the state it was, within the stated bound\t590\t2560\t3.9968028886505635E-15\t121"
-      "a screw undone by its inverse is the state it was, within the stated bound\t727\t1920\t1.1546319456101628E-14\t120"
-      "a screw undone by its inverse is the state it was, within the stated bound\t729\t27021597764222976\t1.509903313490213E-14\t181"
-      "a screw undone by its inverse is the state it was, within the stated bound\t1000\t1888\t8.548717289613705E-15\t602.5"
-      "a screw undone by its inverse is the state it was, within the stated bound\t4242\t27021597764222976\t1.1546319456101628E-14\t76"
-      "a run of translations compacts to one op that reaches its state, within the stated bound\t1\t6755399441055744\t8.881784197001252E-16\t60"
-      "a run of translations compacts to one op that reaches its state, within the stated bound\t2\t22517998136852480\t1.1102230246251565E-16\t24"
-      "a run of translations compacts to one op that reaches its state, within the stated bound\t3\t6755399441055744\t1.6653345369377348E-16\t47"
-      "a run of translations compacts to one op that reaches its state, within the stated bound\t590\t4503599627370496\t4.440892098500626E-16\t108"
-      "a run of translations compacts to one op that reaches its state, within the stated bound\t727\t13510798882111488\t0\t48"
-      "a run of translations compacts to one op that reaches its state, within the stated bound\t729\t22517998136852480\t0\t61"
-      "a run of translations compacts to one op that reaches its state, within the stated bound\t1000\t4503599627370496\t0\t28"
-      "a run of translations compacts to one op that reaches its state, within the stated bound\t4242\t2251799813685248\t0\t16"
-      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound\t1\t6656\t0\t72"
-      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound\t2\t29243826285682932\t0\t141"
-      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound\t3\t8896\t0\t64"
-      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound\t590\t65536\t2.220446049250313E-16\t149"
-      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound\t727\t4096\t0\t76"
-      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound\t729\t4608\t0\t51"
-      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound\t1000\t3377699720527872\t0\t345"
-      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the stated bound\t4242\t11264\t0\t164" ]
+    [ "a rotation undone by its inverse is the state it was, within the pinned figures of its sample\t1\t11776\t2.1871393585115584E-14\t100"
+      "a rotation undone by its inverse is the state it was, within the pinned figures of its sample\t2\t2048\t1.7763568394002505E-14\t154"
+      "a rotation undone by its inverse is the state it was, within the pinned figures of its sample\t3\t22517998136852480\t1.5987211554602254E-14\t98"
+      "a rotation undone by its inverse is the state it was, within the pinned figures of its sample\t590\t768\t2.4868995751603507E-14\t122"
+      "a rotation undone by its inverse is the state it was, within the pinned figures of its sample\t727\t15762598695796736\t3.885780586188048E-15\t284"
+      "a rotation undone by its inverse is the state it was, within the pinned figures of its sample\t729\t7104\t3.1780134079895106E-15\t94"
+      "a rotation undone by its inverse is the state it was, within the pinned figures of its sample\t1000\t4096\t8.881784197001252E-15\t176"
+      "a rotation undone by its inverse is the state it was, within the pinned figures of its sample\t4242\t14336\t8.881784197001252E-15\t114"
+      "a translation undone by its inverse is the state it was, within the pinned figures of its sample\t1\t4503599627370496\t8.881784197001252E-16\t26.5"
+      "a translation undone by its inverse is the state it was, within the pinned figures of its sample\t2\t49539595901075460\t8.881784197001252E-16\t36"
+      "a translation undone by its inverse is the state it was, within the pinned figures of its sample\t3\t1024\t8.881784197001252E-16\t19.75"
+      "a translation undone by its inverse is the state it was, within the pinned figures of its sample\t590\t2144\t1.9984014443252818E-15\t89"
+      "a translation undone by its inverse is the state it was, within the pinned figures of its sample\t727\t13510798882111488\t2.220446049250313E-16\t21"
+      "a translation undone by its inverse is the state it was, within the pinned figures of its sample\t729\t6755399441055744\t1.0658141036401503E-14\t16"
+      "a translation undone by its inverse is the state it was, within the pinned figures of its sample\t1000\t4503599627370496\t2.220446049250313E-16\t29"
+      "a translation undone by its inverse is the state it was, within the pinned figures of its sample\t4242\t4503599627370496\t4.440892098500626E-16\t20"
+      "a scale undone by its inverse is the state it was, within the pinned figures of its sample\t1\t4503599627370496\t7.105427357601002E-15\t26"
+      "a scale undone by its inverse is the state it was, within the pinned figures of its sample\t2\t10240\t1.3766765505351941E-14\t36"
+      "a scale undone by its inverse is the state it was, within the pinned figures of its sample\t3\t40532396646334460\t6.217248937900877E-15\t29"
+      "a scale undone by its inverse is the state it was, within the pinned figures of its sample\t590\t4503599627370496\t2.6645352591003757E-15\t44"
+      "a scale undone by its inverse is the state it was, within the pinned figures of its sample\t727\t3553621580972032\t3.552713678800501E-15\t40"
+      "a scale undone by its inverse is the state it was, within the pinned figures of its sample\t729\t9570149208162304\t4.218847493575595E-14\t53.5"
+      "a scale undone by its inverse is the state it was, within the pinned figures of its sample\t1000\t2462906046218240\t6.217248937900877E-15\t59"
+      "a scale undone by its inverse is the state it was, within the pinned figures of its sample\t4242\t1.125899906842624E+17\t4.440892098500626E-15\t44"
+      "a reflection undone by itself is the state it was, within the pinned figures of its sample\t1\t752\t3.552713678800501E-15\t51"
+      "a reflection undone by itself is the state it was, within the pinned figures of its sample\t2\t512\t1.0658141036401503E-14\t49"
+      "a reflection undone by itself is the state it was, within the pinned figures of its sample\t3\t562949953421312\t1.7763568394002505E-15\t64"
+      "a reflection undone by itself is the state it was, within the pinned figures of its sample\t590\t29273397577908224\t3.552713678800501E-15\t80"
+      "a reflection undone by itself is the state it was, within the pinned figures of its sample\t727\t1024\t1.7763568394002505E-15\t96"
+      "a reflection undone by itself is the state it was, within the pinned figures of its sample\t729\t9728\t1.4210854715202004E-14\t48"
+      "a reflection undone by itself is the state it was, within the pinned figures of its sample\t1000\t22517998136852480\t7.105427357601002E-15\t63"
+      "a reflection undone by itself is the state it was, within the pinned figures of its sample\t4242\t3072\t7.105427357601002E-15\t71"
+      "a screw undone by its inverse is the state it was, within the pinned figures of its sample\t1\t1340\t2.4868995751603507E-14\t134"
+      "a screw undone by its inverse is the state it was, within the pinned figures of its sample\t2\t4503599627370496\t2.4868995751603507E-14\t64"
+      "a screw undone by its inverse is the state it was, within the pinned figures of its sample\t3\t20266198323167230\t9.769962616701378E-15\t64"
+      "a screw undone by its inverse is the state it was, within the pinned figures of its sample\t590\t2560\t3.9968028886505635E-15\t121"
+      "a screw undone by its inverse is the state it was, within the pinned figures of its sample\t727\t1920\t1.1546319456101628E-14\t120"
+      "a screw undone by its inverse is the state it was, within the pinned figures of its sample\t729\t27021597764222976\t1.509903313490213E-14\t181"
+      "a screw undone by its inverse is the state it was, within the pinned figures of its sample\t1000\t1888\t8.548717289613705E-15\t602.5"
+      "a screw undone by its inverse is the state it was, within the pinned figures of its sample\t4242\t27021597764222976\t1.1546319456101628E-14\t76"
+      "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample\t1\t6755399441055744\t8.881784197001252E-16\t60"
+      "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample\t2\t22517998136852480\t1.1102230246251565E-16\t24"
+      "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample\t3\t6755399441055744\t1.6653345369377348E-16\t47"
+      "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample\t590\t4503599627370496\t4.440892098500626E-16\t108"
+      "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample\t727\t13510798882111488\t0\t48"
+      "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample\t729\t22517998136852480\t0\t61"
+      "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample\t1000\t4503599627370496\t0\t28"
+      "a run of translations compacts to one op that reaches its state, within the pinned figures of its sample\t4242\t2251799813685248\t0\t16"
+      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample\t1\t6656\t0\t72"
+      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample\t2\t29243826285682932\t0\t141"
+      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample\t3\t8896\t0\t64"
+      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample\t590\t65536\t2.220446049250313E-16\t149"
+      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample\t727\t4096\t0\t76"
+      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample\t729\t4608\t0\t51"
+      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample\t1000\t3377699720527872\t0\t345"
+      "a run of rotations and screws about one axis compacts to one op that reaches its state, within the pinned figures of its sample\t4242\t11264\t0\t164" ]
 
 [<Tests>]
 let tests =
@@ -675,12 +666,12 @@ let tests =
               // The counts DECISIONS.md D90 states, read from the tree.
               Expect.equal
                   drawnSample.Value.Length
-                  7200
-                  "the drawn sample: 400 indices, narrow and wide, one case of each function"
+                  9200
+                  "the drawn sample: 400 indices, narrow and wide, one case of each function, and deep, five histories"
 
               Expect.equal (List.length wrongPorts) 23 "twenty-three wrong ports"
               Expect.equal (List.length published) 9 "nine functions that compute"
-              Expect.equal (List.length V.cases) 240 "240 committed vectors"
+              Expect.equal (List.length V.cases) 244 "244 committed vectors"
 
               let findings =
                   [ for name, port in wrongPorts do
