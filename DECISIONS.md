@@ -1,5 +1,30 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-24 — D89: the geometric product is specialised to pairs of operand types where a measurement shows the gain (draft: the margin and the route, stated before any specialisation is measured)
+
+**Context.** Phase 730. The general product of `Fuaran.Compute.GeometricAlgebra` (D86) folds all 1,024 signed terms of
+D85 item 3's table whatever its operands hold; the objects (D87) and the versors (D88) fill few coefficients. This
+entry asks whether a product over only the coefficients two operand types carry is worth having, and holds any it
+keeps to the general product's bits.
+
+**The margin, stated before any specialisation was measured.** The general product was measured first and committed
+(`benchmarks/results/2026-11-24-i7-8650u-phase-730.md`, three runs on each host). Across those runs one case's median
+moved by a factor of up to 2.34 on .NET and 2.09 under node, on a machine that was not quiet. So a specialised
+product is kept only where, on BOTH hosts, the GREATEST of its three run medians is below the LEAST of the general
+product's three run medians on the same operands divided by **2.5**: a pessimistic speed-up of at least two and a half
+times, which the general product's own spread did not reach. A product that does not clear it on either host is
+deleted in the change that measured it, and named below with its numbers.
+
+**The route, chosen before any specialisation was measured: a table filtered from the general one when the module is
+first read.** A specialisation is a pair of operand types, each a mask of the blades it carries, and the terms of
+`Basis.geometric` whose left blade the left type carries and whose right blade the right type carries. A filter keeps
+order, so the specialised fold visits its terms in the general order by construction, not by review.
+*Rejected:* hand-written products (some hundred terms each, the order and every sign a reviewer's to check against a
+table that already exists, and a second copy of it); products generated at build time (straight-line code with no
+table, possibly faster, but a generator and a generated source the build and the Fable leg would both have to carry,
+for a gain this phase has not measured); and inlining (the compiler does not fold a loop over a filtered array into
+straight-line code, on either host, so there is no inlined route to take).
+
 ## 2026-11-24 — D88: rotors, translators, motors, dilators and reflections ship as versors of `Fuaran.Compute.GeometricAlgebra`, written to D85 and choosing nothing D85 fixed — five typed wrappers and a module of each one's name, a union of refusals for a matrix read back, and eight more cases of `GeometryRefusal`; every function written once over Phase 728's arithmetic, which gains a member for each new rule, so every go-red witness is the shipped function with one member changed; the five expressions D85 left to this phase each chosen by measurement against an exact or high-precision reference; 533 more vectors, each replayed bit for bit by a second implementation; forty-nine wrong ports held against fifty-eight functions, by a red vector, by a function that does not read the member, or by a drawn search with a stated reason; five bounded laws, each pinned to one stated sample whose maximum is its bound; and the package's first reference, to `Fuaran.Compute.Elementary`
 
 **Context.** Phase 729. D85 recorded how a versor is built, applied, composed, exponentiated and read from a matrix;
