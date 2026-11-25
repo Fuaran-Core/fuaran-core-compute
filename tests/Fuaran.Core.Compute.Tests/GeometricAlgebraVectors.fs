@@ -3491,7 +3491,8 @@ module GeometricAlgebraVectors =
     let sphereCell (x: Sphere) : CorpusCell = floatsCell (sphereValues x)
     let planeCell (x: Plane) : CorpusCell = floatsCell (planeValues x)
 
-    let private refusalName (refusal: GeometryRefusal) : string =
+    /// A constructor refusal by its case name; the op algebra's document names one the same way.
+    let internal refusalName (refusal: GeometryRefusal) : string =
         match refusal with
         | GeometryRefusal.NonFiniteCoordinate -> "NonFiniteCoordinate"
         | GeometryRefusal.ZeroDirection -> "ZeroDirection"

@@ -826,6 +826,26 @@ let internal statedClassAt (tag: string) (package: string) (docs: WireDoc list) 
         | None -> "unchanged"
         | Some c -> wireClassName c
 
+/// The text approval writes for `package`. A baseline whose documents did not move keeps the class
+/// its header states: it is true against the tag it names, and the stated-class test holds it there,
+/// so approving one package never restates another's. Only a moved (or new) baseline states its class
+/// afresh, since `newest`, through `classAt`.
+let internal approvedBaseline
+    (package: string)
+    (newest: string)
+    (classAt: string -> string)
+    (existing: string option)
+    (docs: WireDoc list)
+    : string =
+    let unmoved =
+        existing
+        |> Option.filter (fun text -> parseDocs text = docs)
+        |> Option.bind parseStated
+
+    match unmoved with
+    | Some(tag, stated) -> renderBaseline package (tag + ": " + stated) docs
+    | None -> renderBaseline package (newest + ": " + classAt newest) docs
+
 // ---- the suite ------------------------------------------------------------
 
 let private documentsFor (package: string) =
@@ -900,15 +920,25 @@ let tests =
                   for p in packages do
                       let docs = renderPackage p
                       let path = wirePath p
-                      let stated = statedClassAt tag p docs
-                      let text = renderBaseline p (tag + ": " + stated) docs
-                      let old = if File.Exists path then File.ReadAllText path else ""
 
-                      if old <> text then
+                      let old =
+                          if File.Exists path then
+                              Some(File.ReadAllText path)
+                          else
+                              None
+
+                      let text = approvedBaseline p tag (fun t -> statedClassAt t p docs) old docs
+
+                      let stated =
+                          match parseStated text with
+                          | Some(since, c) -> since + ": " + c
+                          | None -> ""
+
+                      if old <> Some text then
                           File.WriteAllText(path, text)
-                          printfn "  %-28s %-16s (%d documents)  rewritten" p stated docs.Length
+                          printfn "  %-28s %-26s (%d documents)  rewritten" p stated docs.Length
                       else
-                          printfn "  %-28s %-16s (%d documents)" p stated docs.Length
+                          printfn "  %-28s %-26s (%d documents)" p stated docs.Length
 
                   printfn "==== stage the wire baselines you meant to move BY NAME, and state the class in the commit"
               else
@@ -995,6 +1025,60 @@ let tests =
                       failtestf
                           "a wire baseline's stated class is missing, stale or wrong:\n  %s\n       Remedy: regenerate with CORE_APPROVE_WIRE=1, which states the class it computes."
                           (String.concat "\n  " problems)
+          }
+
+          test "approving keeps the stated class of every baseline whose documents did not move" {
+              // Approving one package once re-stated every other package's class since the newest
+              // tag, as `unchanged`, erasing the class each had stated since an older one. Every
+              // committed baseline matches what the encoders emit (the test above), so approving now
+              // must write each back byte for byte, and must not ask for a class at all.
+              for p in wirePackages () do
+                  let committed = (File.ReadAllText(wirePath p)).Replace("\r\n", "\n")
+
+                  let approved =
+                      approvedBaseline
+                          p
+                          "v999.0.0"
+                          (fun t -> failtestf "%s did not move, and its class since %s was asked for" p t)
+                          (Some committed)
+                          (renderPackage p)
+
+                  Expect.equal approved committed (sprintf "approving rewrites %s, whose documents did not move" p)
+          }
+
+          test "go-red: approving re-states the class of a moved or new baseline, and only of that one" {
+              let doc name canonical =
+                  { Name = name
+                    Hash = "sha256:" + name
+                    Canonical = canonical }
+
+              let docs = [ doc "a" "{}" ]
+              let old = renderBaseline "P" "v0.44.0: additive" docs
+              let classAt (tag: string) = "breaking@" + tag
+
+              Expect.equal
+                  (approvedBaseline "P" "v0.46.0" classAt (Some old) docs)
+                  old
+                  "an unmoved baseline keeps the class it states since the older tag"
+
+              let moved = docs @ [ doc "b" "{}" ]
+
+              Expect.equal
+                  (approvedBaseline "P" "v0.46.0" classAt (Some old) moved)
+                  (renderBaseline "P" "v0.46.0: breaking@v0.46.0" moved)
+                  "a moved baseline states its class since the newest tag"
+
+              Expect.equal
+                  (approvedBaseline "P" "v0.46.0" classAt None docs)
+                  (renderBaseline "P" "v0.46.0: breaking@v0.46.0" docs)
+                  "a new baseline states its class since the newest tag"
+
+              let unstated = old.Replace("# class since v0.44.0: additive\n", "")
+
+              Expect.equal
+                  (approvedBaseline "P" "v0.46.0" classAt (Some unstated) docs)
+                  (renderBaseline "P" "v0.46.0: breaking@v0.46.0" docs)
+                  "a baseline that states no class is given one"
           }
 
           // ---- the classifier, pinned on the shapes the phase names ----

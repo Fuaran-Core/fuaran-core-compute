@@ -414,9 +414,10 @@ phase knows of no compiler on either host that turns a loop over a filtered arra
 not try one).
 
 **What was edited after measuring.** The two paragraphs above were committed in `42bb282`, before any specialisation
-was measured. After it, `42ff4d3` edited two passages in them: the parenthetical on the final tree's own spread in the
-margin paragraph, and the wording of the rejected inlining route. The rule's own sentence, from "a specialised product
-is kept only where" to "divided by **2.5**", is as `42bb282` committed it.
+was measured. After it, `42ff4d3` edited three passages in them: the words "in the baseline" inserted into the margin
+paragraph's clause on the general product's own spread, the parenthetical on the final tree's own spread after them,
+and the wording of the rejected inlining route. The rule's own sentence, from "a specialised product is kept only
+where" to "divided by **2.5**", is as `42bb282` committed it.
 
 **Ruled.**
 

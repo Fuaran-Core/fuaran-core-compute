@@ -211,27 +211,6 @@ module GeometricAlgebraOpsVectors =
           13, "drawn-wide-13-invert"
           13, "drawn-wide-13-compact" ]
 
-    let private geometryName (g: GeometryRefusal) : string =
-        match g with
-        | GeometryRefusal.NonFiniteCoordinate -> "NonFiniteCoordinate"
-        | GeometryRefusal.ZeroDirection -> "ZeroDirection"
-        | GeometryRefusal.NonFiniteDirection -> "NonFiniteDirection"
-        | GeometryRefusal.NegativeRadius -> "NegativeRadius"
-        | GeometryRefusal.NonFiniteRadius -> "NonFiniteRadius"
-        | GeometryRefusal.NonFiniteDistance -> "NonFiniteDistance"
-        | GeometryRefusal.ZeroDivisor -> "ZeroDivisor"
-        | GeometryRefusal.NonFiniteDivisor -> "NonFiniteDivisor"
-        | GeometryRefusal.InvalidThreshold -> "InvalidThreshold"
-        | GeometryRefusal.NotANumber -> "NotANumber"
-        | GeometryRefusal.NonFiniteAngle -> "NonFiniteAngle"
-        | GeometryRefusal.NonFiniteTranslation -> "NonFiniteTranslation"
-        | GeometryRefusal.NonFiniteFactor -> "NonFiniteFactor"
-        | GeometryRefusal.NonPositiveFactor -> "NonPositiveFactor"
-        | GeometryRefusal.NonFiniteBivector -> "NonFiniteBivector"
-        | GeometryRefusal.NonFiniteParameter -> "NonFiniteParameter"
-        | GeometryRefusal.NegativeSquaredNorm -> "NegativeSquaredNorm"
-        | GeometryRefusal.NoRotationPlane -> "NoRotationPlane"
-
     // ---- the cases ------------------------------------------------------------------------------
 
     let private applyCases: Case list =
@@ -692,7 +671,7 @@ module GeometricAlgebraOpsVectors =
         match r with
         | GeometricOpRefusal.UnknownName n -> "UnknownName " + n
         | GeometricOpRefusal.NameAlreadyPresent n -> "NameAlreadyPresent " + n
-        | GeometricOpRefusal.Geometry g -> "Geometry " + geometryName g
+        | GeometricOpRefusal.Geometry g -> "Geometry " + GeometricAlgebraVectors.refusalName g
         | GeometricOpRefusal.NotANumber n -> "NotANumber " + n
         | GeometricOpRefusal.NotInvertible op -> "NotInvertible " + op
         | GeometricOpRefusal.InverseRefused inner -> "InverseRefused " + refusalName inner

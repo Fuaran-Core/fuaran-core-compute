@@ -502,7 +502,7 @@ let tests =
                   [ "Fuaran.Compute.Distributions", "Fuaran.Compute.LinearAlgebra" ]
                   "a Fuaran assembly outside the stated set is a violation"
 
-          testCase "the distributions reference Elementary and the solvers alone, by project and by assembly"
+          testCase "every package of the below rule references its stated set alone, by project and by assembly"
           <| fun _ ->
               let projects = projectReferences ()
 
@@ -512,11 +512,16 @@ let tests =
 
               let found = belowViolations projects
 
+              let stated =
+                  [ for KeyValue(name, allowed) in below -> sprintf "%s on %s" name (String.Join(" and ", allowed)) ]
+                  |> String.concat "; "
+
               Expect.isEmpty
                   found
                   (sprintf
-                      "package(s) reference beyond their stated set: %s. Fuaran.Compute.Distributions is written over Elementary's special functions and the solvers alone (DECISIONS.md D79 item 1)."
-                      (render found))
+                      "package(s) reference beyond their stated set: %s. The below rule holds each of its packages to its stated set of this repository's own packages and to nothing of the substrate: %s (DECISIONS.md D79 item 1, D85 item 9)."
+                      (render found)
+                      stated)
 
               let refs =
                   [ for KeyValue(name, _) in below ->

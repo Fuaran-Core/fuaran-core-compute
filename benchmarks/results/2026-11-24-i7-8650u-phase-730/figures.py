@@ -162,6 +162,15 @@ for label, rs in (('base', base['dotnet'] + other['pgo-base']), ('final', pooled
     p(f'{label} | ' + ', '.join(f'{n}: {r[k][0]:.0f}' for n, r in rs))
 
 p('')
+p('## The intermediate trees, every committed .NET run: 030f016 (the general fold inlined as the dispatch\'s '
+  'fallback) and cfe5cdb (one compiled general fold)')
+interim = {c: runs(f'interim-{c}-dotnet', 3) for c in ('030f016', 'cfe5cdb')}
+for k in ('function: Motor.applyToSphere', 'function: Sphere.power',
+          'specialised: (motor point) * reverse motor (sandwich, second)'):
+    for c, rs in interim.items():
+        p(f'{c} | {k} | ' + ', '.join(f'{n}: {r[k][0]:.0f}' for n, r in rs))
+
+p('')
 p('## Checksums: each specialised arm against its general arm, and every row against the baseline')
 for h in ('dotnet', 'node'):
     ok = all(r[g][3] == r[s][3] for _, r in pooled[h] for _, g, s in PAIRS)
