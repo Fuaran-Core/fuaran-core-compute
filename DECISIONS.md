@@ -507,7 +507,7 @@ where" to "divided by **2.5**", is as `42bb282` committed it.
    procedure and commands of the baseline. Every figure here and in the results file is computed from the committed
    captures by `benchmarks/results/2026-11-24-i7-8650u-phase-730/figures.py`, except the script-host figures of item 9
    (4.5 to 4.6 µs, 2.0 to 2.4 µs and 4.6 µs), which are reported from runs that were not captured to files and cannot
-   be recomputed.
+   be recomputed, and item 9's figures of 2026-11-25, which are read from the captures that item names.
    - *The rule, as `42bb282` stated it before measuring, on its designated runs* (the three final runs on each host,
      the general product's medians from the same runs, on the same operands): the least general median over the
      greatest specialised one.
@@ -540,7 +540,8 @@ where" to "divided by **2.5**", is as `42bb282` committed it.
    - *The specialised fold has a slow mode of its own on .NET.* `(motor point) * reverse motor` ran at 412 to 466 ns
      in six of the seven pooled runs and at 1059 ns in `pgo-final-1`, and at 814 ns in one run of the intermediate tree
      (`interim-cfe5cdb-dotnet-3`); `(rotor point) * reverse rotor` at 228 to 264 ns in five and 474 and 484 ns in two;
-     `translator * point` at 177 to 189 ns in six and 337 ns in one. The cause is not established.
+     `translator * point` at 177 to 189 ns in six and 337 ns in one. Each slow run is about twice its pair's other runs,
+   the proportion item 9 establishes for the general product's two speeds, and these were not measured separately.
    - *The general product's own spread on the final tree exceeds the margin.* On .NET its median for `motor * motor`
      moved from 2189 to 7471 ns across the three designated runs, a factor of 3.41, and pooled over seven runs another
      pair's moved by 3.53; under node the largest factor is 1.82. So a ratio taken ACROSS runs, as the rule takes it,
@@ -553,7 +554,7 @@ where" to "divided by **2.5**", is as `42bb282` committed it.
      benchmark measures are 6.33 to 8.73 times faster on .NET (`Motor.applyToPoint` from 5656 to 894 ns) and 6.69 to
      11.72 times under node (`Motor.applyToPoint` from 251008 to 37504 ns). `Sphere.power`, which no pair serves, ran
      at 279, 265 and 453 ns on the final tree's designated runs against 266 to 289 on the base's, and at 266 to 283 in
-     the four `pgo-final` runs; the 453 is one run, and its cause is not established.
+     the four `pgo-final` runs; the 453 is one run, not measured separately (item 9 gives the likely cause).
 9. **What the .NET measurements found beside the verdict, and what was done.** Three things, in the order they were
    found; the captures of each intermediate tree are kept beside the results file, named for their commits.
    - *An inlined second copy of the general fold.* The first build of the dispatch inlined the general fold into it as
@@ -565,7 +566,8 @@ where" to "divided by **2.5**", is as `42bb282` committed it.
      and each signed permutation walked thirty-two blades to move one. The widening now sets the mask in the loop that
      writes the coefficients, and the dual and the undual answer a value of no type (`73f765d`). The final runs are of
      that tree.
-   - *A function no pair serves measured slower on the final tree on .NET, and the cause is not established.* In this
+   - *A function no pair serves measured slower on the final tree on .NET; the cause, established afterwards, is the
+     machine and not the tree.* In this
      harness, `Motor.applyToSphere` ran at 4338 to 5323 ns in all seven committed runs of the base tree, and at 9388
      to 12045 ns in five of the seven committed runs of the final tree (4664 and 4880 in the other two). The general
      product on `point * sphere` ran at 1754 to 2586 ns in all seven base runs and at 4361 to 4747 ns in six of the
@@ -576,15 +578,35 @@ where" to "divided by **2.5**", is as `42bb282` committed it.
      was not kept. Outside the harness, in a script host timing the general product alone, the base tree ran it at 4.5
      to 4.6 µs in three processes of three and this phase's trees at 2.0 to 2.4 µs in two of three (4.6 in the third);
      those runs were not captured to files. So in this harness the base ran it at its faster cost in seven runs of
-     seven and the final tree at the slower in five of seven, and this phase has not established why, nor whether the
-     same holds elsewhere. *Withdrawn:* the first version of this entry said every pair clears the margin against the
-     general product's faster speed; `pgo-final-1` refutes it for `(motor point) * reverse motor`: 1059 ns against
-     that pair's general medians in the base tree's seven runs, 1760 to 2667 ns, is 1.66 to 2.52.
+     seven and the final tree at the slower in five of seven.
+   - *The cause, measured on 2026-11-25* (`benchmarks/results/2026-11-25-i7-8650u-phase-730-two-speeds.md` and the
+     four captures beside it). The two speeds are the product's thread running alone on its physical core, or
+     sharing it with another busy thread (this processor has two hyper-threads per core). Three findings, in order:
+     (1) the JIT compiles `Kernel.general` to the same 293 bytes, through the same tiers, in a slow process (4729 ns)
+     as in fast ones, so the difference is no code-generation decision; (2) a process changes speed when a blocking
+     collection lets the scheduler move its thread, after its code is final (2054 → 4688 → 4687 → 4741 → 2132 ns in
+     one process); (3) with the probe pinned to two processors on different cores, busy threads on their two sibling
+     hyper-threads put every process at the slow speed, on BOTH trees (final 3872 to 7257 ns, base 4807 to 5138),
+     while with the siblings idle both ran at the fast one (final 1866 to 2327 ns, base 1925 to 2785). So the base's
+     seven fast runs and the final tree's five slow runs in the harness were taken under different background load
+     on a machine that was not quiet. The general product such a function calls runs at the same two speeds on both
+     trees; `Motor.applyToSphere` itself was not run under pinning. The same effect accounts
+     for the pooled 2.08 of item 8, which pairs a run at one speed with a run at the other; within one process the
+     least ratio is 4.35. The PGO-off and tiering-off runs above are three runs taken at one time and show no property
+     of those settings: of thirty later processes with `DOTNET_TieredPGO=0`, one ran at the slow speed (4469 ns).
+   - *What a comparison across processes on this machine needs from now on.* Either the benchmark process pinned to
+     one logical processor per physical core, with each sibling idle and the background load recorded beside the
+     capture, or only same-process ratios, which this effect cannot skew.
+   - *Withdrawn:* the first version of this entry said every pair clears the margin against the general product's
+     faster speed; `pgo-final-1` refutes it for `(motor point) * reverse motor`: 1059 ns against that pair's general
+     medians in the base tree's seven runs, 1760 to 2667 ns, is 1.66 to 2.52.
 10. **What was NOT measured.** One machine (an Intel Core i7-8650U laptop, Windows 11, not quiet); one .NET runtime
     (10.0.15) and one node (v22.20.0, Fable 5.0.0); time per call only, not allocation, which the specialised fold does
     not change (one array of thirty-two for the answer); warm code only, not a cold start or the cost of building the
     nine tables when the module is first read; no other host the package's answers are transcribed to; the base tree
-    with profile-guided optimisation or tiering off; the cause of either slow mode; and the general product's own cost
+    with profile-guided optimisation or tiering off; whether the specialised fold's own slow mode (item 8) has the cause
+    item 9 establishes for the general product's (its proportion matches; it was not run under pinning); and the
+    general product's own cost
     under node, about fifty times .NET's, which is not this phase's to explain and is recorded as measured.
 11. **The one float literal this entry adds to a comparison.** The specialised product's guard, `Kernel.admits` in
     `Multivector.fs`, compares each coefficient its operand's type does not carry with zero, `x = 0.0`, and sends an

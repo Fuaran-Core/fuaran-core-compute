@@ -425,7 +425,9 @@ computed from the committed captures by the script beside it. All nine pairs wer
 before measuring; one of them falls below that margin on .NET when every committed run is pooled, and D89 says so.
 The six typed functions measured that use them ran 6.3 to 8.7 times faster on .NET and 6.7 to 11.7 times under node.
 A function that uses none of them, `Motor.applyToSphere`, measured slower on .NET in five of seven runs of the final
-tree (9.4 to 12.0 µs against 4.3 to 5.3 µs in seven runs of the base), and the cause is not established. Not
+tree (9.4 to 12.0 µs against 4.3 to 5.3 µs in seven runs of the base). A later measurement found the cause in the
+machine and not the tree: on that laptop the product runs at about half speed when its thread shares a physical core
+with another busy thread, on both trees alike (D89 item 9). Not
 measured: another machine or runtime, allocation, a cold start, or any host the answers are transcribed to.
 
 ## Proofs

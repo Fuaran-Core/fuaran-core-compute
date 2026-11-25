@@ -1,0 +1,13 @@
+# per process: median ns; the tier-1 listing of Kernel.general with hex constants masked, hashed; its size
+2063 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+2093 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+2594 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+2292 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+2328 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+2067 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+1851 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+4729 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+2089 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+2399 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+1905 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,
+2312 tier1=091a7f4a6d1e bytes=293 tiers=Instrumented Tier0,Tier1-OSR,Instrumented Tier0,Tier1-OSR,Tier1,

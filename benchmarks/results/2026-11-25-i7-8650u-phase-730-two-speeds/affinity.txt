@@ -1,0 +1,7 @@
+# probe pinned to logical CPUs 2 and 4 (affinity mask 0x14); six processes per row; median ns per product
+final, siblings idle: 1866 1893 2319 1893 2327 2147 
+base,  siblings idle: 2398 2785 2407 2149 2355 1925 
+final, spinners on siblings 3 and 5: 4051 4010 3872 7257 5053 5349 
+base,  spinners on siblings 3 and 5: 4899 4807 4941 4951 5138 4921 
+final, spinners on other cores 0 and 6: 3821 2413 2400 2994 3132 2999 
+base,  spinners on other cores 0 and 6: 2686 2848 6024 3004 2654 2757 
