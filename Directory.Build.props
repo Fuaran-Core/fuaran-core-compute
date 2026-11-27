@@ -21,7 +21,7 @@
          .ColumnOps, .PipelineQuery, .Conformance; DECISIONS.md D4), a BREAKING change, so it
          ADVANCED the draft to 0.36.0 rather than riding it: the first version under the new ids is
          a fresh contract, and 0.35.0 is released under no id. It is a DRAFT slot until it is
-         tagged: STABILITY.md heads it "0.36.0 — DRAFT", and an additive change rides it while a
+         tagged: its release record heads it "0.36.0 — DRAFT", and an additive change rides it while a
          breaking one advances it. 0.36.0 is tagged, so Phase 338's breaking change (a derived
          column typed by its expression) advanced the slot to 0.37.0. 0.37.0 is tagged, so Phase
          324's change (window and sort through order codes; no public surface moves) advanced the
@@ -56,8 +56,11 @@
          pipeline-query registry's declarations are a `QueryRegistry<unit>`, and the pipeline-query codec
          writes only a declaration the substrate's gate admits) advanced the slot to 0.46.0, released as
          `v0.46.0`. 0.46.0 is tagged, so Phase 725's addition (the pinned sine, cosine and arc tangents
-         of Fuaran.Compute.Elementary) advanced the slot to 0.47.0, a DRAFT. -->
-    <Version>0.47.0</Version>
+         of Fuaran.Compute.Elementary) advanced the slot to 0.47.0, released as `v0.47.0`. 0.47.0 is
+         tagged, so Phase 734's change (the release record leaves STABILITY.md for a directory per version
+         under docs/releases/, a file per change; no package surface moves) advanced the slot to 0.48.0,
+         a DRAFT: docs/releases/0.48.0/README.md heads it. -->
+    <Version>0.48.0</Version>
     <Authors>Andrew J. Willshire</Authors>
     <Company>Diametrical Ltd</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
