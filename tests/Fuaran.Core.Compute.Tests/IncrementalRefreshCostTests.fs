@@ -515,8 +515,8 @@ let refreshCostTests =
           <| fun _ ->
               // The surface half of the phase, pinned so a later widening is a deliberate act: the
               // representation is private, and these five accessors are the whole of what a state
-              // answers. A consumer that needs something else needs a new accessor and the entry in
-              // STABILITY.md that comes with it.
+              // answers. A consumer that needs something else needs a new accessor and the release entry
+              // under docs/releases/ that comes with it.
               let before = build 50
               let after = editSome 1 before
               let state = ok (Incremental.primeOn idw pipeline before)

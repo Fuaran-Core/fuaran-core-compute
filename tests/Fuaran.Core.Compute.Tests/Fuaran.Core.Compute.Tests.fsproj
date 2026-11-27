@@ -130,8 +130,8 @@
     <Compile Include="GeometricAlgebraOpsTests.fs" />
     <Compile Include="LawVectorExport.fs" />
     <Compile Include="LawVectorTests.fs" />
-    <!-- The package roster held to the tree (the README table, the STABILITY.md entry for the
-         standing Version, the release tags), and the committed public-surface baseline per
+    <!-- The package roster held to the tree (the README table, the release entry under
+         docs/releases/ for the standing Version, the release tags), and the committed public-surface baseline per
          package under api/, rendered from IL metadata and classified when it moves. -->
     <!-- The families this repository ships, held to its assembly, its census and its reference
          runs. WitnessTaking before Vacuity, which reuses its reference pipelines; after
