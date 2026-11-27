@@ -5,7 +5,7 @@
 **Context.** Phase 734. `STABILITY.md` was 2,776 lines: the contract in its first 48 (the versioning policy and the
 public-surface baselines), then one section per version, newest first, each holding one entry per change. Every
 change added its entry to the same draft section, so any two changes in flight conflicted on that file whatever
-they changed in code, and a campaign over this repository's open work tiered serially on it. Fuaran.Core met the
+they changed in code, and this repository's open changes could only land one after another. Fuaran.Core met the
 same problem and moved its entries to `docs/releases/<version>.md`, a file per version (its Phase 397), and since
 its D274 keeps a draft's entries as files of their own that the release act prints into the version's file. A
 file per version still leaves every change of one draft editing one file, so the operator ruled on 2026-11-27 for
