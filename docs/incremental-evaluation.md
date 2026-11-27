@@ -2094,7 +2094,7 @@ which needs no state at all.
 **Read this section before adopting `0.28.1` if you certify your own evaluator against
 `IncrementalDelta.laws`.** The corpus grew by ten shapes, every one of them red against the cache
 condition `0.26.0` shipped, so a host carrying that condition goes red at this pin. That is the
-point of the widening and it is described for adopters under `0.28.1` in the Fuaran.Core repository's `STABILITY.md`, where versions before `0.33.0` are recorded.
+point of the widening and it is described for adopters in the Fuaran.Core repository's release ledger, where versions before `0.33.0` are recorded, under [`0.29.0`](https://github.com/Fuaran-Core/fuaran-core/blob/main/docs/releases/0.29.0.md), the slot that was `0.28.1` until that repository's Phase 194.
 
 ### What the class is
 

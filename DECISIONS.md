@@ -1,5 +1,76 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+## 2026-11-27 — D91: the release record leaves `STABILITY.md` for `docs/releases/` — a directory per version, its `README.md` the version's heading and preamble, and a file per change named by the phase that made it (`phase-<n>.md`, four digits, or `change-<slug>.md`), each moved word for word; a release re-heads the version's `README.md` and moves no entry; an untagged draft that advances moves its directory; the roster family reads the new layout, keeps every refusal it had and gains three; `0.47.0` was tagged under a DRAFT heading, so this change opens `0.48.0`
+
+**Context.** Phase 734. `STABILITY.md` was 2,776 lines: the contract in its first 48 (the versioning policy and the
+public-surface baselines), then one section per version, newest first, each holding one entry per change. Every
+change added its entry to the same draft section, so any two changes in flight conflicted on that file whatever
+they changed in code, and a campaign over this repository's open work tiered serially on it. Fuaran.Core met the
+same problem and moved its entries to `docs/releases/<version>.md`, a file per version (its Phase 397), and since
+its D274 keeps a draft's entries as files of their own that the release act prints into the version's file. A
+file per version still leaves every change of one draft editing one file, so the operator ruled on 2026-11-27 for
+a file per entry here, kept as a file for good.
+
+**Ruled.**
+
+1. **A directory per version.** `docs/releases/<version>/`, for every version this repository has emitted, from
+   `0.33.0` (D1) up, including one never released (`0.38.0`). The versions before `0.33.0` stay where they are
+   recorded, in Fuaran.Core's release ledger, and are not restated.
+2. **The version's own record is that directory's `README.md`.** Its first line is the version's heading, one of
+   three: `## <v> — DRAFT`, `` ## <v> — released <date> as `v<v>` `` and
+   `` ## <v> — never released; its entries ship in `<w>` ``. The preamble follows it: why the slot opened, and at
+   a release its release record. Only the standing `<Version>`, untagged, is a DRAFT.
+3. **A file per change, named by its phase.** `phase-<n>.md`, `<n>` the number of the phase in this repository's
+   roadmap record that made the change, zero-padded to four digits so a listing reads in phase order. The number
+   exists before the change is written, so nothing is allocated at write time and two changes cannot pick one
+   name. A change no phase of that record made (a substrate raise made by hand, another repository's phase) is
+   `change-<slug>.md`, the slug lowercase letters, digits, `.` and `-`; five of the moved entries are such. A
+   phase that makes a second change in one slot extends its own file. The file holds the entry's `###` heading,
+   which states its class, and its body, as a reader reads it. The order of entries within a version is the
+   listing's; the old document's order, which was the order of landing, was not recorded anywhere else and is
+   not kept.
+4. **A change adds one file and edits nothing another change's entry lives in.** The change that opens a slot (the
+   first after a tag, or the one whose class advances a draft) also writes, or re-heads, the slot's `README.md`.
+5. **A release re-heads; it does not print.** The release commit changes the slot's `README.md` heading to
+   `released <date> as v<v>` and adds the release record to its preamble. No entry file moves, merges or is
+   rewritten, so an entry reads the same before and after its version is cut. Fuaran.Core's print-at-cut (its
+   D274) was considered: it makes one release commit rewrite every entry of the slot into one file, a second copy
+   of each entry for the length of the slot and a large diff at the cut, to buy a one-page read of a version;
+   here a version is read as a directory instead.
+6. **An untagged draft that advances moves its directory** to the new number, its entries with it, and re-heads it.
+   The number it leaves keeps a `README.md` headed `never released` only where packages were packed at it
+   (`0.38.0`'s case), and such a slot holds no entry. An entry a branch in flight adds under the old number then
+   lands in a slot with no heading or in a never-released one, and the roster refuses it by name rather than
+   leaving it misfiled.
+7. **`STABILITY.md` is the contract only.** Its status line, its policy and its baselines section say where the
+   record is, and a last section points at `docs/releases/` in one line. The headings it carries name no
+   version. The two stale pointers found while moving (its own to Fuaran.Core's `STABILITY.md`, and
+   `docs/incremental-evaluation.md`'s to that file's `0.28.1`, which became `0.29.0` there) point at that
+   repository's release ledger.
+
+**The roster family.** `PackageRosterTests` read the entry headers out of `STABILITY.md`; it now reads the slots
+(`readSlots`: each directory's name, its README's first line and its other names) and keeps every refusal it
+had, over the slots: the standing `<Version>` with no slot; a release tag from `0.33.0` up with no slot; a draft
+preamble denying a tag that exists, now over every file of the record; and an empty tag list admitted only while
+every slot is a DRAFT. A slot counts as a record of its version only when its heading reads. Three refusals are
+new. **A heading against the tags:** a DRAFT over a tagged version, a released heading with no such tag, a
+never-released heading over a tagged version, and an untagged standing `<Version>` not headed DRAFT. Nothing read
+a heading's status before, which is how `0.47.0` came to be tagged with its heading reading DRAFT while every
+check was green. **The layout:** a heading that cannot be read or names another version, a DRAFT that is not the
+standing `<Version>`, a name in a slot that is not an entry, and an entry under a never-released heading.
+**The contract:** a version or entry heading written back into `STABILITY.md`. Each refusal was seen to fail
+once on a wrong tree before the phase trusted it.
+
+**`0.48.0`.** `v0.47.0` is on the commit this phase was cut from, and its heading read `0.47.0 — DRAFT`. It is
+restated as released on 2026-11-25, the tag's date. This change moves no package surface, and it does not ride
+a released number: `<Version>` moves to `0.48.0`, a DRAFT whose first entry is this phase's, class none, and
+`conformance/laws/transform-laws.json`'s derived `kitVersion` stamp re-reads `0.48.0` with no vector moved.
+
+**Tidy.** The entry-header reader and its controls are replaced by the slot reader and its controls; nothing
+else in the reviewed files was dead or duplicated. `Directory.Build.props`' comment narrating each slot's
+lineage restates the slots' preambles; it is kept, as the one place the sequence reads in order, and gains a
+sentence for `0.48.0`.
+
 ## 2026-11-24 — D90: geometric transforms ride the op stream as a parametric op algebra in `Fuaran.Compute.GeometricAlgebraOps`, written to D85 item 9 and choosing nothing D85 fixed — a state of named objects ordered by the caller's comparison; D85 item 9's seven ops with its parameters and no coefficient; replay through the algebra's published constructors and `applyTo…`, computing nothing of its own; every refusal named and the state left the same value, an object that would hold a NaN refused; a codec that writes every float as its bit pattern, D51 item 7's rule; the `Fuaran.Core.OpStream` witness; an inverse for six ops, exact only for `Add`, and answered only where the state after the op accepts it; the compaction of a run of translations, or of rotations and screws about one axis, which nothing else calls; 244 vectors; twenty-three wrong ports held against nine functions; seven bounded laws, each pinning one stated sample; and three points D85 leaves open, recorded with their options
 
 **Context.** Phase 731. D85 item 9 ruled this package's id, its references, its state ("a set of named objects,

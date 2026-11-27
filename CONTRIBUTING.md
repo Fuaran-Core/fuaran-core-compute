@@ -37,7 +37,13 @@ rather than print, and `FUARAN_CORE_CORPUS_DIR` to name a clone kept elsewhere.
 - **Public-surface moves are classified, not argued.** A change to a package's public contract
   regenerates its baseline under `api/` (`CORE_APPROVE_API=1 dotnet run --project
   tests/Fuaran.Core.Compute.Tests`) in the same commit, and records the change under the standing
-  version in [`STABILITY.md`](STABILITY.md).
+  version, as below.
+- **A change records itself in one new file.** Its entry is
+  `docs/releases/<standing version>/phase-<n>.md`, `<n>` the phase's number zero-padded to four digits
+  (`change-<slug>.md` where no phase made it): the entry's `###` heading with its class, then its body. It
+  edits no other entry. The change that opens a slot also writes that slot's `README.md`, its heading and
+  preamble. The layout is [`docs/releases/README.md`](docs/releases/README.md); the contract it records
+  against is [`STABILITY.md`](STABILITY.md).
 
 A change that adds a public surface should add or extend a law family that certifies it.
 

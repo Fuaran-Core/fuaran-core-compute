@@ -1,10 +1,10 @@
 module Fuaran.Compute.Tests.PackageRosterTests
 
 // ---------------------------------------------------------------------------
-// Phase 199 — the package roster is DERIVED, and STABILITY.md's header is held to
-// `<Version>`.
+// Phase 199 — the package roster is DERIVED, and the release record is held to
+// `<Version>` and to the tags.
 //
-// `README.md`'s package table and `STABILITY.md`'s entry headers are hand-maintained
+// `README.md`'s package table and the release record's headings are hand-maintained
 // documents sitting beside the mechanism they describe, so they drift silently and are
 // discovered by a reader rather than by a gate. Measured 2026-09-17: the table listed
 // twelve packages against twenty-one packable projects, and two RELEASED slots still
@@ -16,28 +16,37 @@ module Fuaran.Compute.Tests.PackageRosterTests
 // prose a person writes; a gate that generated that column would be describing the file
 // layout rather than the design.
 //
-// Five properties, each with a go-red case beside it over synthetic input. The live case
+// Eight properties, each with a go-red case beside it over synthetic input. The live case
 // alone cannot show a classifier works — every one of these reads a real file that is
-// expected to be correct, so a classifier that matched nothing would pass all five.
+// expected to be correct, so a classifier that matched nothing would pass all eight.
 //
 //   1. README rows = the packable set.
 //   2. No packable project sits outside `src/` — the SCOPE property 1's derivation assumes,
 //      checked rather than trusted. Without it a package added elsewhere is invisible to
 //      property 1 by being out of frame, which is the same drift wearing a different hat.
-//   3. Some entry header in STABILITY.md names the standing `<Version>`.
+//   3. The standing `<Version>` has a release slot: `docs/releases/<v>/`, headed by it.
 //   4. No "no `vX.Y.Z` tag exists" sentence survives the tag it denies.
-//   5. Every release TAG at or above a declared floor has an entry header naming it.
+//   5. Every release TAG at or above a declared floor has a slot.
+//   6. Each slot's heading agrees with the tags: a DRAFT is untagged, a released version is
+//      tagged, and the untagged standing `<Version>` is the DRAFT.
+//   7. Every slot is headed by its own version, and holds only entry files.
+//   8. STABILITY.md holds the contract and no release heading.
+//
+// Phase 734 moved the record out of STABILITY.md into a directory per version with a file per
+// entry (DECISIONS.md D91), and properties 3 to 5 read it there. Properties 6 to 8 are that
+// phase's: 6 because `0.47.0` was found tagged under a DRAFT heading with properties 3 to 5
+// green, and 7 and 8 because a layout nothing reads is a layout that drifts back.
 //
 // Property 5 is Phase 205, and it exists because property 3 structurally cannot see what
 // it caught. Property 3 quantifies over the STANDING `<Version>` — one number — so a slot
 // that was cut, tagged, released and then left behind as `<Version>` moved on is invisible
-// to it: `v0.25.0` was tagged 2026-09-15 and this document carried no entry for it at all,
+// to it: `v0.25.0` was tagged 2026-09-15 and the record carried no entry for it at all,
 // while property 3 read green against `0.26.0` the whole time. Quantifying over the tags
 // is what closes that, and the FLOOR is what keeps it honest — every release below
 // `0.25.0` predates this document's per-slot classes, so demanding entries for them would
 // demand invention rather than record.
 //
-// Properties 4 and 5 read `git tag` LOCALLY, which is the honest limit: they answer "has
+// Properties 4, 5 and 6 read `git tag` LOCALLY, which is the honest limit: they answer "has
 // the release gesture been made in this clone", never "is this version published". A clone
 // with no git at all skips by name with the reason printed, on the
 // `WorkingCopyEolTests` precedent — a check that reads as green when its instrument is
@@ -179,19 +188,126 @@ let internal rosterDiff (packable: string list) (documented: string list) : stri
     let d = Set.ofList documented
     Set.difference p d |> Set.toList, Set.difference d p |> Set.toList
 
-// ---- STABILITY ------------------------------------------------------------
+// ---- the release record ---------------------------------------------------
 
 /// The standing `<Version>` from `Directory.Build.props`.
 let internal standingVersion (propsText: string) : string option =
     firstGroup (Regex @"<Version>([^<]*)</Version>") propsText
 
-/// The first level-2-or-3 header naming `version`, if any. A version's entry may be its own
-/// `## 0.26.0 (draft)` section or a `### … (Phase N, \`0.26.0\`)` entry under an older
-/// grouping — both spellings are live in this document, so the property is "an entry header
-/// names it", not "a header equals it".
-let internal entryHeaderNaming (version: string) (stability: string) : string option =
+/// The release record's directory, relative to the repository root (Phase 734, DECISIONS.md D91).
+let internal releasesDir = Path.Combine("docs", "releases")
+
+/// One version's directory under `docs/releases/`, as read from the tree.
+type internal ReleaseSlot =
+    {
+        /// The directory's name, which is the version it records.
+        Version: string
+        /// The first line of the directory's `README.md` — the version's heading — or `None` when it has
+        /// no README.
+        Heading: string option
+        /// Every other name in the directory, a subdirectory with a trailing `/`.
+        Entries: string list
+    }
+
+/// What a slot's heading says of its version.
+type internal SlotStatus =
+    | Draft
+    | Released of tag: string
+    | NeverReleased
+
+/// The three headings a slot may open with, and only those: `## <v> — DRAFT`,
+/// `## <v> — released <date> as \`v<v>\`` and `## <v> — never released; its entries ship in \`<w>\``, each
+/// naming the directory's own version. Anything else is a heading this record cannot read, and is
+/// reported rather than guessed at.
+let internal slotStatus (slot: ReleaseSlot) : Result<SlotStatus, string> =
+    let v = Regex.Escape slot.Version
+
+    match slot.Heading with
+    | None -> Error "has no README.md, so nothing heads it"
+    | Some h when Regex.IsMatch(h, sprintf @"^## %s — DRAFT$" v) -> Ok Draft
+    | Some h when Regex.IsMatch(h, sprintf @"^## %s — released \d{4}-\d{2}-\d{2} as `v%s`$" v v) ->
+        Ok(Released("v" + slot.Version))
+    | Some h when Regex.IsMatch(h, sprintf @"^## %s — never released; its entries ship in `\d+\.\d+\.\d+`$" v) ->
+        Ok NeverReleased
+    | Some h ->
+        Error(
+            sprintf
+                "opens with `%s`, which is not `## %s — DRAFT`, `## %s — released <date> as `v%s`` or `## %s — never released; its entries ship in `<version>``"
+                h
+                slot.Version
+                slot.Version
+                slot.Version
+                slot.Version
+        )
+
+let private entryNameRe =
+    Regex(@"^(phase-\d{4,}|change-[a-z0-9][a-z0-9.-]*)\.md$", RegexOptions.Compiled)
+
+/// Findings that need no tag: a slot whose heading cannot be read, a DRAFT that is not the standing
+/// `<Version>` (one draft at a time, and it is the number the packages build at), and a name in a slot
+/// that is not an entry file (`phase-<n>.md`, `<n>` four digits or more, or `change-<slug>.md`), or an entry
+/// under a never-released heading — the case a branch in flight makes when its draft advanced under it.
+let internal slotLayoutFindings (standing: string) (slots: ReleaseSlot list) : string list =
+    [ for s in slots do
+          match slotStatus s with
+          | Error why -> yield sprintf "docs/releases/%s/ %s" s.Version why
+          | Ok Draft when s.Version <> standing ->
+              yield sprintf "docs/releases/%s/ is headed DRAFT, and the standing `<Version>` is `%s`" s.Version standing
+          | Ok NeverReleased when not s.Entries.IsEmpty ->
+              yield
+                  sprintf
+                      "docs/releases/%s/ is headed never released and holds entries: its entries ship in the version it names, and belong there"
+                      s.Version
+          | Ok _ -> ()
+
+          for e in s.Entries do
+              if not (entryNameRe.IsMatch e) then
+                  yield
+                      sprintf
+                          "docs/releases/%s/%s is not an entry file: an entry is `phase-<n>.md` (four digits or more) or `change-<slug>.md`"
+                          s.Version
+                          e ]
+
+/// Findings against the tags: a DRAFT heading over a version that is tagged (the release was made and
+/// the heading not moved — how `0.47.0` read when Phase 734 found it), a released or never-released
+/// heading that disagrees with the tag list, and a standing `<Version>` that is untagged and not headed
+/// DRAFT.
+let internal slotTagFindings (standing: string) (tags: Set<string>) (slots: ReleaseSlot list) : string list =
+    [ for s in slots do
+          let tagged = tags.Contains("v" + s.Version)
+
+          match slotStatus s with
+          | Ok Draft when tagged ->
+              yield
+                  sprintf
+                      "docs/releases/%s/ is headed DRAFT, and `v%s` is tagged: the release was made and its heading was not moved"
+                      s.Version
+                      s.Version
+          | Ok(Released tag) when not tagged ->
+              yield sprintf "docs/releases/%s/ is headed released as `%s`, and no such tag exists" s.Version tag
+          | Ok NeverReleased when tagged ->
+              yield sprintf "docs/releases/%s/ is headed never released, and `v%s` is tagged" s.Version s.Version
+          | Ok status when s.Version = standing && not tagged && status <> Draft ->
+              yield
+                  sprintf
+                      "the standing `<Version>` `%s` is untagged, so its slot is the draft, and docs/releases/%s/ is not headed DRAFT"
+                      s.Version
+                      s.Version
+          | _ -> () ]
+
+/// The slot recording `version`, when one exists and its heading can be read.
+let internal slotNaming (version: string) (slots: ReleaseSlot list) : ReleaseSlot option =
+    slots
+    |> List.tryFind (fun s -> s.Version = version && Result.isOk (slotStatus s))
+
+/// The lines of STABILITY.md that open a version section or a change entry — the record that left it in
+/// Phase 734. The contract keeps none, so a non-empty answer is an entry written to the wrong file.
+let internal stabilityEntryHeadings (stability: string) : string list =
     stability.Replace("\r\n", "\n").Split('\n')
-    |> Array.tryFind (fun l -> Regex.IsMatch(l, @"^#{2,3}\s") && l.Contains(version, StringComparison.Ordinal))
+    |> Array.filter (fun l ->
+        Regex.IsMatch(l, @"^##\s+\d+\.\d+\.\d+")
+        || l.StartsWith("### ", StringComparison.Ordinal))
+    |> Array.toList
 
 let private noTagRe =
     Regex(@"no `v(?<v>\d+\.\d+\.\d+)` tag exists", RegexOptions.Compiled)
@@ -215,25 +331,18 @@ let internal staleDraftSentences (tags: Set<string>) (lines: string list) : (int
 /// the oldest slot whose record can still be written from evidence — and a judgement spelt
 /// in two places is a judgement that will disagree with itself. In this repository it is the
 /// FIRST version it emits (Phase 259): every earlier version of these packages was released
-/// from the Fuaran.Core repository and is recorded in that repository's STABILITY.md, which
+/// from the Fuaran.Core repository and is recorded in that repository's release ledger, which
 /// this one's points to rather than restates.
 let internal entryHeaderFloor = (0, 33, 0)
 
-let private versionHeaderRe =
-    Regex(@"^##\s+(?<v>\d+\.\d+\.\d+)\b(?<rest>.*)$", RegexOptions.Compiled ||| RegexOptions.Multiline)
-
-/// True when every level-2 entry header in STABILITY.md that names a version marks it DRAFT —
-/// the document's own statement that this repository has released nothing yet (Phase 259). It is
-/// what lets a clone holding NO release tag be read as "nothing released" rather than as "the
-/// tags were not fetched": the two are told apart by the record, not by the absence. Once any
-/// header records a release, an empty tag list is a clone missing its tags, and the tag legs
-/// refuse it as the substrate's do. False for a document with no version header at all, which
-/// is not a statement of anything.
-let internal releasedNothingYet (stability: string) : bool =
-    let headers = versionHeaderRe.Matches(stability.Replace("\r\n", "\n")) |> Seq.toList
-
-    not headers.IsEmpty
-    && headers |> List.forall (fun m -> m.Groups["rest"].Value.Contains "DRAFT")
+/// True when every slot's heading reads DRAFT — the record's own statement that this repository has
+/// released nothing yet (Phase 259). It is what lets a clone holding NO release tag be read as "nothing
+/// released" rather than as "the tags were not fetched": the two are told apart by the record, not by
+/// the absence. Once any heading records a release, an empty tag list is a clone missing its tags, and
+/// the tag legs refuse it as the substrate's do. False for a record with no slot at all, which is not a
+/// statement of anything.
+let internal releasedNothingYet (slots: ReleaseSlot list) : bool =
+    not slots.IsEmpty && slots |> List.forall (fun s -> slotStatus s = Ok Draft)
 
 let private releaseTagRe = Regex(@"^v(\d+)\.(\d+)\.(\d+)$", RegexOptions.Compiled)
 
@@ -250,21 +359,50 @@ let internal releaseTagVersion (tag: string) : (int * int * int) option =
     else
         None
 
-/// Release tags at or above `floor` that no entry header names, oldest first.
+/// Release tags at or above `floor` that no slot records, oldest first.
 ///
 /// Ordering is NUMERIC, over the parsed triple, not lexical over the tag string: `0.9.0`
 /// sorts BELOW `0.25.0` and a string comparison gets that backwards, which would silently
-/// admit every pre-`0.10` tag the floor exists to exclude. It reuses `entryHeaderNaming` —
+/// admit every pre-`0.10` tag the floor exists to exclude. It reuses `slotNaming` —
 /// the same seam property 3 asserts the standing version through — so the two properties
-/// cannot disagree about what counts as an entry.
-let internal tagsMissingEntryHeader (floor: int * int * int) (tags: Set<string>) (stability: string) : string list =
+/// cannot disagree about what counts as a record.
+let internal tagsMissingSlot (floor: int * int * int) (tags: Set<string>) (slots: ReleaseSlot list) : string list =
     tags
     |> Set.toList
     |> List.choose (fun t -> releaseTagVersion t |> Option.map (fun v -> v, t))
     |> List.filter (fun (v, _) -> v >= floor)
     |> List.sortBy fst
-    |> List.filter (fun (_, t) -> (entryHeaderNaming (t.Substring 1) stability).IsNone)
+    |> List.filter (fun (_, t) -> (slotNaming (t.Substring 1) slots).IsNone)
     |> List.map snd
+
+/// Every version directory under `docs/releases/`, by directory name. Empty when the directory is absent.
+let internal readSlots (root: string) : ReleaseSlot list =
+    let dir = Path.Combine(root, releasesDir)
+
+    if not (Directory.Exists dir) then
+        []
+    else
+        Directory.GetDirectories dir
+        |> Array.toList
+        |> List.map (fun d ->
+            let readme = Path.Combine(d, "README.md")
+
+            { Version = Path.GetFileName d
+              Heading =
+                if File.Exists readme then
+                    File.ReadAllText(readme).Replace("\r\n", "\n").Split('\n') |> Array.tryHead
+                else
+                    None
+              Entries =
+                [ for f in Directory.GetFiles d do
+                      let n = Path.GetFileName f
+
+                      if n <> "README.md" then
+                          yield n
+                  for sub in Directory.GetDirectories d do
+                      yield Path.GetFileName sub + "/" ]
+                |> List.sort })
+        |> List.sortBy _.Version
 
 // ---- the instruments ------------------------------------------------------
 
@@ -413,20 +551,56 @@ let tests =
                           (String.concat ", " packable))
           }
 
-          test "STABILITY.md carries an entry header naming the standing <Version>" {
+          test "STABILITY.md holds the contract and no release entry" {
+              // Phase 734: the record left this file for docs/releases/, a file per entry, so two
+              // changes in flight never edit one file. An entry written here again is the old layout
+              // coming back by habit, and it is refused rather than read.
+              withRoot (fun root ->
+                  let stability = File.ReadAllText(Path.Combine(root, "STABILITY.md"))
+
+                  match stabilityEntryHeadings stability with
+                  | [] -> ()
+                  | found ->
+                      failtestf
+                          "STABILITY.md holds %d release heading(s), the first: %s\n       Remedy: a change's entry is its own file, docs/releases/<standing version>/phase-<n>.md; the version's heading is that directory's README.md. STABILITY.md is the contract only (DECISIONS.md D91)."
+                          found.Length
+                          (String.concat " | " (List.truncate 5 found)))
+          }
+
+          test "every slot under docs/releases/ is headed by its own version and holds only entry files" {
+              withRoot (fun root ->
+                  let slots = readSlots root
+
+                  Expect.isNonEmpty
+                      slots
+                      "docs/releases/ was read and holds at least one version directory — an empty read here would make the checks below vacuous"
+
+                  match standingVersion (File.ReadAllText(Path.Combine(root, "Directory.Build.props"))) with
+                  | None -> failtest "Directory.Build.props declares no <Version>"
+                  | Some standing ->
+                      match slotLayoutFindings standing slots with
+                      | [] -> ()
+                      | findings ->
+                          failtestf
+                              "%d finding(s) in the release record:\n       %s\n       Remedy: a slot's README.md opens with `## <v> — DRAFT` (the standing `<Version>` only), `## <v> — released <date> as `v<v>`` or `## <v> — never released; its entries ship in `<w>``, and every other file in it is one entry (DECISIONS.md D91)."
+                              findings.Length
+                              (String.concat "\n       " findings))
+          }
+
+          test "the standing <Version> has a release slot" {
               withRoot (fun root ->
                   let props = File.ReadAllText(Path.Combine(root, "Directory.Build.props"))
 
                   match standingVersion props with
                   | None -> failtest "Directory.Build.props declares no <Version>"
                   | Some version ->
-                      let stability = File.ReadAllText(Path.Combine(root, "STABILITY.md"))
-
-                      match entryHeaderNaming version stability with
+                      match slotNaming version (readSlots root) with
                       | Some _ -> ()
                       | None ->
                           failtestf
-                              "`<Version>` is `%s` and no STABILITY.md entry header names it.\n       Remedy: open the slot — a `## %s (draft)` header with the draft-slot preamble — and append this change's entry under it. The version is what tells a consumer what adopting it costs; a number with no entry says nothing."
+                              "`<Version>` is `%s` and docs/releases/%s/ does not exist or is not headed by it.\n       Remedy: open the slot — docs/releases/%s/README.md headed `## %s — DRAFT` with the draft-slot preamble — and add this change's entry beside it as its own file. The version is what tells a consumer what adopting it costs; a number with no record says nothing."
+                              version
+                              version
                               version
                               version)
           }
@@ -437,42 +611,51 @@ let tests =
                   | Error why ->
                       // Skipped by NAME with the reason printed, never passed silently.
                       // This is the source-archive / no-git case, not a defect in the tree.
-                      printfn "STABILITY draft-slot tag check SKIPPED: %s" why
-                      skiptestf "STABILITY draft-slot tag check skipped — %s" why
+                      printfn "release-record draft-slot tag check SKIPPED: %s" why
+                      skiptestf "release-record draft-slot tag check skipped — %s" why
                   | Ok tags ->
                       if Set.isEmpty tags then
                           // No tag at all is legitimate only while the record says nothing was
                           // released; otherwise this clone is missing its tags (fetch them).
                           Expect.isTrue
-                              (releasedNothingYet (File.ReadAllText(Path.Combine(root, "STABILITY.md"))))
-                              "`git tag --list` listed no tag, and STABILITY.md records a release — this clone is missing its tags (`git fetch --tags`), so the comparison below would pass vacuously"
+                              (releasedNothingYet (readSlots root))
+                              "`git tag --list` listed no tag, and docs/releases/ records a release — this clone is missing its tags (`git fetch --tags`), so the comparison below would pass vacuously"
 
-                      let lines = fileLines (Path.Combine(root, "STABILITY.md"))
+                      let documents =
+                          Path.Combine(root, "STABILITY.md")
+                          :: (Directory.GetFiles(Path.Combine(root, releasesDir), "*.md", SearchOption.AllDirectories)
+                              |> Array.sort
+                              |> Array.toList)
 
-                      match staleDraftSentences tags lines with
+                      let stale =
+                          documents
+                          |> List.collect (fun path ->
+                              staleDraftSentences tags (fileLines path)
+                              |> List.map (fun (n, v) ->
+                                  sprintf
+                                      "%s:%d says no `v%s` tag exists — it does"
+                                      (Path.GetRelativePath(root, path).Replace('\\', '/'))
+                                      n
+                                      v))
+
+                      match stale with
                       | [] -> ()
                       | stale ->
-                          let shown =
-                              stale
-                              |> List.map (fun (n, v) ->
-                                  sprintf "STABILITY.md:%d says no `v%s` tag exists — it does" n v)
-                              |> String.concat "\n       "
-
                           failtestf
-                              "%d draft-slot preamble(s) deny a tag this repository holds:\n       %s\n       Remedy: retire the sentence — the slot is released, so say so and say when. Do not delete the entries under it."
+                              "%d draft-slot preamble(s) deny a tag this repository holds:\n       %s\n       Remedy: retire the sentence — the slot is released, so say so and say when. Do not delete the entries beside it."
                               stale.Length
-                              shown)
+                              (String.concat "\n       " stale))
           }
 
-          test "every release tag at or above the floor has a STABILITY entry header" {
+          test "every release tag at or above the floor has a release slot" {
               // Phase 205. Property 3 asserts the STANDING version only, so a released slot
               // that `<Version>` has moved past is outside its frame entirely — which is
               // how `v0.25.0` came to be tagged with no entry while this file read green.
               withRoot (fun root ->
                   match gitTags root with
                   | Error why ->
-                      printfn "STABILITY per-tag entry check SKIPPED: %s" why
-                      skiptestf "STABILITY per-tag entry check skipped — %s" why
+                      printfn "release-record per-tag check SKIPPED: %s" why
+                      skiptestf "release-record per-tag check skipped — %s" why
                   | Ok tags ->
                       let covered =
                           tags
@@ -480,23 +663,51 @@ let tests =
                           |> List.choose releaseTagVersion
                           |> List.filter (fun v -> v >= entryHeaderFloor)
 
-                      let stability = File.ReadAllText(Path.Combine(root, "STABILITY.md"))
+                      let slots = readSlots root
 
                       if List.isEmpty covered then
                           // Nothing at or above the floor is legitimate only while the record says
                           // this repository has released nothing (Phase 259); otherwise the empty set
                           // is the shape a mis-parsed or unfetched tag takes.
                           Expect.isTrue
-                              (releasedNothingYet stability)
-                              "no release tag sits at or above the floor, and STABILITY.md records a release — with none the comparison below would pass vacuously, which is the shape a mis-parsed or unfetched tag would take"
+                              (releasedNothingYet slots)
+                              "no release tag sits at or above the floor, and docs/releases/ records a release — with none the comparison below would pass vacuously, which is the shape a mis-parsed or unfetched tag would take"
 
-                      match tagsMissingEntryHeader entryHeaderFloor tags stability with
+                      match tagsMissingSlot entryHeaderFloor tags slots with
                       | [] -> ()
                       | missing ->
                           failtestf
-                              "%d released tag(s) at or above the floor have no STABILITY.md entry header: %s\n       Remedy: open a level-2 section whose header names the version — the shape the released slots use is '0.25.0 — released <date> as v0.25.0' — and record under it what shipped in that slot, each change classed. A released version with no entry tells a consumer nothing about what adopting it costs.\n       The floor is `entryHeaderFloor` in this file, and lowering it is a decision about which old slots can still be written from evidence, not a tidy-up."
+                              "%d released tag(s) at or above the floor have no release slot: %s\n       Remedy: open docs/releases/<v>/ with a README.md headed '## <v> — released <date> as `v<v>`' and record beside it what shipped in that slot, a file per change, each classed. A released version with no record tells a consumer nothing about what adopting it costs.\n       The floor is `entryHeaderFloor` in this file, and lowering it is a decision about which old slots can still be written from evidence, not a tidy-up."
                               missing.Length
                               (String.concat ", " missing))
+          }
+
+          test "each slot's heading agrees with the tags: a draft is untagged, a released version is tagged" {
+              // Phase 734. Until this rule, `0.47.0` was tagged with its heading still reading DRAFT,
+              // and every property above was green: none of them reads a heading's status.
+              withRoot (fun root ->
+                  match gitTags root with
+                  | Error why ->
+                      printfn "release-record heading-status check SKIPPED: %s" why
+                      skiptestf "release-record heading-status check skipped — %s" why
+                  | Ok tags ->
+                      let slots = readSlots root
+
+                      if Set.isEmpty tags then
+                          Expect.isTrue
+                              (releasedNothingYet slots)
+                              "`git tag --list` listed no tag, and docs/releases/ records a release — this clone is missing its tags (`git fetch --tags`), so the comparison below would pass vacuously"
+
+                      match standingVersion (File.ReadAllText(Path.Combine(root, "Directory.Build.props"))) with
+                      | None -> failtest "Directory.Build.props declares no <Version>"
+                      | Some standing ->
+                          match slotTagFindings standing tags slots with
+                          | [] -> ()
+                          | findings ->
+                              failtestf
+                                  "%d slot heading(s) disagree with the tags:\n       %s\n       Remedy: the release commit heads its slot `## <v> — released <date> as `v<v>``; a version moved past untagged is headed `never released; its entries ship in `<w>``; the standing `<Version>` is the one DRAFT (DECISIONS.md D91)."
+                                  findings.Length
+                                  (String.concat "\n       " findings))
           }
 
           test "the Fable surface's declared roster — packable minus its exclusions — is documented in the README" {
@@ -535,7 +746,7 @@ let tests =
 
           // ---- the go-red controls ------------------------------------------
           //
-          // Each live case above reads a file expected to be correct, so all four would
+          // Each live case above reads a file expected to be correct, so every one would
           // pass against a classifier that matched nothing at all. These feed the same
           // functions input that must be refused.
 
@@ -603,22 +814,138 @@ let tests =
                   "a document with no Packages section yields nothing — which is why the live case asserts the read is non-empty before comparing"
           }
 
-          test "the STABILITY header check finds a slot header and refuses a missing one" {
-              let stability =
-                  String.concat
-                      "\n"
-                      [ "# Stability"
-                        "Prose mentioning 0.27.0 outside a heading."
-                        "## 0.26.0 (draft)"
-                        "### Something (Phase 1, `0.26.0`)"
-                        "## 0.24.0 — released" ]
+          test "the slot heading reader takes the three headings and refuses the rest" {
+              let slot heading =
+                  { Version = "0.26.0"
+                    Heading = heading
+                    Entries = [] }
 
-              Expect.isSome (entryHeaderNaming "0.26.0" stability) "the standing version's own header is found"
-              Expect.isSome (entryHeaderNaming "0.24.0" stability) "an older released slot is found too"
+              Expect.equal (slotStatus (slot (Some "## 0.26.0 — DRAFT"))) (Ok Draft) "a draft heading"
 
-              Expect.isNone
-                  (entryHeaderNaming "0.27.0" stability)
-                  "a version named only in prose is NOT an entry — this is the `<Version>` bumped without an entry case"
+              Expect.equal
+                  (slotStatus (slot (Some "## 0.26.0 — released 2026-09-17 as `v0.26.0`")))
+                  (Ok(Released "v0.26.0"))
+                  "a released heading, naming its tag"
+
+              Expect.equal
+                  (slotStatus (slot (Some "## 0.26.0 — never released; its entries ship in `0.26.1`")))
+                  (Ok NeverReleased)
+                  "a never-released heading"
+
+              Expect.isError (slotStatus (slot None)) "a slot with no README is headed by nothing"
+
+              Expect.isError
+                  (slotStatus (slot (Some "## 0.27.0 — DRAFT")))
+                  "a heading naming another version than its directory is refused"
+
+              Expect.isError
+                  (slotStatus (slot (Some "## 0.26.0 (draft)")))
+                  "an older spelling of a draft is refused rather than guessed at"
+
+              Expect.isError
+                  (slotStatus (slot (Some "## 0.26.0 — released 2026-09-17 as `v0.25.0`")))
+                  "a released heading naming another version's tag is refused"
+          }
+
+          test "the layout findings report a second draft and a name that is not an entry" {
+              let slots =
+                  [ { Version = "0.26.0"
+                      Heading = Some "## 0.26.0 — DRAFT"
+                      Entries = [ "phase-0734.md"; "change-substrate-0.41.0.md"; "phase-10000.md" ] }
+                    { Version = "0.25.0"
+                      Heading = Some "## 0.25.0 — released 2026-09-15 as `v0.25.0`"
+                      Entries = [ "phase-0700.md" ] } ]
+
+              Expect.isEmpty (slotLayoutFindings "0.26.0" slots) "one draft, at the standing version, with entry files"
+
+              Expect.equal
+                  (slotLayoutFindings "0.27.0" slots |> List.length)
+                  1
+                  "a DRAFT that is not the standing <Version> is reported"
+
+              let badNames =
+                  [ { Version = "0.26.0"
+                      Heading = Some "## 0.26.0 — DRAFT"
+                      Entries = [ "phase-734.md"; "notes.txt"; "Phase-0734.md"; "sub/" ] } ]
+
+              Expect.equal
+                  (slotLayoutFindings "0.26.0" badNames |> List.length)
+                  4
+                  "an unpadded phase number, a non-entry file, a capitalised name and a subdirectory are each reported"
+
+              Expect.equal
+                  (slotLayoutFindings
+                      "0.26.0"
+                      [ { Version = "0.25.1"
+                          Heading = Some "## 0.25.1 — never released; its entries ship in `0.26.0`"
+                          Entries = [ "phase-0735.md" ] } ]
+                   |> List.length)
+                  1
+                  "an entry under a never-released heading is reported"
+
+              Expect.equal
+                  (slotLayoutFindings
+                      "0.26.0"
+                      [ { Version = "0.26.0"
+                          Heading = None
+                          Entries = [] } ]
+                   |> List.length)
+                  1
+                  "a slot with no heading is reported"
+          }
+
+          test "the tag findings report a tagged draft, an untagged release and an undrafted standing version" {
+              let slot v heading =
+                  { Version = v
+                    Heading = Some heading
+                    Entries = [] }
+
+              let honest =
+                  [ slot "0.26.0" "## 0.26.0 — DRAFT"
+                    slot "0.25.0" "## 0.25.0 — released 2026-09-15 as `v0.25.0`"
+                    slot "0.24.1" "## 0.24.1 — never released; its entries ship in `0.25.0`" ]
+
+              let tags = Set.ofList [ "v0.24.0"; "v0.25.0" ]
+
+              Expect.isEmpty
+                  (slotTagFindings "0.26.0" tags honest)
+                  "an untagged draft, a tagged release, an untagged abandoned slot"
+
+              Expect.equal
+                  (slotTagFindings "0.26.0" (tags.Add "v0.26.0") honest |> List.length)
+                  1
+                  "the draft's version tagged with its heading unmoved is reported — the 0.47.0 case"
+
+              Expect.equal
+                  (slotTagFindings "0.26.0" (tags.Remove "v0.25.0") honest |> List.length)
+                  1
+                  "a released heading whose tag does not exist is reported"
+
+              Expect.equal
+                  (slotTagFindings "0.26.0" (tags.Add "v0.24.1") honest |> List.length)
+                  1
+                  "a never-released heading over a tagged version is reported"
+
+              Expect.equal
+                  (slotTagFindings
+                      "0.26.0"
+                      tags
+                      [ slot "0.26.0" "## 0.26.0 — never released; its entries ship in `0.27.0`" ]
+                   |> List.length)
+                  1
+                  "the untagged standing version not headed DRAFT is reported"
+          }
+
+          test "the contract reader finds a release heading written back into STABILITY.md" {
+              let contract =
+                  "# Stability\n\n## Versioning policy\n\nProse naming 0.27.0.\n\n## The release record\n"
+
+              Expect.isEmpty (stabilityEntryHeadings contract) "the contract's own headings are not release headings"
+
+              Expect.equal
+                  (stabilityEntryHeadings (contract + "\n## 0.27.0 — DRAFT\n\n### Something (Phase 1) — additive\n"))
+                  [ "## 0.27.0 — DRAFT"; "### Something (Phase 1) — additive" ]
+                  "a version section and an entry heading are both found"
           }
 
           test "the draft-slot check reports a denied tag and stays quiet on a genuine draft" {
@@ -640,46 +967,55 @@ let tests =
                   "with neither version tagged, both sentences are true and nothing is reported"
           }
 
-          test "an empty tag list is admitted only while every version header is a DRAFT (Phase 259)" {
+          test "an empty tag list is admitted only while every slot is a DRAFT (Phase 259)" {
+              let slot v heading =
+                  { Version = v
+                    Heading = Some heading
+                    Entries = [] }
+
               Expect.isTrue
-                  (releasedNothingYet "# Stability\n\n## 0.33.0 — DRAFT\n\nProse naming 0.32.0.\n")
-                  "a record whose only version header is a draft has released nothing"
+                  (releasedNothingYet [ slot "0.33.0" "## 0.33.0 — DRAFT" ])
+                  "a record whose only slot is a draft has released nothing"
 
               Expect.isFalse
                   (releasedNothingYet
-                      "# Stability\n\n## 0.34.0 — DRAFT\n\n## 0.33.0 — released 2026-10-01 as `v0.33.0`\n")
-                  "one released header means an empty tag list is a clone missing its tags"
+                      [ slot "0.34.0" "## 0.34.0 — DRAFT"
+                        slot "0.33.0" "## 0.33.0 — released 2026-10-01 as `v0.33.0`" ])
+                  "one released heading means an empty tag list is a clone missing its tags"
 
               Expect.isFalse
-                  (releasedNothingYet "# Stability\n\nNo version headers at all.\n")
-                  "a record with no version header states nothing, so it cannot excuse an empty tag list"
+                  (releasedNothingYet [])
+                  "a record with no slot states nothing, so it cannot excuse an empty tag list"
           }
 
-          test "the per-tag entry check reports an un-entried release and respects the floor" {
-              let stability =
-                  String.concat
-                      "\n"
-                      [ "# Stability"
-                        "## 0.26.0 — released 2026-09-17 as `v0.26.0`"
-                        "## 0.24.0 — released 2026-09-15 as `v0.24.0`"
-                        "Prose mentioning 0.25.0 outside a heading." ]
+          test "the per-tag check reports a release with no slot and respects the floor" {
+              let slots =
+                  [ { Version = "0.26.0"
+                      Heading = Some "## 0.26.0 — released 2026-09-17 as `v0.26.0`"
+                      Entries = [] }
+                    { Version = "0.24.0"
+                      Heading = Some "## 0.24.0 — released 2026-09-15 as `v0.24.0`"
+                      Entries = [] }
+                    { Version = "0.25.0"
+                      Heading = None
+                      Entries = [ "phase-0205.md" ] } ]
 
               let tags =
                   Set.ofList [ "v0.0.1-alpha.8"; "v0.17.0"; "v0.24.0"; "v0.25.0"; "v0.26.0" ]
 
               Expect.equal
-                  (tagsMissingEntryHeader (0, 25, 0) tags stability)
+                  (tagsMissingSlot (0, 25, 0) tags slots)
                   [ "v0.25.0" ]
-                  "the released tag with no entry header is reported — and a version named only in prose is not an entry"
+                  "the released tag with no readable slot is reported — a directory holding entries and no heading is not a record of the version"
 
               Expect.isEmpty
-                  (tagsMissingEntryHeader (0, 27, 0) tags stability)
+                  (tagsMissingSlot (0, 27, 0) tags slots)
                   "a floor above every tag reports nothing, which is exactly why the live case asserts the covered set is non-empty first"
 
               Expect.equal
-                  (tagsMissingEntryHeader (0, 17, 0) tags stability)
+                  (tagsMissingSlot (0, 17, 0) tags slots)
                   [ "v0.17.0"; "v0.25.0" ]
-                  "lowering the floor pulls older un-entried slots in, oldest first — the FLOOR is what excludes them, not a gap in the reader"
+                  "lowering the floor pulls older un-recorded slots in, oldest first — the FLOOR is what excludes them, not a gap in the reader"
 
               Expect.equal
                   (releaseTagVersion "v0.9.0" |> Option.map (fun v -> v < (0, 25, 0)))

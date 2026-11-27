@@ -452,7 +452,8 @@ pushes them to nuget.org under **Trusted Publishing** — an OIDC exchange, no A
 (`Fuaran-Core/fuaran-core-compute`, workflow `publish-packages.yml`) must be registered by the package
 owner before the first tag**; until it is, the run fails at the `NuGet/login` step. That failure
 reads like an authentication problem and is the missing registration. A branch push publishes
-nothing. [`STABILITY.md`](STABILITY.md) records each version's changes by class.
+nothing. [`docs/releases/`](docs/releases/README.md) records each version's changes by class, a file per change,
+against the contract in [`STABILITY.md`](STABILITY.md).
 
 ## License
 
