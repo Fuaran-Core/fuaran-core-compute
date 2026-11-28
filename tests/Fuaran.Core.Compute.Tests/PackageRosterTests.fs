@@ -16,9 +16,9 @@ module Fuaran.Compute.Tests.PackageRosterTests
 // prose a person writes; a gate that generated that column would be describing the file
 // layout rather than the design.
 //
-// Eight properties, each with a go-red case beside it over synthetic input. The live case
+// Ten properties, each with a go-red case beside it over synthetic input. The live case
 // alone cannot show a classifier works — every one of these reads a real file that is
-// expected to be correct, so a classifier that matched nothing would pass all eight.
+// expected to be correct, so a classifier that matched nothing would pass all of them.
 //
 //   1. README rows = the packable set.
 //   2. No packable project sits outside `src/` — the SCOPE property 1's derivation assumes,
@@ -31,6 +31,14 @@ module Fuaran.Compute.Tests.PackageRosterTests
 //      tagged, and the untagged standing `<Version>` is the DRAFT.
 //   7. Every slot is headed by its own version, and holds only entry files.
 //   8. STABILITY.md holds the contract and no release heading.
+//   9. DECISIONS.md is closed: it holds D1 to D91, each once, and every `## ` heading in it is one
+//      of those entries.
+//  10. Every name under `docs/decisions/` is a decision file, `D<phase>.<n>.md`, headed by its own
+//      name and phase, and a phase's decisions run from 1 with no gap.
+//
+// Properties 9 and 10 are Phase 735's (D735.1): the decision record left the one file every
+// change prepended to, for a file per decision named for the phase that made it, and they make
+// the old habit fail the gate rather than a review.
 //
 // Phase 734 moved the record out of STABILITY.md into a directory per version with a file per
 // entry (DECISIONS.md D91), and properties 3 to 5 read it there. Properties 6 to 8 are that
@@ -404,6 +412,136 @@ let internal readSlots (root: string) : ReleaseSlot list =
                 |> List.sort })
         |> List.sortBy _.Version
 
+// ---- the decision record (Phase 735, D735.1) -------------------------------
+
+/// The last number `DECISIONS.md` holds. The record is closed at it, and every decision since is a file under
+/// `docs/decisions/` (D735.1 item 5). ONE named constant, because it is the line between two records.
+let internal closedDecisionsLast = 91
+
+/// The directory a decision is written to from Phase 735 on, relative to the repository root.
+let internal decisionsDir = Path.Combine("docs", "decisions")
+
+let private decisionEntryRe =
+    Regex(@"^## \d{4}-\d{2}-\d{2} — D(\d{1,9}): \S", RegexOptions.Compiled)
+
+/// Findings against the closed record, each naming its line: a `## ` heading that is not an entry heading
+/// (`## <yyyy-mm-dd> — D<n>: <title>`, so an entry written in the new form lands here), an entry numbered
+/// above `last`, a number held twice, and a number from 1 to `last` the record no longer holds.
+let internal closedRecordFindings (last: int) (record: string) : string list =
+    let headings =
+        record.Replace("\r\n", "\n").Split('\n')
+        |> Array.toList
+        |> List.indexed
+        |> List.filter (fun (_, l) -> l.StartsWith("## ", StringComparison.Ordinal))
+        |> List.map (fun (i, l) -> i + 1, l)
+
+    let numbered =
+        headings
+        |> List.choose (fun (line, l) ->
+            let m = decisionEntryRe.Match l
+
+            if m.Success then
+                Some(line, int m.Groups[1].Value)
+            else
+                None)
+
+    let held = numbered |> List.map snd |> Set.ofList
+
+    [ for line, l in headings do
+          if not (decisionEntryRe.IsMatch l) then
+              yield
+                  sprintf
+                      "DECISIONS.md line %d is a `## ` heading and not an entry heading `## <yyyy-mm-dd> — D<n>: <title>`: %s"
+                      line
+                      (if l.Length > 100 then l.Substring(0, 100) + "…" else l)
+      for line, n in numbered do
+          if n < 1 || n > last then
+              yield sprintf "DECISIONS.md line %d adds D%d, and the record is closed at D%d" line n last
+      for n, at in numbered |> List.groupBy snd do
+          if at.Length > 1 then
+              yield
+                  sprintf
+                      "DECISIONS.md holds D%d %d times, at lines %s"
+                      n
+                      at.Length
+                      (at |> List.map (fst >> string) |> String.concat ", ")
+      for n in 1..last do
+          if not (held.Contains n) then
+              yield sprintf "DECISIONS.md no longer holds D%d: no entry of the closed record is renumbered or removed" n ]
+
+let private decisionFileRe =
+    Regex(@"^D(\d{4,9})\.([1-9]\d{0,8})\.md$", RegexOptions.Compiled)
+
+/// Findings against `docs/decisions/`, given each name in it with its text (`None` for a subdirectory, named
+/// with a trailing `/`): a name that is not `D<phase>.<n>.md` (`<phase>` zero-padded to four digits, `<n>`
+/// from `1` with no leading zero), a header that does not name the file's own decision and phase
+/// (`# D<phase>.<n>: <title>`, a blank line, `**Date:** <yyyy-mm-dd>. **Phase:** <phase>.`), and a phase whose
+/// decisions do not run from `1` with no gap.
+let internal decisionFileFindings (files: (string * string option) list) : string list =
+    let named =
+        files
+        |> List.choose (fun (name, text) ->
+            let m = decisionFileRe.Match name
+
+            if m.Success && (int m.Groups[1].Value).ToString("D4") = m.Groups[1].Value then
+                Some(name, int m.Groups[1].Value, int m.Groups[2].Value, text)
+            else
+                None)
+
+    let namedSet = named |> List.map (fun (n, _, _, _) -> n) |> Set.ofList
+
+    [ for name, _ in files do
+          if not (namedSet.Contains name) then
+              yield
+                  sprintf
+                      "docs/decisions/%s is not a decision file: a decision is `D<phase>.<n>.md`, the phase zero-padded to four digits and `<n>` from 1 (`D0735.1.md`)"
+                      name
+      for name, phase, n, text in named do
+          let lines = (defaultArg text "").Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+          let line i =
+              List.tryItem i lines |> Option.defaultValue ""
+
+          if
+              not (line(0).StartsWith(sprintf "# D%d.%d: " phase n, StringComparison.Ordinal))
+              || line(0).Length <= (sprintf "# D%d.%d: " phase n).Length
+          then
+              yield sprintf "docs/decisions/%s does not open with `# D%d.%d: <title>`" name phase n
+
+          if
+              line 1 <> ""
+              || not (Regex.IsMatch(line 2, sprintf @"^\*\*Date:\*\* \d{4}-\d{2}-\d{2}\. \*\*Phase:\*\* %d\.$" phase))
+          then
+              yield
+                  sprintf
+                      "docs/decisions/%s does not carry `**Date:** <yyyy-mm-dd>. **Phase:** %d.` on its third line, after a blank one"
+                      name
+                      phase
+      for phase, ds in named |> List.groupBy (fun (_, p, _, _) -> p) do
+          let ns = ds |> List.map (fun (_, _, n, _) -> n) |> List.sort
+
+          if ns <> [ 1 .. ns.Length ] then
+              yield
+                  sprintf
+                      "Phase %d's decisions are D%d.%s: a phase's decisions run from 1 with no gap"
+                      phase
+                      phase
+                      (ns |> List.map string |> String.concat (sprintf ", D%d." phase)) ]
+
+/// Every name under `docs/decisions/` with its text, a subdirectory with a trailing `/` and no text. Empty
+/// when the directory is absent.
+let internal readDecisionFiles (root: string) : (string * string option) list =
+    let dir = Path.Combine(root, decisionsDir)
+
+    if not (Directory.Exists dir) then
+        []
+    else
+        [ for f in Directory.GetFiles dir do
+              yield Path.GetFileName f, Some(File.ReadAllText f)
+          for sub in Directory.GetDirectories dir do
+              yield Path.GetFileName sub + "/", None ]
+        |> List.sortBy fst
+
 // ---- the instruments ------------------------------------------------------
 
 let private repoRoot () : string option =
@@ -549,6 +687,40 @@ let tests =
                           "%d project(s) outside src/ are packable, so the README roster derivation cannot see them: %s\n       Remedy: declare `<IsPackable>false</IsPackable>`, or move the project under src/ and add its README row."
                           packable.Length
                           (String.concat ", " packable))
+          }
+
+          test "DECISIONS.md is closed: it holds D1 to D91, each once, and nothing is added to it" {
+              // Phase 735 (D735.1): a decision since is a file of its own under docs/decisions/, so two
+              // changes in flight never edit one file or take one number. An entry added here is the old
+              // habit, and it is refused rather than read.
+              withRoot (fun root ->
+                  match
+                      closedRecordFindings closedDecisionsLast (File.ReadAllText(Path.Combine(root, "DECISIONS.md")))
+                  with
+                  | [] -> ()
+                  | found ->
+                      failtestf
+                          "%d finding(s) against the closed decision record:\n         %s\n       Remedy: a new decision is its own file, docs/decisions/D<phase>.<n>.md, cited D<phase>.<n>; DECISIONS.md holds D1 to D%d and is edited by no change (D735.1)."
+                          found.Length
+                          (String.concat "\n         " (List.truncate 10 found))
+                          closedDecisionsLast)
+          }
+
+          test "every file under docs/decisions/ is a decision named for its phase and headed by its own name" {
+              withRoot (fun root ->
+                  let files = readDecisionFiles root
+
+                  Expect.isTrue
+                      (files |> List.exists (fun (n, _) -> n = "D0735.1.md"))
+                      "docs/decisions/ holds D735.1, the decision that fixes its layout"
+
+                  match decisionFileFindings files with
+                  | [] -> ()
+                  | found ->
+                      failtestf
+                          "%d finding(s) under docs/decisions/:\n         %s\n       Remedy: a decision is docs/decisions/D<phase>.<n>.md, the phase zero-padded to four digits, headed `# D<phase>.<n>: <title>` with `**Date:** <yyyy-mm-dd>. **Phase:** <phase>.` on its third line (D735.1)."
+                          found.Length
+                          (String.concat "\n         " (List.truncate 10 found)))
           }
 
           test "STABILITY.md holds the contract and no release entry" {
@@ -934,6 +1106,113 @@ let tests =
                    |> List.length)
                   1
                   "the untagged standing version not headed DRAFT is reported"
+          }
+
+          test "the closed-record reader refuses an added, a new-form, a doubled and a removed entry" {
+              let record =
+                  String.concat
+                      "\n"
+                      [ "# decisions (newest first)"
+                        ""
+                        "A head note, which is not a heading."
+                        ""
+                        "## 2026-01-03 — D3: third"
+                        "### a sub-heading inside an entry is not an entry"
+                        "## 2026-01-02 — D2: second"
+                        "## 2026-01-01 — D1: first" ]
+
+              let withTop (heading: string) =
+                  record.Replace("## 2026-01-03", heading + "\n## 2026-01-03")
+
+              Expect.isEmpty (closedRecordFindings 3 record) "the closed record reads clean"
+
+              Expect.equal
+                  (closedRecordFindings 3 (withTop "## 2026-02-01 — D4: a new entry"))
+                  [ "DECISIONS.md line 5 adds D4, and the record is closed at D3" ]
+                  "an entry above the last number is refused by line"
+
+              Expect.equal
+                  (closedRecordFindings 3 (withTop "## 2026-02-01 — D735.1: the new form in the old file"))
+                  [ "DECISIONS.md line 5 is a `## ` heading and not an entry heading `## <yyyy-mm-dd> — D<n>: <title>`: ## 2026-02-01 — D735.1: the new form in the old file" ]
+                  "an entry in the new form written into the old file is refused"
+
+              Expect.equal
+                  (closedRecordFindings 3 (withTop "## 2026-02-01 — D2: second again"))
+                  [ "DECISIONS.md holds D2 2 times, at lines 5, 8" ]
+                  "a number taken twice is refused"
+
+              Expect.equal
+                  (closedRecordFindings 3 (record.Replace("## 2026-01-02 — D2: second\n", "")))
+                  [ "DECISIONS.md no longer holds D2: no entry of the closed record is renumbered or removed" ]
+                  "a removed entry is refused"
+
+              Expect.equal (closedRecordFindings 3 (record.Replace("\n", "\r\n"))) [] "CRLF line endings read the same"
+          }
+
+          test "the decision-file reader refuses a misnamed file, a wrong header and a gap" {
+              let decision (phase: int) (n: int) =
+                  Some(
+                      sprintf
+                          "# D%d.%d: a title\n\n**Date:** 2026-11-28. **Phase:** %d.\n\n**Context.** …\n"
+                          phase
+                          n
+                          phase
+                  )
+
+              let good =
+                  [ "D0735.1.md", decision 735 1
+                    "D0735.2.md", decision 735 2
+                    "D1200.1.md", decision 1200 1 ]
+
+              Expect.isEmpty (decisionFileFindings good) "well-named, well-headed decisions read clean"
+
+              let notADecision name =
+                  sprintf
+                      "docs/decisions/%s is not a decision file: a decision is `D<phase>.<n>.md`, the phase zero-padded to four digits and `<n>` from 1 (`D0735.1.md`)"
+                      name
+
+              for name in
+                  [ "D735.1.md"
+                    "D00735.1.md"
+                    "D0735.01.md"
+                    "D0735.0.md"
+                    "D92.md"
+                    "0735.1.md"
+                    "d0735.1.md"
+                    "D0735.1.txt"
+                    "README.md" ] do
+                  Expect.equal
+                      (decisionFileFindings [ name, decision 735 1 ])
+                      [ notADecision name ]
+                      (sprintf "%s is refused by name" name)
+
+              Expect.equal
+                  (decisionFileFindings [ "notes/", None ])
+                  [ notADecision "notes/" ]
+                  "a subdirectory is refused"
+
+              Expect.equal
+                  (decisionFileFindings [ "D0735.1.md", decision 736 1 ])
+                  [ "docs/decisions/D0735.1.md does not open with `# D735.1: <title>`"
+                    "docs/decisions/D0735.1.md does not carry `**Date:** <yyyy-mm-dd>. **Phase:** 735.` on its third line, after a blank one" ]
+                  "a header naming another decision and phase is refused"
+
+              Expect.equal
+                  (decisionFileFindings [ "D0735.1.md", Some "# D735.1: \n\n**Date:** 28 Nov. **Phase:** 735.\n" ])
+                  [ "docs/decisions/D0735.1.md does not open with `# D735.1: <title>`"
+                    "docs/decisions/D0735.1.md does not carry `**Date:** <yyyy-mm-dd>. **Phase:** 735.` on its third line, after a blank one" ]
+                  "an empty title and a date not in the form are refused"
+
+              Expect.equal
+                  (decisionFileFindings [ "D0735.1.md", decision 735 1; "D0735.3.md", decision 735 3 ])
+                  [ "Phase 735's decisions are D735.1, D735.3: a phase's decisions run from 1 with no gap" ]
+                  "a gap in a phase's decisions is refused"
+
+              Expect.equal
+                  (decisionFileFindings
+                      [ "D0735.1.md", decision 735 1 |> Option.map (fun t -> t.Replace("\n", "\r\n")) ])
+                  []
+                  "CRLF line endings read the same"
           }
 
           test "the contract reader finds a release heading written back into STABILITY.md" {

@@ -455,6 +455,13 @@ reads like an authentication problem and is the missing registration. A branch p
 nothing. [`docs/releases/`](docs/releases/README.md) records each version's changes by class, a file per change,
 against the contract in [`STABILITY.md`](STABILITY.md).
 
+## Decisions
+
+Why the packages are as they are is recorded in two places. [`DECISIONS.md`](DECISIONS.md) holds D1 to D91,
+cited `D<n>` throughout this README and the sources, and is closed. Every decision since is a file of its own
+under [`docs/decisions/`](docs/decisions/), named for the phase that made it and cited `D<phase>.<n>`
+(`D735.1`, the layout).
+
 ## License
 
 Apache-2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

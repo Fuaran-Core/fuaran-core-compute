@@ -1,5 +1,11 @@
 # Fuaran.Core.Compute — decisions (newest first)
 
+**This record is closed at D91.** It holds D1 to D91, each cited as `DECISIONS.md` `D<n>`, and none of them is
+reworded, renumbered or moved. A decision recorded from Phase 735 on is a file of its own under
+[`docs/decisions/`](docs/decisions/), named for the phase that made it and cited `D<phase>.<n>`; the layout is
+[`D735.1`](docs/decisions/D0735.1.md). A change that decides something adds one file there and edits this one not
+at all.
+
 ## 2026-11-27 — D91: the release record leaves `STABILITY.md` for `docs/releases/` — a directory per version, its `README.md` the version's heading and preamble, and a file per change named by the phase that made it (`phase-<n>.md`, four digits, or `change-<slug>.md`), each moved word for word; a release re-heads the version's `README.md` and moves no entry; an untagged draft that advances moves its directory; the roster family reads the new layout, keeps every refusal it had and gains three; `0.47.0` was tagged under a DRAFT heading, so this change opens `0.48.0`
 
 **Context.** Phase 734. `STABILITY.md` was 2,776 lines: the contract in its first 48 (the versioning policy and the

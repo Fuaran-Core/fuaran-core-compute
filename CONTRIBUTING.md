@@ -44,6 +44,12 @@ rather than print, and `FUARAN_CORE_CORPUS_DIR` to name a clone kept elsewhere.
   edits no other entry. The change that opens a slot also writes that slot's `README.md`, its heading and
   preamble. The layout is [`docs/releases/README.md`](docs/releases/README.md); the contract it records
   against is [`STABILITY.md`](STABILITY.md).
+- **A decision is a file of its own, named for the phase that made it.** A change that decides something
+  writes `docs/decisions/D<phase>.<n>.md`, `<phase>` zero-padded to four digits and `<n>` counting that phase's
+  decisions from `1`, headed `# D<phase>.<n>: <title>` with `**Date:** <yyyy-mm-dd>. **Phase:** <phase>.` on
+  its third line, and cites it `D<phase>.<n>` without the padding (`D735.1`). It edits
+  [`DECISIONS.md`](DECISIONS.md) not at all: that record is closed at D91, and its entries keep their names,
+  cited `DECISIONS.md` `D<n>`. The layout is [`D735.1`](docs/decisions/D0735.1.md).
 
 A change that adds a public surface should add or extend a law family that certifies it.
 
